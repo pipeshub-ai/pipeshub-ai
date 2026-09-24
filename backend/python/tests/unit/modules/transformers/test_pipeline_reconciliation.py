@@ -60,7 +60,7 @@ def _pipeline(blob_meta=None):
     sink.blob_storage.get_reconciliation_metadata = AsyncMock(return_value=blob_meta)
     sink.blob_storage.save_reconciliation_metadata = AsyncMock()
     sink.vector_store = AsyncMock()
-    sink.vector_store.delete_embeddings = AsyncMock()
+    sink.vector_store.purge_record_vectors = AsyncMock()
 
     return IndexingPipeline(doc_extraction, sink)
 
@@ -159,8 +159,8 @@ class TestBuildReconciliationContext1to1:
         assert result.block_ids_to_delete is None
         pipeline.sink_orchestrator.blob_storage.get_reconciliation_metadata.assert_awaited_once()
         # Stale vectors must be purged on first reconciliation pass
-        pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_awaited_once_with(
-            record.virtual_record_id
+        pipeline.sink_orchestrator.vector_store.purge_record_vectors.assert_awaited_once_with(
+            record.org_id, record.virtual_record_id, record
         )
 
     @pytest.mark.asyncio
@@ -168,7 +168,7 @@ class TestBuildReconciliationContext1to1:
         """If the stale-vector purge fails, the context must still be returned
         (best-effort cleanup — worst case falls back to the old orphan behavior)."""
         pipeline = _pipeline(blob_meta=None)
-        pipeline.sink_orchestrator.vector_store.delete_embeddings = AsyncMock(
+        pipeline.sink_orchestrator.vector_store.purge_record_vectors = AsyncMock(
             side_effect=RuntimeError("qdrant down")
         )
         block = Block(index=0, type=BlockType.TEXT, data="hi")
@@ -186,8 +186,8 @@ class TestBuildReconciliationContext1to1:
         assert isinstance(result, ReconciliationContext)
         assert result.blocks_to_index_ids is None
         assert result.block_ids_to_delete is None
-        pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_awaited_once_with(
-            record.virtual_record_id
+        pipeline.sink_orchestrator.vector_store.purge_record_vectors.assert_awaited_once_with(
+            record.org_id, record.virtual_record_id, record
         )
 
     @pytest.mark.asyncio
@@ -206,7 +206,7 @@ class TestBuildReconciliationContext1to1:
         await IndexingPipeline.build_reconciliation_context(
             ctx, pipeline.logger, pipeline.sink_orchestrator
         )
-        pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_not_awaited()
+        pipeline.sink_orchestrator.vector_store.purge_record_vectors.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_diff_path_does_not_purge_vectors(self):
@@ -228,7 +228,7 @@ class TestBuildReconciliationContext1to1:
         await IndexingPipeline.build_reconciliation_context(
             ctx, pipeline.logger, pipeline.sink_orchestrator
         )
-        pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_not_awaited()
+        pipeline.sink_orchestrator.vector_store.purge_record_vectors.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_diff_with_changes_produces_index_and_delete_ids(self):
@@ -326,15 +326,15 @@ class TestApplyEmptyCleanup:
 
         await pipeline.apply(ctx)
 
-        pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_awaited_once_with(
-            record.virtual_record_id
+        pipeline.sink_orchestrator.vector_store.purge_record_vectors.assert_awaited_once_with(
+            record.org_id, record.virtual_record_id, record
         )
         pipeline.sink_orchestrator.blob_storage.save_reconciliation_metadata.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_empty_update_cleanup_exception_is_swallowed(self):
         pipeline = _pipeline()
-        pipeline.sink_orchestrator.vector_store.delete_embeddings = AsyncMock(
+        pipeline.sink_orchestrator.vector_store.purge_record_vectors = AsyncMock(
             side_effect=RuntimeError("delete boom")
         )
         record = _record(blocks=[], block_groups=[])

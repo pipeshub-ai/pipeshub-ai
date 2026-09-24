@@ -37,15 +37,18 @@ def _mock_request(
     body: dict = None,
     config_service: Any = None,
     connector_registry: Any = None,
+    is_admin: bool = False,
 ):
     """Build a minimal mock FastAPI request object for create_connector_instance."""
     req = MagicMock()
-    user_data = user or {"userId": "user-1", "orgId": "org-1"}
+    _headers = headers or {}
+    user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
+    if "role" not in user_data:
+        user_data["role"] = "admin" if is_admin else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
 
-    _headers = headers or {}
     req.headers = MagicMock()
     req.headers.get = lambda k, default=None: _headers.get(k, default)
 
@@ -151,7 +154,7 @@ class TestAuthTypeAutoSelection:
         registry = _default_registry()
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -171,7 +174,7 @@ class TestAuthTypeAutoSelection:
         registry = _default_registry(metadata=metadata)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -195,7 +198,7 @@ class TestAuthTypeValidation:
         registry = _default_registry(metadata=metadata)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -213,7 +216,7 @@ class TestAuthTypeValidation:
         registry = _default_registry()
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -240,7 +243,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -293,7 +296,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -343,7 +346,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -385,7 +388,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -426,7 +429,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -470,7 +473,7 @@ class TestPreValidateOAuthConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -512,7 +515,7 @@ class TestCreateInstanceInDB:
         )
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -521,7 +524,51 @@ class TestCreateInstanceInDB:
             with pytest.raises(HTTPException) as exc:
                 await create_connector_instance(req, gp)
             assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
-            assert "Duplicate instance name" in exc.value.detail
+            # the person is told what failed and what to do, not the exception text
+            assert exc.value.detail == "We couldn't set up this connector with those details. Check the settings and try again."
+            assert "Duplicate instance name" not in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_taken_name_keeps_its_own_advice(self) -> None:
+        """A name already in use tells the person to pick another one."""
+        body = _base_body(authType="NONE")
+        registry = _default_registry()
+        registry.create_connector_instance_on_configuration = AsyncMock(
+            side_effect=ValueError(
+                "Connector instance name 'Sales Drive' already exists. Please choose a different name."
+            ),
+        )
+        req = _mock_request(body=body, is_admin=True, connector_registry=registry)
+        gp = _default_graph_provider()
+
+        with _common_patches():
+            with pytest.raises(HTTPException) as exc:
+                await create_connector_instance(req, gp)
+            assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
+            assert exc.value.detail == (
+                "That name is already used by another connector. Pick a different name."
+            )
+            assert "Sales Drive" not in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_missing_sign_in_method_says_to_choose_one(self) -> None:
+        """A missing auth type names the choice to make, not the field."""
+        body = _base_body(authType="NONE")
+        registry = _default_registry()
+        registry.create_connector_instance_on_configuration = AsyncMock(
+            side_effect=ValueError(
+                "selected_auth_type is required when creating connector 'drive'. "
+                "User must select one of the supported auth types: ['OAUTH']"
+            ),
+        )
+        req = _mock_request(body=body, is_admin=True, connector_registry=registry)
+        gp = _default_graph_provider()
+
+        with _common_patches():
+            with pytest.raises(HTTPException) as exc:
+                await create_connector_instance(req, gp)
+            assert exc.value.detail == "Choose how this connector signs in, then try again."
+            assert "selected_auth_type" not in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_none_instance_from_registry_raises_500(self) -> None:
@@ -533,7 +580,7 @@ class TestCreateInstanceInDB:
         )
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -561,7 +608,7 @@ class TestStoreInitialConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -604,7 +651,7 @@ class TestStoreInitialConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -649,7 +696,6 @@ class TestStoreInitialConfig:
         ])
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "false"},
             connector_registry=registry,
             config_service=config_service,
         )
@@ -681,7 +727,7 @@ class TestStoreInitialConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -709,7 +755,7 @@ class TestStoreInitialConfig:
         config_service = AsyncMock()
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -734,7 +780,7 @@ class TestStoreInitialConfig:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -766,7 +812,7 @@ class TestSuccessResponse:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -798,7 +844,7 @@ class TestSuccessResponse:
         registry = _default_registry()
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -829,7 +875,7 @@ class TestOAuthBodyLevelConfigId:
         config_service.set_config = AsyncMock(return_value=True)
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
             config_service=config_service,
         )
@@ -871,7 +917,7 @@ class TestGenericExceptionHandling:
         )
         req = _mock_request(
             body=body,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             connector_registry=registry,
         )
         gp = _default_graph_provider()
@@ -880,4 +926,6 @@ class TestGenericExceptionHandling:
             with pytest.raises(HTTPException) as exc:
                 await create_connector_instance(req, gp)
             assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-            assert "Unexpected DB failure" in exc.value.detail
+            # the person is told what failed and what to do, not the exception text
+            assert exc.value.detail == "We couldn't set up this connector. Please try again; if it keeps failing, contact your admin."
+            assert "Unexpected DB failure" not in exc.value.detail

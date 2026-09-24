@@ -293,20 +293,20 @@ class TestHasOauthCredentials:
 class TestGetOauthCredentialsForToolset:
     @pytest.mark.asyncio
     async def test_empty_config_raises(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         with pytest.raises(ValueError, match="required"):
             await get_oauth_credentials_for_toolset({}, AsyncMock())
 
     @pytest.mark.asyncio
     async def test_none_config_raises(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         with pytest.raises(ValueError, match="required"):
             await get_oauth_credentials_for_toolset(None, AsyncMock())
 
     @pytest.mark.asyncio
     async def test_legacy_auth_credentials_returned(self) -> None:
         """When auth config already has clientId/clientSecret, return as-is."""
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         config = {
             "auth": {
                 "clientId": "legacy-id",
@@ -323,7 +323,7 @@ class TestGetOauthCredentialsForToolset:
     @pytest.mark.asyncio
     async def test_legacy_with_client_id_alt_name(self) -> None:
         """Handles client_id (underscore style) in auth config."""
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         config = {
             "auth": {
                 "client_id": "alt-id",
@@ -336,7 +336,7 @@ class TestGetOauthCredentialsForToolset:
 
     @pytest.mark.asyncio
     async def test_missing_toolset_type_raises(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         config = {"auth": {}, "oauthConfigId": "cfg-1"}
         with pytest.raises(ValueError, match="Toolset type not found"):
             await get_oauth_credentials_for_toolset(config, AsyncMock())
@@ -344,7 +344,7 @@ class TestGetOauthCredentialsForToolset:
     @pytest.mark.asyncio
     async def test_missing_oauth_config_id_fetches_from_instance(self) -> None:
         """When oauthConfigId missing but instanceId present, fetches from instance."""
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
 
@@ -374,7 +374,7 @@ class TestGetOauthCredentialsForToolset:
 
     @pytest.mark.asyncio
     async def test_no_oauth_config_id_and_no_instance_raises(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value=[])
@@ -388,7 +388,7 @@ class TestGetOauthCredentialsForToolset:
 
     @pytest.mark.asyncio
     async def test_oauth_config_found_by_id(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
 
@@ -419,7 +419,7 @@ class TestGetOauthCredentialsForToolset:
 
     @pytest.mark.asyncio
     async def test_oauth_config_not_found_raises(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
 
@@ -440,7 +440,7 @@ class TestGetOauthCredentialsForToolset:
 
     @pytest.mark.asyncio
     async def test_invalid_format_raises(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value="not a list")
@@ -455,7 +455,7 @@ class TestGetOauthCredentialsForToolset:
 
     @pytest.mark.asyncio
     async def test_empty_config_data_raises(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
 
@@ -476,7 +476,7 @@ class TestGetOauthCredentialsForToolset:
 
     @pytest.mark.asyncio
     async def test_missing_client_secret_raises(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
 
@@ -497,7 +497,7 @@ class TestGetOauthCredentialsForToolset:
 
     @pytest.mark.asyncio
     async def test_general_exception_wraps(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(side_effect=RuntimeError("connection failed"))
@@ -518,7 +518,7 @@ class TestGetOauthCredentialsForToolset:
 class TestGetToolsetById:
     @pytest.mark.asyncio
     async def test_found(self) -> None:
-        from app.api.routes.toolsets import get_toolset_by_id
+        from app.api.routes.toolset_resolvers import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
             {"_id": "inst-1", "name": "Jira"},
@@ -529,7 +529,7 @@ class TestGetToolsetById:
 
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:
-        from app.api.routes.toolsets import get_toolset_by_id
+        from app.api.routes.toolset_resolvers import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
             {"_id": "inst-1", "name": "Jira"},
@@ -539,7 +539,7 @@ class TestGetToolsetById:
 
     @pytest.mark.asyncio
     async def test_empty_instances(self) -> None:
-        from app.api.routes.toolsets import get_toolset_by_id
+        from app.api.routes.toolset_resolvers import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
         result = await get_toolset_by_id("inst-1", cs)
@@ -547,7 +547,7 @@ class TestGetToolsetById:
 
     @pytest.mark.asyncio
     async def test_non_list_returns_none(self) -> None:
-        from app.api.routes.toolsets import get_toolset_by_id
+        from app.api.routes.toolset_resolvers import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value="not a list")
         result = await get_toolset_by_id("inst-1", cs)
@@ -555,147 +555,11 @@ class TestGetToolsetById:
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self) -> None:
-        from app.api.routes.toolsets import get_toolset_by_id
+        from app.api.routes.toolset_resolvers import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
         result = await get_toolset_by_id("inst-1", cs)
         assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _check_user_is_admin
-# ---------------------------------------------------------------------------
-
-class TestCheckUserIsAdmin:
-    @pytest.mark.asyncio
-    @patch("app.api.routes.toolsets.httpx.AsyncClient")
-    async def test_admin_returns_true(self, mock_client_cls) -> None:
-        from app.api.routes.toolsets import _check_user_is_admin
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        request = MagicMock()
-        request.headers = {"authorization": "Bearer token123", "cookie": "session=abc"}
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={
-            "nodejs": {"endpoint": "http://nodejs:3001"},
-        })
-
-        result = await _check_user_is_admin("user-1", request, config_service)
-        assert result is True
-
-    @pytest.mark.asyncio
-    @patch("app.api.routes.toolsets.httpx.AsyncClient")
-    async def test_non_admin_returns_false(self, mock_client_cls) -> None:
-        from app.api.routes.toolsets import _check_user_is_admin
-
-        mock_response = MagicMock()
-        mock_response.status_code = 403
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        request = MagicMock()
-        request.headers = {"authorization": "Bearer token123"}
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={
-            "nodejs": {"endpoint": "http://nodejs:3001"},
-        })
-
-        result = await _check_user_is_admin("user-1", request, config_service)
-        assert result is False
-
-    @pytest.mark.asyncio
-    @patch("app.api.routes.toolsets.httpx.AsyncClient")
-    async def test_fallback_endpoint_on_config_error(self, mock_client_cls) -> None:
-        from app.api.routes.toolsets import _check_user_is_admin
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        request = MagicMock()
-        request.headers = {}
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(side_effect=Exception("etcd down"))
-
-        result = await _check_user_is_admin("user-1", request, config_service)
-        assert result is True
-        # Verify the fallback URL is used
-        call_args = mock_client.get.call_args
-        assert "user-1/adminCheck" in call_args[0][0]
-
-    @pytest.mark.asyncio
-    @patch("app.api.routes.toolsets.httpx.AsyncClient")
-    async def test_exception_returns_false(self, mock_client_cls) -> None:
-        from app.api.routes.toolsets import _check_user_is_admin
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=Exception("network error"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        request = MagicMock()
-        request.headers = {}
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={})
-
-        result = await _check_user_is_admin("user-1", request, config_service)
-        assert result is False
-
-    @pytest.mark.asyncio
-    @patch("app.api.routes.toolsets.httpx.AsyncClient")
-    async def test_forwards_auth_headers(self, mock_client_cls) -> None:
-        from app.api.routes.toolsets import _check_user_is_admin
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        request = MagicMock()
-        request.headers = {
-            "authorization": "Bearer abc",
-            "x-organization-id": "org-1",
-            "cookie": "session=xyz",
-            "content-type": "application/json",  # should not be forwarded
-        }
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"nodejs": {"endpoint": "http://test:3001"}})
-
-        await _check_user_is_admin("user-1", request, config_service)
-
-        call_kwargs = mock_client.get.call_args
-        forwarded = call_kwargs[1]["headers"]
-        assert forwarded["authorization"] == "Bearer abc"
-        assert forwarded["x-organization-id"] == "org-1"
-        assert forwarded["cookie"] == "session=xyz"
-        assert "content-type" not in forwarded
 
 
 # ---------------------------------------------------------------------------
@@ -712,14 +576,14 @@ class TestGetUserContext:
         assert ctx["user_id"] == "u1"
         assert ctx["org_id"] == "o1"
 
-    def test_fallback_to_headers(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "u2", "X-Organization-Id": "o2"}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "u2"
-        assert ctx["org_id"] == "o2"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
     def test_missing_user_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
@@ -2537,7 +2401,9 @@ class TestParseRequestJsonDeep:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b'{"key": ')
-        assert "Invalid JSON" in exc.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc.value.detail == "We couldn't read that request. Refresh the page and try again."
+        assert "Invalid JSON" not in exc.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -2554,22 +2420,23 @@ class TestGetUserContextDeep:
         assert ctx["user_id"] == "state-user"
         assert ctx["org_id"] == "state-org"
 
-    def test_missing_org_id_does_not_raise(self) -> None:
+    def test_missing_org_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "u1"}
         request.headers = {}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "u1"
-        assert ctx["org_id"] is None or ctx["org_id"] == ""
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
-    def test_state_attribute_error_falls_back_to_headers(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "header-user", "X-Organization-Id": "header-org"}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "header-user"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
 
 # ===========================================================================
@@ -4041,7 +3908,7 @@ class TestUpdateToolsetInstanceOAuth:
 class TestGetOauthCredentialsEdgeCases:
     @pytest.mark.asyncio
     async def test_logger_debug_on_legacy(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         log = MagicMock()
         config = {"auth": {"clientId": "id", "clientSecret": "s"}, "toolsetType": "jira"}
         result = await get_oauth_credentials_for_toolset(config, AsyncMock(), logger=log)
@@ -4050,7 +3917,7 @@ class TestGetOauthCredentialsEdgeCases:
 
     @pytest.mark.asyncio
     async def test_missing_instance_in_list(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         async def mock_gc(path, default=None, use_cache=True):
             if "instances" in path:
@@ -4063,7 +3930,7 @@ class TestGetOauthCredentialsEdgeCases:
 
     @pytest.mark.asyncio
     async def test_instance_fetch_exception(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         async def mock_gc(path, default=None, use_cache=True):
             if "instances" in path:
@@ -4076,7 +3943,7 @@ class TestGetOauthCredentialsEdgeCases:
 
     @pytest.mark.asyncio
     async def test_oauth_config_not_found_with_logger(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         async def mock_gc(path, default=None, use_cache=True):
             if "oauths" in path:
@@ -4089,7 +3956,7 @@ class TestGetOauthCredentialsEdgeCases:
 
     @pytest.mark.asyncio
     async def test_non_dict_config_data(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         async def mock_gc(path, default=None, use_cache=True):
             if "oauths" in path:
@@ -4282,13 +4149,14 @@ class TestGetUserContextToolsets:
         ctx = _get_user_context(request)
         assert ctx["user_id"] == "u1"
 
-    def test_from_headers(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "u2", "X-Organization-Id": "o2"}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "u2"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
     def test_missing_user_id(self) -> None:
         from app.api.routes.toolsets import _get_user_context
@@ -4469,7 +4337,7 @@ class TestGetOauthCredentialsDebugLogging:
 
     @pytest.mark.asyncio
     async def test_debug_logging_on_success(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         cs = AsyncMock()
 
@@ -4486,7 +4354,7 @@ class TestGetOauthCredentialsDebugLogging:
 
     @pytest.mark.asyncio
     async def test_error_logging_on_unexpected_exception(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("connection dropped"))
@@ -4501,7 +4369,7 @@ class TestGetOauthCredentialsMissingOauthConfigIdWithLogger:
 
     @pytest.mark.asyncio
     async def test_legacy_auth_with_logger(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         config = {"auth": {"clientId": "id1", "clientSecret": "sec1"}, "toolsetType": "slack"}
         result = await get_oauth_credentials_for_toolset(config, AsyncMock(), logger=mock_logger)
@@ -4510,7 +4378,7 @@ class TestGetOauthCredentialsMissingOauthConfigIdWithLogger:
 
     @pytest.mark.asyncio
     async def test_fetches_oauth_from_instance_with_logger(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         cs = AsyncMock()
 
@@ -4530,7 +4398,7 @@ class TestGetOauthCredentialsMissingOauthConfigIdWithLogger:
 
     @pytest.mark.asyncio
     async def test_instance_fetch_exception_with_logger(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("etcd down"))
@@ -4545,7 +4413,7 @@ class TestGetToolsetById:
 
     @pytest.mark.asyncio
     async def test_found(self) -> None:
-        from app.api.routes.toolsets import get_toolset_by_id
+        from app.api.routes.toolset_resolvers import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "inst-1", "name": "Jira"}])
         result = await get_toolset_by_id("inst-1", cs)
@@ -4553,7 +4421,7 @@ class TestGetToolsetById:
 
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:
-        from app.api.routes.toolsets import get_toolset_by_id
+        from app.api.routes.toolset_resolvers import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "other"}])
         result = await get_toolset_by_id("inst-1", cs)
@@ -4561,7 +4429,7 @@ class TestGetToolsetById:
 
     @pytest.mark.asyncio
     async def test_non_list_result(self) -> None:
-        from app.api.routes.toolsets import get_toolset_by_id
+        from app.api.routes.toolset_resolvers import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value="not-a-list")
         result = await get_toolset_by_id("inst-1", cs)
@@ -4569,7 +4437,7 @@ class TestGetToolsetById:
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self) -> None:
-        from app.api.routes.toolsets import get_toolset_by_id
+        from app.api.routes.toolset_resolvers import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("boom"))
         result = await get_toolset_by_id("inst-1", cs)
@@ -4899,60 +4767,6 @@ class TestEncodeDecodeState:
             _decode_state_with_instance("not-valid-json-base64!!!")
 
 
-class TestCheckUserIsAdmin:
-    """Cover _check_user_is_admin function."""
-
-    @pytest.mark.asyncio
-    async def test_is_admin(self) -> None:
-        from app.api.routes.toolsets import _check_user_is_admin
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value={"nodejs": {"endpoint": "http://localhost:3001"}})
-        request = MagicMock()
-        request.headers = {"authorization": "Bearer token"}
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("app.api.routes.toolsets.httpx.AsyncClient", return_value=mock_client):
-            result = await _check_user_is_admin("u1", request, cs)
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_not_admin(self) -> None:
-        from app.api.routes.toolsets import _check_user_is_admin
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value={"nodejs": {"endpoint": "http://localhost:3001"}})
-        request = MagicMock()
-        request.headers = {"authorization": "Bearer token"}
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 403
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("app.api.routes.toolsets.httpx.AsyncClient", return_value=mock_client):
-            result = await _check_user_is_admin("u1", request, cs)
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_exception_defaults_false(self) -> None:
-        from app.api.routes.toolsets import _check_user_is_admin
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(side_effect=Exception("fail"))
-        request = MagicMock()
-        request.headers = {}
-
-        with patch("app.api.routes.toolsets.httpx.AsyncClient", side_effect=Exception("network")):
-            result = await _check_user_is_admin("u1", request, cs)
-        assert result is False
-
-
 class TestDeauthAllInstanceUsersWithExceptions:
     """Cover deauth edge cases with set_config exceptions."""
 
@@ -5052,14 +4866,14 @@ class TestGetUserContext:
         assert result["user_id"] == "u1"
         assert result["org_id"] == "o1"
 
-    def test_extracts_context_from_headers(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "u2", "X-Organization-Id": "o2"}
-        result = _get_user_context(request)
-        assert result["user_id"] == "u2"
-        assert result["org_id"] == "o2"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
     def test_missing_user_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
@@ -5449,7 +5263,7 @@ class TestGetOauthCredentialsInvalidConfigData:
 
     @pytest.mark.asyncio
     async def test_invalid_config_data(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
 
         async def mock_get_config(path, default=None, use_cache=True):
@@ -5464,7 +5278,7 @@ class TestGetOauthCredentialsInvalidConfigData:
 
     @pytest.mark.asyncio
     async def test_missing_client_secret_in_config(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
 
         async def mock_get_config(path, default=None, use_cache=True):
@@ -5479,7 +5293,7 @@ class TestGetOauthCredentialsInvalidConfigData:
 
     @pytest.mark.asyncio
     async def test_deleted_oauth_config(self) -> None:
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
 
         async def mock_get_config(path, default=None, use_cache=True):
@@ -5552,7 +5366,7 @@ class TestCreateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=[]):
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=[]):
             result = await create_toolset_instance(req, cs)
 
         assert result["status"] == "success"
@@ -5594,7 +5408,7 @@ class TestCreateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=[]), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=[]), \
              patch("app.api.routes.toolsets._get_oauth_config_from_registry", return_value=mock_oauth):
             result = await create_toolset_instance(req, cs)
 
@@ -5619,7 +5433,7 @@ class TestCreateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=[]):
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=[]):
             result = await create_toolset_instance(req, cs)
 
         assert result["status"] == "success"
@@ -5643,7 +5457,7 @@ class TestCreateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=[]), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=[]), \
              patch("app.api.routes.toolsets._get_oauth_config_by_id", return_value={"_id": "oc-1"}):
             result = await create_toolset_instance(req, cs)
 
@@ -5668,7 +5482,7 @@ class TestCreateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=[]), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=[]), \
              patch("app.api.routes.toolsets._get_oauth_config_by_id", return_value=None):
             with pytest.raises(HTTPException) as exc:
                 await create_toolset_instance(req, cs)
@@ -5693,7 +5507,7 @@ class TestCreateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=[]), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=[]), \
              patch("app.api.routes.toolsets._get_oauth_configs_for_type", return_value=[{"oauthInstanceName": "My Google", "orgId": "o1"}]), \
              patch("app.api.routes.toolsets._check_oauth_name_conflict", return_value=True):
             with pytest.raises(HTTPException) as exc:
@@ -5719,7 +5533,7 @@ class TestCreateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=[]), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=[]), \
              patch("app.api.routes.toolsets._get_oauth_configs_for_type", return_value=[]), \
              patch("app.api.routes.toolsets._check_oauth_name_conflict", return_value=False), \
              patch("app.api.routes.toolsets._create_or_update_toolset_oauth_config", return_value=None):
@@ -5748,7 +5562,7 @@ class TestCreateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=[]), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=[]), \
              patch("app.api.routes.toolsets._get_oauth_configs_for_type", return_value=[]), \
              patch("app.api.routes.toolsets._check_oauth_name_conflict", return_value=False), \
              patch("app.api.routes.toolsets._create_or_update_toolset_oauth_config", return_value="oc-1"):
@@ -5781,7 +5595,7 @@ class TestUpdateToolsetInstanceRoute:
         req.app.state.toolset_registry = _make_registry("jira")
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances):
             result = await update_toolset_instance("i1", req, cs)
 
         assert result["status"] == "success"
@@ -5813,7 +5627,7 @@ class TestUpdateToolsetInstanceRoute:
         req.app.state.toolset_registry = _make_registry("mariadb", ["BASIC_AUTH"])
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances):
             result = await update_toolset_instance("i1", req, cs)
 
         assert result["status"] == "success"
@@ -5842,7 +5656,7 @@ class TestUpdateToolsetInstanceRoute:
         req.app.state.toolset_registry = _make_registry("mariadb", ["BASIC_AUTH"])
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances):
             result = await update_toolset_instance("i1", req, cs)
 
         assert result["instance"]["auth"] == {"host": "other", "port": "3307"}
@@ -5861,7 +5675,7 @@ class TestUpdateToolsetInstanceRoute:
         req.app.state.toolset_registry = _make_registry("jira")
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances):
             with pytest.raises(HTTPException) as exc:
                 await update_toolset_instance("i1", req, cs)
             assert exc.value.status_code == 409
@@ -5878,7 +5692,7 @@ class TestUpdateToolsetInstanceRoute:
         req.app.state.toolset_registry = _make_registry("google", ["OAUTH"])
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances), \
              patch("app.api.routes.toolsets._get_oauth_config_by_id", return_value={"_id": "oc-new"}), \
              patch("app.api.routes.toolsets._deauth_all_instance_users", return_value=2):
             result = await update_toolset_instance("i1", req, cs)
@@ -5897,7 +5711,7 @@ class TestUpdateToolsetInstanceRoute:
         req.app.state.toolset_registry = _make_registry("google", ["OAUTH"])
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances), \
              patch("app.api.routes.toolsets._get_oauth_config_by_id", return_value=None):
             with pytest.raises(HTTPException) as exc:
                 await update_toolset_instance("i1", req, cs)
@@ -5919,7 +5733,7 @@ class TestUpdateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances), \
              patch("app.api.routes.toolsets._create_or_update_toolset_oauth_config", return_value="oc-new"), \
              patch("app.api.routes.toolsets._deauth_all_instance_users", return_value=1):
             result = await update_toolset_instance("i1", req, cs)
@@ -5938,7 +5752,7 @@ class TestUpdateToolsetInstanceRoute:
         req.app.state.toolset_registry = _make_registry("jira")
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances):
             with pytest.raises(HTTPException) as exc:
                 await update_toolset_instance("i1", req, cs)
             assert exc.value.status_code == 500
@@ -5968,7 +5782,7 @@ class TestUpdateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances), \
              patch("app.api.routes.toolsets._create_or_update_toolset_oauth_config", return_value="oc-1"), \
              patch("app.api.routes.toolsets._deauth_all_instance_users", return_value=0):
             result = await update_toolset_instance("i1", req, cs)
@@ -5997,7 +5811,7 @@ class TestUpdateToolsetInstanceRoute:
         req.app.state.toolset_registry = registry
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances), \
              patch("app.api.routes.toolsets._create_or_update_toolset_oauth_config", return_value="oc-1"), \
              patch("app.api.routes.toolsets._deauth_all_instance_users", return_value=0):
             result = await update_toolset_instance("i1", req, cs)
@@ -6023,7 +5837,7 @@ class TestDeleteToolsetInstanceRoute:
         mock_gp.check_toolset_instance_in_use = AsyncMock(return_value=[])
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=mock_gp):
             result = await delete_toolset_instance("i1", req, cs)
 
@@ -6053,7 +5867,7 @@ class TestDeleteToolsetInstanceRoute:
         mock_startup.get_toolset_token_refresh_service.return_value = mock_refresh
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=mock_gp), \
              patch("app.connectors.core.base.token_service.startup_service.startup_service", mock_startup):
             result = await delete_toolset_instance("i1", req, cs)
@@ -6082,7 +5896,7 @@ class TestDeleteToolsetInstanceRoute:
         mock_gp.check_toolset_instance_in_use = AsyncMock(return_value=[])
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=mock_gp):
             result = await delete_toolset_instance("i1", req, cs)
 
@@ -6104,7 +5918,7 @@ class TestDeleteToolsetInstanceRoute:
         mock_gp.check_toolset_instance_in_use = AsyncMock(return_value=[])
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=mock_gp):
             with pytest.raises(HTTPException) as exc:
                 await delete_toolset_instance("i1", req, cs)
@@ -6127,7 +5941,7 @@ class TestDeleteToolsetInstanceRoute:
         mock_gp.check_toolset_instance_in_use = AsyncMock(return_value=[])
 
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
-             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=instances), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=mock_gp):
             result = await delete_toolset_instance("i1", req, cs)
 
@@ -6726,7 +6540,7 @@ class TestGetOauthCredentialsFetchFromInstance:
     @pytest.mark.asyncio
     async def test_fetch_oauth_config_id_from_instance_when_missing(self) -> None:
         """Cover lines 164-189: missing oauthConfigId, fetched from instance."""
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
 
         # First call: instances path returns list with matching instance
@@ -6752,7 +6566,7 @@ class TestGetOauthCredentialsFetchFromInstance:
     @pytest.mark.asyncio
     async def test_fetch_oauth_config_id_from_instance_exception(self) -> None:
         """Cover lines 187-189: exception when fetching instance."""
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         lg = logging.getLogger("test")
 
@@ -6772,7 +6586,7 @@ class TestGetOauthCredentialsFetchFromInstance:
     @pytest.mark.asyncio
     async def test_instances_not_list(self) -> None:
         """Cover line 176->191: instances returned is not a list."""
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         lg = logging.getLogger("test")
 
@@ -7040,14 +6854,14 @@ class TestGetUserContextFullCoverage:
         assert ctx["user_id"] == "u1"
         assert ctx["org_id"] == "o1"
 
-    def test_from_headers_fallback(self) -> None:
+    def test_headers_are_ignored(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
         request.headers = {"X-User-Id": "u2", "X-Organization-Id": "o2"}
-        ctx = _get_user_context(request)
-        assert ctx["user_id"] == "u2"
-        assert ctx["org_id"] == "o2"
+        with pytest.raises(HTTPException) as exc:
+            _get_user_context(request)
+        assert exc.value.status_code == 401
 
     def test_missing_user_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
@@ -8017,7 +7831,7 @@ class TestGetAuthenticatedToolsets:
         config_service.get_config.return_value = []
         registry = MagicMock()
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert result == []
 
     @pytest.mark.asyncio
@@ -8029,7 +7843,7 @@ class TestGetAuthenticatedToolsets:
         config_service.get_config.side_effect = Exception("etcd error")
         registry = MagicMock()
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert result == []
 
     @pytest.mark.asyncio
@@ -8061,7 +7875,7 @@ class TestGetAuthenticatedToolsets:
             "tools": []
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         assert result[0]["instanceId"] == "inst1"
 
@@ -8096,7 +7910,7 @@ class TestGetAuthenticatedToolsets:
             "tools": []
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 2
         instance_ids = [t["instanceId"] for t in result]
         assert "inst1" in instance_ids
@@ -8131,7 +7945,7 @@ class TestGetAuthenticatedToolsets:
             ]
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         assert result[0]["toolCount"] == 2
         assert len(result[0]["tools"]) == 2
@@ -8158,7 +7972,7 @@ class TestGetAuthenticatedToolsets:
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         assert result[0]["displayName"] == "unknown"
         assert result[0]["tools"] == []
@@ -8194,11 +8008,12 @@ class TestGetAuthenticatedToolsets:
             "tools": [{"name": "search", "description": "Search"}]
         }
 
-        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        result, _auth = await get_authenticated_toolsets("u1", "o1", config_service, registry)
         assert len(result) == 1
         toolset = result[0]
         assert toolset["instanceId"] == "inst1"
-        assert toolset["name"] == "My Jira"
+        assert toolset["name"] == "jira"
+        assert toolset["instanceName"] == "My Jira"
         assert toolset["toolsetType"] == "jira"
         assert toolset["authType"] == "OAUTH"
         assert toolset["displayName"] == "Jira App"
@@ -8209,3 +8024,69 @@ class TestGetAuthenticatedToolsets:
         assert toolset["isAuthenticated"] is True
         assert toolset["createdAtTimestamp"] == 1234567890
         assert toolset["updatedAtTimestamp"] == 1234567900
+
+
+class TestIsActionsEnabled:
+    """No env override exists — resolution is `config_service` (via the shared
+    `read_platform_feature_flag` helper) -> `FeatureFlagService` fallback ->
+    default True. Every "no signal" path must resolve to `True` here (the
+    opposite of `is_mcp_enabled`'s `False`), since Actions/toolsets are
+    pre-existing functionality rather than an opt-in feature."""
+
+    @pytest.mark.asyncio
+    async def test_reads_platform_settings_flag_true(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(
+            return_value={"featureFlags": {"ENABLE_ACTIONS": True}}
+        )
+        assert await is_actions_enabled(cfg) is True
+
+    @pytest.mark.asyncio
+    async def test_reads_platform_settings_flag_false(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(
+            return_value={"featureFlags": {"ENABLE_ACTIONS": False}}
+        )
+        assert await is_actions_enabled(cfg) is False
+
+    @pytest.mark.asyncio
+    async def test_platform_settings_flag_absent_defaults_true(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(return_value={"featureFlags": {}})
+        assert await is_actions_enabled(cfg) is True
+
+    @pytest.mark.asyncio
+    async def test_platform_settings_read_failure_stays_enabled(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
+        assert await is_actions_enabled(cfg) is True
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_feature_flag_service(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        mock_ffs = MagicMock()
+        mock_ffs.is_feature_enabled.return_value = False
+        with patch(
+            "app.services.featureflag.featureflag.FeatureFlagService.get_service",
+            return_value=mock_ffs,
+        ):
+            assert await is_actions_enabled(None) is False
+
+    @pytest.mark.asyncio
+    async def test_feature_flag_service_unavailable_defaults_true(self) -> None:
+        from app.api.routes.toolsets import is_actions_enabled
+
+        with patch(
+            "app.services.featureflag.featureflag.FeatureFlagService.get_service",
+            side_effect=RuntimeError("unwired"),
+        ):
+            assert await is_actions_enabled(None) is True

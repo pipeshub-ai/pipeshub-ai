@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Any
 
@@ -20,7 +21,6 @@ from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
-from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -71,6 +71,10 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationType, NotificationSeverity
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.connectors.core.base.error.stream_errors import (
+    not_found_at_source,
+    to_stream_error,
+)
 
 def get_azure_error_payload(error: Exception) -> Dict[str, Any]:
     """Return Azure error payload JSON when present."""
@@ -112,6 +116,34 @@ class OneDriveCredentials:
     client_id: str
     client_secret: str
     has_admin_consent: bool = False
+
+
+class OneDriveUserStatus(str, Enum):
+    AVAILABLE = "available"
+    NOT_PROVISIONED = "not_provisioned"
+    LOCKED = "locked"
+    UNKNOWN_ERROR = "unknown_error"
+
+
+# Title/message templates for each non-AVAILABLE OneDriveUserStatus, used by
+# _notify_onedrive_user_failures. Kept next to the enum so a new status is a
+# visible reminder to add its notification copy here too.
+ONEDRIVE_USER_FAILURE_NOTIFICATIONS: Dict[OneDriveUserStatus, Tuple[str, str]] = {
+    OneDriveUserStatus.NOT_PROVISIONED: (
+        "OneDrive not provisioned for some users",
+        "OneDrive is not provisioned or licensed for these users, so they were not synced: {emails}.",
+    ),
+    OneDriveUserStatus.LOCKED: (
+        "OneDrive blocked for some users",
+        "OneDrive is archived, or blocked for these users, so they were not synced: {emails}.",
+    ),
+    OneDriveUserStatus.UNKNOWN_ERROR: (
+        "Some OneDrive users could not be synced",
+        "OneDrive availability could not be checked for these users: {emails}. "
+        "This may be a transient error; they will be picked up by a later sync if the issue resolves.",
+    ),
+}
+
 
 @ConnectorBuilder("OneDrive")\
     .in_group("Microsoft 365")\
@@ -303,13 +335,12 @@ class OneDriveConnector(BaseConnector):
                 )
 
             # Get existing record if any
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=item.id
-                )
-                if existing_record:
-                    existing_file_record = await tx_store.get_file_record_by_id(existing_record.id)
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, item.id
+            )
+            existing_file_record = None
+            if existing_record:
+                existing_file_record = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
 
 
             # Detect changes
@@ -678,20 +709,16 @@ class OneDriveConnector(BaseConnector):
                     # Convert to our permission model
                     converted_permissions = await self._convert_to_permissions(child_permissions)
 
-                    # Update the child's permissions in database
-                    async with self.data_store_provider.transaction() as tx_store:
-                        existing_child_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=child.id
-                        )
+                    existing_child_record = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, child.id
+                    )
 
-                        if existing_child_record:
-                            # Update the record with new permissions
-                            await self.data_entities_processor.on_updated_record_permissions(
-                                record=existing_child_record,
-                                permissions=converted_permissions
-                            )
-                            self.logger.info(f"Updated permissions for child item {child.id}")
+                    if existing_child_record:
+                        await self.data_entities_processor.on_updated_record_permissions(
+                            record=existing_child_record,
+                            permissions=converted_permissions
+                        )
+                        self.logger.info(f"Updated permissions for child item {child.id}")
 
                     # If this child is also a folder, recurse
                     if child.folder is not None:
@@ -715,16 +742,13 @@ class OneDriveConnector(BaseConnector):
         """
         try:
             if record_update.is_deleted:
-                # Handle deletion
-                async with self.data_store_provider.transaction() as tx_store:
-                    dbRecord = await tx_store.get_record_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=record_update.external_record_id
+                dbRecord = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
+                )
+                if dbRecord:
+                    await self.data_entities_processor.on_record_deleted(
+                        record_id=dbRecord.id
                     )
-                    if dbRecord:
-                        await self.data_entities_processor.on_record_deleted(
-                            record_id=dbRecord.id
-                        )
 
             elif record_update.is_new:
                 # Handle new record - this will be done through the normal flow
@@ -1293,13 +1317,27 @@ class OneDriveConnector(BaseConnector):
 
             self.logger.info(f"Found {len(active_users)} active users out of {len(users)} total users")
 
-            # Further filter to only users with OneDrive provisioned
             users_to_sync = []
+            failed_users: List[Tuple[str, OneDriveUserStatus]] = []
             for user in active_users:
-                if await self._user_has_onedrive(user.source_user_id):
+                try:
+                    onedrive_status = await self._user_has_onedrive(user.source_user_id)
+                except Exception as e:
+                    self.logger.error(f"❌ Error checking OneDrive for user {user.email}, skipping: {e}", exc_info=True)
+                    failed_users.append((user.email, OneDriveUserStatus.UNKNOWN_ERROR))
+                    continue
+
+                if onedrive_status is OneDriveUserStatus.AVAILABLE:
                     users_to_sync.append(user)
                 else:
-                    self.logger.info(f"Skipping user {user.email}: No OneDrive license or drive not provisioned")
+                    failed_users.append((user.email, onedrive_status))
+                    self.logger.info(
+                        "Skipping user %s: OneDrive status is %s",
+                        user.email,
+                        onedrive_status.value,
+                    )
+
+            await self._notify_onedrive_user_failures(failed_users)
 
             self.logger.info(f"Processing {len(users_to_sync)} users with OneDrive out of {len(active_users)} active users")
             self.onedrive_users_synced = len(users_to_sync)
@@ -1311,7 +1349,6 @@ class OneDriveConnector(BaseConnector):
                     message=(
                         "Ensure that your OneDrive users are invited to Pipeshub, and verify that your application has Files.Read.All API permission with admin consent."
                     ),
-                    recipient_user_ids=[self.created_by],
                     payload={
                         "connector_id": self.connector_id,
                         "connector_name": self.connector_name.value,
@@ -1337,7 +1374,32 @@ class OneDriveConnector(BaseConnector):
             self.logger.error(f"❌ Error processing users in batches: {e}")
             raise
 
-    async def _user_has_onedrive(self, user_id: str) -> bool:
+    async def _notify_onedrive_user_failures(
+        self,
+        failed_users: List[Tuple[str, OneDriveUserStatus]],
+    ) -> None:
+        for status, (title, message_template) in ONEDRIVE_USER_FAILURE_NOTIFICATIONS.items():
+            emails = [email for email, reason in failed_users if reason is status]
+            if not emails:
+                continue
+
+            displayed_emails = ", ".join(emails[:5])
+            if len(emails) > 5:
+                displayed_emails = f"{displayed_emails}, and {len(emails) - 5} more"
+
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=title,
+                message=message_template.format(emails=displayed_emails),
+                payload={
+                    "connector_id": self.connector_id,
+                    "connector_name": self.connector_name.value,
+                    "connector_scope": self.scope,
+                },
+            )
+
+    async def _user_has_onedrive(self, user_id: str) -> OneDriveUserStatus:
         """
         Check if a user has OneDrive provisioned.
 
@@ -1345,11 +1407,11 @@ class OneDriveConnector(BaseConnector):
             user_id: The user identifier
 
         Returns:
-            True if user has OneDrive, False otherwise
+            The user's OneDrive availability status.
         """
         try:
             await self.msgraph_client.get_user_drive(user_id)
-            return True
+            return OneDriveUserStatus.AVAILABLE
         except ODataError as e:
             error_message = str(e).lower()
             error_code = (e.error.code or "").lower() if e.error else ""
@@ -1363,7 +1425,16 @@ class OneDriveConnector(BaseConnector):
                 }
                 or "404" in error_message
             ):
-                return False
+                return OneDriveUserStatus.NOT_PROVISIONED
+
+            if (
+                e.response_status_code == 423
+                or "resourcelocked" in error_message
+            ):
+                self.logger.warning(
+                    f"⚠️ OneDrive for user {user_id} is locked or blocked (423 resourceLocked), skipping: {e}"
+                )
+                return OneDriveUserStatus.LOCKED
             raise
         except Exception as e:
             self.logger.error("❌ Error checking if user has OneDrive: %s", e)
@@ -1412,11 +1483,8 @@ class OneDriveConnector(BaseConnector):
             self.logger.info(f"Handling reindex event for record {record_id}")
 
             # Get the record from database
-            record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=record_id
+            record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record_id
             )
 
             if not record:
@@ -1761,19 +1829,32 @@ class OneDriveConnector(BaseConnector):
             # Reinitialize credential if needed (user might be accessing files after days of inactivity)
             await self._reinitialize_credential_if_needed()
 
-            return await self.msgraph_client.get_signed_url(record.external_record_group_id, record.external_record_id)
-        except Exception as e:
-            self.logger.error(f"❌ Error creating signed URL for record {record.id}: {e}")
+            return await self.msgraph_client.get_signed_url(
+                record.external_record_group_id,
+                record.external_record_id,
+                raise_on_error=True,
+            )
+        except HTTPException:
             raise
+        except Exception as e:
+            self.logger.error(
+                f"❌ Error creating signed URL for record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream a record from OneDrive."""
         signed_url = await self.get_signed_url(record)
         if not signed_url:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+            raise not_found_at_source(self.display_name)
 
         return create_stream_record_response(
-            stream_content(signed_url),
+            stream_content(
+                signed_url,
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=self.display_name,
+            ),
             filename=record.record_name,
             mime_type=record.mime_type,
             fallback_filename=f"record_{record.id}"
@@ -1888,10 +1969,7 @@ class OneDriveConnector(BaseConnector):
     @classmethod
     async def create_connector(cls, logger: Logger,
                                data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str,
-                               scope: str, created_by: str, **kwargs) -> BaseConnector:
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await data_entities_processor.initialize()
-
+                               scope: str, created_by: str, data_entities_processor, **kwargs) -> BaseConnector:
         return OneDriveConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by)
 
 

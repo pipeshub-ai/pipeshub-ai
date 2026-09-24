@@ -178,38 +178,44 @@ describe('KnowledgeBaseContainer', () => {
 
 describe('KnowledgeBaseContainer - coverage', () => {
   let originalInstance: any
+  // Dedicated sandbox (rather than the default `sinon.stub`/`sinon.restore` global
+  // singleton) so this file's message-broker/Kafka stubs can't be wiped out by — or
+  // wipe out — unrelated stubs from other container test files sharing the same
+  // mocha `--parallel` worker process (see the Logger.error workaround below for
+  // another instance of this class of cross-file pollution).
+  const sandbox = sinon.createSandbox()
 
   beforeEach(() => {
     originalInstance = (KnowledgeBaseContainer as any).instance
-    sinon.stub(messageBrokerFactory, 'resolveMessageBrokerConfig').returns({
+    sandbox.stub(messageBrokerFactory, 'resolveMessageBrokerConfig').returns({
       type: 'kafka', kafka: { brokers: ['localhost:9092'], clientId: 'test' },
     } as any)
-    sinon.stub(messageBrokerFactory, 'createMessageProducer').returns({
-      connect: sinon.stub().resolves(), disconnect: sinon.stub().resolves(),
-      isConnected: sinon.stub().returns(true), publish: sinon.stub().resolves(),
-      publishBatch: sinon.stub().resolves(), healthCheck: sinon.stub().resolves(true),
+    sandbox.stub(messageBrokerFactory, 'createMessageProducer').returns({
+      connect: sandbox.stub().resolves(), disconnect: sandbox.stub().resolves(),
+      isConnected: sandbox.stub().returns(true), publish: sandbox.stub().resolves(),
+      publishBatch: sandbox.stub().resolves(), healthCheck: sandbox.stub().resolves(true),
     } as any)
     // stub so that the actual instance is not called.
-    sinon.stub(BaseKafkaProducerConnection.prototype, 'connect').resolves()
-    sinon.stub(BaseKafkaProducerConnection.prototype, 'disconnect').resolves()
-    sinon.stub(BaseKafkaConnection.prototype, 'isConnected').returns(true)
+    sandbox.stub(BaseKafkaProducerConnection.prototype, 'connect').resolves()
+    sandbox.stub(BaseKafkaProducerConnection.prototype, 'disconnect').resolves()
+    sandbox.stub(BaseKafkaConnection.prototype, 'isConnected').returns(true)
   })
 
   afterEach(() => {
     (KnowledgeBaseContainer as any).instance = originalInstance
-    sinon.restore()
+    sandbox.restore()
   })
 
   describe('initialize', () => {
     it('should create container with all bindings', async () => {
       const mockKvStore = {
-        connect: sinon.stub().resolves(),
-        disconnect: sinon.stub().resolves(),
-        isConnected: sinon.stub().returns(true),
+        connect: sandbox.stub().resolves(),
+        disconnect: sandbox.stub().resolves(),
+        isConnected: sandbox.stub().returns(true),
       }
-      sinon.stub(KeyValueStoreService, 'getInstance').returns(mockKvStore as any)
-      sinon.stub(RecordsEventProducer.prototype, 'start').resolves()
-      sinon.stub(SyncEventProducer.prototype, 'start').resolves()
+      sandbox.stub(KeyValueStoreService, 'getInstance').returns(mockKvStore as any)
+      sandbox.stub(RecordsEventProducer.prototype, 'start').resolves()
+      sandbox.stub(SyncEventProducer.prototype, 'start').resolves()
 
       const cmConfig = {
         host: 'localhost',
@@ -223,6 +229,11 @@ describe('KnowledgeBaseContainer - coverage', () => {
         jwtSecret: 'test-jwt-secret',
         scopedJwtSecret: 'test-scoped-jwt-secret',
         kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+        // Populated even though the broker type resolves to kafka above — if the
+        // `resolveMessageBrokerConfig` stub is ever bypassed, the real
+        // implementation falls through to the redis branch and dereferences
+        // `appConfig.redis.host`, so this must never be left undefined.
+        redis: { host: 'localhost', port: 6379 },
       } as any
 
       const container = await KnowledgeBaseContainer.initialize(cmConfig as any, appConfig)
@@ -244,9 +255,9 @@ describe('KnowledgeBaseContainer - coverage', () => {
 
     it('should throw when KeyValueStoreService connect fails', async () => {
       const mockKvStore = {
-        connect: sinon.stub().rejects(new Error('KV store unreachable')),
+        connect: sandbox.stub().rejects(new Error('KV store unreachable')),
       }
-      sinon.stub(KeyValueStoreService, 'getInstance').returns(mockKvStore as any)
+      sandbox.stub(KeyValueStoreService, 'getInstance').returns(mockKvStore as any)
 
       const cmConfig = {
         host: 'localhost',
@@ -260,6 +271,7 @@ describe('KnowledgeBaseContainer - coverage', () => {
         jwtSecret: 'test-jwt-secret',
         scopedJwtSecret: 'test-scoped-jwt-secret',
         kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+        redis: { host: 'localhost', port: 6379 },
       } as any
 
       try {
@@ -272,13 +284,13 @@ describe('KnowledgeBaseContainer - coverage', () => {
 
     it('should throw when RecordsEventProducer.start fails', async () => {
       const mockKvStore = {
-        connect: sinon.stub().resolves(),
-        disconnect: sinon.stub().resolves(),
-        isConnected: sinon.stub().returns(true),
+        connect: sandbox.stub().resolves(),
+        disconnect: sandbox.stub().resolves(),
+        isConnected: sandbox.stub().returns(true),
       }
-      sinon.stub(KeyValueStoreService, 'getInstance').returns(mockKvStore as any)
+      sandbox.stub(KeyValueStoreService, 'getInstance').returns(mockKvStore as any)
       // Stub RecordsEventProducer.start to simulate failure
-      sinon.stub(RecordsEventProducer.prototype, 'start').rejects(new Error('RecordsEventProducer start failed'))
+      sandbox.stub(RecordsEventProducer.prototype, 'start').rejects(new Error('RecordsEventProducer start failed'))
 
       const cmConfig = {
         host: 'localhost',
@@ -292,6 +304,7 @@ describe('KnowledgeBaseContainer - coverage', () => {
         jwtSecret: 'test-jwt-secret',
         scopedJwtSecret: 'test-scoped-jwt-secret',
         kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+        redis: { host: 'localhost', port: 6379 },
       } as any
 
       try {
@@ -303,7 +316,7 @@ describe('KnowledgeBaseContainer - coverage', () => {
     })
 
     it('should log unknown error when non-Error is thrown during initialize', async () => {
-      sinon.stub(KeyValueStoreService, 'getInstance').throws({ reason: 'non-error object' } as any)
+      sandbox.stub(KeyValueStoreService, 'getInstance').throws({ reason: 'non-error object' } as any)
       // Logger.getInstance() is a process-wide singleton; another test file in
       // the same mocha worker (e.g. app.test.ts) can leave Logger.prototype.error
       // stubbed/spied, which makes sinon.stub() on this instance fail with
@@ -325,6 +338,7 @@ describe('KnowledgeBaseContainer - coverage', () => {
         jwtSecret: 'test-jwt-secret',
         scopedJwtSecret: 'test-scoped-jwt-secret',
         kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+        redis: { host: 'localhost', port: 6379 },
       } as any
 
       try {

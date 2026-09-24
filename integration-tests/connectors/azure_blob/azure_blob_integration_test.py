@@ -31,6 +31,11 @@ if str(_ROOT) not in sys.path:
 
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
+from app.config.constants.arangodb import PermissionModel  # noqa: E402
+from helper.assertions import (  # noqa: E402
+    assert_app_level_permissions,
+    assert_permission_model,
+)
 from helper.graph_provider_utils import (  # noqa: E402
     async_wait_for_stable_record_count,
     wait_until_graph_condition,
@@ -41,6 +46,7 @@ from helper.storage_incremental import (  # noqa: E402
     settle_record_baseline,
     sync_until_names_visible,
     unique_incremental_csv_files,
+    wait_for_record_reindex,
 )
 from connectors.azure_blob.azure_blob_storage_helper import (  # type: ignore[import-not-found]  # noqa: E402
     AzureBlobStorageHelper,
@@ -86,8 +92,13 @@ class TestAzureBlobConnector:
                 connector_id, [known_name]
             )
 
-        perm_count = await graph_provider.count_permission_edges(connector_id)
-        logger.info("Permission edges: %d (connector %s)", perm_count, connector_id)
+        await assert_permission_model(
+            graph_provider, connector_id, PermissionModel.APP_LEVEL.value,
+            context="TC-SYNC-001",
+        )
+        await assert_app_level_permissions(
+            graph_provider, connector_id, full_count, context="TC-SYNC-001",
+        )
 
         summary = await graph_provider.graph_summary(connector_id)
         logger.info("Graph summary after full sync: %s (connector %s)", summary, connector_id)
@@ -114,7 +125,8 @@ class TestAzureBlobConnector:
         before_count = await settle_record_baseline(
             pipeshub_client, graph_provider, connector_id
         )
-        new_files = unique_incremental_csv_files()
+        # Under this run's folder: the connector syncs only that folder.
+        new_files = {f"{azure_blob_connector['folder']}{k}": v for k, v in unique_incremental_csv_files().items()}
         new_names = record_names_from_keys(new_files)
         for blob_key, file_bytes in new_files.items():
             azure_blob_storage.upload_blob(
@@ -166,6 +178,20 @@ class TestAzureBlobConnector:
 
         await async_wait_for_stable_record_count(graph_provider, connector_id)
         before_count = await graph_provider.count_records(connector_id)
+
+        # The etag check below proves the *object* changed. This proves the
+        # *record* was re-indexed: the connector derives a new version from the
+        # existing record when it updates one, so a version that does not move
+        # means the change was never picked up. A stable count alone cannot tell
+        # those apart — a connector that ignored the object keeps it stable too.
+        before_record = await graph_provider.get_record_by_name(
+            connector_id, update_name
+        )
+        assert before_record is not None, (
+            f"TC-UPDATE-001: {update_name} is not in the graph before the update "
+            f"(connector {connector_id})"
+        )
+        before_version = before_record.get("version")
         logger.info(
             "TC-UPDATE-001 baseline: %d records (connector %s)",
             before_count, connector_id,
@@ -192,15 +218,12 @@ class TestAzureBlobConnector:
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        async def _update_synced() -> bool:
-            return await graph_provider.count_records(connector_id) >= before_count
-
-        await wait_until_graph_condition(
-            connector_id,
-            check=_update_synced,
-            timeout=120,
-            poll_interval=10,
-            description="update sync",
+        # Wait for the re-index itself. A count-based wait returns on the
+        # first poll after an in-place update, which would race the
+        # version read below: a connector that is merely slow would look
+        # the same as one that ignored the change.
+        after_record = await wait_for_record_reindex(
+            graph_provider, connector_id, update_name, before_version
         )
 
         await graph_provider.assert_record_paths_or_names_contain(
@@ -211,6 +234,12 @@ class TestAzureBlobConnector:
         assert after_count == before_count, (
             f"Record count must be stable after content update; "
             f"before={before_count}, after={after_count} (connector {connector_id})"
+        )
+
+        assert after_record.get("version") != before_version, (
+            f"TC-UPDATE-001: record version stayed at {before_version} after the "
+            f"object content changed, so it was never re-indexed. The ETag and "
+            f"count assertions above pass either way (connector {connector_id})"
         )
 
         logger.info(
@@ -299,7 +328,7 @@ class TestAzureBlobConnector:
         move_name = azure_blob_connector["move_source_name"]
 
         new_prefix = "moved-folder"
-        new_key = f"{new_prefix}/{move_name}"
+        new_key = f"{azure_blob_connector['folder']}{new_prefix}/{move_name}"
 
         logger.info(
             "Moving %s/%s -> %s (connector %s)",

@@ -83,7 +83,22 @@ function LinkRow({ label, href }: LinkRowProps) {
         >
           {href}
         </a>
-        <MaterialIcon name="open_in_new" size={14} color="var(--accent-9)" style={{ flexShrink: 0 }} />
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Open web URL"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+            color: 'var(--accent-9)',
+            lineHeight: 0,
+          }}
+        >
+          <MaterialIcon name="open_in_new" size={14} color="var(--accent-9)" />
+        </a>
       </Flex>
     </Box>
   );

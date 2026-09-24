@@ -22,7 +22,7 @@ Async test execution:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -523,10 +523,13 @@ class TestApplyCodeRenames:
         repos._delete_code_files_by_paths = AsyncMock()
         repos._upsert_code_files_by_paths = AsyncMock(return_value=True)
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
 
         c.data_entities_processor.on_records_moved.assert_called_once()
+        moves = c.data_entities_processor.on_records_moved.call_args.args[0]
+        _, new_record, _ = moves[0]
+        assert new_record.source_created_at is None
+        assert new_record.source_updated_at is None
 
     async def test_cross_directory_move_sets_correct_parent_external_id(self) -> None:
         c, repos = _make_incremental_connector()
@@ -537,8 +540,7 @@ class TestApplyCodeRenames:
         )
         repos._ensure_folder_records_for_paths = AsyncMock()
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("lib/a.py", "src/b.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("lib/a.py", "src/b.py")])
 
         moves = c.data_entities_processor.on_records_moved.call_args.args[0]
         _, new_record, _ = moves[0]
@@ -554,8 +556,7 @@ class TestApplyCodeRenames:
         )
         repos._ensure_folder_records_for_paths = AsyncMock()
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
 
         moves = c.data_entities_processor.on_records_moved.call_args.args[0]
         _, new_record, _ = moves[0]
@@ -571,8 +572,7 @@ class TestApplyCodeRenames:
         repos._delete_code_files_by_paths = AsyncMock()
         repos._upsert_code_files_by_paths = AsyncMock(return_value=True)
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
 
         repos._delete_code_files_by_paths.assert_called_once()
         repos._upsert_code_files_by_paths.assert_called_once()
@@ -586,8 +586,7 @@ class TestApplyCodeRenames:
         repos._ensure_folder_records_for_paths = AsyncMock()
         repos._delete_code_files_by_paths = AsyncMock()
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", ".hidden")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", ".hidden")])
 
         repos._delete_code_files_by_paths.assert_called_once()
         c.data_entities_processor.on_records_moved.assert_not_called()
@@ -611,8 +610,7 @@ class TestApplyCodeRenames:
         )
         repos._ensure_folder_records_for_paths = AsyncMock()
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("src/old.py", "src/new.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("src/old.py", "src/new.py")])
 
         moves = c.data_entities_processor.on_records_moved.call_args.args[0]
         _, new_record, _ = moves[0]
@@ -791,6 +789,19 @@ class TestSyncRepoMainRouting:
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
         repos._sync_repo_full.assert_called_once_with(_PROJECT_ID, _PROJECT_PATH)
 
+    async def test_incremental_raise_falls_back_to_full_sync(self) -> None:
+        c, repos = _make_incremental_connector()
+        c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
+        repos._get_code_repo_checkpoint = AsyncMock(return_value="old-sha")
+        repos._sync_repo_incremental = AsyncMock(side_effect=RuntimeError("graph fail"))
+        repos._sync_repo_full = AsyncMock(return_value=True)
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+        repos._sync_repo_full.assert_called_once_with(_PROJECT_ID, _PROJECT_PATH)
+        # The full walk never deletes, so the raised pass's pending deletes need a compare
+        # from last_sha next run — advancing the checkpoint would lose them.
+        repos._update_code_repo_checkpoint.assert_not_called()
+
     async def test_incremental_failure_checkpoint_updated_on_full_success(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
@@ -891,3 +902,57 @@ class TestResolveBlobShaByPath:
             _PROJECT_ID, ["src/file.py"], ref="HEAD"
         )
         assert all_ok is False
+
+
+# ===========================================================================
+# Record version continuity on the incremental paths
+# ===========================================================================
+
+
+class TestBlobRecordVersion:
+    async def test_upsert_leaves_version_zero_for_processor(self) -> None:
+        """GitLab emits version=0; ``_process_record`` carries/bumps the stored value."""
+        c, repos = _make_incremental_connector()
+        repos = ReposSync(c)
+        repos._ensure_folder_records_for_paths = AsyncMock()
+        repos._process_records = AsyncMock()
+        c.runtime.paged_list = AsyncMock(
+            return_value=paged_res([tree_entry("src/main.py", sha="sha-new")])
+        )
+
+        await repos._upsert_code_files_by_paths(_PROJECT_ID, _PROJECT_PATH, ["src/main.py"])
+
+        updates = repos._process_records.call_args.args[0]
+        assert updates[0].record.version == 0
+
+    async def test_upsert_of_unseen_blob_starts_at_zero(self) -> None:
+        c, repos = _make_incremental_connector()
+        repos = ReposSync(c)
+        repos._ensure_folder_records_for_paths = AsyncMock()
+        repos._process_records = AsyncMock()
+        c.runtime.paged_list = AsyncMock(
+            return_value=paged_res([tree_entry("src/main.py", sha="sha-new")])
+        )
+
+        await repos._upsert_code_files_by_paths(_PROJECT_ID, _PROJECT_PATH, ["src/main.py"])
+
+        updates = repos._process_records.call_args.args[0]
+        assert updates[0].record.version == 0
+
+    async def test_rename_leaves_version_zero_for_on_records_moved(self) -> None:
+        """Rename emits version=0; ``on_records_moved`` carries/bumps from the old vertex."""
+        c, repos = _make_incremental_connector()
+        repos = ReposSync(c)
+        repos._ensure_folder_records_for_paths = AsyncMock()
+        c.runtime.paged_list = AsyncMock(
+            return_value=paged_res([tree_entry("src/b.py", name="b.py", sha="sha-new")])
+        )
+
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("lib/a.py", "src/b.py")])
+
+        moves = c.data_entities_processor.on_records_moved.call_args.args[0]
+        old_external_id, new_record, _ = moves[0]
+        assert old_external_id == f"/{_PROJECT_PATH}/-/blob/HEAD/lib/a.py"
+        assert new_record.version == 0
+        assert new_record.source_created_at is None
+        assert new_record.source_updated_at is None

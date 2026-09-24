@@ -438,3 +438,55 @@ class ConnectorAssertions:
             property_name, validated_count, connector_id
         )
         return validated_count
+
+
+async def assert_permission_model(
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    expected: str,
+    *,
+    context: str = "",
+) -> None:
+    """The app document records the permission model the connector declared.
+
+    Worth asserting on its own: the model decides whether per-user visibility is
+    resolved per record or answered once for the whole connector, so a value
+    that silently fails to persist changes who can read what -- and nothing
+    else in these suites would notice.
+    """
+    label = f"[{context}] " if context else ""
+    app = await graph_provider.get_app_metadata_by_connector_id(connector_id)
+    assert app is not None, f"{label}No app document for connector {connector_id}"
+    actual = getattr(app, "permission_model", None)
+    assert actual == expected, (
+        f"{label}Connector {connector_id} declares permissionModel={expected!r} in "
+        f"code but its app document holds {actual!r}. A declared model that does "
+        f"not reach the database is not in force."
+    )
+
+
+async def assert_app_level_permissions(
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    record_count: int,
+    *,
+    context: str = "",
+) -> None:
+    """APP_LEVEL connectors grant access through the app, not per user.
+
+    Deliberately *not* asserting that permission edges stay below the record
+    count. A blanket grant is often materialised once per record: S3 writes 53
+    edges for 53 records, and all 53 originate from a single Organization node
+    with type ORG -- a blanket grant by any reasonable reading, which a
+    count-based heuristic would fail. What actually matters is that no
+    *per-user* ACL is written, and an edge count cannot show that. So this only
+    asserts the connector grants access at all; the model itself is checked by
+    `assert_permission_model`.
+    """
+    label = f"[{context}] " if context else ""
+    perm_count = await graph_provider.count_permission_edges(connector_id)
+    if record_count > 0:
+        assert perm_count > 0, (
+            f"{label}Connector {connector_id} synced {record_count} record(s) but has "
+            f"no permission edges at all — nothing grants access to them."
+        )

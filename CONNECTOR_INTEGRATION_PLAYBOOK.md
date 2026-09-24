@@ -270,10 +270,9 @@ backend/
 
 frontend/
 └── public/
-    └── assets/
-        └── icons/
-            └── connectors/
-                └── yourconnector.svg           # 🆕 Add connector icon
+    └── icons/
+        └── connectors/
+            └── yourconnector.svg               # 🆕 Add connector icon
 ```
 
 ### Key Components Overview
@@ -299,37 +298,51 @@ Connector data is stored in Graph DB as a **property graph** - a network of node
 
 | Node Type                                                                                                            | Collection     | Purpose                                                        | Example                                        |
 | -------------------------------------------------------------------------------------------------------------------- | -------------- | -------------------------------------------------------------- | ---------------------------------------------- |
-| **[Record](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L44)**         | `records`      | Base entity for all synced data (files, emails, tickets, etc.) | A document, email, or webpage                  |
-| **[FileRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L134)**    | `files`        | File-specific metadata (size, hash, extension)                 | `invoice.pdf`, `presentation.pptx`             |
-| **[MailRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L237)**    | `mails`        | Email-specific metadata (subject, from, to, thread)            | An email message                               |
-| **[WebpageRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L266)** | `webpages`     | Webpage-specific metadata                                      | A Confluence page, Notion page                 |
-| **[TicketRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L288)**  | `tickets`      | Ticket-specific metadata (status, priority, assignee)          | A Jira issue, Linear ticket                    |
-| **[RecordGroup](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L431)**   | `recordGroups` | Container for records                                          | Slack channel, SharePoint site, mailbox, drive |
-| **[User](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L539)**          | `users`        | System users in your organization                              | Active user accounts                           |
-| **[AppUser](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L612)**       | `users`        | Connector-specific user identities                             | External users, service accounts               |
+| **[Record](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**         | `records`      | Base entity for all synced data (files, emails, tickets, etc.) | A document, email, or webpage                  |
+| **[FileRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**    | `files`        | File-specific metadata (size, hash, extension)                 | `invoice.pdf`, `presentation.pptx`             |
+| **[MailRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**    | `mails`        | Email-specific metadata (subject, from, to, thread)            | An email message                               |
+| **[WebpageRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)** | `webpages`     | Webpage-specific metadata                                      | A Confluence page, Notion page                 |
+| **[TicketRecord](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**  | `tickets`      | Ticket-specific metadata (status, priority, assignee)          | A Jira issue, Linear ticket                    |
+| **[RecordGroup](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**   | `recordGroups` | Container for records                                          | Slack channel, SharePoint site, mailbox, drive |
+| **[User](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**          | `users`        | System users in your organization                              | Active user accounts                           |
+| **[AppUser](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py)**       | `users`        | Connector-specific user identities                             | External users, service accounts               |
 
 ### Core Edge Types (Relationships)
 
 | Edge Type                                                                                                                        | Collection        | From → To                           | Purpose                                | Example                                      |
 | -------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ----------------------------------- | -------------------------------------- | -------------------------------------------- |
-| **[Permissions](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py#L22)**              | `permissions`     | User → Record                       | Access control (READER, WRITER, OWNER) | User has READ access to a file               |
-| **[RecordRelations](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py#L221)** | `recordRelations` | Record → Record                     | Record-to-record relationships         | Folder contains file, email has attachment   |
+| **[Permissions](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py)**              | `permissions`     | User → Record                       | Access control (READER, WRITER, OWNER) | User has READ access to a file               |
+| **[RecordRelations](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py)** | `recordRelations` | Record → Record                     | Record-to-record relationships         | Folder contains file, email has attachment   |
 | **IsOfType**                                                                                                                     | `isOfType`        | Record → FileRecord/MailRecord/etc. | Links base record to specific type     | Base record is a FileRecord                  |
 | **BelongsTo**                                                                                                                    | `belongsTo`       | Record/User → RecordGroup           | Membership in a container              | File belongs to a drive, user belongs to org |
 
 #### RecordRelations Types
 
-The `recordRelations` edge has a `relationshipType` field that defines the relationship (see [`RecordRelations` enum](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py#L221)):
+The `recordRelations` edge has a `relationshipType` field that defines the relationship (see [`RecordRelations` enum](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py)):
 
 | Relationship Type | Use Case                     | Example                                      |
 | ----------------- | ---------------------------- | -------------------------------------------- |
 | **PARENT_CHILD**  | Hierarchical structure       | Folder contains file, Drive contains folder  |
 | **SIBLING**       | Related items at same level  | Emails in same thread, related documents     |
 | **ATTACHMENT**    | One item attached to another | File attached to email, attachment to ticket |
+| **LINKED_TO**     | Explicit cross-reference     | Page links to another page                   |
+| **BLOCKS**        | One item blocks another      | Ticket blocks another ticket                 |
+| **DEPENDS_ON**    | One item depends on another  | Ticket depends on another ticket             |
+| **DUPLICATES**    | One item duplicates another  | Duplicate ticket or issue                    |
+| **CLONES**        | One item is a copy of another | Cloned ticket                               |
+| **IMPLEMENTS**    | One item implements another  | Pull request implements an issue             |
+| **REVIEWS**       | One item reviews another     | Review attached to a change                  |
+| **CAUSES**        | One item caused another      | Incident caused by a change                  |
+| **RELATED**       | Loosely related items        | Two tickets on the same topic                |
+| **FOREIGN_KEY**   | Database-style reference     | Row references a row in another table        |
+| **DERIVED_FROM**  | Output produced from a source | Chart generated from a code artifact        |
+| **OTHERS**        | Anything not covered above   | Fallback relationship                        |
+
+All fifteen values are defined in [`RecordRelations`](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py). Most connectors need only `PARENT_CHILD`, `SIBLING` and `ATTACHMENT`.
 
 ### Record Fields Reference
 
-Every [`Record`](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L44) entity has these key fields:
+Every [`Record`](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py) entity has these key fields:
 
 | Field                         | Graph DB Key                  | Type   | Required | Purpose                                                    |
 | ----------------------------- | ----------------------------- | ------ | -------- | ---------------------------------------------------------- |
@@ -527,11 +540,11 @@ Record (Email 1) ←─ recordRelations (SIBLING) ─→ Record (Email 2)
 
 - [ ] **Python Test File**
 
-  - `backend/python/app/connectors/sources/{vendor}/{connector_name}/test.py`
+  - `backend/python/tests/unit/connectors/sources/test_{connector_name}_connector.py`
 
 - [ ] **Frontend Connector Icon**
 
-  - `frontend/public/assets/icons/connectors/{connector_name}.svg`
+  - `frontend/public/icons/connectors/{connector_name}.svg`
 
 - [ ] **External API Client** (optional - if not exists)
   - `backend/python/app/sources/external/{vendor}/{connector_name}/{connector_name}.py`
@@ -554,17 +567,14 @@ Record (Email 1) ←─ recordRelations (SIBLING) ─→ Record (Email 2)
 See example: [Microsoft apps.py](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/microsoft/common/apps.py)
 
 ```python
-from app.config.constants.arangodb import Connectors
-from app.connectors.core.interfaces.connector.apps import App, AppGroup
+from app.config.constants.arangodb import AppGroups, Connectors
+from app.connectors.core.interfaces.connector.apps import App
 
 class YourConnectorApp(App):
     """App definition for YourConnector."""
 
-    def __init__(self) -> None:
-        super().__init__(
-            app_name=Connectors.YOUR_CONNECTOR,  # This will be defined in Step 7.1
-            app_group=AppGroup.YOUR_VENDOR  # e.g., AppGroup.MICROSOFT_365
-        )
+    def __init__(self, connector_id: str) -> None:
+        super().__init__(Connectors.YOUR_CONNECTOR, AppGroups.YOUR_VENDOR, connector_id)
 ```
 
 ### Step 6.2: Create Connector Class (Boilerplate)
@@ -625,7 +635,7 @@ from app.models.permission import EntityType, Permission, PermissionType
     .with_description("Sync data from YourConnector")
     .with_categories(["Category1", "Category2"])  # e.g., ["Email"], ["Storage"]
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/yourconnector.svg")
+        .with_icon("/icons/connectors/yourconnector.svg")
         .add_documentation_link(DocumentationLink(
             "Setup Guide",
             "https://docs.yourservice.com/setup"
@@ -666,15 +676,22 @@ class YourConnector(BaseConnector):
         logger: Logger,
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
-            YourConnectorApp(),
+            YourConnectorApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
             config_service,
+            connector_id,
+            scope,
+            created_by,
         )
+        self.connector_id = connector_id
 
         # TODO: Initialize your external API client reference
         self.external_client: Optional[Any] = None
@@ -682,7 +699,7 @@ class YourConnector(BaseConnector):
         # Initialize sync point for delta sync
         # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/sync_point/sync_point.py
         self.sync_point = SyncPoint(
-            connector_name=Connectors.YOUR_CONNECTOR,
+            connector_id=connector_id,
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=self.data_store_provider
@@ -822,21 +839,27 @@ class YourConnector(BaseConnector):
         cls,
         logger: Logger,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str,
+        scope: str,
+        created_by: str,
+        data_entities_processor: DataSourceEntitiesProcessor,
+        **kwargs,
     ) -> 'YourConnector':
-        """Factory method to create and initialize connector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
+        """Factory method used by ConnectorFactory.create_connector().
 
+        The factory builds and initialises the entities processor itself and
+        passes it in, along with connector_id, scope and created_by. Accept
+        **kwargs so future additions do not break this signature.
+        """
         return YourConnector(
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
+            connector_id,
+            scope,
+            created_by,
         )
 ```
 
@@ -854,7 +877,7 @@ async def _get_all_users_external(self) -> List[AppUser]:
         # response = await self.external_client.get_users()
 
         # TODO: Transform to AppUser entities
-        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L612
+        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py
         users = []
         # for user_data in response:
         #     app_user = AppUser(
@@ -879,7 +902,7 @@ async def _process_entities(self, org_id: str, users: List[AppUser]) -> None:
     """Process entities and create records."""
     try:
         # Save users to database
-        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py#L268
+        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py
         await self.data_entities_processor.on_new_app_users(users)
 
         # Process each user's data
@@ -897,7 +920,7 @@ async def _process_user_data(self, org_id: str, user: AppUser) -> None:
         # items = await self.external_client.get_items(user.source_user_id)
 
         # TODO: Read sync point for delta sync
-        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/sync_point/sync_point.py#L16
+        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/sync_point/sync_point.py
         sync_point_key = generate_record_sync_point_key(
             RecordType.FILE.value,  # Or appropriate type
             "users",
@@ -917,7 +940,7 @@ async def _process_user_data(self, org_id: str, user: AppUser) -> None:
         #     records_with_permissions.append((record, permissions))
 
         # Save records in batch
-        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py#L205
+        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py
         if records_with_permissions:
             await self.data_entities_processor.on_new_records(records_with_permissions)
 
@@ -938,7 +961,7 @@ def _transform_to_record(self, org_id: str, item: Dict, user: AppUser) -> Record
     """Transform external API item to Record entity."""
 
     # Example for FileRecord (adjust based on your data type)
-    # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L134
+    # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py
     record = FileRecord(
         id=str(uuid.uuid4()),
         org_id=org_id,
@@ -989,7 +1012,7 @@ def _extract_permissions(self, item: Dict, owner: AppUser) -> List[Permission]:
 
     try:
         # Owner permission
-        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py#L22
+        # See: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py
         permissions.append(Permission(
             email=owner.email,
             type=PermissionType.OWNER,
@@ -1046,9 +1069,11 @@ class ConnectorFactory:
 
 ### Step 7.1: Add Connector Icon
 
-**File:** `frontend/public/assets/icons/connectors/yourconnector.svg`
+**File:** `frontend/public/icons/connectors/yourconnector.svg`
 
-> 💡 **Tip:** You can use existing brand icons or create custom ones. Ensure the path matches the one specified in your `@ConnectorBuilder` decorator.
+> 💡 **Tip:** You can use existing brand icons or create custom ones.
+>
+> `IconPaths.connector_icon()` builds the path as `/icons/connectors/{name}.svg`, lowercased with spaces removed, so a file placed here is found automatically. If you set `.with_icon()` by hand instead, the path must start `/icons/connectors/` — a file under `public/assets/` is not served at that address.
 
 ### Step 7.2: Frontend UI Integration
 
@@ -1060,110 +1085,100 @@ The connector will automatically appear in the UI once configured.
 
 ### Step 8.1: Create Test File
 
-**File:** `backend/python/app/connectors/sources/{vendor}/{connector_name}/test.py`
+**File:** `backend/python/tests/unit/connectors/sources/test_{connector_name}_connector.py`
+
+Connector tests live under `backend/python/tests/`. That is what `testpaths = tests` in `pytest.ini` makes pytest search by default, and the filename must match `python_files = test_*.py` to be picked up.
+
+Unit tests here mock the external service — they do not need etcd, a graph database, or network access, so they run in CI and on a laptop with nothing else started. Follow an existing one such as [`test_linear_connector.py`](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/tests/unit/connectors/sources/test_linear_connector.py).
 
 ```python
-"""
-Test file for YourConnector.
-Run this to test your connector implementation before integrating with the full system.
-"""
+"""Tests for the YourConnector connector."""
 
-import asyncio
-import sys
-from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent.parent))
+import pytest
 
-from app.config.configuration_service import ConfigurationService
-from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.sources.{vendor}.{connector_name}.connector import YourConnector
-from app.utils.logger import create_logger
 
 
-async def test_connector():
-    """Test connector initialization and basic operations."""
+def _make_connector() -> YourConnector:
+    """Build a connector with every dependency mocked.
 
-    # Setup
-    logger = create_logger("test_yourconnector")
-    key_value_store = Etcd3EncryptedKeyValueStore(logger)
-    config_service = ConfigurationService(logger, key_value_store)
-
-    # TODO: Initialize data store provider
-    # data_store_provider = DataStoreProvider(...)
-
-    try:
-        logger.info("=" * 50)
-        logger.info("Testing YourConnector")
-        logger.info("=" * 50)
-
-        # Test 1: Create connector instance
-        logger.info("\n1. Creating connector instance...")
-        connector = await YourConnector.create_connector(
-            logger,
-            None,  # data_store_provider - set to None for basic testing
-            config_service
-        )
-        logger.info("✅ Connector instance created")
-
-        # Test 2: Initialize connector
-        logger.info("\n2. Initializing connector...")
-        init_result = await connector.init()
-        if init_result:
-            logger.info("✅ Connector initialized successfully")
-        else:
-            logger.error("❌ Connector initialization failed")
-            return
-
-        # Test 3: Test connection
-        logger.info("\n3. Testing connection...")
-        connection_ok = connector.test_connection_and_access()
-        if connection_ok:
-            logger.info("✅ Connection test passed")
-        else:
-            logger.error("❌ Connection test failed")
-            return
-
-        # Test 4: Fetch sample data (without saving to database)
-        logger.info("\n4. Fetching sample data from API...")
-        # TODO: Implement test data fetching
-        # users = await connector._get_all_users_external()
-        # logger.info(f"✅ Fetched {len(users)} users")
-
-        # Test 5: Test sync (dry run - comment out database operations)
-        # logger.info("\n5. Running test sync (dry run)...")
-        # await connector.run_sync()
-        # logger.info("✅ Sync test completed")
-
-        logger.info("\n" + "=" * 50)
-        logger.info("All tests passed! ✅")
-        logger.info("=" * 50)
-
-    except Exception as e:
-        logger.error(f"\n❌ Test failed: {e}", exc_info=True)
-    finally:
-        # Cleanup
-        connector.cleanup()
+    The arguments match `YourConnector.__init__` from Step 6.2, which in
+    turn matches `BaseConnector`. The entities processor cannot be omitted:
+    its `org_id` is read while the connector is being constructed, to build
+    the SyncPoint.
+    """
+    return YourConnector(
+        logger=MagicMock(),
+        data_entities_processor=MagicMock(org_id="org-1"),
+        data_store_provider=MagicMock(),
+        config_service=MagicMock(),
+        connector_id="yourconnector-1",
+        scope="team",
+        created_by="test-user",
+    )
 
 
-if __name__ == "__main__":
-    asyncio.run(test_connector())
+class TestYourConnector:
+    """`init()` has three outcomes. Patch what it calls: `_get_credentials`
+    and `test_connection_and_access`, both defined in Step 6.2."""
+
+    @pytest.mark.asyncio
+    async def test_init_success(self):
+        connector = _make_connector()
+
+        with patch.object(
+            connector, "_get_credentials", AsyncMock(return_value={"token": "t"})
+        ), patch.object(connector, "test_connection_and_access", return_value=True):
+            assert await connector.init() is True
+
+    @pytest.mark.asyncio
+    async def test_init_returns_false_when_connection_test_fails(self):
+        connector = _make_connector()
+
+        with patch.object(
+            connector, "_get_credentials", AsyncMock(return_value={"token": "t"})
+        ), patch.object(connector, "test_connection_and_access", return_value=False):
+            assert await connector.init() is False
+
+    @pytest.mark.asyncio
+    async def test_init_returns_false_when_credentials_fail(self):
+        connector = _make_connector()
+
+        with patch.object(
+            connector, "_get_credentials", AsyncMock(side_effect=Exception("no credentials"))
+        ):
+            assert await connector.init() is False
 ```
+
+Patch the methods the connector actually calls, not an API client symbol. The
+boilerplate's `init()` reads `data_entities_processor.org_id`, awaits
+`_get_credentials()`, then calls `test_connection_and_access()` — so those are
+what a test controls. Once you replace the TODOs in Step 6.2 with a real client,
+patch that client where `init()` builds it.
+
+`asyncio_mode = auto` is set, so `async def test_*` runs without decoration; the
+explicit `@pytest.mark.asyncio` above matches the style of the existing tests.
+
+> [!WARNING]
+> Do not put a `__main__` script that connects to real services inside `tests/`.
+> pytest collects any `async def test_*` it finds there and runs it, so a script
+> expecting etcd or a live API will fail the suite. Keep exploratory scripts
+> outside `tests/` and run them directly.
 
 ### Step 8.2: Run Backend Tests
 
 ```bash
-# Navigate to Python backend
 cd backend/python
+source venv/bin/activate  # Linux/Mac; Windows: venv\Scripts\activate
 
-# Activate virtual environment
-source venv/bin/activate  # Linux/Mac
-# or
-venv\Scripts\activate  # Windows
+# Just your connector
+pytest tests/unit/connectors/sources/test_{connector_name}_connector.py
 
-# Run your test
-python -m app.connectors.sources.{vendor}.{connector_name}.test
+# With detail, or the whole connector suite
+pytest -v tests/unit/connectors/sources/test_{connector_name}_connector.py
+pytest tests/unit/connectors/sources/
 ```
 
 **Expected Output:**
@@ -1173,18 +1188,8 @@ python -m app.connectors.sources.{vendor}.{connector_name}.test
 Testing YourConnector
 ==================================================
 
-1. Creating connector instance...
-✅ Connector instance created
-
-2. Initializing connector...
-✅ Connector initialized successfully
-
-3. Testing connection...
-✅ Connection test passed
-
-==================================================
-All tests passed! ✅
-==================================================
+...                                                                    [100%]
+3 passed in 0.42s
 ```
 
 ### Step 8.3: Test with Full System
@@ -1292,7 +1297,7 @@ Ensure the following services are running:
 
 #### Test File Debugging (Recommended for Development)
 
-**Location:** `backend/python/app/connectors/sources/{vendor}/{connector_name}/test.py`
+**Location:** `backend/python/tests/unit/connectors/sources/test_{connector_name}_connector.py`
 
 This is the simplest way to debug connector logic without running the full system:
 
@@ -1537,7 +1542,7 @@ Full implementation: [`ConnectorBuilder` class](https://github.com/pipeshub-ai/p
 #### Basic Configuration
 
 ```python
-.with_icon("/assets/icons/connectors/icon.svg")
+.with_icon("/icons/connectors/icon.svg")
 .add_documentation_link(DocumentationLink(
     "Link Title",
     "https://docs.example.com/path",
@@ -1817,9 +1822,9 @@ Events are published automatically by `DataEntitiesProcessor` when you call:
 ```python
 # This publishes newRecord events to Kafka automatically
 # See usage examples:
-# - OneDrive: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/microsoft/onedrive/connector.py#L523
-# - SharePoint: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/microsoft/sharepoint_online/connector.py#L536
-# - Confluence: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/atlassian/confluence_cloud/connector.py#L389
+# - OneDrive: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/microsoft/onedrive/connector.py
+# - SharePoint: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/microsoft/sharepoint_online/connector.py
+# - Confluence: https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/connectors/sources/atlassian/confluence_cloud/connector.py
 await self.data_entities_processor.on_new_records(records_with_permissions)
 ```
 
@@ -1839,8 +1844,8 @@ You don't need to manually publish events in most cases.
 - **Data Models:**
   - [Record Models](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py) - Record, FileRecord, MailRecord, WebpageRecord, TicketRecord
   - [Permission Models](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py) - Permission, PermissionType
-  - [User Models](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L539) - User, AppUser
-  - [RecordGroup](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py#L431) - Container entities
+  - [User Models](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py) - User, AppUser
+  - [RecordGroup](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/entities.py) - Container entities
 - **Constants & Enums:**
   - [ArangoDB Constants](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py) - Connectors, RecordType, RecordRelations, PermissionType, etc.
 

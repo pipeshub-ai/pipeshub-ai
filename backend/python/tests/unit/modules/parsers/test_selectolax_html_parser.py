@@ -232,6 +232,47 @@ class TestHeadingMergesIntoParagraph:
         ]
 
 
+class TestDocumentTitle:
+    """Unit tests for ``<title>`` → leading HEADING via HtmlToBlocksConverter."""
+
+    def test_title_emitted_as_leading_heading(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert(
+            "<html><head><title>  Doc Title  </title></head>"
+            "<body><p>Body text.</p></body></html>"
+        )
+        assert len(container.blocks) >= 2
+        assert container.blocks[0].sub_type == BlockSubType.HEADING
+        assert container.blocks[0].data == "Doc Title"
+        assert container.blocks[0].format == DataFormat.MARKDOWN
+        assert container.blocks[0].type == BlockType.TEXT
+
+    def test_empty_or_non_document_title_not_emitted(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        for html, body_text in (
+            (
+                "<html><head><title>   </title></head><body><p>Body.</p></body></html>",
+                "Body.",
+            ),
+            ("<html><body><p>Only body.</p></body></html>", "Only body."),
+            (
+                "<html><body>"
+                "<svg><title>Icon Label</title></svg>"
+                "<p>Body text.</p>"
+                "</body></html>",
+                "Body text.",
+            ),
+        ):
+            container = converter.convert(html)
+            headings = [
+                b for b in container.blocks if b.sub_type == BlockSubType.HEADING
+            ]
+            assert headings == []
+            assert any(b.data == body_text for b in container.blocks)
+
+
 class TestHeadings:
     def test_heading_produces_text_block(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert("<h1>Title</h1><h2>Subtitle</h2>")

@@ -20,8 +20,16 @@ from app.agent_loop_lib.agent.tool_loop import (
 from app.agent_loop_lib.context.base import ContextBudget
 from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.exceptions import AgentError, HookBlocked, RunCancelled
-from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
-from app.agent_loop_lib.core.responses import RunUsage
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    ImagePart,
+    Part,
+    TextPart,
+    ThinkingPart,
+    ToolMessage,
+    UserMessage,
+)
+from app.agent_loop_lib.core.responses import RunUsage, StopReason
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
 from app.agent_loop_lib.core.streaming import (
     StreamCompleteEvent,
@@ -68,6 +76,27 @@ def _content_to_json(content: Any) -> str:
         return str(content)
 
 
+_PART_TYPES = (TextPart, ImagePart, ThinkingPart)
+
+
+def _tool_result_content_to_message_content(content: Any) -> str | list[Part]:
+    """Normalize a `ToolResult.content` into `ToolMessage.content`.
+
+    A tool that wants to surface images to the LLM (search/fetch tools
+    returning IMAGE blocks) returns `ToolOutput(data=[TextPart(...),
+    ImagePart(...), ...])`; that list of `Part` objects must pass through
+    untouched so `ToolMessage` keeps them as real multipart content instead
+    of collapsing them into an opaque JSON string. Everything else
+    (str, dict, Pydantic model, plain list/scalar) keeps the pre-existing
+    JSON-serialization behavior.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and content and all(isinstance(p, _PART_TYPES) for p in content):
+        return content
+    return _content_to_json(content)
+
+
 # See Agent.emit — legacy event -> AG-UI-aligned event, fired alongside
 # (never instead of) the legacy one. TOOL_BLOCKED counts as a TOOL_CALL_END
 # too: a blocked call is a terminal outcome for that tool_call, same as a
@@ -100,7 +129,10 @@ class Agent:
     loops (see `examples/`) be added with zero changes to this file.
     """
 
-    def __init__(self, spec: "AgentSpec", runtime: "AgentRuntime", *, session_id: str | None = None) -> None:
+    def __init__(
+        self, spec: "AgentSpec", runtime: "AgentRuntime", *,
+        session_id: str | None = None, run_id: str | None = None,
+    ) -> None:
         self._spec = spec
         self._runtime = runtime
         self._session_id = session_id
@@ -153,7 +185,14 @@ class Agent:
         for install in spec.middleware:
             install(self._hooks)
 
-        self._run_ctx = RunContext(role_name=spec.name, model=spec.model.model)
+        # `run_id`, when given (a caller-supplied id — e.g. an AG-UI client's
+        # `runId` — that must match every frame this run emits), overrides
+        # `RunContext.run_id`'s own `default_factory` uuid4 rather than
+        # generating one and mapping between the two afterward.
+        self._run_ctx = RunContext(
+            role_name=spec.name, model=spec.model.model,
+            **({"run_id": run_id} if run_id else {}),
+        )
 
         # Run-scoped conversation state — created fresh in run() unless a
         # caller (AgentRuntime.run_child, resume()) pre-seeds it.
@@ -447,7 +486,10 @@ class Agent:
         every "run stopped without succeeding" exit (blocked hooks,
         cancellation, transport errors, max_turns exhausted)."""
         turns = self._scope.turns if self._scope is not None else []
-        result = AgentResult(goal=goal, turns=list(turns), success=False, error=error, usage=self._usage)
+        result = AgentResult(
+            goal=goal, turns=list(turns), success=False, error=error, usage=self._usage,
+            cancelled=(status == "cancelled"),
+        )
         await self.emit(
             EventType.CANCELLATION if status == "cancelled" else EventType.ERROR,
             {"error": error},
@@ -764,6 +806,23 @@ class Agent:
             )
 
         await context.add(response_msg)
+
+        if response.stop_reason == StopReason.CANCELLED:
+            # Stop Generation (Phase 3b): the transport's `stream()` saw
+            # `runtime.cancellation_token` fire mid-response and returned
+            # early — `response_msg` (just added to context above) already
+            # carries whatever text streamed before that, with any
+            # in-progress tool call dropped (see `LangChainTransport.
+            # stream()`). Route to the SAME `status="cancelled"` outcome
+            # the PRE_TURN `check_not_cancelled` guard produces, so
+            # `AnswerFinalizer` has one cancelled-branch contract to
+            # handle regardless of which check caught it.
+            return StepOutcome("stop", result=await self.fail(
+                goal, "Cancelled", event="agent_cancelled",
+                summary=f"Agent cancelled mid-response (turn {turn_index})",
+                status="cancelled", detail={"turn_index": turn_index},
+            ))
+
         tool_calls = self._extract_tool_calls(response_msg)
 
         post_model_ctx = await hooks.dispatch_post_model(self._hooks, response_msg, tool_calls, turn_index, scope=turn_scope)
@@ -776,7 +835,10 @@ class Agent:
             if tool_calls:
                 trunc_results = post_model_ctx.recovery_tool_results or []
                 for tr in trunc_results:
-                    await context.add(ToolMessage(content=tr.content, tool_call_id=tr.tool_call_id))
+                    await context.add(ToolMessage(
+                        content=_tool_result_content_to_message_content(tr.content),
+                        tool_call_id=tr.tool_call_id,
+                    ))
                 turn = AgentTurn(messages=[response_msg], tool_calls=tool_calls, tool_results=trunc_results)
             else:
                 if post_model_ctx.recovery_message is not None:
@@ -940,9 +1002,7 @@ class Agent:
             # rather than relying on a stateful "two consecutive empty turns"
             # prose rule.  See _OPERATING_RULES in prompt_builder.py.
             any_useful = any(
-                not tr.is_error and bool(
-                    tr.content if isinstance(tr.content, str) else _content_to_json(tr.content)
-                )
+                not tr.is_error and bool(_tool_result_content_to_message_content(tr.content))
                 for tr in tool_results
             )
             if any_useful:
@@ -955,11 +1015,11 @@ class Agent:
                 f" stale_rounds={self._stale_tool_rounds}]"
             )
             for tr in tool_results:
-                content_str = _content_to_json(tr.content) if not isinstance(tr.content, str) else tr.content
+                message_content = _tool_result_content_to_message_content(tr.content)
                 # Skip the footer on terminal-tool results — they stop the loop.
                 is_terminal = TAG_LIFECYCLE_TERMINAL in runtime.tool_registry.tags_for_name(tr.name)
                 await context.add(ToolMessage(
-                    content=content_str,
+                    content=message_content,
                     step_footer=("" if is_terminal else step_footer),
                     tool_call_id=tr.tool_call_id,
                     is_error=tr.is_error,

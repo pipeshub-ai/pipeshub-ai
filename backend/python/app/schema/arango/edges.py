@@ -489,6 +489,42 @@ agent_has_skill_schema = {
     "message": "Document does not match the agent has skill schema.",
 }
 
+# Agent -> MCP Server — per-agent MCP server attachment, mirrors
+# agent_has_toolset_schema exactly.
+agent_has_mcp_server_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent has MCP server schema.",
+}
+
+# MCP Server -> Tool — mirrors toolset_has_tool_schema exactly; tool nodes
+# live in the same AGENT_TOOLS collection as toolset tools.
+mcp_server_has_tool_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the MCP server has tool schema.",
+}
+
 
 # future schema
 

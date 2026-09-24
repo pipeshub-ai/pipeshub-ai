@@ -487,8 +487,18 @@ class TestPersonalCreatorFallback:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args, _ = connector.data_entities_processor.on_new_record_groups.call_args
         record_groups_payload = args[0]
-        # Four record groups: project, work items, MRs, code repo.
-        assert len(record_groups_payload) == 4
+        # Five record groups: project, work items, confidential work items, MRs,
+        # code repo. Confidential issues need their own ACL holder because GitLab
+        # hides them below the Planner role, so they cannot share a group with the
+        # ordinary work items.
+        assert len(record_groups_payload) == 5
+        assert {rg.external_group_id for rg, _ in record_groups_payload} == {
+            "99",
+            "99-work-items",
+            "99-confidential-work-items",
+            "99-merge-requests",
+            "99-code-repository",
+        }
         for _rg, perms in record_groups_payload:
             assert len(perms) == 1
             assert perms[0].entity_type == EntityType.GROUP
@@ -657,28 +667,19 @@ class TestPersonalCreateConnector:
     @pytest.mark.asyncio
     async def test_factory_method_builds_instance(self) -> None:
         logger, _dep, dsp, cs = _make_deps()
-        # Patch the processor symbol *imported into the module under test*
-        # so the constructed instance still routes through our mock; this
-        # also lets us assert that initialize() is awaited as part of the
-        # factory contract.
-        with patch(
-            "app.connectors.sources.gitlab_personal.connector.DataSourceEntitiesProcessor"
-        ) as MockProcessor:
-            mock_dep = MagicMock()
-            mock_dep.org_id = "org-1"
-            mock_dep.initialize = AsyncMock()
-            MockProcessor.return_value = mock_dep
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            connector = await GitLabPersonalConnector.create_connector(
-                logger=logger,
-                data_store_provider=dsp,
-                config_service=cs,
-                connector_id="conn-personal-1",
-                scope="personal",
-                created_by="creator-1",
-            )
+        connector = await GitLabPersonalConnector.create_connector(
+            logger=logger,
+            data_store_provider=dsp,
+            config_service=cs,
+            connector_id="conn-personal-1",
+            scope="personal",
+            created_by="creator-1",
+            data_entities_processor=processor,
+        )
 
         assert isinstance(connector, GitLabPersonalConnector)
         assert connector.connector_id == "conn-personal-1"
         assert connector.created_by == "creator-1"
-        mock_dep.initialize.assert_awaited_once()

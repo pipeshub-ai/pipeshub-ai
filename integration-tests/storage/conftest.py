@@ -24,6 +24,22 @@ from dotenv import load_dotenv
 logger = logging.getLogger("storage-conftest")
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Run only when asked for by marker, never as part of a plain ``pytest``.
+
+    These tests repoint the deployment's storage while they run, so a session
+    that is also exercising uploads would be reconfigured underneath itself.
+    """
+    if "storage" in (config.getoption("markexpr") or ""):
+        return
+    skip = pytest.mark.skip(
+        reason="repoints the deployment's storage; select it with -m storage"
+    )
+    for item in items:
+        if item.get_closest_marker("storage"):
+            item.add_marker(skip)
+
+
 class _S3CleanupTracker:
     def __init__(self) -> None:
         self._doc_ids: set[str] = set()
@@ -56,6 +72,7 @@ _load_env()
 
 from local_auth import obtain_local_oauth_credentials
 from pipeshub_client import PipeshubClient
+from storage_backends import available_backends, parked_notice
 from storage_client import StorageClient
 
 # ---------------------------------------------------------------------------
@@ -92,12 +109,9 @@ def _set_storage_backend(client: PipeshubClient, backend: str) -> None:
     logger.info("Switched storage backend to '%s'", backend)
 
 
-def _available_backends() -> list[str]:
-    """Return the list of storage backends to test based on available credentials."""
-    backends = ["local"]
-    if os.getenv("S3_ACCESS_KEY") and os.getenv("S3_SECRET_KEY") and os.getenv("S3_REGION") and os.getenv("S3_BUCKET"):
-        backends.append("s3")
-    return backends
+def pytest_report_header() -> str | None:
+    """Say so when a backend is parked, on every run."""
+    return parked_notice()
 
 
 def _extract_s3_key_from_url(url: str, bucket: str) -> str | None:
@@ -250,7 +264,7 @@ def s3_cleanup_tracker(
     logger.info("Centralized S3 cleanup deleted %d object(s)", len(keys_to_delete))
 
 
-@pytest.fixture(scope="session", params=_available_backends())
+@pytest.fixture(scope="session", params=available_backends())
 def storage_backend(
     request: pytest.FixtureRequest,
     pipeshub_client: PipeshubClient,
@@ -264,12 +278,20 @@ def storage_backend(
     backend: str = request.param
     _set_storage_backend(pipeshub_client, backend)
     yield backend
-    # Reset to local after the parametrized run
+    # Reset to local after the parametrized run. A failure here is not cosmetic:
+    # the setting lives in the deployment's config, so the stack stays pointed at
+    # the other backend for everything that runs after this — say so loudly.
     if backend != "local":
         try:
             _set_storage_backend(pipeshub_client, "local")
-        except Exception:
-            logger.warning("Failed to reset storage backend to 'local'", exc_info=True)
+        except Exception as e:
+            logger.error("Could not reset storage back to local", exc_info=True)
+            pytest.fail(
+                "The suite left the deployment's storage pointed at "
+                f"'{backend}' because resetting it failed: {e}. Set storage back "
+                "to local in Settings before running anything else against this "
+                "stack."
+            )
 
 
 @pytest.fixture(scope="session")

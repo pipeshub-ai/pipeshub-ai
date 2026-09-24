@@ -1,13 +1,13 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from io import BytesIO
 from logging import Logger
 
 import aiohttp  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    SUPPORTED_CODE_FILE_EXTENSIONS,
     CollectionNames,
     EventTypes,
     ExtensionTypes,
@@ -17,13 +17,22 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service import (
+    DefaultEndpoints,
+    TokenScopes,
+    config_node_constants,
+)
 from app.events.events import EventProcessor
-from app.exceptions.indexing_exceptions import IndexingError
+from app.events.processor import convert_record_dict_to_record
+from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.modules.transformers.transformer import TransformContext
+from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
+    StreamMessage,
     Topic,
 )
 from app.services.messaging.error_classifier import (
@@ -32,48 +41,30 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
+from app.services.vector_db.rebuild_state import (
+    PHASE_FAILED,
+    PHASE_READY,
+    mark_cleanup_phase,
+)
+from app.services.vector_db.strategy import DeleteContext, RecordContext
+from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.indexing_progress import build_indexing_progress, stage_for_status
 from app.utils.jwt import generate_jwt
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import (
+    CONNECTOR_OFF,
+    FOLDER_NOTHING_TO_INDEX,
+    RETRIES_EXHAUSTED,
+    RETRY_SCHEDULED,
+    STORED_CONTENT_DAMAGED,
+    STORED_CONTENT_MISSING,
+    duplicate_failed,
+    to_user_reason,
+    unsupported_file_type,
+)
 
-
-SUPPORTED_CODE_FILE_EXTENSIONS = {
-    # C
-    "c", "h",
-    # C++
-    "cpp", "cc", "cxx", "hpp", "hxx",
-    # C#
-    "cs",
-    # Java
-    "java",
-    # Python
-    "py",
-    # JavaScript
-    "js", "jsx", "mjs", "cjs",
-    # TypeScript
-    "ts", "tsx",
-    # Go
-    "go",
-    # Rust
-    "rs",
-    # Ruby
-    "rb",
-    # PHP
-    "php",
-    # Swift
-    "swift",
-    # Kotlin
-    "kt", "kts",
-    # Dart
-    "dart",
-    # Bash
-    "sh", "bash",
-    # HTML
-    "html", "htm",
-    #Markdown
-    "md"
-}
 
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
@@ -88,6 +79,159 @@ class RecordEventHandler(BaseEventService):
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
 
+    # Statuses that already describe a finished record. Abandoning a duplicate
+    # delivery of one of these must not rewrite it as a failure. FAILED is
+    # included so that when the handler ran and recorded its own specific
+    # reason, this does not overwrite it with the generic one — while a record
+    # whose handler never ran still gets marked here.
+    _SETTLED_STATUSES = frozenset({
+        ProgressStatus.COMPLETED.value,
+        ProgressStatus.EMPTY.value,
+        ProgressStatus.AUTO_INDEX_OFF.value,
+        ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+        ProgressStatus.FAILED.value,
+    })
+    # A live handler owns this record. The stale-IN_PROGRESS scan republishes
+    # if that handler actually died; rewriting FAILED here races the worker
+    # and is what the idle-drain backstop was doing to healthy PDFs.
+    _IN_FLIGHT_STATUSES = frozenset({
+        ProgressStatus.IN_PROGRESS.value,
+    })
+
+    async def on_message_abandoned(
+        self,
+        message: StreamMessage | None,
+        *,
+        reason: str,
+        attempts: int,
+    ) -> None:
+        """Put a record into a terminal state when its message is discarded.
+
+        Implements ``AbandonedMessageSink``. Without this a discarded message
+        leaves its record on whatever status it was created with — QUEUED —
+        which no recovery path revisits, so the record is stranded silently and
+        for ever.
+
+        Never raises: the caller is on its way to an acknowledgement that has to
+        happen either way.
+        """
+        if message is None:
+            self.logger.error(
+                "Discarded an unparseable message (%s); no record could be identified",
+                reason,
+            )
+            return
+
+        payload = message.payload or {}
+        record_id = payload.get("recordId")
+        if not record_id:
+            # Bulk-delete, membership-sync and collection-delete events carry no
+            # record; there is nothing to mark.
+            self.logger.warning(
+                "Discarded %s message with no recordId after %d attempt(s): %s",
+                message.eventType,
+                attempts,
+                reason,
+            )
+            return
+
+        record_id = str(record_id)
+        try:
+            record = await self.event_processor.graph_provider.get_document(
+                record_id,
+                CollectionNames.RECORDS.value,
+                # Not for retry -- the consumer has already given up by the
+                # time this runs, and the `except` below keeps this method to
+                # its contract of never raising. It is so the log is true: an
+                # unreadable graph answers None, and the line below would call
+                # that "record no longer exists". Chasing a log line saying
+                # exactly that, in a service whose graph was restarting, is
+                # what this whole change came out of.
+                raise_on_error=True,
+            )
+            if record is None:
+                self.logger.warning(
+                    "Discarded message for record %s after %d attempt(s); "
+                    "record no longer exists: %s",
+                    record_id,
+                    attempts,
+                    reason,
+                )
+                return
+
+            current_status = record.get("indexingStatus")
+            if current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES:
+                self.logger.info(
+                    "Discarded message for record %s after %d attempt(s); "
+                    "leaving status %s untouched: %s",
+                    record_id,
+                    attempts,
+                    current_status,
+                    reason,
+                )
+                return
+
+            # The check above is a read, so it cannot stand on its own: a
+            # concurrent delivery can finish the record between that read and
+            # this write, and an unconditional write would bury a COMPLETED
+            # record as FAILED. Claim the transition from the exact status we
+            # saw instead -- if anything moved it in the meantime the swap
+            # misses, and whatever it became is not ours to overwrite.
+            claimed = await self.event_processor.graph_provider.compare_and_set_indexing_status(
+                [record_id],
+                current_status,
+                ProgressStatus.FAILED.value,
+            )
+            if not claimed:
+                self.logger.info(
+                    "Discarded message for record %s after %d attempt(s); it "
+                    "moved on from %s before it could be marked, leaving it "
+                    "alone: %s",
+                    record_id,
+                    attempts,
+                    current_status,
+                    reason,
+                )
+                return
+
+            # The record is ours now (nothing else can swap out of FAILED), so
+            # fill in the remaining fields through the usual writer, which also
+            # preserves a completed extraction and mirrors parsingStatus.
+            updated = await self.__update_document_status(
+                record_id=record_id,
+                indexing_status=ProgressStatus.FAILED.value,
+                extraction_status=ProgressStatus.FAILED.value,
+                reason=RETRIES_EXHAUSTED,
+            )
+            if updated is None:
+                # The status write is the only trace this record will ever get,
+                # so a silent failure here recreates the bug this method exists
+                # to fix.
+                self.logger.error(
+                    "Failed to mark record %s FAILED after its message was "
+                    "discarded (%s); it may remain in %s",
+                    record_id,
+                    reason,
+                    current_status,
+                )
+                return
+
+            self.logger.error(
+                "Record %s marked FAILED: message discarded after %d attempt(s): %s",
+                record_id,
+                attempts,
+                reason,
+            )
+        except Exception as e:
+            self.logger.error(
+                "Error while marking record %s FAILED after its message was "
+                "discarded (%s): %s",
+                record_id,
+                reason,
+                e,
+                exc_info=True,
+            )
+
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
         record_id: str,
@@ -100,11 +244,7 @@ class RecordEventHandler(BaseEventService):
         would usually repeat the same failure (e.g. rate limits) and waste resources.
         """
         try:
-            propagated_reason = (
-                f"Primary duplicate indexing failed: {reason}"
-                if reason
-                else "Primary duplicate indexing failed"
-            )
+            propagated_reason = duplicate_failed(reason)
             updated = await self.event_processor.graph_provider.update_queued_duplicates_status(
                 record_id,
                 ProgressStatus.FAILED.value,
@@ -129,12 +269,29 @@ class RecordEventHandler(BaseEventService):
                 e,
             )
 
+    async def _publish_reindex_event(self, record_id: str, payload: dict) -> None:
+        if not self.producer:
+            raise IndexingError("No messaging producer configured; cannot publish newRecord event")
+        await self.producer.send_event(
+            topic=Topic.RECORD_EVENTS.value,
+            event_type="newRecord",
+            payload=payload,
+            key=str(record_id),
+        )
+
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
             self.logger.info(f"🔍 Looking for next queued duplicate for record {record_id}")
 
-            # Find the next queued duplicate
-            next_queued_record = await self.event_processor.graph_provider.find_next_queued_duplicate(record_id)
+            # None means "nothing is waiting behind this record", and the
+            # method returns without publishing anything. A failed read gave
+            # the same answer, and nothing else ever looks again: the queued
+            # duplicates keep that status with no event left to move them.
+            # Raising reaches the handler below, which marks them FAILED --
+            # visible, and recoverable by a reindex.
+            next_queued_record = await self.event_processor.graph_provider.find_next_queued_duplicate(
+                record_id, raise_on_error=True
+            )
 
             if not next_queued_record:
                 self.logger.info(f"✅ No queued duplicates found for record {record_id}")
@@ -143,28 +300,18 @@ class RecordEventHandler(BaseEventService):
             next_record_id = next_queued_record.get("_key")
             self.logger.info(f"🚀 Found queued duplicate: {next_record_id}, triggering indexing")
 
-            # Get file record for the queued duplicate
             file_record = None
             if next_queued_record.get("recordType") == RecordTypes.FILE.value:
                 file_record = await self.event_processor.graph_provider.get_document(
                     next_record_id, CollectionNames.FILES.value
                 )
 
-            # Create event payload for the queued record
             payload = await self.event_processor.graph_provider._create_reindex_event_payload(
                 next_queued_record,
                 file_record,
             )
 
-            # Publish the event to trigger indexing
-            if not self.producer:
-                raise IndexingError("No messaging producer configured; cannot publish newRecord event")
-            await self.producer.send_event(
-                topic=Topic.RECORD_EVENTS.value,
-                event_type="newRecord",
-                payload=payload,
-                key=str(next_record_id),
-            )
+            await self._publish_reindex_event(str(next_record_id), payload)
 
             self.logger.info(f"✅ Successfully triggered indexing for queued duplicate: {next_record_id}")
 
@@ -175,6 +322,221 @@ class RecordEventHandler(BaseEventService):
             except Exception as e:
                 self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
 
+    @staticmethod
+    def _blob_has_blocks(blob: dict) -> bool:
+        containers = blob.get("block_containers") if isinstance(blob, dict) else None
+        if not isinstance(containers, dict):
+            return False
+        return bool(containers.get("blocks") or containers.get("block_groups"))
+
+    async def _delete_vector_collection(self, payload: dict | None = None) -> AsyncGenerator[PipelineEvent, None]:
+        # The cleanup job polls for a phase and otherwise waits out its whole
+        # deadline, so every exit from here must publish one — a failure
+        # included — rather than let the job time out with no explanation.
+        try:
+            await self._recreate_managed_collections()
+        except Exception:
+            await mark_cleanup_phase(
+                self.config_service, PHASE_FAILED, logger=self.logger
+            )
+            raise
+        await mark_cleanup_phase(self.config_service, PHASE_READY, logger=self.logger)
+        yield PipelineEvent(
+            event=IndexingEvent.PARSING_COMPLETE,
+            data=PipelineEventData(record_id="delete_vector_collection"),
+        )
+        yield PipelineEvent(
+            event=IndexingEvent.INDEXING_COMPLETE,
+            data=PipelineEventData(record_id="delete_vector_collection"),
+        )
+
+    async def _recreate_managed_collections(self) -> list[str]:
+        """Drop and rebuild every collection the registry manages.
+
+        The embedding dimension is re-derived from the *live* model rather
+        than the manifest, because this event fires precisely when the model
+        has changed — the manifest still records the outgoing model's width.
+        """
+        sink = getattr(self.event_processor, "sink_orchestrator", None)
+        vector_store = getattr(sink, "vector_store", None) if sink is not None else None
+        if vector_store is None:
+            # Nothing here recovers on redelivery — an unconfigured vector
+            # store is the same on the next attempt.
+            raise IndexingError("Vector store is not configured; cannot drop the records collection")
+
+        await vector_store.get_embedding_model_instance()
+        embedding_size = vector_store.embedding_size
+        if not embedding_size:
+            raise IndexingError(
+                "Could not resolve the embedding dimension; refusing to recreate "
+                "collections without knowing their vector width"
+            )
+
+        registry = self.event_processor.processor.indexing_pipeline.collection_registry
+        recreated = await registry.recreate_all_collections(embedding_size)
+        # A rebuild is also the supported way to change the strategy, and the
+        # resolved one is memoised per process. Without this the collections
+        # are rebuilt but every later resolution still uses the outgoing
+        # strategy's names until the service restarts.
+        reset_strategy_cache()
+        self.logger.info(
+            "♻️ Recreated %d collection(s) at dimension %s: %s",
+            len(recreated),
+            embedding_size,
+            recreated,
+        )
+        return recreated
+
+    async def _index_from_blob(
+        self,
+        record_id: str,
+        record: dict,
+        payload: dict,
+        virtual_record_id: str | None,
+        event_type: str,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        org_id = payload.get("orgId") or record.get("orgId") or ""
+        extraction_status = record.get("extractionStatus", ProgressStatus.NOT_STARTED.value)
+
+        async def _fail(reason: str) -> AsyncGenerator[PipelineEvent, None]:
+            await self.__update_document_status(
+                record_id=record_id,
+                indexing_status=ProgressStatus.FAILED.value,
+                extraction_status=extraction_status,
+                reason=reason,
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.PARSING_COMPLETE,
+                data=PipelineEventData(record_id=record_id),
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id=record_id),
+            )
+
+        if not virtual_record_id:
+            # Not a failure: no virtualRecordId means the record was never
+            # indexed, so there is nothing in blob to re-embed. A vector-only
+            # reindex re-embeds what is already indexed — it deliberately does
+            # not download or parse sources — so such a record is simply out of
+            # scope. Marking it FAILED would misreport a healthy record, never
+            # succeed on retry, and overwrite whatever status it actually had.
+            self.logger.info(
+                "Skipping vector-only reindex for record %s: no virtualRecordId, "
+                "so it has never been indexed and has nothing to rebuild from",
+                record_id,
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.PARSING_COMPLETE,
+                data=PipelineEventData(record_id=record_id),
+            )
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id=record_id),
+            )
+            return
+
+        sink = getattr(self.event_processor, "sink_orchestrator", None)
+        if sink is None:
+            # A service-level misconfiguration, not a bad record. _fail would
+            # brand this record FAILED and acknowledge the message, so a wiring
+            # problem would silently burn every record it touched.
+            raise IndexingError(
+                "Sink orchestrator is not configured; cannot reindex from blob"
+            )
+
+        try:
+            blob = await sink.blob_storage.get_record_from_storage(
+                virtual_record_id, org_id
+            )
+        except Exception as exc:
+            self.logger.exception(
+                "Blob fetch failed for vector-only reindex of record %s", record_id
+            )
+            # _fail writes FAILED and yields both completion events, so the
+            # broker counts the message as handled and nothing retries it. A
+            # storage timeout or 5xx would therefore burn every record it
+            # touched for the whole rebuild. Re-raise instead and let the
+            # consumer redeliver under its capped-attempt policy, which
+            # dead-letters only if the outage outlasts the retries.
+            if (
+                MessageErrorClassifier.classify_by_exception(exc)
+                == MessageErrorType.TRANSIENT
+            ):
+                raise
+            async for event in _fail(STORED_CONTENT_MISSING):
+                yield event
+            return
+
+        if not blob or not self._blob_has_blocks(blob):
+            async for event in _fail(STORED_CONTENT_DAMAGED):
+                yield event
+            return
+
+        # Everything that can fail deterministically happens before the delete.
+        # _blob_has_blocks only checks the container is non-empty, so a malformed
+        # block still raises here — and a validation error classifies TERMINAL,
+        # which after the delete would acknowledge a record whose vectors are
+        # already gone and never revisit it.
+        try:
+            record_obj = convert_record_dict_to_record(record)
+            record_obj.virtual_record_id = virtual_record_id
+            record_obj.block_containers = BlocksContainer.model_validate(
+                blob["block_containers"]
+            )
+            raw_semantic = blob.get("semantic_metadata")
+            if raw_semantic:
+                record_obj.semantic_metadata = SemanticMetadata.model_validate(
+                    raw_semantic
+                )
+            ctx = TransformContext(
+                record=record_obj,
+                settings={"skip_blob": True},
+                event_type=event_type,
+            )
+        except Exception:
+            # Terminal by nature — the same blob parses the same way next time —
+            # and safe to mark FAILED because the old vectors are still intact.
+            self.logger.exception(
+                "Vector-only reindex could not build blocks for record %s", record_id
+            )
+            async for event in _fail(STORED_CONTENT_DAMAGED):
+                yield event
+            return
+
+        # Unconditional: bulk_delete_embeddings only deletes when the VRID has no
+        # remaining graph record, which is never true on a re-embed, so it would
+        # leave the old points in place and the upsert below would duplicate them.
+        # Scoped to this record's own collection — the same VRID can be indexed
+        # from another connector, and re-embedding one must not wipe the other.
+        await self.event_processor.processor.indexing_pipeline.delete_points_for_virtual_record(
+            virtual_record_id,
+            RecordContext.from_record(record_obj, record_obj.org_id),
+        )
+
+        try:
+            await sink.index(ctx)
+        except Exception:
+            self.logger.exception(
+                "Vector-only reindex failed for record %s", record_id
+            )
+            # Past the point of no return: the old points are gone, so the only
+            # way back to a searchable record is a successful re-run. _fail would
+            # acknowledge the message and end that possibility, so every failure
+            # here is re-raised regardless of classification — the content was
+            # already validated above, which leaves infrastructure as the likely
+            # cause and that is worth retrying. A genuinely terminal error just
+            # exhausts its attempts and lands on the same FAILED status.
+            raise
+
+        yield PipelineEvent(
+            event=IndexingEvent.PARSING_COMPLETE,
+            data=PipelineEventData(record_id=record_id),
+        )
+        yield PipelineEvent(
+            event=IndexingEvent.INDEXING_COMPLETE,
+            data=PipelineEventData(record_id=record_id),
+        )
 
     async def process_event(self, event_type: str, payload: dict) -> AsyncGenerator[PipelineEvent, None]:
         """Process record events, yielding phase completion events.
@@ -190,28 +552,129 @@ class RecordEventHandler(BaseEventService):
         error_occurred = False
         error_msg = None
         last_exception: Exception | None = None
+        cancelled = False
         record = None
         heartbeat_task: asyncio.Task | None = None
         try:
             if not event_type:
+                # A message with no event type is a producer bug: acking it
+                # silently would hide that, so it still dead-letters. Raise a
+                # TERMINAL-classified error rather than returning bare, which the
+                # consumer reports as "Handler ended without INDEXING_COMPLETE"
+                # and classifies as transient — three deliveries of something no
+                # retry can fix.
                 self.logger.error(f"Missing event_type in message {payload}")
+                raise ProcessingError(
+                    "Message has no eventType; cannot be routed",
+                    details={"payload_keys": sorted(payload.keys())},
+                )
+
+            # Both vector-cleanup events come first: neither carries a record_id.
+            # They are told apart by eventType and never by which payload keys
+            # happen to be present — an event whose meaning flips on a missing
+            # key is one serialisation quirk away from purging a whole connector.
+            if event_type == EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value:
+                connector_id = payload.get("connectorId")
+                if not connector_id:
+                    # A producer bug no retry can fix: TERMINAL, so it reaches the
+                    # dead-letter queue in one attempt rather than three.
+                    raise ProcessingError(
+                        "deleteConnectorEmbeddings carries no connectorId",
+                        details={"payload_keys": sorted(payload.keys())},
+                    )
+                self.logger.info(f"🗑️ Deleting embeddings for connector {connector_id}")
+                indexing_pipeline = self.event_processor.processor.indexing_pipeline
+                result = await indexing_pipeline.purge_connector(
+                    DeleteContext(
+                        org_id=payload.get("orgId", ""),
+                        connector_id=connector_id,
+                        connector_name=payload.get("connectorName"),
+                    ),
+                    payload.get("recordGroupIds") or [],
+                )
+                # Report the passes separately. The exclusive delete does the
+                # overwhelming majority of the work and returns no count, so
+                # collapsing this to one number logs 0 on a fully successful
+                # cleanup — indistinguishable from a no-op.
+                self.logger.info(
+                    f"✅ Connector {connector_id} cleanup complete: "
+                    f"exclusive points deleted="
+                    f"{result.get('exclusive_points_deleted', False)}, "
+                    f"shared rewritten={result.get('virtual_record_ids_rewritten', 0)}, "
+                    f"orphans resolved={result.get('virtual_record_ids_deleted', 0)}"
+                )
+                if result.get("success") is False:
+                    raise IndexingError(
+                        "Connector embedding cleanup did not complete",
+                        details={"result": result},
+                    )
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="connector_purge", count=0))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="connector_purge", count=0))
                 return
 
-            # Handle bulk delete event FIRST - for connector instance deletion (doesn't have record_id)
             if event_type == EventTypes.BULK_DELETE_RECORDS.value:
                 virtual_record_ids = payload.get("virtualRecordIds", [])
+                connector_id = payload.get("connectorId")
                 self.logger.info(f"🗑️ Bulk deleting embeddings for {len(virtual_record_ids)} records")
 
-                result = await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    virtual_record_ids
-                )
+                indexing_pipeline = self.event_processor.processor.indexing_pipeline
+                if connector_id:
+                    # Routes through the active collection strategy: a
+                    # dedicated-collection strategy that confirms no other
+                    # connector writes here can drop the collection outright;
+                    # `single` (and any collection still shared with a live
+                    # connector) falls through to the membership-aware VRID
+                    # delete below, unchanged from today's behavior.
+                    delete_ctx = DeleteContext(
+                        org_id=payload.get("orgId", ""),
+                        connector_id=connector_id,
+                        connector_name=payload.get("connectorName"),
+                    )
+                    result = await indexing_pipeline.purge_connector_by_virtual_record_ids(
+                        delete_ctx, virtual_record_ids
+                    )
+                else:
+                    result = await indexing_pipeline.bulk_delete_embeddings(virtual_record_ids)
 
                 self.logger.info(
-                    f"✅ Bulk deletion complete: embeddings deleted for "
-                    f"{result.get('virtual_record_ids_processed', 0)} virtual record IDs"
+                    f"✅ Bulk deletion complete: {result}"
                 )
+                # `bulk_delete_embeddings` reports success=False when it refused
+                # to proceed — no managed collection resolved, so nothing was
+                # deleted and the mapping rows were deliberately kept. Yielding
+                # the completion events below would ack that as done and strip
+                # the only handle a later run has on those points. Raise so the
+                # consumer redelivers; IndexingError classifies as transient,
+                # and the refusal leaves nothing half-applied to retry over.
+                # `is False` deliberately: the drop and noop results carry no
+                # success key at all.
+                if result.get("success") is False:
+                    raise IndexingError(
+                        "Bulk deletion did not complete; no managed collection "
+                        "resolved, so nothing was purged",
+                        details={"result": result},
+                    )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
+                return
+
+            if event_type == EventTypes.SYNC_VECTOR_MEMBERSHIP.value:
+                virtual_record_id = payload.get("virtualRecordId")
+                if virtual_record_id:
+                    await self.event_processor.sync_vector_membership(virtual_record_id)
+                yield PipelineEvent(
+                    event=IndexingEvent.PARSING_COMPLETE,
+                    data=PipelineEventData(record_id="sync_vector_membership"),
+                )
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id="sync_vector_membership"),
+                )
+                return
+
+            if event_type == EventTypes.DELETE_VECTOR_COLLECTION.value:
+                async for event in self._delete_vector_collection(payload):
+                    yield event
                 return
 
             # For all other event types, require record_id
@@ -222,16 +685,17 @@ class RecordEventHandler(BaseEventService):
             message_id = f"{event_type}-{record_id}"
 
             if not record_id:
+                # As above: malformed payload, surfaced via the dead-letter queue
+                # in one attempt rather than three.
                 self.logger.error(f"Missing record_id in message {payload}")
-                return
+                raise ProcessingError(
+                    f"Message of type {event_type} has no recordId",
+                    details={"event_type": event_type},
+                )
 
-        
 
-            record = await self.event_processor.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
 
-            self.logger.info(
+            self.logger.debug(
                 f"Processing record {record_id} with event type: {event_type}. "
                 f"Virtual Record ID: {virtual_record_id} "
                 f"Extension: {extension}, Mime Type: {mime_type}"
@@ -245,9 +709,35 @@ class RecordEventHandler(BaseEventService):
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
+            # Below the delete branch, which does not use `record`: a delete
+            # should still drop the embeddings when the graph is unreadable
+            # rather than exhaust its retries and leave them behind.
+            record = await self.event_processor.graph_provider.get_document(
+                record_id,
+                CollectionNames.RECORDS.value,
+                # None below drains the message -- the record is treated as
+                # deleted and the event is gone. Without this an unreadable
+                # graph gives the same answer as a deletion, so every record
+                # in flight during a restart is discarded and left at QUEUED
+                # with nothing to retry it.
+                raise_on_error=True,
+            )
+
             if record is None:
+                # Legitimately reachable: the record can be deleted between the
+                # event being published and consumed. There is nothing to index
+                # and nothing to fail, so drain the message like the delete path
+                # does instead of retrying it three times.
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 await self._track_payload_outcome(payload, outcome="skipped")
+                yield PipelineEvent(
+                    event=IndexingEvent.PARSING_COMPLETE,
+                    data=PipelineEventData(record_id=record_id),
+                )
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id=record_id),
+                )
                 return
 
             await self._touch_sync_run(payload)
@@ -258,7 +748,14 @@ class RecordEventHandler(BaseEventService):
                 virtual_record_id = record.get("virtualRecordId")
 
             #Reconciliation
-            if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
+            vector_db_only = bool(payload.get("vectorDbOnly"))
+            if (
+                not vector_db_only
+                and (
+                    event_type == EventTypes.UPDATE_RECORD.value
+                    or event_type == EventTypes.REINDEX_RECORD.value
+                )
+            ):
                 from app.config.constants.arangodb import (
                     RECONCILIATION_ENABLED_EXTENSIONS,
                     RECONCILIATION_ENABLED_MIME_TYPES,
@@ -277,7 +774,12 @@ class RecordEventHandler(BaseEventService):
 
             doc = dict(record)
 
-            if (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+            # The guard stops a replayed newRecord from re-running the pipeline over
+            # an indexed corpus. An explicit reindex is the one case that must run
+            # anyway, so it opts out rather than the guard being relaxed for
+            # everyone: without this, reindex reports success while doing nothing.
+            force_reindex = bool(payload.get("forceReindex"))
+            if (not force_reindex) and (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 # Track immediately so Current sync Indexed does not lag graph Completed.
                 await self._track_indexing_outcome(
@@ -287,13 +789,32 @@ class RecordEventHandler(BaseEventService):
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
-            # Check if record is from a connector and if the connector is active
-            if event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
+            # Check if record is from a connector and if the connector is active.
+            # UPDATE_RECORD is included: without it an update for a disabled
+            # connector runs the full pipeline, fails once the connector has been
+            # removed from connectors_map, and burns every delivery attempt (each
+            # holding a Pool.INDEX slot) before landing on FAILED instead of
+            # AUTO_INDEX_OFF. vectorDbOnly still opts out — the vector-store
+            # rebuild deliberately re-embeds disabled connectors from blob.
+            if (
+                not vector_db_only
+                and (
+                    event_type == EventTypes.NEW_RECORD.value
+                    or event_type == EventTypes.REINDEX_RECORD.value
+                    or event_type == EventTypes.UPDATE_RECORD.value
+                )
+            ):
                 connector_id = record.get("connectorId")
                 origin = record.get("origin")
                 if connector_id and origin == OriginTypes.CONNECTOR.value:
                     connector_instance = await self.event_processor.graph_provider.get_document(
-                        connector_id, CollectionNames.APPS.value
+                        connector_id,
+                        CollectionNames.APPS.value,
+                        # Same reason as the record read above: the two yields
+                        # below ack the message and leave the record QUEUED, so
+                        # an unreadable graph must not reach them by looking
+                        # like a deleted connector.
+                        raise_on_error=True,
                     )
                     if not connector_instance:
                         self.logger.info(
@@ -313,7 +834,7 @@ class RecordEventHandler(BaseEventService):
                             record_id=record_id,
                             indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                             extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
-                            reason="Connector is inactive",
+                            reason=CONNECTOR_OFF,
                             payload=payload,
                         )
                         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -373,7 +894,7 @@ class RecordEventHandler(BaseEventService):
                     record_id=record_id,
                     indexing_status=ProgressStatus.COMPLETED.value,
                     extraction_status=ProgressStatus.COMPLETED.value,
-                    reason="Folder record — no content to index",
+                    reason=FOLDER_NOTHING_TO_INDEX,
                     payload=payload,
                 )
                 yield PipelineEvent(
@@ -386,23 +907,18 @@ class RecordEventHandler(BaseEventService):
                 )
                 return
 
-            # Gate: CODE_FILE records only index supported programming languages.
-            # Code files typically arrive as text/plain (which passes the general
-            # mime check below), so we need an explicit allowlist here.
-            if doc.get("recordType") == RecordTypes.CODE_FILE.value and (code_file_extension is None or code_file_extension not in SUPPORTED_CODE_FILE_EXTENSIONS):
-                self.logger.info(
-                    f"🔴 CODE_FILE with unsupported language extension '{code_file_extension}' "
-                    f"for record {record_id} — marking FILE_TYPE_NOT_SUPPORTED"
-                )
-                await self.__update_document_status(
+            if vector_db_only and event_type == EventTypes.REINDEX_RECORD.value:
+                async for event in self._index_from_blob(
                     record_id=record_id,
-                    indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    reason=f"Unsupported code file extension: {code_file_extension}",
-                )
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    record=record,
+                    payload=payload,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                ):
+                    yield event
                 return
+
+            is_code_file = doc.get("recordType") == RecordTypes.CODE_FILE.value
 
             supported_mime_types = [
                 MimeTypes.GMAIL.value,
@@ -457,6 +973,7 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.SHELL.value,
                 MimeTypes.SHELL_TEXT.value,
                 MimeTypes.SHELLSCRIPT.value,
+                MimeTypes.EPUB.value,
             ]
 
             supported_extensions = [
@@ -510,21 +1027,37 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.SH.value,
                 ExtensionTypes.BASH.value,
                 ExtensionTypes.HTM.value,
+                ExtensionTypes.EPUB.value,
             ]
 
-            if (
-                mime_type not in supported_mime_types
-                and extension not in supported_extensions
-            ):
+            if is_code_file:
+                # A CODE_FILE's mime is not trustworthy — connectors that walk a
+                # git tree default it to text/plain for anything they don't
+                # recognise, which would let archives and media through as text.
+                # Judge it on the filename extension alone: a known language, or
+                # a type the generic pipeline handles (images, json, yaml).
+                judged_extension = code_file_extension
+                is_supported = (
+                    code_file_extension in SUPPORTED_CODE_FILE_EXTENSIONS
+                    or code_file_extension in supported_extensions
+                )
+            else:
+                judged_extension = extension
+                is_supported = (
+                    mime_type in supported_mime_types
+                    or extension in supported_extensions
+                )
+
+            if not is_supported:
                 self.logger.info(
-                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {extension} 🔴🔴🔴"
+                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {judged_extension} 🔴🔴🔴"
                 )
 
                 await self.__update_document_status(
                     record_id=record_id,
                     indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                     extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    reason=f"Unsupported file type: {mime_type} ({extension})",
+                    reason=unsupported_file_type(judged_extension),
                 )
 
                 # Yield both events for unsupported file types
@@ -540,7 +1073,9 @@ class RecordEventHandler(BaseEventService):
             if payload and payload.get("signedUrl"):
                 self.logger.info(f"🔍 Signed URL received for record {record_id}")
                 try:
-                    response = await self._download_from_signed_url(signed_url=payload["signedUrl"], record_id=record_id, doc=doc)
+                    response = await self._download_from_signed_url(
+                        signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
+                    )
                     if not response:
                         raise Exception("Failed to download file from signed URL")
                 except Exception as e:
@@ -576,7 +1111,7 @@ class RecordEventHandler(BaseEventService):
                 try:
                     jwt_payload  = {
                         "orgId": payload["orgId"],
-                        "scopes": ["connector:signedUrl"],
+                        "scopes": [TokenScopes.CONNECTOR_SIGNED_URL.value],
                     }
                     token = await generate_jwt(self.config_service, jwt_payload)
                     self.logger.debug(f"Generated JWT token for message {message_id}")
@@ -585,7 +1120,7 @@ class RecordEventHandler(BaseEventService):
                     connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
                     response = await make_api_call(
-                        route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token
+                        route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
                     )
 
                     event_data_for_processor = {
@@ -633,10 +1168,12 @@ class RecordEventHandler(BaseEventService):
             # (set by the consumer before we started) still governs whether
             # this becomes a terminal FAILED or a QUEUED retry below.
             error_occurred = True
+            cancelled = True
             error_msg = "Record processing was cancelled (handler closed)"
             raise
         except asyncio.CancelledError as ce:
             error_occurred = True
+            cancelled = True
             error_msg = "Record processing was cancelled"
             last_exception = ce
             raise
@@ -654,18 +1191,6 @@ class RecordEventHandler(BaseEventService):
             # only once, when this turns out to be the final attempt.
             self.logger.warning(f"Record {message_id} processing failed: {error_msg}")
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
-        except (asyncio.CancelledError, GeneratorExit):
-            # CancelledError/GeneratorExit are BaseException, so the block above
-            # misses them. The consumer's per-message asyncio.timeout() cancels
-            # this generator on timeout — without this branch the record would be
-            # stranded in IN_PROGRESS forever (and the log would claim success).
-            error_occurred = True
-            error_msg = (
-                f"Record processing was cancelled before completion "
-                f"(processing timeout exceeded or service shutdown) for {message_id}"
-            )
-            self.logger.error(error_msg)
-            raise
         finally:
             if heartbeat_task:
                 heartbeat_task.cancel()
@@ -698,9 +1223,23 @@ class RecordEventHandler(BaseEventService):
                     )
                     is_final = True
                     
-                if is_final:
+                if cancelled:
+                    # Checked before is_final: a cancellation is not a verdict
+                    # on the record. The broker entry was never acknowledged
+                    # (Redis) or committed (Kafka), so it comes back regardless
+                    # of how many attempts it had used. Writing FAILED here --
+                    # which the is_final branch would do, clearing
+                    # processingStartedAt with it -- would both misreport the
+                    # record and drop the one marker the stale-record scan
+                    # needs to recover it if this process never returns.
+                    self.logger.info(
+                        f"🔄 Record {record_id} cancelled mid-flight; leaving it "
+                        f"IN_PROGRESS for redelivery or stale recovery"
+                    )
+                elif is_final:
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
+                    user_reason = to_user_reason(last_exception)
                     self.logger.error(
                         f"Final failure for record {record_id}: {error_msg}",
                         exc_info=last_exception,
@@ -710,7 +1249,7 @@ class RecordEventHandler(BaseEventService):
                             record_id=record_id,
                             indexing_status=ProgressStatus.FAILED.value,
                             extraction_status=ProgressStatus.FAILED.value,
-                            reason=error_msg,
+                            reason=user_reason,
                         )
                     except Exception as status_exc:
                         # A status-write failure here must not replace the
@@ -740,7 +1279,7 @@ class RecordEventHandler(BaseEventService):
                                 f"propagating failure to all queued duplicates"
                             )
                             await self._propagate_primary_failure_to_queued_duplicates(
-                                record_id, virtual_record_id, error_msg
+                                record_id, virtual_record_id, user_reason
                             )
                         else:
                             # Transient error exhausted retries → try next duplicate
@@ -769,10 +1308,11 @@ class RecordEventHandler(BaseEventService):
                                 updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
                             if current.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
                                 updates["indexingStatus"] = ProgressStatus.QUEUED.value
+                                updates["queuedAtTimestamp"] = get_epoch_timestamp_in_ms()
                                 if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
                                     updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
                         if updates:
-                            updates["reason"] = f"Transient failure, retry scheduled: {error_msg}"
+                            updates["reason"] = RETRY_SCHEDULED
                             updates["processingStartedAt"] = None
                             updated = await self.event_processor.graph_provider.update_node(
                                 record_id, CollectionNames.RECORDS.value, updates
@@ -819,6 +1359,16 @@ class RecordEventHandler(BaseEventService):
                                 indexing_status,
                                 payload,
                                 count=duplicate_count,
+                            )
+                        if indexing_status == ProgressStatus.COMPLETED.value:
+                            # Duplicates just became searchable too. They can live in
+                            # a different KB than this record, which only the TTL
+                            # covers — the provider returns a count, not the ids.
+                            await notify_record_indexed(
+                                connector_name=record.get("connectorName"),
+                                connector_id=record.get("connectorId"),
+                                external_record_group_id=record.get("externalGroupId"),
+                                org_id=record.get("orgId"),
                             )
                     elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                         # Find and trigger indexing for the next queued duplicate
@@ -942,7 +1492,7 @@ class RecordEventHandler(BaseEventService):
             except ValueError:
                 stage = None
             if stage is not None:
-                doc.update(build_indexing_progress(stage))
+                updates.update(build_indexing_progress(stage))
 
             if reason:
                 updates["reason"] = reason
@@ -958,19 +1508,19 @@ class RecordEventHandler(BaseEventService):
                     record_id,
                 )
                 return None
-            self.logger.info(f"✅ Updated document status for record {record_id}")
+            self.logger.debug(f"✅ Updated document status for record {record_id}")
             # Bump run counters as soon as graph status is terminal so Current
             # sync Indexed does not trail Records Status Completed across polls.
             # finally/_track_indexing_outcome remains an idempotent safety net.
             if payload is not None:
-                await self._track_indexing_outcome(doc, indexing_status, payload)
-            return doc
+                await self._track_indexing_outcome(record, indexing_status, payload)
+            return record
         except Exception as e:
             self.logger.error(f"❌ Failed to update document status: {str(e)}")
             raise
 
     async def _download_from_signed_url(
-        self, signed_url: str, record_id: str, doc: dict,from_route: bool = False
+        self, signed_url: str, record_id: str, doc: dict, from_route: bool = False,
     ) -> bytes|None:
         """
         Download file from signed URL with exponential backoff retry
@@ -995,7 +1545,7 @@ class RecordEventHandler(BaseEventService):
 
         for attempt in range(max_retries):
             delay = base_delay * (2**attempt)  # Exponential backoff
-            file_buffer = BytesIO()
+            file_buffer = bytearray()
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     try:
@@ -1020,7 +1570,7 @@ class RecordEventHandler(BaseEventService):
                                 async for chunk in response.content.iter_chunked(
                                     chunk_size
                                 ):
-                                    file_buffer.write(chunk)
+                                    file_buffer.extend(chunk)
                                     total_size += len(chunk)
                                     if total_size - last_logged_size >= log_interval:
                                         self.logger.debug(
@@ -1032,7 +1582,7 @@ class RecordEventHandler(BaseEventService):
                                     f"IO error during chunk download: {str(io_err)}"
                                 ) from io_err
 
-                            file_content = file_buffer.getvalue()
+                            file_content = bytes(file_buffer)
                             self.logger.info(
                                 f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB"
                             )
@@ -1060,6 +1610,3 @@ class RecordEventHandler(BaseEventService):
                         f"Error: {error_type} - {str(e)}. File id: {record_id}"
                     ) from e
                 await asyncio.sleep(delay)
-            finally:
-                if not file_buffer.closed:
-                    file_buffer.close()

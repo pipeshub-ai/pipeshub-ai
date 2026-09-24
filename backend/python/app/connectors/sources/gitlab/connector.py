@@ -92,6 +92,13 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
     .with_description("Sync content from your GitLab instance")
     .with_categories(["Knowledge Management"])
     .with_scopes([ConnectorScope.TEAM.value])
+    # No APP_LEVEL here: GitLab syncs real per-project member ACLs
+    # (`projects.py::_transform_restrictions_to_permissions` writes a per-user
+    # permission for every project member), and creator-only is merely the
+    # fallback when member enumeration fails. Declaring APP_LEVEL routes these
+    # users to the connector-wide record scan, which returns every synced
+    # project's records to anyone linked to the app regardless of project
+    # membership. RECORD_LEVEL (the default) is correct.
     .with_auth(
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(
@@ -133,7 +140,31 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
                 ],
                 app_description="OAuth application for accessing Gitlab services",
                 app_categories=["Knowledge Management"],
-            )
+            ),
+            # A GitLab personal access token as an alternative to OAuth. The field
+            # is named "token" because GitLabClient.build_from_services reads the
+            # API_TOKEN value from auth.token. The instance URL is repeated so a
+            # self-managed GitLab can be reached with a token as it can with OAuth.
+            AuthBuilder.type(AuthType.API_TOKEN).fields(
+                [
+                    CommonFields.api_token(
+                        token_name="Personal Access Token",
+                        placeholder="Enter a GitLab personal access token",
+                        field_name="token",
+                    ),
+                    AuthField(
+                        name="instanceUrl",
+                        display_name="GitLab Instance URL",
+                        placeholder="https://gitlab.com",
+                        description=(
+                            "Base URL of your GitLab instance. "
+                            "Leave blank or set to https://gitlab.com for GitLab.com (cloud). "
+                            "Set to your self-managed host (e.g. https://gitlab.mycompany.com) for GitLab EE."
+                        ),
+                        required=False,
+                    ),
+                ]
+            ),
         ]
     )
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)
@@ -154,10 +185,11 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.PROJECT_IDS.value,
-            display_name="Repositories",
-            description="Limit sync to specific repositories (path_with_namespace, e.g. my-org/my-repo)",
-            filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
+            display_name="Repository",
+            description="Select the repository to sync.",
+            filter_type=FilterType.SELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
+            required=True,
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.MODIFIED.value,
@@ -186,11 +218,6 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
         .add_filter_field(FilterField(
             name=IndexingFilterKey.CODE_FILES.value,
             display_name="Index Code Files",
-            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
-        ))
-        .add_filter_field(FilterField(
-            name=IndexingFilterKey.COMMENTS.value,
-            display_name="Index Comments",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
@@ -256,7 +283,7 @@ class GitLabConnector(BaseConnector):
         )
 
         # Helper modules — instantiated once, hold a reference back to self
-        self.runtime = RuntimeHelper(self)
+        self.runtime = self._create_runtime()
         self.scope = ScopeHelper(self)
         self.users = UsersSync(self)
         self.projects = ProjectsSync(self)
@@ -267,6 +294,10 @@ class GitLabConnector(BaseConnector):
         self.attachments = AttachmentsHelper(self)
         self.filters = FiltersHelper(self)
         self.streaming = StreamingHelper(self)
+
+    def _create_runtime(self) -> RuntimeHelper:
+        """EE override point: return EE RuntimeHelper for org-scoped token refresh."""
+        return RuntimeHelper(self)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -485,13 +516,11 @@ class GitLabConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BaseConnector":
         """Factory method to create and return an initialized GitLabConnector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
-        return GitLabConnector(
+        return cls(
             logger, data_entities_processor, data_store_provider,
             config_service, connector_id, scope, created_by,
         )

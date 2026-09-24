@@ -6,6 +6,7 @@ from app.models.blocks import (
     Block,
     BlockGroup,
     BlockGroupChildren,
+    BlocksContainer,
     BlockSubType,
     BlockType,
     CitationMetadata,
@@ -747,3 +748,77 @@ class TestCitationMetadata:
         assert meta.sheet_name == "Sheet1"
         assert meta.slide_number == 4
         assert meta.duration_ms == 60000
+
+
+class TestBlocksContainerExtend:
+    """Merging page/batch results: every reference in the model is positional,
+    so an index left unshifted silently re-parents content onto the wrong
+    group instead of failing loudly."""
+
+    @staticmethod
+    def _batch() -> BlocksContainer:
+        """One group owning two blocks, indices local to the batch."""
+        return BlocksContainer(
+            block_groups=[
+                BlockGroup(
+                    index=0,
+                    type=GroupType.TEXT_SECTION,
+                    children=BlockGroupChildren(block_ranges=[IndexRange(start=0, end=1)]),
+                )
+            ],
+            blocks=[
+                Block(index=0, type=BlockType.TEXT, parent_index=0),
+                Block(index=1, type=BlockType.TEXT, parent_index=0),
+            ],
+        )
+
+    def test_indices_stay_equal_to_list_position(self):
+        merged = BlocksContainer()
+        merged.extend(self._batch())
+        merged.extend(self._batch())
+
+        assert [b.index for b in merged.blocks] == [0, 1, 2, 3]
+        assert [g.index for g in merged.block_groups] == [0, 1]
+
+    def test_parent_and_children_references_follow_their_targets(self):
+        merged = BlocksContainer()
+        merged.extend(self._batch())
+        merged.extend(self._batch())
+
+        # Second batch's blocks must re-parent onto the second group, not the first.
+        assert [b.parent_index for b in merged.blocks] == [0, 0, 1, 1]
+        assert merged.block_groups[0].children.block_ranges[0] == IndexRange(start=0, end=1)
+        assert merged.block_groups[1].children.block_ranges[0] == IndexRange(start=2, end=3)
+
+    def test_parent_block_index_shifts_by_the_block_offset(self):
+        """Fragments split from an image-bearing block point at a *block*, so
+        this offsets by the block count, not the group count."""
+        second = self._batch()
+        second.blocks[1].parent_block_index = 0
+
+        merged = BlocksContainer()
+        merged.extend(self._batch())
+        merged.extend(second)
+
+        assert merged.blocks[3].parent_block_index == 2
+
+    def test_source_container_is_consumed(self):
+        """Items are re-parented rather than copied, so a caller merging many
+        batches never holds two copies of one batch."""
+        batch = self._batch()
+        blocks_before = batch.blocks
+
+        merged = BlocksContainer()
+        merged.extend(batch)
+
+        assert batch.blocks == []
+        assert batch.block_groups == []
+        assert merged.blocks[0] is blocks_before[0]
+
+    def test_extending_with_empty_container_is_a_noop(self):
+        merged = BlocksContainer()
+        merged.extend(self._batch())
+        merged.extend(BlocksContainer())
+
+        assert len(merged.blocks) == 2
+        assert len(merged.block_groups) == 1

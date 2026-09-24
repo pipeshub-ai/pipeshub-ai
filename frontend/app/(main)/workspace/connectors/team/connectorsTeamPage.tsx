@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
@@ -13,8 +14,11 @@ import {
   isConnectorSyncInProgressError,
   isConnectorSyncLockedError,
   startConnectorSync,
+  toggleConnectorSyncOn,
 } from '../utils/connector-sync-actions';
 import { useSyncConflictGuard } from '../utils/use-sync-conflict-guard';
+import { CONNECTOR_INSTANCE_STATUS } from '../constants';
+import { localFsDesktopToast } from '../utils/local-fs-helpers';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
@@ -31,7 +35,6 @@ import {
 import { AdminAccessRequiredDialog } from '../components/admin-access-required-dialog';
 import type { AdminAccessDialogPhase } from '../components/admin-access-required-dialog';
 import { shouldPromptAdminAccess } from '../utils/admin-access-helpers';
-import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import { useResolvedConnectorTypeParam } from '../utils/resolve-connector-type-param';
 import type { Connector, ConnectorInstance, TeamFilterTab } from '../types';
@@ -408,22 +411,36 @@ function TeamConnectorsPageContent() {
     async (instance: ConnectorInstance) => {
       if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
       try {
-        await ConnectorsApi.toggleConnector(instance._key, 'sync');
+        if (!instance.isActive) {
+          const outcome = await toggleConnectorSyncOn(instance._key, instance.type);
+          if (outcome.kind === 'requires-desktop') {
+            addToast(localFsDesktopToast(outcome));
+            return;
+          }
+        } else {
+          await ConnectorsApi.toggleConnector(instance._key, 'sync');
+        }
+        await refreshConnectorRowQuiet(instance._key);
         addToast({
           variant: 'success',
           title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
           duration: 2500,
         });
-        await refreshConnectorRowQuiet(instance._key);
-        await refreshConnectorsListsQuiet();
-      } catch {
-        addToast({
-          variant: 'error',
-          title: 'Could not update connector',
-        });
+        try {
+          await refreshConnectorsListsQuiet();
+        } catch {
+          addToast({
+            variant: 'error',
+            title: t('workspace.connectors.toasts.refreshInstancesError'),
+          });
+        }
+      } catch (err: unknown) {
+        if (!isProcessedError(err)) {
+          addToast({ variant: 'error', title: 'Could not update connector' });
+        }
       }
     },
-    [addToast, refreshConnectorRowQuiet, refreshConnectorsListsQuiet]
+    [addToast, refreshConnectorRowQuiet, refreshConnectorsListsQuiet, t]
   );
 
   const handleInstanceChevron = useCallback(
@@ -444,10 +461,15 @@ function TeamConnectorsPageContent() {
 
     const doStartSync = async (force: boolean) => {
       try {
-        await startConnectorSync(
+        const outcome = await startConnectorSync(
           { _key: instanceId, type: connectorTypeInfo?.type },
           { force }
         );
+        if (outcome.kind === 'requires-desktop') {
+          addToast(localFsDesktopToast(outcome));
+          await refreshConnectorRowQuiet(instanceId);
+          return;
+        }
         addToast({
           variant: 'success',
           title: t('workspace.connectors.toasts.syncStarted', {

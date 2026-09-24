@@ -1,4 +1,5 @@
 import {
+  type SlackBotConfig,
   findSlackBotByIdentity,
   getCachedSlackBots,
   getCurrentMatchedSlackBot,
@@ -17,6 +18,16 @@ interface AuthorizationResult {
   botToken: string;
   botId?: string;
   botUserId?: string;
+}
+
+export interface BotRegistryDeps {
+  getCurrentMatchedSlackBot: () => SlackBotConfig | null;
+  getCachedSlackBots: () => SlackBotConfig[];
+  refreshSlackBotRegistry: (options?: { force?: boolean }) => Promise<SlackBotConfig[]>;
+  findSlackBotByIdentity: (
+    bots: SlackBotConfig[],
+    identity: { teamId?: string; botId?: string; botUserId?: string },
+  ) => SlackBotConfig | null;
 }
 
 function getStringField(value: unknown): string | undefined {
@@ -65,47 +76,54 @@ function getBodyIdentifiers(body: unknown): {
   return { teamId, botId, botUserId };
 }
 
-const authorizeFn = async (
-  params: AuthorizeParams,
-  body?: unknown,
-): Promise<AuthorizationResult> => {
-  const matchedFromRequestContext = getCurrentMatchedSlackBot();
-  if (matchedFromRequestContext?.botToken) {
+export function createAuthorizeFn(deps: BotRegistryDeps) {
+  return async (
+    params: AuthorizeParams,
+    body?: unknown,
+  ): Promise<AuthorizationResult> => {
+    const matchedFromRequestContext = deps.getCurrentMatchedSlackBot();
+    if (matchedFromRequestContext?.botToken) {
+      return { botToken: matchedFromRequestContext.botToken };
+    }
+
+    let bots = deps.getCachedSlackBots();
+    if (bots.length === 0) {
+      bots = await deps.refreshSlackBotRegistry({ force: true });
+    }
+
+    const bodyIdentifiers = getBodyIdentifiers(body);
+    const matchedFromPayload = deps.findSlackBotByIdentity(bots, {
+      teamId: params.teamId || bodyIdentifiers.teamId,
+      botId: bodyIdentifiers.botId,
+      botUserId: bodyIdentifiers.botUserId,
+    });
+
+    if (matchedFromPayload?.botToken) {
+      return {
+        botToken: matchedFromPayload.botToken,
+        botId: matchedFromPayload.botId,
+        botUserId: matchedFromPayload.botUserId,
+      };
+    }
+
+    const fallbackBotToken = process.env.BOT_TOKEN;
+    if (!fallbackBotToken) {
+      throw new Error("Unable to resolve Slack bot token for authorization.");
+    }
+
     return {
-      botToken: matchedFromRequestContext.botToken,
+      botToken: fallbackBotToken,
+      botId: process.env.SLACK_BOT_ID,
+      botUserId: process.env.SLACK_BOT_USER_ID,
     };
-  }
-
-  let bots = getCachedSlackBots();
-  if (bots.length === 0) {
-    bots = await refreshSlackBotRegistry({ force: true });
-  }
-
-  const bodyIdentifiers = getBodyIdentifiers(body);
-  const matchedFromPayload = findSlackBotByIdentity(bots, {
-    teamId: params.teamId || bodyIdentifiers.teamId,
-    botId: bodyIdentifiers.botId,
-    botUserId: bodyIdentifiers.botUserId,
-  });
-
-  if (matchedFromPayload?.botToken) {
-    return {
-      botToken: matchedFromPayload.botToken,
-      botId: matchedFromPayload.botId,
-      botUserId: matchedFromPayload.botUserId,
-    };
-  }
-
-  const fallbackBotToken = process.env.BOT_TOKEN;
-  if (!fallbackBotToken) {
-    throw new Error("Unable to resolve Slack bot token for authorization.");
-  }
-
-  return {
-    botToken: fallbackBotToken,
-    botId: process.env.SLACK_BOT_ID,
-    botUserId: process.env.SLACK_BOT_USER_ID,
   };
-};
+}
+
+const authorizeFn = createAuthorizeFn({
+  getCurrentMatchedSlackBot,
+  getCachedSlackBots,
+  refreshSlackBotRegistry,
+  findSlackBotByIdentity,
+});
 
 export default authorizeFn;

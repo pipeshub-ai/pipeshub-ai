@@ -1,7 +1,7 @@
 'use client';
 
 import React, { memo } from 'react';
-import Link from 'next/link';
+import { Link } from '@/lib/navigation';
 import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';

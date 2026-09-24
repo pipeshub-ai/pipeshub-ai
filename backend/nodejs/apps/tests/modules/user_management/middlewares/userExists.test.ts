@@ -141,4 +141,31 @@ describe('userExists Middleware', () => {
     expect(req.user).to.not.deep.equal(originalUser);
     expect(req.user).to.deep.equal(foundUser);
   });
+
+  it('should preserve JWT actor userId on the target user document', async () => {
+    const actorUserId = '507f1f77bcf86cd799439099';
+    req.user = {
+      userId: actorUserId,
+      orgId: '507f1f77bcf86cd799439012',
+    };
+    const mockOrg = { _id: '507f1f77bcf86cd799439012', isDeleted: false };
+    const foundUser = {
+      _id: '507f1f77bcf86cd799439011',
+      orgId: '507f1f77bcf86cd799439012',
+      email: 'found@test.com',
+      role: 'member',
+    };
+
+    sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+    sinon.stub(Users, 'findOne').returns({
+      exec: sinon.stub().resolves(foundUser),
+    } as any);
+
+    await userExists(req, res, next);
+
+    expect(next.calledOnce).to.be.true;
+    expect(next.firstCall.args).to.have.lengthOf(0);
+    expect(req.user._id).to.equal(foundUser._id);
+    expect(req.user.userId).to.equal(actorUserId);
+  });
 });

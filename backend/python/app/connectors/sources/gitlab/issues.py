@@ -16,12 +16,17 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from fastapi import HTTPException
+
 from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.models.entities import Record, RecordGroupType, RecordType, TicketRecord, ItemType
+from app.models.permission import EntityType, Permission, PermissionType
 from app.models.blocks import (
     BlockGroup,
     BlocksContainer,
@@ -31,8 +36,15 @@ from app.models.blocks import (
 )
 from app.utils.time_conversion import parse_timestamp, string_to_datetime
 
+from app.models.blocks import wire_block_group_parent_children
+
 from .common.utils import parse_item_id_from_url
 from .models import GitlabLiterals, RecordUpdate
+
+# Work items split across two ACL groups: GitLab hides confidential issues from
+# Guests, so they cannot share a record group with the ordinary ones.
+_WORK_ITEMS_SUFFIX = "-work-items"
+_CONFIDENTIAL_SUFFIX = "-confidential-work-items"
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
@@ -85,9 +97,22 @@ class IssuesSync:
         all_issues = issues_res.data
         self.logger.info("Fetched %s issues for project %s; processing in batches", len(all_issues), project_id)
 
+        # The sweep owns checkpoint advancement. The listing is sorted
+        # ``updated asc``, so committing a later batch's timestamp after an
+        # earlier batch failed would move the checkpoint past the failed
+        # items and they would never be re-fetched.
+        watermarks: dict[str, int] = {}
         for i in range(0, len(all_issues), c.batch_size):
             batch_records = await self._build_issue_records(all_issues[i : i + c.batch_size])
-            await self.process_new_records(batch_records)
+            if not await self.process_new_records(batch_records, watermarks):
+                self.logger.warning(
+                    "Issue batch failed for project %s at offset %s; stopping so the "
+                    "checkpoint stays behind the failure instead of skipping past it.",
+                    project_id, i,
+                )
+                return
+        for group_id, last_sync_time in watermarks.items():
+            await self._update_sync_checkpoint(group_id, last_sync_time)
 
     # ------------------------------------------------------------------
     # Record building
@@ -99,7 +124,6 @@ class IssuesSync:
         record_updates_batch: list[RecordUpdate] = []
         attachment_records_cnt = 0
         issues_enabled = self._issues_indexing_enabled()
-        comments_enabled = self._comments_indexing_enabled()
 
         for issue in issue_batch:
             record_update = await self._process_issue_incident_task_to_ticket(issue)
@@ -123,12 +147,12 @@ class IssuesSync:
                     record_updates_batch.extend(file_record_updates)
                     attachment_records_cnt += len(file_record_updates)
 
-            # Note attachments
+            # Note attachments follow the parent issue's indexing flag
             attachment_records = await c.attachments.make_files_records_from_notes(
                 issue, record_update.record
             )
             if attachment_records:
-                if not issues_enabled or not comments_enabled:
+                if not issues_enabled:
                     for ru in attachment_records:
                         ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                 record_updates_batch.extend(attachment_records)
@@ -142,10 +166,9 @@ class IssuesSync:
         """Map a single GitLab work-item to a TicketRecord RecordUpdate."""
         c = self.c
         try:
-            async with c.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=c.connector_id, external_id=str(issue.id)
-                )
+            existing_record = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, str(issue.id)
+            )
             is_new = existing_record is None
             is_updated = False
             metadata_changed = False
@@ -163,7 +186,12 @@ class IssuesSync:
             elif issue.issue_type == ItemType.TASK.value.lower():
                 issue_type = ItemType.TASK.value
 
-            external_group_id = f"{issue.project_id}-work-items"
+            # GitLab hides a confidential issue from Guests; the connector reads as
+            # the token owner and sees it regardless, so the restriction has to be
+            # re-imposed here or every Guest inherits it through the work-items group.
+            is_confidential = bool(getattr(issue, "confidential", False))
+            suffix = _CONFIDENTIAL_SUFFIX if is_confidential else _WORK_ITEMS_SUFFIX
+            external_group_id = f"{issue.project_id}{suffix}"
             ticket_record = TicketRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=issue.title,
@@ -187,6 +215,13 @@ class IssuesSync:
                 labels=list(issue.labels),
                 inherit_permissions=True,
             )
+            # Author and assignees keep access whatever their role. Additive on top
+            # of the restricted group, which is the direction the union-with-no-deny
+            # model can express.
+            exceptions = (
+                await self._confidential_exception_permissions(issue)
+                if is_confidential else []
+            )
             return RecordUpdate(
                 record=ticket_record,
                 is_new=is_new,
@@ -194,43 +229,97 @@ class IssuesSync:
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=False,
+                permissions_changed=bool(exceptions),
                 old_permissions=[],
-                new_permissions=[],
+                new_permissions=exceptions,
                 external_record_id=str(issue.id),
             )
         except Exception as e:
             self.logger.error("Error processing issue/task/incident to ticket: %s", e, exc_info=True)
             return None
 
+    async def _confidential_exception_permissions(self, issue: Any) -> list[Permission]:
+        """Principals who see a confidential issue regardless of their project role.
+
+        Resolved through the same path as member permissions, so an author without a
+        resolvable identity is parked on a pseudo-group rather than dropped.
+        """
+        c = self.c
+        candidates: list[int] = []
+        author = getattr(issue, "author", None) or {}
+        if isinstance(author, dict) and author.get("id") is not None:
+            candidates.append(int(author["id"]))
+        candidates.extend(
+            int(assignee["id"])
+            for assignee in getattr(issue, "assignees", None) or []
+            if isinstance(assignee, dict) and assignee.get("id") is not None
+        )
+
+        permissions: list[Permission] = []
+        seen: set[int] = set()
+        for user_id in candidates:
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+            permission = await c.projects._create_permission_from_principal(
+                EntityType.USER.value,
+                str(user_id),
+                PermissionType.OWNER.value,
+                create_pseudo_group_if_missing=True,
+            )
+            if permission:
+                permissions.append(permission)
+        return permissions
+
     # ------------------------------------------------------------------
     # Record persistence + checkpoint advancement
     # ------------------------------------------------------------------
 
-    async def process_new_records(self, batch_records: list[RecordUpdate]) -> None:
-        """Persist a batch of records and advance the appropriate sync checkpoint."""
+    async def process_new_records(
+        self, batch_records: list[RecordUpdate], watermarks: dict[str, int] | None = None
+    ) -> bool:
+        """Persist records; return ``False`` on the first failed write.
+
+        When ``watermarks`` is supplied the caller owns checkpoint advancement:
+        the highest ``source_updated_at`` per record group accumulates there and
+        is committed once the whole sweep succeeds. Without it (stream-time
+        attachment persists, whose records are FILEs) the checkpoint is written
+        inline — which is only safe for callers not walking an ``updated asc``
+        listing.
+        """
         c = self.c
-        need_sync_update: bool = True
+        if not batch_records:
+            return True
         for i in range(0, len(batch_records), c.batch_size):
             batch = batch_records[i : i + c.batch_size]
             batch_sent = [(ru.record, ru.new_permissions) for ru in batch]
             try:
                 await c.data_entities_processor.on_new_records(batch_sent)
-                if not need_sync_update:
-                    continue
-                last_sync_time = None
-                project_id: str | None = None
-                for record_update in batch:
-                    if record_update.record.record_type in (RecordType.TICKET, RecordType.PULL_REQUEST):
-                        last_sync_time = record_update.record.source_updated_at
-                        project_id = record_update.record.external_record_group_id
-                if project_id and last_sync_time:
-                    await self._update_sync_checkpoint(project_id, last_sync_time)
             except Exception as e:
-                self.logger.error("Error processing batch of records: %s", e)
-                need_sync_update = False
+                self.logger.error("Error processing batch of records: %s", e, exc_info=True)
+                return False
+            for record_update in batch:
+                if record_update.record.record_type not in (
+                    RecordType.TICKET.value, RecordType.PULL_REQUEST.value
+                ):
+                    continue
+                last_sync_time = record_update.record.source_updated_at
+                group_id = record_update.record.external_record_group_id
+                if not (group_id and last_sync_time):
+                    continue
+                # Confidential issues sit in their own ACL group but come from the
+                # same listing stream, and the checkpoint is only ever read back
+                # under the work-items key — so they must advance that key rather
+                # than a parallel one nothing reads.
+                if group_id.endswith(_CONFIDENTIAL_SUFFIX):
+                    group_id = group_id[: -len(_CONFIDENTIAL_SUFFIX)] + _WORK_ITEMS_SUFFIX
+                if watermarks is None:
+                    await self._update_sync_checkpoint(group_id, last_sync_time)
+                else:
+                    watermarks[group_id] = max(watermarks.get(group_id, 0), last_sync_time)
 
         self.logger.info("Processed %s records", len(batch_records))
+        return True
 
     # ------------------------------------------------------------------
     # Content streaming (block building)
@@ -241,18 +330,24 @@ class IssuesSync:
         c = self.c
         raw_url = getattr(record, "weburl", "") or ""
         if not raw_url:
-            raise ValueError("Web URL is required for indexing ticket")
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value, "Web URL is required for indexing ticket"
+            )
         issue_number = parse_item_id_from_url(raw_url)
         external_group_id: str = getattr(record, "external_record_group_id")
         if not external_group_id:
-            raise Exception("Project id not found.")
+            raise HTTPException(HttpStatusCode.BAD_REQUEST.value, "Project id not found.")
         project_id = external_group_id.split("-")[0]
 
         issue_res = await c.runtime.ds_call(c.data_source.get_issue, project_id=project_id, issue_iid=issue_number)
-        if not issue_res.success:
-            raise Exception(f"Failed to fetch issue details for record {record.external_record_id}: {issue_res.error}")
-        if not issue_res.data:
-            raise Exception(f"No issue data found for record {record.external_record_id}")
+        if not issue_res.success or not issue_res.data:
+            raise_for_stream_fetch(
+                success=issue_res.success,
+                has_payload=bool(issue_res.data),
+                connector=c.display_name,
+                status=issue_res.status_code,
+                message=issue_res.error,
+            )
 
         base_project_url = f"{c._gitlab_base_url}/api/v4/projects/{project_id}"
         block_group_number = 0
@@ -284,14 +379,14 @@ class IssuesSync:
         block_groups.append(bg_0)
         block_group_number += 1
 
-        if self._comments_indexing_enabled():
-            comments_bg, remaining_records = await c.comments.build_comment_blocks(
-                issue_url=record.weburl, parent_index=bg_0.index, record=record
-            )
-            block_groups.extend(comments_bg)
-            block_group_number += len(comments_bg)
-            list_remaining_records.extend(remaining_records)
+        comments_bg, remaining_records = await c.comments.build_comment_blocks(
+            issue_url=record.weburl, parent_index=bg_0.index, record=record
+        )
+        block_groups.extend(comments_bg)
+        block_group_number += len(comments_bg)
+        list_remaining_records.extend(remaining_records)
 
+        wire_block_group_parent_children(block_groups)
         blocks_container = BlocksContainer(blocks=[], block_groups=block_groups)
         await self.process_new_records(list_remaining_records)
         return blocks_container.model_dump_json(indent=2).encode(GitlabLiterals.UTF_8.value)
@@ -336,9 +431,3 @@ class IssuesSync:
         from app.connectors.core.registry.filters import IndexingFilterKey
         return c.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
 
-    def _comments_indexing_enabled(self) -> bool:
-        c = self.c
-        if not c.indexing_filters:
-            return True
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        return c.indexing_filters.is_enabled(IndexingFilterKey.COMMENTS)

@@ -245,6 +245,26 @@ class Tool(ABC):
         """Declarative parameter schema used for validation and to_schema()."""
 
     @property
+    def raw_input_schema(self) -> dict[str, Any] | None:
+        """Verbatim JSON Schema to use for `to_schema()` instead of rebuilding
+        one from `parameters`. `None` (the default) keeps the existing
+        `parameters`-derived behavior.
+
+        `ToolParameter` is a lossy intermediate representation — it has no
+        field for `default`, `minimum`/`maximum`, `format`, a map-typed
+        `additionalProperties`, or a real union, so any tool built from a
+        rich JSON Schema (e.g. an MCP server's own `inputSchema`) silently
+        loses those on the round trip through it. A tool that already has an
+        authoritative schema should return it here so `to_schema()` can pass
+        it straight through to every transport unchanged, while `parameters`
+        stays in use for `list_toolsets`/`search_tools` ranking and
+        `validate()`'s required/enum/type checks (which do not need the full
+        schema, and degrade gracefully if `parameters` is coarser than the
+        real schema).
+        """
+        return None
+
+    @property
     def display_name(self) -> str | None:
         """Human-friendly label for UI display (e.g. "Fetching additional data").
         Returns ``None`` by default — the frontend falls back to humanizing
@@ -338,6 +358,14 @@ class Tool(ABC):
     def to_schema(self) -> "ToolSchema":
         """Export as a provider-agnostic function-calling schema."""
         from app.agent_loop_lib.core.tool_schema import ToolSchema
+
+        raw_schema = self.raw_input_schema
+        if raw_schema is not None:
+            return ToolSchema(
+                name=self.name,
+                description=self.description,
+                input_schema=raw_schema,
+            )
 
         properties: dict[str, Any] = {}
         required: list[str] = []

@@ -184,10 +184,10 @@ NOTION_ENDPOINTS = {
         {
             "name": "update_data_source",
             "method": "PATCH",
-            "path": "/databases/{database_id}/data_sources/{data_source_id}",
+            "path": "/data_sources/{data_source_id}",
             "description": "Update an existing data source",
             "parameters": [
-                {"name": "database_id", "type": "str", "required": True, "location": "path", "description": "Database ID containing the data source"},
+                {"name": "database_id", "type": "str", "required": True, "location": "path", "description": "Unused; Notion addresses data sources globally"},
                 {"name": "data_source_id", "type": "str", "required": True, "location": "path", "description": "Data source ID to update"}
             ],
             "request_body": {"description": "Updated data source configuration"}
@@ -195,10 +195,10 @@ NOTION_ENDPOINTS = {
         {
             "name": "retrieve_data_source",
             "method": "GET",
-            "path": "/databases/{database_id}/data_sources/{data_source_id}",
+            "path": "/data_sources/{data_source_id}",
             "description": "Retrieve a specific data source by ID",
             "parameters": [
-                {"name": "database_id", "type": "str", "required": True, "location": "path", "description": "Database ID containing the data source"},
+                {"name": "database_id", "type": "str", "required": True, "location": "path", "description": "Unused; Notion addresses data sources globally"},
                 {"name": "data_source_id", "type": "str", "required": True, "location": "path", "description": "Data source ID to retrieve"}
             ],
             "request_body": None
@@ -206,10 +206,10 @@ NOTION_ENDPOINTS = {
         {
             "name": "query_data_source",
             "method": "POST",
-            "path": "/databases/{database_id}/data_sources/{data_source_id}/query",
+            "path": "/data_sources/{data_source_id}/query",
             "description": "Query a data source connected to a database",
             "parameters": [
-                {"name": "database_id", "type": "str", "required": True, "location": "path", "description": "Database ID containing the data source"},
+                {"name": "database_id", "type": "str", "required": True, "location": "path", "description": "Unused; Notion addresses data sources globally"},
                 {"name": "data_source_id", "type": "str", "required": True, "location": "path", "description": "Data source ID to query"}
             ],
             "request_body": {"description": "Query parameters for the data source"}
@@ -251,11 +251,14 @@ NOTION_ENDPOINTS = {
     ],
 
     # File Upload endpoints (COMPLETE)
+    # NOTE: ``send_file_upload`` takes multipart/form-data, which the generated
+    # HTTPRequest body cannot express — it is hand-maintained in
+    # app/sources/external/notion/notion.py and must be re-applied after regeneration.
     "file_uploads": [
         {
             "name": "create_file_upload",
             "method": "POST",
-            "path": "/files",
+            "path": "/file_uploads",
             "description": "Create a new file upload request",
             "parameters": [],
             "request_body": {"description": "File upload request with name, file details, and parent information"}
@@ -263,7 +266,7 @@ NOTION_ENDPOINTS = {
         {
             "name": "send_file_upload",
             "method": "POST",
-            "path": "/files/{file_id}/upload",
+            "path": "/file_uploads/{file_id}/send",
             "description": "Send file data to complete the upload",
             "parameters": [
                 {"name": "file_id", "type": "str", "required": True, "location": "path", "description": "File ID from upload session"}
@@ -273,7 +276,7 @@ NOTION_ENDPOINTS = {
         {
             "name": "complete_file_upload",
             "method": "POST",
-            "path": "/files/{file_id}/complete",
+            "path": "/file_uploads/{file_id}/complete",
             "description": "Complete a file upload process",
             "parameters": [
                 {"name": "file_id", "type": "str", "required": True, "location": "path", "description": "File ID to complete"}
@@ -283,7 +286,7 @@ NOTION_ENDPOINTS = {
         {
             "name": "retrieve_file_upload",
             "method": "GET",
-            "path": "/files/{file_id}",
+            "path": "/file_uploads/{file_id}",
             "description": "Retrieve information about a file upload",
             "parameters": [
                 {"name": "file_id", "type": "str", "required": True, "location": "path", "description": "File ID to retrieve"}
@@ -293,7 +296,7 @@ NOTION_ENDPOINTS = {
         {
             "name": "list_file_uploads",
             "method": "GET",
-            "path": "/files",
+            "path": "/file_uploads",
             "description": "List all file uploads for the workspace",
             "parameters": [
                 {"name": "start_cursor", "type": "str", "required": False, "location": "query", "description": "Pagination cursor"},
@@ -963,10 +966,14 @@ def _generate_method_body(endpoint: Dict[str, Any]) -> str:
         "            params.update(kwargs)"
     ])
     
-    # Build path formatting - FIXED
+    # Build path formatting — only substitute placeholders that appear in the path
     if path_params:
-        path_format_dict = ", ".join(f"{param}={param}" for param in path_params)
-        url_line = f'        url = self.base_url + "{path}".format({path_format_dict})'
+        used = [p for p in path_params if "{" + p + "}" in path]
+        if used:
+            path_format_dict = ", ".join(f"{param}={param}" for param in used)
+            url_line = f'        url = self.base_url + "{path}".format({path_format_dict})'
+        else:
+            url_line = f'        url = self.base_url + "{path}"'
     else:
         url_line = f'        url = self.base_url + "{path}"'
     
@@ -988,7 +995,7 @@ def _generate_method_body(endpoint: Dict[str, Any]) -> str:
     execute_lines = [
         "        try:",
         "            response = await self.http.execute(request)",
-        "            return NotionResponse(success=True, data=response)",
+        "            return NotionResponse.from_http(response)",
         "        except Exception as e:",
         "            return NotionResponse(success=False, error=str(e))"
     ]

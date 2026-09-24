@@ -14,17 +14,20 @@ from io import BytesIO
 
 import pdfplumber
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.config.constants.ai_models import validate_reasoning_effort
 from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_bytes_sync
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry, RunOwner
+from app.agents.agent_loop.cancellation.validation import validate_run_id
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.service import OAuthScopes, config_node_constants
+from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.containers.query import QueryAppContainer
 from app.events.processor import convert_record_dict_to_record
@@ -37,6 +40,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import TransformContext
+from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model_async
 from app.utils.attachment_mime_types import (
@@ -46,6 +50,7 @@ from app.utils.attachment_mime_types import (
     SUPPORTED_ATTACHMENT_MIME_TYPES,
     TEXT_ATTACHMENT_MIME_TYPES,
 )
+from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -75,6 +80,10 @@ class ChatQuery(BaseModel):
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
+    # Author-set instructions from the Project this conversation is linked
+    # to (Node `ProjectService.buildContext`). Additive — rendered as its
+    # own prompt section, never merged into system_prompt/instructions.
+    projectInstructions: str | None = Field(default=None, max_length=8000)
     attachments: list[dict[str, Any]] = []
     # AG-UI is the only supported SSE wire protocol. This field is
     # accepted but ignored — `resolve_protocol` always returns "agui".
@@ -87,8 +96,40 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
+    # Stop Generation: client-generated UUID identifying this run, so a
+    # later `POST /chat/cancel {runId}` can target it. Absent for callers
+    # that predate this field or don't need cancellation (the agent loop
+    # generates one itself — see `stream_bridge.py`/`bridge.py`).
+    runId: str | None = None
+    # Set by Node for a project-scoped chat (see `applyProjectScope`,
+    # project-context.ts). When true and the effective `filters` carry no
+    # apps/kb, `get_accessible_virtual_record_ids` returns no records instead
+    # of falling back to "search everything the user can access" — an empty
+    # project scope must stay empty, never widen. Threaded into `filters`
+    # below rather than passed as a separate retrieval parameter.
+    strictScope: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
+    _validate_run_id = field_validator("runId")(validate_run_id)
+
+
+class CancelRunRequest(BaseModel):
+    """Body of `POST /chat/cancel`. One endpoint for both assistant
+    (`/chat/stream`) and agent (`/{agent_id}/chat/stream`) runs — the
+    registry is keyed by `runId` alone, not by which route created it.
+
+    `conversationId` is Node's already-ownership-checked path param,
+    forwarded so the registry can reject a `runId` that is real and owned
+    by this same user/org but was registered under a DIFFERENT
+    conversation (see `RunOwner.conversation_id`). Optional only so an
+    older/rolling-deploy Node build without this field still gets the
+    pre-existing user/org check rather than a hard 400.
+    """
+
+    runId: str
+    conversationId: str | None = None
+
+    _validate_run_id = field_validator("runId")(validate_run_id)
 
 
 class AttachmentUploadItem(BaseModel):
@@ -231,6 +272,11 @@ async def get_config_service(request: Request) -> ConfigurationService:
     return container.config_service()
 
 
+async def get_run_cancellation_registry(request: Request) -> RunCancellationRegistry:
+    container: QueryAppContainer = request.app.container
+    return container.run_cancellation_registry()
+
+
 async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     """Get model configuration based on user selection or fallback to default
 
@@ -258,8 +304,10 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
         return next((config for config in configs if config.get("modelKey") == key), None)
 
     # Get initial config
-    ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
-    llm_configs = ai_models["llm"]
+    ai_models = await config_service.get_config(
+        config_node_constants.AI_MODELS.value, use_cache=True,
+    ) or {}
+    llm_configs = ai_models.get("llm") or []
 
     # Search based on provided parameters
     if model_key is None and model_name is None:
@@ -280,13 +328,13 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
         new_ai_models = await config_service.get_config(
             config_node_constants.AI_MODELS.value,
             use_cache=False
-        )
-        llm_configs = new_ai_models["llm"]
+        ) or {}
+        llm_configs = new_ai_models.get("llm") or []
         if key_config := _find_config_by_key(llm_configs, model_key):
             return key_config, new_ai_models
 
     if not llm_configs:
-        raise ValueError("No LLM configurations found")
+        raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
 
     return llm_configs, ai_models
 
@@ -308,7 +356,7 @@ async def get_llm_for_chat(
     try:
         llm_config, ai_models_config = await get_model_config(config_service, model_key, model_name)
         if not llm_config:
-            raise ValueError("No LLM configurations found")
+            raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
 
         # Handle list of configs - extract first one if we got a list
         if isinstance(llm_config, list):
@@ -345,8 +393,34 @@ async def get_llm_for_chat(
             model_provider, llm_config, default_model_name, reasoning_effort
         )
         return llm, llm_config, ai_models_config
+    except LLMNotConfiguredError:
+        # Already says what to do; the "Failed to initialize" prefix would only bury it.
+        raise
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
+
+
+# Shown when the chat model fails to start for a reason the classifier doesn't recognise.
+CHAT_MODEL_START_FAILED = (
+    "The selected AI model couldn't be started. Try another model, or ask a "
+    "workspace admin to check it in Workspace → AI Models."
+)
+
+
+_ATTACHMENT_UNREADABLE_HINTS = {
+    "image": "The image may be damaged or in a format we can't open. Save it as PNG or JPEG and attach it again.",
+    "text": "Make sure it's a plain-text file, then attach it again.",
+    "docx": "It may be damaged or password-protected. Save it again, or attach it as a PDF.",
+    "spreadsheet": "It may be damaged or password-protected. Save it again, or attach it as a CSV.",
+    "csv": "Check that it's a valid CSV or TSV file, then attach it again.",
+    "pdf": "It may be damaged or password-protected. Save it again, or attach a different copy.",
+    "upload": "Please attach it again.",
+}
+
+
+def _attachment_unreadable(file_name: str, kind: str) -> str:
+    """The message a user sees when a chat attachment can't be read; the cause goes to the log."""
+    return f"Couldn't read {file_name}. {_ATTACHMENT_UNREADABLE_HINTS[kind]}"
 
 
 # Cap tabular chat-attachment context so large CSV/XLSX files don't blow the LLM window.
@@ -417,7 +491,51 @@ class _AttachmentSinkNoopVectorStore:
         return True
 
 
-@router.post("/chat/attachments/upload", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+async def _rollback_attachment_records(
+    graph_provider: IGraphDBProvider,
+    record_ids: list[str],
+) -> None:
+    """Undo the graph half of an attachment upload that failed partway through.
+
+    Mirrors `delete_chat_attachment`: dropping the RECORDS node takes its
+    IS_OF_TYPE and PERMISSION edges with it, and the FILES node shares the key.
+    Blobs are not reachable from here -- `BlobStorage` exposes no delete, so the
+    normal delete path leaks them too.
+
+    Each collection is attempted independently so a failure on one still cleans
+    the other. Both go through `delete_nodes_and_edges` rather than the cheaper
+    `delete_nodes` the delete route uses for FILES: that route only reaches FILES
+    once RECORDS cleanup has already taken the isOfType edge, whereas here FILES
+    can be deleted while the edge is still live, and on Arango `delete_nodes`
+    leaves edges behind (on Neo4j both are the same DETACH DELETE).
+
+    Best-effort: a failure here must not replace the error that triggered it.
+    """
+    if not record_ids:
+        return
+    for collection in (CollectionNames.RECORDS.value, CollectionNames.FILES.value):
+        try:
+            await graph_provider.delete_nodes_and_edges(record_ids, collection)
+        except Exception:
+            logger.exception(
+                "Failed to roll back partially uploaded attachments from %s; "
+                "records may be orphaned: %s",
+                collection,
+                record_ids,
+            )
+
+
+@router.post(
+    "/chat/attachments/upload",
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.CONVERSATION_CHAT,
+                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
+            )
+        )
+    ],
+)
 @inject
 async def upload_chat_attachments(
     request: Request,
@@ -478,12 +596,13 @@ async def upload_chat_attachments(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Unsupported attachment type '{item.mimeType}': {item.fileName}. "
-                    "Supported: PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV, TSV."
+                    f"{item.fileName} can't be attached because that file type isn't supported. "
+                    "You can attach PDF, Word (DOCX), Excel (XLSX), CSV, TSV, text, Markdown, "
+                    "JPEG and PNG files."
                 ),
             )
         if item.size <= 0:
-            raise HTTPException(status_code=400, detail=f"Attachment size must be positive: {item.fileName}")
+            raise HTTPException(status_code=400, detail=f"{item.fileName} is empty. Attach a file that has content.")
 
         record_id = str(uuid4())
         virtual_record_id = str(uuid4())
@@ -497,7 +616,7 @@ async def upload_chat_attachments(
         try:
             file_binary = base64.b64decode(item.contentBase64, validate=True)
         except Exception:
-            raise HTTPException(status_code=400, detail=f"Invalid base64 content for attachment: {item.fileName}")
+            raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "upload"))
 
         storage_doc_id, _ = await blob_storage.save_binary_to_storage(
             org_id=org_id,
@@ -541,28 +660,32 @@ async def upload_chat_attachments(
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "image_direct"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to process image attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "image"))
         elif is_text:
             try:
                 block_containers = await _build_text_blocks(file_binary)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "text"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse text attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "text"))
         elif is_docx:
             try:
                 block_containers = await _build_docx_blocks(file_binary, item.fileName, config_service)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "docling"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse DOCX attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "docx"))
         elif is_spreadsheet:
             try:
                 block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "excel_lightweight"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse Excel attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet"))
         elif is_delimited:
             try:
                 block_containers = await _build_csv_blocks(
@@ -571,7 +694,8 @@ async def upload_chat_attachments(
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "csv_lightweight"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse CSV attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "csv"))
         else:
             try:
                 needs_ocr = await asyncio.to_thread(_pdf_has_any_ocr_page, file_binary)
@@ -581,8 +705,9 @@ async def upload_chat_attachments(
                         raise HTTPException(
                             status_code=400,
                             detail=(
-                                f"Scanned attachment page cap exceeded. "
-                                f"Maximum allowed combined scanned pages is {OCR_IMAGE_PAGE_CAP}."
+                                f"{item.fileName} has too many scanned pages to attach: the limit is "
+                                f"{OCR_IMAGE_PAGE_CAP} scanned pages per message. Attach fewer pages "
+                                "or split the document."
                             ),
                         )
                     block_containers = await asyncio.to_thread(
@@ -598,7 +723,8 @@ async def upload_chat_attachments(
             except HTTPException:
                 raise
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "pdf"))
         record_doc["isVLMOcrProcessed"] = needs_ocr
         file_doc = {
             "_key": record_id,
@@ -627,77 +753,87 @@ async def upload_chat_attachments(
             }
         )
 
-    await graph_provider.batch_upsert_nodes(record_docs, CollectionNames.RECORDS.value)
-    await graph_provider.batch_upsert_nodes(file_docs, CollectionNames.FILES.value)
+    # Records, files, edges and the sink's blob write are five separate round
+    # trips with no shared transaction, so a failure partway leaves a record the
+    # user can neither see nor delete. Undo the graph writes before surfacing it.
+    try:
+        await graph_provider.batch_upsert_nodes(record_docs, CollectionNames.RECORDS.value)
+        await graph_provider.batch_upsert_nodes(file_docs, CollectionNames.FILES.value)
 
-    ts = get_epoch_timestamp_in_ms()
-    is_of_type_edges = [
-        {
-            "_from": f"{CollectionNames.RECORDS.value}/{rd['_key']}",
-            "_to": f"{CollectionNames.FILES.value}/{rd['_key']}",
-            "createdAtTimestamp": ts,
-            "updatedAtTimestamp": ts,
-        }
-        for rd in record_docs
-    ]
-    await graph_provider.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value)
-    if is_service_account:
-        # Service accounts have no user graph node, so no USER -> RECORD edge
-        # can be created. Grant an org-scoped permission edge instead so the
-        # uploaded file is readable org-wide through the standard ACL path
-        # (orgAccessPermissionEdge in check_record_access_with_details).
-        permission_edges = [
+        ts = get_epoch_timestamp_in_ms()
+        is_of_type_edges = [
             {
-                "from_id": org_id,
-                "from_collection": CollectionNames.ORGS.value,
-                "to_id": rd["_key"],
-                "to_collection": CollectionNames.RECORDS.value,
-                "type": "ORGANIZATION",
-                "role": "READER",
+                "_from": f"{CollectionNames.RECORDS.value}/{rd['_key']}",
+                "_to": f"{CollectionNames.FILES.value}/{rd['_key']}",
                 "createdAtTimestamp": ts,
                 "updatedAtTimestamp": ts,
             }
             for rd in record_docs
         ]
-        await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
-    else:
-        permission_edges = [
-            {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": rd["_key"],
-                "to_collection": CollectionNames.RECORDS.value,
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": ts,
-                "updatedAtTimestamp": ts,
-            }
-            for rd in record_docs
-        ]
-        await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
+        await graph_provider.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value)
+        if is_service_account:
+            # Service accounts have no user graph node, so no USER -> RECORD edge
+            # can be created. Grant an org-scoped permission edge instead so the
+            # uploaded file is readable org-wide through the standard ACL path
+            # (orgAccessPermissionEdge in check_record_access_with_details).
+            permission_edges = [
+                {
+                    "from_id": org_id,
+                    "from_collection": CollectionNames.ORGS.value,
+                    "to_id": rd["_key"],
+                    "to_collection": CollectionNames.RECORDS.value,
+                    "type": "ORGANIZATION",
+                    "role": "READER",
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                for rd in record_docs
+            ]
+            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
+        else:
+            permission_edges = [
+                {
+                    "from_id": user_key,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": rd["_key"],
+                    "to_collection": CollectionNames.RECORDS.value,
+                    "type": "USER",
+                    "role": "OWNER",
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                for rd in record_docs
+            ]
+            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
 
-    sink_orchestrator = SinkOrchestrator(
-        graphdb=graphdb,
-        blob_storage=blob_storage,
-        vector_store=_AttachmentSinkNoopVectorStore(),
-        graph_provider=graph_provider,
-        logger=service_logger,
-    )
-
-    for record_doc in record_docs:
-        record_id = record_doc.get("_key") or record_doc.get("id")
-        block_containers = parsed_blocks_by_record.get(record_id)
-        if block_containers is None:
-            continue
-
-        record = convert_record_dict_to_record(record_doc)
-        record.block_containers = block_containers
-        record.virtual_record_id = record_doc.get("virtualRecordId")
-        ctx = TransformContext(
-            record=record,
-            settings={"sink_only": True, "skip_vector_store": True},
+        sink_orchestrator = SinkOrchestrator(
+            graphdb=graphdb,
+            blob_storage=blob_storage,
+            vector_store=_AttachmentSinkNoopVectorStore(),
+            graph_provider=graph_provider,
+            logger=service_logger,
+            config_service=config_service,
         )
-        await sink_orchestrator.index(ctx)
+
+        for record_doc in record_docs:
+            record_id = record_doc.get("_key") or record_doc.get("id")
+            block_containers = parsed_blocks_by_record.get(record_id)
+            if block_containers is None:
+                continue
+
+            record = convert_record_dict_to_record(record_doc)
+            record.block_containers = block_containers
+            record.virtual_record_id = record_doc.get("virtualRecordId")
+            ctx = TransformContext(
+                record=record,
+                settings={"sink_only": True, "skip_vector_store": True},
+            )
+            await sink_orchestrator.index(ctx)
+    except Exception:
+        await _rollback_attachment_records(
+            graph_provider, [rd["_key"] for rd in record_docs]
+        )
+        raise
 
     return {
         "conversationId": payload.conversationId,
@@ -861,12 +997,54 @@ async def delete_chat_attachment(
     )
 
 
+async def _load_user_doc(graph_provider: IGraphDBProvider, user_id: str | None) -> dict | None:
+    """Deferred so the graph call happens inside the coroutine, not when the
+    task is created — enrichment is best-effort and its failures are handled
+    by the caller's `gather(..., return_exceptions=True)`."""
+    if not user_id:
+        return None
+    return await graph_provider.get_user_by_user_id(user_id)
+
+
+async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) -> dict | None:
+    """See :func:`_load_user_doc`."""
+    if not org_id:
+        return None
+    return await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+
+
+async def load_system_prompts(
+    config_service: ConfigurationService, logger_: Any,
+) -> dict[str, Any]:
+    """System prompts from the dedicated key, falling back to the legacy
+    aiModels blob for OSS deployments that haven't migrated yet."""
+    try:
+        sp_raw = await config_service.get_config(
+            config_node_constants.SYSTEM_PROMPTS.value, use_cache=True,
+        )
+        if sp_raw:
+            return sp_raw
+        ai_raw = await config_service.get_config(
+            config_node_constants.AI_MODELS.value, use_cache=True,
+        )
+        if ai_raw:
+            return {
+                k: ai_raw[k]
+                for k in ("customSystemPrompt", "customSystemPromptWebSearch", "customSystemPromptAgent")
+                if k in ai_raw
+            }
+    except Exception:
+        logger_.debug("Could not load system prompts config", exc_info=True)
+    return {}
+
+
 async def _generate_chat_stream_via_agent_loop(
     request: Request,
     query_info: "ChatQuery",
     retrieval_service: RetrievalService,
     graph_provider: IGraphDBProvider,
     config_service: ConfigurationService,
+    cancellation_registry: RunCancellationRegistry | None = None,
 ) -> AsyncGenerator[str, None]:
     """Adapts a validated `ChatQuery` + the authenticated request into the
     plain-dict `query_info`/`user_info` contract `chat_modes.run_chat_stream()`
@@ -887,21 +1065,44 @@ async def _generate_chat_stream_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
-    try:
-        llm, model_config, ai_models_config = await get_llm_for_chat(
+    # LLM init, system prompts and user/org enrichment are independent of each
+    # other and all sit before the first streamed byte, so they run as one wave
+    # instead of four serial round trips.
+    llm_task = asyncio.ensure_future(
+        get_llm_for_chat(
             config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
             reasoning_effort=query_info.reasoningEffort,
         )
-        if llm is None:
-            raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+    )
+    prompts_task = asyncio.ensure_future(load_system_prompts(config_service, logger_))
+    user_doc_task = asyncio.ensure_future(_load_user_doc(graph_provider, user_id))
+    org_doc_task = asyncio.ensure_future(_load_org_doc(graph_provider, org_id))
+    user_context_flag_task = asyncio.ensure_future(is_user_context_enabled(config_service))
+
+    try:
+        llm_bundle = await llm_task
+        if not llm_bundle or llm_bundle[0] is None:
+            raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
+        llm, model_config, ai_models_config = llm_bundle
     except Exception as exc:
+        for pending in (prompts_task, user_doc_task, org_doc_task, user_context_flag_task):
+            pending.cancel()
+        await asyncio.gather(
+            prompts_task, user_doc_task, org_doc_task, user_context_flag_task,
+            return_exceptions=True,
+        )
         logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
+        error_code, user_message = classify_exception(exc)
+        if error_code == "unknown":
+            user_message = CHAT_MODEL_START_FAILED
         if protocol == "agui":
-            evt = frame(AGUIEventType.RUN_ERROR, message=str(exc), code="llm_initialization_failed")
+            evt = frame(AGUIEventType.RUN_ERROR, message=user_message, code="llm_initialization_failed")
             yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
         else:
-            yield create_sse_event("error", {"error": str(exc)})
+            yield create_sse_event("error", {"error": user_message})
         return
+
+    system_prompts_config: dict[str, Any] = await prompts_task
 
     policy = resolve_chat_mode_policy(query_info.chatMode)
     is_multimodal_llm = bool(model_config.get("isMultimodal"))
@@ -920,19 +1121,28 @@ async def _generate_chat_stream_via_agent_loop(
             )
             policy = resolve_agent_policy(caps)
 
+    # strictScope rides along inside `filters` (not a separate top-level key)
+    # so every downstream consumer that already forwards `filters` straight
+    # into `get_accessible_virtual_record_ids` picks it up for free.
+    effective_filters: dict[str, Any] = dict(query_info.filters or {})
+    if query_info.strictScope:
+        effective_filters["strictScope"] = True
+
     query_dict = {
         "query": query_info.query,
         "limit": query_info.limit,
         "previous_conversations": query_info.previousConversations,
-        "filters": query_info.filters,
+        "filters": effective_filters,
         "retrievalMode": query_info.retrievalMode,
         "quickMode": query_info.quickMode,
         "chatMode": query_info.chatMode,
         "timezone": query_info.timezone,
         "currentTime": query_info.currentTime,
         "conversationId": query_info.conversationId,
+        "projectInstructions": query_info.projectInstructions,
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
+        "runId": query_info.runId,
     }
     user_info = {
         "userId": user_id,
@@ -942,23 +1152,40 @@ async def _generate_chat_stream_via_agent_loop(
     }
 
     org_info: dict[str, Any] | None = None
-    try:
-        user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
-        if user_doc and isinstance(user_doc, dict):
-            for field in ("fullName", "firstName", "lastName", "displayName"):
-                if user_doc.get(field):
-                    user_info[field] = user_doc[field]
-        if org_id:
-            org_doc = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
-            if org_doc and isinstance(org_doc, dict):
-                raw_account_type = str(org_doc.get("accountType", "")).lower()
-                org_info = {
-                    "orgId": org_id,
-                    "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
-                    "name": org_doc.get("name") or "",
-                }
-    except Exception:
-        logger_.debug("Failed to enrich user/org context for prompt", exc_info=True)
+    user_doc, org_doc, user_context_flag = await asyncio.gather(
+        user_doc_task, org_doc_task, user_context_flag_task, return_exceptions=True,
+    )
+    if isinstance(user_doc, BaseException):
+        logger_.debug("Failed to load user doc for prompt enrichment", exc_info=user_doc)
+    elif user_doc and isinstance(user_doc, dict):
+        for field in ("fullName", "firstName", "lastName", "displayName"):
+            if user_doc.get(field):
+                user_info[field] = user_doc[field]
+        # Reused by `_fetch_available_connectors` (chat_modes/bridge.py) so
+        # the same user lookup is not repeated further down the request.
+        user_key = user_doc.get("_key") or user_doc.get("id")
+        if user_key:
+            user_info["userKey"] = user_key
+    if isinstance(org_doc, BaseException):
+        logger_.debug("Failed to load org doc for prompt enrichment", exc_info=org_doc)
+    elif org_doc and isinstance(org_doc, dict):
+        raw_account_type = str(org_doc.get("accountType", "")).lower()
+        org_info = {
+            "orgId": org_id,
+            "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
+            "name": org_doc.get("name") or "",
+        }
+
+    if isinstance(user_context_flag, BaseException):
+        logger_.debug(
+            "Failed to read ENABLE_USER_CONTEXT; defaulting to enabled",
+            exc_info=user_context_flag,
+        )
+        user_context_enabled = True
+    else:
+        user_context_enabled = bool(user_context_flag)
+    if not user_context_enabled:
+        user_info["sendUserInfo"] = False
 
     client_name = request.headers.get("client-name")
 
@@ -969,8 +1196,10 @@ async def _generate_chat_stream_via_agent_loop(
         org_info=org_info,
         model_name=query_info.modelName, model_key=query_info.modelKey,
         is_multimodal_llm=is_multimodal_llm, context_length=context_length,
-        ai_models_config=ai_models_config, protocol=protocol,
+        llm_provider=model_config.get("provider") or "",
+        system_prompts_config=system_prompts_config, protocol=protocol,
         client_name=client_name,
+        cancellation_registry=cancellation_registry,
     ):
         yield event
 
@@ -982,6 +1211,7 @@ async def askAIStream(
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(get_config_service),
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
 ) -> StreamingResponse:
     """Perform semantic search across documents with streaming events and tool support.
 
@@ -998,6 +1228,12 @@ async def askAIStream(
         query_info = ChatQuery(**body)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+
+    # A real HTTP 409 is only possible HERE, before `StreamingResponse` is
+    # returned — once the SSE generator below starts, Starlette has already
+    # committed the response to 200. See `RunCancellationRegistry.is_active`.
+    if query_info.runId and await cancellation_registry.is_active(query_info.runId):
+        raise HTTPException(status_code=409, detail=f"runId '{query_info.runId}' is already active")
 
 
     _chat_user = getattr(request.state, "user", {}) or {}
@@ -1018,6 +1254,7 @@ async def askAIStream(
         retrieval_service=retrieval_service,
         graph_provider=graph_provider,
         config_service=config_service,
+        cancellation_registry=cancellation_registry,
     )
 
     return StreamingResponse(
@@ -1030,3 +1267,43 @@ async def askAIStream(
             "Access-Control-Allow-Headers": "Cache-Control",
         },
     )
+
+
+@router.post("/chat/cancel", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+async def cancel_chat_stream(
+    request: Request,
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
+) -> dict[str, bool]:
+    """Cooperatively cancel an in-flight run — one endpoint for both
+    assistant (`/chat/stream`) and agent (`/{agent_id}/chat/stream`) runs,
+    since the registry is keyed by `runId` alone. Node's own
+    `/conversations/:id/cancel` and `/agents/:key/conversations/:id/cancel`
+    routes (owner-filtered against Mongo) forward here after their own
+    ownership check; this is the second, independent check against the
+    `RunOwner` the run was actually registered with.
+
+    Never a 4xx for "already finished"/"unknown" — `{cancelled: false}` —
+    only for a genuine mismatch (403) or a malformed `runId` (400, via
+    `CancelRunRequest`'s field validator).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+    try:
+        cancel_request = CancelRunRequest(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+
+    user = getattr(request.state, "user", {}) or {}
+    requester = RunOwner(
+        user_id=user.get("userId", ""),
+        org_id=user.get("orgId", ""),
+        conversation_id=cancel_request.conversationId,
+    )
+
+    outcome = await cancellation_registry.cancel(cancel_request.runId, requester)
+    if outcome == "forbidden":
+        raise HTTPException(status_code=403, detail="You do not own this run")
+    return {"cancelled": outcome == "cancelled"}

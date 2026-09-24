@@ -11,6 +11,7 @@ import { BadRequestError } from '../../../libs/errors/http.errors';
 import { CrawlingScheduleType } from '../schema/enums';
 import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
+import { crawlingQueuePrefix, crawlingRedisProvider } from './crawling_queue';
 import {
   CrawlingJobData,
   ScheduleJobOptions,
@@ -39,14 +40,14 @@ export class CrawlingSchedulerService {
   constructor(@inject('RedisConfig') redisConfig: RedisConfig) {
     this.logger = Logger.getInstance({ service: 'CrawlingSchedulerService' });
 
+    const provider = crawlingRedisProvider(redisConfig);
+
     const queueOptions: QueueOptions = {
-      connection: {
-        host: redisConfig.host,
-        port: redisConfig.port,
-        username: redisConfig.username,
-        password: redisConfig.password,
-        db: redisConfig.db || 0,
-      },
+      // A dedicated blocking-capable client (never the provider's shared
+      // `getClient()`): BullMQ issues its own long-lived blocking commands
+      // on this connection.
+      connection: provider.createClient({ blocking: true }),
+      prefix: crawlingQueuePrefix(provider),
       defaultJobOptions: {
         removeOnComplete: 10, // Keep only last 10 completed jobs per connector type
         removeOnFail: 10, // Keep only last 10 failed jobs per connector type

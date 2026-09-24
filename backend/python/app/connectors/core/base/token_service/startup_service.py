@@ -6,16 +6,11 @@ Handles both connector and toolset token refresh services separately
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.core.base.token_service.token_refresh_service import (
-    TokenRefreshService,
-)
-from app.connectors.core.base.token_service.toolset_token_refresh_service import (
-    ToolsetTokenRefreshService,
-)
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+from app.edition_services import TokenRefreshService, ToolsetTokenRefreshService, MCPTokenRefreshService
 from app.services.messaging.interface.producer import IMessagingProducer
 
 
@@ -26,9 +21,9 @@ class StartupService:
         self.logger = logging.getLogger(__name__)
         self._token_refresh_service: Optional[TokenRefreshService] = None
         self._toolset_token_refresh_service: Optional[ToolsetTokenRefreshService] = None
+        self._mcp_token_refresh_service: Optional[MCPTokenRefreshService] = None
         self._initialize_lock = asyncio.Lock()
         self._initialized = False
-
 
     def set_messaging_producer(self, producer: IMessagingProducer) -> None:
         """Attach the messaging producer once it starts (after initialize)."""
@@ -38,36 +33,50 @@ class StartupService:
     async def initialize(
         self,
         configuration_service: ConfigurationService,
-        graph_provider: IGraphDBProvider,
+        graph_provider: Any,
+        oauth_config_resolver=None,
     ) -> None:
         """Initialize startup services"""
         async with self._initialize_lock:
             if self._initialized:
-                self.logger.info("⏭️ Startup services already initialized, skipping duplicate initialize call")
+                self.logger.info(
+                    "⏭️ Startup services already initialized, skipping duplicate initialize call"
+                )
                 return
 
             try:
-                # Initialize connector token refresh service.
                 # Skip waiting for the initial refresh scan so app startup is
                 # not blocked on per-connector OAuth provider round-trips.
-                # The first scan runs as a background task and the periodic
-                # refresher takes over afterwards.
-                token_refresh_service = TokenRefreshService(configuration_service, graph_provider)
+                token_refresh_service = TokenRefreshService(
+                    configuration_service, graph_provider
+                )
+                if oauth_config_resolver is not None:
+                    token_refresh_service._oauth_config_resolver = oauth_config_resolver
                 await token_refresh_service.start(wait_for_initial_refresh=False)
                 self._token_refresh_service = token_refresh_service
                 self.logger.info("✅ Connector token refresh service initialized")
 
-                # Initialize toolset token refresh service (separate from connectors)
-                toolset_token_refresh_service = ToolsetTokenRefreshService(configuration_service)
+                toolset_token_refresh_service = ToolsetTokenRefreshService(
+                    configuration_service
+                )
+                if oauth_config_resolver is not None:
+                    toolset_token_refresh_service._oauth_config_resolver = (
+                        oauth_config_resolver
+                    )
                 await toolset_token_refresh_service.start(wait_for_initial_refresh=False)
                 self._toolset_token_refresh_service = toolset_token_refresh_service
                 self.logger.info("✅ Toolset token refresh service initialized")
+
+                # Initialize MCP server token refresh service (separate from connectors/toolsets)
+                mcp_token_refresh_service = MCPTokenRefreshService(configuration_service)
+                await mcp_token_refresh_service.start(wait_for_initial_refresh=False)
+                self._mcp_token_refresh_service = mcp_token_refresh_service
+                self.logger.info("✅ MCP token refresh service initialized")
 
                 self._initialized = True
                 self.logger.info("Startup services initialized successfully")
 
             except Exception as e:
-                # Best-effort cleanup for partial initialization
                 if self._token_refresh_service:
                     try:
                         await self._token_refresh_service.stop()
@@ -81,6 +90,13 @@ class StartupService:
                     except Exception:
                         pass
                     self._toolset_token_refresh_service = None
+
+                if self._mcp_token_refresh_service:
+                    try:
+                        await self._mcp_token_refresh_service.stop()
+                    except Exception:
+                        pass
+                    self._mcp_token_refresh_service = None
 
                 self._initialized = False
                 self.logger.error(f"Error initializing startup services: {e}")
@@ -100,6 +116,11 @@ class StartupService:
                     self.logger.info("✅ Toolset token refresh service stopped")
                     self._toolset_token_refresh_service = None
 
+                if self._mcp_token_refresh_service:
+                    await self._mcp_token_refresh_service.stop()
+                    self.logger.info("✅ MCP token refresh service stopped")
+                    self._mcp_token_refresh_service = None
+
                 self._initialized = False
                 self.logger.info("Startup services shutdown successfully")
 
@@ -113,6 +134,10 @@ class StartupService:
     def get_toolset_token_refresh_service(self) -> Optional[ToolsetTokenRefreshService]:
         """Get the toolset token refresh service instance"""
         return self._toolset_token_refresh_service
+
+    def get_mcp_token_refresh_service(self) -> Optional[MCPTokenRefreshService]:
+        """Get the MCP server token refresh service instance"""
+        return self._mcp_token_refresh_service
 
 
 # Global startup service instance

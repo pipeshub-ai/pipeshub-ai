@@ -445,6 +445,19 @@ describe('User Routes', () => {
       expect(patchEmail).to.not.be.undefined;
     });
 
+    it('should register GET /internal/:id/adminCheck route', () => {
+      const router = createUserRouter(container);
+      const routes = (router as any).stack;
+
+      const internalAdminCheck = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/internal/:id/adminCheck' &&
+          layer.route.methods.get,
+      );
+      expect(internalAdminCheck).to.not.be.undefined;
+    });
+
     it('should register GET /:id/adminCheck route', () => {
       const router = createUserRouter(container);
       const routes = (router as any).stack;
@@ -456,6 +469,22 @@ describe('User Routes', () => {
           layer.route.methods.get,
       );
       expect(adminCheck).to.not.be.undefined;
+    });
+
+    it('should register GET /me/role behind authenticate only (no OAuth scope)', () => {
+      const router = createUserRouter(container);
+      const routes = (router as any).stack;
+
+      const meRole = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/me/role' &&
+          layer.route.methods.get,
+      );
+      expect(meRole).to.not.be.undefined;
+      const handles = meRole.route.stack.map((s: any) => s.handle);
+      expect(handles).to.have.length(2);
+      expect(handles[0]).to.equal(mockAuthMiddleware.authenticate);
     });
 
     it('should register POST /updateAppConfig route', () => {
@@ -1138,6 +1167,82 @@ describe('User Routes - handler coverage', () => {
       await handler(req, res, next)
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.calledOnce).to.be.true
+    })
+  })
+
+  describe('GET /me/role handler', () => {
+    const userId = '507f1f77bcf86cd799439011'
+    const orgId = '507f1f77bcf86cd799439012'
+    const userAdminService = require('../../../../src/modules/user_management/services/user-admin.service')
+
+    it("should return the caller's live role", async () => {
+      const roleStub = sinon.stub(userAdminService, 'getActiveUserOrgRole').resolves('admin')
+      const handler = findHandler('/me/role', 'get')
+      expect(handler).to.exist
+
+      const res = mockRes()
+      const next = sinon.stub()
+      await handler({ user: { userId, orgId } } as any, res, next)
+
+      expect(roleStub.calledOnceWithExactly(userId, orgId)).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledOnceWithExactly({ role: 'admin' })).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('should answer 401 when the caller no longer has an active account', async () => {
+      sinon.stub(userAdminService, 'getActiveUserOrgRole').resolves(null)
+      const handler = findHandler('/me/role', 'get')
+
+      const res = mockRes()
+      const next = sinon.stub()
+      await handler({ user: { userId, orgId } } as any, res, next)
+
+      expect(res.status.called).to.be.false
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].statusCode).to.equal(401)
+    })
+  })
+
+  describe('GET /internal/:id/adminCheck handler', () => {
+    const userId = '507f1f77bcf86cd799439011'
+    const orgId = '507f1f77bcf86cd799439012'
+
+    it('should return 200 when scoped token user is org admin', async () => {
+      const handler = findHandler('/internal/:id/adminCheck', 'get')
+      expect(handler).to.exist
+
+      const userAdminService = require('../../../../src/modules/user_management/services/user-admin.service')
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true)
+
+      const req = {
+        params: { id: userId },
+        tokenPayload: { userId, orgId },
+      } as any
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler(req, res, next)
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.equal('User has admin access')
+    })
+
+    it('should call next with Admin access required when user is not admin', async () => {
+      const handler = findHandler('/internal/:id/adminCheck', 'get')
+      const userAdminService = require('../../../../src/modules/user_management/services/user-admin.service')
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false)
+
+      const req = {
+        params: { id: userId },
+        tokenPayload: { userId, orgId },
+      } as any
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler(req, res, next)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('Admin access required')
     })
   })
 

@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -15,6 +15,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     ExtensionTypes,
     MimeTypes,
@@ -74,6 +75,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     fetch_folder_children,
     has_entered_scope,
     has_exited_scope,
+    is_retryable_403,
     pass_folder_filter,
     probe_can_list_children,
 )
@@ -89,9 +91,25 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
-from app.utils.oauth_config import fetch_oauth_config_by_id
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+
+if TYPE_CHECKING:
+    from app.connectors.core.thread_pool import ThreadPoolLease
+
+# Maximum concurrent borrows from the shared connector thread pool.
+_DRIVE_INDIVIDUAL_MAX_CONCURRENCY = 4
+
+# Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
+# 100 MB, which buffers a whole slice in memory before any of it reaches the
+# client and keeps one executor thread busy for that entire transfer.
+_DRIVE_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 
 
 @ConnectorBuilder("Drive")\
@@ -99,6 +117,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
     .with_description("Sync files and folders from Google Drive")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Drive",
@@ -242,9 +261,14 @@ class GoogleDriveIndividualConnector(BaseConnector):
         # credentials out from under each other.
         self._datasource_refresh_lock = asyncio.Lock()
 
+        # Acquired in init(), once the factory has injected the shared pool.
+        self._drive_executor: ThreadPoolLease | None = None
+
     async def init(self) -> bool:
         """Initialize the Google Drive connector with credentials and services."""
         try:
+            self._drive_executor = self._thread_lease(_DRIVE_INDIVIDUAL_MAX_CONCURRENCY)
+
             # Load connector config
             config = await self.config_service.get_config(
                 f"/services/connectors/{self.connector_id}/config"
@@ -262,12 +286,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 self.logger.error("Dropbox oauthConfigId not found in auth configuration.")
                 return False
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=Connectors.GOOGLE_DRIVE.value,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             if not oauth_config:
@@ -311,7 +333,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
                 # Create Google Drive Data Source from the client
                 self.drive_data_source = GoogleDriveDataSource(
-                    self.google_client.get_client()
+                    self.google_client.get_client(),
+                    executor=self._drive_executor,
                 )
 
                 self.logger.info(
@@ -368,6 +391,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         drive_id: str,
         *,
         bypass_folder_filter: bool = False,
+        permission_type: PermissionType = PermissionType.OWNER,
     ) -> Optional[RecordUpdate]:
         """
         Process a single Google Drive file and detect changes.
@@ -380,6 +404,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
             bypass_folder_filter: Skip the folder-scope check. Only the placeholder
                 sweep sets this: the ancestors it backfills are by definition
                 outside the tracked subtree and would otherwise be rejected.
+            permission_type: Access level to record for user_email on this item.
+                Defaults to OWNER (My Drive); callers seeding items the user does
+                not own (e.g. sharedWithMe) must pass the correct grant.
 
         Returns:
             RecordUpdate object or None if entry should be skipped
@@ -407,13 +434,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             org_id = self.data_entities_processor.org_id
 
-            # Get existing record from the database
-            # !!! IMPORTANT: Do not use tx_store directly here. Use the data_entities_processor instead.
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=file_id
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, file_id
+            )
 
             # Detect changes
             is_new = existing_record is None
@@ -511,7 +534,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 Permission(
                     external_id=user_id,
                     email=user_email,
-                    type=PermissionType.OWNER,
+                    type=permission_type,
                     entity_type=EntityType.USER
                 )
             ]
@@ -702,6 +725,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         drive_id: str,
         *,
         bypass_folder_filter: bool = False,
+        permission_type: PermissionType = PermissionType.OWNER,
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Google Drive files and yield records with their permissions.
@@ -714,6 +738,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
             drive_id: The drive ID
             bypass_folder_filter: Forwarded to `_process_drive_item`; set only by
                 the placeholder sweep.
+            permission_type: Forwarded to `_process_drive_item`; the access level
+                to record for user_email on these items.
         """
         import asyncio
 
@@ -725,6 +751,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     user_email,
                     drive_id,
                     bypass_folder_filter=bypass_folder_filter,
+                    permission_type=permission_type,
                 )
                 if record_update and record_update.record:
                     files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
@@ -742,11 +769,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
         """Handle different types of record updates (new, updated, deleted)."""
         try:
             if record_update.is_deleted:
-                async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=record_update.external_record_id
-                    )
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
+                )
                 if existing_record is None:
                     self.logger.debug(
                         f"Received delete for untracked external id {record_update.external_record_id}; nothing to delete"
@@ -804,7 +829,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             and is_folder
             and file_id not in self._folder_seed_ids
             and await has_entered_scope(
-                self.data_store_provider,
+                self.data_entities_processor,
                 self.connector_id,
                 file_id,
                 self._tracked_folder_ids,
@@ -831,7 +856,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         scope. A folder takes its whole subtree with it.
         """
         exited_scope, existing_record = await has_exited_scope(
-            self.data_store_provider,
+            self.data_entities_processor,
             self.connector_id,
             file_id,
             self._tracked_folder_ids,
@@ -1141,6 +1166,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 self.logger.info(f"💾 Processing final batch of {len(batch_records)} records")
                 await self.data_entities_processor.on_new_records(batch_records)
 
+            # Seed shared drive items shared individually with this user. Runs before the
+            # page token is stored so a failure here replays on the next run instead of
+            # being skipped for good; afterwards changes_list carries the deltas.
+            total_files += await self._sync_shared_with_me(user_id, user_email, drive_id)
+
             # Save start page token to sync point for future incremental syncs
             await self.drive_delta_sync_point.update_sync_point(
                 sync_point_key,
@@ -1152,6 +1182,131 @@ class GoogleDriveIndividualConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during full sync: {e}", exc_info=True)
             raise
+
+    async def _sync_shared_with_me(self, user_id: str, user_email: str, drive_id: str) -> int:
+        """
+        Seed items that live in a shared drive and were shared individually with this user.
+
+        The full sync above runs with Drive's defaults, which drop every shared drive item
+        regardless of how access was granted. Scoping this to `sharedWithMe` rather than
+        setting includeItemsFromAllDrives on that listing keeps the seed to individual
+        grants: shared drive membership leaves sharedWithMeTime unset, so drives the user
+        belongs to are not enumerated here.
+
+        Returns:
+            Number of records queued for processing.
+        """
+        self.logger.info("Syncing shared with me items")
+
+        batch_records = []
+        total_files = 0
+        page_token = None
+        # Persists across pages so a subtree already pulled in behind one shared folder
+        # is not re-walked when an overlapping/nested share surfaces on a later page.
+        seen_ids: set = set()
+
+        while True:
+            list_params = {
+                "q": "sharedWithMe = true and trashed = false",
+                "supportsAllDrives": True,
+                "includeItemsFromAllDrives": True,
+                "fields": DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
+            }
+
+            if page_token:
+                list_params["pageToken"] = page_token
+
+            await self._get_fresh_datasource()
+            files_response = await self.drive_data_source.files_list(**list_params)
+
+            # Items without a driveId are personal-drive shares, which the full sync
+            # listing already returned. Already-seen ids are dropped too, in case an
+            # earlier page's folder expansion already pulled this item in.
+            files = [
+                file_metadata
+                for file_metadata in files_response.get("files", [])
+                if file_metadata.get("driveId")
+                and file_metadata.get("id") not in seen_ids
+            ]
+
+            # A shared folder arrives without its contents: sharedWithMeTime marks only
+            # the item actually shared, and Drive has no recursive parent operator.
+            # drive_scoped=False keeps the walk on the user corpus, since corpora=drive
+            # needs shared drive membership and this path does not have it.
+            seen_ids.update(file_id for f in files if (file_id := f.get("id")))
+            for folder in [f for f in files if f.get("mimeType") == MimeTypes.GOOGLE_DRIVE_FOLDER.value]:
+                found = []
+                try:
+                    async for child_batch in fetch_folder_children(
+                        folder["id"],
+                        seen_ids,
+                        self._fresh_drive_data_source,
+                        fields=DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
+                        drive_scoped=False,
+                    ):
+                        found.extend(child_batch)
+                except HttpError as e:
+                    if (
+                        e.resp.status in (HttpStatusCode.FORBIDDEN.value, HttpStatusCode.NOT_FOUND.value)
+                        and not is_retryable_403(e)
+                    ):
+                        # Folder genuinely gone or access revoked since it was listed above;
+                        # there is nothing to replay, so this is safe to skip permanently.
+                        self.logger.warning(
+                            f"Shared folder {folder['id']} no longer accessible (HTTP {e.resp.status}); skipping"
+                        )
+                        continue
+                    # Anything else (rate limiting -- including a 403 with a
+                    # rateLimitExceeded/userRateLimitExceeded reason -- transient 5xx,
+                    # etc.) must not be swallowed: the sync-point save below would then
+                    # permanently skip this folder's descendants since incremental sync
+                    # never replays them.
+                    self.logger.error(
+                        f"Failed to list children of shared folder {folder['id']}: {e}"
+                    )
+                    raise
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to list children of shared folder {folder['id']}: {e}"
+                    )
+                    raise
+
+                seen_ids.update(c["id"] for c in found if c.get("id"))
+                files.extend(found)
+
+            if files:
+                async for record, perms, update in self._process_drive_items_generator(
+                    files,
+                    user_id,
+                    user_email,
+                    drive_id,
+                    permission_type=PermissionType.READ,
+                ):
+                    if update.is_deleted or update.is_updated:
+                        await self._handle_record_updates(update)
+                        continue
+
+                    batch_records.append((record, perms))
+                    total_files += 1
+
+                    if len(batch_records) >= self.batch_size:
+                        self.logger.info(f"💾 Processing batch of {len(batch_records)} shared with me records")
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        batch_records = []
+                        await asyncio.sleep(0)
+
+            # Paging is driven by the token alone: an empty page here only means everything
+            # on it was filtered out, not that the listing is exhausted.
+            page_token = files_response.get("nextPageToken")
+            if not page_token:
+                break
+
+        if batch_records:
+            self.logger.info(f"💾 Processing final batch of {len(batch_records)} shared with me records")
+            await self.data_entities_processor.on_new_records(batch_records)
+
+        self.logger.info(f"✅ Synced {total_files} shared with me item(s)")
+        return total_files
 
     async def _perform_incremental_sync(self, sync_point_key: str, org_id: str, user_id: str, user_email: str, page_token: str, drive_id: str) -> None:
         """
@@ -1347,24 +1502,29 @@ class GoogleDriveIndividualConnector(BaseConnector):
         """
         buffer = io.BytesIO()
         try:
-            downloader = MediaIoBaseDownload(buffer, request)
+            downloader = MediaIoBaseDownload(buffer, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
             done = False
 
             while not done:
                 try:
-                    _, done = downloader.next_chunk()
+                    # next_chunk() performs the HTTP range request synchronously, so
+                    # calling it here would freeze the event loop for the whole
+                    # round-trip and stall every other request in the process.
+                    _, done = await self.drive_data_source.execute(
+                        downloader.next_chunk
+                    )
                 except HttpError as http_error:
                     self.logger.error(f"HTTP error during {error_context}: {str(http_error)}")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Error during {error_context}: {str(http_error)}",
-                    )
+                    # HttpError carries Drive's own status on .resp.status —
+                    # mapping it is what tells a revoked token from a deleted file.
+                    raise map_source_status(
+                        http_error.resp.status, connector=self.display_name
+                    ) from http_error
                 except Exception as chunk_error:
                     self.logger.error(f"Error during {error_context}: {str(chunk_error)}")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Error during {error_context}",
-                    )
+                    raise to_stream_error(
+                        chunk_error, connector=self.display_name
+                    ) from chunk_error
 
                 buffer.seek(0)
                 content = buffer.read()
@@ -1374,15 +1534,13 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 # Clear buffer for next chunk
                 buffer.seek(0)
                 buffer.truncate(0)
-
-                # Yield control back to event loop
-                await asyncio.sleep(0)
+        except HTTPException:
+            raise
         except Exception as stream_error:
             self.logger.error(f"Error in {error_context} stream: {str(stream_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error setting up {error_context} stream",
-            )
+            raise to_stream_error(
+                stream_error, connector=self.display_name
+            ) from stream_error
         finally:
             buffer.close()
 
@@ -1452,28 +1610,20 @@ class GoogleDriveIndividualConnector(BaseConnector):
         """
         try:
             drive_service = self.google_client.get_client()
-            file_metadata = drive_service.files().get(
+            metadata_request = drive_service.files().get(
                 fileId=file_id,
                 fields=DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
-            ).execute()
-            return file_metadata
+                supportsAllDrives=True,
+            )
+            return await self.drive_data_source.execute(metadata_request.execute)
         except HttpError as http_error:
             self.logger.error(f"Error fetching file metadata from Drive: {str(http_error)}")
-            if http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail="File not found in Google Drive"
-                )
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error fetching file metadata: {str(http_error)}"
-            )
+            raise map_source_status(
+                http_error.resp.status, connector=self.display_name
+            ) from http_error
         except Exception as e:
             self.logger.error(f"Error getting file metadata: {str(e)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error getting file metadata: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     def get_signed_url(self, record: Record) -> Optional[str]:
         """Get a signed URL for a specific record."""
@@ -1502,6 +1652,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 )
 
             self.logger.info(f"Streaming Drive file: {file_id}, convertTo: {convertTo}")
+
+            if not self.google_client or not self.drive_data_source:
+                raise connector_not_ready(self.display_name)
 
             # Get drive service
             drive_service = self.google_client.get_client()
@@ -1565,12 +1718,17 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     # Download file to temp directory
                     try:
                         with open(temp_file_path, "wb") as f:
-                            request = drive_service.files().get_media(fileId=file_id)
-                            downloader = MediaIoBaseDownload(f, request)
+                            request = drive_service.files().get_media(
+                                fileId=file_id,
+                                supportsAllDrives=True,
+                            )
+                            downloader = MediaIoBaseDownload(f, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
 
                             done = False
                             while not done:
-                                status, done = downloader.next_chunk()
+                                status, done = await self.drive_data_source.execute(
+                                    downloader.next_chunk
+                                )
                                 self.logger.info(
                                     f"Download {int(status.progress() * 100)}%."
                                 )
@@ -1583,9 +1741,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                                     self.logger.error(
                                         f"Google Workspace file cannot be downloaded for PDF conversion: {str(http_error)}"
                                     )
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.BAD_REQUEST.value,
-                                        detail="Google Workspace files (Sheets, Docs, Slides) cannot be converted to PDF using direct download. Please use the file's native export functionality.",
+                                    raise not_downloadable(
+                                        "Google Workspace files (Sheets, Docs, Slides) cannot be "
+                                        "converted to PDF using direct download. Please use the "
+                                        "file's native export functionality.",
+                                        connector=self.display_name,
                                     )
                         raise
 
@@ -1613,7 +1773,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             # Regular file download without conversion
             # StreamingResponse will handle chunking automatically
-            request = drive_service.files().get_media(fileId=file_id)
+            request = drive_service.files().get_media(
+                fileId=file_id,
+                supportsAllDrives=True,
+            )
             return create_stream_record_response(
                 self._stream_google_api_request(request, error_context="file download"),
                 filename=file_name,
@@ -1625,10 +1788,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Error streaming record: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming file: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _create_personal_record_group(self, user_id: str, user_email: str, display_name: str, drive_id: str) -> RecordGroup:
         """Create a personal record group for the user."""
@@ -1724,6 +1884,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
         """Cleanup resources when shutting down the connector."""
         try:
             self.logger.info("Cleaning up Google Drive connector resources")
+
+            await self._release_thread_lease()
 
             # Clear client and data source references
             if hasattr(self, 'drive_data_source') and self.drive_data_source:
@@ -1871,17 +2033,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> BaseConnector:
         """Create a new instance of the Google Drive connector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
-        return GoogleDriveIndividualConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

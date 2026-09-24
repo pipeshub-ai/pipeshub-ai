@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import ipaddress
+import json
 import os
 import re
 from enum import Enum
@@ -10,6 +13,7 @@ from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from botocore.client import BaseClient
+    from botocore.config import Config as BotocoreConfig
 
 from langchain_core.embeddings.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -18,10 +22,13 @@ from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_REASONING_EFFORT,
+    EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
     OPENROUTER_BASE_URL,
+    REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS,
     AzureOpenAILLM,
 )
 from app.utils.embedding_server_client import get_embedding_server_embeddings
+from app.utils.env_utils import env_int
 from app.utils.llm_api_mode_store import (
     REASONING_MANDATORY_FALLBACK_EFFORT,
     LLMApiMode,
@@ -92,6 +99,74 @@ class EmbeddingProvider(Enum):
     VERTEX_AI = "vertexAI"
     VOYAGE = "voyage"
 
+LOCAL_CPU_EMBEDDING_PROVIDERS = frozenset({
+    EmbeddingProvider.DEFAULT.value,
+    EmbeddingProvider.HUGGING_FACE.value,
+    EmbeddingProvider.SENTENCE_TRANSFOMERS.value,
+})
+
+# These speak a hosted-API protocol but are usually pointed at a server the
+# operator runs themselves. Whether they are as slow as the built-in embedding
+# server depends on where the endpoint points, not on the provider name — so
+# they are resolved per-endpoint by ``is_local_cpu_embedding_provider``.
+SELF_HOSTABLE_EMBEDDING_PROVIDERS = frozenset({
+    EmbeddingProvider.LITELLM_PROXY.value,
+    EmbeddingProvider.LM_STUDIO.value,
+    EmbeddingProvider.OLLAMA.value,
+    EmbeddingProvider.OPENAI_COMPATIBLE.value,
+})
+
+_LOCAL_HOSTNAME_SUFFIXES = (".localhost", ".local", ".internal", ".svc")
+
+
+def _is_locally_served_endpoint(endpoint: str | None) -> bool:
+    """Whether *endpoint* points at a host inside this deployment.
+
+    Deliberately does not resolve DNS: this runs on the indexing event loop for
+    every batch, and a lookup here would block it. A name that cannot be judged
+    from its text alone is treated as remote, which only costs the shorter
+    timeout budget the caller already used before endpoints were consulted.
+    """
+    if not endpoint:
+        return False
+    host = urlparse(endpoint if "//" in endpoint else f"//{endpoint}").hostname
+    if not host:
+        return False
+    host = host.lower().removesuffix(".")
+
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        pass
+
+    if host == "localhost" or host.endswith(_LOCAL_HOSTNAME_SUFFIXES):
+        return True
+    # Single-label names only resolve inside a private network — a Docker
+    # Compose service name or a Kubernetes short name.
+    return "." not in host
+
+
+def is_local_cpu_embedding_provider(
+    provider: str | None, endpoint: str | None = None
+) -> bool:
+    """Whether *provider* embeds on hardware this deployment shares.
+
+    Callers use this to pick batch size, concurrency and timeout budgets, so
+    the question is "is this as slow as a CPU model next door", not "is the
+    vendor named locally". A self-hostable provider pointed at a private
+    address answers yes; the same provider pointed at a vendor's cloud does not.
+
+    ``None`` counts as local: an unconfigured deployment falls back to
+    ``get_default_embedding_model()``.
+    """
+    if provider is None or provider in LOCAL_CPU_EMBEDDING_PROVIDERS:
+        return True
+    return (
+        provider in SELF_HOSTABLE_EMBEDDING_PROVIDERS
+        and _is_locally_served_endpoint(endpoint)
+    )
+
+
 class LLMProvider(Enum):
     ANTHROPIC = "anthropic"
     AWS_BEDROCK = "bedrock"
@@ -140,10 +215,77 @@ MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_MODERN = 16384
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
 
+def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> str:
+    """Deterministic hash of the embedding config, for cache invalidation.
+
+    Covers every field that changes which client gets built or how it
+    authenticates, so a change made in the admin UI rebuilds the model rather
+    than being served from a stale cache. Shared by the indexing and retrieval
+    paths so both invalidate on the same events.
+    """
+    if not embedding_configs:
+        return "default"
+    serialisable = []
+    for cfg in embedding_configs:
+        configuration = cfg.get("configuration") or {}
+        serialisable.append({
+            "provider": cfg.get("provider"),
+            "isDefault": cfg.get("isDefault"),
+            "isMultimodal": cfg.get("isMultimodal"),
+            "model": configuration.get("model"),
+            "endpoint": configuration.get("endpoint"),
+            "dimensions": configuration.get("dimensions"),
+            "apiKey": configuration.get("apiKey"),
+            "organizationId": configuration.get("organizationId"),
+            "trustRemoteCode": configuration.get("trustRemoteCode"),
+            "region": configuration.get("region"),
+            "awsAccessKeyId": configuration.get("awsAccessKeyId"),
+            "awsAccessSecretKey": configuration.get("awsAccessSecretKey"),
+            "serviceAccountJson": configuration.get("serviceAccountJson"),
+            "project": configuration.get("project"),
+            "location": configuration.get("location"),
+        })
+    return hashlib.sha256(
+        json.dumps(serialisable, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
+
+
 def get_default_embedding_model() -> Embeddings:
     return get_embedding_server_embeddings(DEFAULT_EMBEDDING_MODEL)
 
 logger = create_logger("aimodels")
+
+# botocore's defaults are 60s connect, 60s read and legacy retries (up to 5
+# attempts), so a wrong region, a model not enabled in it, or an endpoint that
+# does not resolve becomes ~300s of silent retrying. Nothing upstream can tell
+# that apart from a slow model, so the health check reports a timeout and the
+# admin learns nothing.
+#
+# A connection that cannot be made fails fast; a request that reached Bedrock
+# is given room, because extended thinking legitimately takes a while.
+_BEDROCK_CONNECT_TIMEOUT_S = 10
+_BEDROCK_READ_TIMEOUT_S = 120
+_BEDROCK_MAX_ATTEMPTS = 2
+
+
+def _bedrock_client_config() -> "BotocoreConfig":
+    from botocore.config import Config
+
+    return Config(
+        connect_timeout=env_int(
+            "PIPESHUB_BEDROCK_CONNECT_TIMEOUT", _BEDROCK_CONNECT_TIMEOUT_S, lo=1, hi=120,
+        ),
+        read_timeout=env_int(
+            "PIPESHUB_BEDROCK_READ_TIMEOUT", _BEDROCK_READ_TIMEOUT_S, lo=5, hi=900,
+        ),
+        retries={
+            "mode": "standard",
+            "max_attempts": env_int(
+                "PIPESHUB_BEDROCK_MAX_ATTEMPTS", _BEDROCK_MAX_ATTEMPTS, lo=1, hi=5,
+            ),
+        },
+    )
+
 
 def _create_bedrock_client(configuration: dict[str, Any], service_name: str = "bedrock-runtime") -> BaseClient:
     """Create a boto3 Bedrock client with proper credential handling.
@@ -173,7 +315,7 @@ def _create_bedrock_client(configuration: dict[str, Any], service_name: str = "b
         )
         session = boto3.Session(region_name=region)
 
-    return session.client(service_name)
+    return session.client(service_name, config=_bedrock_client_config())
 
 
 def _create_vertex_credentials(service_account_json: str) -> Any:
@@ -219,6 +361,48 @@ def _set_embedding_dimensions_kwarg(
         kwargs[key] = dimensions
 
 
+def _set_openai_client_limits_kwargs(
+    kwargs: Dict[str, Any],
+    provider: str | None = None,
+    endpoint: str | None = None,
+) -> None:
+    """Bound one HTTP attempt and disable the SDK's own retry loop.
+
+    Callers wrap embed calls in their own timeout (the indexing pipeline bounds
+    each batch), and the SDK's silent 2 retries at a 600s default timeout sit
+    entirely inside that budget — so a rate-limited or stalled provider expires
+    the caller's clock instead of surfacing as the 429 or timeout it was.
+    Retries belong to the caller, which can also signal backpressure; see
+    ``app.utils.embedding_retry``.
+
+    Locally served models (LM Studio, self-hosted LiteLLM, etc.) are much
+    slower per request than hosted APIs, so they get the same generous timeout
+    the local embedding server uses.
+    """
+    if is_local_cpu_embedding_provider(provider, endpoint):
+        kwargs["timeout"] = EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS
+    else:
+        kwargs["timeout"] = REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS
+    kwargs["max_retries"] = 0
+
+
+# `check_embedding_ctx_length=True` makes langchain-openai tiktoken-encode each
+# text and send `input` as arrays of token IDs. Only OpenAI's own embeddings
+# endpoint accepts that shape; every other server speaking the OpenAI protocol
+# (routers such as OpenRouter/Requesty, and providers proxied behind them —
+# Google, Cohere, Voyage, Nvidia, ...) requires plain strings and rejects token
+# arrays with a 400. tiktoken's vocabulary is OpenAI-specific anyway, so the
+# token IDs would be meaningless to a non-OpenAI model even where accepted.
+_TOKEN_ARRAY_EMBEDDING_HOSTS = frozenset({"api.openai.com"})
+
+
+def _accepts_token_array_embedding_input(base_url: str | None) -> bool:
+    if not base_url:
+        return False
+    host = urlparse(base_url).hostname
+    return bool(host) and host.lower() in _TOKEN_ARRAY_EMBEDDING_HOSTS
+
+
 def get_embedding_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
     is_default = config.get("isDefault")
@@ -233,7 +417,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         if model_name not in model_names:
             raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
 
-    logger.info(f"Getting embedding model: provider={provider}, model_name={model_name}")
+    logger.debug(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
     raw_dims = configuration.get("dimensions")
     dimensions: int | None = None
@@ -256,6 +440,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=check_embedding_ctx_length,
         )
         _set_embedding_dimensions_kwarg(kwargs, dimensions)
+        _set_openai_client_limits_kwargs(kwargs, provider, configuration.get('endpoint'))
         return OpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.AZURE_OPENAI.value:
@@ -268,6 +453,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             azure_endpoint=configuration['endpoint'],
         )
         _set_embedding_dimensions_kwarg(kwargs, dimensions)
+        _set_openai_client_limits_kwargs(kwargs, provider, configuration.get('endpoint'))
         return AzureOpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.COHERE.value:
@@ -345,6 +531,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             organization=configuration.get("organizationId"),
         )
         _set_embedding_dimensions_kwarg(openai_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(openai_kwargs, provider, configuration.get('endpoint'))
         return OpenAIEmbeddings(**openai_kwargs)
 
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
@@ -367,16 +554,14 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         from langchain_openai.embeddings import OpenAIEmbeddings
 
         base_url = configuration['endpoint']
-        providers_to_skip_check = ("google", "cohere", "voyage")
-        check_embedding_ctx_length = not any(p in base_url for p in providers_to_skip_check)
-
         compat_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=base_url,
-            check_embedding_ctx_length=check_embedding_ctx_length,
+            check_embedding_ctx_length=_accepts_token_array_embedding_input(base_url),
         )
         _set_embedding_dimensions_kwarg(compat_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(compat_kwargs, provider, base_url)
         return OpenAIEmbeddings(**compat_kwargs)
 
     elif provider == EmbeddingProvider.OPENROUTER.value:
@@ -386,9 +571,10 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=OPENROUTER_BASE_URL,
-            check_embedding_ctx_length=True,
+            check_embedding_ctx_length=_accepts_token_array_embedding_input(OPENROUTER_BASE_URL),
         )
         _set_embedding_dimensions_kwarg(or_emb_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(or_emb_kwargs, provider, OPENROUTER_BASE_URL)
         return OpenAIEmbeddings(**or_emb_kwargs)
 
     elif provider == EmbeddingProvider.LM_STUDIO.value:
@@ -401,6 +587,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=False,
         )
         _set_embedding_dimensions_kwarg(lms_emb_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(lms_emb_kwargs, provider, configuration["endpoint"])
         return OpenAIEmbeddings(**lms_emb_kwargs)
 
     elif provider == EmbeddingProvider.LITELLM_PROXY.value:
@@ -413,6 +600,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=False,
         )
         _set_embedding_dimensions_kwarg(llp_emb_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(llp_emb_kwargs, provider, configuration["endpoint"])
         return OpenAIEmbeddings(**llp_emb_kwargs)
 
     elif provider == EmbeddingProvider.TOGETHER.value:
@@ -461,27 +649,71 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
 
     raise ValueError(f"Unsupported embedding config type: {provider}")
 
-def _get_anthropic_max_tokens(model_name: str) -> int:
-    """Gets the max output tokens for an Anthropic model based on its name.
+# Bedrock/Anthropic snapshot suffixes (e.g. 20250219) are not x.y minors.
+_CLAUDE_SNAPSHOT_DATE_MIN = 100
 
-    Claude 4.5 supports 64K output tokens.  Claude 4.6+ and Claude 5.x
-    support at least 16K.  Legacy/unrecognised models fall back to 4096.
+_CLAUDE_TIER_PATTERN = r"([a-z]+)"
+
+
+def _claude_version_minor(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    value = int(raw)
+    if value >= _CLAUDE_SNAPSHOT_DATE_MIN:
+        return None
+    return value
+
+
+def _parse_claude_version(
+    model_name: str | None,
+) -> tuple[str | None, int, int | None] | None:
+    """Parse Claude tier/major/minor from API, Bedrock, and Vertex IDs.
+
+    Handles both ``claude-sonnet-4-5`` and dated ``claude-3-7-sonnet-20250219``
+    shapes. Snapshot dates are not treated as minor versions.
     """
-    lowered = model_name.lower() if model_name else ""
+    if not model_name:
+        return None
+    lowered = model_name.lower()
+    if "claude" not in lowered:
+        return None
+
     match = re.search(
-        r"claude[-_]?(?:opus|sonnet|haiku)[-_]?(\d+)(?:[-_.](\d+))?",
+        rf"claude[-_]?{_CLAUDE_TIER_PATTERN}[-_]?(\d+)(?:[-_.](\d+))?",
         lowered,
     )
     if match:
-        major = int(match.group(1))
-        minor = int(match.group(2)) if match.group(2) is not None else None
+        return match.group(1), int(match.group(2)), _claude_version_minor(match.group(3))
+
+    match = re.search(
+        rf"claude[-_]?(\d+)(?:[-_.](\d+))?[-_]?{_CLAUDE_TIER_PATTERN}",
+        lowered,
+    )
+    if match:
+        return match.group(3), int(match.group(1)), _claude_version_minor(match.group(2))
+
+    return None
+
+
+def _get_anthropic_max_tokens(model_name: str) -> int:
+    """Gets the max output tokens for an Anthropic model based on its name.
+
+    Claude 3.7, Claude 4, and Claude 4.5 support 64K output tokens (GA
+    thinking cap on 3.7). Claude 4.6+ and Claude 5.x use 16K. Legacy or
+    unrecognised models fall back to 4096.
+    """
+    lowered = model_name.lower() if model_name else ""
+    parsed = _parse_claude_version(model_name)
+    if parsed is not None:
+        _tier, major, minor = parsed
         if major >= 5:
             return MAX_OUTPUT_TOKENS_CLAUDE_MODERN
         if major == 4:
-            if minor is not None and minor == 5:
-                return MAX_OUTPUT_TOKENS_CLAUDE_4_5
             if minor is not None and minor >= 6:
                 return MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+            return MAX_OUTPUT_TOKENS_CLAUDE_4_5
+        if major == 3 and minor is not None and minor >= 7:
+            return MAX_OUTPUT_TOKENS_CLAUDE_4_5
     if "4.5" in lowered:
         return MAX_OUTPUT_TOKENS_CLAUDE_4_5
     return MAX_OUTPUT_TOKENS
@@ -506,17 +738,11 @@ def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
     if "claude" not in lowered:
         return True
 
-    # Minor is optional so bare major IDs like ``claude-sonnet-5`` match.
-    match = re.search(
-        r"claude[-_]?(opus|sonnet|haiku)[-_]?(\d+)(?:[-_.](\d+))?",
-        lowered,
-    )
-    if not match:
+    parsed = _parse_claude_version(model_name)
+    if parsed is None:
         return True
 
-    tier = match.group(1)
-    major = int(match.group(2))
-    minor = int(match.group(3)) if match.group(3) is not None else None
+    tier, major, minor = parsed
 
     if major >= 5:
         return False
@@ -662,6 +888,49 @@ def _targets_openai_responses_api(base_url: str | None) -> bool:
     return bool(host) and host.lower() in _OPENAI_RESPONSES_API_HOSTS
 
 
+# Qwen 3.8+ Chat Completions rejects OpenAI's 'xhigh'. That is a model-
+# family constraint — OpenRouter, LiteLLM, a generic openai-compatible
+# entry, Fireworks, LM Studio, vLLM, Groq, ... all hit it when they serve
+# these IDs. Allowed set is none/default/low/medium/high; platform 'max'
+# clamps to 'high'.
+_QWEN_38_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# Dotted IDs: qwen/qwen3.8-27b, Qwen3.8-Max, qwen3.5:9b. Require the dot so
+# `qwen3-8b` (8B params of Qwen 3) is not mistaken for version 3.8.
+_QWEN_DOTTED_VERSION_RE = re.compile(r"(?:^|/)qwen[-_]?(\d+)\.(\d+)", re.IGNORECASE)
+# Undotted major-only: qwen4, qwen-4-plus. Does not consume a following
+# param-size (`qwen3-32b` → 3.0, which is older than 3.8).
+_QWEN_MAJOR_VERSION_RE = re.compile(r"(?:^|/)qwen[-_]?(\d+)(?:[-_]|$)", re.IGNORECASE)
+
+
+def _parse_qwen_version(model_name: str | None) -> tuple[int, int] | None:
+    """Return ``(major, minor)`` for a Qwen model ID, or ``None``.
+
+    ``qwen/qwen3.8-27b`` → (3, 8); ``qwen3-32b`` → (3, 0); ``qwen4-plus`` →
+    (4, 0). Non-Qwen names return ``None``.
+    """
+    if not model_name or "qwen" not in model_name.lower():
+        return None
+    dotted = _QWEN_DOTTED_VERSION_RE.search(model_name)
+    if dotted:
+        return int(dotted.group(1)), int(dotted.group(2))
+    major = _QWEN_MAJOR_VERSION_RE.search(model_name)
+    if major:
+        return int(major.group(1)), 0
+    return None
+
+
+def _is_qwen_38_or_later(model_name: str | None) -> bool:
+    parsed = _parse_qwen_version(model_name)
+    return parsed is not None and parsed >= (3, 8)
+
+
 # LLM routers/gateways (Requesty, OpenRouter, LiteLLM proxy, and similar)
 # commonly proxy requests for OpenAI's own "gpt-5.x" models straight through
 # to OpenAI's real backend under an `openAICompatible`/`litellmProxy`/
@@ -774,6 +1043,8 @@ def _reasoning_effort_kwargs(
     - Fireworks: none, low, medium, high, max (no 'xhigh')
     - MiniMax, XAI: none, low, medium, high (no 'max' or 'xhigh'; 'max' is
       clamped to 'high')
+    - Qwen 3.8+ (any OpenAI-compatible host, detected by model name): none,
+      default, low, medium, high (no 'xhigh'; 'max' clamps to 'high')
     - Gemini: minimal, low, medium, high (no 'none' or 'max')
     - Anthropic: low, medium, high, xhigh, max (no 'none')
     - LM Studio: low, medium, high (no 'none' or 'max')
@@ -857,6 +1128,12 @@ def _reasoning_effort_kwargs(
     if provider == LLMProvider.OLLAMA.value:
         return {"reasoning": _OLLAMA_EFFORT_MAP.get(effort_input, effort_input)}
 
+    # Model-family first, not host: Qwen 3.8+ 400s on 'xhigh' whether the
+    # caller reached OpenRouter, LiteLLM, or a self-hosted endpoint.
+    # Skip the Responses API — these are not OpenAI gpt-5.
+    if _is_qwen_38_or_later(model_name):
+        return {"reasoning_effort": _QWEN_38_EFFORT_MAP.get(effort_input, effort_input)}
+
     effort = effort_input
     if provider in _OPENAI_FAMILY:
         effort = _OPENAI_EFFORT_MAP.get(effort_input, effort_input)
@@ -903,6 +1180,344 @@ def _reasoning_effort_kwargs(
     return {"reasoning_effort": effort}
 
 
+# Bedrock Converse: gpt-oss only accepts low/medium/high for
+# additionalModelRequestFields.reasoning_effort (no none/max/xhigh).
+# GPT-5.6 Sol/Terra/Luna accept a wider set (including max); do not clamp.
+_BEDROCK_GPT_OSS_EFFORT_MAP: Dict[str, str] = {
+    "none": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+_BEDROCK_OPENAI_EFFORT_MAP = _BEDROCK_GPT_OSS_EFFORT_MAP
+
+# Same gpt-5 family as ``_OPENAI_GPT5_MODEL_PATTERN``, but Bedrock IDs are
+# dot-delimited (``us.openai.gpt-5.6-luna``) so the prefix must also allow
+# ``.``. A substring ``gpt[-_.]?5`` would false-positive ``gpt-50`` and
+# mid-token names like ``my-gpt-5-compatible``.
+_GPT5_MODEL_RE = re.compile(r"(?:^|[./])gpt-5(?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
+
+# Nova 2 maxReasoningEffort is low|medium|high only.
+_BEDROCK_NOVA_EFFORT_MAP: Dict[str, str] = {
+    "none": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# LiteLLM-style budget_tokens map for Claude manual extended thinking on Bedrock.
+# Bedrock rejects budget_tokens < 1024.
+_BEDROCK_ANTHROPIC_THINKING_BUDGETS: Dict[str, int] = {
+    "low": 1024,
+    "medium": 2048,
+    "high": 4096,
+    "max": 4096,
+}
+
+_BEDROCK_MIN_THINKING_BUDGET_TOKENS = 1024
+# Visible-reply headroom so budget_tokens stays strictly below max_tokens.
+_BEDROCK_THINKING_OUTPUT_RESERVE_TOKENS = 1024
+
+
+def _bedrock_is_nova_2(model_name: str | None) -> bool:
+    """True for Nova 2 ids such as ``amazon.nova-2-lite-v1:0`` and ``us.amazon.nova-2-lite-v1:0``."""
+    if not model_name:
+        return False
+    return "nova-2" in model_name.lower()
+
+
+def _bedrock_is_gpt_oss(model_name: str | None) -> bool:
+    return bool(model_name) and "gpt-oss" in model_name.lower()
+
+
+def _bedrock_is_openai_gpt5(model_name: str | None) -> bool:
+    """GPT-5.x on Bedrock Converse (Sol/Terra/Luna), not gpt-oss."""
+    if not model_name:
+        return False
+    lowered = model_name.lower()
+    if "gpt-oss" in lowered:
+        return False
+    return bool(_GPT5_MODEL_RE.search(lowered))
+
+
+def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
+    if (provider or "").lower() == "openai":
+        return True
+    if not model_name:
+        return False
+    lowered = model_name.lower()
+    return (
+        "openai" in lowered
+        or "gpt-oss" in lowered
+        or bool(_GPT5_MODEL_RE.search(lowered))
+    )
+
+
+def _bedrock_is_deepseek_r1(model_name: str | None) -> bool:
+    if not model_name:
+        return False
+    lowered = model_name.lower()
+    return "deepseek" in lowered and "r1" in lowered
+
+
+def _bedrock_anthropic_uses_adaptive_thinking(model_name: str | None) -> bool:
+    """Claude models that reject budget_tokens and require thinking.type=adaptive.
+
+    Adaptive thinking is required for Claude 4.6+, Opus 4.7+, and Claude 5
+    families (including Fable/Mythos). Manual ``enabled`` + budget_tokens
+    returns 400 on those models.
+    """
+    if not model_name:
+        return False
+
+    lowered = model_name.lower()
+    if "claude" not in lowered:
+        return False
+
+    if any(token in lowered for token in ("fable", "mythos")):
+        return True
+
+    parsed = _parse_claude_version(model_name)
+    if parsed is not None:
+        _tier, major, minor = parsed
+        if major >= 5:
+            return True
+        if major == 4 and minor is not None and minor >= 6:
+            return True
+        return False
+
+    # IDs like ``claude-4-6`` with no tier token.
+    return bool(re.search(r"claude.*4[-_.]([67]|[6-9]\d)", lowered))
+
+
+def _resolve_bedrock_effort_input(reasoning_effort: str | None) -> str:
+    """Normalize UI effort for Bedrock, flooring explicit ``none`` to low.
+
+    Matches the platform-wide policy in ``_reasoning_effort_kwargs``: ``none``
+    is no longer offered in the UI and must not fully disable reasoning when
+    the model is flagged ``isReasoning``.
+    """
+    effort_input = reasoning_effort or DEFAULT_REASONING_EFFORT
+    if effort_input == "none":
+        return REASONING_MANDATORY_FALLBACK_EFFORT
+    return effort_input
+
+
+def _bedrock_additional_model_request_fields(
+    reasoning_effort: str | None,
+    config: dict[str, Any],
+    *,
+    provider_in_bedrock: str,
+    model_name: str | None,
+) -> Dict[str, Any]:
+    """Build Converse ``additional_model_request_fields`` for Bedrock reasoning.
+
+    Provider shapes differ (OpenAI ``reasoning_effort``, Anthropic ``thinking``,
+    Nova ``reasoningConfig``). DeepSeek R1 always reasons and rejects any
+    reasoning request fields.
+    """
+    if not config.get("isReasoning"):
+        return {}
+
+    if _bedrock_is_deepseek_r1(model_name):
+        return {}
+
+    effort_input = _resolve_bedrock_effort_input(reasoning_effort)
+    provider = (provider_in_bedrock or "").lower()
+
+    if _bedrock_is_openai(provider, model_name):
+        if _bedrock_is_gpt_oss(model_name):
+            effort = _BEDROCK_GPT_OSS_EFFORT_MAP.get(effort_input, effort_input)
+        else:
+            # GPT-5.6 (and future gpt-5* Converse models): pass UI effort
+            # through. ``none`` is already floored to low above.
+            effort = effort_input
+        return {"reasoning_effort": effort}
+
+    if provider == LLMProvider.ANTHROPIC.value or (
+        model_name and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
+    ):
+        if _bedrock_anthropic_uses_adaptive_thinking(model_name):
+            effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
+            return {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": effort},
+            }
+        budget = _BEDROCK_ANTHROPIC_THINKING_BUDGETS.get(
+            effort_input, _BEDROCK_ANTHROPIC_THINKING_BUDGETS["high"]
+        )
+        budget = max(budget, _BEDROCK_MIN_THINKING_BUDGET_TOKENS)
+        return {
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": budget,
+            },
+        }
+
+    if _bedrock_is_nova_2(model_name):
+        effort = _BEDROCK_NOVA_EFFORT_MAP.get(effort_input, effort_input)
+        return {
+            "reasoningConfig": {
+                "type": "enabled",
+                "maxReasoningEffort": effort,
+            },
+        }
+
+    return {}
+
+
+def _bedrock_max_tokens_for_thinking(
+    model_name: str | None,
+    thinking: dict[str, Any] | None,
+) -> int:
+    """max_tokens for Bedrock Converse, with budget_tokens < max_tokens.
+
+    AWS and Anthropic require ``1024 <= budget_tokens < max_tokens`` when
+    ``thinking.type`` is ``enabled``. Unrecognised Claude IDs fall back to
+    4096, which collides with the high/max thinking budgets, so those
+    requests are lifted to at least the modern Claude output floor.
+    """
+    max_tokens = _get_anthropic_max_tokens(model_name or "")
+    if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+        return max_tokens
+    budget = thinking.get("budget_tokens")
+    if not isinstance(budget, int):
+        return max_tokens
+    if max_tokens > budget:
+        return max_tokens
+    return max(
+        MAX_OUTPUT_TOKENS_CLAUDE_MODERN,
+        budget + _BEDROCK_THINKING_OUTPUT_RESERVE_TOKENS,
+    )
+
+
+def _bedrock_temperature(
+    configuration: dict[str, Any],
+    *,
+    provider_in_bedrock: str,
+    model_name: str | None,
+    additional_fields: dict[str, Any],
+) -> float | None:
+    """Return Converse temperature, or ``None`` when the param must be omitted.
+
+    Rules (AWS / Anthropic / Nova / OpenAI):
+    - Claude models that dropped sampling params → omit.
+    - Claude with thinking / adaptive thinking enabled → omit (non-1 values 400).
+    - Nova 2 with ``maxReasoningEffort=high`` → omit (also forbids maxTokens).
+    - GPT-5.x on Bedrock typically rejects temperature → omit.
+    - Otherwise use configured temperature (default 0.2). Never force 1 for
+      Bedrock OpenAI gpt-oss (unlike direct OpenAI gpt-5.x).
+    """
+    provider = (provider_in_bedrock or "").lower()
+    is_anthropic = provider == LLMProvider.ANTHROPIC.value or (
+        model_name is not None
+        and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
+    )
+
+    if _bedrock_is_openai_gpt5(model_name):
+        return None
+
+    if is_anthropic and not _anthropic_supports_sampling_params(model_name):
+        return None
+
+    thinking = additional_fields.get("thinking")
+    if is_anthropic and isinstance(thinking, dict) and thinking.get("type") in (
+        "enabled",
+        "adaptive",
+    ):
+        return None
+
+    reasoning_config = additional_fields.get("reasoningConfig")
+    if (
+        isinstance(reasoning_config, dict)
+        and reasoning_config.get("type") == "enabled"
+        and reasoning_config.get("maxReasoningEffort") == "high"
+    ):
+        return None
+
+    return configuration.get("temperature", 0.2)
+
+
+def _detect_bedrock_provider(model_name: str | None) -> str:
+    """Infer the Bedrock foundation-model provider from a model id.
+
+    Falls back to Anthropic when the id says nothing recognizable; use
+    `_identify_bedrock_provider` when the difference between "it is Anthropic"
+    and "cannot tell" matters.
+    """
+    return _identify_bedrock_provider(model_name) or LLMProvider.ANTHROPIC.value
+
+
+def _identify_bedrock_provider(model_name: str | None) -> str | None:
+    """The provider a Bedrock model id names, or None when it names none.
+
+    Bedrock ids namespace their provider (`global.amazon.nova-2-lite-v1:0`,
+    `anthropic.claude-...`), so when this is confident it is authoritative --
+    more so than a value picked from a dropdown.
+    """
+    if not model_name:
+        return None
+
+    lowered = model_name.lower()
+    if "mistral" in lowered:
+        return LLMProvider.MISTRAL.value
+    if "claude" in lowered or "anthropic" in lowered:
+        return LLMProvider.ANTHROPIC.value
+    if "openai" in lowered or "gpt-oss" in lowered or _GPT5_MODEL_RE.search(lowered):
+        return "openai"
+    if "llama" in lowered or "meta" in lowered:
+        return "meta"
+    if "deepseek" in lowered:
+        return "deepseek"
+    if "titan" in lowered or "amazon" in lowered or "nova" in lowered:
+        return "amazon"
+    if "cohere" in lowered:
+        return "cohere"
+    if "ai21" in lowered or "jamba" in lowered:
+        return "ai21"
+    if "qwen" in lowered:
+        return "qwen"
+    return None
+
+
+def bedrock_provider_mismatch(configured: str | None, model_name: str | None) -> str | None:
+    """The provider a Bedrock model id names, when it contradicts `configured`.
+
+    `None` means there is nothing to report: the two agree, the id names no
+    provider, or none was configured.
+    """
+    identified = _identify_bedrock_provider(model_name)
+    if not identified or not configured:
+        return None
+    configured_key = configured.strip().lower()
+    if configured_key in ("", "other"):
+        return None
+    return identified if identified != configured_key else None
+
+
+def resolve_bedrock_provider(configured: str | None, model_name: str | None) -> str:
+    """Which foundation-model provider to build the request for.
+
+    The model id wins over a configured value that contradicts it. Bedrock ids
+    namespace their provider (`global.amazon.nova-2-lite-v1:0`), so a mismatch
+    is a mis-set dropdown, not an intent -- and honouring it sends Anthropic's
+    `thinking` block to a Nova model, which Bedrock rejects with "extraneous
+    key [thinking] is not permitted": an error that names neither the setting
+    at fault nor the model it was set on.
+    """
+    identified = bedrock_provider_mismatch(configured, model_name)
+    if identified:
+        logger.warning(
+            "Bedrock provider is set to %r but the model id names %r (%s); "
+            "using %r. Correct the provider on this model to silence this.",
+            configured, identified, model_name, identified,
+        )
+        return identified
+    return configured or _detect_bedrock_provider(model_name)
+
+
 def get_generator_model(
     provider: str,
     config: dict[str, Any],
@@ -932,7 +1547,7 @@ def get_generator_model(
     api_mode_store = get_llm_api_mode_store()
     api_mode = api_mode_store.get(config.get("modelKey"), model_name) if api_mode_store else None
 
-    logger.info(
+    logger.debug(
         f"Getting generator model: provider={provider}, model_name={model_name}, "
         f"reasoning_effort={reasoning_effort}, api_mode={api_mode}"
     )
@@ -959,7 +1574,7 @@ def get_generator_model(
         return ChatAnthropic(**anthropic_kwargs)
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
-        from langchain_aws import ChatBedrock
+        from langchain_aws import ChatBedrockConverse
 
         # Determine the actual provider based on model name if not explicitly set
         provider_in_bedrock = configuration.get("provider")
@@ -974,38 +1589,22 @@ def get_generator_model(
                 # Fall back to auto-detection if custom provider is not provided
                 provider_in_bedrock = None
 
-        # Auto-detect provider from model name if not explicitly set
-        if not provider_in_bedrock:
-            if "mistral" in model_name.lower():
-                provider_in_bedrock = LLMProvider.MISTRAL.value
-            elif "claude" in model_name.lower() or "anthropic" in model_name.lower():
-                provider_in_bedrock = LLMProvider.ANTHROPIC.value
-            elif "llama" in model_name.lower() or "meta" in model_name.lower():
-                provider_in_bedrock = "meta"
-            elif "titan" in model_name.lower() or "amazon" in model_name.lower():
-                provider_in_bedrock = "amazon"
-            elif "cohere" in model_name.lower():
-                provider_in_bedrock = "cohere"
-            elif "ai21" in model_name.lower() or "jamba" in model_name.lower():
-                provider_in_bedrock = "ai21"
-            elif "qwen" in model_name.lower():
-                provider_in_bedrock = "qwen"
-            else:
-                # Default to anthropic for backwards compatibility
-                provider_in_bedrock = LLMProvider.ANTHROPIC.value
+        provider_in_bedrock = resolve_bedrock_provider(provider_in_bedrock, model_name)
 
         logger.info(f"Provider in Bedrock: {provider_in_bedrock} for model: {model_name}")
 
-        # Set model_kwargs based on the provider
-        # For Anthropic models in Bedrock, we need to pass max_tokens in model_kwargs
-        # but NOT anthropic_version (which causes the validation error)
-        if provider_in_bedrock == LLMProvider.ANTHROPIC.value:
-            max_tokens = _get_anthropic_max_tokens(model_name)
-            model_kwargs = {
-                "max_tokens": max_tokens,
-            }
-        else:
-            model_kwargs = {}
+        additional_fields = _bedrock_additional_model_request_fields(
+            reasoning_effort,
+            config,
+            provider_in_bedrock=provider_in_bedrock,
+            model_name=model_name,
+        )
+        temperature = _bedrock_temperature(
+            configuration,
+            provider_in_bedrock=provider_in_bedrock,
+            model_name=model_name,
+            additional_fields=additional_fields,
+        )
 
         bedrock_client = _create_bedrock_client(configuration)
 
@@ -1014,15 +1613,30 @@ def get_generator_model(
             client=bedrock_client,
             region_name=configuration.get("region"),
             provider=provider_in_bedrock,
-            model_kwargs=model_kwargs,
-            beta_use_converse_api=True,
         )
-        if (
-            provider_in_bedrock != LLMProvider.ANTHROPIC.value
-            or _anthropic_supports_sampling_params(model_name)
+        if additional_fields:
+            bedrock_kwargs["additional_model_request_fields"] = additional_fields
+
+        # Anthropic needs an explicit max_tokens on Converse. Any path that
+        # emits a thinking block must set it too (budget_tokens < max_tokens).
+        # Nova 2 with maxReasoningEffort=high forbids maxTokens — skip then.
+        thinking = additional_fields.get("thinking")
+        nova_high = (
+            isinstance(additional_fields.get("reasoningConfig"), dict)
+            and additional_fields["reasoningConfig"].get("maxReasoningEffort") == "high"
+        )
+        if not nova_high and (
+            isinstance(thinking, dict)
+            or provider_in_bedrock == LLMProvider.ANTHROPIC.value
         ):
-            bedrock_kwargs["temperature"] = 0.2
-        return ChatBedrock(**bedrock_kwargs)
+            bedrock_kwargs["max_tokens"] = _bedrock_max_tokens_for_thinking(
+                model_name, thinking if isinstance(thinking, dict) else None
+            )
+
+        if temperature is not None:
+            bedrock_kwargs["temperature"] = temperature
+
+        return ChatBedrockConverse(**bedrock_kwargs)
     elif provider == LLMProvider.AZURE_AI.value:
         from langchain_anthropic import ChatAnthropic
         from langchain_openai import ChatOpenAI

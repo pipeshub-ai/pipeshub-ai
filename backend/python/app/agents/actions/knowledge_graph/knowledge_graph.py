@@ -30,11 +30,13 @@ from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
 )
+from app.utils.chat_helpers import resolve_frontend_url
 
 from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
 from .ops.scope import resolve_scope
+from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
 from .views import render_lookup_result, render_navigation_view
 
@@ -166,36 +168,6 @@ def _get_scoping(state: ChatState) -> tuple[list[str], list[str]]:
     from .ops.scope import derive_scope
     scope = derive_scope(state)
     return list(scope.app_ids), list(scope.kb_ids)
-
-
-def _time_range_to_kh_filters(
-    time_range: dict[str, int] | None,
-) -> tuple[dict[str, int | None] | None, dict[str, int | None] | None]:
-    """Bridge `ops.time_range.parse_time_range()`'s epoch-ms dict (keyed by
-    source_created_after_ms/source_created_before_ms/source_updated_after_ms/
-    source_updated_before_ms — the shape knowledgegraph__search's retrieval
-    path expects) to the `{"gte": ..., "lte": ...}` shape
-    `KnowledgeHubService.get_nodes()` expects for its `created_at`/
-    `updated_at` params. Reusing the same parser as search() (rather than a
-    second, separate ISO-parsing implementation) means navigate() gets the
-    exact same validation: rejecting timezone-naive datetimes, checking
-    after <= before, and rejecting future created_after dates.
-    """
-    if not time_range:
-        return None, None
-    created_at: dict[str, int | None] | None = None
-    if "source_created_after_ms" in time_range or "source_created_before_ms" in time_range:
-        created_at = {
-            "gte": time_range.get("source_created_after_ms"),
-            "lte": time_range.get("source_created_before_ms"),
-        }
-    updated_at: dict[str, int | None] | None = None
-    if "source_updated_after_ms" in time_range or "source_updated_before_ms" in time_range:
-        updated_at = {
-            "gte": time_range.get("source_updated_after_ms"),
-            "lte": time_range.get("source_updated_before_ms"),
-        }
-    return created_at, updated_at
 
 
 def _time_range_error_message(error_json: str) -> str:
@@ -398,6 +370,8 @@ class KnowledgeGraph:
         if not graph_provider:
             return False, "Graph provider not available."
 
+        frontend_url = await resolve_frontend_url(state.get("config_service"))
+
         # Normalize
         node_id = node_id.strip() if node_id else None
         node_types = node_types if node_types else None
@@ -421,7 +395,7 @@ class KnowledgeGraph:
         )
         if time_error is not None:
             return False, _time_range_error_message(time_error)
-        created_at, updated_at = _time_range_to_kh_filters(time_range)
+        created_at, updated_at = time_range_to_kh_filters(time_range)
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`): node_id may be a short
@@ -475,7 +449,7 @@ class KnowledgeGraph:
                     user_key=user_key,
                     folder_mime_types=FOLDER_MIME_TYPES,
                     agent_connector_ids=connector_ids,
-                    frontend_url=state.get("frontend_url"),
+                    frontend_url=frontend_url,
                 )
                 result = await resolver.resolve_many([node_id])
                 if result.matches:
@@ -486,7 +460,7 @@ class KnowledgeGraph:
             user_id=user_id,
             user_key=user_key,
             org_id=org_id,
-            frontend_url=state.get("frontend_url"),
+            frontend_url=frontend_url,
         )
 
         app_names = {c.id: c.name for c in catalog.connectors}
@@ -624,7 +598,7 @@ class KnowledgeGraph:
             folder_mime_types=FOLDER_MIME_TYPES,
             agent_connector_ids=connector_ids,
             connector_name_hint=connector_name,
-            frontend_url=state.get("frontend_url"),
+            frontend_url=await resolve_frontend_url(state.get("config_service")),
         )
 
         try:

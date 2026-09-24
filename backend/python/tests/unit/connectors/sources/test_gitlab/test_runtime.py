@@ -402,6 +402,88 @@ class TestForceRefreshOAuthToken:
         assert result is True
         mock_refresh.refresh_now.assert_called_once()
 
+    async def test_concurrent_401s_refresh_only_once(self) -> None:
+        """GitLab refresh tokens are single-use: N concurrent 401s must produce
+        ONE refresh_now call, with the waiters reusing the rotated token instead
+        of each performing a real refresh.
+
+        Nothing on the apply path is mocked. That matters: the winner pushes the
+        rotated token into the client, so a guard that compares etcd against the
+        client sees them equal and refreshes again. Stubbing
+        ``refresh_token_if_needed`` / ``_apply_access_token_to_clients`` pins the
+        client token and hides exactly that.
+        """
+        import asyncio
+
+        creds = {"access_token": "old-access", "refresh_token": "tok-refresh"}
+        client_token = {"value": "old-access"}
+
+        c, runtime = _make_runtime()
+        internal_client = MagicMock()
+        internal_client.get_token.side_effect = lambda: client_token["value"]
+        internal_client.set_token.side_effect = (
+            lambda t: client_token.__setitem__("value", t)
+        )
+        c.external_client = MagicMock()
+        c.external_client.get_client.return_value = internal_client
+        c.data_source = MagicMock()
+
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "OAUTH"}, "credentials": creds}
+        )
+
+        async def _rotate(*_args, **_kwargs):
+            # Suspend like the real HTTP refresh does. Without a genuine yield
+            # here a bare AsyncMock never reaches the event loop, so task 1 runs
+            # to completion before task 2 starts and the 401s are serial rather
+            # than concurrent — the test would pass no matter what the guard did.
+            await asyncio.sleep(0)
+            # The real service stores a new pair; later config reads see it.
+            creds["access_token"] = "new-access"
+            creds["refresh_token"] = "tok-refresh-2"
+
+        mock_refresh = MagicMock()
+        mock_refresh.refresh_now = AsyncMock(side_effect=_rotate)
+
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_ss.get_token_refresh_service = MagicMock(return_value=mock_refresh)
+            results = await asyncio.gather(
+                *(runtime.force_refresh_oauth_token() for _ in range(5))
+            )
+
+        assert all(results)
+        mock_refresh.refresh_now.assert_awaited_once()
+        # The winner really did push the rotated token through to the client.
+        assert client_token["value"] == "new-access"
+        assert c.data_source.token == "new-access"
+
+    async def test_already_rotated_token_is_applied_without_refresh(self) -> None:
+        """When the stored access token already differs from the client's, a
+        concurrent refresh (or the background refresher) beat us to it — apply
+        it and never touch the single-use refresh token."""
+        c, runtime = _make_runtime()
+        c.external_client = MagicMock()
+        c.external_client.get_client.return_value.get_token.return_value = "old-access"
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"access_token": "new-access", "refresh_token": "tok-refresh"},
+            }
+        )
+        runtime._apply_access_token_to_clients = MagicMock()
+
+        mock_refresh = MagicMock()
+        mock_refresh.refresh_now = AsyncMock()
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_ss.get_token_refresh_service = MagicMock(return_value=mock_refresh)
+            result = await runtime.force_refresh_oauth_token()
+
+        assert result is True
+        runtime._apply_access_token_to_clients.assert_called_once_with("new-access")
+        mock_refresh.refresh_now.assert_not_awaited()
+
     async def test_exception_returns_false(self) -> None:
         """Exception during refresh is caught and returns False."""
         c, runtime = _make_runtime()

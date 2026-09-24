@@ -1,11 +1,53 @@
 'use client';
 
 import React from 'react';
-import { Flex, IconButton, Popover, Separator, Switch, Text, Tooltip } from '@radix-ui/themes';
+import { Box, Flex, IconButton, Popover, Separator, Switch, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
+import { DEFAULT_AGENT_CAPABILITIES } from '@/chat/types';
+
+export function hasNonDefaultSearchCapabilities(
+  internalSearch: boolean,
+  webSearch: boolean,
+): boolean {
+  return (
+    internalSearch !== DEFAULT_AGENT_CAPABILITIES.internalSearch ||
+    webSearch !== DEFAULT_AGENT_CAPABILITIES.webSearch
+  );
+}
+
+export function PlusMenuTriggerIcon({
+  color,
+  showFilterBadge,
+}: {
+  color: string;
+  showFilterBadge: boolean;
+}) {
+  return (
+    <Box style={{ position: 'relative', display: 'inline-flex' }}>
+      <MaterialIcon name="add" size={ICON_SIZES.PRIMARY} color={color} />
+      {showFilterBadge && (
+        <Box
+          data-testid="plus-menu-filter-badge"
+          aria-hidden
+          style={{
+            position: 'absolute',
+            top: -1,
+            right: -1,
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            backgroundColor: 'var(--red-9)',
+            boxShadow: '0 0 0 1.5px var(--color-panel-solid)',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+    </Box>
+  );
+}
 
 export interface PlusMenuCapabilities {
   internalSearch: boolean;
@@ -166,6 +208,10 @@ export function PlusMenuButton({
   ...capabilities
 }: PlusMenuButtonProps) {
   const { t } = useTranslation();
+  const showFilterBadge = hasNonDefaultSearchCapabilities(
+    capabilities.internalSearch,
+    capabilities.webSearch,
+  );
   return (
     <Popover.Root open={open} onOpenChange={onOpenChange}>
       <Popover.Trigger>
@@ -174,13 +220,18 @@ export function PlusMenuButton({
           color="gray"
           size="2"
           disabled={disabled}
-          aria-label={t('chat.plusMenu.ariaLabel', { defaultValue: 'Attach files and capabilities' })}
+          aria-label={
+            showFilterBadge
+              ? t('chat.plusMenu.ariaLabelFiltersApplied', {
+                  defaultValue: 'Attach files and capabilities. Search filters applied',
+                })
+              : t('chat.plusMenu.ariaLabel', { defaultValue: 'Attach files and capabilities' })
+          }
           style={{ margin: 0, cursor: disabled ? 'default' : 'pointer' }}
         >
-          <MaterialIcon
-            name="add"
-            size={ICON_SIZES.PRIMARY}
+          <PlusMenuTriggerIcon
             color={disabled ? 'var(--slate-5)' : activeIconColor}
+            showFilterBadge={showFilterBadge}
           />
         </IconButton>
       </Popover.Trigger>

@@ -119,6 +119,13 @@ from app.sources.client.confluence.confluence import (
 from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 
 # Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
@@ -247,6 +254,7 @@ def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
                     field_type="SELECT",
                     required=True,
                     placeholder="Select...",
+                    default_value="yes",
                     options=["no", "yes"],
                     is_secret=False,
                 ),
@@ -449,17 +457,21 @@ class ConfluenceConnector(BaseConnector):
         # Lazy cache: lowercased Confluence group name -> external group id (UUID)
         self._group_name_to_external_id: dict[str, str] | None = None
 
+    async def _build_confluence_client(self):
+        """EE override point: swap to EE ConfluenceClient for org-scoped OAuth inheritance."""
+        return await ExternalConfluenceClient.build_from_services(
+            logger=self.logger,
+            config_service=self.config_service,
+            connector_instance_id=self.connector_id,
+        )
+
     async def init(self) -> bool:
         """Initialize the Confluence connector with credentials and client."""
         try:
             self.logger.info("🔧 Initializing Confluence Cloud Connector...")
 
             # Build client from services (handles config loading, token, base URL internally)
-            self.external_client = await ExternalConfluenceClient.build_from_services(
-                logger=self.logger,
-                config_service=self.config_service,
-                connector_instance_id=self.connector_id
-            )
+            self.external_client = await self._build_confluence_client()
 
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
@@ -510,13 +522,13 @@ class ConfluenceConnector(BaseConnector):
             ConfluenceDataSource with current valid token
         """
         if not self.external_client:
-            raise Exception("Confluence client not initialized. Call init() first.")
+            raise connector_not_ready(self.display_name)
 
         # Fetch current config from etcd (async I/O)
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
 
         if not config:
-            raise Exception("Confluence configuration not found")
+            raise connector_not_ready(self.display_name)
 
         # Check auth type
         auth_config = config.get("auth", {}) or {}
@@ -531,7 +543,7 @@ class ConfluenceConnector(BaseConnector):
         fresh_token = credentials_config.get("access_token", "")
 
         if not fresh_token:
-            raise Exception("No OAuth access token available")
+            raise connector_not_ready(self.display_name)
 
         # Get current token from client
         internal_client = self.external_client.get_client()
@@ -2352,61 +2364,59 @@ class ConfluenceConnector(BaseConnector):
         try:
             if principal_type == "user":
                 entity_type = EntityType.USER
-                # Lookup user by source_user_id (accountId) using transaction store
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_source_id(
-                        source_user_id=principal_id,
-                        connector_id=self.connector_id,
-                    )
-                    if user:
-                        return Permission(
-                            email=user.email,
-                            type=permission_type,
-                            entity_type=entity_type
-                        )
-
-                    # User not found - check if pseudo-group exists or should be created
-                    if create_pseudo_group_if_missing:
-                        # Check for existing pseudo-group
-                        pseudo_group = await tx_store.get_user_group_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=principal_id,
-                        )
-
-                        if not pseudo_group:
-                            # Create pseudo-group on-the-fly
-                            pseudo_group = await self._create_pseudo_group(principal_id)
-
-                        if pseudo_group:
-                            self.logger.debug(
-                                f"Using pseudo-group for user {principal_id} (no email available)"
-                            )
-                            return Permission(
-                                external_id=pseudo_group.source_user_group_id,
-                                type=permission_type,
-                                entity_type=EntityType.GROUP
-                            )
-
-                    self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
-                    return None
-
-            elif principal_type == "group":
-                entity_type = EntityType.GROUP
-                # Lookup group by source_user_group_id using transaction store
-                async with self.data_store_provider.transaction() as tx_store:
-                    group = await tx_store.get_user_group_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=principal_id,
-                    )
-                    if not group:
-                        self.logger.debug(f"  ⚠️ Group {principal_id} not found in DB, skipping permission")
-                        return None
-
+                # Lookup user by source_user_id (accountId)
+                user = await self.data_entities_processor.get_user_by_source_id(
+                    source_user_id=principal_id,
+                    connector_id=self.connector_id,
+                )
+                if user:
                     return Permission(
-                        external_id=group.source_user_group_id,
+                        email=user.email,
                         type=permission_type,
                         entity_type=entity_type
                     )
+
+                # User not found - check if pseudo-group exists or should be created
+                if create_pseudo_group_if_missing:
+                    # Check for existing pseudo-group
+                    pseudo_group = await self.data_entities_processor.get_user_group_by_external_id(
+                        connector_id=self.connector_id,
+                        external_id=principal_id,
+                    )
+
+                    if not pseudo_group:
+                        # Create pseudo-group on-the-fly
+                        pseudo_group = await self._create_pseudo_group(principal_id)
+
+                    if pseudo_group:
+                        self.logger.debug(
+                            f"Using pseudo-group for user {principal_id} (no email available)"
+                        )
+                        return Permission(
+                            external_id=pseudo_group.source_user_group_id,
+                            type=permission_type,
+                            entity_type=EntityType.GROUP
+                        )
+
+                self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
+                return None
+
+            elif principal_type == "group":
+                entity_type = EntityType.GROUP
+                # Lookup group by source_user_group_id
+                group = await self.data_entities_processor.get_user_group_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=principal_id,
+                )
+                if not group:
+                    self.logger.debug(f"  ⚠️ Group {principal_id} not found in DB, skipping permission")
+                    return None
+
+                return Permission(
+                    external_id=group.source_user_group_id,
+                    type=permission_type,
+                    entity_type=entity_type
+                )
 
             return None
 
@@ -2452,11 +2462,9 @@ class ConfluenceConnector(BaseConnector):
             return self._group_name_to_external_id
 
         name_map: dict[str, str] = {}
-        async with self.data_store_provider.transaction() as tx_store:
-            groups = await tx_store.get_user_groups(
-                connector_id=self.connector_id,
-                org_id=self.data_entities_processor.org_id,
-            )
+        groups = await self.data_entities_processor.get_all_user_groups(
+            connector_id=self.connector_id,
+        )
         for group in groups:
             if group.name and group.source_user_group_id:
                 name_map[group.name.lower()] = group.source_user_group_id
@@ -3431,11 +3439,10 @@ class ConfluenceConnector(BaseConnector):
 
     async def _app_user_from_linked_source_id(self, account_id: str) -> Optional[AppUser]:
         """Build AppUser for a Confluence accountId linked to this connector."""
-        async with self.data_store_provider.transaction() as tx_store:
-            user = await tx_store.get_user_by_source_id(
-                source_user_id=account_id,
-                connector_id=self.connector_id,
-            )
+        user = await self.data_entities_processor.get_user_by_source_id(
+            source_user_id=account_id,
+            connector_id=self.connector_id,
+        )
         if not user or not user.email:
             return None
         return AppUser(
@@ -3612,9 +3619,10 @@ class ConfluenceConnector(BaseConnector):
             StreamingResponse: Streaming response with BlocksContainer JSON or file content
         """
         if record.is_placeholder:
-            raise ValueError(
+            raise not_downloadable(
                 f"Cannot stream placeholder record {record.external_record_id}: "
-                "it is a stub for an out-of-scope ancestor and has no content"
+                "it is a stub for an out-of-scope ancestor and has no content",
+                connector=self.display_name,
             )
         try:
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
@@ -3714,11 +3722,8 @@ class ConfluenceConnector(BaseConnector):
                 # Comment record - fetch comment content
                 comment_data = await self._fetch_comment_data(record)
                 if not comment_data:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Comment {record.external_record_id} not found"
-                    )
-                
+                    raise not_found_at_source(self.display_name)
+
                 # Extract comment content
                 body = comment_data.get("body", {})
                 storage_content = body.get("storage", {})
@@ -3741,9 +3746,7 @@ class ConfluenceConnector(BaseConnector):
             raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500, detail=f"Failed to stream record: {str(e)}"
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
         """
@@ -3782,11 +3785,11 @@ class ConfluenceConnector(BaseConnector):
                     detail=f"Unsupported record type: {record_type}"
                 )
 
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Content not found: {page_id}"
-                )
+            if not response:
+                raise not_found_at_source(self.display_name)
+
+            if response.status != HttpStatusCode.SUCCESS.value:
+                raise map_source_status(response.status, connector=self.display_name)
 
             response_data = response.json()
 
@@ -3816,10 +3819,7 @@ class ConfluenceConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Failed to fetch content: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to fetch content: {str(e)}"
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     @staticmethod
     def _rest_attachment_id_from_linked_resource(linked_resource_id: str) -> str:
@@ -4865,8 +4865,11 @@ class ConfluenceConnector(BaseConnector):
         else:
             raise ValueError(f"Unsupported record type: {record_type}")
 
+        if not response:
+            raise not_found_at_source(self.display_name)
+
         if response.status != HttpStatusCode.SUCCESS.value:
-            raise HTTPException(status_code=404, detail=f"Content not found: {page_id}")
+            raise map_source_status(response.status, connector=self.display_name)
 
         return response.json()
 
@@ -4889,40 +4892,39 @@ class ConfluenceConnector(BaseConnector):
         attachment_children_map: dict[str, ChildRecord] = {}
         new_file_records: list[tuple[FileRecord, list[Permission]]] = []
 
-        async with self.data_store_provider.transaction() as tx_store:
-            for attachment in attachments_data:
-                attachment_id = attachment.get("id")
-                if not attachment_id:
-                    continue
+        for attachment in attachments_data:
+            attachment_id = attachment.get("id")
+            if not attachment_id:
+                continue
 
-                # Look up existing FileRecord (without "attachment_" prefix - matches how records are stored)
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=str(attachment_id)  # No prefix - matches external_record_id in FileRecord
+            # Look up existing FileRecord (without "attachment_" prefix - matches how records are stored)
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=str(attachment_id)  # No prefix - matches external_record_id in FileRecord
+            )
+
+            # Create FileRecord if it doesn't exist (new attachment added after sync)
+            if not existing_record:
+                # Transform to FileRecord
+                file_record = self._transform_to_attachment_file_record(
+                    attachment_data=attachment,
+                    parent_external_record_id=page_id,
+                    parent_external_record_group_id=space_id,
+                    existing_record=None,
+                    parent_node_id=page_node_id,
+                    attachment_api_base_url=attachment_api_base_url,
                 )
 
-                # Create FileRecord if it doesn't exist (new attachment added after sync)
-                if not existing_record:
-                    # Transform to FileRecord
-                    file_record = self._transform_to_attachment_file_record(
-                        attachment_data=attachment,
-                        parent_external_record_id=page_id,
-                        parent_external_record_group_id=space_id,
-                        existing_record=None,
-                        parent_node_id=page_node_id,
-                        attachment_api_base_url=attachment_api_base_url,
-                    )
+                if file_record:
+                    new_file_records.append((file_record, []))
+                    existing_record = file_record
 
-                    if file_record:
-                        new_file_records.append((file_record, []))
-                        existing_record = file_record
-
-                if existing_record:
-                    attachment_children_map[str(attachment_id)] = ChildRecord(
-                        child_type=ChildType.RECORD,
-                        child_id=existing_record.id,
-                        child_name=existing_record.record_name
-                    )
+            if existing_record:
+                attachment_children_map[str(attachment_id)] = ChildRecord(
+                    child_type=ChildType.RECORD,
+                    child_id=existing_record.id,
+                    child_name=existing_record.record_name
+                )
 
         # Save new FileRecords if any were created
         if new_file_records:
@@ -4972,10 +4974,7 @@ class ConfluenceConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Failed to download attachment {record.external_record_id}: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to download attachment: {str(e)}"
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (delegates to full sync)."""
@@ -5639,15 +5638,26 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.error(f"Unsupported comment type: {comment_type}")
                 return None
             
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
+            if not response:
                 self.logger.warning(f"Comment {comment_id} not found at source")
                 return None
-            
+
+            # Only a real 404 means "gone"; anything else (expired token,
+            # revoked permission, rate limit) must keep its own status.
+            if response.status == HttpStatusCode.NOT_FOUND.value:
+                self.logger.warning(f"Comment {comment_id} not found at source")
+                return None
+
+            if response.status != HttpStatusCode.SUCCESS.value:
+                raise map_source_status(response.status, connector=self.display_name)
+
             return response.json()
-            
+
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to fetch comment {record.external_record_id}: {e}")
-            return None
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _batch_fetch_user_display_names(
         self, 
@@ -5800,8 +5810,7 @@ class ConfluenceConnector(BaseConnector):
         # Persist the mime type updates to database
         if records_to_fix:
             self.logger.info(f"Updating {len(records_to_fix)} legacy records to application/blocks mime type")
-            async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
-                await tx_store.batch_upsert_records(records_to_fix)
+            await self.data_entities_processor.batch_upsert_records(records_to_fix)
             self.logger.info(f"Successfully updated mime types for {len(records_to_fix)} records")
         
         return records_to_fix, records_ok
@@ -5932,16 +5941,10 @@ class ConfluenceConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "ConfluenceConnector":
         """Factory method to create a Confluence connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-
-        await data_entities_processor.initialize()
-
         return cls(
             logger,
             data_entities_processor,

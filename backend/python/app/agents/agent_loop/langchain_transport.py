@@ -30,6 +30,8 @@ not a replacement for, `OpikTracingTransport`'s own summary span.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -51,13 +53,22 @@ from app.agent_loop_lib.core.streaming import (
 )
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
+from app.agent_loop_lib.transport.provider_conflicts import (
+    API_SHAPE_CONFLICT_MARKERS,
+    REASONING_MANDATORY_CONFLICT_MARKERS,
+    is_api_shape_conflict,
+    is_reasoning_mandatory_conflict,
+    is_tool_result_image_conflict,
+)
 from app.agents.agent_loop.converters import (
     convert_assistant_message_from_langchain,
     convert_messages_to_langchain,
     convert_tool_schemas_to_langchain,
+    has_tool_result_images,
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
+from app.agents.agent_loop.image_guard import cap_images
 from app.utils.llm_api_mode_store import (
     REASONING_MANDATORY_FALLBACK_EFFORT,
     LLMApiMode,
@@ -68,7 +79,9 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.messages import BaseMessage
 
+    from app.agent_loop_lib.core.context import CancellationToken
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.tool_schema import ToolSchema
 
@@ -86,7 +99,15 @@ _STOP_REASON_TRUNCATED = {"length", "max_tokens"}
 # library network/timeout errors plus each SDK's consistent
 # "*Connection*"/"*Timeout*" naming convention covers the common transient
 # cases without a hard dependency on any one provider's package.
-_NETWORK_ERROR_NAME_HINTS = ("connectionerror", "connecttimeout", "readtimeout", "timeouterror", "apitimeouterror", "apiconnectionerror")
+# "protocolerror" covers httpx/httpcore's `RemoteProtocolError` — "peer closed
+# connection without sending complete message body", the way a gateway
+# dropping a stream mid-response actually surfaces. It carries no HTTP status
+# and is not an OSError, so without this it read as a permanent failure and a
+# transient blip killed the turn instead of being retried.
+_NETWORK_ERROR_NAME_HINTS = (
+    "connectionerror", "connecttimeout", "readtimeout", "timeouterror",
+    "apitimeouterror", "apiconnectionerror", "protocolerror", "incompleteread",
+)
 
 # Substrings providers/gateways actually emit when reasoning + bound function
 # tools can't both go through the API shape the request used. Matched
@@ -99,27 +120,13 @@ _NETWORK_ERROR_NAME_HINTS = ("connectionerror", "connecttimeout", "readtimeout",
 #   attempt landed on a backend that only supports this on Chat Completions.
 # - "tool_choice.function": Chat-Completions-shaped tool_choice sent to a
 #   Responses-only model/deployment.
-_API_SHAPE_CONFLICT_MARKERS = (
-    "please use /v1/responses instead",
-    "please use /v1/chat/completions instead",
-    "tool_choice.function",
-)
-
-
-def _is_api_shape_conflict(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return any(marker in message for marker in _API_SHAPE_CONFLICT_MARKERS)
-
-
-# Substring a provider/gateway emits when it refuses to let reasoning be
-# turned off at all — observed on some OpenRouter-proxied Gemini models:
-# "Reasoning is mandatory for this endpoint and cannot be disabled."
-_REASONING_MANDATORY_CONFLICT_MARKERS = ("reasoning is mandatory",)
-
-
-def _is_reasoning_mandatory_conflict(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return any(marker in message for marker in _REASONING_MANDATORY_CONFLICT_MARKERS)
+# Markers and predicates live in transport/provider_conflicts.py so the direct
+# SDK transport recovers from exactly the same errors this one does.
+_API_SHAPE_CONFLICT_MARKERS = API_SHAPE_CONFLICT_MARKERS
+_REASONING_MANDATORY_CONFLICT_MARKERS = REASONING_MANDATORY_CONFLICT_MARKERS
+_is_api_shape_conflict = is_api_shape_conflict
+_is_reasoning_mandatory_conflict = is_reasoning_mandatory_conflict
+_is_tool_result_image_conflict = is_tool_result_image_conflict
 
 
 def _truncate_raw_for_log(raw: Any, max_len: int = 500) -> str:  # noqa: ANN401
@@ -176,6 +183,48 @@ def _is_network_error(exc: Exception) -> bool:
     return any(hint in type_name for hint in _NETWORK_ERROR_NAME_HINTS)
 
 
+# Class names in a chat model's MRO that identify the provider family, matched
+# by name so this module keeps no hard `isinstance`/import dependency on
+# `langchain_ollama`/`langchain_openai` being installed. Matching the whole MRO
+# rather than `type(x).__name__` is what makes a subclass/wrapper (a custom
+# `ChatOllama` subclass, `AzureChatOpenAI`) resolve to its family instead of
+# falling through to the permissive default.
+_OLLAMA_CLASS_NAME = "ChatOllama"
+_OPENAI_CLASS_NAMES = frozenset({"BaseChatOpenAI", "ChatOpenAI", "AzureChatOpenAI"})
+
+
+def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
+    """Whether this LangChain chat model's underlying provider accepts
+    image content inside a tool-result message.
+
+    Two families reject it:
+    - Ollama's `/api/chat` only accepts `content: str` for `role: "tool"`
+      messages (see the Image Context Engineering plan's API landscape
+      survey).
+    - OpenAI-family models on Chat Completions — which is every gateway
+      PipesHub routes through `ChatOpenAI` (OpenAI, Azure, OpenRouter,
+      LiteLLM proxy, LM Studio, ...) — reject an image block on any
+      non-`user` message outright: "Image URLs are only allowed for
+      messages with role 'user', but this message with role 'tool'
+      contains an image URL." Only the Responses API takes them, so
+      `use_responses_api` decides. A model LangChain routes to Responses on
+      its own (`_model_prefers_responses_api`, e.g. `gpt-5-pro`) reads as
+      unsupported here and delivers its images through the user-message
+      fallback instead — a redundant relocation, not a broken call.
+
+    Every other LangChain-wrapped provider PipesHub configures (Anthropic,
+    Gemini, Bedrock, ...) accepts multipart tool results. Whatever this gets
+    wrong for an unknown gateway is recovered at runtime off the provider's
+    own error — see `LangChainTransport._tool_image_fallback`.
+    """
+    mro_names = {cls.__name__ for cls in type(chat_model).__mro__}
+    if _OLLAMA_CLASS_NAME in mro_names:
+        return False
+    if mro_names & _OPENAI_CLASS_NAMES:
+        return bool(getattr(chat_model, "use_responses_api", False))
+    return True
+
+
 class LangChainTransport(LLMTransport):
     """Bridges a LangChain `BaseChatModel` to agent-loop's `LLMTransport`."""
 
@@ -185,9 +234,28 @@ class LangChainTransport(LLMTransport):
         model_name: str = "",
         opik_project_name: str | None = None,
         model_key: str | None = None,
+        max_images_per_request: int | None = None,
+        cancellation_token: "CancellationToken | None" = None,
     ) -> None:
         self._llm = chat_model
         self._model = model_name
+        # Stop Generation (Phase 3b): checked once per streamed chunk in
+        # `stream()` — the only place mid-response cancellation can act,
+        # since `complete()` makes one un-chunked provider call with no
+        # earlier exit point. `None` for every transport built without a
+        # `runId` (background/test runs) — `stream()`'s check is a no-op.
+        self._cancellation_token = cancellation_token
+        # Final enforcement of this model's image cap (see `image_guard`).
+        # `None` means "not wired by this caller" and leaves the messages
+        # untouched -- selection at the source already bounded them.
+        self._max_images_per_request = max_images_per_request
+        # Computed once from the model TYPE (not swapped on the api-mode
+        # fallback path below — that only rebinds the same underlying
+        # provider with different call kwargs, never changes provider).
+        self._supports_multipart_tool_result = _supports_multipart_tool_result(chat_model)
+        # Flipped by `_tool_image_fallback` once the provider itself has
+        # rejected an image inside a tool result, for the rest of this run.
+        self._tool_images_relocated = False
         # etcd `aiModels` config-entry key (see `app/utils/aimodels.py`'s
         # `get_generator_model`) — the identity a learned API-mode fact is
         # recorded/looked-up against (`app/utils/llm_api_mode_store.py`).
@@ -196,6 +264,9 @@ class LangChainTransport(LLMTransport):
         # runtime fallback below still applies either way).
         self._model_key = model_key
         self._opik_callbacks = build_langchain_opik_callbacks(opik_project_name)
+        # Keyed on the turn's tool names; see `_bind_tools`. A transport is
+        # built per request, so this can never be shared across users.
+        self._bound_by_tools: dict[tuple[str, ...], BaseChatModel] = {}
 
     def _langchain_config(self) -> dict[str, Any]:
         """`config=` kwarg for every `ainvoke`/`astream` call below — see
@@ -242,6 +313,22 @@ class LangChainTransport(LLMTransport):
             logger.debug("LangChainTransport: no tools offered for this turn")
             return llm
         tool_names = [t.name for t in tools]
+
+        # Binding re-derives a pydantic JSON schema per tool every turn (5.5% of
+        # query-service CPU) for output identical whenever the tool set is. Names
+        # key it safely: one name resolves to one registry entry per request, and
+        # `fetch_tools` granting more tools changes the names, forcing a rebind.
+        # Only bindings onto `self._llm` are cached. An `llm` override is the
+        # API-shape fallback retrying on a differently-configured model, and
+        # handing it the cached original made the retry re-raise the very error
+        # it was retrying.
+        cacheable = llm is self._llm
+        cache_key = tuple(tool_names)
+        if cacheable:
+            cached = self._bound_by_tools.get(cache_key)
+            if cached is not None:
+                return cached
+
         lc_tools = convert_tool_schemas_to_langchain(tools)
         try:
             bound = llm.bind_tools(lc_tools)
@@ -259,9 +346,73 @@ class LangChainTransport(LLMTransport):
             "LangChainTransport: bound %d tool(s) to LLM call: %s",
             len(tool_names), tool_names,
         )
+        if cacheable:
+            self._bound_by_tools[cache_key] = bound
         return bound
 
-    def _wrap_error(self, exc: Exception, context: str) -> TransportError:
+    def _to_langchain(
+        self, messages: list[Message], system: str | None, *, relocate: bool | None = None,
+    ) -> list[BaseMessage]:
+        """The single place message conversion picks up this transport's
+        learned image-delivery shape, so `complete`/`complete_structured`/
+        `stream` -- and the relocation retry -- can never drift on it.
+
+        `relocate` overrides the learned shape for the one caller still
+        discovering it (`_tool_image_fallback`); every other caller passes
+        None and gets what this transport has learned so far.
+        """
+        if self._max_images_per_request is not None:
+            messages = cap_images(messages, self._max_images_per_request)
+        return convert_messages_to_langchain(
+            messages,
+            system,
+            strip_tool_images=not self._supports_multipart_tool_result,
+            # The cap may keep a tool copy and discard its injected user copy.
+            # Move surviving tool images instead of silently stripping them.
+            relocate_tool_images=(
+                not self._supports_multipart_tool_result or self._tool_images_relocated
+            ) if relocate is None else relocate,
+        )
+
+    def _tool_image_fallback(
+        self, exc: Exception, messages: list[Message], system: str | None,
+    ) -> list[BaseMessage] | None:
+        """Messages to retry `exc` with when the provider rejected an image
+        inside a tool result, or `None` when that isn't what `exc` says.
+
+        The images move to a trailing user message rather than being dropped
+        (`convert_messages_to_langchain`'s `relocate_tool_images`): a run that
+        got here has no `shape_retrieved_image_injection` hook registered to
+        re-deliver them, since the factory registers that hook only for
+        providers `_supports_multipart_tool_result` already rejects. Returns
+        `None` once the shape is pinned, so a rejection that merely repeats
+        the same marker can't retry forever.
+        """
+        if self._tool_images_relocated or not _is_tool_result_image_conflict(exc):
+            return None
+        # Judged on the capped set, not the raw one. The retry has to carry the
+        # same images the first attempt did -- relocating every image in
+        # history would hand the provider more than it accepts, which is a
+        # second rejection -- and once the cap has taken the last tool image
+        # there is nothing left to move, so retrying would just resend the
+        # request that already failed.
+        if self._max_images_per_request is not None:
+            messages = cap_images(messages, self._max_images_per_request)
+        if not has_tool_result_images(messages):
+            return None
+        return self._to_langchain(messages, system, relocate=True)
+
+    def _wrap_error(
+        self, exc: Exception, context: str, *, retryable: bool | None = None,
+    ) -> TransportError:
+        """Wrap a provider exception as a `TransportError`.
+
+        `retryable=False` forces a non-retryable result regardless of the
+        exception type. `stream()` passes it once any delta has reached the
+        client: `retry_model_call` (the PRE_MODEL_CALL wrapper) re-runs the
+        WHOLE model call, so a transient error arriving mid-stream would
+        otherwise replay text the user has already seen.
+        """
         status_code = getattr(exc, "status_code", None)
         # 529 is Anthropic's non-standard "overloaded_error" status —
         # capacity exhaustion across all customers, not this request's
@@ -273,9 +424,11 @@ class LangChainTransport(LLMTransport):
         # default (`transport/base.py`) and the native
         # `AnthropicTransport._RETRYABLE_STATUS_CODES` — retryable=True
         # here only gets a retry if that config list also allows the code.
-        retryable = (
-            status_code in (429, 500, 502, 503, 504, 529) if status_code else _is_network_error(exc)
-        )
+        if retryable is None:
+            retryable = (
+                status_code in (429, 500, 502, 503, 504, 529)
+                if status_code else _is_network_error(exc)
+            )
         return TransportError(
             f"LangChain transport error ({context}): {exc}",
             status_code=status_code,
@@ -428,12 +581,34 @@ class LangChainTransport(LLMTransport):
         # system_blocks: LangChain has no cache-breakpoint API; join if needed.
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
-        lc_messages = convert_messages_to_langchain(messages, system)
+        lc_messages = self._to_langchain(messages, system)
         lc_llm = self._bind_tools(tools)
 
         try:
             ai_message = await lc_llm.ainvoke(lc_messages, config=self._langchain_config())
         except Exception as exc:
+            relocated = self._tool_image_fallback(exc, messages, system)
+            if relocated is not None:
+                logger.warning(
+                    "LangChainTransport.complete: model=%s rejected images inside tool "
+                    "results, retrying once with them moved to a user message: %s",
+                    self._model, exc,
+                )
+                try:
+                    ai_message = await lc_llm.ainvoke(
+                        relocated, config=self._langchain_config(),
+                    )
+                except Exception as retry_exc:
+                    logger.error(
+                        "LangChainTransport.complete: tool-image relocation retry also "
+                        "failed for model=%s: %s — raising the ORIGINAL error",
+                        self._model, retry_exc,
+                    )
+                    raise self._wrap_error(exc, "complete") from exc
+                # Pinned for the rest of this run so every later call builds
+                # the working shape on the first attempt.
+                self._tool_images_relocated = True
+                return self._response_from(ai_message, tools, model)
             fallback = self._conflict_fallback(exc)
             if fallback is None:
                 raise self._wrap_error(exc, "complete") from exc
@@ -457,6 +632,9 @@ class LangChainTransport(LLMTransport):
             # follow) and persisted so the NEXT request for this model
             # skips straight to the working shape.
             self._llm = fallback_llm
+            # Entries were bound onto the old model; keeping them would serve
+            # the shape that just failed for the rest of the run.
+            self._bound_by_tools.clear()
             await self._record_api_mode(mode)
             logger.info(
                 "LangChainTransport.complete: retry succeeded — pinned api_mode=%s for "
@@ -464,8 +642,12 @@ class LangChainTransport(LLMTransport):
                 mode, self._model,
             )
 
+        return self._response_from(ai_message, tools, model)
+
+    def _response_from(
+        self, ai_message: AIMessage, tools: list[ToolSchema] | None, model: str | None,
+    ) -> ModelResponse:
         assistant_message = convert_assistant_message_from_langchain(ai_message)
-        usage = token_usage_from_ai_message(ai_message)
         stop_reason = (
             StopReason.MAX_TOKENS if assistant_message.truncated
             else self._stop_reason_from(ai_message)
@@ -473,7 +655,7 @@ class LangChainTransport(LLMTransport):
         self._log_turn_outcome(tools, ai_message, stop_reason)
         return ModelResponse(
             message=assistant_message,
-            usage=usage,
+            usage=token_usage_from_ai_message(ai_message),
             stop_reason=stop_reason,
             model=self._resolve_model_name(model),
         )
@@ -485,7 +667,7 @@ class LangChainTransport(LLMTransport):
         system: str | None = None,
         model: str | None = None,
     ) -> StructuredResponse:
-        lc_messages = convert_messages_to_langchain(messages, system)
+        lc_messages = self._to_langchain(messages, system)
         resolved_model = self._resolve_model_name(model)
 
         parsed, raw = await self._invoke_structured(lc_messages, output_schema)
@@ -587,27 +769,73 @@ class LangChainTransport(LLMTransport):
     ) -> AsyncIterator[StreamEvent]:
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
-        lc_messages = convert_messages_to_langchain(messages, system)
+        lc_messages = self._to_langchain(messages, system)
         lc_llm = self._bind_tools(tools)
 
         chunks: list[AIMessage] = []
+        # Whether a StreamEvent actually reached the caller. Distinct from
+        # `chunks`, which counts what the PROVIDER sent: OpenAI-family
+        # streams open with a role-only chunk carrying empty content, so a
+        # disconnect in the first moments buffers a chunk while the client
+        # has seen nothing. Retryability turns on this, not on `chunks`.
+        emitted = False
         fallback_llm: BaseChatModel | None = None
         fallback_mode: str | None = None
         original_exc: Exception | None = None
         retried = False
+        relocated_images = False
+        # Stop Generation (Phase 3b): set once the token fires mid-stream —
+        # short-circuits the retry/fallback logic below (a cancelled call
+        # is not a failure to retry) and overrides `stop_reason` after the
+        # loop regardless of how far generation got.
+        cancelled = False
         current_llm = lc_llm
         while True:
+            stream_iter: AsyncIterator[AIMessage] | None = None
+            cancel_task: asyncio.Task[None] | None = None
             try:
-                async for chunk in current_llm.astream(lc_messages, config=self._langchain_config()):
+                stream_iter = current_llm.astream(
+                    lc_messages, config=self._langchain_config(),
+                ).__aiter__()
+                if self._cancellation_token is not None:
+                    cancel_task = asyncio.ensure_future(self._cancellation_token.wait())
+                while True:
+                    next_chunk_task = asyncio.ensure_future(stream_iter.__anext__())
+                    wait_set = (
+                        {next_chunk_task} if cancel_task is None
+                        else {next_chunk_task, cancel_task}
+                    )
+                    await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
+                    if self._cancellation_token is not None and self._cancellation_token.is_cancelled:
+                        # `cancel_task` (racing `CancellationToken.wait()` against
+                        # the next chunk) is what makes this fire even when the
+                        # provider stalls between chunks -- checking is_cancelled
+                        # only inside the loop body (as before) would leave a
+                        # cooperative cancel stuck until another chunk arrived,
+                        # which may never happen. Not awaited for its result: a
+                        # provider error racing the same cancel is irrelevant
+                        # once we've already decided to stop.
+                        if not next_chunk_task.done():
+                            next_chunk_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await next_chunk_task
+                        cancelled = True
+                        break
+                    try:
+                        chunk = next_chunk_task.result()
+                    except StopAsyncIteration:
+                        break
                     chunks.append(chunk)
                     text = getattr(chunk, "content", None)
                     if isinstance(text, str) and text:
+                        emitted = True
                         yield TextDeltaEvent(delta=text)
                     elif isinstance(text, list):
                         for block in text:
                             if isinstance(block, dict) and block.get("type") == "text":
                                 delta = block.get("text", "")
                                 if delta:
+                                    emitted = True
                                     yield TextDeltaEvent(delta=delta)
 
                     # Extended-thinking / reasoning deltas (Claude extended
@@ -621,6 +849,7 @@ class LangChainTransport(LLMTransport):
                         if block.get("type") == "reasoning":
                             reasoning_delta = block.get("reasoning", "")
                             if reasoning_delta:
+                                emitted = True
                                 yield ThinkingDeltaEvent(delta=reasoning_delta)
 
                     # Tool-call argument deltas — used by Agent.step()'s streaming
@@ -633,12 +862,24 @@ class LangChainTransport(LLMTransport):
                         if not isinstance(tc_chunk, dict):
                             continue
                         args_delta = tc_chunk.get("args") or ""
-                        if not args_delta:
+                        name = tc_chunk.get("name")
+                        tc_id = tc_chunk.get("id")
+                        # The agent loop reads `name` off the FIRST delta for an
+                        # index to decide whether the call is final_answer, and
+                        # OpenAI/Azure open a tool call with a metadata-only
+                        # fragment (name and id set, args "") -- verified against
+                        # the live deployment. Dropping it meant the first delta
+                        # the loop saw carried name=None, final_answer went
+                        # unrecognised, and the answer only appeared once the
+                        # turn had finished. A fragment carrying nothing at all
+                        # still tells the loop nothing, so it is still skipped.
+                        if not args_delta and not name and not tc_id:
                             continue
+                        emitted = True
                         yield ToolCallDeltaEvent(
                             index=tc_chunk.get("index") or 0,
-                            id=tc_chunk.get("id"),
-                            name=tc_chunk.get("name"),
+                            id=tc_id,
+                            name=name,
                             arguments_delta=args_delta,
                         )
                 break
@@ -651,13 +892,38 @@ class LangChainTransport(LLMTransport):
                 # cap this to exactly one attempt) gate the retry.
                 if retried:
                     logger.error(
-                        "LangChainTransport.stream: retry with api_mode=%s also failed for "
-                        "model=%s: %s — raising the ORIGINAL error",
-                        fallback_mode, self._model, exc,
+                        "LangChainTransport.stream: retry (api_mode=%s, "
+                        "relocated_images=%s) also failed for model=%s: %s — "
+                        "raising the ORIGINAL error",
+                        fallback_mode, relocated_images, self._model, exc,
                     )
                     raise self._wrap_error(original_exc, "stream") from original_exc
                 if chunks:
-                    raise self._wrap_error(exc, "stream") from exc
+                    # Still no INTERNAL retry once the provider has sent
+                    # anything: `chunks` is not reset between attempts, so
+                    # re-streaming would aggregate both attempts into one
+                    # response.
+                    #
+                    # The OUTER retry wrapper is a different question. It
+                    # re-runs the whole call, which only hurts if the client
+                    # already saw output — so that is gated on `emitted`,
+                    # letting a disconnect after nothing but a role-only
+                    # chunk still be retried.
+                    raise self._wrap_error(
+                        exc, "stream", retryable=False if emitted else None,
+                    ) from exc
+                relocated = self._tool_image_fallback(exc, messages, system)
+                if relocated is not None:
+                    original_exc = exc
+                    lc_messages = relocated
+                    relocated_images = True
+                    retried = True
+                    logger.warning(
+                        "LangChainTransport.stream: model=%s rejected images inside tool "
+                        "results, retrying once with them moved to a user message: %s",
+                        self._model, exc,
+                    )
+                    continue
                 fallback = self._conflict_fallback(exc)
                 if fallback is None:
                     raise self._wrap_error(exc, "stream") from exc
@@ -677,12 +943,39 @@ class LangChainTransport(LLMTransport):
                     "retrying once with api_mode=%s: %s",
                     self._model, fallback_mode, exc,
                 )
+            finally:
+                # Best-effort: never let cleanup mask the real outcome (an
+                # exception from `except Exception` above, or the
+                # cancelled/natural-completion break already decided).
+                if cancel_task is not None and not cancel_task.done():
+                    cancel_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await cancel_task
+                if stream_iter is not None:
+                    # Explicit close, not left to GC: this is what actually
+                    # stops the provider from continuing to generate/bill
+                    # for tokens nobody will read once cancellation wins the
+                    # race above. A no-op on the natural-completion path
+                    # (the generator is already exhausted).
+                    with contextlib.suppress(BaseException):
+                        await stream_iter.aclose()
+
+        if relocated_images:
+            # Pinned for the rest of this run so every later call builds the
+            # working shape on the first attempt.
+            self._tool_images_relocated = True
+            logger.info(
+                "LangChainTransport.stream: retry succeeded — tool-result images are "
+                "relocated to a user message for model=%s for the rest of this run",
+                self._model,
+            )
 
         if retried and fallback_llm is not None:
             # Pinned for the rest of this agent loop (many more calls will
             # follow) and persisted so the NEXT request for this model
             # skips straight to the working shape.
             self._llm = fallback_llm
+            self._bound_by_tools.clear()
             await self._record_api_mode(fallback_mode)
             logger.info(
                 "LangChainTransport.stream: retry succeeded — pinned api_mode=%s for "
@@ -699,10 +992,18 @@ class LangChainTransport(LLMTransport):
 
         assistant_message = convert_assistant_message_from_langchain(final_ai_message)
         usage = token_usage_from_ai_message(final_ai_message)
-        stop_reason = (
-            StopReason.MAX_TOKENS if assistant_message.truncated
-            else self._stop_reason_from(final_ai_message)
-        )
+        if cancelled:
+            # Keep the text the user already saw; drop any tool call this
+            # chunk stream was still assembling — its arguments are
+            # truncated mid-JSON and would corrupt the tool-dispatch loop
+            # if `Agent.step()` tried to execute it.
+            assistant_message.tool_calls = None
+            stop_reason = StopReason.CANCELLED
+        else:
+            stop_reason = (
+                StopReason.MAX_TOKENS if assistant_message.truncated
+                else self._stop_reason_from(final_ai_message)
+            )
         self._log_turn_outcome(tools, final_ai_message, stop_reason)
         yield StreamCompleteEvent(
             response=ModelResponse(

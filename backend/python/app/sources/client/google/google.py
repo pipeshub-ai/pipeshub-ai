@@ -20,6 +20,25 @@ from app.connectors.sources.google.common.scopes import (
 from app.sources.client.iclient import IClient
 from app.sources.client.utils.utils import merge_scopes
 
+# httplib2's default (unset) timeout blocks forever on a stalled socket, which
+# under the shared connector thread pool would pin a worker permanently since a
+# blocked read can't be cancelled. 300s bounds that without cutting off slow-but-
+# legitimate calls (e.g. exporting a large Doc/Sheet to PDF).
+GOOGLE_HTTP_TIMEOUT_SECONDS = 300
+
+# Retries passed to googleapiclient's own execute() backoff so a timeout or
+# transient network error doesn't surface as an outright failure.
+GOOGLE_HTTP_NUM_RETRIES = 3
+
+
+def configure_google_http_timeout(client: object) -> object:
+    authorized_http = getattr(client, "_http", None)
+    http = getattr(authorized_http, "http", authorized_http)
+    if http is not None:
+        http.timeout = GOOGLE_HTTP_TIMEOUT_SECONDS
+    return client
+
+
 try:
     from google.oauth2 import service_account  # type: ignore
     from google.oauth2.credentials import Credentials  # type: ignore
@@ -52,7 +71,7 @@ class GoogleClient(IClient):
 
     def __init__(self, client: object) -> None:
         """Initialize with a Google Drive client object"""
-        self.client = client
+        self.client = configure_google_http_timeout(client)
 
     def get_client(self) -> object:
         """Return the Google Drive client object"""

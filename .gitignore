@@ -146,6 +146,7 @@ integration-tests/.env.local
 integration-tests/.env.prod
 integration-tests/.env.refresh_tokens
 integration-tests/reports/
+integration-tests/logs/
 integration-tests/.integration-test-cache/
 .integration-test-cache/
 
@@ -215,3 +216,16 @@ backend/python/.claude/settings.local.json
 .commandcode
 # Subagent-driven-development progress ledger (scratch, not committed)
 .superpowers/
+
+# Load-test output and credentials (see loadtest/.gitignore)
+loadtest/results/
+# Host + bearer token for a load-test target environment.
+.env.play
+
+# Filled first-run bootstrap env (copy of bootstrap-first-run.env.example)
+deployment/docker-compose/bootstrap-first-run.env
+
+# Local scratch workspace, not part of the repo
+loom/
+node_modules
+.claude

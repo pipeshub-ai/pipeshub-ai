@@ -142,7 +142,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             existing_value = await self.store.get_key(key)
             if existing_value is not None and not overwrite:
                 self.logger.debug("⏭️ Skipping existing key: %s", key)
-                return True
+                return False  # Key was not created (already exists)
 
             # Convert value to JSON string
             value_json = json.dumps(value)
@@ -200,9 +200,14 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def update_value(self, key: str, value: T, ttl: Optional[int] = None) -> None:
         return await self.create_key(key, value, True, ttl)
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         try:
-            encrypted_value = await self.store.get_key(key)
+            # Forwarded, or the backend's own swallow of an unreadable value
+            # answers None here and reads as a missing key.
+            if raise_on_error:
+                encrypted_value = await self.store.get_key(key, raise_on_error=True)
+            else:
+                encrypted_value = await self.store.get_key(key)
 
             if encrypted_value is not None:
                 try:
@@ -247,6 +252,10 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                     self.logger.error(
                         f"❌ Failed to process value for key {key}: {str(e)}"
                     )
+                    # A value came back and could not be read: not the same as
+                    # no value, so a caller that asked must not see None.
+                    if raise_on_error:
+                        raise
                     return None
             else:
                 self.logger.debug(f"⚠️ No value found in ETCD for key: {key}")
@@ -255,6 +264,8 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         except Exception as e:
             self.logger.error("❌ Failed to get config %s: %s", key, str(e))
             self.logger.exception("Detailed error:")
+            if raise_on_error:
+                raise
             return None
 
     async def delete_key(self, key: str) -> bool:
@@ -331,7 +342,9 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             return decrypted_keys
 
         except Exception as e:
-            self.logger.error(f"Failed to list keys in directory {directory}: {e}")
+            self.logger.error(
+                "Failed to list keys in directory (%s)", type(e).__name__
+            )
             raise
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:

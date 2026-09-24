@@ -95,6 +95,33 @@ describe('telemetry metrics-backend (PrometheusBackend)', () => {
     });
   });
 
+  describe('reset', () => {
+    it('should drop all series so the next push starts from an empty registry', async () => {
+      const counter = backend.createCounter({
+        name: 'test_reset_total',
+        help: 'test',
+        labelNames: ['k'],
+      });
+      const histogram = backend.createHistogram({
+        name: 'test_reset_seconds',
+        help: 'test',
+        labelNames: ['k'],
+        buckets: [1],
+      });
+      counter.inc({ k: 'a' });
+      histogram.observe({ k: 'a' }, 0.5);
+
+      backend.reset();
+
+      const text = await backend.serialize();
+      expect(text).to.not.include('test_reset_total{');
+      expect(text).to.not.include('test_reset_seconds_count{');
+
+      counter.inc({ k: 'a' });
+      expect(await backend.serialize()).to.include('test_reset_total{k="a"} 1');
+    });
+  });
+
   describe('serialize', () => {
     it('should use an isolated registry per backend instance', async () => {
       const other = new PrometheusBackend();

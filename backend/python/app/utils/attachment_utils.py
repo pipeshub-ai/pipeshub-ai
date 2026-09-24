@@ -9,7 +9,13 @@ from collections.abc import Callable
 from typing import Any
 
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
-from app.utils.chat_helpers import is_base64_image
+from app.utils.chat_helpers import ImageBudget, is_base64_image
+from app.utils.image_admission import (
+    ImageAdmission,
+    ImageCandidate,
+    ImageOrigin,
+    admission_from_state,
+)
 
 # Base64 data-URI prefixes accepted by the multimodal LLM providers we support.
 _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
@@ -28,6 +34,8 @@ async def resolve_attachments(
     logger: logging.Logger,
     ref_mapper: Any = None,
     out_records: dict[str, dict[str, Any]] | None = None,
+    image_budget: ImageBudget | None = None,
+    image_admission: "ImageAdmission | None" = None,
 ) -> list[dict[str, Any]]:
     """Fetch user-uploaded attachments and return LangChain content blocks.
 
@@ -57,6 +65,12 @@ async def resolve_attachments(
     """
     if not attachments:
         return []
+
+    if image_budget is None:
+        image_budget = ImageBudget()
+    admission = image_admission if image_admission is not None else admission_from_state(
+        {"image_budget": image_budget},
+    )
 
     blocks: list[dict[str, Any]] = []
 
@@ -97,7 +111,12 @@ async def resolve_attachments(
                 logger=logger,
                 unavailable_log_msg="blob_store not available; cannot resolve image attachment %s",
                 fallback_block={"type": "text", "text": f"[Image attached by user: {record_name}]\n"},
-                empty_content_fallback=lambda record: _extract_image_blocks(record, record_name, logger),
+                empty_content_fallback=lambda record: _extract_image_blocks(
+                    record, record_name, logger, image_budget,
+                    image_admission=admission,
+                ),
+                image_budget=image_budget,
+                image_admission=admission,
             )
             if img_content:
                 blocks.extend(img_content)
@@ -116,6 +135,8 @@ async def resolve_attachments(
                 logger=logger,
                 unavailable_log_msg="blob_store not available; cannot resolve attachment %s",
                 fallback_block={"type": "text", "text": f"[Document attached by user: {record_name}]\n"},
+                image_budget=image_budget,
+                image_admission=admission,
             )
             if doc_content:
                 blocks.extend(doc_content)
@@ -138,6 +159,8 @@ async def _resolve_attachment_content(
     unavailable_log_msg: str,
     fallback_block: dict[str, Any],
     empty_content_fallback: Callable[[dict[str, Any]], list[dict[str, Any]]] | None = None,
+    image_budget: ImageBudget | None = None,
+    image_admission: "ImageAdmission | None" = None,
 ) -> tuple[list[dict[str, Any]], Any]:
     """Fetch a stored attachment record and convert it via ``record_to_message_content``.
 
@@ -153,7 +176,7 @@ async def _resolve_attachment_content(
         return [fallback_block], ref_mapper
 
     try:
-        from app.utils.chat_helpers import record_to_message_content  # noqa: PLC0415
+        from app.utils.chat_helpers import record_to_message_content
 
         record = await blob_store.get_record_from_storage(
             virtual_record_id=virtual_record_id,
@@ -172,6 +195,9 @@ async def _resolve_attachment_content(
 
         content, ref_mapper = record_to_message_content(
             record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm,
+            image_budget=image_budget,
+            image_admission=image_admission,
+            image_origin=ImageOrigin.ATTACHMENT,
         )
         if not content and empty_content_fallback is not None:
             content = empty_content_fallback(record)
@@ -191,6 +217,8 @@ def _extract_image_blocks(
     record: dict[str, Any],
     record_name: str,
     logger: logging.Logger,
+    image_budget: ImageBudget | None = None,
+    image_admission: "ImageAdmission | None" = None,
 ) -> list[dict[str, Any]]:
     """Extract ``image_url`` content blocks from a stored record dict.
 
@@ -200,9 +228,18 @@ def _extract_image_blocks(
         record["block_containers"]["blocks"][i]["data"]["uri"] == "data:image/...;base64,..."
 
     Older records may store blocks directly under ``record["blocks"]``; both
-    layouts are handled here.
+    layouts are handled here. Respects the shared conversation-wide
+    ``image_budget`` (defaults to a fresh, effectively-unbounded one when not
+    supplied) the same way ``record_to_message_content`` does, so this
+    fallback path — only reached when that function returns zero content for
+    an image record — cannot bypass the 50-image cap.
     """
     result: list[dict[str, Any]] = []
+    if image_budget is None:
+        image_budget = ImageBudget()
+    admission = image_admission if image_admission is not None else admission_from_state(
+        {"image_budget": image_budget},
+    )
 
     block_containers = record.get("block_containers")
     if isinstance(block_containers, dict):
@@ -226,10 +263,31 @@ def _extract_image_blocks(
         if not uri:
             continue
 
-        if uri.startswith(("https://", "http://")):
-            result.append({"type": "image_url", "image_url": {"url": uri}})
-        elif uri.startswith(_SUPPORTED_IMAGE_PREFIXES):
-            result.append({"type": "image_url", "image_url": {"url": uri}})
+        if uri.startswith(("https://", "http://")) or uri.startswith(_SUPPORTED_IMAGE_PREFIXES):
+            # ATTACHMENT origin: the user uploaded this deliberately, so it
+            # outranks anything retrieval found and skips the size prefilter.
+            outcome = admission.admit([
+                ImageCandidate(
+                    ref="",
+                    data_uri=uri,
+                    origin=ImageOrigin.ATTACHMENT,
+                    block_index=int(block.get("index") or 0),
+                ),
+            ])
+            if outcome.admitted:
+                # The admitted candidate, not `uri`: admission downscales an
+                # image that exceeds the model's per-image limits, and sending
+                # the source bytes would discard that.
+                result.append({
+                    "type": "image_url",
+                    "image_url": {"url": outcome.admitted[0].data_uri},
+                })
+            else:
+                logger.debug(
+                    "Skipping image from %s: %s",
+                    record_name,
+                    outcome.degraded[0].reason.value if outcome.degraded else "not admitted",
+                )
         else:
             logger.debug(
                 "Skipping image with unsupported URI format from %s: %.80s",
@@ -294,7 +352,9 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
     try:
         blob_store = state.get("blob_store")
         if blob_store is None:
-            from app.modules.transformers.blob_storage import BlobStorage  # noqa: PLC0415
+            from app.modules.transformers.blob_storage import (
+                BlobStorage,
+            )
 
             blob_store = BlobStorage(
                 logger=logger,
@@ -305,11 +365,16 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
 
         ref_mapper = state.get("citation_ref_mapper")
         if ref_mapper is None:
-            from app.utils.chat_helpers import CitationRefMapper  # noqa: PLC0415
+            from app.utils.chat_helpers import CitationRefMapper
             ref_mapper = CitationRefMapper()
             state["citation_ref_mapper"] = ref_mapper
 
         attachment_records: dict[str, dict[str, Any]] = {}
+        # Shared with retrieval/prefetch/citations/history-replay via the
+        # SAME `state["image_budget"]` instance (see `context.py`'s
+        # `_seed_tool_state`) so attachment images debit the one
+        # conversation-wide 50-image cap instead of an independent budget.
+        image_budget = state.setdefault("image_budget", ImageBudget())
         blocks = await resolve_attachments(
             attachments=raw_attachments,
             blob_store=blob_store,
@@ -318,6 +383,8 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             logger=logger,
             ref_mapper=ref_mapper,
             out_records=attachment_records,
+            image_budget=image_budget,
+            image_admission=admission_from_state(state),
         )
 
         if attachment_records:
@@ -347,7 +414,7 @@ def inject_attachment_blocks(messages: list, attachment_blocks: list) -> None:
     if not attachment_blocks or not messages:
         return
 
-    from langchain_core.messages import HumanMessage  # noqa: PLC0415
+    from langchain_core.messages import HumanMessage
 
     last = messages[-1]
     if not isinstance(last, HumanMessage):

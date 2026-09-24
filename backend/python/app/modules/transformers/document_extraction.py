@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import logging
 from typing import List, Literal, Optional
 
@@ -142,7 +143,7 @@ class DocumentExtraction(Transformer):
             sub_category_level_2=document_classification.subcategories.level2,
             sub_category_level_3=document_classification.subcategories.level3,
         )
-        self.logger.info("🎯 Document extraction completed successfully")
+        self.logger.debug("🎯 Document extraction completed successfully")
 
 
     def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int) -> List[dict]:
@@ -251,6 +252,21 @@ class DocumentExtraction(Transformer):
                     content.append(candidate)
                     total_tokens += increment
 
+            elif block.type.value == "code":
+                if block.data:
+                    code_text = block.data.get("text", "") if isinstance(block.data, dict) else str(block.data)
+                    if code_text:
+                        candidate = {
+                            "type": "text",
+                            "text": code_text,
+                        }
+                        increment = count_tokens(code_text)
+                        if total_tokens + increment > MAX_TOKENS:
+                            self.logger.info("✂️ Content exceeds %d tokens (%d). Truncating to head.", MAX_TOKENS, total_tokens + increment)
+                            break
+                        content.append(candidate)
+                        total_tokens += increment
+
         return content
 
     async def classify(
@@ -266,11 +282,11 @@ class DocumentExtraction(Transformer):
         ``None`` or empty the method falls back to the DepartmentNames defaults
         rather than making a graph call.
         """
-        self.logger.info("🎯 Extracting domain metadata (pre-fetched departments)")
+        self.logger.debug("🎯 Extracting domain metadata (pre-fetched departments)")
         self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
         is_multimodal_llm = config.get("isMultimodal")
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
-        self.logger.info(f"Context length: {context_length}")
+        self.logger.debug(f"Context length: {context_length}")
 
         try:
             resolved_departments: List[str] = departments or [dept.value for dept in DepartmentNames]
@@ -295,7 +311,7 @@ class DocumentExtraction(Transformer):
                 self.llm, messages, DocumentClassification
             )
             if parsed_response is not None:
-                self.logger.info("✅ Document classification parsed successfully")
+                self.logger.debug("✅ Document classification parsed successfully")
                 return parsed_response
             self.logger.warning(
                 "⚠️ Structured extraction failed after all attempts. Falling back to summary."
@@ -311,15 +327,15 @@ class DocumentExtraction(Transformer):
         """
         Extract metadata from document content.
         """
-        self.logger.info("🎯 Extracting domain metadata")
+        self.logger.debug("🎯 Extracting domain metadata")
         self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
         is_multimodal_llm = config.get("isMultimodal")
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
-        self.logger.info(f"Context length: {context_length}")
+        self.logger.debug(f"Context length: {context_length}")
 
         try:
-            self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
+            self.logger.debug(f"🎯 Extracting departments for org_id: {org_id}")
             departments = await self.graph_provider.get_departments(org_id)
             if not departments:
                 departments = [dept.value for dept in DepartmentNames]
@@ -364,7 +380,7 @@ class DocumentExtraction(Transformer):
             )
 
             if parsed_response is not None:
-                self.logger.info("✅ Document classification parsed successfully")
+                self.logger.debug("✅ Document classification parsed successfully")
                 return parsed_response
 
             self.logger.warning(

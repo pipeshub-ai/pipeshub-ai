@@ -208,6 +208,9 @@ export const MAX_VISIBLE_AGENTS_IN_SIDEBAR = 3;
 /** Fetch at least this many agents to decide if "More" is needed. */
 export const SIDEBAR_AGENTS_PREVIEW_FETCH_LIMIT = 20;
 
+/** Page size for GET /api/v1/projects/:id/conversations in the project-scoped sidebar. */
+export const SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE = 10;
+
 /** Page size for the initial agent sidebar conversations fetch (page 1). */
 export const SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE = 10;
 
@@ -247,3 +250,20 @@ export function chatContentColumnStyle(isMobile: boolean): {
     paddingRight: isMobile ? CHAT_CONTENT_PADDING_X.mobile : CHAT_CONTENT_PADDING_X.desktop,
   };
 }
+
+// ── Paste-to-attachment (large clipboard text) ──────────────────────────
+// Mirrors ChatGPT/Claude's "large paste becomes an attachment" behavior —
+// see `utils/paste-attachment.ts` for the detection/conversion logic.
+
+/** A paste longer than this many characters is converted to a text attachment. */
+export const CHAT_PASTE_CHARACTER_THRESHOLD = 5000;
+
+/** A paste with more lines than this is converted to a text attachment,
+ *  even if it is under the character threshold (e.g. a long list). */
+export const CHAT_PASTE_LINE_THRESHOLD = 10;
+
+/** Maximum bytes kept from a single paste; longer content is truncated with a notice. */
+export const CHAT_PASTE_MAX_SIZE_BYTES = 128 * 1024;
+
+/** Filename prefix for synthetic pasted-text attachments (`<prefix><timestamp>.txt`). */
+export const CHAT_PASTE_FILENAME_PREFIX = 'pasted-text-';

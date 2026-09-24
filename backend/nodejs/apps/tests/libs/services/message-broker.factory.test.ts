@@ -1,55 +1,11 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
-import { EventEmitter } from 'events';
 import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
 import { KafkaConfig } from '../../../src/libs/types/kafka.types';
 import { RedisBrokerConfig } from '../../../src/libs/types/messaging.types';
 import { ENV_MESSAGE_BROKER } from '../../../src/libs/constants/messaging.constants';
-
-// ---------------------------------------------------------------------------
-// Override ioredis mock to support `import { Redis } from 'ioredis'`
-// ---------------------------------------------------------------------------
-class FakeRedisForFactory extends EventEmitter {
-  status = 'ready';
-  connect = sinon.stub().resolves();
-  quit = sinon.stub().resolves();
-  xadd = sinon.stub().resolves('1-0');
-  ping = sinon.stub().resolves('PONG');
-  constructor(_options?: any) {
-    super();
-    process.nextTick(() => {
-      this.emit('connect');
-      this.emit('ready');
-    });
-  }
-}
-
-function ensureIoredisMock() {
-  const ioredisPath = require.resolve('ioredis');
-  const original = require.cache[ioredisPath];
-  const FakeRedis = function (this: any, _opt: any) {
-    return Object.assign(this, new FakeRedisForFactory(_opt));
-  } as any;
-  FakeRedis.prototype = FakeRedisForFactory.prototype;
-  require.cache[ioredisPath] = {
-    ...original!,
-    exports: { Redis: FakeRedis, default: FakeRedis, RedisOptions: {} },
-  } as any;
-
-  // Reload the modules that import ioredis
-  const rsPath = require.resolve(
-    '../../../src/libs/services/redis-streams.service',
-  );
-  delete require.cache[rsPath];
-  const factoryPath = require.resolve(
-    '../../../src/libs/services/message-broker.factory',
-  );
-  delete require.cache[factoryPath];
-}
-
-// Set up the mock before any module that uses ioredis is loaded
-ensureIoredisMock();
+import { stubGetRedisProvider, createFakeRedisProvider } from '../../helpers/fake-redis-provider';
 
 import {
   getMessageBrokerType,
@@ -100,13 +56,18 @@ describe('MessageBrokerFactory', () => {
 
   beforeEach(() => {
     mockLogger = createMockLogger();
+    // Redis-path factories build real `BaseRedisStreamsProducerConnection` /
+    // `...ConsumerConnection` / `RedisStreamsAdminService` instances, which
+    // resolve their client through `getRedisProvider()` -- stub the
+    // provider (R18), not the `ioredis` module it would otherwise
+    // construct a real client from.
+    stubGetRedisProvider(createFakeRedisProvider());
   });
 
   afterEach(() => {
     sinon.restore();
     delete process.env.MESSAGE_BROKER;
     delete process.env.REDIS_STREAMS_MAXLEN;
-    delete process.env.REDIS_STREAMS_PREFIX;
   });
 
   // ================================================================
@@ -141,6 +102,33 @@ describe('MessageBrokerFactory', () => {
       expect(() => getMessageBrokerType()).to.throw(
         `Unsupported ${ENV_MESSAGE_BROKER} type`,
       );
+    });
+  });
+
+  // ================================================================
+  // REDIS_KEY_NAMESPACE guard
+  // ================================================================
+  describe('buildRedisBrokerConfig REDIS_KEY_NAMESPACE guard', () => {
+    afterEach(() => {
+      delete process.env.REDIS_KEY_NAMESPACE;
+    });
+
+    it('refuses a namespaced Redis Streams broker', () => {
+      // The namespace isolates KV keys, the invalidation channel and the
+      // BullMQ prefix -- but not stream or consumer-group names. Two releases
+      // on one endpoint would share both, so a message produced by one can be
+      // delivered to the other's consumer and acked there.
+      process.env.REDIS_KEY_NAMESPACE = 'tenant-a';
+      expect(() => buildRedisBrokerConfig(redisConfig)).to.throw(
+        /does not isolate Redis Streams/,
+      );
+    });
+
+    it('allows an unset or blank namespace', () => {
+      delete process.env.REDIS_KEY_NAMESPACE;
+      expect(() => buildRedisBrokerConfig(redisConfig)).to.not.throw();
+      process.env.REDIS_KEY_NAMESPACE = '   ';
+      expect(() => buildRedisBrokerConfig(redisConfig)).to.not.throw();
     });
   });
 
@@ -315,17 +303,6 @@ describe('MessageBrokerFactory', () => {
       expect(config.maxLen).to.equal(500000);
     });
 
-    it('should use REDIS_STREAMS_PREFIX env var for keyPrefix', () => {
-      process.env.REDIS_STREAMS_PREFIX = 'myapp:';
-      const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
-      expect(config.keyPrefix).to.equal('myapp:');
-    });
-
-    it('should default keyPrefix to empty string', () => {
-      delete process.env.REDIS_STREAMS_PREFIX;
-      const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
-      expect(config.keyPrefix).to.equal('');
-    });
   });
 
   // ================================================================

@@ -44,6 +44,7 @@ _MODEL_PRICES: dict[str, tuple[float, float]] = {
     "claude-opus-4-8":           (15.0, 75.0),
     "claude-haiku-4-5":          (0.80,  4.0),
     "claude-haiku-4-5-20251001": (0.80,  4.0),
+    "claude-sonnet-5":           (2.0,  10.0),
 }
 
 
@@ -842,7 +843,7 @@ def _serve_main(argv: list[str]) -> None:
     parser.add_argument("--port", "-p", type=int, default=int(os.environ.get("AGENT_LOOP_PORT", "8000")))
     parser.add_argument("--transport", default=os.environ.get("AGENT_LOOP_TRANSPORT", "anthropic"))
     parser.add_argument("--api-key", default=os.environ.get("ANTHROPIC_API_KEY"))
-    parser.add_argument("--model", "-m", default=os.environ.get("AGENT_LOOP_MODEL", "claude-sonnet-4-6"))
+    parser.add_argument("--model", "-m", default=os.environ.get("AGENT_LOOP_MODEL", "claude-sonnet-5"))
     parser.add_argument("--base-url", default=os.environ.get("AGENT_LOOP_BASE_URL"))
     args = parser.parse_args(argv)
 
@@ -935,8 +936,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--model", "-m",
-        default=os.environ.get("AGENT_LOOP_MODEL", "claude-sonnet-4-6"),
-        help="Model [default: claude-sonnet-4-6]",
+        default=os.environ.get("AGENT_LOOP_MODEL", "claude-sonnet-5"),
+        help="Model [default: claude-sonnet-5]",
     )
     parser.add_argument(
         "--role", "-r",

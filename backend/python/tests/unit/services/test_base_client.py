@@ -121,6 +121,36 @@ async def test_request_raises_service_call_error_on_persistent_5xx() -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_includes_error_message_from_5xx_body() -> None:
+    """Final 5xx ServiceCallError must include remote error.message for UI reason."""
+    client = _ConcreteClient(max_retries=2, retry_delay=0.0)
+    body = {
+        "success": False,
+        "error": {
+            "code": "PARSE_FAILED",
+            "message": (
+                "Failed to convert SVG to PNG: "
+                "SVG conversion dependency missing: cairosvg is not installed"
+            ),
+        },
+    }
+
+    with patch.object(client, "_make_client") as mock_make_client:
+        mock_httpx = AsyncMock()
+        mock_httpx.__aenter__ = AsyncMock(return_value=mock_httpx)
+        mock_httpx.__aexit__ = AsyncMock(return_value=False)
+        mock_httpx.request = AsyncMock(return_value=_make_response(500, body))
+        mock_make_client.return_value = mock_httpx
+
+        with pytest.raises(ServiceCallError) as exc_info:
+            await client._post_json("/test", {})
+
+    assert exc_info.value.status_code == 500
+    assert "cairosvg is not installed" in str(exc_info.value)
+    assert exc_info.value.details.get("error_message", "").find("cairosvg") >= 0
+
+
+@pytest.mark.asyncio
 async def test_request_does_not_retry_on_4xx() -> None:
     """Client errors (4xx) should not be retried."""
     client = _ConcreteClient(max_retries=3, retry_delay=0.0)

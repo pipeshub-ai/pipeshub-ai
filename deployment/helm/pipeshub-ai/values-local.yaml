@@ -78,6 +78,13 @@ securityContext:
 config:
   allowedOrigins: "http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://127.0.0.1:3000"
   frontendPublicUrl: "http://localhost:3001"
+  # A kind/minikube node has no Docker socket mounted into the pod, so the
+  # chart default of "docker" would fail `run_code` at provision. Chosen
+  # explicitly here rather than inherited: on this preset generated code runs
+  # as a subprocess of the query service (no network namespace, no filesystem
+  # boundary beyond rlimits), which is acceptable for a local dev cluster and
+  # is NOT acceptable for a shared or internet-reachable one.
+  sandboxMode: "local"
 
 # ----- MongoDB: single standalone node -----
 mongodb:

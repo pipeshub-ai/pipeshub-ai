@@ -112,7 +112,7 @@ def _extract_turn_summary(msg: Message) -> str | None:
         meta = msg.artifact_meta
         if meta is not None:
             return f"[tool:{msg.tool_call_id}] artifact:{meta.artifact_id} — {meta.summary[:100]}"
-        return f"[tool:{msg.tool_call_id}] {msg.content[:100]}"
+        return f"[tool:{msg.tool_call_id}] {msg.text[:100]}"
     return None
 
 

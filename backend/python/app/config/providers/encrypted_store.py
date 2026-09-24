@@ -247,12 +247,20 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     ) -> None:
         return await self.create_key(key, value, True, ttl)
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         try:
-            encrypted_value = await self.store.get_key(key)
+            # Forwarded, or the backend's own swallow of an unreadable value
+            # answers None here and reads as a missing key.
+            if raise_on_error:
+                encrypted_value = await self.store.get_key(key, raise_on_error=True)
+            else:
+                encrypted_value = await self.store.get_key(key)
 
             if encrypted_value is not None:
                 try:
+                    if isinstance(encrypted_value, (dict, list, int, float)):
+                        return encrypted_value
+                        
                     # Determine if value needs decryption
                     UNENCRYPTED_KEYS = [
                         config_node_constants.ENDPOINTS.value,
@@ -294,6 +302,10 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                     self.logger.error(
                         f"Failed to process value for key {key}: {str(e)}"
                     )
+                    # A value came back and could not be read: not the same as
+                    # no value, so a caller that asked must not see None.
+                    if raise_on_error:
+                        raise
                     return None
             else:
                 self.logger.debug(f"No value found for key: {key}")
@@ -302,6 +314,8 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         except Exception as e:
             self.logger.error("Failed to get config %s: %s", key, str(e))
             self.logger.exception("Detailed error:")
+            if raise_on_error:
+                raise
             return None
 
     async def delete_key(self, key: str) -> bool:
@@ -378,7 +392,9 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             return decrypted_keys
 
         except Exception as e:
-            self.logger.error(f"Failed to list keys in directory {directory}: {e}")
+            self.logger.error(
+                "Failed to list keys in directory (%s)", type(e).__name__
+            )
             raise
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:
@@ -393,37 +409,25 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     # -------------------------------------------------------------------------
 
     async def publish_cache_invalidation(self, key: str) -> None:
-        """Publish a cache invalidation message for the given key.
-
-        Only works when using Redis as the backend.
-        """
-        if hasattr(self.store, 'publish_cache_invalidation'):
-            await self.store.publish_cache_invalidation(key)
-        else:
-            self.logger.debug(
-                "Underlying store doesn't support publish_cache_invalidation"
-            )
+        """Deprecated alias; use ``publish_change`` (KeyValueStore interface, R15)."""
+        await self.publish_change(key)
 
     async def subscribe_cache_invalidation(
         self, callback: Callable[[str], None]
-    ) -> asyncio.Task:
-        """Subscribe to cache invalidation messages.
+    ) -> Optional[Any]:
+        """Deprecated alias; use ``subscribe_changes`` (KeyValueStore interface, R15)."""
+        return await self.subscribe_changes(callback)
 
-        Only works when using Redis as the backend.
+    # -- KeyValueStore cross-process notification interface (R15) -----------
+    # Delegates to whatever the underlying store implements (Redis Pub/Sub,
+    # etcd's native watch, or the in-memory no-op) so this wrapper never
+    # branches on backend type.
 
-        Args:
-            callback: Function to call with the invalidated key when a message is received.
+    async def subscribe_changes(self, callback: Callable[[str], None]) -> Optional[Any]:
+        return await self.store.subscribe_changes(callback)
 
-        Returns:
-            The subscription task that can be cancelled to stop listening.
-        """
-        if hasattr(self.store, 'subscribe_cache_invalidation'):
-            return await self.store.subscribe_cache_invalidation(callback)
-        else:
-            self.logger.debug(
-                "Underlying store doesn't support subscribe_cache_invalidation"
-            )
-            # Return a no-op task for stores that don't support Pub/Sub
-            async def noop()  -> None:
-                pass
-            return asyncio.create_task(noop())
+    async def publish_change(self, key: str) -> None:
+        await self.store.publish_change(key)
+
+    async def unsubscribe_changes(self, handle: Any) -> None:  # noqa: ANN401
+        await self.store.unsubscribe_changes(handle)

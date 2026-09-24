@@ -27,6 +27,13 @@ class StopReason(str, Enum):
     MAX_TOKENS = "max_tokens"
     STOP_SEQUENCE = "stop_sequence"
     ERROR = "error"
+    # Cooperative cancellation (Stop Generation, Phase 3b): a transport's
+    # `stream()` observed a `CancellationToken` mid-response and stopped
+    # consuming the provider's stream early. `message` still carries
+    # whatever text streamed before the check fired; any tool call still
+    # being assembled is dropped (see `LangChainTransport.stream()`) since
+    # its arguments are truncated mid-JSON.
+    CANCELLED = "cancelled"
 
 
 class TokenUsage(BaseModel):

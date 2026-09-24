@@ -328,98 +328,83 @@ class TestConnectDisconnect:
 
 
 class TestCreateFactory:
-    """Tests for RedisService.create() class method."""
+    """Tests for RedisService.create() class method.
+
+    `create()` builds its client through `IRedisConnectionProvider`, never
+    `aioredis.from_url()` directly (R12), so it is exercised at the provider
+    seam (`get_redis_provider`) instead of patching an `aioredis` module
+    attribute that no longer exists on this module (R18).
+    """
+
+    @staticmethod
+    def _config_service_with_redis_config(**overrides):
+        from app.services.messaging.config import RedisConfig
+
+        defaults = {"host": "localhost", "port": 6379, "password": None, "db": 0}
+        defaults.update(overrides)
+        mock_config_service = AsyncMock()
+        mock_config_service.get_redis_config = AsyncMock(
+            return_value=RedisConfig(**defaults)
+        )
+        return mock_config_service
 
     @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_success(self, mock_build_url, mock_aioredis, logger):
-        """create() builds URL, creates client, pings, and returns service."""
-        mock_config_service = AsyncMock()
-        mock_config_service.get_config.return_value = {
-            "host": "localhost",
-            "port": 6379,
-            "password": "secret",
-        }
-        mock_build_url.return_value = "redis://:secret@localhost:6379/0"
+    @patch("app.services.key_value.redis.redis.get_redis_provider")
+    async def test_create_success(self, mock_get_provider, logger):
+        """create() resolves the typed Redis config, builds a client through
+        the provider, pings it, and returns an initialized service."""
+        mock_config_service = self._config_service_with_redis_config(
+            host="localhost", port=6379, password="secret"
+        )
 
         mock_client = AsyncMock()
         mock_client.ping.return_value = True
-        # from_url is called with await, so it must be an AsyncMock
-        mock_aioredis.from_url = AsyncMock(return_value=mock_client)
+        mock_provider = MagicMock()
+        mock_provider.create_client.return_value = mock_client
+        mock_get_provider.return_value = mock_provider
 
         svc = await RedisService.create(logger, mock_config_service)
 
         assert isinstance(svc, RedisService)
         assert svc.redis_client is mock_client
-        mock_build_url.assert_called_once_with({"host": "localhost", "port": 6379, "password": "secret"})
-        mock_aioredis.from_url.assert_awaited_once()
+        mock_provider.create_client.assert_called_once()
         mock_client.ping.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_config_none_raises(self, mock_build_url, mock_aioredis, logger):
-        """create() raises when config returns None."""
-        mock_config_service = AsyncMock()
-        mock_config_service.get_config.return_value = None
-
-        with pytest.raises(Exception, match="Redis configuration not found"):
-            await RedisService.create(logger, mock_config_service)
-
-    @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_config_not_dict_raises(self, mock_build_url, mock_aioredis, logger):
-        """create() raises when config returns a non-dict value."""
-        mock_config_service = AsyncMock()
-        mock_config_service.get_config.return_value = "not-a-dict"
-
-        with pytest.raises(Exception, match="Redis configuration not found"):
-            await RedisService.create(logger, mock_config_service)
-
-    @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_empty_dict_config_raises(self, mock_build_url, mock_aioredis, logger):
-        """create() raises when config returns an empty dict (falsy)."""
-        mock_config_service = AsyncMock()
-        mock_config_service.get_config.return_value = {}
-
-        with pytest.raises(Exception, match="Redis configuration not found"):
-            await RedisService.create(logger, mock_config_service)
-
-    @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_ping_failure_raises(self, mock_build_url, mock_aioredis, logger):
-        """create() raises when Redis ping fails (connect returns False)."""
-        mock_config_service = AsyncMock()
-        mock_config_service.get_config.return_value = {
-            "host": "localhost",
-            "port": 6379,
-        }
-        mock_build_url.return_value = "redis://localhost:6379/0"
+    @patch("app.services.key_value.redis.redis.get_redis_provider")
+    async def test_create_ping_failure_raises(self, mock_get_provider, logger):
+        """create() raises when the provider's client fails to connect."""
+        mock_config_service = self._config_service_with_redis_config()
 
         mock_client = AsyncMock()
         mock_client.ping.side_effect = Exception("connection refused")
-        mock_aioredis.from_url = AsyncMock(return_value=mock_client)
+        mock_provider = MagicMock()
+        mock_provider.create_client.return_value = mock_client
+        mock_get_provider.return_value = mock_provider
 
         with pytest.raises(Exception, match="Failed to connect to Redis"):
             await RedisService.create(logger, mock_config_service)
 
     @pytest.mark.asyncio
-    @patch("app.services.key_value.redis.redis.aioredis")
-    @patch("app.services.key_value.redis.redis.build_redis_url")
-    async def test_create_from_url_raises(self, mock_build_url, mock_aioredis, logger):
-        """create() raises when aioredis.from_url fails."""
-        mock_config_service = AsyncMock()
-        mock_config_service.get_config.return_value = {
-            "host": "localhost",
-            "port": 6379,
-        }
-        mock_build_url.return_value = "redis://localhost:6379/0"
-        mock_aioredis.from_url = AsyncMock(side_effect=Exception("could not connect"))
+    @patch("app.services.key_value.redis.redis.get_redis_provider")
+    async def test_create_provider_construction_failure_propagates(
+        self, mock_get_provider, logger
+    ):
+        """create() propagates errors raised while resolving the provider
+        (e.g. REDIS_DB rejected for a cluster mode, per R4)."""
+        mock_config_service = self._config_service_with_redis_config()
+        mock_get_provider.side_effect = ValueError("REDIS_DB is not supported")
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match="REDIS_DB is not supported"):
+            await RedisService.create(logger, mock_config_service)
+
+    @pytest.mark.asyncio
+    async def test_create_config_lookup_failure_propagates(self, logger):
+        """create() propagates errors raised while resolving the Redis config."""
+        mock_config_service = AsyncMock()
+        mock_config_service.get_redis_config = AsyncMock(
+            side_effect=RuntimeError("config store unavailable")
+        )
+
+        with pytest.raises(RuntimeError, match="config store unavailable"):
             await RedisService.create(logger, mock_config_service)

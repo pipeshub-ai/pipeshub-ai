@@ -91,6 +91,19 @@ class IVectorDBService(ABC):
     ) -> None:
         raise NotImplementedError
 
+    async def reconcile_storage_layout(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Advance an existing collection one step toward ``config``'s storage layout.
+
+        Returns the field that was changed, or None when nothing was applied.
+        Intentionally concrete: providers that cannot retune a live collection
+        inherit the no-op rather than being forced to stub it out.
+        """
+        return None
+
     @abstractmethod
     async def get_collections(self) -> object:
         raise NotImplementedError
@@ -134,8 +147,15 @@ class IVectorDBService(ABC):
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
+        max_values: Optional[Dict[str, int]] = None,
         **filters: FilterValue,
     ) -> FilterExpression:
+        """Build a provider-native filter.
+
+        ``max_values`` bounds an array field's length (``{"connectorIds": 1}``
+        matches a point whose only owner is the one named in ``must``). It is
+        always ANDed, never an alternative to a value match.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -149,7 +169,16 @@ class IVectorDBService(ABC):
         scroll_filter: FilterExpression,
         limit: int,
         offset: Optional[str] = None,
+        with_payload: Optional[List[str]] = None,
     ) -> ScrollResult:
+        """Page through matching points.
+
+        ``with_payload`` restricts which payload fields come back (dotted paths
+        such as ``metadata.virtualRecordId``). Callers that need a couple of
+        fields should pass it: the default pulls the whole payload including
+        ``page_content``, which on a large scan is megabytes of chunk text
+        transferred and discarded.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -173,7 +202,16 @@ class IVectorDBService(ABC):
         self,
         collection_name: str,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
+        """Delete matching points.
+
+        ``refresh=True`` asks the provider to make the write immediately
+        visible to a subsequent read. Only pass it when the caller re-reads the
+        matched set to decide whether it is done — on OpenSearch it forces a
+        shard refresh, creating a Lucene segment per call, which is exactly the
+        segment proliferation the 30s ``refresh_interval`` exists to avoid.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -183,6 +221,23 @@ class IVectorDBService(ABC):
         payload: dict,
         points: FilterExpression,
     ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def set_payload(
+        self,
+        collection_name: str,
+        payload: dict,
+        filter: FilterExpression,
+        refresh: bool = False,
+    ) -> None:
+        """Merge ``payload`` into matching points without replacing the rest.
+
+        See ``delete_points`` for ``refresh``.
+
+        Must not use Qdrant ``overwrite_payload`` (that drops ``page_content``).
+        Rejects an empty filter — the same safety rule as ``delete_points``.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -210,16 +265,3 @@ class IVectorDBService(ABC):
         mapped files and expose an explicit warmup API (e.g. OpenSearch).
         """
 
-    def schedule_idle_force_merge(
-        self,
-        collection_name: str,
-        idle_seconds: float = 300.0,
-        max_segments: int = 1,
-    ) -> None:
-        """Schedule a debounced force_merge after an idle period.
-
-        No-op for providers that manage segment lifecycle internally (e.g.
-        Qdrant).  Override in OpenSearch where callers want to collapse
-        segments automatically after a burst of ingest without running
-        force_merge mid-burst.
-        """

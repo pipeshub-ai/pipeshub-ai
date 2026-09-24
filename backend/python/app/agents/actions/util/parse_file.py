@@ -38,7 +38,7 @@ from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.utils.chat_helpers import count_tokens_text
-from app.utils.llm import get_llm_for_role
+from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
 
 # ---------------------------------------------------------------------------
 # Supported extensions (OOXML, OLE2, and text/markup as specified)
@@ -230,6 +230,9 @@ class FileContentParser:
 
             try:
                 blocks = await self.parse_to_block_container(file_record, raw)
+            except LLMNotConfiguredError as exc:
+                # Spreadsheets need the model while parsing; its message already says what to do.
+                return (False, _error_list(str(exc)))
             except Exception as exc:
                 self._logger.exception("parse_to_block_container failed")
                 return (False, _error_list(f"Parse failed: {exc}"))
@@ -249,6 +252,8 @@ class FileContentParser:
                     configuration_service=configuration_service,
                     data=llm_context,
                 )
+            except LLMNotConfiguredError as exc:
+                return (False, _error_list(str(exc)))
             except Exception as exc:
                 self._logger.exception("Token check failed")
                 return (False, _error_list(f"Token check failed: {exc}"))

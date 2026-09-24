@@ -223,6 +223,17 @@ export class Logger {
   }
 
   private logWithLevel(level: string, message: string, meta?: any) {
+    // Bail before getCallerInfo(): it captures and symbolises a stack trace,
+    // which profiling put at ~5% of gateway CPU -- and it was being paid in
+    // full for debug lines that the configured level then discarded.
+    // Guarded on the method existing: `logger` starts life as an empty cast
+    // and is only replaced once initializeLogger has run.
+    if (
+      typeof this.logger.isLevelEnabled === 'function' &&
+      !this.logger.isLevelEnabled(level)
+    ) {
+      return;
+    }
     const callerInfo = this.getCallerInfo();
     // Read at emit time; omitted entirely when there is no context.
     const traceMeta = getRequestContext()

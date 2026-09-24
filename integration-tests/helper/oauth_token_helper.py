@@ -19,12 +19,14 @@ Required env vars (in .env.local or .env.refresh_tokens):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Any, Coroutine, Optional
 
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -35,7 +37,9 @@ logger = logging.getLogger("oauth-token-helper")
 _INTEGRATION_TESTS_DIR = Path(__file__).resolve().parent.parent
 _DEFAULT_REFRESH_TOKENS_FILE = _INTEGRATION_TESTS_DIR / ".env.refresh_tokens"
 
-# Redis Pub/Sub channel the backend listens on for cache invalidation
+# Redis Pub/Sub channel the backend listens on for cache invalidation.
+# The actual channel name may be prefixed by REDIS_KEY_NAMESPACE (R9);
+# see _namespaced_channel() below.
 _CACHE_INVALIDATION_CHANNEL = "pipeshub:cache:invalidate"
 
 
@@ -71,7 +75,7 @@ def _config_path(connector_id: str) -> str:
     return f"/services/connectors/{connector_id}/config"
 
 
-def _write_credentials_to_redis(
+async def _write_credentials_to_redis(
     connector_id: str,
     access_token: str,
     refresh_token: str,
@@ -82,8 +86,17 @@ def _write_credentials_to_redis(
     Replicates the serialization used by EncryptedKeyValueStore + RedisDistributedKeyValueStore:
       stored bytes  =  json.dumps(encrypted_string).encode("utf-8")
     where encrypted_string is ``iv_hex:ciphertext_hex:auth_tag_hex``.
+
+    Goes through ``IRedisConnectionProvider`` (T6), not a bare
+    ``redis.Redis(...)``, so this helper keeps working when the target
+    deployment is Redis Cluster / MemoryDB rather than standalone Redis.
     """
-    import redis as redis_lib  # noqa: PLC0415 — keep top-level import light
+    # Imported lazily (keep top-level import light) and after
+    # integration-tests/conftest.py has put backend/python on sys.path.
+    from app.services.redis.config import ClientOptions, RedisConnectionConfig  # noqa: PLC0415
+    from app.services.redis.connection_provider_factory import (  # noqa: PLC0415
+        get_prepared_redis_provider,
+    )
 
     redis_host = os.getenv("REDIS_HOST", "localhost")
     redis_port = int(os.getenv("REDIS_PORT", "6379"))
@@ -91,55 +104,67 @@ def _write_credentials_to_redis(
     redis_db = int(os.getenv("REDIS_DB", "0"))
     key_prefix = os.getenv("REDIS_KV_PREFIX", "pipeshub:kv:")
 
-    client = redis_lib.Redis(
-        host=redis_host,
-        port=redis_port,
-        password=redis_password,
-        db=redis_db,
-        socket_connect_timeout=10,
-        socket_timeout=10,
-        decode_responses=False,
+    provider = await get_prepared_redis_provider(
+        RedisConnectionConfig.from_host_port(
+            host=redis_host,
+            port=redis_port,
+            password=redis_password,
+            db=redis_db,
+        )
     )
+    client = provider.create_client(ClientOptions(decode_responses=False))
+
+    # REDIS_KEY_NAMESPACE (R9): from_host_port() already reads the env var,
+    # and the provider exposes it.  Prefix key and channel the same way
+    # RedisDistributedKeyValueStore._build_key / _invalidation_channel do.
+    ns = provider.key_namespace
+    ns_prefix = f"{ns}:" if ns else ""
 
     path = _config_path(connector_id)
-    redis_key = f"{key_prefix}{path}"
+    redis_key = f"{ns_prefix}{key_prefix}{path}"
 
-    # Read + decrypt existing config so we preserve auth/sync/filters blocks
-    existing_config: dict = {}
-    raw = client.get(redis_key)
-    if raw:
-        try:
-            encrypted_str = json.loads(raw.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise RuntimeError(
-                f"Existing Redis KV config for connector {connector_id!r} is not valid JSON. "
-                "Aborting to prevent data loss."
-            ) from exc
-        try:
-            existing_config = json.loads(_decrypt(key_bytes, encrypted_str))
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to decrypt existing Redis KV config for connector {connector_id!r}. "
-                "Aborting to prevent accidental data loss. "
-                "Verify that SECRET_KEY matches the backend's value."
-            ) from exc
+    try:
+        # Read + decrypt existing config so we preserve auth/sync/filters blocks
+        existing_config: dict = {}
+        raw = await client.get(redis_key)
+        if raw:
+            try:
+                encrypted_str = json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise RuntimeError(
+                    f"Existing Redis KV config for connector {connector_id!r} is not valid JSON. "
+                    "Aborting to prevent data loss."
+                ) from exc
+            try:
+                existing_config = json.loads(_decrypt(key_bytes, encrypted_str))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to decrypt existing Redis KV config for connector {connector_id!r}. "
+                    "Aborting to prevent accidental data loss. "
+                    "Verify that SECRET_KEY matches the backend's value."
+                ) from exc
 
-    # Merge — only replace the credentials block
-    existing_config["credentials"] = {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "Bearer",
-    }
+        # Merge — only replace the credentials block
+        existing_config["credentials"] = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "Bearer",
+        }
 
-    # Encrypt → JSON-serialize → store
-    encrypted = _encrypt(key_bytes, json.dumps(existing_config))
-    serialized = json.dumps(encrypted).encode("utf-8")
-    client.set(redis_key, serialized)
+        # Encrypt → JSON-serialize → store
+        encrypted = _encrypt(key_bytes, json.dumps(existing_config))
+        serialized = json.dumps(encrypted).encode("utf-8")
+        await client.set(redis_key, serialized)
 
-    # Publish cache-invalidation so the backend drops its in-process LRU cache
-    client.publish(_CACHE_INVALIDATION_CHANNEL, path)
+        # Publish cache-invalidation so the backend drops its in-process LRU cache
+        channel = f"{ns_prefix}{_CACHE_INVALIDATION_CHANNEL}"
+        await client.publish(channel, path)
+    finally:
+        # `create_client()` clients are caller-owned (T6); the provider only
+        # tracks them so its own `close()` can sweep up stragglers, there is
+        # no per-client `release()` on `IRedisConnectionProvider`.
+        await client.aclose()
 
-    client.close()
     logger.info("Wrote OAuth credentials to Redis for connector %s", connector_id)
 
 
@@ -215,7 +240,7 @@ def _write_credentials_to_etcd(
     logger.info("Wrote OAuth credentials to etcd for connector %s", connector_id)
 
 
-def _write_credentials_to_kv(
+async def _write_credentials_to_kv(
     connector_id: str,
     access_token: str,
     refresh_token: str,
@@ -224,7 +249,7 @@ def _write_credentials_to_kv(
     """Dispatch to the correct KV store based on KV_STORE_TYPE (default: redis)."""
     kv_type = os.getenv("KV_STORE_TYPE", "redis").lower()
     if kv_type == "redis":
-        _write_credentials_to_redis(connector_id, access_token, refresh_token, key_bytes)
+        await _write_credentials_to_redis(connector_id, access_token, refresh_token, key_bytes)
     elif kv_type == "etcd":
         _write_credentials_to_etcd(connector_id, access_token, refresh_token, key_bytes)
     else:
@@ -283,7 +308,7 @@ def exchange_refresh_token(
     return access_token, new_refresh_token
 
 
-def authenticate_connector_with_refresh_token(
+async def authenticate_connector_with_refresh_token(
     connector_id: str,
     refresh_token_env_var: str,
     token_url: str,
@@ -354,7 +379,7 @@ def authenticate_connector_with_refresh_token(
     )
 
     key_bytes = _derive_key(secret_key)
-    _write_credentials_to_kv(connector_id, access_token, new_refresh_token, key_bytes)
+    await _write_credentials_to_kv(connector_id, access_token, new_refresh_token, key_bytes)
 
     # Persist the updated refresh token if the provider issued a new one
     if new_refresh_token != refresh_token:
@@ -370,3 +395,50 @@ def authenticate_connector_with_refresh_token(
         "toggle_sync will complete authentication.",
         connector_id,
     )
+
+
+def _run_blocking(coro: Coroutine[Any, Any, None]) -> None:
+    """Drive an async KV write from a synchronous caller.
+
+    ``asyncio.run`` alone is not enough: the connector-setup helpers that call
+    ``inject_access_token`` are synchronous but run inside pytest-asyncio's session
+    loop, where ``asyncio.run`` raises "cannot be called from a running event loop".
+    A worker thread with its own loop works from either context.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(coro)
+        return
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(asyncio.run, coro).result()
+
+
+def inject_access_token(connector_id: str, access_token: str) -> None:
+    """Inject a bare access token into the backend KV store, with no token exchange.
+
+    ``authenticate_connector_with_refresh_token`` cannot be used for providers that
+    issue no refresh token — GitHub OAuth Apps and classic PATs both fall in that
+    group, and ``grant_type=refresh_token`` is simply not a supported grant there.
+
+    ``refresh_token`` is deliberately written empty rather than omitted:
+    ``TokenRefreshService._is_connector_authenticated`` gates on
+    ``bool(credentials['refresh_token'])``, so an empty value keeps the connector out
+    of the background refresh scan entirely. A placeholder non-empty value would be
+    picked up, fail to refresh, and eventually flip ``isAuthenticated`` to False.
+    """
+    if not access_token or not access_token.strip():
+        # Writing an empty token would replace a working credentials block with one
+        # the connector cannot authenticate with, and the failure would surface later
+        # as a confusing 401 during sync rather than here.
+        raise ValueError("access_token is empty; refusing to overwrite stored credentials.")
+    secret_key = os.getenv("SECRET_KEY")
+    if not secret_key:
+        raise ValueError(
+            "SECRET_KEY is not set; it must match the backend's value to write "
+            "connector credentials into the KV store."
+        )
+    _run_blocking(
+        _write_credentials_to_kv(connector_id, access_token, "", _derive_key(secret_key))
+    )
+    logger.info("Injected access token for connector %s", connector_id)

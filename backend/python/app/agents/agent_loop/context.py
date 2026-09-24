@@ -42,6 +42,7 @@ class AgentContext(BaseModel):
     user_info: dict[str, Any] = Field(default_factory=dict)
     org_info: dict[str, Any] = Field(default_factory=dict)
     is_service_account: bool = False
+    send_user_info: bool = True
 
     # Services (injected, not serializable)
     retrieval_service: Any = None
@@ -56,6 +57,14 @@ class AgentContext(BaseModel):
     tool_to_toolset_map: dict[str, str] = Field(default_factory=dict)
     toolset_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     web_search_config: dict[str, Any] | None = None
+
+    # MCP servers — parallel to the toolset fields above. `mcp_servers` is the
+    # attached/authenticated instance metadata (from `agent.py`'s chat handler);
+    # `mcp_server_configs` is SENSITIVE (contains resolved credentials, keyed by
+    # instanceId). Consumed by `MCPAccessResolver`/`MCPToolProvider`
+    # (`app/agents/agent_loop/mcp_access.py` / `mcp_tool_loader.py`).
+    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
+    mcp_server_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
     # Knowledge config
     has_knowledge: bool = False
@@ -77,6 +86,11 @@ class AgentContext(BaseModel):
     has_slack_connector: bool = False
     has_slack_knowledge: bool = False
     is_multimodal_llm: bool = False
+    # The user's question for this turn. Reaches tools that need to know what
+    # is being asked -- `fetch_record` ranks an over-budget record's blocks
+    # against it (see `record_block_selection`). Empty when a caller builds a
+    # context without one; every consumer treats that as "no opinion".
+    query: str = ""
 
     # TEMPORARY token-savings experiment — see `RecordIdShortener` in
     # `utils/chat_helpers.py`. Opt-in per request (`ChatQuery.
@@ -101,6 +115,12 @@ class AgentContext(BaseModel):
     # (`agentIdPlaceholder` via `agent.py`). Real Agent Builder agents never
     # populate this field — they use their own `system_prompt`/`instructions`.
     custom_instructions: str | None = None
+    # Author-set instructions from a Project this conversation is linked to
+    # (Node `ProjectService.buildContext` -> `applyProjectContext` ->
+    # `ChatQuery.projectInstructions`). Rendered as its own prompt section
+    # (see `prompt_builder.py`), distinct from `instructions` (agent-specific)
+    # and `custom_instructions` (org-level) — never touches agent identity.
+    project_instructions: str | None = None
     timezone: str | None = None
     current_time: str | None = None
 
@@ -122,6 +142,14 @@ class AgentContext(BaseModel):
     # `_seed_tool_state`) so `build_capability_summary(state)` can read it
     # without a hard dependency on `AgentContext`.
     toolset_load_failures: dict[str, str] = Field(default_factory=dict)
+
+    # Populated by `MCPToolProvider.load_into()` (`mcp_tool_loader.py`): one
+    # entry per attached MCP instance whose runtime discovery/registration
+    # failed (timeout, connection error, ...) — soft-skip, not a hard-block
+    # (unlike the chat-route's attach-time authentication hard-block). Mirrored
+    # onto `tool_state["mcp_tool_load_failures"]` the same way
+    # `toolset_load_failures` is, for the same reason (see comment above).
+    mcp_tool_load_failures: list[dict[str, Any]] = Field(default_factory=list)
 
     # Group names (as registered on the per-request `ToolRegistry`, i.e.
     # `PipesHubToolLoader`'s `group_name`, not the registry's raw toolset
@@ -157,14 +185,28 @@ class AgentContext(BaseModel):
     # inside any individual producer.
     protocol: str = "legacy"
 
-    # The top-level agent's `run_ctx.run_id`, stashed here by
-    # `stream_bridge.py` right after `PipesHubAgentFactory.create()`
-    # returns — `AnswerFinalizer`/`clarification`/hooks never hold an
-    # `Agent`/`RunContext` reference themselves, but `AGUIFormatter` needs
-    # a `runId` to stamp onto the frames it builds directly (STATE_SNAPSHOT,
-    # RUN_FINISHED, RUN_ERROR, CUSTOM). `None` until then; irrelevant for
-    # `LegacyFormatter`.
+    # The top-level agent's `run_ctx.run_id` — set here BEFORE `factory.
+    # create()` runs (from the client-supplied/generated `runId`, by
+    # `stream_bridge.py`/`bridge.py`) so `factory.create()` can pass it
+    # into `Agent(..., run_id=...)` and get the SAME value back on
+    # `agent.run_ctx.run_id`; re-assigned (a no-op when already set, or
+    # filled in for callers that never set it) right after `Agent()`
+    # construction for exactly that reason. `AnswerFinalizer`/
+    # `clarification`/hooks never hold an `Agent`/`RunContext` reference
+    # themselves, but `AGUIFormatter` needs a `runId` to stamp onto the
+    # frames it builds directly (STATE_SNAPSHOT, RUN_FINISHED, RUN_ERROR,
+    # CUSTOM). `None` until then; irrelevant for `LegacyFormatter`.
     run_id: str | None = None
+
+    # Stop Generation (Phase 3a): the `CancellationToken` this request's
+    # `RunCancellationRegistry` entry was registered with — `None` for
+    # every caller that didn't supply a `runId` (background/test runs,
+    # callers predating this field). Read by `factory.create()` to wire
+    # `AgentRuntime.cancellation_token`, which `Agent.__init__` already
+    # turns into a PRE_TURN `check_not_cancelled` guard and a per-tool-call
+    # check (`install_turn_guards`, `agent_loop_lib/agent/__init__.py`) —
+    # this field is the ONLY plumbing Phase 3a needed to add on this side.
+    cancellation_token: Any = None
 
     # Per-request agent_loop_lib `SandboxManager` (only set when code
     # execution is enabled for this request — see
@@ -225,8 +267,11 @@ class AgentContext(BaseModel):
     model_name: str = ""
 
     # Model profile fields threaded from etcd llm_config at the route layer.
-    # Set alongside model_name in factory.create() so PipesHubPromptBuilder
-    # can inject tier-appropriate guidance without re-reading etcd.
+    # Passed to `from_chat_state` rather than assigned afterwards:
+    # `model_post_init` resolves this request's image policy from
+    # `llm_provider`, so a provider set after construction would leave the
+    # admission on the unknown-provider default while the wire cap
+    # (`factory.create`) used the real one.
     # `""` / None are safe defaults for tests and CLI runs that don't
     # go through get_llm_for_chat.
     llm_provider: str = ""
@@ -274,7 +319,10 @@ class AgentContext(BaseModel):
         per streamed chunk). Imported lazily to avoid a hard import-time
         dependency from this narrow adapter-context module onto the
         protocol package."""
-        from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER, LEGACY_FORMATTER
+        from app.agents.agent_loop.protocol.formatter import (
+            AGUI_FORMATTER,
+            LEGACY_FORMATTER,
+        )
 
         return AGUI_FORMATTER if self.protocol == "agui" else LEGACY_FORMATTER
 
@@ -297,6 +345,9 @@ class AgentContext(BaseModel):
     @classmethod
     def from_chat_state(
         cls, state: dict[str, Any], *, event_sink: Any = None, protocol: str = "legacy",
+        llm_provider: str = "", context_length: int | None = None,
+        is_reasoning_model: bool = False, run_id: str | None = None,
+        cancellation_token: Any = None,
     ) -> "AgentContext":
         """Builds an `AgentContext` from an already-built `ChatState` dict
         (Phase 8, `stream_bridge.py`) rather than re-deriving every field a
@@ -318,6 +369,7 @@ class AgentContext(BaseModel):
             user_info=state.get("user_info") or {},
             org_info=state.get("org_info") or {},
             is_service_account=bool(state.get("is_service_account", False)),
+            send_user_info=state.get("send_user_info", True) is not False,
             retrieval_service=state.get("retrieval_service"),
             graph_provider=state.get("graph_provider"),
             config_service=state.get("config_service"),
@@ -327,6 +379,8 @@ class AgentContext(BaseModel):
             agent_toolsets=state.get("agent_toolsets") or [],
             tool_to_toolset_map=state.get("tool_to_toolset_map") or {},
             toolset_configs=state.get("toolset_configs") or {},
+            mcp_servers=state.get("mcp_servers") or [],
+            mcp_server_configs=state.get("mcp_server_configs") or {},
             web_search_config=state.get("web_search_config"),
             has_knowledge=bool(state.get("has_knowledge", False)),
             apps=state.get("apps"),
@@ -340,10 +394,12 @@ class AgentContext(BaseModel):
             has_slack_connector=bool(state.get("has_slack_connector", False)),
             has_slack_knowledge=bool(state.get("has_slack_knowledge", False)),
             is_multimodal_llm=bool(state.get("is_multimodal_llm", False)),
+            query=str(state.get("query") or ""),
             enable_record_id_shortening=bool(state.get("enable_record_id_shortening", False)),
             system_prompt=state.get("system_prompt"),
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
+            project_instructions=state.get("project_instructions"),
             timezone=state.get("timezone"),
             current_time=state.get("current_time"),
             conversation_id=state.get("conversation_id"),
@@ -351,6 +407,11 @@ class AgentContext(BaseModel):
             previous_conversations=state.get("previous_conversations") or [],
             event_sink=event_sink,
             protocol=protocol,
+            llm_provider=llm_provider,
+            context_length=context_length,
+            is_reasoning_model=is_reasoning_model,
+            run_id=run_id,
+            cancellation_token=cancellation_token,
             tool_state=state,
         )
 
@@ -373,7 +434,30 @@ class AgentContext(BaseModel):
         creating (`final_results`, `tool_records`, ...) beyond their empty
         defaults, so `.setdefault()` never clobbers accumulated state on a
         second call into `_seed_tool_state`."""
+        from app.utils.image_admission import (  # noqa: PLC0415
+            ImageAdmission,
+            ImageBudget,
+        )
+        from app.utils.image_policy import resolve_image_policy  # noqa: PLC0415
+
+        # One budget instance, and one arbiter that composes it. The budget is
+        # the conversation-wide ceiling every image source debits; the
+        # admission adds the cap the model in use actually accepts, which is
+        # far lower for Azure (10 per request) and Ollama (1) than the 50 the
+        # ceiling allows. Resolved here rather than at each renderer so a
+        # sub-agent on a different model gets its own — see
+        # `resolve_image_policy`.
+        image_budget = ImageBudget()
+
         return {
+            "image_budget": image_budget,
+            "image_admission": ImageAdmission(
+                resolve_image_policy(
+                    provider=self.llm_provider,
+                    is_multimodal=self.is_multimodal_llm,
+                ),
+                budget=image_budget,
+            ),
             "logger": self.logger,
             "llm": self.llm,
             "retrieval_service": self.retrieval_service,
@@ -386,11 +470,14 @@ class AgentContext(BaseModel):
             "user_info": self.user_info,
             "org_info": self.org_info,
             "is_service_account": self.is_service_account,
+            "send_user_info": self.send_user_info,
             "conversation_id": self.conversation_id,
             "has_ui_client": self.has_ui_client,
             "agent_toolsets": self.agent_toolsets,
             "tool_to_toolset_map": self.tool_to_toolset_map,
             "toolset_configs": self.toolset_configs,
+            "mcp_servers": self.mcp_servers,
+            "mcp_server_configs": self.mcp_server_configs,
             "web_search_config": self.web_search_config,
             "has_knowledge": self.has_knowledge,
             "apps": self.apps,
@@ -404,10 +491,12 @@ class AgentContext(BaseModel):
             "has_slack_connector": self.has_slack_connector,
             "has_slack_knowledge": self.has_slack_knowledge,
             "is_multimodal_llm": self.is_multimodal_llm,
+            "query": self.query,
             "enable_record_id_shortening": self.enable_record_id_shortening,
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,
+            "project_instructions": self.project_instructions,
             "timezone": self.timezone,
             "current_time": self.current_time,
             "previous_conversations": self.previous_conversations,
@@ -433,6 +522,7 @@ class AgentContext(BaseModel):
             # Convenience read — retrieval.py mirrors context.needs_whole_document
             # here so the tool does not need a direct context reference.
             "needs_whole_document": self.needs_whole_document,
+            "mcp_tool_load_failures": self.mcp_tool_load_failures,
         }
 
 

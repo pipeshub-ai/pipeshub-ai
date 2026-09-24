@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.context import TurnContext
     from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next
     from app.agents.agent_loop.context import AgentContext
+    from app.utils.chat_helpers import ImageBudget
+    from app.utils.image_admission import ImageAdmission
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,7 @@ __all__ = [
     "resolve_attachments_for_goal",
     "resolve_history_attachments",
     "shape_image_injection",
+    "shape_retrieved_image_injection",
 ]
 
 
@@ -81,8 +84,8 @@ async def resolve_attachments_for_goal(
         log.warning("No blob_store available; cannot resolve attachment content")
         return "", []
 
-    from app.utils.attachment_utils import resolve_attachments  # noqa: PLC0415
-    from app.utils.chat_helpers import CitationRefMapper  # noqa: PLC0415
+    from app.utils.attachment_utils import resolve_attachments
+    from app.utils.chat_helpers import CitationRefMapper
 
     state = context.tool_state
 
@@ -90,6 +93,9 @@ async def resolve_attachments_for_goal(
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
         state["citation_ref_mapper"] = ref_mapper
+
+    from app.utils.chat_helpers import ImageBudget
+    image_budget: ImageBudget = state.setdefault("image_budget", ImageBudget())
 
     attachment_records: dict[str, dict[str, Any]] = {}
     try:
@@ -101,6 +107,7 @@ async def resolve_attachments_for_goal(
             logger=log,
             ref_mapper=ref_mapper,
             out_records=attachment_records,
+            image_budget=image_budget,
         )
     except Exception as exc:
         log.warning("Failed to resolve attachments: %s", exc)
@@ -256,8 +263,8 @@ async def _rehydrate_citation_maps(
     Returns actual record IDs (``record["id"]``) that were resolved —
     these are the IDs the model should pass to ``dynamic_fetch_full_record``.
     """
-    from app.utils.chat_helpers import CitationRefMapper  # noqa: PLC0415
-    from app.utils.chat_helpers import record_to_message_content  # noqa: PLC0415
+    from app.utils.chat_helpers import CitationRefMapper
+    from app.utils.chat_helpers import record_to_message_content
 
     state = context.tool_state
 
@@ -315,7 +322,7 @@ def _register_fetch_tool(
     registered after that hook's ``initial_visible_tools()`` snapshot stays
     invisible to ``tool_schemas_for_turn`` for the entire run.
     """
-    from app.agents.agent_loop.hooks.citations import (  # noqa: PLC0415
+    from app.agents.agent_loop.hooks.citations import (
         _FETCH_FULL_RECORD_TOOL_NAME,
         ensure_fetch_full_record_available,
     )
@@ -365,6 +372,8 @@ async def resolve_history_attachments(
     vrmap: dict[str, Any],
     *,
     is_multimodal_llm: bool = False,
+    image_budget: "ImageBudget | None" = None,
+    image_admission: "ImageAdmission | None" = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Resolve document and image attachments from blob for a historical turn.
 
@@ -378,12 +387,29 @@ async def resolve_history_attachments(
     resolution remain functional after auto-compaction summarizes this
     text away.
 
+    ``image_budget`` should be the SAME instance current-turn attachments
+    and every search/fetch/prefetch tool call debit
+    (``context.tool_state["image_budget"]``) — historical images count
+    against the same 50-image conversation cap, not a separate one.
+    Defaults to a fresh (effectively unbounded for this call alone)
+    budget when not supplied.
+
+    ``image_admission`` is the request's arbiter. Replayed images are
+    ``ImageOrigin.HISTORY`` -- the lowest tier -- and this runs during history
+    seeding, before any of the turn's own tool calls: on the raw budget alone,
+    old images spent the allowance ahead of the record the user is actually
+    asking about, and skipped dedup and the downscale to the provider's
+    per-image limits on the way.
+
     Returns ``(text, image_blocks)`` where *text* is the rendered
     ``<record>`` content (empty string if nothing resolved) and
     *image_blocks* is a list of LangChain ``image_url`` dicts for
     multimodal injection.
     """
-    from app.utils.chat_helpers import record_to_message_content  # noqa: PLC0415
+    from app.utils.chat_helpers import ImageBudget, record_to_message_content
+
+    if image_budget is None:
+        image_budget = ImageBudget()
 
     text_parts: list[str] = []
     image_blocks: list[dict[str, Any]] = []
@@ -431,7 +457,9 @@ async def resolve_history_attachments(
                     continue
                 if vrid not in vrmap:
                     vrmap[vrid] = record
-                blocks = _extract_image_urls_from_record(record)
+                blocks = _extract_image_urls_from_record(
+                    record, image_budget, image_admission=image_admission,
+                )
                 image_blocks.extend(blocks)
             except Exception:
                 logger.warning(
@@ -442,16 +470,33 @@ async def resolve_history_attachments(
     return "\n".join(text_parts), image_blocks
 
 
-def _extract_image_urls_from_record(record: dict[str, Any]) -> list[dict[str, Any]]:
-    """Extract ``image_url`` blocks from a blob record's block_containers."""
-    from app.utils.chat_helpers import is_base64_image  # noqa: PLC0415
+def _extract_image_urls_from_record(
+    record: dict[str, Any],
+    image_budget: "ImageBudget | None" = None,
+    *,
+    image_admission: "ImageAdmission | None" = None,
+) -> list[dict[str, Any]]:
+    """Extract ``image_url`` blocks from a blob record's block_containers.
+
+    Goes through the request's `ImageAdmission` so a replayed image obeys the
+    same per-model cap, dedup and per-image downscale as every other source,
+    and is ranked as `ImageOrigin.HISTORY` rather than taking a slot simply
+    for being seeded first. Falls back to the shared conversation-wide
+    ``image_budget`` alone when no arbiter is supplied.
+    """
+    from app.utils.chat_helpers import ImageBudget, admission_for, is_base64_image
+    from app.utils.image_admission import ImageCandidate, ImageOrigin
+
+    if image_budget is None:
+        image_budget = ImageBudget()
+    admission = admission_for(image_admission, image_budget)
 
     block_containers = record.get("block_containers", {})
     blocks = (
         block_containers.get("blocks", [])
         if isinstance(block_containers, dict) else []
     )
-    result: list[dict[str, Any]] = []
+    candidates: list[ImageCandidate] = []
     for block in blocks:
         if not isinstance(block, dict) or block.get("type") != "image":
             continue
@@ -462,8 +507,45 @@ def _extract_image_urls_from_record(record: dict[str, Any]) -> list[dict[str, An
             uri = data
         else:
             continue
-        if uri and is_base64_image(uri):
-            result.append({"type": "image_url", "image_url": {"url": uri}})
+        if not (uri and is_base64_image(uri)):
+            continue
+        candidates.append(ImageCandidate(
+            ref="",
+            data_uri=uri,
+            origin=ImageOrigin.HISTORY,
+            block_index=int(block.get("index") or 0),
+        ))
+
+    # One batch, not one call per image: ranking needs the whole set in hand.
+    outcome = admission.admit(candidates)
+    # `admitted_uri` answers "did this win a slot in the request", which is
+    # yes for an image some earlier batch already put on the wire. Emitting on
+    # that alone attaches a second copy of it here.
+    #
+    # Identity, not the URI: within one batch the copies this call rejected as
+    # duplicates carry the SAME `data_uri` as the copy it admitted, so keying
+    # on the string would withhold the winner along with them and the image
+    # would vanish. `outcome.degraded` holds the very objects passed in, and
+    # `candidates` outlives the loop, so `id()` is both exact and free of a
+    # sha256 over a multi-megabyte payload.
+    withheld = {id(degraded.candidate) for degraded in outcome.degraded}
+    # Looked up per source URI rather than keyed by `block_index`. A record is
+    # blob data and `Block.index` defaults to None, so several image blocks can
+    # collapse to index 0 -- which made this emit one image twice and lose the
+    # other. Not keyed off `admit()`'s returned list either: those candidates
+    # carry the *normalized* bytes, so their hash never matches the source.
+    result: list[dict[str, Any]] = []
+    emitted: set[str] = set()
+    for candidate in candidates:
+        if id(candidate) in withheld:
+            continue
+        # The admitted bytes, downscaled if the model's per-image limits
+        # required it; None when this image did not win a slot.
+        uri = admission.admitted_uri(candidate.data_uri)
+        if uri is None or uri in emitted:
+            continue
+        emitted.add(uri)
+        result.append({"type": "image_url", "image_url": {"url": uri}})
     return result
 
 
@@ -473,14 +555,14 @@ def _extract_image_urls_from_record(record: dict[str, Any]) -> list[dict[str, An
 
 
 def _langchain_image_to_part(block: dict[str, Any]) -> Any:
-    """Convert a LangChain ``image_url`` dict to an ``ImagePart``."""
-    from app.agent_loop_lib.core.messages import ImagePart, ImageSource  # noqa: PLC0415
+    """Convert a LangChain ``image_url`` dict to an ``ImagePart``. Thin
+    alias over ``chat_helpers.image_dict_to_part`` (shared with
+    ``retrieval.py``/``citations.py``'s tool-result image collection) kept
+    under this name since it's the established public symbol other modules
+    already import."""
+    from app.utils.chat_helpers import image_dict_to_part
 
-    image_url = block.get("image_url") or {}
-    url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
-    if not url:
-        return None
-    return ImagePart(source=ImageSource(type="url", data=url))
+    return image_dict_to_part(block)
 
 
 def shape_image_injection(context: "AgentContext") -> "Middleware[Any]":
@@ -510,24 +592,106 @@ def shape_image_injection(context: "AgentContext") -> "Middleware[Any]":
             await next_fn()
             return
 
-        from app.agent_loop_lib.core.messages import (  # noqa: PLC0415
+        from app.agent_loop_lib.core.messages import (
             TextPart,
             UserMessage,
         )
 
-        for msg in ctx.messages:
-            if not isinstance(msg, UserMessage):
-                continue
-            content = msg.content
-            if isinstance(content, str):
-                msg.content = [TextPart(text=content), *_cached_parts]
-            elif isinstance(content, list):
-                has_image = any(
-                    getattr(p, "type", None) == "image" for p in content
-                )
-                if not has_image:
-                    msg.content = [*content, *_cached_parts]
-            break
+        _inject_into_first_user_message(ctx.messages, _cached_parts, TextPart, UserMessage)
+        await next_fn()
+
+    return _middleware
+
+
+def _image_identity(part: Any) -> str | None:
+    """A producer-independent identity for an `ImagePart`, so a base64 source
+    and a url source carrying the same image compare equal."""
+    from app.agent_loop_lib.core.messages import image_data_url
+
+    source = getattr(part, "source", None)
+    if source is None:
+        return None
+    try:
+        return image_data_url(source)
+    except Exception:
+        return getattr(source, "data", None)
+
+
+def _inject_into_first_user_message(
+    messages: list[Any], parts: list[Any], text_part_cls: Any, user_message_cls: Any,
+) -> None:
+    """Append `parts` (`ImagePart`s) to the first `UserMessage` in
+    `messages`, converting plain-string content to multipart first. Shared
+    by `shape_image_injection` (attachment images) and
+    `shape_retrieved_image_injection` (tool-sourced images, Ollama
+    fallback) — same target message, same multipart-conversion rule.
+    """
+    for msg in messages:
+        if not isinstance(msg, user_message_cls):
+            continue
+        content = msg.content
+        if isinstance(content, str):
+            msg.content = [text_part_cls(text=content), *parts]
+        elif isinstance(content, list):
+            # Dedup per image, not by "any image present" — the latter
+            # would drop a whole batch of newly-popped
+            # `pending_tool_images` (each batch is popped exactly once,
+            # see `shape_retrieved_image_injection`, so a dropped batch is
+            # gone for good) whenever the message already carried an
+            # unrelated image, e.g. an attachment injected by
+            # `shape_image_injection` or an earlier retrieved-image batch.
+            #
+            # Key on the normalised data URL rather than `source.data`: the
+            # same image can arrive as a base64 source or a url source
+            # depending on which producer built the part, and those two
+            # carry different `data` strings for identical bytes.
+            existing_sources = {
+                _image_identity(p) for p in content
+                if getattr(p, "type", None) == "image"
+            }
+            new_parts = [p for p in parts if _image_identity(p) not in existing_sources]
+            if new_parts:
+                msg.content = [*content, *new_parts]
+        break
+
+
+def shape_retrieved_image_injection(context: "AgentContext") -> "Middleware[Any]":
+    """PRE_MODEL fallback hook: delivers tool-sourced images (search/fetch
+    results) to providers whose tool-result messages have images stripped
+    before the request leaves (Ollama, OpenAI-family models on Chat
+    Completions — see `LangChainTransport._supports_multipart_tool_result` /
+    `converters.py`'s `strip_tool_images`).
+
+    Only registered by `factory.py` when the resolved chat model needs it,
+    so OpenAI/Anthropic (which deliver images natively via multipart
+    `ToolMessage` content) never see the same image injected twice.
+
+    Pops (not peeks) `context.tool_state["pending_tool_images"]` on every
+    dispatch — `retrieval.py`/`citations.py` repopulate it fresh on each
+    tool call within the turn, so each batch of tool-sourced images is
+    delivered exactly once, on the very next model call after the tool
+    call that produced them.
+    """
+
+    async def _middleware(ctx: Any, next_fn: "Next") -> None:
+        pending = context.tool_state.pop("pending_tool_images", [])
+        if not pending:
+            await next_fn()
+            return
+
+        from app.utils.chat_helpers import image_dict_to_part
+
+        image_parts = [p for img in pending if (p := image_dict_to_part(img)) is not None]
+        if not image_parts:
+            await next_fn()
+            return
+
+        from app.agent_loop_lib.core.messages import (
+            TextPart,
+            UserMessage,
+        )
+
+        _inject_into_first_user_message(ctx.messages, image_parts, TextPart, UserMessage)
         await next_fn()
 
     return _middleware

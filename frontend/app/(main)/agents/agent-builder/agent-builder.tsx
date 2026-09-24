@@ -15,7 +15,6 @@ import {
 import { Box, Flex, Text, Button, Dialog, Callout, VisuallyHidden } from '@radix-ui/themes';
 import { AgentsApi } from '../api';
 import { extractAgentConfigFromFlow } from './extract-agent-config';
-import { selectPreferredModel, llmNodeTypeSlug } from './agent-model-utils';
 import { useAgentBuilderData } from './hooks/use-agent-builder-data';
 import { useAgentBuilderState } from './hooks/use-agent-builder-state';
 import { useAgentBuilderNodeTemplates } from './hooks/use-node-templates';
@@ -29,18 +28,20 @@ import { AgentToolsetCredentialsDialog } from './components/agent-toolset-creden
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { AgentWebSearchAttachment, FlowNodeData } from './types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
-import { normalizeDisplayName, formattedProvider } from './display-utils';
+import { normalizeDisplayName } from './display-utils';
 import { FLOW_EDGE } from './flow-theme';
 import { connectionError } from './connection-rules';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { invalidateModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getAgentBuilderPermissions } from './agent-builder-permissions';
+import { useUserPermission } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import {
   collectActiveToolsetTypeKeysFromNodes,
   type ToolsetTypeKeyFlowNode,
 } from './sidebar-toolset-utils';
+import type { McpInstanceIdFlowNode } from './sidebar-mcp-utils';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
@@ -94,11 +95,13 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     activeAgentConnectors,
     configuredConnectors,
     toolsets,
+    mcpServers,
     loading,
     loadedAgent,
     error,
     setError,
     refreshToolsets,
+    refreshMcpServers,
     refreshAgent,
   } = useAgentBuilderData(editingKey);
 
@@ -160,6 +163,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
   const { canPersist, isAgentStructureLocked, isServiceAccountToolsetOrgLocked, isServiceAccount } =
     useMemo(() => getAgentBuilderPermissions(loadedAgent), [loadedAgent]);
+  const canAccessServiceAgent = useUserPermission('accessServiceAgent');
+  const canDeleteAgentPermission = useUserPermission('deleteAgent');
+  const canShareAgent = useUserPermission('shareAgent');
 
   const paletteDragBlockedMessage = useMemo(() => {
     if (!isAgentStructureLocked) return '';
@@ -303,7 +309,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   }, [editingKey]);
 
   useEffect(() => {
-    if (loading || availableModels.length === 0 || nodes.length > 0 || initOnce.current) return;
+    // Note: we no longer gate initialization on `availableModels.length === 0`.
+    // A new agent may start with no LLM node connected — it will use the
+    // organization's default model at chat time until one is explicitly added.
+    if (loading || nodes.length > 0 || initOnce.current) return;
 
     const agentSrc = loadedAgent || undefined;
     if (agentSrc) {
@@ -325,9 +334,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       return;
     }
 
-    const initialModel = selectPreferredModel(availableModels);
-    if (!initialModel) return;
-
+    // Brand-new agents never get an LLM auto-attached — the agent core node
+    // renders fine without an `llms` edge and falls back to the
+    // organization's default LLM at chat time until the user explicitly
+    // connects a model.
     const systemPrompt = t('agentBuilder.defaultSystemPrompt');
     const startMessage = t('agentBuilder.defaultStartMessage');
 
@@ -349,31 +359,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         },
       },
       {
-        id: 'llm-1',
-        type: 'flowNode',
-        position: { x: 50, y: 220 },
-        data: {
-          id: 'llm-1',
-          type: llmNodeTypeSlug(initialModel.provider, initialModel.modelKey, initialModel.modelName),
-          label: initialModel.modelFriendlyName?.trim() || initialModel.modelName || 'Model',
-          description: `${formattedProvider(initialModel.provider || 'AI')} model`,
-          icon: 'psychology',
-          config: {
-            modelKey: initialModel.modelKey,
-            modelName: initialModel.modelName,
-            provider: initialModel.provider || '',
-            modelType: initialModel.modelType || 'llm',
-            isMultimodal: initialModel.isMultimodal,
-            isDefault: initialModel.isDefault,
-            isReasoning: initialModel.isReasoning,
-            modelFriendlyName: initialModel.modelFriendlyName,
-          },
-          inputs: [],
-          outputs: ['response'],
-          isConfigured: true,
-        },
-      },
-      {
         id: 'agent-core-1',
         type: 'flowNode',
         position: { x: 420, y: 120 },
@@ -390,7 +375,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             routing: 'auto',
             allowMultipleLLMs: true,
           },
-          inputs: ['input', 'toolsets', 'knowledge', 'llms'],
+          inputs: ['input', 'toolsets', 'knowledge', 'llms', 'skills', 'mcpServers'],
           outputs: ['response'],
           isConfigured: true,
         },
@@ -420,15 +405,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         target: 'agent-core-1',
         sourceHandle: 'message',
         targetHandle: 'input',
-        type: 'smoothstep',
-        style: { stroke: FLOW_EDGE.line, strokeWidth: 1.5 },
-      },
-      {
-        id: 'e-llm-agent',
-        source: 'llm-1',
-        target: 'agent-core-1',
-        sourceHandle: 'response',
-        targetHandle: 'llms',
         type: 'smoothstep',
         style: { stroke: FLOW_EDGE.line, strokeWidth: 1.5 },
       },
@@ -857,6 +833,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           onEnableServiceAccount={canPersist ? handleRequestServiceAccount : undefined}
           canDeleteAgent={Boolean(loadedAgent?.can_delete)}
           onRequestDeleteAgent={() => setAgentDeleteDialogOpen(true)}
+          serviceAccountPermissionDenied={!canAccessServiceAgent}
+          deletePermissionDenied={!canDeleteAgentPermission}
+          sharePermissionDenied={!canShareAgent}
           createdBy={loadedAgent?.createdBy ?? null}
         />
 
@@ -978,11 +957,15 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             width={AGENT_BUILDER_SIDEBAR_WIDTH}
             loading={loading}
             nodeTemplates={nodeTemplates}
+            availableSkills={availableSkills}
             configuredConnectors={configuredConnectors}
             toolsets={toolsets}
             activeToolsetTypeKeys={activeToolsetTypeKeys}
             toolsetMergeCheckNodes={nodes as ToolsetTypeKeyFlowNode[]}
             refreshToolsets={refreshToolsets}
+            mcpServers={mcpServers}
+            mcpMergeCheckNodes={nodes as McpInstanceIdFlowNode[]}
+            refreshMcpServers={() => refreshMcpServers(effectiveAgentKey, isServiceAccount)}
             onNotify={setBanner}
             agentKey={effectiveAgentKey}
             isServiceAccount={isServiceAccount}

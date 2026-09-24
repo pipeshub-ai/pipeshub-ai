@@ -47,21 +47,22 @@ export const WebSearchApi = {
       if (data.status === 'success') {
         const providers: ConfiguredWebSearchProvider[] = Array.isArray(data.providers)
           ? data.providers.map((provider: { providerKey: string; provider: string; configuration?: Record<string, unknown>; isDefault?: boolean }) => ({
-              providerKey: provider.providerKey,
-              provider: provider.provider,
-              configuration: provider.configuration || {},
-              isDefault: provider.isDefault || false,
-            }))
+            providerKey: provider.providerKey,
+            provider: provider.provider,
+            configuration: provider.configuration || {},
+            isDefault: provider.isDefault || false,
+          }))
           : [];
 
         return {
           providers,
           settings: normalizeWebSearchSettings(data.settings),
+          inherited: !!data?.inherited || false,
         };
       }
-      return { providers: [], settings: DEFAULT_WEB_SEARCH_SETTINGS };
+      return { providers: [], settings: DEFAULT_WEB_SEARCH_SETTINGS, inherited: false };
     } catch {
-      return { providers: [], settings: DEFAULT_WEB_SEARCH_SETTINGS };
+      return { providers: [], settings: DEFAULT_WEB_SEARCH_SETTINGS, inherited: false };
     }
   },
 

@@ -14,8 +14,52 @@ import type { AgentDetail, KnowledgeHubAppNode } from '../../types';
 import { ToolsetsApi, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { AgentToolsListRow, KnowledgeBaseForBuilder, SkillForBuilder } from '../../types';
 import { SkillsApi } from '../../../workspace/skills/personal/api';
+import { McpServersApi } from '../../../workspace/mcp-servers/api';
+import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
+import {
+  useFeatureFlagsStore,
+  selectMcpEnabled,
+  selectActionsEnabled,
+  selectSkillsEnabled,
+  selectFeatureFlagsLoaded,
+} from '@/lib/store/feature-flags-store';
 
 const TOOLSETS_PAGE = 20;
+
+/** Non-hook read for use inside plain async functions (not React components). */
+function isMcpEnabledNow(): boolean {
+  return selectMcpEnabled(useFeatureFlagsStore.getState());
+}
+
+/** Non-hook read for use inside plain async functions (not React components). */
+function isActionsEnabledNow(): boolean {
+  return selectActionsEnabled(useFeatureFlagsStore.getState());
+}
+
+/** Non-hook read for use inside plain async functions (not React components). */
+function isSkillsEnabledNow(): boolean {
+  return selectSkillsEnabled(useFeatureFlagsStore.getState());
+}
+
+async function ensureFeatureFlagsLoaded(): Promise<void> {
+  if (selectFeatureFlagsLoaded(useFeatureFlagsStore.getState())) return;
+  await useFeatureFlagsStore.getState().fetchFlags();
+}
+
+async function loadSkillsCatalog(): Promise<
+  Awaited<ReturnType<typeof SkillsApi.listAssignableSkills>>
+> {
+  await ensureFeatureFlagsLoaded();
+  if (!isSkillsEnabledNow()) {
+    return [];
+  }
+  try {
+    return await SkillsApi.listAssignableSkills();
+  } catch (err) {
+    console.error('Failed to fetch skills catalog:', err);
+    return [];
+  }
+}
 
 /**
  * Map KnowledgeHubAppNode items to Connector[] for downstream compatibility.
@@ -56,10 +100,7 @@ async function fetchStaticBuilderResources() {
       console.error('Failed to fetch knowledge hub app nodes:', err);
       return [] as KnowledgeHubAppNode[];
     }),
-    SkillsApi.listAssignableSkills().catch((err) => {
-      console.error('Failed to fetch skills catalog:', err);
-      return [] as Awaited<ReturnType<typeof SkillsApi.listAssignableSkills>>;
-    }),
+    loadSkillsCatalog(),
   ]);
 
   const configuredConnectors = mapNodesToConnectors(appNodes);
@@ -72,6 +113,7 @@ async function fetchStaticBuilderResources() {
       name: s.name,
       description: s.description,
       category: s.category,
+      isBuiltin: s.source === 'builtin',
     })),
   };
 }
@@ -80,6 +122,7 @@ async function loadToolsetsForAgentContext(
   agentDetails: AgentDetail | null,
   editingAgentKey: string | null
 ): Promise<BuilderSidebarToolset[]> {
+  if (!isActionsEnabledNow()) return [];
   const isSvc = agentDetails?.isServiceAccount === true;
   const keyForToolsets = agentDetails?._key || editingAgentKey || undefined;
   if (isSvc && keyForToolsets) {
@@ -95,12 +138,33 @@ async function loadToolsetsForAgentContext(
   return toolsets;
 }
 
+/** Same scoping rule as `loadToolsetsForAgentContext`: service-account agents use their own credentials. */
+async function loadMcpServersForAgentContext(
+  agentDetails: AgentDetail | null,
+  editingAgentKey: string | null
+): Promise<McpMyServerEntry[]> {
+  if (!isMcpEnabledNow()) return [];
+  const isSvc = agentDetails?.isServiceAccount === true;
+  const keyForMcp = agentDetails?._key || editingAgentKey || undefined;
+  const { instances } =
+    isSvc && keyForMcp
+      ? await McpServersApi.getAgentMcpServers(keyForMcp, true)
+      : await McpServersApi.getMyMcpServers(true);
+  return instances;
+}
+
 async function fetchAgentAndToolsets(editingAgentKey: string | null) {
   const agentDetails = editingAgentKey
     ? await AgentsApi.getAgent(editingAgentKey).then((r) => r.agent).catch(() => null)
     : null;
-  const allToolsets = await loadToolsetsForAgentContext(agentDetails, editingAgentKey);
-  return { agentDetails, allToolsets };
+  const [allToolsets, mcpServers] = await Promise.all([
+    loadToolsetsForAgentContext(agentDetails, editingAgentKey),
+    loadMcpServersForAgentContext(agentDetails, editingAgentKey).catch((err) => {
+      console.error('Failed to fetch MCP servers:', err);
+      return [] as McpMyServerEntry[];
+    }),
+  ]);
+  return { agentDetails, allToolsets, mcpServers };
 }
 
 export function useAgentBuilderData(editingAgentKey: string | null) {
@@ -112,6 +176,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   const [availableSkills, setAvailableSkills] = useState<SkillForBuilder[]>([]);
   const [configuredConnectors, setConfiguredConnectors] = useState<Connector[]>([]);
   const [toolsets, setToolsets] = useState<BuilderSidebarToolset[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpMyServerEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadedAgent, setLoadedAgent] = useState<AgentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +187,10 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   const refreshToolsets = useCallback(
     async (agentKey?: string | null, isServiceAccount?: boolean, search?: string) => {
       toolsetsSearchRef.current = search ?? '';
+      if (!isActionsEnabledNow()) {
+        setToolsets([]);
+        return;
+      }
       const svc = Boolean(isServiceAccount) && Boolean(agentKey);
       const all = svc
         ? await ToolsetsApi.getAllAgentToolsets(agentKey!, {
@@ -141,13 +210,40 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     []
   );
 
+  const refreshMcpServers = useCallback(
+    async (agentKey?: string | null, isServiceAccount?: boolean) => {
+      if (!isMcpEnabledNow()) {
+        setMcpServers([]);
+        return;
+      }
+      const svc = Boolean(isServiceAccount) && Boolean(agentKey);
+      try {
+        const { instances } = svc
+          ? await McpServersApi.getAgentMcpServers(agentKey!, true)
+          : await McpServersApi.getMyMcpServers(true);
+        setMcpServers(instances);
+      } catch (err) {
+        // Matches loadMcpServersForAgentContext's callers: this is awaited inside
+        // Promise.all in refreshAgent (a rejection here would otherwise also discard the
+        // sibling toolset refresh) and fired as `void refreshMcpServers()` from the OAuth
+        // message listener, where a rejection would be silently unhandled either way.
+        console.error('Failed to refresh MCP servers:', err);
+        setMcpServers([]);
+      }
+    },
+    []
+  );
+
   const refreshAgent = useCallback(
     async (agentKey: string, opts?: { knownAgent?: AgentDetail }) => {
       const agent = opts?.knownAgent ?? (await AgentsApi.getAgent(agentKey)).agent;
       if (agent) setLoadedAgent(agent);
-      await refreshToolsets(agentKey, agent?.isServiceAccount, toolsetsSearchRef.current);
+      await Promise.all([
+        refreshToolsets(agentKey, agent?.isServiceAccount, toolsetsSearchRef.current),
+        refreshMcpServers(agentKey, agent?.isServiceAccount),
+      ]);
     },
-    [refreshToolsets]
+    [refreshToolsets, refreshMcpServers]
   );
 
   useEffect(() => {
@@ -175,22 +271,32 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
 
           toolsetsSearchRef.current = '';
 
-          const allToolsets = await loadToolsetsForAgentContext(agentPromise, editingAgentKey);
+          const [allToolsets, mcpServerEntries] = await Promise.all([
+            loadToolsetsForAgentContext(agentPromise, editingAgentKey),
+            loadMcpServersForAgentContext(agentPromise, editingAgentKey).catch((err) => {
+              console.error('Failed to fetch MCP servers:', err);
+              return [] as McpMyServerEntry[];
+            }),
+          ]);
 
           if (cancelled) return;
 
           setLoadedAgent(agentPromise ?? null);
           setToolsets(allToolsets);
+          setMcpServers(mcpServerEntries);
           staticResourcesLoadedRef.current = true;
         } else {
           toolsetsSearchRef.current = '';
 
-          const { agentDetails, allToolsets } = await fetchAgentAndToolsets(editingAgentKey);
+          const { agentDetails, allToolsets, mcpServers: mcpServerEntries } = await fetchAgentAndToolsets(
+            editingAgentKey
+          );
 
           if (cancelled) return;
 
           setLoadedAgent(agentDetails);
           setToolsets(allToolsets);
+          setMcpServers(mcpServerEntries);
         }
       } catch (e) {
         if (!cancelled) {
@@ -223,11 +329,13 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     activeAgentConnectors: configuredConnectors,
     configuredConnectors,
     toolsets,
+    mcpServers,
     loading,
     loadedAgent,
     error,
     setError,
     refreshToolsets,
+    refreshMcpServers,
     refreshAgent,
   };
 }

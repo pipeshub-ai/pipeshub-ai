@@ -42,15 +42,109 @@ def _resolve_parameter_type(raw_type: str) -> ParameterType:
     return _JSON_TYPE_TO_PARAMETER_TYPE.get((raw_type or "").lower(), ParameterType.STRING)
 
 
-def _resolve_json_refs(node: Any, defs: dict[str, Any]) -> Any:  # noqa: ANN401
+# Keywords whose value is DATA, not a subschema — a `default` of
+# `{"type": ["a", "b"]}` is a literal object the server wants back verbatim,
+# so neither ref inlining nor union normalization may touch inside it.
+_NON_SCHEMA_VALUE_KEYS = frozenset({"default", "enum", "const", "examples"})
+
+
+def _normalized_schema_keywords(node: dict[str, Any]) -> dict[str, Any]:
+    """Rewrites the two union spellings Gemini cannot consume — a list-valued
+    `type` (`{"type": ["string", "null"]}`) and `oneOf` — into the ones every
+    provider accepts. Both are common in real MCP schemas, and both are fatal
+    rather than degrading:
+
+    - `google.genai`'s `types.Schema.type` is a single enum, so the list form
+      raises `ValueError: Invalid type: [...]` inside langchain-google-genai's
+      `_format_json_schema_to_gapic`, and a pydantic `ValidationError` in
+      `transport/gemini.py::_format_tools`.
+    - `oneOf` is not in `_ALLOWED_SCHEMA_FIELDS_SET`, so that same converter
+      drops it. A property whose schema was ONLY `oneOf` is then empty,
+      `_dict_to_genai_schema` returns `None` for it, and validating
+      `properties={"x": None}` fails.
+
+    Either way the result is a NON-retryable `TransportError` that fails the
+    whole turn, not just the one tool — every tool goes up in one call.
+    Nothing downstream had to handle these before schemas were passed through
+    verbatim, because `to_schema()` rebuilt them from `ToolParameter` and
+    could only emit a single string type.
+
+    One concrete type plus `null` becomes `nullable`; a genuine multi-type
+    union becomes `anyOf`, which `_unwrap_any_of` below already treats
+    interchangeably with `oneOf` anyway. Exotic keywords that carry a
+    property's ONLY structure (`patternProperties`, `not`, ...) remain a gap
+    on the LangChain-Gemini arm for the same "dropped, then empty" reason —
+    no MCP server seen in the wild emits one.
+    """
+    if node.get("oneOf") and not node.get("anyOf"):
+        node = {"anyOf" if k == "oneOf" else k: v for k, v in node.items()}
+
+    raw = node.get("type")
+    if not isinstance(raw, list):
+        return node
+
+    concrete = [t for t in raw if isinstance(t, str) and t != "null"]
+    nullable = "null" in raw
+    out = {k: v for k, v in node.items() if k != "type"}
+    if len(concrete) == 1:
+        out["type"] = concrete[0]
+        if nullable:
+            out["nullable"] = True
+    elif concrete:
+        arms: list[dict[str, Any]] = [{"type": t} for t in concrete]
+        if nullable:
+            arms.append({"type": "null"})
+        out.setdefault("anyOf", arms)
+    else:
+        out["type"] = "null"
+    return out
+
+
+def _resolve_json_refs(node: Any, defs: dict[str, Any], seen: frozenset[str] = frozenset()) -> Any:  # noqa: ANN401
+    """Inlines every `$ref`/`$defs` indirection in `node` into a single
+    self-contained schema fragment, and normalizes union spellings on the way
+    through (see `_normalized_schema_keywords`).
+
+    `seen` guards against a self-referential (directly or mutually)
+    `$defs` entry — e.g. a Jira `IssueLink` schema whose `parent` field
+    `$ref`s back to `IssueLink` itself. Without it, resolving such a ref
+    recurses forever and raises `RecursionError`, which callers used to
+    catch and silently fall back to a flattened, typeless schema for the
+    WHOLE tool (see `_params_from_schema`'s `except` below) — not just the
+    recursive branch. Once a ref name is on the current resolution path, a
+    revisit returns a bounded placeholder instead of recursing again; every
+    OTHER branch of the schema still resolves normally.
+    """
     if isinstance(node, dict):
         ref = node.get("$ref")
         if ref:
-            resolved = _resolve_json_refs(defs.get(ref.rsplit("/", 1)[-1], {}), defs)
-            return {**resolved, **{k: v for k, v in node.items() if k != "$ref"}}
-        return {k: _resolve_json_refs(v, defs) for k, v in node.items() if k != "$defs"}
+            ref_name = ref.rsplit("/", 1)[-1]
+            if ref_name in seen:
+                return {
+                    "type": "object",
+                    "description": f"(recursive reference to '{ref_name}', not expanded further)",
+                }
+            resolved = _resolve_json_refs(defs.get(ref_name, {}), defs, seen | {ref_name})
+            # Siblings are resolved too, not copied verbatim: a `$ref` nested
+            # inside one (`{"$ref": ..., "items": {"$ref": ...}}`, legal since
+            # draft 2019-09) would otherwise survive to the transports, where
+            # `_sanitize_tool_input_schema` drops the key outright and the
+            # nested constraint is lost silently. `seen` (not `seen |
+            # {ref_name}`) because a sibling is at the referencing node's
+            # level, not inside the definition being expanded.
+            siblings = {
+                key: value if key in _NON_SCHEMA_VALUE_KEYS else _resolve_json_refs(value, defs, seen)
+                for key, value in node.items()
+                if key != "$ref"
+            }
+            return _normalized_schema_keywords({**resolved, **siblings})
+        return _normalized_schema_keywords({
+            k: v if k in _NON_SCHEMA_VALUE_KEYS else _resolve_json_refs(v, defs, seen)
+            for k, v in node.items()
+            if k != "$defs"
+        })
     if isinstance(node, list):
-        return [_resolve_json_refs(item, defs) for item in node]
+        return [_resolve_json_refs(item, defs, seen) for item in node]
     return node
 
 
@@ -77,7 +171,28 @@ def _json_schema_dict_from_source(schema: Any) -> dict[str, Any] | None:  # noqa
     else:
         return None
     defs = raw.get("$defs") or raw.get("definitions") or {}
-    return _resolve_json_refs(raw, defs) if defs else raw
+    # Walked even with no `$defs` to resolve: `_resolve_json_refs` also
+    # normalizes the union spellings Gemini can't consume, which a schema
+    # carrying no indirection at all still needs.
+    return _resolve_json_refs(raw, defs)
+
+
+def resolve_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Public entry point for `_resolve_json_refs`/`_json_schema_dict_from_source`
+    — used by `MCPToolAdapter.raw_input_schema` to inline an MCP server's own
+    `$ref`/`$defs` once, up front, so every transport downstream (native and
+    LangChain alike) sees a self-contained schema instead of having to
+    understand JSON Schema indirection itself.
+
+    Never returns an empty schema: `AnthropicTransport._format_tools` forwards
+    `input_schema` verbatim, and the API rejects `{}` (its four sibling
+    transports substitute the same empty-object schema themselves). An MCP
+    server that omits `inputSchema` for a zero-argument tool yields `{}` here
+    (`discovery.py`'s `input_schema or {}`), and that would fail every tool in
+    the request, since they all go up in one API call.
+    """
+    resolved = _json_schema_dict_from_source(schema)
+    return resolved or {"type": "object", "properties": {}}
 
 
 def _tool_parameter_from_json_schema(name: str, prop_schema: dict[str, Any], required: bool) -> ToolParameter:
@@ -108,7 +223,7 @@ def _tool_parameter_from_json_schema(name: str, prop_schema: dict[str, Any], req
     )
 
 
-def _params_from_schema(schema: Any) -> list[ToolParameter]:  # noqa: ANN401
+def _params_from_schema(schema: Any, tool_name: str | None = None) -> list[ToolParameter]:  # noqa: ANN401
     if schema is None:
         return []
     try:
@@ -121,7 +236,14 @@ def _params_from_schema(schema: Any) -> list[ToolParameter]:  # noqa: ANN401
                 for param_name, prop_schema in properties.items()
             ]
     except Exception:
-        logger.debug("Full JSON-schema extraction failed for %r, falling back to flat extraction", schema, exc_info=True)
+        # This flattens EVERY parameter of the tool to an untyped fallback
+        # (below), not just the branch that failed to resolve — worth a
+        # WARNING with the tool's identity, not a DEBUG nobody sees.
+        logger.warning(
+            "Full JSON-schema extraction failed for tool %r, falling back to flat "
+            "extraction (parameters will lose type/enum/nesting information)",
+            tool_name or "<unknown>", exc_info=True,
+        )
 
     extracted = _extract_parameters_from_schema(schema, logger)
     return [
@@ -212,7 +334,7 @@ class PipesHubStructuredToolAdapter(_PermissiveValidationMixin, Tool):
 
     @property
     def parameters(self) -> list[ToolParameter]:
-        return _params_from_schema(getattr(self._structured_tool, "args_schema", None))
+        return _params_from_schema(getattr(self._structured_tool, "args_schema", None), self.name)
 
     def validate(self, kwargs: dict[str, Any]) -> None:
         """Permissive validation — dynamic tools handle their own input normalization."""
@@ -241,5 +363,6 @@ def split_original_tool_name(structured_tool: "StructuredTool") -> tuple[str, st
 __all__ = [
     "PipesHubStructuredToolAdapter",
     "_to_tool_output",
+    "resolve_json_schema_refs",
     "split_original_tool_name",
 ]

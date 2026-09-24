@@ -334,3 +334,51 @@ class TestRetrieveArtifactContentClearing:
         assert "tool: jira_search" in result[2].content
         assert "artifact_3" in result[4].content
         assert result[6].content == "summary"
+
+
+class TestMultipartToolMessageClearing:
+    """A ToolMessage carrying images (search/fetch surfacing IMAGE blocks)
+    ages out like any other tool result: once past `keep_last_n_turns`,
+    it is replaced by a plain-text reference — the image is as expendable
+    as any other stale tool content, and the model can re-call the tool
+    if it needs the image again."""
+
+    @pytest.mark.asyncio
+    async def test_old_multipart_result_is_cleared_to_text_reference(self) -> None:
+        from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart
+
+        old_tool_msg = ToolMessage(
+            content=[
+                TextPart(text="[ref1] (image)"),
+                ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc123")),
+            ],
+            tool_call_id="c1",
+        )
+        messages = [
+            UserMessage(content="go"),
+            _assistant_call("c1", "fetch_full_record"),
+            old_tool_msg,
+            _assistant_call("c2", "slack_search"),
+            _tool_result("c2", "recent slack data"),
+        ]
+        result = await _run_clearing(messages, keep_last_n_turns=1)
+        assert isinstance(result[2].content, str)
+        assert "tool: fetch_full_record" in result[2].content
+        assert "[ref1] (image)" in result[2].content
+        assert result[4].content == "recent slack data"
+
+    @pytest.mark.asyncio
+    async def test_recent_multipart_result_is_kept_verbatim(self) -> None:
+        from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart
+
+        recent_parts = [
+            TextPart(text="[ref1] (image)"),
+            ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc123")),
+        ]
+        messages = [
+            UserMessage(content="go"),
+            _assistant_call("c1", "fetch_full_record"),
+            ToolMessage(content=recent_parts, tool_call_id="c1"),
+        ]
+        result = await _run_clearing(messages, keep_last_n_turns=3)
+        assert result[2].content == recent_parts

@@ -1,8 +1,10 @@
-import express, { Express } from 'express';
+import express, { Express, Response } from 'express';
 import path from 'path';
 import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
+import { IncomingMessage } from 'http';
+import { redactSensitiveQueryParams } from './libs/utils/log-redaction.utils';
 import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
@@ -18,6 +20,8 @@ import {
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
+import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
+import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
@@ -54,6 +58,7 @@ import {
   createWorkspaceAuthRouter,
   createFeatureFlagRouter,
   createOrgConfigRouter,
+  createRequestRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
 } from './config';
@@ -67,6 +72,8 @@ import {
 import { NotificationService } from './modules/notification/service/notification.service';
 import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/desktop-proxy.gateway';
 import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
+import { createDesktopProxyRouter } from './modules/desktop_proxy/routes/desktop-proxy.routes';
+import { registerDesktopPresence } from './libs/services/desktop-presence.provider';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
@@ -79,6 +86,11 @@ import { createTeamsRouter } from './modules/user_management/routes/teams.routes
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
+import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
+import { createServiceTokenRouter } from './modules/oauth_provider/routes/service-token.routes';
+import { ServiceAccountsService } from './modules/user_management/services/service-accounts.service';
+import { ServiceTokenService } from './modules/oauth_provider/services/service-token.service';
+import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import {
   resolveMessageBrokerConfig,
@@ -89,7 +101,20 @@ import { ToolsetsContainer } from './modules/toolsets/container/toolsets.contain
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
 import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
+import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
+import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
+import { ProjectsContainer } from './modules/projects/container/project.container';
+import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
+// Side-effect import: registers edition-specific Redis providers for this process.
+import './redisProviders';
+import {
+  RedisConnectionProviderFactory,
+  closeAllRedisProviders,
+  getPreparedRedisProvider,
+} from './libs/services/redis/connectionProviderFactory';
+
+const SERVER_KEEP_ALIVE_TIMEOUT_MS = 65_000;
 
 const loggerConfig = {
   service: 'Application',
@@ -109,12 +134,15 @@ export class Application {
   private mailServiceContainer!: Container;
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
+  private outboxDispatcher: OutboxDispatcher | null = null;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
   private toolsetsContainer!: Container;
   private skillsContainer!: Container;
   private oauthAppsContainer!: Container;
+  private mcpServersContainer!: Container;
+  private projectsContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
 
@@ -122,6 +150,12 @@ export class Application {
     this.app = express();
     this.port = parseInt(process.env.PORT || '3000', 10);
     this.server = http.createServer(this.app);
+    // Python services reuse pooled connections to this server for up to 4s
+    // after they *process* a response, and a busy event loop can get there
+    // seconds late. Node's 5s default closed sockets they were about to reuse
+    // ("Can not write request body" on record uploads).
+    this.server.keepAliveTimeout = SERVER_KEEP_ALIVE_TIMEOUT_MS;
+    this.server.headersTimeout = SERVER_KEEP_ALIVE_TIMEOUT_MS + 1_000;
   }
 
 
@@ -129,6 +163,23 @@ export class Application {
     try {
       // Initialize Logger
       this.logger = new Logger(loggerConfig);
+
+      // Import REDIS_PROVIDER_MODULE (R10) before any container -- and
+      // therefore any RedisService/RedisDistributedKeyValueStore/streams
+      // client -- resolves REDIS_MODE against the provider registry. An EE
+      // `memorydb` module that self-registers on import is otherwise never
+      // loaded, since nothing else in this process imports it.
+      await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
+
+      // Resolve rotating credentials (F1) -- e.g. an EE MemoryDB provider's
+      // IAM token -- before `loadConfigurationManagerConfig()` below builds
+      // the bootstrap KV store's Redis client. Node ends up with two
+      // fingerprints (env config for the KV store, KV-stored config for
+      // services), so `prepare()` on the EE provider must prime a
+      // process-level credential cache rather than per-instance state for
+      // one call to cover both.
+      await getPreparedRedisProvider();
+
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
@@ -190,7 +241,7 @@ export class Application {
           appConfig,
         );
       this.desktopProxyContainer =
-        await DesktopProxyContainer.initialize(appConfig, () => this.port);
+        await DesktopProxyContainer.initialize(appConfig);
 
       this.oauthProviderContainer = await OAuthProviderContainer.initialize(
         configurationManagerConfig,
@@ -208,6 +259,13 @@ export class Application {
 
       this.oauthAppsContainer = await OAuthAppsContainer.initialize(
         configurationManagerConfig,
+      );
+      this.mcpServersContainer = await McpServersContainer.initialize(
+        configurationManagerConfig,
+      );
+      this.projectsContainer = await ProjectsContainer.initialize(
+        configurationManagerConfig,
+        appConfig,
       );
 
       await this.addOAuthServicesToAuthMiddleware();
@@ -235,17 +293,61 @@ export class Application {
       );
       startOrgMetricsRefresh(this.logger);
 
+      // Domain events are written to the outbox by whoever makes the change;
+      // this is what actually delivers them. Without it running, events queue
+      // durably and nothing reaches the permission graph, so it starts with
+      // the application rather than on first use.
+      this.outboxDispatcher = new OutboxDispatcher(
+        this.entityManagerContainer.get<IMessageProducer>('MessageProducer'),
+        this.logger,
+      );
+      this.outboxDispatcher.start();
+
       this.notificationContainer
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
       this.desktopProxySocketGateway =
         this.desktopProxyContainer.get(DesktopProxySocketGateway);
+      registerDesktopPresence(this.desktopProxySocketGateway);
       this.desktopProxySocketGateway.initialize(this.server);
 
       this.bootstrapNotificationBrokerConsumer();
 
       // Serve static frontend files\
-      this.app.use(express.static(path.join(__dirname, 'public')));
+      const publicDir = path.join(__dirname, 'public');
+      const staticAssetPrefix = `${path.sep}_next${path.sep}static${path.sep}`;
+      this.app.use(
+        express.static(publicDir, {
+          setHeaders: (res, filePath) => {
+            // Everything under /_next/static is content-hashed, so a given URL's
+            // bytes never change. Every other file (index.html, /_redirects) is
+            // replaced in place on deploy and must be revalidated, or a client
+            // keeps a shell that references the previous build's chunk hashes.
+            res.setHeader(
+              'Cache-Control',
+              filePath.includes(staticAssetPrefix)
+                ? 'public, max-age=31536000, immutable'
+                : 'no-cache',
+            );
+          },
+        }),
+      );
+
+      // The SPA shell is HTML; serving it for a build asset that express.static
+      // did not find breaks the page instead of failing the one request. Browsers
+      // reject it ("Refused to execute script ... MIME type ('text/html')"), and
+      // CDNs that cache on URL extension rather than Content-Type store that HTML
+      // body under the .js URL, so one client requesting a stale chunk poisons the
+      // asset for everyone until the entry expires. Fail these closed.
+      const buildAssetPath =
+        /\.(?:js|mjs|css|map|json|wasm|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot)$/i;
+
+      const sendShell = (res: Response, ...segments: string[]): void => {
+        res.sendFile(path.join(publicDir, ...segments, 'index.html'), {
+          headers: { 'Cache-Control': 'no-cache' },
+        });
+      };
+
       // SPA fallback route\
       this.app.get('*', (_req, res) => {
         // The Next.js static export emits a single index.html for the
@@ -259,16 +361,7 @@ export class Application {
           /^\/(toolsets|connectors)\/oauth\/callback\/[^/]+\/?$/,
         );
         if (oauthCallbackMatch && oauthCallbackMatch[1]) {
-          res.sendFile(
-            path.join(
-              __dirname,
-              'public',
-              oauthCallbackMatch[1],
-              'oauth',
-              'callback',
-              'index.html',
-            ),
-          );
+          sendShell(res, oauthCallbackMatch[1], 'oauth', 'callback');
           return;
         }
 
@@ -281,11 +374,17 @@ export class Application {
         // pattern used above for OAuth callback slugs.
         const recordMatch = _req.path.match(/^\/record\/[^/]+(?:\/.*)?$/);
         if (recordMatch) {
-          res.sendFile(path.join(__dirname, 'public', 'record', 'index.html'));
+          sendShell(res, 'record');
           return;
         }
-  
-        res.sendFile(path.join(__dirname, 'public', 'index.html'));
+
+        if (_req.path.startsWith('/_next/') || buildAssetPath.test(_req.path)) {
+          res.setHeader('Cache-Control', 'no-store');
+          res.status(404).type('text/plain').send('Not Found');
+          return;
+        }
+
+        sendShell(res);
       });
 
       this.logger.info('Application initialized successfully');
@@ -367,9 +466,27 @@ export class Application {
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
 
-    // Logging — only log API requests, skip static assets
+    // Logging — only log API requests, skip static assets.
+    // 'combined' logs the full request URL, and OAuth callbacks arrive as
+    // ?code=<authorization code> — a credential exchangeable for tokens by
+    // whoever reads the log. Same format, with those values redacted.
+    morgan.token('url-redacted', (req: IncomingMessage) =>
+      redactSensitiveQueryParams((req as { originalUrl?: string; url?: string }).originalUrl ?? req.url ?? ''),
+    );
+    // The Referer is client-supplied and can itself be an OAuth callback or a
+    // presigned URL, so it carries the same credentials the request line does.
+    morgan.token('referrer-redacted', (req: IncomingMessage) => {
+      const referrer = req.headers.referer ?? req.headers.referrer;
+      return typeof referrer === 'string'
+        ? redactSensitiveQueryParams(referrer)
+        : '-';
+    });
+    const combinedRedacted =
+      ':remote-addr - :remote-user [:date[clf]] ":method :url-redacted ' +
+      'HTTP/:http-version" :status :res[content-length] ":referrer-redacted" ' +
+      '":user-agent"';
     this.app.use(
-      morgan('combined', {
+      morgan(combinedRedacted, {
         stream: {
           write: (message: string) => this.logger.info(message.trim()),
         },
@@ -412,6 +529,11 @@ export class Application {
     );
 
     this.app.use(
+      '/api/v1/requests',
+      createRequestRouter(this.entityManagerContainer),
+    );
+
+    this.app.use(
       '/api/v1/featureFlags',
       createFeatureFlagRouter(this.entityManagerContainer),
     );
@@ -436,6 +558,12 @@ export class Application {
     this.app.use(
       '/api/v1/document',
       createStorageRouter(this.storageServiceContainer),
+    );
+
+    // desktop relay routes (connector service -> user's desktop app)
+    this.app.use(
+      '/api/v1/desktop',
+      createDesktopProxyRouter(this.desktopProxyContainer),
     );
 
     // enterprise search conversational routes
@@ -514,6 +642,18 @@ export class Application {
       createOAuthAppsRouter(this.oauthAppsContainer),
     );
 
+    // MCP servers routes (registry + auth + token management -> Python connectors service)
+    this.app.use(
+      '/api/v1/mcp-servers',
+      createMcpServersRouter(this.mcpServersContainer)
+    );
+
+    // Projects — workspaces grouping chat/agent conversations, instructions, files, and scope
+    this.app.use(
+      '/api/v1/projects',
+      createProjectsRouter(this.projectsContainer),
+    );
+
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
@@ -535,6 +675,35 @@ export class Application {
     this.app.use(
       '/api/v1/oauth-clients',
       createOAuthClientsRouter(this.oauthProviderContainer),
+    );
+
+    // Service accounts own the identity; service tokens own the credential,
+    // and they live in different containers. Joined here, where both exist,
+    // so deleting an account revokes its tokens and restoring one under the
+    // same name does not bring old tokens back with it.
+    this.entityManagerContainer
+      .get<ServiceAccountsService>('ServiceAccountsService')
+      .setTokenRevoker(
+        this.oauthProviderContainer.get<ServiceTokenService>(
+          'ServiceTokenService',
+        ),
+      );
+
+    // Service accounts (machine identities, admin-managed)
+    this.app.use(
+      '/api/v1/service-accounts',
+      createServiceAccountsRouter(this.entityManagerContainer),
+    );
+
+    // Service tokens (the credential a service account authenticates with)
+    this.app.use(
+      '/api/v1/service-tokens',
+      createServiceTokenRouter(this.oauthProviderContainer),
+    );
+
+    this.app.use(
+      '/api/v1/personal-access-tokens',
+      createPatRouter(this.oauthProviderContainer),
     );
 
     // MCP (Model Context Protocol) routes
@@ -615,6 +784,7 @@ export class Application {
       try {
         this.desktopProxySocketGateway?.shutdown();
         this.desktopProxySocketGateway = null;
+        registerDesktopPresence(null);
         this.notificationContainer
           .get<NotificationService>(NotificationService)
           .shutdown();
@@ -622,6 +792,13 @@ export class Application {
         this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
       }
+      // Stopped before the containers go, because it holds the message
+      // producer one of them owns.
+      // Awaited: a pass in flight is publishing through a producer the
+      // containers below are about to disconnect.
+      await this.outboxDispatcher?.stop();
+      this.outboxDispatcher = null;
+
       await NotificationContainer.dispose();
       await StorageContainer.dispose();
       await UserManagerContainer.dispose();
@@ -635,6 +812,12 @@ export class Application {
       await DesktopProxyContainer.dispose();
       await ApiDocsContainer.dispose();
       await OAuthProviderContainer.dispose();
+
+      // Last: the containers above still hand back Redis-backed services
+      // while they dispose. Nothing else closes these -- the provider owns
+      // every client it handed out (R11), and on cluster that is a socket to
+      // every node.
+      await closeAllRedisProviders();
 
       this.logger.info('Application stopped successfully');
     } catch (error) {

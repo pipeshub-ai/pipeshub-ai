@@ -5,10 +5,10 @@ from dataclasses import dataclass
 class QdrantConfig:
     host: str
     port: int
-    api_key: str
-    prefer_grpc: bool
-    https: bool
-    timeout: int
+    api_key: str = ""
+    prefer_grpc: bool = True
+    https: bool = False
+    timeout: int = 300
 
     @property
     def qdrant_config(self) -> dict:

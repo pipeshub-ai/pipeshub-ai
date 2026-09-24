@@ -48,7 +48,7 @@ describe('telemetry middleware', () => {
 
   it('should record method, status, and a positive duration on finish', () => {
     const middleware = metricsMiddleware();
-    const req = mockReq({ method: 'POST' });
+    const req = mockReq({ method: 'POST', route: { path: '/api/v1/users' } });
     const res = mockRes(201);
 
     middleware(req, res as any, sinon.stub());
@@ -77,30 +77,17 @@ describe('telemetry middleware', () => {
     expect(recordStub.firstCall.args[0]).to.equal('/api/v1/users/:userId');
   });
 
-  it('should normalize id-like segments when no route template matched (404s stay low-cardinality)', () => {
+  it('should record "unmatched" when no route template matched (404s, assets, and bot scans stay one series)', () => {
     const middleware = metricsMiddleware();
     const req = mockReq({
-      path: '/api/v1/users/507f1f77bcf86cd799439011/items/42/e2c1a1f0-1234-4abc-9def-1234567890ab',
+      path: '/assets/index-Bo3xK9qw.js',
     });
     const res = mockRes(404);
 
     middleware(req, res as any, sinon.stub());
     res.emit('finish');
 
-    expect(recordStub.firstCall.args[0]).to.equal(
-      '/api/v1/users/:id/items/:id/:id',
-    );
-  });
-
-  it('should record "/" for an empty path', () => {
-    const middleware = metricsMiddleware();
-    const req = mockReq({ path: '' });
-    const res = mockRes();
-
-    middleware(req, res as any, sinon.stub());
-    res.emit('finish');
-
-    expect(recordStub.firstCall.args[0]).to.equal('/');
+    expect(recordStub.firstCall.args[0]).to.equal('unmatched');
   });
 
   it('should extract org and email-domain from the authenticated user', () => {

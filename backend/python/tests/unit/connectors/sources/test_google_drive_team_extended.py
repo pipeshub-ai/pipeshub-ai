@@ -115,6 +115,7 @@ def connector():
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
         dep.add_permission_to_record = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -683,7 +684,9 @@ class TestTeamProcessDriveItemExtended:
         existing.version = 0
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = ProgressStatus.COMPLETED.value
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "owner", "type": "user", "emailAddress": "user@example.com"}],
         })
@@ -706,7 +709,9 @@ class TestTeamProcessDriveItemExtended:
         existing.version = 0
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = ProgressStatus.COMPLETED.value
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "owner", "type": "user", "emailAddress": "user@example.com"}],
         })
@@ -728,7 +733,9 @@ class TestTeamProcessDriveItemExtended:
         existing.version = 0
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = ProgressStatus.COMPLETED.value
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "owner", "type": "user", "emailAddress": "user@example.com"}],
         })
@@ -780,7 +787,9 @@ class TestTeamProcessDriveItemExtended:
         existing.version = 0
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = ProgressStatus.COMPLETED.value
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
 
         from googleapiclient.errors import HttpError
         mock_resp = MagicMock()

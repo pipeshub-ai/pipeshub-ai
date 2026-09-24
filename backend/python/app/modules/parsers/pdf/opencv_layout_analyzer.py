@@ -28,6 +28,8 @@ from typing import List, Tuple, Optional, Dict, Any, Callable
 import cv2
 import numpy as np
 from PIL import Image
+from pdfminer.pdfdevice import PDFDevice
+from pdfminer.pdfinterp import PDFPageInterpreter
 
 
 # --------------------------------------------------------------------------- #
@@ -81,6 +83,14 @@ class ColumnDetectionResult:
 # --------------------------------------------------------------------------- #
 
 _DPI = 150
+
+# A page carrying more vector primitives than this is a CAD/GIS drawing sheet
+# rather than a document page, and has no document layout to recover: the
+# union-find clustering in _segment_vector_blocks degrades toward O(n^2) there
+# (1.5e9 pair tests on a 350k-primitive sheet, ~166 s) and the primitive dicts
+# alone cost ~2 GB. Such pages are emitted as a single full-page IMAGE for the
+# vision model instead. Ordinary figure-heavy pages carry a few thousand.
+_MAX_VECTOR_PRIMITIVES = 50_000
 
 _PRIORITY = {
     LayoutRegionType.IMAGE: 0,
@@ -1385,6 +1395,59 @@ class DocumentRasterCache:
         return self._cache[page_number]
 
 
+class _VectorPrimitiveCounter(PDFDevice):
+    """Counts path-painting sub-paths without building any layout object.
+
+    Splits multi-``m`` shapes the same way
+    ``pdfminer.converter.PDFLayoutAnalyzer.paint_path`` does, so the total
+    matches ``len(page.lines) + len(page.rects) + len(page.curves)`` --
+    but it never allocates an ``LTLine``/``LTRect``/``LTCurve`` and never
+    touches text or images, so a page with hundreds of thousands of
+    primitives doesn't pay for materializing them just to be counted.
+    """
+
+    def __init__(self, rsrcmgr) -> None:
+        super().__init__(rsrcmgr)
+        self.count = 0
+
+    def paint_path(self, gstate, stroke, fill, evenodd, path) -> None:
+        shape = "".join(seg[0] for seg in path)
+        if shape[:1] != "m":
+            return
+        if shape.count("m") > 1:
+            for m in re.finditer(r"m[^m]+", shape):
+                self.paint_path(gstate, stroke, fill, evenodd, path[m.start(0):m.end(0)])
+        else:
+            self.count += 1
+
+
+def _count_vector_primitives(page) -> int:
+    try:
+        device = _VectorPrimitiveCounter(page.pdf.rsrcmgr)
+        PDFPageInterpreter(page.pdf.rsrcmgr, device).process_page(page.page_obj)
+        return device.count
+    except Exception:
+        return 0
+
+
+def _full_page_image_region(
+    page,
+    page_w: float,
+    page_h: float,
+    pdf_path: Optional[str],
+    raster_cache: Optional[DocumentRasterCache],
+) -> LayoutRegion:
+    img_rgb, scale = _rasterize_page(
+        page, _DPI, pdf_path=pdf_path, raster_cache=raster_cache
+    )
+    full_bbox = (0.0, 0.0, page_w, page_h)
+    return LayoutRegion(
+        type=LayoutRegionType.IMAGE,
+        bbox=full_bbox,
+        image_data=_crop_image_bytes(img_rgb, full_bbox, scale),
+    )
+
+
 def extract_layout_regions(
     page,
     pdf_path: Optional[str] = None,
@@ -1392,6 +1455,14 @@ def extract_layout_regions(
 ) -> List[LayoutRegion]:
     page_w = float(page.width)
     page_h = float(page.height)
+
+    n_vectors = _count_vector_primitives(page)
+    if n_vectors > _MAX_VECTOR_PRIMITIVES:
+        return [
+            _full_page_image_region(
+                page, page_w, page_h, pdf_path, raster_cache
+            )
+        ]
 
     try:
         all_words = page.extract_words(
@@ -1411,24 +1482,15 @@ def extract_layout_regions(
 
     if not all_words:
         try:
-            n_vec = (
-                len(page.lines or [])
-                + len(page.rects or [])
-                + len(page.curves or [])
-            )
             n_embed = len(page.images or [])
         except Exception:
-            n_vec = n_embed = 0
-        if n_vec < 5 and n_embed == 0:
-            img_rgb, scale = _rasterize_page(
-                page, _DPI, pdf_path=pdf_path, raster_cache=raster_cache
-            )
-            full_bbox = (0.0, 0.0, page_w, page_h)
-            return [LayoutRegion(
-                type=LayoutRegionType.IMAGE,
-                bbox=full_bbox,
-                image_data=_crop_image_bytes(img_rgb, full_bbox, scale),
-            )]
+            n_embed = 0
+        if n_vectors < 5 and n_embed == 0:
+            return [
+                _full_page_image_region(
+                    page, page_w, page_h, pdf_path, raster_cache
+                )
+            ]
 
     # Identify striped-fill code-frame regions once and thread them
     # down to both table detection (so the false-positive TABLE

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
@@ -15,7 +16,6 @@ from typing import (
     Tuple,
 )
 
-from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
@@ -26,13 +26,16 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    raise_for_stream_fetch,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -321,22 +324,30 @@ class BookStackConnector(BaseConnector):
             HTTPException if record cannot be streamed
         """
         if not self.data_source:
-            raise HTTPException(
-                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail="BookStack connector not initialized"
-            )
+            raise connector_not_ready(self.display_name)
 
         record_id = record.external_record_id.split('/')[1]
         markdown_response = await self.data_source.export_page_markdown(record_id)
-        if not markdown_response.success:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="Record not found or access denied"
+        raw_markdown = (markdown_response.data or {}).get("markdown")
+        if not markdown_response.success or raw_markdown is None:
+            self.logger.error(
+                "BookStack markdown export failed for %s: %s",
+                record_id,
+                markdown_response.message or markdown_response.error,
             )
-        raw_markdown = markdown_response.data.get("markdown")
+            raise_for_stream_fetch(
+                success=markdown_response.success,
+                has_payload=raw_markdown is not None,
+                connector=self.display_name,
+                status=markdown_response.status_code,
+                message=markdown_response.message or markdown_response.error,
+            )
+
+        async def _markdown_stream() -> AsyncGenerator[bytes, None]:
+            yield raw_markdown.encode("utf-8")
 
         return create_stream_record_response(
-            raw_markdown,
+            _markdown_stream(),
             filename=record.record_name,
             mime_type=record.mime_type,
             fallback_filename=f"record_{record.id}"
@@ -654,12 +665,13 @@ class BookStackConnector(BaseConnector):
                     continue
 
                 # Delete edges to groups for the user
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_email(user_email)
-                    if not user:
-                        self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
-                        continue
-                    await tx_store.delete_edges_between_collections(user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value)
+                user = await self.data_entities_processor.get_user_by_email(user_email)
+                if not user:
+                    self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
+                    continue
+                await self.data_entities_processor.delete_edges_between_collections(
+                    user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value
+                )
 
                 if not roles:
                     self.logger.info(f"User {name} (ID: {user_id}) has no roles assigned.")
@@ -697,21 +709,17 @@ class BookStackConnector(BaseConnector):
             self.logger.info(f"Processing deletion for user: {name} (ID: {user_id})")
 
             try:
-                # Fetch user by user_id using tx_store
-                async with self.data_store_provider.transaction() as tx_store:
-                    # Look up the user by their external ID (source_user_id)
-                    user = await tx_store.get_user_by_user_id(
-                        user_id=str(user_id)
+                # Look up the user by their external ID (source_user_id)
+                user = await self.data_entities_processor.get_user_by_user_id(str(user_id))
+
+                if not user:
+                    self.logger.warning(
+                        f"User with BookStack ID {user_id} ({name}) not found in database. "
+                        "May have been already deleted or never synced."
                     )
+                    continue
 
-                    if not user:
-                        self.logger.warning(
-                            f"User with BookStack ID {user_id} ({name}) not found in database. "
-                            "May have been already deleted or never synced."
-                        )
-                        continue
-
-                    user_email = user.get("email")
+                user_email = user.email
 
                 # If user is found, call the data processor to handle removal
                 if user_email:
@@ -1720,12 +1728,9 @@ class BookStackConnector(BaseConnector):
                 return None
 
             # Check for existing record
-            existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=f"page/{page_id}"
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, f"page/{page_id}"
+            )
 
             # Detect changes
             is_new = existing_record is None
@@ -1838,9 +1843,12 @@ class BookStackConnector(BaseConnector):
         """
         try:
             if record_update.is_deleted:
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
+                # The update carries the source's id; records are deleted by their key.
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
                 )
+                if existing_record:
+                    await self.data_entities_processor.on_record_deleted(record_id=existing_record.id)
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
             elif record_update.is_updated:
@@ -2429,6 +2437,8 @@ class BookStackConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BaseConnector":
         """
         Factory method to create a BookStack connector instance.
@@ -2441,11 +2451,6 @@ class BookStackConnector(BaseConnector):
         Returns:
             Initialized BookStackConnector instance
         """
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
-
         return BookStackConnector(
             logger,
             data_entities_processor,

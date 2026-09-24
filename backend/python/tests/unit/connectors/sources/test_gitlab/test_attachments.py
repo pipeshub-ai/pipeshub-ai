@@ -12,7 +12,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import to_stream_error
 from app.connectors.sources.gitlab.attachments import AttachmentsHelper
 from app.connectors.sources.gitlab.constants import UPLOAD_PATTERN
 
@@ -23,13 +26,6 @@ pytestmark = pytest.mark.anyio
 
 def _make_attachment_helper() -> tuple[MagicMock, AttachmentsHelper]:
     c = make_mock_connector()
-    tx_store = MagicMock()
-    tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-    ctx = MagicMock()
-    ctx.__aenter__ = AsyncMock(return_value=tx_store)
-    ctx.__aexit__ = AsyncMock(return_value=None)
-    c.data_store_provider = MagicMock()
-    c.data_store_provider.transaction = MagicMock(return_value=ctx)
     helper = AttachmentsHelper(c)
     return c, helper
 
@@ -201,12 +197,7 @@ class TestMakeFileRecordsFromList:
 
         existing = MagicMock()
         existing.id = "existing-uuid"
-        tx_store = MagicMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
-        ctx = MagicMock()
-        ctx.__aenter__ = AsyncMock(return_value=tx_store)
-        ctx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=ctx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         att = FileAttachment(href="/uploads/x/doc.pdf", filename="doc.pdf", filetype="pdf", category="attachment")
         record = _record()
@@ -275,14 +266,6 @@ class TestMakeChildRecordsOfAttachments:
         record = _record()
         text = f"[doc.pdf](/uploads/{_HASH32}/doc.pdf)"
 
-        # No existing record
-        tx_store = MagicMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-        ctx = MagicMock()
-        ctx.__aenter__ = AsyncMock(return_value=tx_store)
-        ctx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=ctx)
-
         child_records, remaining = await helper.make_child_records_of_attachments(text, record)
         assert len(remaining) == 1
         assert len(child_records) == 1
@@ -296,12 +279,7 @@ class TestMakeChildRecordsOfAttachments:
         existing = MagicMock()
         existing.id = "existing-uuid"
         existing.record_name = "doc.pdf"
-        tx_store = MagicMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
-        ctx = MagicMock()
-        ctx.__aenter__ = AsyncMock(return_value=tx_store)
-        ctx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=ctx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         child_records, remaining = await helper.make_child_records_of_attachments(text, record)
         assert len(remaining) == 0
@@ -331,13 +309,6 @@ class TestMakeBlockCommentOfAttachments:
         record = _record()
         text = f"[report.pdf](/uploads/{_HASH32}/report.pdf)"
 
-        tx_store = MagicMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-        ctx = MagicMock()
-        ctx.__aenter__ = AsyncMock(return_value=tx_store)
-        ctx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=ctx)
-
         comment_attachments, remaining = await helper.make_block_comment_of_attachments(text, record)
         assert len(remaining) == 1
         assert len(comment_attachments) == 1
@@ -351,12 +322,7 @@ class TestMakeBlockCommentOfAttachments:
         existing = MagicMock()
         existing.id = "existing-id"
         existing.record_name = "report.pdf"
-        tx_store = MagicMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
-        ctx = MagicMock()
-        ctx.__aenter__ = AsyncMock(return_value=tx_store)
-        ctx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=ctx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         comment_attachments, remaining = await helper.make_block_comment_of_attachments(text, record)
         assert len(remaining) == 0
@@ -488,8 +454,11 @@ class TestFetchAttachmentContent:
 
         assert chunks == [b"chunk1", b"chunk2"]
 
-    async def test_streaming_error_wrapped(self) -> None:
-        """Exception during streaming is wrapped in a generic Exception."""
+    async def test_streaming_error_propagates_with_source_status(self) -> None:
+        """The SDK error must reach the router intact: re-wrapping it in a bare
+        Exception erased the status and turned every download failure into a 500."""
+        import httpx
+
         c, helper = _make_attachment_helper()
 
         record = MagicMock()
@@ -497,12 +466,29 @@ class TestFetchAttachmentContent:
         record.external_record_id = "https://gitlab.com/uploads/abc/file.pdf"
         record.weburl = "https://gitlab.com/uploads/abc/file.pdf"
 
+        request = httpx.Request("GET", record.weburl)
+        response = httpx.Response(HttpStatusCode.NOT_FOUND.value, request=request)
+
         async def _gen_fail():
-            raise IOError("network failure")
+            raise httpx.HTTPStatusError("gone", request=request, response=response)
             yield b""  # noqa: unreachable — marks as async generator
 
         c.data_source.get_attachment_files_content = MagicMock(return_value=_gen_fail())
 
-        with pytest.raises(Exception):
+        with pytest.raises(httpx.HTTPStatusError) as exc:
             async for _ in helper.fetch_attachment_content(record):
                 pass
+        assert to_stream_error(exc.value).status_code == HttpStatusCode.NOT_FOUND.value
+
+    async def test_missing_weburl_is_a_client_error(self) -> None:
+        c, helper = _make_attachment_helper()
+
+        record = MagicMock()
+        record.id = "rec-1"
+        record.external_record_id = "att-1"
+        record.weburl = None
+
+        with pytest.raises(HTTPException) as exc:
+            async for _ in helper.fetch_attachment_content(record):
+                pass
+        assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value

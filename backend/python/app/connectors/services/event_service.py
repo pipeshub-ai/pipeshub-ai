@@ -1,5 +1,6 @@
 """Generic Event Service for handling connector-specific events"""
 
+import asyncio
 import logging
 from typing import Any
 
@@ -9,10 +10,11 @@ from app.config.constants.arangodb import (
     AppStatus,
     CollectionNames,
     Connectors,
-    EventTypes,
     ProgressStatus,
 )
 from app.connectors.core.constants import ConnectorStateKeys
+from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -21,7 +23,13 @@ from app.connectors.services.sync_lifecycle import run_sync_with_lifecycle
 from app.connectors.services.sync_progress_store import (
     get_connector_sync_progress_store,
 )
+from app.connectors.services.vector_cleanup_events import (
+    build_connector_vector_cleanup_events,
+    log_cleanup_publish_failure,
+)
 from app.containers.connector import ConnectorAppContainer
+from app.services.cache.invalidation_hooks import notify_connector_sync_completed
+from app.edition_services import get_data_entities_processor_cls
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -86,8 +94,14 @@ class EventService:
 
         return None
 
-    def _store_connector(self, connector_id: str, connector: BaseConnector) -> None:
-        """Store a connector instance in the app_container."""
+    async def _store_connector(self, connector_id: str, connector: BaseConnector) -> None:
+        """Store a connector instance, releasing the one it replaces.
+
+        A superseded instance still owns an open HTTP connection pool; dropping
+        the reference without closing it leaks that pool for the life of the
+        process.
+        """
+        previous = self._get_connector(connector_id)
         connector_key = f"{connector_id}_connector"
         if hasattr(self.app_container, connector_key):
             getattr(self.app_container, connector_key).override(providers.Object(connector))
@@ -95,6 +109,33 @@ class EventService:
             if not hasattr(self.app_container, 'connectors_map'):
                 self.app_container.connectors_map = {}
             self.app_container.connectors_map[connector_id] = connector
+
+        if previous is None or previous is connector:
+            return
+
+        if sync_task_manager.is_running(connector_id):
+            # cleanup() nulls the connector's client and data source, so closing one
+            # mid-sync kills that sync. Leaking the pool is the lesser evil, and is
+            # what this did before it started cleaning up at all.
+            self.logger.warning(
+                f"Replaced the live {connector_id} connector instance while its sync is "
+                "running; leaving the previous instance open so the sync can finish"
+            )
+            return
+
+        self.logger.warning(f"Replaced the live {connector_id} connector instance; cleaning up the previous one")
+        try:
+            await previous.cleanup()
+        except Exception as e:
+            self.logger.warning(f"Failed to clean up the replaced {connector_id} connector instance: {e}")
+
+    def _resolve_org_id(self) -> str | None:
+        """Optional org id from request/event context"""
+        return None
+
+    def _build_data_store(self, org_id: str | None = None) -> GraphDataStore:
+        """Build a graph data store"""
+        return GraphDataStore(self.logger, self.graph_provider)
 
     async def _ensure_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
         """
@@ -106,10 +147,23 @@ class EventService:
         if connector:
             return connector
 
-        self.logger.warning(
-            f"{connector_name} connector {connector_id} not in memory — attempting auto-initialization"
-        )
+        async with connector_init_lock(connector_id):
+            # Re-check under the lock: every concurrent caller missed the check
+            # above, and each would otherwise build a duplicate instance with its
+            # own HTTP client and its own rate limiter.
+            connector = self._get_connector(connector_id)
+            if connector:
+                return connector
 
+            self.logger.warning(
+                f"{connector_name} connector {connector_id} not in memory — attempting auto-initialization"
+            )
+            return await self._auto_initialize_connector(connector_name, connector_id)
+
+    async def _auto_initialize_connector(
+        self, connector_name: str, connector_id: str
+    ) -> BaseConnector | None:
+        """Build and store a connector. Caller must hold ``connector_init_lock``."""
         try:
             connector_doc = await self.graph_provider.get_document(
                 document_key=connector_id,
@@ -126,12 +180,13 @@ class EventService:
                 )
                 return None
             config_service = self.app_container.config_service()
-            data_store_provider = GraphDataStore(self.logger, self.graph_provider)
 
             # Extract scope, createdBy and org from connector document
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
-            org_id = connector_doc.get("orgId")
+            last_synced_by = connector_doc.get("lastSyncedBy", "") or None
+            org_id = connector_doc.get("orgId") or self._resolve_org_id()
+            data_store_provider = self._build_data_store(org_id)
 
             connector = await ConnectorFactory.initialize_connector(
                 name=connector_name,
@@ -142,7 +197,10 @@ class EventService:
                 scope=scope,
                 created_by=created_by,
                 org_id=org_id,
+                data_entities_processor_cls=get_data_entities_processor_cls(),
                 notification_service=self.app_container.connector_notification_service(),
+                connector_instance_name=connector_doc.get("name"),
+                last_synced_by=last_synced_by,
             )
 
             if not connector:
@@ -151,7 +209,7 @@ class EventService:
                 )
                 return None
 
-            self._store_connector(connector_id, connector)
+            await self._store_connector(connector_id, connector)
             self.logger.info(
                 f"Auto-initialized {connector_name} connector {connector_id} successfully"
             )
@@ -196,6 +254,20 @@ class EventService:
 
     async def _handle_init(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Initializes the event service connector and its dependencies."""
+        connector_id = payload.get("connectorId")
+        if not connector_id:
+            self.logger.error(
+                f"'connectorId' is required in the payload for '{connector_name}.init' event."
+            )
+            return False
+
+        # Shares the lock with the lazy-init paths so an init event and a
+        # concurrent stream request cannot each build their own instance.
+        async with connector_init_lock(connector_id):
+            return await self._build_init_connector(connector_name, payload)
+
+    async def _build_init_connector(self, connector_name: str, payload: dict[str, Any]) -> bool:
+        """Build and store the connector. Caller must hold ``connector_init_lock``."""
         try:
             org_id = payload.get("orgId")
             connector_id = payload.get("connectorId")
@@ -206,7 +278,7 @@ class EventService:
             self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id} and connector_id: {connector_id}")
             config_service = self.app_container.config_service()
             # Create data_store manually using already-resolved graph_provider (arango_service) to avoid coroutine reuse
-            data_store_provider = GraphDataStore(self.logger, self.graph_provider)
+            data_store_provider = self._build_data_store(org_id)
             
             # Fetch scope and createdBy from database App node
             connector_doc = await self.graph_provider.get_document(
@@ -218,6 +290,8 @@ class EventService:
                 return False
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
+            last_synced_by = connector_doc.get("lastSyncedBy", "") or None
+            connector_instance_name = connector_doc.get("name")
             
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
@@ -229,7 +303,10 @@ class EventService:
                 scope=scope,
                 created_by=created_by,
                 org_id=org_id,
+                data_entities_processor_cls=get_data_entities_processor_cls(),
                 notification_service=self.app_container.connector_notification_service(),
+                connector_instance_name=connector_instance_name,
+                last_synced_by=last_synced_by,
             )
 
             if not connector:
@@ -244,7 +321,7 @@ class EventService:
 
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
-            self._store_connector(connector_id, connector)
+            await self._store_connector(connector_id, connector)
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
@@ -282,6 +359,14 @@ class EventService:
         if not connector:
             self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
             return False
+
+        synced_by = payload.get("syncedBy", "")
+        if synced_by:
+            await self.graph_provider.update_node(
+                connector_id, CollectionNames.APPS.value,
+                {"lastSyncedBy": synced_by},
+            )
+            connector.last_synced_by = synced_by
 
         pending_full_sync = False
         if connector_doc:
@@ -345,7 +430,10 @@ class EventService:
                         org_id, connector_id, full_sync=effective_full_sync
                     )
                 # Schedule the background sync task
-                await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id, org_id, run_id))
+                await sync_task_manager.start_sync(
+                    connector_id,
+                    self._run_sync_and_clear_status(connector, connector_id, org_id, run_id),
+                )
                 self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
 
                 # Clear only when we consumed a persisted pending flag (avoids redundant writes on manual full sync).
@@ -383,26 +471,56 @@ class EventService:
         else:
             # --- Normal sync: set status only, no lock ---
             try:
-                await self._update_app_status(connector_id, status=AppStatus.SYNCING.value)
+                await self._update_app_status(
+                    connector_id,
+                    status=AppStatus.SYNCING.value,
+                )
                 self.logger.info(f"Set status=SYNCING for connector {connector_id}")
             except Exception as status_err:
                 self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
                 # Non-fatal: proceed with sync even if status write failed
 
+            # Declined rather than restarted: a scheduled tick that lands while
+            # the previous sync is still running used to cancel it, so a sync
+            # slower than its own interval could be killed and restarted for
+            # ever and never finish. An explicit full sync still pre-empts,
+            # because asking for one is a deliberate act.
+            #
+            # Checked before a run id is minted: start_run makes the new id the
+            # current run, so minting one for a request that is then declined
+            # would leave the running sync looking superseded, and its progress
+            # would stop updating.
+            if sync_task_manager.is_running(connector_id):
+                self.logger.info(
+                    f"Sync already running for {connector_name} {connector_id}; "
+                    f"ignoring this request"
+                )
+                # Acknowledged, not failed: the work is already in progress, so
+                # redelivering this event would only repeat the decision.
+                return True
             if store:
                 run_id = await store.start_run(
                     org_id, connector_id, full_sync=effective_full_sync
                 )
             try:
-                await sync_task_manager.start_sync(
+                started = await sync_task_manager.start_if_idle(
                     connector_id,
                     self._run_sync_and_clear_status(connector, connector_id, org_id, run_id),
                 )
-                self.logger.info(f"Started sync task for {connector_name} {connector_id}")
             except Exception:
                 if store and run_id:
                     await store.clear(org_id, connector_id, expected_run_id=run_id)
                 raise
+            if started is None:
+                # Another sync started while the run id was being written.
+                if store and run_id:
+                    await store.clear(org_id, connector_id, expected_run_id=run_id)
+                self.logger.info(
+                    f"Sync already running for {connector_name} {connector_id}; "
+                    f"ignoring this request"
+                )
+                return True
+            self.logger.info(f"Started sync task for {connector_name} {connector_id}")
 
         return True
 
@@ -418,15 +536,20 @@ class EventService:
         async def _set_idle_status() -> None:
             await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
 
-        await run_sync_with_lifecycle(
-            connector=connector,
-            connector_id=connector_id,
-            org_id=org_id,
-            run_id=run_id,
-            logger=self.logger,
-            get_store=self._sync_progress_store,
-            set_idle_status=_set_idle_status,
-        )
+        try:
+            await run_sync_with_lifecycle(
+                connector=connector,
+                connector_id=connector_id,
+                org_id=org_id,
+                run_id=run_id,
+                logger=self.logger,
+                get_store=self._sync_progress_store,
+                set_idle_status=_set_idle_status,
+            )
+        finally:
+            # The sync may have added or removed records; drop the query
+            # service's cached view of this connector so the next search sees them.
+            await notify_connector_sync_completed(connector_id, org_id)
 
     @staticmethod
     def _reindex_task_key(
@@ -687,29 +810,43 @@ class EventService:
                 f"Records: {result.get('deleted_records_count', 0)}"
             )
 
-            # Publish bulkDeleteRecords so the indexing service cleans up Qdrant embeddings
-            virtual_record_ids = result.get("virtual_record_ids", [])
-            if virtual_record_ids:
+            # Tell the indexing service to clean up this connector's embeddings.
+            # Normally one connector-scoped event that ships no record ids at
+            # all; a connector whose points predate the membership arrays falls
+            # back to chunked id lists. connectorName lets the consumer resolve
+            # which collection(s) the data lives in under a per-connector-type
+            # strategy.
+            events = build_connector_vector_cleanup_events(
+                org_id=org_id,
+                connector_id=connector_id,
+                vector_membership_backfilled=result.get(
+                    "vector_membership_backfilled", False
+                ),
+                vector_membership_backfill_exhausted=result.get(
+                    "vector_membership_backfill_exhausted", False
+                ),
+                connector_name=result.get("connector_name"),
+                record_group_ids=result.get("record_group_ids", []),
+                virtual_record_ids=result.get("virtual_record_ids", []),
+            )
+            published = 0
+            for event in events:
                 try:
                     await self.app_container.messaging_producer.send_message(
                         topic="record-events",
-                        message={
-                            "eventType": EventTypes.BULK_DELETE_RECORDS.value,
-                            "payload": {
-                                "orgId": org_id,
-                                "connectorId": connector_id,
-                                "virtualRecordIds": virtual_record_ids,
-                                "totalRecords": len(virtual_record_ids),
-                            },
-                            "timestamp": get_epoch_timestamp_in_ms(),
-                        },
+                        message=event,
                     )
-                    self.logger.info(f"✅ Published bulkDeleteRecords for {len(virtual_record_ids)} records")
+                    published += 1
                 except Exception as kafka_err:
-                    self.logger.error(
-                        f"❌ Failed to publish bulkDeleteRecords for connector {connector_id}: {kafka_err}. "
-                        f"Embeddings may persist in Qdrant — manual cleanup may be required."
+                    log_cleanup_publish_failure(
+                        self.logger, event, f"connector {connector_id}", kafka_err
                     )
+            if events:
+                level = self.logger.info if published == len(events) else self.logger.error
+                level(
+                    f"Published {published}/{len(events)} vector-cleanup event(s) "
+                    f"for connector {connector_id}"
+                )
 
             # Delete connector credentials from etcd/config store
             try:

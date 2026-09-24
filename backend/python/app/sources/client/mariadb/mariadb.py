@@ -13,7 +13,6 @@ from typing import Any, Optional
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
-from app.api.routes.toolsets import get_toolset_by_id
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
 
@@ -197,8 +196,10 @@ class MariaDBClient:
                         except Exception:
                             pass
         except Exception as e:
+            # Re-raised as-is: the driver's errno/sqlstate is what the streaming
+            # path maps to a status, and a RuntimeError wrapper destroys it.
             logger.error(f"🔧 [MariaDBClient] Query execution failed: {e}")
-            raise RuntimeError(f"Query execution failed: {e}") from e
+            raise
 
     async def execute_query_raw(
         self,
@@ -252,7 +253,7 @@ class MariaDBClient:
                             pass
         except Exception as e:
             logger.error(f"🔧 [MariaDBClient] Query execution failed: {e}")
-            raise RuntimeError(f"Query execution failed: {e}") from e
+            raise
 
     def get_connection_info(self) -> dict[str, Any]:
         """Get connection information."""
@@ -299,7 +300,13 @@ class MariaDBClient:
         if not instance_id:
             raise ValueError("MariaDB toolset configuration is missing required field: instanceId")
 
+        from app.edition_config import get_toolset_by_id
         mariadb_instance = await get_toolset_by_id(instance_id, config_service)
+        if not isinstance(mariadb_instance, dict):
+            raise ValueError(
+                f"MariaDB toolset instance '{instance_id}' not found or inaccessible. "
+                f"Please verify the instance exists and is properly configured."
+            )
 
         def pick_value(config: dict[str, Any], *keys: str) -> Optional[Any]:
             auth_config = config.get("auth", {}) or {}

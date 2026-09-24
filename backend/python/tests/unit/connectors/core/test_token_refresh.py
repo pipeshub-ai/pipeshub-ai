@@ -686,6 +686,29 @@ class TestBuildCompleteOAuthConfig:
         assert result["clientSecret"] == "csec"
 
     @pytest.mark.asyncio
+    async def test_shared_oauth_app_redirect_uri_is_used(self):
+        """Refresh must use the shared OAuth app's redirectUri (the source of truth)."""
+        svc = _make_service()
+        svc._fetch_shared_oauth_config = AsyncMock(return_value={
+            "authorizeUrl": "https://auth.atlassian.com/authorize",
+            "tokenUrl": "https://auth.atlassian.com/oauth/token",
+            "redirectUri": "http://localhost:3001/connectors/oauth/callback/Jira",
+            "config": {"clientId": "cid", "clientSecret": "csec"},
+            "scopes": {"team_sync": ["read:jira-work"]},
+        })
+        svc._enrich_from_registry = MagicMock()
+
+        auth_config = {
+            "oauthConfigId": "oid1",
+            "connectorScope": "team",
+            "redirectUri": "http://localhost:3001/some/other/callback",
+        }
+        result = await svc._build_complete_oauth_config("c1", "Jira", auth_config)
+        assert result["redirectUri"] == (
+            "http://localhost:3001/connectors/oauth/callback/Jira"
+        )
+
+    @pytest.mark.asyncio
     async def test_fallback_to_auth_config(self):
         svc = _make_service()
         svc._fetch_shared_oauth_config = AsyncMock(return_value={})
@@ -1001,8 +1024,10 @@ class TestEnrichFromRegistrySlack:
         )
 
     def test_no_enrichment_needed_when_all_keys_present(self):
-        from app.connectors.core.constants import OAuthConfigKeys
+        from app.connectors.core.constants import AuthFieldKeys, OAuthConfigKeys
         cfg = {
+            AuthFieldKeys.TOKEN_URL: "https://example.com/token",
+            AuthFieldKeys.AUTHORIZE_URL: "https://example.com/authorize",
             OAuthConfigKeys.TOKEN_ACCESS_TYPE: "offline",
             OAuthConfigKeys.ADDITIONAL_PARAMS: {},
             OAuthConfigKeys.SCOPE_PARAMETER_NAME: "scope",

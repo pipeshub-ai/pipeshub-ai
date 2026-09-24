@@ -14,6 +14,21 @@ const httpRequestDuration = metricsBackend.createHistogram({
   buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
 });
 
+// Unbounded route values grow the push payload until the collector rejects it.
+const MAX_UNIQUE_ROUTES = 300;
+const seenRoutes = new Set<string>();
+
+function boundRoute(route: string): string {
+  if (seenRoutes.has(route)) {
+    return route;
+  }
+  if (seenRoutes.size >= MAX_UNIQUE_ROUTES) {
+    return 'other';
+  }
+  seenRoutes.add(route);
+  return route;
+}
+
 export function recordHttpRequest(
   route: string,
   method: string,
@@ -24,7 +39,7 @@ export function recordHttpRequest(
 ): void {
   const labels = {
     service: SERVICE_NAME,
-    route: route === '' ? 'unmatched' : route,
+    route: boundRoute(route === '' ? 'unmatched' : route),
     method,
     status: String(statusCode),
     org: orgId == null || orgId === '' ? 'unknown' : orgId,

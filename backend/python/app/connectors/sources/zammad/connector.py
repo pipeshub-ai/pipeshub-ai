@@ -15,6 +15,7 @@ from typing import (
 from uuid import uuid4
 
 from bs4 import BeautifulSoup  # pyright: ignore[reportMissingModuleSource]
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
 
@@ -25,12 +26,17 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -1312,12 +1318,9 @@ class ZammadConnector(BaseConnector):
         weburl = f"{self.base_url}/#ticket/zoom/{ticket_id}" if self.base_url else ""
 
         # Check for existing record
-        existing_record = None
-        async with self.data_store_provider.transaction() as tx_store:
-            existing_record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=str(ticket_id)
-            )
+        existing_record = await self.data_entities_processor.get_record_by_external_id(
+            self.connector_id, str(ticket_id)
+        )
 
         # Handle versioning
         is_new = existing_record is None
@@ -1404,12 +1407,9 @@ class ZammadConnector(BaseConnector):
         content_type = attachment_data.get("preferences", {}).get("Content-Type", "application/octet-stream")
 
         # Check for existing record
-        existing_record = None
-        async with self.data_store_provider.transaction() as tx_store:
-            existing_record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=external_record_id
-            )
+        existing_record = await self.data_entities_processor.get_record_by_external_id(
+            self.connector_id, external_record_id
+        )
 
         is_new = existing_record is None
         record_id = existing_record.id if existing_record else str(uuid4())
@@ -2036,12 +2036,9 @@ class ZammadConnector(BaseConnector):
 
                     # Check for existing record before creating/updating
                     external_record_id = f"kb_answer_{answer_id}"
-                    existing_record = None
-                    async with self.data_store_provider.transaction() as tx_store:
-                        existing_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=external_record_id
-                        )
+                    existing_record = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, external_record_id
+                    )
 
                     # Create record with visibility-based permissions
                     answer_record, permissions = self._create_answer_with_permissions(
@@ -2281,7 +2278,10 @@ class ZammadConnector(BaseConnector):
             elif record.record_type == RecordType.FILE:
                 content_bytes = await self._process_file_for_streaming(record)
             else:
-                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
 
             return StreamingResponse(
                 iter([content_bytes]),
@@ -2291,9 +2291,11 @@ class ZammadConnector(BaseConnector):
                 }
             )
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.id}: {e}", exc_info=True)
-            raise
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _build_ticket_attachment_child_records(
         self,
@@ -2316,49 +2318,48 @@ class ZammadConnector(BaseConnector):
             List of ChildRecord objects for attachments
         """
         child_records = []
-        async with self.data_store_provider.transaction() as tx_store:
-            for att in attachments:
-                att_id = att.get("id")
-                att_filename = att.get("filename", "")
-                if not att_id:
+        for att in attachments:
+            att_id = att.get("id")
+            att_filename = att.get("filename", "")
+            if not att_id:
+                continue
+
+            # Ticket attachment external_record_id format: {ticket_id}_{article_id}_{attachment_id}
+            external_record_id = f"{ticket_id}_{article_id}_{att_id}"
+
+            # Look up existing record to get the actual record ID
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=external_record_id
+            )
+
+            if existing_record:
+                child_records.append(ChildRecord(
+                    child_type=ChildType.RECORD,
+                    child_id=existing_record.id,
+                    child_name=existing_record.record_name or att_filename
+                ))
+            else:
+                # Create the record if it doesn't exist
+                try:
+                    file_record = await self._transform_attachment_to_file_record(
+                        attachment_data=att,
+                        external_record_id=external_record_id,
+                        parent_record=parent_record,
+                        parent_record_type=RecordType.TICKET,
+                        indexing_filter_key=IndexingFilterKey.ISSUE_ATTACHMENTS
+                    )
+                    if file_record:
+                        # Save the record - FileRecords inherit permissions from group (inherit_permissions=True by default)
+                        await self.data_entities_processor.on_new_records([(file_record, [])])
+                        child_records.append(ChildRecord(
+                            child_type=ChildType.RECORD,
+                            child_id=file_record.id,
+                            child_name=file_record.record_name or att_filename
+                        ))
+                except Exception as e:
+                    self.logger.warning(f"Failed to create attachment record {external_record_id}: {e}")
                     continue
-
-                # Ticket attachment external_record_id format: {ticket_id}_{article_id}_{attachment_id}
-                external_record_id = f"{ticket_id}_{article_id}_{att_id}"
-
-                # Look up existing record to get the actual record ID
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
-
-                if existing_record:
-                    child_records.append(ChildRecord(
-                        child_type=ChildType.RECORD,
-                        child_id=existing_record.id,
-                        child_name=existing_record.record_name or att_filename
-                    ))
-                else:
-                    # Create the record if it doesn't exist
-                    try:
-                        file_record = await self._transform_attachment_to_file_record(
-                            attachment_data=att,
-                            external_record_id=external_record_id,
-                            parent_record=parent_record,
-                            parent_record_type=RecordType.TICKET,
-                            indexing_filter_key=IndexingFilterKey.ISSUE_ATTACHMENTS
-                        )
-                        if file_record:
-                            # Save the record - FileRecords inherit permissions from group (inherit_permissions=True by default)
-                            await self.data_entities_processor.on_new_records([(file_record, [])])
-                            child_records.append(ChildRecord(
-                                child_type=ChildType.RECORD,
-                                child_id=file_record.id,
-                                child_name=file_record.record_name or att_filename
-                            ))
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create attachment record {external_record_id}: {e}")
-                        continue
 
         return child_records
 
@@ -2384,7 +2385,14 @@ class ZammadConnector(BaseConnector):
         # Fetch ticket data
         ticket_response = await datasource.get_ticket(id=int(ticket_id), expand=True)
         if not ticket_response.success or not ticket_response.data:
-            raise Exception(f"Failed to fetch ticket {ticket_id}")
+            self.logger.warning("Failed to fetch ticket %s for streaming", ticket_id)
+            raise_for_stream_fetch(
+                success=ticket_response.success,
+                has_payload=bool(ticket_response.data),
+                connector=self.display_name,
+                status=ticket_response.status_code,
+                message=ticket_response.message or ticket_response.error,
+            )
 
         ticket_data = ticket_response.data
 
@@ -2611,53 +2619,52 @@ class ZammadConnector(BaseConnector):
 
         # Build children_records for attachments
         answer_children_records = []
-        async with self.data_store_provider.transaction() as tx_store:
-            for att in answer_attachments:
-                att_id = att.get("id")
-                att_filename = att.get("filename", "")
-                if not att_id:
+        for att in answer_attachments:
+            att_id = att.get("id")
+            att_filename = att.get("filename", "")
+            if not att_id:
+                continue
+
+            # KB answer attachment external_record_id format: kb_answer_{answer_id}_attachment_{attachment_id}
+            external_record_id = f"kb_answer_{answer_id}_attachment_{att_id}"
+
+            # Look up existing record to get the actual record ID
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=external_record_id
+            )
+
+            if existing_record:
+                answer_children_records.append(ChildRecord(
+                    child_type=ChildType.RECORD,
+                    child_id=existing_record.id,
+                    child_name=existing_record.record_name or att_filename
+                ))
+            else:
+                # Create the record if it doesn't exist
+                try:
+                    file_record = await self._transform_attachment_to_file_record(
+                        attachment_data=att,
+                        external_record_id=external_record_id,
+                        parent_record=record,
+                        parent_record_type=RecordType.WEBPAGE,
+                        indexing_filter_key=IndexingFilterKey.KNOWLEDGE_BASE,
+                        inherit_permissions=answer_inherit_permissions
+                    )
+                    if file_record:
+                        # Save the record with the same permissions as the parent answer
+                        # For PUBLIC: ORG permission, inherit_permissions=False
+                        # For ARCHIVED/DRAFT: Editor role permissions, inherit_permissions=False
+                        # For INTERNAL: Empty list, inherit_permissions=True will handle category inheritance
+                        await self.data_entities_processor.on_new_records([(file_record, answer_permissions)])
+                        answer_children_records.append(ChildRecord(
+                            child_type=ChildType.RECORD,
+                            child_id=file_record.id,
+                            child_name=file_record.record_name or att_filename
+                        ))
+                except Exception as e:
+                    self.logger.warning(f"Failed to create attachment record {external_record_id}: {e}")
                     continue
-
-                # KB answer attachment external_record_id format: kb_answer_{answer_id}_attachment_{attachment_id}
-                external_record_id = f"kb_answer_{answer_id}_attachment_{att_id}"
-
-                # Look up existing record to get the actual record ID
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
-
-                if existing_record:
-                    answer_children_records.append(ChildRecord(
-                        child_type=ChildType.RECORD,
-                        child_id=existing_record.id,
-                        child_name=existing_record.record_name or att_filename
-                    ))
-                else:
-                    # Create the record if it doesn't exist
-                    try:
-                        file_record = await self._transform_attachment_to_file_record(
-                            attachment_data=att,
-                            external_record_id=external_record_id,
-                            parent_record=record,
-                            parent_record_type=RecordType.WEBPAGE,
-                            indexing_filter_key=IndexingFilterKey.KNOWLEDGE_BASE,
-                            inherit_permissions=answer_inherit_permissions
-                        )
-                        if file_record:
-                            # Save the record with the same permissions as the parent answer
-                            # For PUBLIC: ORG permission, inherit_permissions=False
-                            # For ARCHIVED/DRAFT: Editor role permissions, inherit_permissions=False
-                            # For INTERNAL: Empty list, inherit_permissions=True will handle category inheritance
-                            await self.data_entities_processor.on_new_records([(file_record, answer_permissions)])
-                            answer_children_records.append(ChildRecord(
-                                child_type=ChildType.RECORD,
-                                child_id=file_record.id,
-                                child_name=file_record.record_name or att_filename
-                            ))
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create attachment record {external_record_id}: {e}")
-                        continue
 
         return answer_children_records
 
@@ -2690,6 +2697,14 @@ class ZammadConnector(BaseConnector):
 
         # Try to fetch KB answer using correct endpoint format
         answer_response = await datasource.get_kb_answer(id=answer_id, kb_id=kb_id)
+        # Without this the body stays "" and a title-only container streams at 200.
+        raise_for_stream_fetch(
+            success=answer_response.success,
+            has_payload=bool(answer_response.data),
+            connector=self.display_name,
+            status=answer_response.status_code,
+            message=answer_response.message or answer_response.error,
+        )
 
         title = record.record_name
         body = ""
@@ -2933,8 +2948,19 @@ class ZammadConnector(BaseConnector):
                 id=int(attachment_id)
             )
 
-            if not response.success:
-                raise Exception(f"Failed to download KB answer attachment: {response.message}")
+            if not response.success or response.data is None:
+                self.logger.warning(
+                    "Failed to download KB answer attachment %s: %s",
+                    attachment_id,
+                    response.message,
+                )
+                raise_for_stream_fetch(
+                    success=response.success,
+                    has_payload=response.data is not None,
+                    connector=self.display_name,
+                    status=response.status_code,
+                    message=response.message or response.error,
+                )
 
             # Return raw content bytes
             content = response.data
@@ -2959,8 +2985,19 @@ class ZammadConnector(BaseConnector):
                 id=int(attachment_id)
             )
 
-            if not response.success:
-                raise Exception(f"Failed to download attachment: {response.message}")
+            if not response.success or response.data is None:
+                self.logger.warning(
+                    "Failed to download ticket attachment %s: %s",
+                    attachment_id,
+                    response.message,
+                )
+                raise_for_stream_fetch(
+                    success=response.success,
+                    has_payload=response.data is not None,
+                    connector=self.display_name,
+                    status=response.status_code,
+                    message=response.message or response.error,
+                )
 
             # Return raw content bytes
             content = response.data
@@ -3361,15 +3398,14 @@ class ZammadConnector(BaseConnector):
             category_map: Dict[int, RecordGroup] = {}
             editor_role_ids: List[int] = []
 
-            async with self.data_store_provider.transaction() as tx_store:
-                if record.external_record_group_id:
-                    cat_rg = await tx_store.get_record_group_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=record.external_record_group_id
-                    )
-                    if cat_rg:
-                        category_id = int(record.external_record_group_id.replace("cat_", ""))
-                        category_map[category_id] = cat_rg
+            if record.external_record_group_id:
+                cat_rg = await self.data_entities_processor.get_record_group_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=record.external_record_group_id
+                )
+                if cat_rg:
+                    category_id = int(record.external_record_group_id.replace("cat_", ""))
+                    category_map[category_id] = cat_rg
 
             # Fetch category permissions for visibility-based permission handling
             if category_id:
@@ -3419,15 +3455,10 @@ class ZammadConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BaseConnector":
         """Factory method to create ZammadConnector instance"""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
         return ZammadConnector(
             logger,
             data_entities_processor,

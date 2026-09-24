@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
@@ -30,11 +31,12 @@ from app.models.entities import RecordType, User
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -84,6 +86,9 @@ def mock_data_entities_processor():
         full_name="Test User",
     )
     proc.get_user_by_user_id = AsyncMock(return_value=u)
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock()
     return proc
 
 
@@ -450,7 +455,7 @@ class TestProcessS3Object:
         existing.external_record_id = "mybucket/path/file.txt"
         existing.version = 1
         existing.source_created_at = 1700000000000
-        s3_connector.data_store_provider = _make_mock_data_store_provider(existing)
+        s3_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         s3_connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -472,9 +477,8 @@ class TestProcessS3Object:
         existing.external_revision_id = "mybucket/same_etag"
         existing.version = 0
         existing.source_created_at = 1700000000000
-        s3_connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=None, existing_revision_record=existing
-        )
+        s3_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        s3_connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
         s3_connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -591,8 +595,9 @@ class TestGetSignedUrl:
     async def test_not_initialized(self, s3_connector):
         s3_connector.data_source = None
         record = MagicMock()
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_bucket_name(self, s3_connector):
@@ -600,8 +605,9 @@ class TestGetSignedUrl:
         record = MagicMock()
         record.external_record_group_id = None
         record.id = "rec-1"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_no_external_record_id(self, s3_connector):
@@ -610,8 +616,9 @@ class TestGetSignedUrl:
         record.external_record_group_id = "mybucket"
         record.external_record_id = None
         record.id = "rec-1"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_success(self, s3_connector):
@@ -632,7 +639,7 @@ class TestGetSignedUrl:
     async def test_access_denied(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_make_response(False, error="AccessDenied")
+            return_value=_make_response(False, error="AccessDenied", status_code=403)
         )
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         record = MagicMock()
@@ -640,14 +647,15 @@ class TestGetSignedUrl:
         record.external_record_id = "mybucket/path/file.txt"
         record.id = "rec-1"
         record.record_name = "file.txt"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_no_such_key(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.generate_presigned_url = AsyncMock(
-            return_value=_make_response(False, error="NoSuchKey")
+            return_value=_make_response(False, error="NoSuchKey", status_code=404)
         )
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         record = MagicMock()
@@ -655,8 +663,9 @@ class TestGetSignedUrl:
         record.external_record_id = "mybucket/path/file.txt"
         record.id = "rec-1"
         record.record_name = "file.txt"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_key_without_bucket_prefix(self, s3_connector):
@@ -744,23 +753,6 @@ class TestRunSyncExtended:
         s3_connector._sync_bucket = AsyncMock(side_effect=Exception("sync error"))
         # Should not raise
         await s3_connector.run_sync()
-
-
-# ===========================================================================
-# _remove_old_parent_relationship
-# ===========================================================================
-class TestRemoveOldParentRelationship:
-    @pytest.mark.asyncio
-    async def test_successful_removal(self, s3_connector):
-        tx_store = AsyncMock()
-        tx_store.delete_parent_child_edge_to_record = AsyncMock(return_value=2)
-        await s3_connector._remove_old_parent_relationship("rec-1", tx_store)
-
-    @pytest.mark.asyncio
-    async def test_exception_handled(self, s3_connector):
-        tx_store = AsyncMock()
-        tx_store.delete_parent_child_edge_to_record = AsyncMock(side_effect=Exception("err"))
-        await s3_connector._remove_old_parent_relationship("rec-1", tx_store)
 
 
 # ===========================================================================
@@ -1231,15 +1223,9 @@ class TestCreateS3PermissionsEdgeCases:
     async def test_personal_creator_lookup_fails(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
-        # Mock tx_store to return None for user lookup so no email is found
-        tx = AsyncMock()
-        tx.get_user_by_id = AsyncMock(return_value=None)
-        provider = MagicMock()
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        provider.transaction = _transaction
-        s3_connector.data_store_provider = provider
+        s3_connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+            side_effect=Exception("DB error")
+        )
         perms = await s3_connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"

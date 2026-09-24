@@ -89,7 +89,7 @@ class DateCalculator:
     """
 
     def __init__(self) -> None:
-        logger.info("🚀 Initializing DateCalculator tool")
+        logger.debug("🚀 Initializing DateCalculator tool")
 
     # ────────────────────────────────────────────────────────────────────────
     # Tool 1: Get all exclusion dates (weekends + holidays) for a range

@@ -13,10 +13,13 @@
 import { Router } from 'express';
 import { Container } from 'inversify';
 import multer from 'multer';
+import { createMulter } from '../../../libs/utils/multer.utils';
 
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { createSkillsImportRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
   listSkills,
@@ -27,6 +30,8 @@ import {
   updateSkill,
   patchSkillBody,
   deprecateSkill,
+  disableSkill,
+  enableSkill,
   getSkillUsage,
   deleteSkill,
   listSkillVersions,
@@ -54,8 +59,11 @@ export function createSkillsRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const appConfig = container.get<AppConfig>('AppConfig');
+  const logger = (container.get('Logger') as Logger | undefined)
+    ?? Logger.getInstance({ service: 'SkillsRoutes' });
+  const importLimiter = createSkillsImportRateLimiter(logger);
 
-  const skillUpload = multer({
+  const skillUpload = createMulter({
     storage: multer.memoryStorage(),
     limits: { fileSize: SKILL_UPLOAD_MAX_BYTES, files: 1 },
   });
@@ -74,16 +82,35 @@ export function createSkillsRouter(container: Container): Router {
 
   // ---- Package import (same ordering guard — 'import' before '/:name') --
 
-  router.post('/import/npm/preview', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_WRITE), previewNpmSkillImport(appConfig));
-  router.post('/import/url/preview', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_WRITE), previewUrlSkillImport(appConfig));
+  router.post(
+    '/import/npm/preview',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.SKILL_WRITE),
+    importLimiter,
+    previewNpmSkillImport(appConfig),
+  );
+  router.post(
+    '/import/url/preview',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.SKILL_WRITE),
+    importLimiter,
+    previewUrlSkillImport(appConfig),
+  );
   router.post(
     '/import/upload/preview',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SKILL_WRITE),
+    importLimiter,
     skillUpload.single('file'),
     previewUploadSkillImport(appConfig),
   );
-  router.post('/import/finalize', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_WRITE), finalizeSkillImport(appConfig));
+  router.post(
+    '/import/finalize',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.SKILL_WRITE),
+    importLimiter,
+    finalizeSkillImport(appConfig),
+  );
 
   // ---- CRUD -----------------------------------------------------------------
 
@@ -92,6 +119,8 @@ export function createSkillsRouter(container: Container): Router {
   router.put('/:name', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_WRITE), updateSkill(appConfig));
   router.patch('/:name/body', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_WRITE), patchSkillBody(appConfig));
   router.post('/:name/deprecate', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_WRITE), deprecateSkill(appConfig));
+  router.post('/:name/disable', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_WRITE), disableSkill(appConfig));
+  router.post('/:name/enable', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_WRITE), enableSkill(appConfig));
   router.get('/:name/usage', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_READ), getSkillUsage(appConfig));
   router.delete('/:name', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_WRITE), deleteSkill(appConfig));
   router.get('/:name/export', authMiddleware.authenticate, requireScopes(OAuthScopeNames.SKILL_READ), exportSkill(appConfig));

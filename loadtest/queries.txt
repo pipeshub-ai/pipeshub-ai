@@ -1,0 +1,25 @@
+# One query per line. Blank lines and lines starting with # are ignored.
+#
+# Each user picks from this list with a PRNG seeded from (run label, user
+# index): random-looking and spread across users, but identical between two
+# arms of an A/B so both see the same workload.
+#
+# WHY A LIST AND NOT ONE QUERY: a single repeated query gets its prompt prefix
+# cached by the LLM provider and returns the same warm records every turn, so
+# it overstates throughput. Use `PIPESHUB_QUERY` to force a single query only
+# when you want both arms of an A/B identically biased -- never to quote a
+# capacity number.
+#
+# REPLACE THESE for your own corpus, then check a run's answers: turns coming
+# back with 0 citations are measuring the not-found path, not retrieval.
+
+How do I set up an agent, and what configuration does it need?
+Which AI model providers are supported and how are they configured?
+How are spending limits and AI budgets applied to users and teams?
+What does the connector integration playbook say about adding a new connector?
+How is access control and permissions handled across connectors?
+Summarise the task runner and concurrency architecture for background syncs.
+What issues were found in the recent bug bash sessions?
+What does the Asana SOC 3 report cover?
+What has been discussed recently about MCP and the context layer?
+What is on the PipesHub capabilities roadmap?

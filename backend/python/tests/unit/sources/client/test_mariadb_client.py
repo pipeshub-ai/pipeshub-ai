@@ -282,7 +282,9 @@ class TestMariaDBClient:
         )
         client, _, conn = self._make_pooled_client(cursor)
 
-        with pytest.raises(RuntimeError, match="Query execution failed"):
+        # The driver's own class must survive: the streaming path maps
+        # permission/missing-table errors by errno, not by message.
+        with pytest.raises(mariadb_module.Error, match="query fail"):
             await client.execute_query("BAD SQL")
         conn.rollback.assert_awaited_once()
 
@@ -330,7 +332,7 @@ class TestMariaDBClient:
         )
         client, _, _ = self._make_pooled_client(cursor)
 
-        with pytest.raises(RuntimeError, match="Query execution failed"):
+        with pytest.raises(mariadb_module.Error, match="fail"):
             await client.execute_query_raw("BAD SQL")
 
     def test_get_connection_info(self):
@@ -514,7 +516,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_success(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.mariadb.mariadb.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "localhost", "port": 3306}},
         ):
@@ -528,7 +530,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_missing_host_raises(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.mariadb.mariadb.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {}},
         ):
@@ -542,7 +544,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_missing_username_raises(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.mariadb.mariadb.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "localhost"}},
         ):
@@ -556,7 +558,7 @@ class TestBuildFromToolset:
     @pytest.mark.asyncio
     async def test_password_none_defaults_empty(self, logger, mock_config_service):
         with patch(
-            "app.sources.client.mariadb.mariadb.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "localhost"}},
         ):

@@ -5,7 +5,7 @@ Covers:
 - process_new_records: batch persist, checkpoint advancement
 - _process_issue_incident_task_to_ticket: type mapping (issue/incident/task), new vs updated
 - _get_issues_sync_checkpoint / _update_sync_checkpoint: read/write/exception
-- _issues_indexing_enabled / _comments_indexing_enabled: filter flags
+- _issues_indexing_enabled: filter flag; comments have no separate indexing gate
 """
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.connectors.sources.gitlab.issues import IssuesSync
+from app.models.entities import RecordType
+from app.models.permission import EntityType, Permission, PermissionType
 
 from .conftest import make_mock_connector, failed_res
 
@@ -27,6 +29,9 @@ def _make_issue(
     state: str = "opened",
     project_id: int = 42,
     web_url: str = "https://gitlab.com/ns/proj/-/issues/1",
+    confidential: bool = False,
+    author_id: int | None = None,
+    assignee_ids: list[int] | None = None,
 ) -> MagicMock:
     issue = MagicMock()
     issue.id = iid
@@ -40,6 +45,11 @@ def _make_issue(
     issue.labels = []
     issue.updated_at = "2024-01-01T00:00:00Z"
     issue.created_at = "2024-01-01T00:00:00Z"
+    # Set explicitly: an unset attribute on a MagicMock reads back truthy, which
+    # would route every issue in this file down the confidential branch.
+    issue.confidential = confidential
+    issue.author = {"id": author_id} if author_id is not None else {}
+    issue.assignees = [{"id": uid} for uid in (assignee_ids or [])]
     return issue
 
 
@@ -124,6 +134,76 @@ class TestFetchIssuesBatched:
         # 5 issues with batch_size=2 → 3 batches
         assert issues_sync.process_new_records.call_count == 3
 
+    async def test_checkpoint_stays_behind_a_failed_batch(self) -> None:
+        """The listing is sorted ``updated asc``: committing a later batch's
+        timestamp after an earlier batch failed would skip those issues
+        forever, so the sweep must stop and write no checkpoint."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c.batch_size = 2
+        issues_sync = IssuesSync(c)
+
+        issues = [_make_issue(i) for i in range(6)]
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=issues, error=None))
+        issues_sync._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        issues_sync._build_issue_records = AsyncMock(return_value=[])
+        issues_sync._update_sync_checkpoint = AsyncMock()
+        # batch 1 succeeds, batch 2 fails, batch 3 must never run
+        issues_sync.process_new_records = AsyncMock(side_effect=[True, False, True])
+
+        await issues_sync.fetch_issues_batched(42)
+
+        assert issues_sync.process_new_records.call_count == 2
+        issues_sync._update_sync_checkpoint.assert_not_called()
+
+    async def test_checkpoint_written_once_after_a_clean_sweep(self) -> None:
+        """One checkpoint write per record group per sweep, not one per batch."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c.batch_size = 2
+        issues_sync = IssuesSync(c)
+
+        issues = [_make_issue(i) for i in range(6)]
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=issues, error=None))
+        issues_sync._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        issues_sync._build_issue_records = AsyncMock(return_value=[])
+        issues_sync._update_sync_checkpoint = AsyncMock()
+
+        async def _persist(batch, watermarks=None):
+            if watermarks is not None:
+                watermarks["42-work-items"] = 555
+            return True
+
+        issues_sync.process_new_records = AsyncMock(side_effect=_persist)
+
+        await issues_sync.fetch_issues_batched(42)
+
+        assert issues_sync.process_new_records.call_count == 3
+        issues_sync._update_sync_checkpoint.assert_awaited_once_with("42-work-items", 555)
+
+    async def test_persist_failure_returns_false_and_keeps_watermark_clean(self) -> None:
+        """process_new_records reports the failure and leaves no watermark for it."""
+        from app.connectors.sources.gitlab.models import RecordUpdate
+        from unittest.mock import ANY
+
+        c = make_mock_connector()
+        issues_sync = IssuesSync(c)
+        c.data_entities_processor.on_new_records = AsyncMock(side_effect=Exception("db down"))
+
+        record = MagicMock()
+        record.record_type = "TICKET"
+        record.source_updated_at = 999
+        record.external_record_group_id = "42-work-items"
+        ru = MagicMock(spec=RecordUpdate)
+        ru.record = record
+        ru.new_permissions = []
+
+        watermarks: dict[str, int] = {}
+        result = await issues_sync.process_new_records([ru], watermarks)
+
+        assert result is False
+        assert watermarks == {}
+
 
 # ===========================================================================
 # _process_issue_incident_task_to_ticket
@@ -181,9 +261,7 @@ class TestProcessIssueToTicket:
         existing = MagicMock()
         existing.record_name = "Old Title"
         existing.id = "existing-id-1"
-        _, ctx = await self._make_tx_context(existing)
-        c.data_store_provider = MagicMock()
-        c.data_store_provider.transaction = MagicMock(return_value=ctx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         issues_sync = IssuesSync(c)
 
         result = await issues_sync._process_issue_incident_task_to_ticket(_make_issue(title="New Title"))
@@ -193,8 +271,9 @@ class TestProcessIssueToTicket:
 
     async def test_exception_returns_none(self) -> None:
         c = make_mock_connector()
-        c.data_store_provider = MagicMock()
-        c.data_store_provider.transaction = MagicMock(side_effect=Exception("DB error"))
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=Exception("DB error")
+        )
         issues_sync = IssuesSync(c)
 
         result = await issues_sync._process_issue_incident_task_to_ticket(_make_issue())
@@ -253,12 +332,6 @@ class TestIssueIndexingFilters:
         issues_sync = IssuesSync(c)
         assert issues_sync._issues_indexing_enabled() is True
 
-    def test_comments_enabled_by_default_when_no_filters(self) -> None:
-        c = make_mock_connector()
-        c.indexing_filters = None
-        issues_sync = IssuesSync(c)
-        assert issues_sync._comments_indexing_enabled() is True
-
     def test_issues_disabled_by_filter(self) -> None:
         c = make_mock_connector()
         from app.connectors.core.registry.filters import IndexingFilterKey
@@ -268,14 +341,13 @@ class TestIssueIndexingFilters:
         issues_sync = IssuesSync(c)
         assert issues_sync._issues_indexing_enabled() is False
 
-    def test_comments_disabled_by_filter(self) -> None:
-        c = make_mock_connector()
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        filters = MagicMock()
-        filters.is_enabled = MagicMock(side_effect=lambda k: k != IndexingFilterKey.COMMENTS)
-        c.indexing_filters = filters
-        issues_sync = IssuesSync(c)
-        assert issues_sync._comments_indexing_enabled() is False
+    def test_no_comments_indexing_filter_exists(self) -> None:
+        """Comments are part of a ticket's content, not records of their own, so
+        there is nothing separate to index or not index. Gating block
+        composition on an indexing filter also silently stripped every comment
+        once enable_manual_sync was on, because is_enabled answers
+        "auto-index this?" and returns False for every filter in that mode."""
+        assert not hasattr(IssuesSync, "_comments_indexing_enabled")
 
 
 # ===========================================================================
@@ -347,8 +419,6 @@ class TestBuildIssueRecords:
         issues_sync = IssuesSync(c)
         issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         result = await issues_sync._build_issue_records([issue])
         assert len(result) == 2
         c.attachments.make_file_records_from_list.assert_called_once()
@@ -380,8 +450,6 @@ class TestBuildIssueRecords:
         issues_sync = IssuesSync(c)
         issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         result = await issues_sync._build_issue_records([issue])
         assert len(result) == 2
         c.attachments.make_files_records_from_notes.assert_called_once()
@@ -409,8 +477,6 @@ class TestBuildIssueRecords:
         issues_sync = IssuesSync(c)
         issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=False)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         await issues_sync._build_issue_records([issue])
         assert ru.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
@@ -434,8 +500,6 @@ class TestBuildIssueRecords:
 
         issues_sync = IssuesSync(c)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         result = await issues_sync._build_issue_records([issue])
         assert len(result) == 1
         assert result[0].metadata_changed is False
@@ -523,7 +587,6 @@ class TestBuildTicketBlocks:
         c.comments.build_comment_blocks = AsyncMock(return_value=([], []))
 
         issues_sync = IssuesSync(c)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=False)
         issues_sync.process_new_records = AsyncMock()
 
         result = await issues_sync.build_ticket_blocks(record)
@@ -531,7 +594,7 @@ class TestBuildTicketBlocks:
         assert b"block_groups" in result
 
     async def test_with_comments_appended(self) -> None:
-        """When comments indexing enabled, comment blocks are included."""
+        """Comment blocks are always appended to the ticket container."""
         c = make_mock_connector()
         c._gitlab_base_url = "https://gitlab.com"
 
@@ -554,12 +617,16 @@ class TestBuildTicketBlocks:
         c.attachments.make_child_records_of_attachments = AsyncMock(return_value=([], []))
 
         from app.models.blocks import BlockGroup, GroupType
-        comment_bg = BlockGroup(index=1, name="comment", type=GroupType.TEXT_SECTION.value)
+        comment_bg = BlockGroup(
+            index=1,
+            parent_index=0,
+            name="comment",
+            type=GroupType.TEXT_SECTION.value,
+        )
         c.comments = MagicMock()
         c.comments.build_comment_blocks = AsyncMock(return_value=([comment_bg], []))
 
         issues_sync = IssuesSync(c)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
         issues_sync.process_new_records = AsyncMock()
 
         result = await issues_sync.build_ticket_blocks(record)
@@ -567,3 +634,104 @@ class TestBuildTicketBlocks:
         import json
         data = json.loads(result)
         assert len(data["block_groups"]) == 2  # description + comment
+        parent_children = data["block_groups"][0].get("children") or {}
+        group_ranges = parent_children.get("block_group_ranges") or []
+        assert group_ranges == [{"start": 1, "end": 1}]
+
+
+# ===========================================================================
+# Confidential work items
+# ===========================================================================
+
+
+class TestConfidentialIssueRouting:
+    """GitLab hides confidential issues from Guests.
+
+    The connector reads as the token owner and receives them regardless, so the
+    restriction is re-imposed by placing them in a record group whose ACL stops at
+    ``access_level >= 15`` instead of the Guest-readable work-items group.
+    """
+
+    async def _ticket_for(self, issue: MagicMock) -> object:
+        c = make_mock_connector()
+        tx_store = MagicMock()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        c.data_store_provider = MagicMock()
+        c.data_store_provider.transaction = MagicMock(return_value=ctx)
+        c.projects = MagicMock()
+        c.projects._create_permission_from_principal = AsyncMock(
+            side_effect=lambda _t, pid, _p, **_k: Permission(
+                email=f"user{pid}@example.com",
+                type=PermissionType.OWNER.value,
+                entity_type=EntityType.USER,
+            )
+        )
+        return await IssuesSync(c)._process_issue_incident_task_to_ticket(issue)
+
+    async def test_ordinary_issue_stays_in_work_items(self) -> None:
+        result = await self._ticket_for(_make_issue(confidential=False))
+        assert result.record.external_record_group_id == "42-work-items"
+        assert result.new_permissions == []
+
+    async def test_confidential_issue_moves_to_restricted_group(self) -> None:
+        result = await self._ticket_for(_make_issue(confidential=True))
+        assert result.record.external_record_group_id == "42-confidential-work-items"
+
+    async def test_author_and_assignees_keep_access(self) -> None:
+        """Additive grants: the union-with-no-deny model can widen but not narrow."""
+        result = await self._ticket_for(
+            _make_issue(confidential=True, author_id=7, assignee_ids=[8, 9])
+        )
+        emails = sorted(p.email for p in result.new_permissions)
+        assert emails == ["user7@example.com", "user8@example.com", "user9@example.com"]
+        assert result.permissions_changed is True
+
+    async def test_author_who_is_also_assignee_is_granted_once(self) -> None:
+        result = await self._ticket_for(
+            _make_issue(confidential=True, author_id=7, assignee_ids=[7])
+        )
+        assert len(result.new_permissions) == 1
+
+    async def test_ordinary_issue_gets_no_exception_grants(self) -> None:
+        """An author only matters when the issue is restricted."""
+        result = await self._ticket_for(
+            _make_issue(confidential=False, author_id=7, assignee_ids=[8])
+        )
+        assert result.new_permissions == []
+        assert result.permissions_changed is False
+
+
+class TestConfidentialWatermark:
+    """The ACL split must not split the sync cursor.
+
+    Both kinds of issue arrive on one ``updated asc`` listing, and the checkpoint is
+    only ever read back under the work-items key — so a confidential issue has to
+    advance that key rather than a parallel one nothing reads.
+    """
+
+    async def _run(self, group_id: str) -> dict:
+        c = make_mock_connector()
+        record = MagicMock()
+        record.record_type = RecordType.TICKET.value
+        record.source_updated_at = 1700000000000
+        record.external_record_group_id = group_id
+        ru = MagicMock(record=record, new_permissions=[])
+        watermarks: dict[str, int] = {}
+        await IssuesSync(c).process_new_records([ru], watermarks)
+        return watermarks
+
+    async def test_ordinary_issue_advances_work_items_key(self) -> None:
+        assert list(await self._run("42-work-items")) == ["42-work-items"]
+
+    async def test_confidential_issue_advances_the_same_key(self) -> None:
+        watermarks = await self._run("42-confidential-work-items")
+        assert list(watermarks) == ["42-work-items"], (
+            "a confidential issue must advance the checkpoint the reader actually "
+            "consults, or the cursor stalls whenever the newest issue is confidential"
+        )
+
+    async def test_merge_request_group_is_untouched(self) -> None:
+        assert list(await self._run("42-merge-requests")) == ["42-merge-requests"]

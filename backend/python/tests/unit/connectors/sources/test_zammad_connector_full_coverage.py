@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
 from app.connectors.sources.zammad.connector import (
@@ -54,6 +55,8 @@ def mock_data_entities_processor():
     proc.on_new_app_roles = AsyncMock()
     proc.on_updated_record_permissions = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_group_by_external_id = AsyncMock(return_value=None)
     return proc
 
 
@@ -98,12 +101,13 @@ def connector(mock_logger, mock_data_entities_processor,
     return c
 
 
-def _resp(success=True, data=None, error=None, message=None):
+def _resp(success=True, data=None, error=None, message=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
     r.message = message
+    r.status_code = status_code
     return r
 
 
@@ -570,11 +574,7 @@ class TestSyncKBAnswersPaginated:
         existing.inherit_permissions = True
         existing.external_revision_id = "1000"
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         first_assets = {
             "KnowledgeBaseAnswer": {
@@ -785,8 +785,9 @@ class TestStreamRecord:
         record.record_type = "UNKNOWN"
         record.id = "test"
 
-        with pytest.raises(ValueError, match="Unsupported"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 400
 
     async def test_stream_error_reraises(self, connector):
         connector._process_ticket_blockgroups_for_streaming = AsyncMock(
@@ -796,8 +797,9 @@ class TestStreamRecord:
         record.record_type = RecordType.TICKET
         record.id = "test"
 
-        with pytest.raises(Exception, match="stream fail"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
 
 class TestProcessFileForStreaming:
@@ -886,7 +888,7 @@ class TestProcessFileForStreaming:
 
         record = MagicMock()
         record.external_record_id = "42_1_99"
-        with pytest.raises(Exception, match="Failed to download attachment"):
+        with pytest.raises(RuntimeError):
             await connector._process_file_for_streaming(record)
 
     async def test_kb_attachment_api_failure(self, connector):
@@ -896,7 +898,7 @@ class TestProcessFileForStreaming:
 
         record = MagicMock()
         record.external_record_id = "kb_answer_5_attachment_10"
-        with pytest.raises(Exception, match="Failed to download KB"):
+        with pytest.raises(RuntimeError):
             await connector._process_file_for_streaming(record)
 
 
@@ -1685,7 +1687,7 @@ class TestProcessTicketBlockgroupsForStreaming:
         record = MagicMock()
         record.external_record_id = "44"
 
-        with pytest.raises(Exception, match="Failed to fetch ticket"):
+        with pytest.raises(RuntimeError):
             await connector._process_ticket_blockgroups_for_streaming(record)
 
     async def test_ticket_skips_system_articles(self, connector):
@@ -1838,7 +1840,9 @@ class TestProcessKBAnswerBlockgroupsForStreaming:
     async def test_kb_answer_no_content(self, connector):
         ds = _mock_ds()
         ds.init_knowledge_base = AsyncMock(return_value=_resp(success=False))
-        ds.get_kb_answer = AsyncMock(return_value=_resp(success=False))
+        ds.get_kb_answer = AsyncMock(
+            return_value=_resp(success=False, status_code=404)
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         record = MagicMock()
@@ -1847,8 +1851,9 @@ class TestProcessKBAnswerBlockgroupsForStreaming:
         record.weburl = None
         record.inherit_permissions = False
 
-        result = await connector._process_kb_answer_blockgroups_for_streaming(record)
-        assert b"Empty Answer" in result
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._process_kb_answer_blockgroups_for_streaming(record)
+        assert exc_info.value.status_code == 404
 
     async def test_kb_answer_direct_data(self, connector):
         ds = _mock_ds()
@@ -1964,11 +1969,7 @@ class TestBuildTicketAttachmentChildRecords:
         existing.id = "existing-att-1"
         existing.record_name = "file.pdf"
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         parent = MagicMock()
         attachments = [{"id": 99, "filename": "file.pdf"}]
@@ -2037,11 +2038,7 @@ class TestBuildKBAnswerChildRecords:
         existing.id = "existing-kb-att"
         existing.record_name = "kb-file.pdf"
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         record = MagicMock()
         record.inherit_permissions = False
@@ -2209,11 +2206,7 @@ class TestTransformAttachmentEdgeCases:
         existing.id = "existing-att"
         existing.version = 5
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         parent = MagicMock(spec=TicketRecord)
         parent.id = "p1"
@@ -2727,11 +2720,7 @@ class TestTransformTicketEdgeCases:
         existing.version = 5
         existing.source_updated_at = 1719792000000
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         ds = _mock_ds()
         ds.list_links = AsyncMock(return_value=_resp(success=False))
@@ -2814,13 +2803,10 @@ class TestGroupFilterEdgeCases:
 
 
 class TestCreateConnector:
-    @patch("app.connectors.sources.zammad.connector.DataSourceEntitiesProcessor")
     @patch("app.connectors.sources.zammad.connector.ZammadApp")
-    async def test_factory_method(self, mock_app, mock_dep, mock_data_store_provider, mock_config_service):
-        mock_proc = MagicMock()
-        mock_proc.org_id = "org-1"
-        mock_proc.initialize = AsyncMock()
-        mock_dep.return_value = mock_proc
+    async def test_factory_method(self, mock_app, mock_data_store_provider, mock_config_service):
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
         logger = logging.getLogger("test")
         result = await ZammadConnector.create_connector(
@@ -2830,9 +2816,9 @@ class TestCreateConnector:
             connector_id="zm-test",
             scope="team",
             created_by="test-user-id",
+            data_entities_processor=processor,
         )
         assert isinstance(result, ZammadConnector)
-        mock_proc.initialize.assert_awaited_once()
 
 
 class TestFetchTicketsForGroupBatchDateFilters:

@@ -80,6 +80,18 @@ class ImageSource(BaseModel):
     data: str = ""                 # base64 string (type="base64") or URL (type="url")
 
 
+def image_data_url(source: "ImageSource") -> str:
+    """An `ImageSource` as a URL the OpenAI-family APIs accept.
+
+    They take one string for both cases: a plain URL, or a `data:` URI carrying
+    base64. Kept here next to the model so each transport does not re-derive it.
+    """
+    if source.type == "base64":
+        media_type = source.media_type or "image/jpeg"
+        return f"data:{media_type};base64,{source.data}"
+    return source.data
+
+
 class TextPart(BaseModel):
     type: Literal["text"] = "text"
     text: str
@@ -97,6 +109,11 @@ class ThinkingPart(BaseModel):
 class ImagePart(BaseModel):
     type: Literal["image"] = "image"
     source: ImageSource
+    # Pixel dimensions when the producer measured them, so `count_tokens` can
+    # size the image without decoding it on every shaper pass. `None` means
+    # unmeasured, never zero-cost -- see `tokens.py`.
+    width: int | None = None
+    height: int | None = None
 
 
 # Open/Closed: adding a new content shape (e.g. DocumentPart) means adding a
@@ -194,7 +211,12 @@ class ToolMessageMeta(BaseModel):
 
 class ToolMessage(BaseModel):
     role: Literal[MessageRole.TOOL] = MessageRole.TOOL
-    content: str = ""
+    # Plain str covers the overwhelming common case (text-only tool
+    # results); list[Part] is for tools that return images alongside text
+    # (e.g. internal-knowledge search/fetch surfacing IMAGE blocks to a
+    # multimodal LLM) — OpenAI and Anthropic both accept image content in
+    # tool results natively; Ollama's transport falls back to `.text` only.
+    content: str | list[Part] = ""
     tool_call_id: str | None = None
     is_error: bool = False
     artifact_meta: ToolMessageMeta | None = None
@@ -202,6 +224,17 @@ class ToolMessage(BaseModel):
     # but NOT included in .content, so consumers like parent_results.py
     # that read raw content see clean tool output.
     step_footer: str = ""
+
+    @property
+    def text(self) -> str:
+        """Concatenated text of every `TextPart` in `content` when
+        multipart, or `content` itself when plain `str` — the accessor
+        every consumer that only cares about text (token counting,
+        `parent_results.py`, context shapers) should use instead of
+        reading `.content` directly."""
+        if isinstance(self.content, str):
+            return self.content
+        return "".join(part.text for part in self.content if isinstance(part, TextPart))
 
 
 Message = Annotated[

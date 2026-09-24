@@ -338,7 +338,7 @@ class TestBuildFromToolset:
     async def test_missing_host(self):
         from app.sources.client.redshift.redshift import RedshiftClient
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {}, "credentials": {}},
         ):
@@ -352,7 +352,7 @@ class TestBuildFromToolset:
     async def test_missing_user(self):
         from app.sources.client.redshift.redshift import RedshiftClient
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "h", "database": "db"}, "credentials": {}},
         ):
@@ -366,7 +366,7 @@ class TestBuildFromToolset:
     async def test_successful_build(self):
         from app.sources.client.redshift.redshift import RedshiftClient
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "h", "database": "db"}, "credentials": {}},
         ), patch("app.sources.client.redshift.redshift.redshift_connector", MagicMock()):

@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import json
 import logging
@@ -115,7 +116,7 @@ def create_fetch_url_tool(
                     the real URL via this mapper.
     """
     @tool("fetch_url", args_schema=FetchUrlArgs)
-    def fetch_url_tool(url: str) -> str:
+    async def fetch_url_tool(url: str) -> str:
         """
         Fetches and extracts main content from a **public** webpage (unauthenticated HTTP GET).
 
@@ -167,7 +168,11 @@ def create_fetch_url_tool(
                 })
 
             try:
-                response = fetch_url(url, verbose=True)
+                # fetch_url is sync (curl_cffi/cloudscraper/requests) and walks a
+                # fallback chain of up to 4 strategies x 3 profiles at 15s each.
+                # Run inline it would stall the event loop -- every concurrent
+                # request -- for the whole chain. image_utils does the same.
+                response = await asyncio.to_thread(fetch_url, url, verbose=True)
             except FetchError as e:
                 logger.warning("Fetch URL rejected or failed for %s: %s", url, e)
                 return json.dumps({

@@ -4,7 +4,9 @@ import logging
 from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+)
 
 # from app.connectors.core.interfaces.data_store.data_store_provider import DataStoreProvider
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
@@ -19,6 +21,7 @@ from app.connectors.core.registry.connector import (
 )
 from app.connectors.core.registry.connector_builder import SyncStrategy
 from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -47,6 +50,7 @@ from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
 from app.connectors.sources.local_fs.connector import LocalFsConnector
+from app.connectors.sources.demo.connector import DemoConnector
 from app.connectors.sources.github.connector import GithubConnector
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
@@ -70,10 +74,10 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
 from app.connectors.sources.minio.connector import MinIOConnector
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.notion.connector import NotionConnector
+from app.connectors.sources.notion_personal.connector import NotionPersonalConnector
 from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
-from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
@@ -83,6 +87,8 @@ from app.connectors.sources.slack.team.connector import SlackConnector
 
 from app.connectors.sources.gitlab.connector import GitLabConnector
 from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
+
+from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 
 from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
@@ -116,6 +122,7 @@ class ConnectorFactory:
         "web": WebConnector,
         "rss": RSSConnector,
         "localfs": LocalFsConnector,
+        "demo": DemoConnector,
         "bookstack": BookStackConnector,
         "github": GithubConnector,
         "s3": S3Connector,
@@ -127,11 +134,13 @@ class ConnectorFactory:
         "postgresql": PostgreSQLConnector,
         "linear": LinearConnector,
         "notion": NotionConnector,
+        "notionpersonal": NotionPersonalConnector,
         "zammad": ZammadConnector,
         "zoom": ZoomConnector,
         "salesforce": SalesforceConnector,
         "gitlab": GitLabConnector,
         "gitlabpersonal": GitLabPersonalConnector,
+        "githubteams": GitHubTeamsConnector,
         "mariadb": MariaDBConnector,
         "slackworkspace": SlackConnector,
         "slack": SlackIndividualConnector,
@@ -155,6 +164,13 @@ class ConnectorFactory:
     ) -> None:
         """Register a new connector type"""
         cls._connector_registry[name.lower()] = connector_class
+
+
+    @classmethod
+    def unregister_connectors(cls, names: list[str]) -> None:
+        """Remove multiple connectors from the registry."""
+        for name in names:
+            cls._connector_registry.pop(name.lower(), None)
 
     @classmethod
     def initialize_beta_connector_registry(cls) -> None:
@@ -196,15 +212,17 @@ class ConnectorFactory:
         scope: str,
         created_by: str,
         org_id: str | None = None,
+        data_entities_processor_cls: type | None = None,
         **kwargs,
     ) -> BaseConnector | None:
         """Create a connector instance.
 
-        ``org_id`` is bound here (not forwarded to the connector) and applied to the
-        connector's entities processor after creation. The processor's initialize()
-        resolves an arbitrary orgs[0] fallback; connectors read
-        ``self.data_entities_processor.org_id`` live at sync time, so overriding it
-        here makes every record/edge use the connector's actual org (multi-org fix).
+        The processor is created and initialized here using
+        ``data_entities_processor_cls``.
+        The ready instance is forwarded to the connector so individual connectors
+
+        ``org_id`` is applied to the processor after creation so every
+        record/edge uses the connector's actual org.
         """
         connector_class = cls.get_connector_class(name)
         if not connector_class:
@@ -213,6 +231,17 @@ class ConnectorFactory:
 
         try:
             notification_service = kwargs.pop("notification_service", None)
+            connector_instance_name = kwargs.pop("connector_instance_name", None)
+            last_synced_by = kwargs.pop("last_synced_by", None)
+            from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
+            processor_cls = data_entities_processor_cls or DataSourceEntitiesProcessor
+            data_entities_processor = processor_cls(logger, data_store_provider, config_service)
+            if org_id:
+                data_entities_processor.org_id = org_id
+            await data_entities_processor.initialize()
+
+            thread_pool = kwargs.pop("thread_pool", None)
+
             connector = await connector_class.create_connector(
                 logger=logger,
                 data_store_provider=data_store_provider,
@@ -220,13 +249,23 @@ class ConnectorFactory:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
+                data_entities_processor=data_entities_processor,
+                org_id=org_id,
                 **kwargs,
             )
             if connector is not None:
-                if org_id and getattr(connector, "data_entities_processor", None) is not None:
-                    connector.data_entities_processor.org_id = org_id
                 if notification_service is not None:
                     connector._notification_service = notification_service
+                # Must be set here rather than passed to create_connector: no
+                # concrete connector accepts **kwargs, so an extra kwarg would
+                # TypeError and be swallowed into a None return below.
+                connector._shared_thread_pool = (
+                    thread_pool or get_shared_connector_thread_pool()
+                )
+                if connector_instance_name:
+                    connector.connector_instance_name = connector_instance_name
+                if last_synced_by:
+                    connector.last_synced_by = last_synced_by
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
@@ -390,12 +429,22 @@ class ConnectorFactory:
 
         from app.connectors.services.sync_lifecycle import run_sync_with_lifecycle
 
-        await run_sync_with_lifecycle(
-            connector=connector,
-            connector_id=connector_id,
-            org_id=org_id,
-            run_id=run_id,
-            logger=logger,
-            get_store=_get_store,
-            set_idle_status=_set_idle_status,
-        )
+        from app.services.cache.invalidation_hooks import notify_connector_sync_completed
+
+        try:
+            await run_sync_with_lifecycle(
+                connector=connector,
+                connector_id=connector_id,
+                org_id=org_id,
+                run_id=run_id,
+                logger=logger,
+                get_store=_get_store,
+                set_idle_status=_set_idle_status,
+            )
+        finally:
+            # Same as the EventService path: the sync may have changed the
+            # record set, so drop the cached accessible-record map.
+            processor = getattr(connector, "data_entities_processor", None)
+            await notify_connector_sync_completed(
+                connector_id, org_id or getattr(processor, "org_id", None)
+            )

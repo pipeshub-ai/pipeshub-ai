@@ -76,8 +76,10 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         With ``scoped=True`` only records with a live ``BELONGS_TO`` → RecordGroup edge are
         counted (not ``IS_OF_TYPE``): a full sync wipes and recreates sync edges but leaves
         nodes and ``IS_OF_TYPE`` intact, so records for a project that left the filter scope
-        keep ``IS_OF_TYPE`` yet lose ``BELONGS_TO``; scoped counting also excludes placeholder
-        stubs. Default (``False``) counts every record for the connector — required by suites
+        keep ``IS_OF_TYPE`` yet lose ``BELONGS_TO``. This does *not* exclude placeholder stubs —
+        connectors that anchor stubs to a RecordGroup (e.g. Linear) leave them with a live
+        ``BELONGS_TO``; use :meth:`get_placeholder_records` to isolate those.
+        Default (``False``) counts every record for the connector — required by suites
         whose records have no RecordGroup (e.g. standalone KB uploads).
         """
         if not self.http_client:
@@ -124,6 +126,30 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             query = f"FOR g IN {CollectionNames.RECORD_GROUPS.value} FILTER g.connectorId == @cid RETURN 1"
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return len(result) if result else 0
+
+    async def fetch_record_group_names(
+        self, connector_id: str, group_type: str | None = None
+    ) -> List[str]:
+        """Names of a connector's RecordGroups, optionally of one type.
+
+        See the Neo4j provider for why a test wants group names rather than a
+        substring search over record names.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        bind: Dict[str, Any] = {"cid": connector_id}
+        type_filter = ""
+        if group_type:
+            type_filter = "FILTER g.groupType == @gtype"
+            bind["gtype"] = group_type
+        query = f"""
+            FOR g IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER g.connectorId == @cid
+                {type_filter}
+                RETURN g.name != null ? g.name : g.groupName
+        """
+        rows = await self.http_client.execute_aql(query, bind)
+        return [str(name) for name in (rows or []) if name]
 
     async def count_user_groups(self, connector_id: str) -> int:
         """Count user-group documents for this connector (Jira site ``groups`` collection)."""
@@ -793,6 +819,31 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         )
         return bool(result[0]) if result else False
 
+    async def get_sync_point(
+        self, connector_id: str, sync_point_key: str
+    ) -> Optional[Dict[str, Any]]:
+        """Load a connector sync checkpoint from ``syncPoints``.
+
+        Matches on the suffix of ``syncPointKey`` because the stored key is prefixed with
+        ``{orgId}/{connectorId}/{syncDataPointType}/`` (see backend ``SyncPoint``), and tests
+        only know the unqualified key.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        # RIGHT(...) rather than ENDS_WITH(...): the latter is not available in the ArangoDB
+        # versions this suite runs against.
+        query = f"""
+            FOR sp IN {CollectionNames.SYNC_POINTS.value}
+                FILTER sp.connectorId == @cid
+                FILTER RIGHT(sp.syncPointKey, LENGTH(@suffix)) == @suffix
+                LIMIT 1
+                RETURN sp
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "suffix": sync_point_key}
+        )
+        return dict(result[0]) if result else None
+
     async def get_app_metadata_by_connector_id(
         self, connector_id: str
     ) -> Optional[AppMetadata]:
@@ -844,15 +895,29 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         return len(result) if result else 0
 
     async def fetch_records_by_type(
-        self, connector_id: str, record_type: str
+        self, connector_id: str, record_type: str, *, scoped: bool = False
     ) -> List[Dict[str, Any]]:
-        """Fetch records for a connector; ``record_type`` empty string means all types."""
+        """Fetch records for a connector; ``record_type`` empty string means all types.
+
+        With ``scoped=True`` applies the same live ``BELONGS_TO`` → RecordGroup guard as
+        :meth:`count_records_by_type`, so records the source no longer returns drop out after a
+        full sync even though their documents survive.
+        """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
+        scope_filter = f"""
+                FILTER LENGTH(
+                    FOR v IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+        """ if scoped else ""
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid
                 FILTER @rtype == '' OR r.recordType == @rtype
+                {scope_filter}
                 LIMIT 10000
                 RETURN r
         """
@@ -1052,14 +1117,18 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
     async def get_record_parent_external_id(
         self, connector_id: str, external_record_id: str
     ) -> Optional[str]:
-        """Return the ``parentExternalRecordId`` field of a record (or None)."""
+        """Return the record's parent external id, or None.
+
+        Stored as ``externalParentId`` (see ``Record.to_arango_base_record``); the alternate
+        spelling is kept as a fallback for documents written by older code.
+        """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid AND r.externalRecordId == @eid
                 LIMIT 1
-                RETURN r.parentExternalRecordId
+                RETURN r.externalParentId != null ? r.externalParentId : r.parentExternalRecordId
         """
         result = await self.http_client.execute_aql(
             query, {"cid": connector_id, "eid": external_record_id}
@@ -1068,6 +1137,26 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             return None
         val = result[0]
         return str(val) if val else None
+
+    async def get_placeholder_records(self, connector_id: str) -> List[Record]:
+        """Return every placeholder stub for a connector.
+
+        ``== true`` rather than truthiness: records written before ``isPlaceholder``
+        existed have no such field, and ``null != true`` is the intended behaviour.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.isPlaceholder == true
+                RETURN r
+        """
+        result = await self.http_client.execute_aql(query, {"cid": connector_id})
+        return [
+            Record.from_arango_base_record(self._translate_node_from_arango(doc))
+            for doc in (result or [])
+            if doc
+        ]
 
     async def get_typed_record_by_external_id(
         self, connector_id: str, external_record_id: str

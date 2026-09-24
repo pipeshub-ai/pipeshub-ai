@@ -13,15 +13,15 @@
  *   silently — no React component subscribes to those fields.
  */
 
-import { startTransition } from 'react';
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages, getThreadMessagePlainText } from './runtime';
 import { i18n } from '@/lib/i18n';
+import { showNoModelToast } from './utils/no-model-toast';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import {
   buildAssistantApiFilters,
@@ -51,6 +51,76 @@ function createPendingAssistantId(): string {
     return cryptoApi.randomUUID();
   }
   return `asst-pending-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+/**
+ * Client-generated run identifier sent with the stream request so a later
+ * Stop can cooperatively cancel this exact run (`ChatApi.cancelStream`).
+ * Unlike `createPendingAssistantId`, there's no non-crypto fallback — the
+ * backend validates it as a UUID (`cancelRunBodySchema`) — so callers must
+ * treat `undefined` as "this run cannot be cooperatively cancelled" and
+ * fall back to a hard abort (see `cancelStreamForSlot`).
+ */
+function generateRunId(): string | undefined {
+  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+  return cryptoApi && typeof cryptoApi.randomUUID === 'function' ? cryptoApi.randomUUID() : undefined;
+}
+
+/** True while this slot's in-flight `runId` is still the one `streamRunId` started. */
+function slotIsOnRun(slotId: string, streamRunId: string | null): boolean {
+  const slot = useChatStore.getState().slots[slotId];
+  return Boolean(slot && slot.runId === streamRunId);
+}
+
+/**
+ * Grace period between posting a cooperative cancel and hard-aborting the
+ * connection if the backend hasn't finished the run by then. Long enough
+ * for `RunCancellationRegistry` fan-out + the in-flight LLM chunk boundary
+ * check (`LangChainTransport.stream()`) to land under normal conditions;
+ * short enough that a stuck backend doesn't leave Stop looking unresponsive.
+ */
+const STOP_GRACE_MS = 5000;
+
+/**
+ * Builds the post-stop message list for the offline fallback (grace-timeout
+ * abort) — commits whatever text streamed so far as a locally-synthesized
+ * `status: 'stopped'` message, since the hard abort means we'll never see
+ * the backend's own persisted version.
+ *
+ * - Regenerate: replaces the target message in place (leaves it untouched,
+ *   i.e. the pre-regenerate answer, if nothing new streamed yet).
+ * - New message: replaces the trailing placeholder assistant row, or drops
+ *   it entirely if the stream was stopped before any tokens arrived (e.g.
+ *   during "Thinking") — an empty "stopped" bubble is just noise.
+ */
+function buildStoppedMessages(
+  messages: ThreadMessageLike[],
+  regenerateMessageId: string | null,
+  streamingContent: string
+): ThreadMessageLike[] {
+  if (regenerateMessageId) {
+    if (!streamingContent) return messages;
+    return messages.map((m) =>
+      m.id === regenerateMessageId
+        ? {
+            ...m,
+            content: [{ type: 'text' as const, text: streamingContent }],
+            metadata: { ...m.metadata, custom: { ...m.metadata?.custom, status: 'stopped' as const } },
+          }
+        : m
+    );
+  }
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'assistant') return messages;
+  if (!streamingContent) return messages.slice(0, -1);
+  return [
+    ...messages.slice(0, -1),
+    {
+      ...last,
+      content: [{ type: 'text' as const, text: streamingContent }],
+      metadata: { ...last.metadata, custom: { ...last.metadata?.custom, status: 'stopped' as const } },
+    },
+  ];
 }
 
 function applyAskUserQuestionSse(
@@ -166,6 +236,7 @@ function statusMessageIdleThinking(): StatusMessage {
  */
 function createStatusDwellScheduler(
   slotId: string,
+  isCurrentRun: () => boolean,
   minDwellMs = 400,
   idleMs = 900
 ): StatusDwellScheduler {
@@ -180,6 +251,7 @@ function createStatusDwellScheduler(
   }
 
   function applyStatus(msg: StatusMessage | null): void {
+    if (!isCurrentRun()) return;
     lastStatusAt = Date.now();
     // A real status supersedes whatever the watchdog was about to show.
     clearIdleTimer();
@@ -191,7 +263,7 @@ function createStatusDwellScheduler(
     clearIdleTimer();
     idleTimer = setTimeout(() => {
       idleTimer = null;
-      if (idleRetired) return;
+      if (idleRetired || !isCurrentRun()) return;
       // Re-read live state: the stream may have ended, or a real status may
       // have landed, between arming and firing.
       const slot = useChatStore.getState().slots[slotId];
@@ -264,8 +336,25 @@ export async function streamMessageForSlot(
   const slot = store.slots[slotId];
   if (!slot) return;
 
+  // A Stop-then-send (or a second submit while the previous run is still
+  // winding down) must kill the previous fetch so its callbacks cannot
+  // clobber the new run. `cancelStreamForSlot`'s grace timer already no-ops
+  // when `runId` changes; this abort is what actually drops the old SSE.
+  slot.abortController?.abort();
+
+  // Stop-then-send: commit the cancelled run's partial locally so the new
+  // turn does not drop it. The grace timer will no-op once `runId` changes.
+  const baseMessages = slot.stopping
+    ? buildStoppedMessages(slot.messages, slot.regenerateMessageId, slot.streamingContent)
+    : slot.messages;
+
   // Create an abort controller scoped to this stream
   const abortController = new AbortController();
+  // Client-generated run identifier so a later Stop can target this exact
+  // run (see `ChatApi.cancelStream` / `cancelStreamForSlot`).
+  const runId = generateRunId();
+  const streamRunId = runId ?? null;
+  if (runId) request.runId = runId;
 
   // Ephemeral empty assistant so the in-progress turn has a dedicated "last
   // assistant" message. Pairs with MessageList: only the last assistant whose
@@ -282,6 +371,8 @@ export async function streamMessageForSlot(
     streamingCitationMaps: null,
     streamingParts: [],
     abortController,
+    runId: streamRunId,
+    stopping: false,
     threadAgentId: request.agentId ?? slot.threadAgentId ?? null,
     // `request.agentStreamTools` is `undefined` when every tool is
     // selected (see `buildStreamChatRequestForSlot` in runtime.ts) — must
@@ -292,7 +383,7 @@ export async function streamMessageForSlot(
       ? { agentStreamTools: request.agentStreamTools ?? null }
       : {}),
     messages: [
-      ...slot.messages,
+      ...baseMessages,
       {
         role: 'user' as const,
         content: [{ type: 'text' as const, text: query }],
@@ -355,8 +446,19 @@ export async function streamMessageForSlot(
   // With N background streams at 60 fps each, that starves the main
   // thread and breaks the active chat's scroll tracking.  To avoid this,
   // background slots flush at a much lower cadence (200 ms).
-  const ACTIVE_FLUSH_MS = 16;
   const BACKGROUND_FLUSH_MS = 200;
+  // ACTIVE THROTTLING scales with answer size. 16ms (~60fps) is fine for a
+  // short answer, but a large table/answer costs measurably more to
+  // re-render per flush (block-splitting in `AnswerContent` keeps that cost
+  // roughly proportional to the *tail* block, not the whole answer, but a
+  // single tail block can itself still grow past a 16ms budget). Flushing
+  // faster than the main thread can retire the resulting render only queues
+  // up backlog — it doesn't make the UI feel faster.
+  function activeFlushIntervalMs(contentLength: number): number {
+    if (contentLength < 2000) return 16;
+    if (contentLength < 8000) return 33;
+    return 50;
+  }
   let accumulatedContent = '';
   let pendingCitationMaps: ReturnType<typeof buildCitationMapsFromStreaming> | null = null;
   let lastCitationKey = ''; // JSON.stringify key for dedup
@@ -374,9 +476,10 @@ export async function streamMessageForSlot(
   // Minimum-dwell scheduler for SSE status messages (see
   // createStatusDwellScheduler for the rationale).
   const { applyStatus, scheduleStatus, cancelPendingStatus, armIdleStatus, stopIdleStatus } =
-    createStatusDwellScheduler(slotId);
+    createStatusDwellScheduler(slotId, () => slotIsOnRun(slotId, streamRunId));
 
   function flushContentToStore() {
+    if (!slotIsOnRun(slotId, streamRunId)) return;
     debugLog.rafFlush();
     const citationMaps = pendingCitationMaps;
     if (citationMaps) {
@@ -393,7 +496,9 @@ export async function streamMessageForSlot(
     const now = Date.now();
     // Check activity on every call — adapts immediately when user switches.
     const isActive = useChatStore.getState().activeSlotId === slotId;
-    const interval = isActive ? ACTIVE_FLUSH_MS : BACKGROUND_FLUSH_MS;
+    const interval = isActive
+      ? activeFlushIntervalMs(accumulatedContent.length)
+      : BACKGROUND_FLUSH_MS;
     if (now - lastFlushTime >= interval) {
       // Enough time has passed — flush immediately.
       if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
@@ -412,6 +517,7 @@ export async function streamMessageForSlot(
   try {
     await ChatApi.streamMessage(request, {
       onConnected: (data) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         if (isNewConversation) {
           const raw = (data as SSEConnectedEvent | undefined)?.conversationId;
           const earlyId = typeof raw === 'string' ? raw.trim() : '';
@@ -435,6 +541,7 @@ export async function streamMessageForSlot(
       },
 
       onRestreaming: () => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         if (flushTimer !== null) {
           clearTimeout(flushTimer);
           flushTimer = null;
@@ -453,6 +560,7 @@ export async function streamMessageForSlot(
       },
 
       onStatus: (data) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         const statusMessage: StatusMessage = {
           id: `status-${Date.now()}`,
           status: data.status,
@@ -467,11 +575,13 @@ export async function streamMessageForSlot(
       },
 
       onParts: (parts) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         latestParts = parts;
         scheduleFlush();
       },
 
       onChunk: (data) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         if (ignoreChunks) return;
         debugLog.chunk();
         accumulatedContent = data.accumulated;
@@ -497,6 +607,7 @@ export async function streamMessageForSlot(
       },
 
       onArtifact: (data: SSEArtifactEvent) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         // Defensive guard: Python already suppresses STAGING artifacts before
         // emitting SSE events, so this branch should never fire in production.
         // It guards against accidental backend bypasses or future protocol changes.
@@ -528,6 +639,7 @@ export async function streamMessageForSlot(
       },
 
       onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         // Stop accumulating answer_chunks so no partial answer is shown
         // above the question card.
         ignoreChunks = true;
@@ -548,10 +660,12 @@ export async function streamMessageForSlot(
       },
 
       onAnswerFinal: () => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         stopIdleStatus();
       },
 
       onComplete: (data) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         latestParts = [];
         cancelPendingStatus();
@@ -601,10 +715,10 @@ export async function streamMessageForSlot(
             }
           : null;
 
-        // De-prioritise the large `messages` replace so React can finish paint /
-        // pointer handling first (smoother transition vs one blocking commit).
-        startTransition(() => {
-          useChatStore.getState().updateSlot(slotId, {
+        // Apply the settled run in one write so `isStreaming` clears in the
+        // same tick as the final messages — wrapping this in startTransition
+        // left the composer blocked on Stop for a follow-up Enter.
+        useChatStore.getState().updateSlot(slotId, {
             isStreaming: false,
             streamingContent: '',
             streamingQuestion: '',
@@ -616,12 +730,13 @@ export async function streamMessageForSlot(
             messages: finalMessages,
             hasLoaded: true,
             abortController: null,
+            runId: null,
+            stopping: false,
             conversationModelInfo: data.conversation.modelInfo,
             ...(newMsgPagination !== null ? { messagePagination: newMsgPagination } : {}),
             ...(isNewConversation ? { isOwner: true } : {}),
             ...(remappedPending ? { pendingAskUserQuestion: remappedPending } : {}),
           });
-        });
 
         // Resolve temp → real convId
         const currentStore = useChatStore.getState();
@@ -640,6 +755,7 @@ export async function streamMessageForSlot(
               modelInfo: data.conversation.modelInfo,
               isOwner: true,
               sharedWith: [],
+              projectId: data.conversation.projectId ?? slot.projectId ?? undefined,
             },
             { isAgentStream: Boolean(request.agentId) }
           );
@@ -661,6 +777,7 @@ export async function streamMessageForSlot(
       },
 
       onError: (error) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         cancelPendingStatus();
         console.error('[streaming] Stream error for slot', slotId, error);
@@ -675,6 +792,8 @@ export async function streamMessageForSlot(
           streamingParts: [],
           pendingCollections: [],
           abortController: null,
+          runId: null,
+          stopping: false,
           pendingAskUserQuestion: null,
           messages: withStreamingErrorMessage(currentMessages, err),
         });
@@ -699,6 +818,7 @@ export async function streamMessageForSlot(
         (error.name === 'AbortError' || error.name === 'CanceledError'));
 
     if (aborted) {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
       const cur = useChatStore.getState().slots[slotId];
       if (cur?.isStreaming) {
         useChatStore.getState().updateSlot(slotId, {
@@ -710,6 +830,8 @@ export async function streamMessageForSlot(
           streamingParts: [],
           pendingCollections: [],
           abortController: null,
+          runId: null,
+          stopping: false,
         });
       }
       if (isNewConversation) {
@@ -718,6 +840,8 @@ export async function streamMessageForSlot(
       debugLog.flush('stream-aborted', { slotId });
       return;
     }
+
+    if (!slotIsOnRun(slotId, streamRunId)) return;
 
     console.error('[streaming] Fatal error for slot', slotId, error);
     const currentMessages = useChatStore.getState().slots[slotId]?.messages ?? [];
@@ -733,6 +857,8 @@ export async function streamMessageForSlot(
       streamingParts: [],
       pendingCollections: [],
       abortController: null,
+      runId: null,
+      stopping: false,
       pendingAskUserQuestion: null,
       messages: withStreamingErrorMessage(currentMessages, errorMessage),
     });
@@ -762,10 +888,18 @@ export async function streamRegenerateForSlot(
   const slot = store.slots[slotId];
   if (!slot || !slot.convId) return;
 
-  // Resolve model: explicit override → context-scoped selection/default.
-  // Context is the slot's own agent (so regenerate for an agent thread
-  // always picks from that agent's models, never leaks assistant choices).
-  const regenCtxKey = ctxKeyFromAgent(slot.threadAgentId ?? null);
+  slot.abortController?.abort();
+
+  // Derive the effective agent id early — the slot may not have it yet when
+  // the URL carries the agentId (first message in a fresh tab).  All context-
+  // scoped lookups (model, reasoning effort) must use the same resolved id.
+  const rawAgentIdFromUrl =
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('agentId') : null;
+  const agentIdFromUrl = rawAgentIdFromUrl?.trim() ? rawAgentIdFromUrl : null;
+  const slotAgentId = slot.threadAgentId?.trim() || null;
+  const threadAgentId = slotAgentId ?? agentIdFromUrl;
+
+  const regenCtxKey = ctxKeyFromAgent(threadAgentId ?? null);
   let resolvedModel: ModelOverride | null =
     modelOverride ?? getEffectiveModel(regenCtxKey);
   if (!resolvedModel) {
@@ -777,10 +911,13 @@ export async function streamRegenerateForSlot(
     }
   }
   if (!resolvedModel) {
+    showNoModelToast();
     resolvedModel = { modelKey: '', modelName: '', modelFriendlyName: '' };
   }
 
   const abortController = new AbortController();
+  const runId = generateRunId();
+  const streamRunId = runId ?? null;
 
   store.updateSlot(slotId, {
     isStreaming: true,
@@ -790,6 +927,8 @@ export async function streamRegenerateForSlot(
     streamingCitationMaps: null,
     streamingParts: [],
     abortController,
+    runId: streamRunId,
+    stopping: false,
   });
 
   debugLog.flush('regenerate-started', { slotId, messageId });
@@ -808,9 +947,10 @@ export async function streamRegenerateForSlot(
   // Minimum-dwell scheduler for SSE status messages (see
   // createStatusDwellScheduler for the rationale).
   const { applyStatus, scheduleStatus, cancelPendingStatus, armIdleStatus, stopIdleStatus } =
-    createStatusDwellScheduler(slotId);
+    createStatusDwellScheduler(slotId, () => slotIsOnRun(slotId, streamRunId));
 
   function flushContentToStore() {
+    if (!slotIsOnRun(slotId, streamRunId)) return;
     debugLog.rafFlush();
     const citationMaps = pendingCitationMaps;
     if (citationMaps) {
@@ -840,20 +980,17 @@ export async function streamRegenerateForSlot(
     }
   }
 
-  const rawAgentIdFromUrl =
-    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('agentId') : null;
-  const agentIdFromUrl = rawAgentIdFromUrl?.trim() ? rawAgentIdFromUrl : null;
-  const slotAgentId = slot.threadAgentId?.trim() || null;
-  const threadAgentId = slotAgentId ?? agentIdFromUrl;
   /** Which API we use for reload — frozen at regen start (URL may change before `complete`) */
   const reloadViaAgentId = threadAgentId;
 
   const regenerateCallbacks: StreamMessageCallbacks = {
     onConnected: (data) => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
       scheduleStatus(statusMessageFromConnectedEvent(data));
     },
 
     onRestreaming: () => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
       if (flushTimer !== null) {
         clearTimeout(flushTimer);
         flushTimer = null;
@@ -872,6 +1009,7 @@ export async function streamRegenerateForSlot(
     },
 
     onStatus: (data) => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
       const statusMessage: StatusMessage = {
         id: `status-${Date.now()}`,
         status: data.status,
@@ -886,11 +1024,13 @@ export async function streamRegenerateForSlot(
     },
 
     onParts: (parts) => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
       latestParts = parts;
       scheduleFlush();
     },
 
     onChunk: (data) => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
       if (ignoreChunks) return;
       debugLog.chunk();
       accumulatedContent = data.accumulated;
@@ -912,6 +1052,7 @@ export async function streamRegenerateForSlot(
     },
 
     onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
       ignoreChunks = true;
       if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
       accumulatedContent = '';
@@ -928,10 +1069,12 @@ export async function streamRegenerateForSlot(
     },
 
     onAnswerFinal: () => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
       stopIdleStatus();
     },
 
     onComplete: async () => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
       if (flushTimer !== null) {
         clearTimeout(flushTimer);
         flushTimer = null;
@@ -942,6 +1085,7 @@ export async function streamRegenerateForSlot(
         const detail = reloadViaAgentId
           ? await AgentsApi.fetchAgentConversation(reloadViaAgentId, slot.convId!)
           : await ChatApi.fetchConversation(slot.convId!);
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         const { messages: finalMessages } = loadHistoricalMessages(detail.messages);
         const postRegenModelInfo = pickModelInfoFromConversationBundle({
           modelInfo: detail.conversation.modelInfo,
@@ -964,11 +1108,14 @@ export async function streamRegenerateForSlot(
           streamingParts: [],
           messages: finalMessages,
           abortController: null,
+          runId: null,
+          stopping: false,
           ...(regenPagination ? { messagePagination: regenPagination } : {}),
           ...(postRegenModelInfo ? { conversationModelInfo: postRegenModelInfo } : {}),
         });
         debugLog.flush('regenerate-completed', { slotId, messageId });
       } catch (err) {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
         console.error('[streaming] Failed to reload after regenerate:', err);
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
@@ -978,12 +1125,15 @@ export async function streamRegenerateForSlot(
           streamingCitationMaps: null,
           streamingParts: [],
           abortController: null,
+          runId: null,
+          stopping: false,
         });
         debugLog.flush('regenerate-reload-error', { slotId });
       }
     },
 
     onError: (error: Error) => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
       if (flushTimer !== null) {
         clearTimeout(flushTimer);
         flushTimer = null;
@@ -998,6 +1148,8 @@ export async function streamRegenerateForSlot(
         streamingCitationMaps: null,
         streamingParts: [],
         abortController: null,
+        runId: null,
+        stopping: false,
       });
       debugLog.flush('regenerate-error', { slotId });
     },
@@ -1032,9 +1184,12 @@ export async function streamRegenerateForSlot(
       const scopedCaps = useChatStore.getState().scopedAgentCapabilities[threadAgentId]
         ?? { internalSearch: true, webSearch: true };
       const agentRegenReasoningEffortOverride = useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
+      const agentRegenDefault = getAgentDefaultReasoningEffort(regenCtxKey);
       const agentRegenReasoningEffort =
         agentRegenReasoningEffortOverride ??
-        (isModelReasoningCapable(regenCtxKey, resolvedModel) ? DEFAULT_REASONING_EFFORT : undefined);
+        (isModelReasoningCapable(regenCtxKey, resolvedModel)
+          ? (agentRegenDefault ?? DEFAULT_REASONING_EFFORT)
+          : undefined);
       await ChatApi.streamAgentRegenerate(
         threadAgentId,
         slot.convId,
@@ -1049,6 +1204,7 @@ export async function streamRegenerateForSlot(
           filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
           agentCapabilities: scopedCaps,
           ...(agentRegenReasoningEffort ? { reasoningEffort: agentRegenReasoningEffort } : {}),
+          runId,
         }
       );
     } else {
@@ -1078,12 +1234,19 @@ export async function streamRegenerateForSlot(
         ...(regenStreamTools !== undefined ? { agentStreamTools: regenStreamTools } : {}),
         ...(isUniversalAgent ? { agentCapabilities: store.settings.agentCapabilities } : {}),
         ...(assistantRegenReasoningEffort ? { reasoningEffort: assistantRegenReasoningEffort } : {}),
+        runId,
       });
     }
   } catch (error) {
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
     cancelPendingStatus();
-    console.error('[streaming] Fatal regenerate error for slot', slotId, error);
+    const aborted =
+      (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') ||
+      (error instanceof Error && (error.name === 'AbortError' || error.name === 'CanceledError'));
+    if (!slotIsOnRun(slotId, streamRunId)) return;
+    if (!aborted) {
+      console.error('[streaming] Fatal regenerate error for slot', slotId, error);
+    }
     useChatStore.getState().updateSlot(slotId, {
       isStreaming: false,
       regenerateMessageId: null,
@@ -1092,34 +1255,101 @@ export async function streamRegenerateForSlot(
       streamingCitationMaps: null,
       streamingParts: [],
       abortController: null,
+      runId: null,
+      stopping: false,
     });
-    debugLog.flush('regenerate-fatal-error', { slotId });
+    debugLog.flush(aborted ? 'regenerate-aborted' : 'regenerate-fatal-error', { slotId });
   }
 }
 
 /**
- * Cancel the active stream for a slot by aborting its AbortController.
+ * Stop the active stream for a slot.
+ *
+ * Cooperative-first: posts `POST .../cancel` (same `runId` the stream
+ * request carried) and marks the slot `stopping` WITHOUT aborting the SSE
+ * connection — so the backend has a chance to actually stop token
+ * generation, persist the partial answer as `status: 'stopped'`, and send a
+ * normal `RUN_FINISHED` that this same stream's `onComplete` renders (see
+ * `streamMessageForSlot`/`streamRegenerateForSlot`).
+ *
+ * A `STOP_GRACE_MS` timer is the guaranteed fallback: if the run hasn't
+ * settled by then (backend unreachable, stuck request, cancel POST itself
+ * failed), it hard-aborts the connection and commits whatever text streamed
+ * so far as a locally-synthesized stopped message — never leaves the
+ * composer stuck showing "Stopping…" forever.
+ *
+ * No-ops if the slot isn't streaming or is already `stopping` (second Stop
+ * click). If `convId`/`runId` aren't known yet (stopped before
+ * `conversation_created` on the very first turn of a brand-new
+ * conversation), there's nothing to target server-side — fall straight to a
+ * hard abort; Node's passive disconnect path still saves the partial.
+ *
+ * Exported as `cancelStreamForSlot` — the name `runtime.ts`'s `onCancel`
+ * and the chat-input Stop button both already call.
  */
 export function cancelStreamForSlot(slotId: string): void {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
-  if (!slot) return;
+  if (!slot || !slot.isStreaming || slot.stopping) return;
 
-  slot.abortController?.abort();
-  store.updateSlot(slotId, {
-    isStreaming: false,
-    streamingContent: '',
-    streamingQuestion: '',
-    currentStatusMessage: null,
-    streamingCitationMaps: null,
-    streamingParts: [],
-    abortController: null,
-    regenerateMessageId: null,
-  });
-  if (slot.isTemp) {
-    store.clearPendingConversation(slotId);
+  const { convId, runId, threadAgentId, isTemp } = slot;
+
+  if (!convId || !runId) {
+    slot.abortController?.abort();
+    store.updateSlot(slotId, {
+      isStreaming: false,
+      streamingContent: '',
+      streamingQuestion: '',
+      currentStatusMessage: null,
+      streamingCitationMaps: null,
+      streamingParts: [],
+      abortController: null,
+      runId: null,
+      stopping: false,
+      regenerateMessageId: null,
+    });
+    if (isTemp) {
+      store.clearPendingConversation(slotId);
+    }
+    debugLog.flush('stream-cancelled-no-run-id', { slotId });
+    return;
   }
-  debugLog.flush('stream-cancelled', { slotId });
+
+  store.updateSlot(slotId, { stopping: true });
+  debugLog.flush('stream-stop-requested', { slotId, runId });
+
+  ChatApi.cancelStream(convId, runId, threadAgentId ?? undefined).catch((err) => {
+    // Best-effort — the grace timer below is the guaranteed fallback if this
+    // request fails outright (network blip, backend restart mid-run, etc).
+    console.warn('[streaming] cancelStream request failed for slot', slotId, err);
+  });
+
+  setTimeout(() => {
+    const cur = useChatStore.getState().slots[slotId];
+    // Already settled (normal RUN_FINISHED, a later error, or a brand-new
+    // stream started on this slot in the meantime) — nothing to do.
+    if (!cur || !cur.isStreaming || cur.runId !== runId) return;
+
+    cur.abortController?.abort();
+    const messages = buildStoppedMessages(cur.messages, cur.regenerateMessageId, cur.streamingContent);
+    useChatStore.getState().updateSlot(slotId, {
+      isStreaming: false,
+      streamingContent: '',
+      streamingQuestion: '',
+      currentStatusMessage: null,
+      streamingCitationMaps: null,
+      streamingParts: [],
+      abortController: null,
+      runId: null,
+      stopping: false,
+      regenerateMessageId: null,
+      messages,
+    });
+    if (cur.isTemp) {
+      useChatStore.getState().clearPendingConversation(slotId);
+    }
+    debugLog.flush('stream-stop-grace-timeout', { slotId });
+  }, STOP_GRACE_MS);
 }
 
 /**

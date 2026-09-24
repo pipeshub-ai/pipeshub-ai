@@ -218,22 +218,18 @@ class TestKnowledgeBaseConnector:
         logger = MagicMock()
         data_store_provider = MagicMock()
         config_service = AsyncMock()
-        with patch(
-            "app.connectors.sources.localKB.connector.DataSourceEntitiesProcessor"
-        ) as MockProcessor:
-            mock_proc = MagicMock()
-            mock_proc.initialize = AsyncMock()
-            MockProcessor.return_value = mock_proc
-            connector = await KnowledgeBaseConnector.create_connector(
-                logger=logger,
-                data_store_provider=data_store_provider,
-                config_service=config_service,
-                connector_id="kb-conn-1",
-                scope="team",
-                created_by="user-1",
-            )
-            assert isinstance(connector, KnowledgeBaseConnector)
-            mock_proc.initialize.assert_awaited_once()
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        connector = await KnowledgeBaseConnector.create_connector(
+            logger=logger,
+            data_store_provider=data_store_provider,
+            config_service=config_service,
+            connector_id="kb-conn-1",
+            scope="team",
+            created_by="user-1",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, KnowledgeBaseConnector)
 
 
 # ===================================================================

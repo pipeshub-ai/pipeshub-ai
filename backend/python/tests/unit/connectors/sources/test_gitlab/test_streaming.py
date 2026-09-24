@@ -1,7 +1,7 @@
-"""Unit tests for gitlab StreamingHelper and _stream_with_eager_first_chunk.
+"""Unit tests for gitlab StreamingHelper and stream_with_eager_first_chunk.
 
 Covers:
-- _stream_with_eager_first_chunk: empty source, first-chunk error, normal yield
+- stream_with_eager_first_chunk: empty source, first-chunk error, normal yield
 - stream_record: TICKET dispatch, PULL_REQUEST dispatch, FILE download, CODE_FILE download,
   unsupported type raises
 - reindex_records: source-changed triggers on_new_records, unchanged skips,
@@ -13,11 +13,11 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
-from app.connectors.sources.gitlab.streaming import (
-    StreamingHelper,
-    _stream_with_eager_first_chunk,
-)
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.sources.gitlab.streaming import StreamingHelper
+from app.utils.streaming import stream_with_eager_first_chunk
 
 from .conftest import make_mock_connector
 
@@ -38,6 +38,16 @@ async def _failing_gen() -> AsyncGenerator[bytes, None]:
     yield b""  # noqa: unreachable
 
 
+def _make_dispatch_connector() -> MagicMock:
+    """Connector with both blob fetchers stubbed, so routing can be asserted."""
+    c = make_mock_connector()
+    c.attachments = MagicMock()
+    c.attachments.fetch_attachment_content = MagicMock(return_value=_gen(b"attachment"))
+    c.repos = MagicMock()
+    c.repos._fetch_code_file_content = MagicMock(return_value=_gen(b"blob"))
+    return c
+
+
 def _make_record(record_type: str, record_name: str = "file.py") -> MagicMock:
     r = MagicMock()
     r.id = "rec-1"
@@ -52,7 +62,7 @@ def _make_record(record_type: str, record_name: str = "file.py") -> MagicMock:
 
 
 # ===========================================================================
-# _stream_with_eager_first_chunk
+# stream_with_eager_first_chunk
 # ===========================================================================
 
 
@@ -62,23 +72,38 @@ class TestStreamWithEagerFirstChunk:
             return
             yield b""
 
-        result_gen = await _stream_with_eager_first_chunk(empty())
+        result_gen = await stream_with_eager_first_chunk(empty())
         chunks = [chunk async for chunk in result_gen]
         assert chunks == []
 
     async def test_single_chunk_yielded(self) -> None:
-        result_gen = await _stream_with_eager_first_chunk(_gen(b"hello"))
+        result_gen = await stream_with_eager_first_chunk(_gen(b"hello"))
         chunks = [chunk async for chunk in result_gen]
         assert chunks == [b"hello"]
 
     async def test_multiple_chunks_all_yielded(self) -> None:
-        result_gen = await _stream_with_eager_first_chunk(_gen(b"a", b"b", b"c"))
+        result_gen = await stream_with_eager_first_chunk(_gen(b"a", b"b", b"c"))
         chunks = [chunk async for chunk in result_gen]
         assert chunks == [b"a", b"b", b"c"]
 
     async def test_error_in_first_chunk_raised_before_return(self) -> None:
         with pytest.raises(RuntimeError, match="stream error"):
-            await _stream_with_eager_first_chunk(_failing_gen())
+            await stream_with_eager_first_chunk(_failing_gen())
+
+    async def test_error_in_first_chunk_closes_source(self) -> None:
+        closed = False
+
+        async def failing() -> AsyncGenerator[bytes, None]:
+            nonlocal closed
+            try:
+                raise RuntimeError("stream error")
+                yield b""  # noqa: unreachable
+            finally:
+                closed = True
+
+        with pytest.raises(RuntimeError, match="stream error"):
+            await stream_with_eager_first_chunk(failing())
+        assert closed is True
 
 
 # ===========================================================================
@@ -109,38 +134,38 @@ class TestStreamRecord:
         result = await helper.stream_record(record)
         assert isinstance(result, StreamingResponse)
 
-    async def test_file_record_returns_streaming_response(self) -> None:
-        c = make_mock_connector()
-        c.attachments = MagicMock()
-        c.attachments.fetch_attachment_content = MagicMock(return_value=_gen(b"bytes"))
+    async def test_attachment_file_record_uses_attachment_fetcher(self) -> None:
+        c = _make_dispatch_connector()
         helper = StreamingHelper(c)
+
+        record = _make_record("FILE", "report.pdf")
+        record.mime_type = "application/pdf"
 
         with patch("app.connectors.sources.gitlab.streaming.create_stream_record_response") as mock_csr:
             mock_csr.return_value = MagicMock()
-            record = _make_record("FILE", "report.pdf")
-            record.mime_type = "application/pdf"
             await helper.stream_record(record)
             mock_csr.assert_called_once()
+        c.attachments.fetch_attachment_content.assert_called_once_with(record)
+        c.repos._fetch_code_file_content.assert_not_called()
 
-    async def test_code_file_record_returns_streaming_response(self) -> None:
+    async def test_code_file_record_uses_repo_fetcher(self) -> None:
         from app.models.entities import CodeFileRecord
-        c = make_mock_connector()
-        c.repos = MagicMock()
-        c.repos._fetch_code_file_content = MagicMock(return_value=_gen(b"code"))
-
+        c = _make_dispatch_connector()
         helper = StreamingHelper(c)
 
-        code_record = MagicMock(spec=CodeFileRecord)
-        code_record.record_type = "CODE_FILE"
-        code_record.record_name = "main.py"
-        code_record.mime_type = "text/plain"
-        code_record.external_record_id = "ext-1"
-        code_record.id = "rec-1"
+        record = MagicMock(spec=CodeFileRecord)
+        record.id = "rec-1"
+        record.record_type = "CODE_FILE"
+        record.record_name = "main.py"
+        record.mime_type = "text/plain"
+        record.external_record_id = "/ns/proj/-/blob/HEAD/src/main.py"
 
         with patch("app.connectors.sources.gitlab.streaming.create_stream_record_response") as mock_csr:
             mock_csr.return_value = MagicMock()
-            await helper.stream_record(code_record)
+            await helper.stream_record(record)
             mock_csr.assert_called_once()
+        c.repos._fetch_code_file_content.assert_called_once_with(record)
+        c.attachments.fetch_attachment_content.assert_not_called()
 
     async def test_code_file_non_code_file_record_raises(self) -> None:
         c = make_mock_connector()
@@ -148,16 +173,20 @@ class TestStreamRecord:
 
         record = _make_record("CODE_FILE")
         # Not a CodeFileRecord instance (is a generic MagicMock)
-        with pytest.raises(ValueError, match="CodeFileRecord"):
+        with pytest.raises(HTTPException) as exc_info:
             await helper.stream_record(record)
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert "CodeFileRecord" in exc_info.value.detail
 
     async def test_unsupported_type_raises(self) -> None:
         c = make_mock_connector()
         helper = StreamingHelper(c)
 
         record = _make_record("UNKNOWN_TYPE")
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await helper.stream_record(record)
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert "Unsupported record type" in exc_info.value.detail
 
 
 # ===========================================================================

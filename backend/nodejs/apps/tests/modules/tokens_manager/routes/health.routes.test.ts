@@ -14,8 +14,15 @@ describe('tokens_manager/routes/health.routes', () => {
   let cmContainer: any
   let router: any
   let mockConfigService: any
+  let savedRedisMode: string | undefined
 
   beforeEach(() => {
+    // Default cases assert standalone labels. The cluster integration job
+    // runs the whole suite with REDIS_MODE=cluster, which would otherwise
+    // change serviceNames.redis to "Redis (Cluster)".
+    savedRedisMode = process.env.REDIS_MODE
+    delete process.env.REDIS_MODE
+
     mockConfigService = {
       readDeploymentConfig: sinon.stub().callsFake(() => Promise.resolve({ ...mockAppConfig.deployment })),
     }
@@ -58,6 +65,11 @@ describe('tokens_manager/routes/health.routes', () => {
   afterEach(() => {
     (ConfigService as any).instance = undefined
     sinon.restore()
+    if (savedRedisMode === undefined) {
+      delete process.env.REDIS_MODE
+    } else {
+      process.env.REDIS_MODE = savedRedisMode
+    }
   })
 
   function findHandler(path: string, method: string) {
@@ -143,6 +155,43 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.serviceNames.mongodb).to.equal('MongoDB')
       expect(jsonArg.serviceNames.messageBroker).to.equal('Kafka')
       expect(jsonArg.serviceNames.graphDb).to.equal('ArangoDB')
+      expect(jsonArg.deployment.redisMode).to.equal('standalone')
+    })
+
+    it('should show Redis (Cluster) in serviceNames when REDIS_MODE is cluster', async () => {
+      process.env.REDIS_MODE = 'cluster'
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.serviceNames.redis).to.equal('Redis (Cluster)')
+      expect(jsonArg.deployment.redisMode).to.equal('cluster')
+    })
+
+    it('should show Redis (MemoryDB) in serviceNames when REDIS_MODE is memorydb', async () => {
+      process.env.REDIS_MODE = 'memorydb'
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.serviceNames.redis).to.equal('Redis (MemoryDB)')
+      expect(jsonArg.deployment.redisMode).to.equal('memorydb')
     })
 
     it('should show Neo4j in serviceNames when dataStoreType is neo4j', async () => {
@@ -694,6 +743,7 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.deployment).to.have.property('kvStoreType')
       expect(jsonArg.deployment).to.have.property('messageBrokerType')
       expect(jsonArg.deployment).to.have.property('graphDbType')
+      expect(jsonArg.deployment).to.have.property('redisMode')
     })
 
     it('should call next() on unexpected top-level exception', async () => {
@@ -1466,7 +1516,10 @@ describe('tokens_manager/routes/health.routes', () => {
         expect(jsonArg.services.extraction).to.equal('unhealthy')
       })
 
-      it('should include parsing/extraction as unknown in error fallback when enabled', async () => {
+      it('should report parsing/extraction as not ready when their checks throw', async () => {
+        // Each service is checked on its own, so one that cannot be reached is
+        // reported unhealthy with a "waiting" detail instead of turning the
+        // whole response into the unknown fallback.
         process.env.USE_PARSING_SERVICE = 'true'
         sinon.stub(axiosModule, 'get').throws(new Error('Unexpected'))
 
@@ -1477,8 +1530,10 @@ describe('tokens_manager/routes/health.routes', () => {
         await handler({}, res, next)
 
         const jsonArg = res.json.firstCall.args[0]
-        expect(jsonArg.services.parsing).to.equal('unknown')
-        expect(jsonArg.services.extraction).to.equal('unknown')
+        expect(jsonArg.services.parsing).to.equal('unhealthy')
+        expect(jsonArg.services.extraction).to.equal('unhealthy')
+        expect(jsonArg.details.parsing.status).to.equal('starting')
+        expect(jsonArg.details.extraction.status).to.equal('starting')
       })
     })
   })

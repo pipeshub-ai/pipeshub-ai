@@ -39,6 +39,14 @@ class OpenSearchConfig:
     #   7  → 7-bit scalar quantization (~4x memory reduction, ~INT8 equivalent)
     #   0  → disabled (full FP32, no encoder block in mapping)
     quantization_bits: int = 7
+    # segments_per_tier: TieredMergePolicy target. Lower than Lucene's default of
+    # 10 trades more background merge I/O for fewer segments at search time.
+    # This is how segment count is kept low on a live index; force_merge is an
+    # explicit operator action for indices that are no longer written to.
+    segments_per_tier: int = 4
+    # max_concurrent_searches: upper bound on the fan-out of one
+    # query_nearest_points call (agent retrieval issues one request per source).
+    max_concurrent_searches: int = 8
     # confidence_interval: fraction of vectors used to compute quantile bounds
     # for the scalar quantizer. 0.99 clips 1% of outliers; reduces recall risk.
     confidence_interval: float = 0.99
@@ -67,6 +75,8 @@ class OpenSearchConfig:
             "efConstruction": self.ef_construction,
             "efSearch": self.ef_search,
             "quantizationBits": self.quantization_bits,
+            "segmentsPerTier": self.segments_per_tier,
+            "maxConcurrentSearches": self.max_concurrent_searches,
             "confidenceInterval": self.confidence_interval,
             "rrfRankConstant": self.rrf_rank_constant,
         }
@@ -87,6 +97,20 @@ class OpenSearchConfig:
             ef_construction=int(data.get("efConstruction", data.get("ef_construction", 256))),
             ef_search=int(data.get("efSearch", data.get("ef_search", 100))),
             quantization_bits=int(data.get("quantizationBits", data.get("quantization_bits", 7))),
+            # Clamped, not trusted: 0 builds a Semaphore that never admits
+            # anyone and hangs retrieval for good, a negative raises on
+            # construction, and OpenSearch rejects a tier below 2.
+            segments_per_tier=max(
+                2, int(data.get("segmentsPerTier", data.get("segments_per_tier", 4)))
+            ),
+            max_concurrent_searches=max(
+                1,
+                int(
+                    data.get(
+                        "maxConcurrentSearches", data.get("max_concurrent_searches", 8)
+                    )
+                ),
+            ),
             confidence_interval=float(data.get("confidenceInterval", data.get("confidence_interval", 0.99))),
             rrf_rank_constant=int(data.get("rrfRankConstant", data.get("rrf_rank_constant", 60))),
         )

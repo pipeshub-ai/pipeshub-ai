@@ -13,6 +13,9 @@ from app.agent_loop_lib.sandbox.coding.base import (
     ErrorAnalysis,
     ErrorCategory,
     InstallResult,
+    IsolationLevel,
+    SandboxCapabilities,
+    SandboxContext,
     normalize_sandbox_path,
 )
 from app.agent_loop_lib.sandbox.coding.reflection import ReflectionEngine
@@ -63,6 +66,8 @@ _LISTING_IGNORED_DIRS = {"node_modules", ".venv", "__pycache__", ".git"}
 
 
 class E2BCodingSandbox(CodingSandboxBackend):
+    backend_name = "e2b"
+
     def __init__(
         self,
         *,
@@ -72,6 +77,7 @@ class E2BCodingSandbox(CodingSandboxBackend):
         allow_internet_access: bool = True,
         package_allowlist: list[str] | None = None,
         package_denylist: list[str] | None = None,
+        context: SandboxContext | None = None,
     ) -> None:
         self._api_key = api_key
         self._template = template
@@ -79,11 +85,79 @@ class E2BCodingSandbox(CodingSandboxBackend):
         self._allow_internet_access = allow_internet_access
         self._allowlist = set(package_allowlist) if package_allowlist else None
         self._denylist = set(package_denylist or [])
+        self._context = context
         self._installed: dict[str, set[str]] = {"typescript": set(), "python": set()}
         self._node_initialized = False
         self._reflection = ReflectionEngine()
         self._sbx = None
         self._sandbox_id: str | None = None
+        self._created_at: float | None = None
+
+    @classmethod
+    def attach(
+        cls,
+        sbx: object,
+        *,
+        sandbox_id: str,
+        api_key: str | None = None,
+        template: str = "base",
+        e2b_timeout: int = 300,
+        allow_internet_access: bool = True,
+        context: SandboxContext | None = None,
+        created_at: float | None = None,
+    ) -> "E2BCodingSandbox":
+        """Wrap an already-connected `AsyncSandbox` (the reconnect path).
+
+        A constructor plus attribute pokes from outside would have to reach
+        past the class to set `_sbx`/`_sandbox_id`; keeping that here means
+        the invariant "a sandbox with an id has a live handle" stays
+        enforceable in one place.
+
+        Installed-package tracking starts empty: what the remote VM already
+        has is unknown to this process, and `install_packages` is idempotent,
+        so the cost of re-checking is a no-op install rather than a missing
+        dependency at run time.
+
+        `created_at` is when E2B created the VM, carried across processes on
+        `SandboxRef.created_at`. It matters because E2B counts the TTL from
+        its own creation moment: stamping "now" here would restart the clock
+        locally and report an `expires_at` further out than the deadline the
+        provider will actually enforce — worst exactly when it matters most,
+        reconnecting to a sandbox that is nearly expired.
+        """
+        sandbox = cls(
+            api_key=api_key,
+            template=template,
+            e2b_timeout=e2b_timeout,
+            allow_internet_access=allow_internet_access,
+            context=context,
+        )
+        sandbox._sbx = sbx
+        sandbox._sandbox_id = sandbox_id
+        # `time.time()` only when the caller genuinely has no record of the
+        # provider's clock — it over-reports the remaining life, so it is a
+        # last resort rather than a default.
+        sandbox._created_at = created_at if created_at is not None else time.time()
+        return sandbox
+
+    def _provider_metadata(self) -> dict[str, str]:
+        """Tags attached to the remote VM.
+
+        Orphan cleanup and cost attribution both need to answer "whose is
+        this?" from the provider console alone, after the process that
+        created it is gone. Never carries secrets, and never reaches the
+        model.
+        """
+        ctx = self._context
+        if ctx is None:
+            return {}
+        return {
+            k: v for k, v in (
+                ("org_id", ctx.org_id),
+                ("user_id", ctx.user_id),
+                ("conversation_id", ctx.conversation_id),
+            ) if v
+        }
 
     @property
     def sandbox_id(self) -> str:
@@ -92,6 +166,36 @@ class E2BCodingSandbox(CodingSandboxBackend):
         if self._sandbox_id is None:
             raise CodingSandboxError("E2BCodingSandbox has not been provisioned yet — call provision() first.")
         return self._sandbox_id
+
+    @property
+    def expires_at(self) -> float | None:
+        """E2B reclaims the VM `e2b_timeout` seconds after creation,
+        regardless of whether this process is still alive."""
+        if self._created_at is None:
+            return None
+        return self._created_at + self._e2b_timeout
+
+    @classmethod
+    def describe_capabilities(
+        cls, *, allow_internet_access: bool = True, e2b_timeout: int = 300,
+    ) -> SandboxCapabilities:
+        """See `LocalCodingSandbox.describe_capabilities`."""
+        return SandboxCapabilities(
+            isolation=IsolationLevel.MICROVM,
+            supports_network=allow_internet_access,
+            supports_streaming=True,
+            supports_reconnect=True,
+            is_metered=True,
+            max_timeout_s=float(e2b_timeout),
+            persistent_filesystem=True,
+        )
+
+    @property
+    def capabilities(self) -> SandboxCapabilities:
+        return self.describe_capabilities(
+            allow_internet_access=self._allow_internet_access,
+            e2b_timeout=self._e2b_timeout,
+        )
 
     async def provision(self) -> SandboxInfo:
         if self._sbx is not None:
@@ -107,13 +211,19 @@ class E2BCodingSandbox(CodingSandboxBackend):
                 "to use the E2B coding sandbox backend."
             ) from e
 
+        # `timeout` is the provider-side TTL: E2B kills the VM after it
+        # even if this process dies first, which is the only thing that
+        # stops a crashed request from billing indefinitely. The factory
+        # clamps it to `max_lifetime_s` before it gets here.
         self._sbx = await AsyncSandbox.create(
             template=self._template,
             timeout=self._e2b_timeout,
             allow_internet_access=self._allow_internet_access,
             api_key=self._api_key,
+            metadata=self._provider_metadata(),
         )
         self._sandbox_id = self._sbx.sandbox_id
+        self._created_at = time.time()
         return SandboxInfo(
             sandbox_id=self._sandbox_id,
             status="ready",

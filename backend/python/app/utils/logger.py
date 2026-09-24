@@ -4,7 +4,10 @@ import os
 import sys
 from collections.abc import Callable
 
+from httpx import URL
+
 from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
+from app.utils.url_redaction import redact_url
 
 # ``%(trace)s`` expands to ``[req:<id> thr:<thread> task:<task>] `` only when a
 # context is in flight, so startup/background lines stay clean.
@@ -81,6 +84,40 @@ class ColoredFormatter(logging.Formatter):
         return formatted
 
 
+class HttpxSuccessFilter(logging.Filter):
+    """Drop httpx's per-request INFO log for successful responses.
+
+    httpx logs *every* request at INFO ("HTTP Request: POST <url> \"HTTP/1.1 200
+    OK\""), which at indexing volumes buries everything else. Raising the
+    logger to WARNING would silence failures too, since httpx logs those at INFO
+    as well — so filter on the status code instead and keep 3xx/4xx/5xx.
+
+    The status is read from ``record.args`` rather than the formatted message:
+    httpx passes it as an int, so this does not depend on message wording.
+
+    Lines that are kept have their request URL redacted: the query string of a
+    signed URL, or the userinfo of any URL, is a credential.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not isinstance(record.args, (tuple, list)):
+            return True
+        # args are (method, url, http_version, status_code, reason_phrase); scan
+        # for the status rather than indexing, so a signature change downgrades
+        # to "log it" instead of raising.
+        for arg in record.args:
+            if isinstance(arg, bool):
+                continue
+            if isinstance(arg, int) and 100 <= arg <= 599:
+                if 200 <= arg < 300:
+                    return False
+                break
+        record.args = tuple(
+            redact_url(str(arg)) if isinstance(arg, URL) else arg for arg in record.args
+        )
+        return True
+
+
 class HealthCheckFilter(logging.Filter):
     """Suppress successful uvicorn access log entries for /health* endpoints.
 
@@ -135,6 +172,9 @@ logging.getLogger("opensearch").setLevel(logging.WARNING)
 
 # Suppress /health* endpoint noise from uvicorn access logs (process_monitor polling)
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
+# httpx logs every outbound request at INFO. Keep the failures, drop the 2xx.
+logging.getLogger("httpx").addFilter(HttpxSuccessFilter())
 
 
 def create_logger(service_name: str) -> logging.Logger:

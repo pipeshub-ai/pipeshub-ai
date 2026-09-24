@@ -19,6 +19,9 @@ class RedisVectorConfig:
     # whatever dtype they were created with (query encoding is resolved from the
     # live index, not this setting).
     dense_dtype: str = _DEFAULT_DENSE_DTYPE
+    # Upper bound on the fan-out of one query_nearest_points call (agent
+    # retrieval issues one request per source).
+    max_concurrent_searches: int = 8
 
     @property
     def redis_config(self) -> dict:
@@ -48,4 +51,15 @@ class RedisVectorConfig:
             db=int(data.get("db", 0)),
             timeout=int(data.get("timeout", 300)),
             dense_dtype=dense_dtype,
+            # Clamped: 0 builds a Semaphore that never admits anyone and hangs
+            # every search for good, and a negative raises at search time rather
+            # than at config load.
+            max_concurrent_searches=max(
+                1,
+                int(
+                    data.get(
+                        "maxConcurrentSearches", data.get("max_concurrent_searches", 8)
+                    )
+                ),
+            ),
         )

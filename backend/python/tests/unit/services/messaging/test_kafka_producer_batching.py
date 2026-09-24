@@ -1,6 +1,8 @@
 import asyncio
 from unittest.mock import MagicMock
+
 import pytest
+
 from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
 
 

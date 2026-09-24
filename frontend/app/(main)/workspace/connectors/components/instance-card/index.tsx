@@ -41,6 +41,8 @@ interface InstanceCardProps {
   onRefresh?: () => void | Promise<void>;
   /** Parent-driven refresh in progress (e.g. per-card or refresh-all) */
   isRefreshing?: boolean;
+  /** Extra action buttons rendered before the chevron */
+  renderExtraActions?: (instance: ConnectorInstance) => React.ReactNode;
 }
 
 // ========================================
@@ -56,6 +58,7 @@ export function InstanceCard({
   onChevronClick,
   onRefresh,
   isRefreshing = false,
+  renderExtraActions,
 }: InstanceCardProps) {
   const { t } = useTranslation();
   const [identityIcon, setIdentityIcon] = useState<string | null>(null);
@@ -228,6 +231,8 @@ export function InstanceCard({
               </span>
             </IconButton>
           ) : null}
+
+          {renderExtraActions?.(instance)}
 
           <IconButton
             variant="outline"

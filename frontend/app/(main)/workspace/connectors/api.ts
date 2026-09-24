@@ -16,6 +16,7 @@ import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
 import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
 import { pruneInactiveFilterValues } from './utils/prune-inactive-filter-values';
+import { isDesktopOfflineError } from './utils/local-fs-helpers';
 const BASE_URL = '/api/v1/connectors';
 
 /** Normalized DELETE /connectors/:id body for optimistic UI merge. */
@@ -73,6 +74,12 @@ export interface ConnectorFileEvent {
   timestamp: number;
   size?: number;
   isDirectory: boolean;
+}
+
+/** 202 response from the admin vector-store cleanup / reindex routes. */
+export interface VectorStoreJobResponse {
+  accepted: boolean;
+  operation: 'cleanup' | 'reindex';
 }
 
 export const ConnectorsApi = {
@@ -293,9 +300,9 @@ export const ConnectorsApi = {
       limit?: number;
       search?: string;
       cursor?: string;
-      /** GitLab: scope project_ids options to repos under these group namespace paths */
+      /** Scope repository options to those under these parent containers (GitLab groups / GitHub orgs) */
       contextGroupPath?: string[];
-      /** GitLab: exclude project_ids options under these group namespace paths */
+      /** Exclude repository options under these parent containers */
       excludeContextGroupPath?: string[];
     }
   ): Promise<FilterOptionsResponse> {
@@ -314,11 +321,22 @@ export const ConnectorsApi = {
 
   // ── Toggle ──
 
-  /** Toggle sync or agent for a connector instance */
-  async toggleConnector(connectorId: string, type: 'sync' | 'agent') {
+  /**
+   * Toggle sync or agent for a connector instance. Only the Local FS
+   * desktop-offline refusal is suppressed, because callers render that as an
+   * info toast; every other failure keeps the generic error toast and its
+   * backend message. `device` is the desktop enabling a Local FS connector;
+   * the backend claims it as owner on first enable and refuses any other.
+   */
+  async toggleConnector(
+    connectorId: string,
+    type: 'sync' | 'agent',
+    device?: { deviceId: string; deviceName: string }
+  ) {
     const { data } = await apiClient.post(
       `${BASE_URL}/${connectorId}/toggle`,
-      { type }
+      { type, ...device },
+      { suppressErrorToast: isDesktopOfflineError }
     );
     return data;
   },
@@ -358,9 +376,12 @@ export const ConnectorsApi = {
         ...(fullSync !== undefined ? { fullSync } : {}),
         ...(force ? { force: true } : {}),
       },
-      // A 409 here means "sync already running" — the caller turns that into a
-      // confirm-and-restart prompt, so skip the global error toast.
-      { suppressErrorToast: true }
+      // Callers render the desktop-offline refusal as an info toast and turn a
+      // 409 ("sync already running") into a confirm-and-restart prompt.
+      {
+        suppressErrorToast: (error) =>
+          isDesktopOfflineError(error) || error.statusCode === 409,
+      }
     );
     return data;
   },
@@ -376,22 +397,6 @@ export const ConnectorsApi = {
       {
         ...(statusFilters?.length ? { statusFilters } : {}),
       }
-    );
-    return data;
-  },
-
-  /** Submit local filesystem file-event batches for incremental sync */
-  async submitFileEvents(
-    connectorId: string,
-    payload: {
-      batchId: string;
-      timestamp: number;
-      events: ConnectorFileEvent[];
-    }
-  ) {
-    const { data } = await apiClient.post(
-      `${BASE_URL}/${connectorId}/file-events`,
-      payload
     );
     return data;
   },
@@ -419,6 +424,34 @@ export const ConnectorsApi = {
       suppressErrorToast: true,
     });
     return data ?? {};
+  },
+
+  // ── Vector store (admin) ──
+
+  /**
+   * Drop and recreate the shared `records` vector collection.
+   *
+   * Deployment-wide and destructive: it removes embeddings for every
+   * organisation, and search stays empty until a reindex completes. Returns 409
+   * while a cleanup or reindex is already running.
+   */
+  async cleanupVectorStore(): Promise<VectorStoreJobResponse> {
+    const { data } = await apiClient.post<VectorStoreJobResponse>(
+      `${BASE_URL}/vector-store/cleanup`
+    );
+    return data;
+  },
+
+  /**
+   * Re-embed every record from its stored blob, without re-downloading or
+   * re-parsing the source. Long-running; returns 202 once accepted, or 409 if a
+   * cleanup or reindex is already running.
+   */
+  async reindexVectorStore(): Promise<VectorStoreJobResponse> {
+    const { data } = await apiClient.post<VectorStoreJobResponse>(
+      `${BASE_URL}/vector-store/reindex`
+    );
+    return data;
   },
 
   // ── Stats ──

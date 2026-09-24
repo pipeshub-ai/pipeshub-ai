@@ -31,13 +31,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.core.context import CancellationToken
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
+from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.error_classification import classify_error
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks import CitationCollector, ensure_fetch_full_record_available
 from app.agents.agent_loop.respond import AnswerFinalizer
@@ -59,11 +62,14 @@ from app.agents.chat_modes.policy import (
 )
 from app.agents.chat_modes.prefetch import prefetch_retrieval
 from app.config.constants.service import config_node_constants
-from app.utils.chat_helpers import CitationRefMapper, get_message_content
+from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
+from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.streaming import create_sse_event, handle_simple_mode
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +133,7 @@ async def _resolve_web_search_config(config_service: Any, logger: logging.Logger
     in `agent.py::_resolve_default_web_search_config`)."""
     try:
         web_search_config = await config_service.get_config(
-            config_node_constants.WEB_SEARCH.value, default={}, use_cache=False,
+            config_node_constants.WEB_SEARCH.value, default={}, use_cache=True,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("run_chat_stream: failed to load web search config: %s", exc)
@@ -142,42 +148,50 @@ async def _resolve_web_search_config(config_service: Any, logger: logging.Logger
     }
 
 
-async def _prefetch_available_connectors(
-    chat_state: dict[str, Any],
+async def _none() -> None:
+    """Placeholder awaitable so a conditional lookup can still take a slot in
+    the `asyncio.gather` below without branching the result unpacking."""
+    return None
+
+
+async def _fetch_available_connectors(
     *,
     graph_provider: Any,
+    user_key: str | None,
     user_id: str,
     org_id: str,
     log: logging.Logger,
-) -> None:
-    """Fetch user-visible connector metadata once and cache it in ``chat_state``.
+) -> list[dict[str, str]] | None:
+    """User-visible connector metadata as ``{id, name, type}`` dicts, for
+    ``chat_state["available_connectors"]``.
 
-    Stored as ``chat_state["available_connectors"]`` — a list of
-    ``{id, name, type}`` dicts. ``ConnectorCatalog.build`` reads this key and
-    skips the DB round-trip.  Failures are silently swallowed so the chat
-    mode degrades gracefully (tools still work; catalog falls back to the
-    lazy path inside each tool call instead).
+    ``user_key`` comes from the user document the route already loaded
+    (`chatbot.py`); only a caller that didn't resolve one pays for the lookup
+    here. Failures return ``None`` so the chat mode degrades gracefully —
+    the catalog falls back to its lazy path inside each tool call.
     """
     try:
-        user = await graph_provider.get_user_by_user_id(user_id=user_id)
-        user_key = (user.get("_key") or user.get("id")) if user else None
         if not user_key:
-            return
+            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            user_key = (user.get("_key") or user.get("id")) if user else None
+        if not user_key:
+            return None
         options = await graph_provider.get_knowledge_hub_filter_options(
             user_key=user_key, org_id=org_id,
         )
         apps = (options or {}).get("apps") or []
-        chat_state["available_connectors"] = [
+        connectors = [
             {"id": a.get("id", ""), "name": a.get("name", ""), "type": a.get("type", "")}
             for a in apps
             if isinstance(a, dict) and a.get("id")
         ]
         log.debug(
-            "run_chat_stream: prefetched %d connector(s) for catalog",
-            len(chat_state["available_connectors"]),
+            "run_chat_stream: prefetched %d connector(s) for catalog", len(connectors),
         )
+        return connectors
     except Exception as exc:
         log.debug("run_chat_stream: connector prefetch failed (non-fatal): %s", exc)
+        return None
 
 
 def _apply_policy_to_chat_state(
@@ -197,7 +211,7 @@ def _apply_policy_to_chat_state(
 
 
 async def _build_no_tools_messages(
-    *, query: str, ai_models_config: dict[str, Any], context_text: str, user_data: str,
+    *, query: str, system_prompts_config: dict[str, Any], context_text: str, user_data: str,
     is_multimodal_llm: bool, ref_mapper: CitationRefMapper,
 ) -> list[dict[str, Any]]:
     """Minimal message set for the Ollama/no-tool-calls degradation path --
@@ -215,7 +229,7 @@ async def _build_no_tools_messages(
     # `_run_no_tools_degradation`), but resolve through the same shared
     # helper as the tool-calling path so the org-prompt lookup has one
     # source of truth.
-    custom_prompt = _resolve_custom_instructions(ai_models_config, INTERNAL_SEARCH_POLICY)
+    custom_prompt = _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY)
     if custom_prompt:
         system_prompt += f"\n\n{custom_prompt}"
     content, ref_mapper = get_message_content(
@@ -232,7 +246,7 @@ async def _build_no_tools_messages(
 async def _run_no_tools_degradation(
     *, query_info: dict[str, Any], user_info: dict[str, Any], llm: "BaseChatModel",
     policy: ChatModePolicy, log: logging.Logger, retrieval_service: Any, graph_provider: Any,
-    config_service: Any, ai_models_config: dict[str, Any], is_multimodal_llm: bool,
+    config_service: Any, system_prompts_config: dict[str, Any], is_multimodal_llm: bool,
     context_length: int,
 ) -> AsyncGenerator[str, None]:
     """`supports_tool_calls=False` (Ollama) path. `internal_search` degrades
@@ -266,7 +280,7 @@ async def _run_no_tools_degradation(
     context_text = prefetch.formatted_context if prefetch else ""
 
     messages = await _build_no_tools_messages(
-        query=query_info.get("query", ""), ai_models_config=ai_models_config, context_text=context_text,
+        query=query_info.get("query", ""), system_prompts_config=system_prompts_config, context_text=context_text,
         user_data="", is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,
     )
 
@@ -302,48 +316,87 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     model_key: str | None = None,
     is_multimodal_llm: bool = False,
     context_length: int = 128000,
-    ai_models_config: dict[str, Any] | None = None,
+    llm_provider: str = "",
+    system_prompts_config: dict[str, Any] | None = None,
     supports_tool_calls: bool = True,
     protocol: str = "legacy",
     client_name: str | None = None,
+    cancellation_registry: "RunCancellationRegistry | None" = None,
+    cancellation_owner: "RunOwner | None" = None,
 ) -> "AsyncGenerator[str, None]":
     """Entry point `chatbot.py::askAIStream()` calls for every `/chat/stream`
     request, regardless of mode. See module docstring."""
     from app.modules.agents.qna.chat_state import build_initial_state
-    from app.utils.execute_query import has_sql_connector_configured
-    from app.utils.fetch_slack_thread import has_slack_connector_configured
+    from app.utils.execute_query import connector_instances_have_sql
+    from app.utils.fetch_slack_thread import connector_instances_have_slack
     from app.modules.transformers.blob_storage import BlobStorage
 
     policy = policy or resolve_chat_mode_policy(query_info.get("chatMode"))
-    ai_models_config = ai_models_config or {}
+    system_prompts_config = system_prompts_config or {}
+
+    # Stop Generation (Phase 3a): registered BEFORE `build_initial_state()`
+    # below (same reasoning as `stream_bridge.py::run_agent_loop_stream`)
+    # so the "Thinking" phase is cancellable too. Covers the no-tools path
+    # too — `_run_no_tools_degradation` has no agent loop to cancel INTO,
+    # but registration lets `/chat/cancel` return `{cancelled: true}` so
+    # the frontend's 5-second grace timer fires and aborts the connection.
+    run_id = query_info.get("runId") or str(uuid.uuid4())
+    cancellation_token = CancellationToken()
+    run_owner = cancellation_owner or RunOwner(
+        user_id=user_info.get("userId", ""),
+        org_id=user_info.get("orgId", ""),
+        conversation_id=query_info.get("conversationId"),
+    )
+
+    if cancellation_registry is not None:
+        await cancellation_registry.register(run_id, cancellation_token, run_owner)
 
     if not supports_tool_calls:
-        async for event in _run_no_tools_degradation(
-            query_info=query_info, user_info=user_info, llm=llm, policy=policy, log=log,
-            retrieval_service=retrieval_service, graph_provider=graph_provider,
-            config_service=config_service, ai_models_config=ai_models_config,
-            is_multimodal_llm=is_multimodal_llm, context_length=context_length,
-        ):
-            yield event
+        try:
+            async for event in _run_no_tools_degradation(
+                query_info=query_info, user_info=user_info, llm=llm, policy=policy, log=log,
+                retrieval_service=retrieval_service, graph_provider=graph_provider,
+                config_service=config_service, system_prompts_config=system_prompts_config,
+                is_multimodal_llm=is_multimodal_llm, context_length=context_length,
+            ):
+                yield event
+        finally:
+            if cancellation_registry is not None:
+                await cancellation_registry.unregister(run_id)
         return
 
     try:
-        has_sql_connector = await has_sql_connector_configured(
-            graph_provider, user_info["userId"], user_info["orgId"]
-        )
-        has_slack_connector = await has_slack_connector_configured(
-            graph_provider, user_info["userId"], user_info["orgId"]
-        )
-        web_search_config = (
-            await _resolve_web_search_config(config_service, log) if policy.include_web_search else None
-        )
-
         blob_store = BlobStorage(logger=log, config_service=config_service, graph_provider=graph_provider)
         ref_mapper = CitationRefMapper()
-        resolved_attachments = await resolve_attachments(
-            query_info.get("attachments"), blob_store=blob_store, org_id=user_info.get("orgId", ""),
-            ref_mapper=ref_mapper, logger=log,
+
+        # Everything needed to build the initial state is independent, and all
+        # of it sits before the first streamed byte -- run it as one wave. The
+        # SQL and Slack checks used to issue the SAME `get_user_connector_
+        # instances` query twice; they now share one result.
+        connector_instances, web_search_config, resolved_attachments, available_connectors = (
+            await asyncio.gather(
+                fetch_user_connector_instances(
+                    graph_provider, user_info["userId"], user_info["orgId"], log,
+                ),
+                _resolve_web_search_config(config_service, log) if policy.include_web_search else _none(),
+                resolve_attachments(
+                    query_info.get("attachments"), blob_store=blob_store,
+                    org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,
+                ),
+                # Pre-fetch user-visible connectors so the catalog
+                # (ConnectorCatalog.build) and capability_summary can use them
+                # without an extra round-trip per tool call.
+                _fetch_available_connectors(
+                    graph_provider=graph_provider,
+                    user_key=user_info.get("userKey"),
+                    user_id=user_info.get("userId", ""),
+                    org_id=user_info.get("orgId", ""),
+                    log=log,
+                ) if policy.has_knowledge else _none(),
+            )
         )
+        has_sql_connector = connector_instances_have_sql(connector_instances)
+        has_slack_connector = connector_instances_have_slack(connector_instances)
         filters = dict(query_info.get("filters") or {})
         if resolved_attachments.virtual_record_ids:
             # Widened, never narrowed: an attachment scoped search must not
@@ -361,22 +414,17 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         )
         _apply_policy_to_chat_state(chat_state, policy, web_search_config)
         chat_state["instructions"] = _with_mode_instructions(chat_state.get("instructions"), policy)
-        chat_state["custom_instructions"] = _resolve_custom_instructions(ai_models_config, policy)
+        chat_state["custom_instructions"] = _resolve_custom_instructions(system_prompts_config, policy)
         chat_state["citation_ref_mapper"] = ref_mapper
-
-        # For chat modes with knowledge enabled, pre-fetch user-visible connectors
-        # so the catalog (ConnectorCatalog.build) and capability_summary can use
-        # them without an extra round-trip per tool call. The query is cheap
-        # (one indexed graph traversal), and the result is cached in chat_state.
-        if policy.has_knowledge:
-            await _prefetch_available_connectors(
-                chat_state, graph_provider=graph_provider,
-                user_id=user_info.get("userId", ""), org_id=user_info.get("orgId", ""),
-                log=log,
-            )
+        # Read by `ConnectorCatalog.build`, which skips its own DB round-trip
+        # when this key is present.
+        if available_connectors is not None:
+            chat_state["available_connectors"] = available_connectors
     except Exception as exc:
         log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
-        error_code, user_message = classify_error(str(exc))
+        error_code, user_message = classify_exception(exc)
+        if cancellation_registry is not None:
+            await cancellation_registry.unregister(run_id)
         yield _pre_stream_error_frame(protocol, user_message, error_code)
         return
 
@@ -387,12 +435,21 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
-    context = AgentContext.from_chat_state(chat_state, event_sink=event_sink, protocol=protocol)
+    context = AgentContext.from_chat_state(
+        chat_state, event_sink=event_sink, protocol=protocol,
+        llm_provider=llm_provider, context_length=context_length,
+        run_id=run_id, cancellation_token=cancellation_token,
+    )
 
     async def _produce() -> None:
         agent: Any = None
         try:
             factory = PipesHubAgentFactory()
+            # Shared with `retrieval.py`/`citations.py`'s tool-result image
+            # collection so the 50-image cap is enforced across the whole
+            # turn regardless of whether an image came from prefetch or a
+            # later search/fetch tool call -- see `ImageBudget`.
+            image_budget = context.tool_state.setdefault("image_budget", ImageBudget())
             prefetch_task = (
                 asyncio.ensure_future(
                     prefetch_retrieval(
@@ -406,6 +463,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         # `factory.create()` below -- see
                         # `prefetch_retrieval`'s `ref_mapper` docstring.
                         ref_mapper=ref_mapper,
+                        image_budget=image_budget,
                     )
                 )
                 if policy.prefetch_retrieval else None
@@ -433,6 +491,19 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 # citation_ref_mapper` IS `ref_mapper` (passed in above), the
                 # same instance `context.tool_state["citation_ref_mapper"]`
                 # already holds and web_search/fetch_url already closed over.
+
+                if prefetch_result.collected_images:
+                    # Prefetch produces plain text folded into
+                    # `goal.constraints`, not a tool result -- so its images
+                    # ride the SAME `shape_image_injection` PRE_MODEL hook
+                    # that already delivers user-attachment images, rather
+                    # than a multipart `ToolMessage`. Extend (not overwrite):
+                    # `factory.create()` already ran above and may have
+                    # populated this from the user's own attachments.
+                    context.attachment_image_blocks = [
+                        *context.attachment_image_blocks,
+                        *prefetch_result.collected_images,
+                    ]
 
                 # Compute coverage and candidate list for the prefetched results.
                 # The retrieval TOOL never runs in prefetch mode, so this is the
@@ -522,13 +593,22 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     agent_success=result.success, agent_error=result.error,
                     agent_output=result.output, event_sink=context.event_sink,
                     streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,
+                    # Stop Generation (Phase 3b) — see the matching call in
+                    # `stream_bridge.py::run_agent_loop_stream` for why this
+                    # reads `result.cancelled` (an immutable snapshot taken
+                    # when the agent loop itself observed cancellation)
+                    # rather than live-checking `cancellation_token.
+                    # is_cancelled` here.
+                    agent_cancelled=result.cancelled,
                 )
         except Exception as exc:
             log.error("run_chat_stream: run failed: %s", exc, exc_info=True)
-            error_code, user_message = classify_error(str(exc))
+            error_code, user_message = classify_exception(exc)
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            if cancellation_registry is not None:
+                await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
             if context.sandbox_manager is not None:
                 try:

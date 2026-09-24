@@ -1,0 +1,120 @@
+name: Helm chart
+
+# Nothing else in CI renders or installs the Helm chart, so a change that breaks
+# the Kubernetes install is only found by the next person who tries it.
+#
+# check:   every value the templates read is defined; lint + render every
+#          supported configuration + schema-validate it; and confirm the
+#          misconfigurations the chart refuses are still refused.
+# install: install into a throwaway kind cluster with the published slim image
+#          and wait for every core service to report healthy.
+#
+# The weekly run also catches drift between the chart and the image on Docker
+# Hub, which moves without any change to this repository.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'deployment/helm/**'
+      - '.github/workflows/helm-chart.yml'
+  schedule:
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+# Every job runs pull-request code with no secrets and a read-only token, on
+# GitHub-hosted runners, and checks out without persisting credentials.
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-chart-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  HELM_VERSION: v3.16.4
+  KUBECONFORM_VERSION: v0.6.7
+  KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+  KIND_VERSION: v0.25.0
+  KIND_SHA256: b22ff7e5c02b8011e82cc3223d069d178b9e1543f1deb21e936d11764780a3d8
+
+jobs:
+  check:
+    name: Lint and validate every configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: python -m pip install pyyaml==6.0.2
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -fsSLo kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          tar xzf kubeconform.tar.gz kubeconform
+          sudo install kubeconform /usr/local/bin/kubeconform
+          rm kubeconform kubeconform.tar.gz
+
+      - name: Check the chart
+        run: bash deployment/helm/tests/check_chart.sh
+
+  install:
+    name: Install on kind (${{ matrix.variant }})
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two graph databases and two message brokers the chart supports,
+        # paired so each appears once.
+        variant: [neo4j-kafka, arangodb-redis]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install kind
+        run: |
+          set -euo pipefail
+          curl -fsSLo kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  kind" | sha256sum -c -
+          sudo install kind /usr/local/bin/kind
+          rm kind
+
+      - name: Install and check health
+        env:
+          SMOKE_VARIANT: ${{ matrix.variant }}
+          SMOKE_DIAG: ${{ runner.temp }}/diag
+        run: bash deployment/helm/tests/kind_smoke.sh
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-kind-${{ matrix.variant }}
+          path: ${{ runner.temp }}/diag
+          if-no-files-found: ignore

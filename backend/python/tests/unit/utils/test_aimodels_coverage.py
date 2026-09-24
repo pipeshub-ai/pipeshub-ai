@@ -228,7 +228,23 @@ class TestOpenAICompatibleEmbeddingCtxLength:
         assert call_kwargs["check_embedding_ctx_length"] is False
 
     @patch("langchain_openai.embeddings.OpenAIEmbeddings")
-    def test_normal_endpoint_checks_length(self, mock_cls):
+    def test_router_endpoint_skips_check(self, mock_cls):
+        """Routers proxy models that reject tiktoken token-ID input."""
+        mock_cls.return_value = MagicMock()
+        config = {
+            "configuration": {
+                "model": "nvidia/llama-nemotron-embed-vl-1b-v2:free",
+                "apiKey": "key",
+                "endpoint": "https://openrouter.ai/api/v1",
+            },
+            "isDefault": True,
+        }
+        get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["check_embedding_ctx_length"] is False
+
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_endpoint_checks_length(self, mock_cls):
         mock_cls.return_value = MagicMock()
         config = {
             "configuration": {
@@ -307,14 +323,13 @@ class TestBedrockAnthropicClaude45:
             "isDefault": True,
         }
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
-            with patch("langchain_aws.ChatBedrock") as mock_chat:
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
                 mock_chat.return_value = MagicMock()
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
-                model_kwargs = mock_chat.call_args.kwargs.get("model_kwargs", {})
-                assert model_kwargs["max_tokens"] == MAX_OUTPUT_TOKENS_CLAUDE_4_5
+                assert mock_chat.call_args.kwargs["max_tokens"] == MAX_OUTPUT_TOKENS_CLAUDE_4_5
 
-    def test_bedrock_non_anthropic_empty_model_kwargs(self):
-        """Non-Anthropic models in Bedrock should have empty model_kwargs."""
+    def test_bedrock_non_anthropic_omits_max_tokens(self):
+        """Non-Anthropic models in Bedrock should not set max_tokens."""
         config = {
             "configuration": {
                 "model": "meta.llama3-70b",
@@ -323,11 +338,11 @@ class TestBedrockAnthropicClaude45:
             "isDefault": True,
         }
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
-            with patch("langchain_aws.ChatBedrock") as mock_chat:
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
                 mock_chat.return_value = MagicMock()
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
-                model_kwargs = mock_chat.call_args.kwargs.get("model_kwargs", {})
-                assert model_kwargs == {}
+                assert "max_tokens" not in mock_chat.call_args.kwargs
+                assert "model_kwargs" not in mock_chat.call_args.kwargs
 
 
 # ============================================================================
@@ -588,7 +603,9 @@ class TestBedrockClientRegion:
             mock_session_cls.return_value = mock_session
             from app.utils.aimodels import _create_bedrock_client
             _create_bedrock_client(config, service_name="bedrock")
-            mock_session.client.assert_called_once_with("bedrock")
+            service_name, kwargs = mock_session.client.call_args
+            assert service_name == ("bedrock",)
+            assert kwargs["config"].connect_timeout <= 15
 
 
 # ============================================================================
@@ -606,7 +623,7 @@ class TestBedrockJambaDetection:
             "isDefault": True,
         }
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
-            with patch("langchain_aws.ChatBedrock") as mock_chat:
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
                 mock_chat.return_value = MagicMock()
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
                 assert mock_chat.call_args.kwargs["provider"] == "ai21"

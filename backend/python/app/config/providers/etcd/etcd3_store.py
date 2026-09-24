@@ -106,14 +106,23 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 value_str = json.dumps(value, default=str)
             logger.debug("📋 Serialized value: %s", value_str)
 
+            if not overwrite:
+                # One transaction, not get-then-put: with a separate read, every
+                # process that starts at once sees the key absent and each is
+                # told it owns the value it then overwrites.
+                lease = await asyncio.to_thread(client.lease, ttl) if ttl else None
+                created = await asyncio.to_thread(
+                    client.put_if_not_exists, key, value_str.encode(), lease
+                )
+                if not created and lease is not None:
+                    await asyncio.to_thread(lease.revoke)
+                return bool(created)
+
             # Check if key exists
             logger.debug("🔍 Checking if key exists")
             existing_value = await asyncio.to_thread(client.get, key)
 
-            if existing_value[0] is not None and not overwrite:
-                logger.debug("📋 Key exists, skipping creation")
-                return False  # Key was not created (already exists)
-            elif existing_value[0] is not None:
+            if existing_value[0] is not None:
                 logger.debug("📋 Key exists, updating value")
                 success = await asyncio.to_thread(
                     client.put, key, value_str.encode()
@@ -171,7 +180,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 await asyncio.to_thread(lease.revoke)
             raise ConnectionError(f"Failed to update key: {str(e)}")
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         """Get value for key from etcd."""
         logger.debug("🔍 Getting key from ETCD: %s", key)
         try:
@@ -190,10 +199,22 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             try:
                 deserialized = self.deserializer(value_bytes)
+                # Present bytes that deserialize to nothing could not be read:
+                # the factory deserializer answers None for bytes that are not
+                # valid UTF-8 instead of raising, so the decode handler below
+                # never sees them. Empty bytes are how None is stored, and stay
+                # absent.
+                if deserialized is None and value_bytes and raise_on_error:
+                    raise ValueError("Stored value could not be decoded")
                 return deserialized
             except json.JSONDecodeError as e:
                 logger.error("❌ Failed to deserialize value: %s", str(e))
                 logger.error("📋 Value that failed: %s", value_bytes)
+                # A stored value that cannot be read is not an absent one.
+                # Surfaces as ConnectionError via the handler below, as every
+                # failed read from this store does.
+                if raise_on_error:
+                    raise
                 return None
 
         except Exception as e:
@@ -283,6 +304,41 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def cancel_watch(self, key: str, watch_id: str) -> None:
         client = await self._get_client()
         await asyncio.to_thread(client.cancel_watch, watch_id)
+
+    # -- KeyValueStore cross-process notification interface (R15) -----------
+    #
+    # etcd already has a native, cross-process watch mechanism (unlike
+    # Redis, which needs Pub/Sub bolted on) -- this just exposes it through
+    # the same three methods every store implements, so callers never check
+    # `hasattr(self.store, 'client')` / branch on KV_STORE_TYPE to reach it.
+
+    async def subscribe_changes(self, callback: Callable[[str], None]) -> int:
+        client = await self._get_client()
+
+        def _prefix_watch_adapter(event: Any) -> None:  # noqa: ANN401
+            try:
+                for evt in event.events:
+                    callback(evt.key.decode("utf-8"))
+            except Exception as e:
+                logger.error("Error in etcd prefix-watch adapter: %s", str(e))
+
+        watch_id = await asyncio.to_thread(
+            client.add_watch_prefix_callback, "/", _prefix_watch_adapter
+        )
+        self._active_watchers.append(watch_id)
+        return watch_id
+
+    async def publish_change(self, key: str) -> None:  # noqa: ARG002
+        """No-op: etcd's own watch above already notifies other processes."""
+        return None
+
+    async def unsubscribe_changes(self, handle: object) -> None:
+        if handle is None:
+            return
+        client = await self._get_client()
+        await asyncio.to_thread(client.cancel_watch, handle)
+        if handle in self._active_watchers:
+            self._active_watchers.remove(handle)
 
     async def close(self) -> None:
         """Clean up resources and close connection."""

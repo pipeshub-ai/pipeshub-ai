@@ -102,9 +102,9 @@ def _resolve_agent_prompt_key(caps: AgentCapabilities) -> str:
 def resolve_agent_policy(capabilities: AgentCapabilities | None = None) -> ChatModePolicy:
     """Build a capabilities-aware `ChatModePolicy` for agent mode.
 
-    When ``capabilities`` is ``None`` the defaults are used, which restores
-    the original ``AGENT_POLICY`` behavior (both knowledge and web search
-    enabled) — so callers that don't pass capabilities stay backward compat.
+    Capability toggles narrow which tools are available (knowledge, web search)
+    but do NOT change the prompt key — the user is always in agent mode, so the
+    custom instructions always read from ``customSystemPromptAgent``.
     """
     caps = capabilities or AgentCapabilities()
     return ChatModePolicy(
@@ -112,7 +112,7 @@ def resolve_agent_policy(capabilities: AgentCapabilities | None = None) -> ChatM
         has_knowledge=caps.internal_search,
         include_web_search=caps.web_search,
         prefetch_retrieval=False,
-        system_prompt_key=_resolve_agent_prompt_key(caps),
+        system_prompt_key="agent",
     )
 
 

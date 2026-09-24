@@ -14,7 +14,7 @@ import aiohttp
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
-from langchain_aws import ChatBedrock
+from langchain_aws import ChatBedrock, ChatBedrockConverse
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -23,6 +23,7 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import map_source_status
 from app.modules.agents.qna.reference_data import normalize_reference_data_items
 from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -147,7 +148,12 @@ ANTHROPIC_LEGACY_MODEL_PATTERNS = [
 ]
 
 
-async def stream_content(signed_url: str, record_id: str | None = None, file_name: str | None = None) -> AsyncGenerator[bytes, None]:
+async def stream_content(
+    signed_url: str,
+    record_id: str | None = None,
+    file_name: str | None = None,
+    connector: str | None = None,
+) -> AsyncGenerator[bytes, None]:
     # Validate that signed_url is actually a string, not a coroutine
     if not isinstance(signed_url, str):
         error_msg = f"Expected signed_url to be a string, but got {type(signed_url).__name__}"
@@ -222,20 +228,97 @@ async def stream_content(signed_url: str, record_id: str | None = None, file_nam
                         logger.error(
                             f"❌ HTTP {response.status}: Failed to fetch file content. {log_prefix}{error_details}"
                         )
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Failed to fetch file content: {response.status}{error_details}"
+                    # error_details stays in the log: it can contain presigned
+                    # URL internals and bucket names.
+                    raise map_source_status(
+                        response.status,
+                        connector=connector,
+                        retry_after=response.headers.get("Retry-After")
+                        if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value
+                        else None,
                     )
                 async for chunk in response.content.iter_chunked(8192):
                     yield chunk
+    except asyncio.TimeoutError as e:
+        logger.error(f"❌ TIMEOUT: Fetching file content timed out | {log_prefix}")
+        raise map_source_status(
+            HttpStatusCode.GATEWAY_TIMEOUT.value, connector=connector
+        ) from e
     except aiohttp.ClientError as e:
         logger.error(
             f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {str(e)} | {log_prefix}"
         )
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Failed to fetch file content from signed URL {str(e)}"
-        )
+        raise map_source_status(
+            HttpStatusCode.BAD_GATEWAY.value, connector=connector
+        ) from e
+
+
+async def start_streaming_response(response: StreamingResponse) -> StreamingResponse:
+    """Pull the first chunk before the response starts.
+
+    Starlette sends ``http.response.start`` — committing the status code —
+    before it asks the body iterator for anything. Connectors that call the
+    source API lazily inside that iterator (Slack file downloads, Confluence
+    attachments) would otherwise fail after a 200 was already on the wire,
+    leaving the client with a truncated body that looks like success.
+
+    Draining one chunk here moves that call ahead of the status commit. A
+    failure *after* the first chunk still cannot change the status; those
+    abort the response instead.
+    """
+    response.body_iterator = await stream_with_eager_first_chunk(response.body_iterator)
+    return response
+
+
+async def _aclose(source: object) -> None:
+    """Close *source* if it is a generator. Starlette wraps a sync iterable in
+    `iterate_in_threadpool`, which has no `aclose`, so this cannot assume one."""
+    closer = getattr(source, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except Exception:
+        logger.debug("Failed to close stream source", exc_info=True)
+
+
+async def stream_with_eager_first_chunk(
+    source: AsyncGenerator[bytes | str, None],
+) -> AsyncGenerator[bytes | str, None]:
+    """Return a streaming generator after eagerly pulling its first chunk.
+
+    Reading the first chunk before returning lets upstream auth / 404 / network
+    errors surface here, where they can still be converted to a real HTTP status,
+    rather than after ``StreamingResponse`` has already committed the status line
+    and can only produce a truncated chunked body.
+
+    Chunks may be `str` as well as `bytes` — Starlette encodes either.
+    """
+    aiter = source.__aiter__()
+    try:
+        first = await aiter.__anext__()
+    except StopAsyncIteration:
+        await _aclose(source)
+        async def _empty() -> AsyncGenerator[bytes | str, None]:
+            return
+            yield b""  # noqa: unreachable — marks function as async generator
+        return _empty()
+    except Exception:
+        await _aclose(source)
+        raise
+
+    async def _gen() -> AsyncGenerator[bytes | str, None]:
+        # `finally` (not just falling off the end) so an abandoned download —
+        # the client disconnecting mid-file — still releases the upstream
+        # session. Starlette never closes `body_iterator` itself.
+        try:
+            yield first
+            async for chunk in aiter:
+                yield chunk
+        finally:
+            await _aclose(source)
+
+    return _gen()
 
 
 def create_stream_record_response(
@@ -963,7 +1046,7 @@ async def call_aiter_llm_stream_simple(
         return
 
 def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
-    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock)):
+    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock,ChatBedrockConverse)):
 
         additional_kwargs = {}
         if isinstance(llm, ChatAnthropic):
@@ -978,7 +1061,7 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
 
             additional_kwargs["stream"] = True
 
-        if not isinstance(llm, ChatBedrock):
+        if not isinstance(llm, (ChatBedrock, ChatBedrockConverse)):
             additional_kwargs["method"] = "json_schema"
 
         try:
@@ -986,13 +1069,13 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
                 schema,
                 **additional_kwargs
             )
-            logger.info("Using structured output")
+            logger.debug("Using structured output")
             return model_with_structure
         except Exception as e:
             logger.warning("Failed to apply structured output, falling back to default. Error: %s", str(e))
-            logger.info("Using non-structured LLM")
+            logger.debug("Using non-structured LLM")
 
-    logger.info("Using non-structured LLM")
+    logger.debug("Using non-structured LLM")
     return llm
 
 
@@ -1015,6 +1098,37 @@ def cleanup_content(response_text: str) -> str:
     if response_text.endswith("```"):
         response_text = response_text.rsplit("```", 1)[0]
     return response_text.strip()
+
+
+def _recover_structured_json_from_exception(
+    error: Exception,
+    schema: type[SchemaT],
+) -> SchemaT | None:
+    """Recover JSON with duplicated wrapper braces from a validation error."""
+    if not isinstance(error, ValidationError):
+        return None
+
+    for detail in error.errors():
+        raw_input = detail.get("input")
+        if not isinstance(raw_input, str):
+            continue
+
+        original = raw_input.strip()
+        cleaned = cleanup_content(original)
+        candidates = [original, cleaned]
+        for candidate in (original, cleaned):
+            if candidate.startswith("{{"):
+                candidates.append(candidate[1:])
+                if candidate.endswith("}}"):
+                    candidates.append(candidate[1:-1])
+
+        for candidate in dict.fromkeys(candidates):
+            try:
+                return schema.model_validate_json(candidate)
+            except ValidationError:
+                pass
+
+    return None
 
 
 async def invoke_with_structured_output_and_reflection(
@@ -1040,6 +1154,10 @@ async def invoke_with_structured_output_and_reflection(
     try:
         response = await _ainvoke_throttled(llm_with_structured_output, messages)
     except Exception as e:
+        recovered = _recover_structured_json_from_exception(e, schema)
+        if recovered is not None:
+            logger.info("Recovered schema-valid structured output from invocation error")
+            return recovered
         logger.error(f"LLM invocation failed: {e}")
         return None
 
@@ -1135,6 +1253,12 @@ Respond only with valid JSON that matches the schema."""
                 return parsed_response
 
             except Exception as reflection_error:
+                recovered = _recover_structured_json_from_exception(reflection_error, schema)
+                if recovered is not None:
+                    logger.info(
+                        "Recovered schema-valid structured output from reflection invocation error"
+                    )
+                    return recovered
                 logger.warning(f"Reflection attempt {attempt + 1} failed: {reflection_error}")
                 if attempt < max_retries - 1:
                     # Update messages for next retry

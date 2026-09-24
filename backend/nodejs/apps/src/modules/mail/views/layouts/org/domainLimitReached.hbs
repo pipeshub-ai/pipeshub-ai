@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+  {{>head}}
+  <body>
+    <main>
+      <table {{{containerstyle}}}>
+        <tr>
+          <td>{{> header}}</td>
+        </tr>
+        <tr>
+          <td>
+            <table class="mobile-width" {{{bodytablestyle}}}>
+              <tr>
+                <td
+                  style="
+                    padding: 40px 30px;
+                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                  "
+                >
+                  <div
+                    style="
+                      font-size: 20px;
+                      font-weight: 700;
+                      color: #1d1c1d;
+                      letter-spacing: -0.25px;
+                      line-height: 28px;
+                      margin: 0 0 16px 0;
+                    "
+                  >
+                    Workspace Limit Reached for Domain
+                  </div>
+                  <div
+                    style="
+                      font-size: 15px;
+                      font-weight: 400;
+                      color: #434245;
+                      line-height: 22px;
+                      margin: 0 0 24px 0;
+                    "
+                  >
+                    <div>Hi Support Team,</div>
+                    <div style="height: 12px; line-height: 12px;">&nbsp;</div>
+                    <div>
+                      A user with the email address <strong>{{userEmail}}</strong> attempted
+                      to create a new workspace for the domain <strong>{{domain}}</strong>.
+                    </div>
+                    <div style="height: 12px; line-height: 12px;">&nbsp;</div>
+                    <div>
+                      The request was blocked because <strong>{{domain}}</strong> has already
+                      reached the maximum allowed limit of <strong>{{limit}}</strong> active
+                      workspaces on this platform.
+                    </div>
+                    <div style="height: 12px; line-height: 12px;">&nbsp;</div>
+                    <div>
+                      If this user should be granted access, please review the existing
+                      workspaces for that domain or adjust the workspace limit accordingly.
+                    </div>
+                  </div>
+                  <div
+                    style="
+                      font-size: 13px;
+                      font-weight: 400;
+                      color: #868686;
+                      line-height: 20px;
+                      border-top: 1px solid #e8e8e8;
+                      padding-top: 16px;
+                      margin-top: 8px;
+                    "
+                  >
+                    This is an automated notification from PipesHub. No action is required
+                    unless you wish to accommodate this user.
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td>{{> footer}}</td>
+        </tr>
+      </table>
+    </main>
+  </body>
+</html>

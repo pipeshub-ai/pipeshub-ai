@@ -15,6 +15,10 @@ export function LanguageSwitcher() {
     { value: 'es-ES', label: 'Spanish', nativeLabel: 'Español' },
     { value: 'en-IN', label: 'English (India)', nativeLabel: 'English' },
     { value: 'hi-IN', label: 'Hindi', nativeLabel: 'हिन्दी' },
+    { value: 'ko-KR', label: 'Korean', nativeLabel: '한국어' },
+    { value: 'zh-TW', label: 'Chinese (Taiwan)', nativeLabel: '中文（台灣）' },
+    { value: 'zh-SG', label: 'Chinese (Singapore)', nativeLabel: '中文（新加坡）' },
+    { value: 'zh-CN', label: 'Chinese (Mandarin, Simplified)', nativeLabel: '中文（简体）' },
   ];
 
   const currentLanguage = languages.find((lang) => lang.value === language);

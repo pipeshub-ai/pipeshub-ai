@@ -8,6 +8,7 @@ import { SyncEventProducer } from '../../../knowledge_base/services/sync_events.
 import { constructSyncConnectorEvent } from '../../utils/utils';
 import { ICrawlingSchedule } from '../../schema/interface';
 import { isLocalFsConnector } from '../../../../utils/local-fs-utils';
+import { isDesktopConnected } from '../../../../libs/services/desktop-presence.provider';
 
 @injectable()
 export class ConnectorsCrawlingService implements ICrawlingTaskService {
@@ -29,7 +30,7 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
     connector: string,
     connectorId: string,
   ): Promise<CrawlingResult> {
-    this.logger.info('Starting Connectors crawling', {
+    this.logger.debug('Starting Connectors crawling', {
       orgId,
       userId,
       config,
@@ -38,29 +39,30 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
     });
 
     try {
-      // TODO: Implement Connectors crawling logic
-      this.logger.info('Connectors crawling completed successfully', {
-        orgId,
-        userId,
-        connector,
-        connectorId,
-      });
-      if (isLocalFsConnector(connector)) {
-        // Local FS is client-managed: the desktop app runs its own scheduler
-        // (see frontend electron/local-sync/manager.js scheduledTick). The
-        // server-side BullMQ schedule has nothing to do here.
-        this.logger.debug(
-          'Skipping Local FS scheduled crawl — client-managed connector',
-          { orgId, connector, connectorId },
-        );
+      // A Local FS pull needs a desktop on the socket. Returning success (not
+      // throwing) keeps BullMQ from retrying against a machine that is still
+      // offline; unknown presence publishes as usual. Whether the *owner*
+      // device is the one connected is deliberately not checked here: the job
+      // has no request to authorize an instance lookup with, the relay only
+      // ever routes the pull to the owner, and run_sync treats an offline
+      // owner as a skipped sync rather than a failure.
+      if (
+        isLocalFsConnector(connector) &&
+        isDesktopConnected(orgId, userId) === false
+      ) {
+        this.logger.info('Skipping scheduled Local FS sync: no desktop connected', {
+          orgId,
+          userId,
+          connectorId,
+        });
         return { success: true };
       }
 
-      const event = constructSyncConnectorEvent(orgId, connector, connectorId);
+      const event = constructSyncConnectorEvent(orgId, connector, connectorId, userId);
 
       await this.syncEventsService.publishEvent(event);
 
-      this.logger.info('Sync event published successfully', {
+      this.logger.debug('Sync event published successfully', {
         orgId,
         connector,
         connectorId,

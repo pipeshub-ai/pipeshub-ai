@@ -14,6 +14,7 @@ from msgraph.generated.models.recipient import Recipient  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -27,6 +28,13 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_downloadable,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -92,6 +100,7 @@ from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookSyncConfig,
     OutlookSyncPointKeys,
     OutlookThreadDetection,
+    normalize_conversation_index,
 )
 from app.models.entities import (
     AppUser,
@@ -115,7 +124,6 @@ from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsResponse,
     OutlookMailFoldersResponse,
 )
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import (
     datetime_to_epoch_ms,
@@ -128,6 +136,7 @@ from app.utils.time_conversion import (
     .with_description("Sync emails from your personal Outlook mailbox")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name=OutlookConnectorNames.PERSONAL,
@@ -343,12 +352,10 @@ class OutlookIndividualConnector(BaseConnector):
                 self.logger.error("Outlook Personal oauthConfigId not found in auth configuration.")
                 raise ValueError("Outlook Personal oauthConfigId not found in auth configuration.")
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=OutlookOAuthConfig.CONNECTOR_TYPE_PERSONAL,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             if not oauth_config:
@@ -538,20 +545,14 @@ class OutlookIndividualConnector(BaseConnector):
             parent_index = base64.b64encode(parent_bytes).decode('utf-8')
             self.logger.debug(f"Thread {thread_id}: Looking for parent with conversation_index={parent_index}")
 
-            # Search in ArangoDB for parent message
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_record_by_conversation_index(
-                    connector_id=self.connector_id,
-                    conversation_index=parent_index,
-                    thread_id=thread_id,
-                    org_id=org_id,
-                    user_id=user.source_user_id
-                )
+            parent_record = await self.data_entities_processor.get_record_by_conversation_index(
+                self.connector_id, parent_index, thread_id, user.source_user_id
+            )
 
-                if parent_record:
-                    return parent_record.id
-                else:
-                    return None
+            if parent_record:
+                return parent_record.id
+            else:
+                return None
 
         except Exception as e:
             self.logger.error(f"Error finding parent by conversation index from DB for thread {thread_id}: {e}")
@@ -1173,8 +1174,7 @@ class OutlookIndividualConnector(BaseConnector):
 
             if is_deleted:
                 self.logger.info(f"Deleting message: {message_id} and its attachments from folder {folder_name}")
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.delete_record_by_external_id(self.connector_id, message_id, user.source_user_id)
+                await self.data_entities_processor.delete_record_by_external_id(self.connector_id, message_id, user.source_user_id)
                 return updates, True
 
             # Process email with attachments
@@ -1268,7 +1268,7 @@ class OutlookIndividualConnector(BaseConnector):
                 thread_id=message.conversation_id or '',
                 is_parent=False,
                 internet_message_id=message.internet_message_id or '',
-                conversation_index=message.conversation_index or '',
+                conversation_index=normalize_conversation_index(message.conversation_index),
             )
 
             # Apply indexing filter for mail records
@@ -1489,11 +1489,9 @@ class OutlookIndividualConnector(BaseConnector):
     async def _get_existing_record(self, org_id: str, external_record_id: str) -> Record | None:
         """Get existing record from data store."""
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                return await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
+            return await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_record_id
+            )
         except Exception as e:
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
@@ -1537,10 +1535,7 @@ class OutlookIndividualConnector(BaseConnector):
         """Stream record content (email or attachment) using /me API."""
         try:
             if not self.external_outlook_client:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=OutlookHTTPDetails.CLIENT_NOT_INITIALIZED,
-                )
+                raise connector_not_ready(self.display_name)
 
             # Ensure we have fresh token before streaming operations
             await self._get_fresh_graph_client()
@@ -1549,7 +1544,7 @@ class OutlookIndividualConnector(BaseConnector):
                 # User email using /me API
                 message = await self._get_message_by_id_external(record.external_record_id)
                 if not message:
-                    raise Exception(f"Message {record.external_record_id} not found")
+                    raise not_found_at_source(self.display_name)
                 body_obj = message.body
                 email_body = body_obj.content if body_obj and body_obj.content else ''
                 # Augment with recipient metadata for indexing
@@ -1590,32 +1585,32 @@ class OutlookIndividualConnector(BaseConnector):
                     detail=OutlookHTTPDetails.UNSUPPORTED_RECORD_TYPE,
                 )
 
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream record: {str(e)}",
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_message_by_id_external(self, message_id: str) -> Message | None:
-        """Get a specific message by ID for authenticated user using /me API."""
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        """Get a specific message by ID for authenticated user using /me API.
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_get_message(
-                message_id=message_id
-            )
+        Returns None only when Graph succeeded but returned no message. Every
+        failure raises: the caller turns None into a 404, and an expired token
+        or a 429 must not be reported to the user as a deleted email.
+        """
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
 
-            if not response.success:
-                self.logger.error(f"Failed to get message {message_id}: {response.error}")
-                return None
+        response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_get_message(
+            message_id=message_id
+        )
 
-            # response.data is Message Pydantic object
-            return response.data
+        if not response.success:
+            self.logger.error(f"Failed to get message {message_id}: {response.error}")
+            # MSGraphResponse has no HTTP status — do not invent a 404.
+            raise RuntimeError(response.error or f"Failed to get message {message_id}")
 
-        except Exception as e:
-            self.logger.error(f"Error getting message {message_id}: {e}")
-            return None
+        # response.data is Message Pydantic object
+        return response.data
 
     @staticmethod
     def _decode_content_bytes(content_bytes: bytes | str) -> bytes:
@@ -1635,41 +1630,51 @@ class OutlookIndividualConnector(BaseConnector):
             return raw
 
     async def _download_attachment_external(self, message_id: str, attachment_id: str) -> bytes:
-        """Download attachment content for authenticated user using /me API."""
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        """Download attachment content for authenticated user using /me API.
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_messages_get_attachments(
-                message_id=message_id,
-                attachment_id=attachment_id
+        Raises rather than returning empty bytes: a failed download that returns
+        ``b''`` streams a zero-byte file with a 200 the client cannot detect.
+        """
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
+
+        response: OutlookCalendarContactsResponse = await self.external_outlook_client.me_messages_get_attachments(
+            message_id=message_id,
+            attachment_id=attachment_id
+        )
+
+        if not response.success:
+            self.logger.error(
+                f"Failed to download attachment {attachment_id} for message {message_id}: {response.error}"
+            )
+        raise_for_stream_fetch(
+            success=response.success,
+            has_payload=response.data is not None,
+            connector=self.display_name,
+            message=response.error,
+        )
+
+        # Extract attachment content from FileAttachment SDK object
+        # response.data is the SDK object itself (not a dict with 'value')
+        attachment_data = response.data
+
+        # Try both snake_case and camelCase attribute names
+        if hasattr(attachment_data, 'content_bytes'):
+            content_bytes = attachment_data.content_bytes
+        elif hasattr(attachment_data, 'contentBytes'):
+            content_bytes = attachment_data.contentBytes
+        elif isinstance(attachment_data, dict):
+            content_bytes = attachment_data.get('content_bytes') or attachment_data.get('contentBytes')
+        else:
+            content_bytes = None
+
+        if not content_bytes:
+            raise not_downloadable(
+                OutlookHTTPDetails.ATTACHMENT_NOT_DOWNLOADABLE,
+                connector=self.display_name,
             )
 
-            if not response.success or not response.data:
-                return b''
-
-            # Extract attachment content from FileAttachment SDK object
-            # response.data is the SDK object itself (not a dict with 'value')
-            attachment_data = response.data
-
-            # Try both snake_case and camelCase attribute names
-            if hasattr(attachment_data, 'content_bytes'):
-                content_bytes = attachment_data.content_bytes
-            elif hasattr(attachment_data, 'contentBytes'):
-                content_bytes = attachment_data.contentBytes
-            elif isinstance(attachment_data, dict):
-                content_bytes = attachment_data.get('content_bytes') or attachment_data.get('contentBytes')
-            else:
-                content_bytes = None
-
-            if not content_bytes:
-                return b''
-
-            return self._decode_content_bytes(content_bytes)
-
-        except Exception as e:
-            self.logger.error(f"Error downloading attachment {attachment_id} for message {message_id}: {e}")
-            return b''
+        return self._decode_content_bytes(content_bytes)
 
 
     def get_signed_url(self, record: Record) -> str | None:
@@ -2067,12 +2072,11 @@ class OutlookIndividualConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> 'OutlookIndividualConnector':
         """Factory method to create and initialize OutlookIndividualConnector."""
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await data_entities_processor.initialize()
-
-        return OutlookIndividualConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

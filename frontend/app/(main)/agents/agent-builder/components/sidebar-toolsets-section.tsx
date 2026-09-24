@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Text, TextField } from '@radix-ui/themes';
+import { Box, Flex, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { CHAT_ITEM_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
@@ -28,6 +28,7 @@ import type { AgentWebSearchAttachment } from '../types';
 const DEFAULT_TOOLSET_TYPE_EXPANDED = true;
 /** Toolset instance row: collapsed by default; user expands to see tools (Knowledge stops at instance rows). */
 const DEFAULT_TOOLSET_INSTANCE_EXPANDED = false;
+const TOOLSET_SHOW_MORE_LIMIT = 5;
 
 function applyToolDrag(e: React.DragEvent, data: Record<string, string>) {
   e.dataTransfer.effectAllowed = 'move';
@@ -199,6 +200,7 @@ export function AgentBuilderToolsetsSection(props: {
   const [searchInput, setSearchInput] = useState('');
   const [expandedApps, setExpandedApps] = useState<Record<string, boolean>>({});
   const [userConfigToolset, setUserConfigToolset] = useState<BuilderSidebarToolset | null>(null);
+  const [showAllToolsets, setShowAllToolsets] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -389,103 +391,149 @@ export function AgentBuilderToolsetsSection(props: {
       ) : null}
 
       {!loading
-        ? Object.entries(toolsetsByType).map(([toolsetType, typeToolsets]) => {
-            const first = typeToolsets[0];
-            const typeKey = `toolset-type-${toolsetType}`;
-            const isTypeExpanded = expandedApps[typeKey] ?? DEFAULT_TOOLSET_TYPE_EXPANDED;
-
+        ? (() => {
+            const typeEntries = Object.entries(toolsetsByType).sort(([, a], [, b]) => {
+              const priority = (instances: BuilderSidebarToolset[]) => {
+                if (instances.some((ts) => ts.isConfigured && ts.isAuthenticated)) return 0;
+                if (instances.some((ts) => ts.isConfigured)) return 1;
+                return 2;
+              };
+              return priority(a) - priority(b);
+            });
+            const visibleEntries = showAllToolsets ? typeEntries : typeEntries.slice(0, TOOLSET_SHOW_MORE_LIMIT);
             return (
-              <Box key={toolsetType} mb="2">
-                <SidebarCategoryRow
-                  groupLabel={normalizePaletteLabel((first.toolsetType || toolsetType) as string)}
-                  groupConnectorType={(first.toolsetType || toolsetType) as string}
-                  groupIcon={first.iconPath}
-                  itemCount={typeToolsets.length}
-                  isExpanded={isTypeExpanded}
-                  onToggle={() => onAppToggle(typeKey, DEFAULT_TOOLSET_TYPE_EXPANDED)}
+              <>
+              {visibleEntries.map(([toolsetType, typeToolsets]) => {
+                const first = typeToolsets[0];
+                const typeKey = `toolset-type-${toolsetType}`;
+                const isTypeExpanded = expandedApps[typeKey] ?? DEFAULT_TOOLSET_TYPE_EXPANDED;
+
+                return (
+                  <Box key={toolsetType} mb="2">
+                    <SidebarCategoryRow
+                      groupLabel={normalizePaletteLabel((first.toolsetType || toolsetType) as string)}
+                      groupConnectorType={(first.toolsetType || toolsetType) as string}
+                      groupIcon={first.iconPath}
+                      itemCount={typeToolsets.length}
+                      isExpanded={isTypeExpanded}
+                      onToggle={() => onAppToggle(typeKey, DEFAULT_TOOLSET_TYPE_EXPANDED)}
+                    >
+                      {typeToolsets.map((ts) => {
+                        const instKey = `toolset-${ts.instanceId || ts.name.toLowerCase()}`;
+                        const isInstanceExpanded =
+                          expandedApps[instKey] ?? DEFAULT_TOOLSET_INSTANCE_EXPANDED;
+                        const ui = buildUiState(ts);
+                        const {
+                          needsConfiguration,
+                          dragPayload,
+                          dragBlocked,
+                          dragType,
+                          showCfg,
+                          cfgClickable,
+                          configureLocked,
+                          onDragAttempt,
+                        } = getToolsetPaletteRowState(
+                          ts,
+                          ui,
+                          activeToolsetTypeKeys,
+                          structureLocked,
+                          orgCredentialUiLocked,
+                          isServiceAccount,
+                          notifyStructureDragBlocked,
+                          () => handleDuplicateDrag(ts),
+                          () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
+                        );
+
+                        const toolsetNameForMerge = ts.toolsetType || ts.name || '';
+                        const dupType = activeToolsetTypeKeys.has(
+                          normalizeToolsetTypeKey(toolsetNameForMerge)
+                        );
+                        const mergeTarget = findMergeTargetToolsetNode(
+                          toolsetMergeCheckNodes,
+                          toolsetNameForMerge,
+                          ts.instanceId
+                        );
+                        const duplicateTypeDragBlocked = dupType && !mergeTarget;
+
+                        return (
+                          <SidebarCategoryRow
+                            key={ts.instanceId || ts.displayName}
+                            groupLabel={normalizePaletteLabel(ts.instanceName || ts.displayName || ts.name || '')}
+                            groupConnectorType={ts.toolsetType}
+                            groupIcon={ts.iconPath}
+                            itemCount={ts.tools.length}
+                            isExpanded={isInstanceExpanded}
+                            onToggle={() => onAppToggle(instKey, DEFAULT_TOOLSET_INSTANCE_EXPANDED)}
+                            dragType={dragType}
+                            dragData={dragBlocked ? undefined : dragPayload}
+                            onDragAttempt={onDragAttempt}
+                            showConfigureIcon={showCfg}
+                            onConfigureClick={
+                              cfgClickable ? () => void handleConfigureClick(ts) : undefined
+                            }
+                            configureDisabled={configureLocked}
+                            configureDisabledTooltip={orgCredentialLockedTooltip}
+                            configureTooltip={ui.configureTooltip}
+                            configureUseKeyIcon={ui.configureUseKeyIcon}
+                            configureIconColor={ui.configureIconColor}
+                            toolsetStatus={getToolsetSidebarStatus(ts)}
+                          >
+                            {ts.tools.map((tool) => (
+                              <ToolDragRow
+                                key={`${ts.instanceId}-${tool.fullName || tool.name}`}
+                                tool={tool}
+                                toolset={ts}
+                                needsConfiguration={needsConfiguration}
+                                structureLocked={structureLocked}
+                                duplicateTypeDragBlocked={duplicateTypeDragBlocked}
+                                onDragBlocked={() => {
+                                  if (structureLocked) notifyStructureDragBlocked();
+                                  else if (needsConfiguration) handleUnconfiguredDrag(ts, ui.isFromRegistry);
+                                  else if (duplicateTypeDragBlocked) handleDuplicateDrag(ts);
+                                }}
+                              />
+                            ))}
+                          </SidebarCategoryRow>
+                        );
+                      })}
+                    </SidebarCategoryRow>
+                  </Box>
+                );
+              })}
+              {typeEntries.length > TOOLSET_SHOW_MORE_LIMIT && (
+                <button
+                  type="button"
+                  aria-expanded={showAllToolsets}
+                  onClick={() => setShowAllToolsets((v) => !v)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    width: '100%',
+                    gap: 4,
+                    padding: '6px 8px',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    borderRadius: 'var(--radius-1)',
+                    border: 'none',
+                    background: 'none',
+                    fontFamily: 'inherit',
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a3)'; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
                 >
-                  {typeToolsets.map((ts) => {
-                    const instKey = `toolset-${ts.instanceId || ts.name.toLowerCase()}`;
-                    const isInstanceExpanded =
-                      expandedApps[instKey] ?? DEFAULT_TOOLSET_INSTANCE_EXPANDED;
-                    const ui = buildUiState(ts);
-                    const {
-                      needsConfiguration,
-                      dragPayload,
-                      dragBlocked,
-                      dragType,
-                      showCfg,
-                      cfgClickable,
-                      configureLocked,
-                      onDragAttempt,
-                    } = getToolsetPaletteRowState(
-                      ts,
-                      ui,
-                      activeToolsetTypeKeys,
-                      structureLocked,
-                      orgCredentialUiLocked,
-                      isServiceAccount,
-                      notifyStructureDragBlocked,
-                      () => handleDuplicateDrag(ts),
-                      () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
-                    );
-
-                    const toolsetNameForMerge = ts.toolsetType || ts.name || '';
-                    const dupType = activeToolsetTypeKeys.has(
-                      normalizeToolsetTypeKey(toolsetNameForMerge)
-                    );
-                    const mergeTarget = findMergeTargetToolsetNode(
-                      toolsetMergeCheckNodes,
-                      toolsetNameForMerge,
-                      ts.instanceId
-                    );
-                    const duplicateTypeDragBlocked = dupType && !mergeTarget;
-
-                    return (
-                      <SidebarCategoryRow
-                        key={ts.instanceId || ts.displayName}
-                        groupLabel={normalizePaletteLabel(ts.instanceName || ts.displayName || ts.name || '')}
-                        groupConnectorType={ts.toolsetType}
-                        groupIcon={ts.iconPath}
-                        itemCount={ts.tools.length}
-                        isExpanded={isInstanceExpanded}
-                        onToggle={() => onAppToggle(instKey, DEFAULT_TOOLSET_INSTANCE_EXPANDED)}
-                        dragType={dragType}
-                        dragData={dragBlocked ? undefined : dragPayload}
-                        onDragAttempt={onDragAttempt}
-                        showConfigureIcon={showCfg}
-                        onConfigureClick={
-                          cfgClickable ? () => void handleConfigureClick(ts) : undefined
-                        }
-                        configureDisabled={configureLocked}
-                        configureDisabledTooltip={orgCredentialLockedTooltip}
-                        configureTooltip={ui.configureTooltip}
-                        configureUseKeyIcon={ui.configureUseKeyIcon}
-                        configureIconColor={ui.configureIconColor}
-                        toolsetStatus={getToolsetSidebarStatus(ts)}
-                      >
-                        {ts.tools.map((tool) => (
-                          <ToolDragRow
-                            key={`${ts.instanceId}-${tool.fullName || tool.name}`}
-                            tool={tool}
-                            toolset={ts}
-                            needsConfiguration={needsConfiguration}
-                            structureLocked={structureLocked}
-                            duplicateTypeDragBlocked={duplicateTypeDragBlocked}
-                            onDragBlocked={() => {
-                              if (structureLocked) notifyStructureDragBlocked();
-                              else if (needsConfiguration) handleUnconfiguredDrag(ts, ui.isFromRegistry);
-                              else if (duplicateTypeDragBlocked) handleDuplicateDrag(ts);
-                            }}
-                          />
-                        ))}
-                      </SidebarCategoryRow>
-                    );
-                  })}
-                </SidebarCategoryRow>
-              </Box>
+                  <MaterialIcon
+                    name={showAllToolsets ? 'expand_less' : 'expand_more'}
+                    size={16}
+                    color="var(--accent-9)"
+                  />
+                  <Text size="1" weight="medium" style={{ color: 'var(--accent-9)' }}>
+                    {showAllToolsets ? t('agentBuilder.showLess') : `${t('agentBuilder.showMore')} (${typeEntries.length - TOOLSET_SHOW_MORE_LIMIT})`}
+                  </Text>
+                </button>
+              )}
+              </>
             );
-          })
+          })()
         : null}
 
       {userConfigToolset?.instanceId ? (

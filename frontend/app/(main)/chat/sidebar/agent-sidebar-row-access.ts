@@ -11,6 +11,7 @@ export type AgentAccessInput = Pick<
   | '_key'
   | 'can_edit'
   | 'can_delete'
+  | 'can_share'
   | 'can_view'
   | 'isServiceAccount'
   | 'shareWithOrg'
@@ -38,6 +39,8 @@ export type AgentSidebarRowMenuAccess = {
   agentKey: string;
   canEdit: boolean;
   canDelete: boolean;
+  canShare: boolean;
+  shareWithOrg: boolean;
   /**
    * Offer “View agent” in the row menu when the user may open the builder but cannot edit:
    * shared non–service-account agents, or service-account agents (builder is structure-locked without edit).
@@ -57,6 +60,8 @@ export function getAgentSidebarRowMenuAccess(agent: AgentAccessInput): AgentSide
 
   const canEdit = Boolean(agent.can_edit);
   const canDelete = Boolean(agent.can_delete);
+  const canShare = Boolean(agent.can_share);
+  const shareWithOrg = Boolean(agent.shareWithOrg);
   const canOpenBuilder = agent.can_view !== false;
   const isServiceAccount = agent.isServiceAccount === true;
   const viewEligible =
@@ -72,8 +77,10 @@ export function getAgentSidebarRowMenuAccess(agent: AgentAccessInput): AgentSide
     agentKey,
     canEdit,
     canDelete,
+    canShare,
+    shareWithOrg,
     showViewAgent,
     viewAgentTooltipVariant,
-    showMenu: canEdit || canDelete || showViewAgent,
+    showMenu: canEdit || canDelete || canShare || showViewAgent,
   };
 }

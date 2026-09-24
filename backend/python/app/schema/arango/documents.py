@@ -2,6 +2,7 @@ from app.config.constants.arangodb import (
     Connectors,
     ConnectorScopes,
     OriginTypes,
+    PermissionModel,
 )
 from app.models.entities import RecordGroupType, RecordType
 
@@ -155,16 +156,37 @@ app_schema = {
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
             "pendingFullSync": {"type": "boolean", "default": False},
+            "vectorMembershipBackfilled": {"type": "boolean", "default": False},
+            "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
+            "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
+            "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
+            "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
+            "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
+            "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
+            "lastSyncedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "status": {"type": ["string", "null"]},
             "isLocked": {"type": ["boolean", "null"]},
+            "ownerDeviceId": {"type": ["string", "null"]},
+            "ownerDeviceName": {"type": ["string", "null"]},
+            "permissionModel": {
+                "type": ["string", "null"],
+                "enum": [
+                    PermissionModel.APP_LEVEL.value,
+                    PermissionModel.RECORD_LEVEL.value,
+                    None,
+                ],
+            },
             # KB-specific optional fields
             "orgId": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
             "hideConnector": {"type": ["boolean", "null"]},
+            # Excludes this KB from list/browse/unscoped-search surfaces even
+            # though it is a normal KB app; explicit filters.kb still resolves it.
+            "isHidden": {"type": ["boolean", "null"]},
         },
         "required": [
             "name",
@@ -195,6 +217,7 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "externalRootGroupId": {"type": ["string", "null"]},
             "recordGroupId": {"type": ["string", "null"]},
+            "rootRecordGroupId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
                 "enum": [record_type.value for record_type in RecordType],
@@ -219,6 +242,9 @@ record_schema = {
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
+            # Clocks the stranded-record sweep in indexing_main ages rows on.
+            "queuedAtTimestamp": {"type": ["number", "null"]},
+            "lastRepublishedAt": {"type": ["number", "null"]},
             "parsingStatus": {
                 "type": "string",
                 "enum": [
@@ -610,6 +636,10 @@ code_file_record_schema={
             "description": {"type": ["string", "null"]},
             "filePath": {"type": "string", "minLength": 0},
             "fileHash": {"type": "string", "minLength": 0},
+            "language": {"type": ["string", "null"]},
+            # source | test | config | build | migration | script |
+            # type_definition | generated -- see parsers/code_parser/file_role.py
+            "fileRole": {"type": ["string", "null"]},
         },
     },
 }
@@ -729,6 +759,18 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            # Whether container-filtered search may trust this group's grant
+            # instead of checking each record. Null means "verify" — the safe
+            # state, and the only one until a connector proves otherwise.
+            # APP_LEVEL is excluded: it describes a connector, not a group.
+            "permissionModel": {
+                "type": ["string", "null"],
+                "enum": [
+                    PermissionModel.RECORD_GROUP_LEVEL.value,
+                    PermissionModel.RECORD_LEVEL.value,
+                    None,
+                ],
+            },
             "connectorId": {"type": ["string", "null"]},
             "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},
@@ -867,6 +909,7 @@ agent_schema = {
             },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
+            "sendUserContext": {"type": "boolean", "default": True},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
@@ -1260,6 +1303,31 @@ tool_schema = {
 }
 
 
+# MCP Server Node Schema — per-agent attachment of an org-wide MCP instance
+# (see app/agents/mcp/service.py). No secrets: credentials live in etcd,
+# keyed by instanceId + owner id, never on this node. Mirrors toolset_schema.
+mcp_server_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},
+            "name": {"type": "string"},  # Instance display name, snapshotted at attach time
+            "displayName": {"type": "string"},
+            "typeId": {"type": ["string", "null"]},  # Catalog type id, null for custom servers
+            "instanceId": {"type": "string"},  # /services/mcp/instances/{orgId}/{instanceId}
+            "userId": {"type": "string"},  # Executing user (used for etcd auth path lookup)
+            "createdBy": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"}
+        },
+        "required": ["name", "displayName", "instanceId", "userId", "createdBy", "createdAtTimestamp"],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the MCP server schema.",
+}
+
+
 # Agent Skills Node Schema — agent_loop_lib SkillManager's GraphSkillStore.
 # `content`/`resources` carry the full SKILL.md so the store can serve
 # `get_skill`/`get_resource` from one document; every other property is a
@@ -1290,7 +1358,7 @@ agent_skills_schema = {
             "concepts": {"type": "array", "items": {"type": "string"}, "default": []},
             "related": {"type": "array", "items": {"type": "string"}, "default": []},
             "requires": {"type": "array", "items": {"type": "string"}, "default": []},
-            "status": {"type": "string", "enum": ["active", "deprecated"]},
+            "status": {"type": "string", "enum": ["active", "deprecated", "disabled"]},
             "source": {"type": "string"},
             "version": {"type": "string"},
             "deprecatedReason": {"type": ["string", "null"]},

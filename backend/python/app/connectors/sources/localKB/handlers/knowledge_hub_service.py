@@ -30,6 +30,23 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
 from app.models.entities import RecordType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.indexing_progress import build_container_rollup, normalize_indexing_progress
+from app.utils.user_messages import action_failed, not_found
+
+
+class BrowseRequestError(Exception):
+    """A browse request this service can explain to the person who made it.
+
+    Only messages written here for a reader travel in one of these. Everything
+    else that goes wrong — including a ``ValueError`` the graph client raises for
+    its own reasons, such as a transaction it can no longer find — is internal,
+    and the caller answers it with a generic message instead.
+    """
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
 
 # Maps a node type to the container type understood by the rollup aggregation,
 # or None when the node is not a container that can carry a rollup. 'kb' (the
@@ -79,6 +96,18 @@ class KnowledgeHubService:
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
+
+    async def _resolve_user(self, user_id: str, org_id: str) -> Any | None:
+        """Resolve graph user node from external userId. EE overrides for org-scoped lookup."""
+        return await self.graph_provider.get_user_by_user_id(user_id=user_id)
+
+    async def _get_user_app_ids(
+        self, user_key: str, org_id: str
+    ) -> list[str]:
+        """Return app IDs accessible to this user. EE overrides for org-scoped lookup."""
+        owned_app_ids = await self.graph_provider.get_user_app_ids(user_key)
+        shared_app_ids = await self.graph_provider.get_user_permission_app_ids(user_key, org_id)
+        return list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))
 
     def _has_flattening_filters(self, q: str | None, node_types: list[str] | None,
                                  record_types: list[str] | None, origins: list[str] | None,
@@ -140,11 +169,12 @@ class KnowledgeHubService:
             skip = (page - 1) * limit
 
             # Get user key
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await self._resolve_user(user_id, org_id)
             if not user:
                 return KnowledgeHubNodesResponse(
                     success=False,
                     error="User not found",
+                    errorCode=404,
                     id=parent_id,
                     items=[],
                     pagination=PaginationInfo(
@@ -345,12 +375,12 @@ class KnowledgeHubService:
 
             return response
 
-        except ValueError as ve:
-            # Validation errors (404 - not found, 400 - type mismatch)
-            self.logger.warning(f"⚠️ Validation error: {str(ve)}")
+        except BrowseRequestError as request_error:
+            self.logger.warning("⚠️ Browse request refused: %s", request_error.message)
             return KnowledgeHubNodesResponse(
                 success=False,
-                error=str(ve),
+                error=request_error.message,  # user-written message
+                errorCode=request_error.status_code,
                 id=parent_id,
                 items=[],
                 pagination=PaginationInfo(
@@ -360,11 +390,11 @@ class KnowledgeHubService:
                 filters=FiltersInfo(applied=AppliedFilters()),
             )
         except Exception as e:
-            self.logger.error(f"❌ Failed to get nodes: {str(e)}")
-            self.logger.error(traceback.format_exc())
+            self.logger.error("❌ Failed to get nodes: %s", e, exc_info=True)
             return KnowledgeHubNodesResponse(
                 success=False,
-                error=f"Failed to retrieve nodes: {str(e)}",
+                error=action_failed("open this collection"),
+                errorCode=500,
                 id=parent_id,
                 items=[],
                 pagination=PaginationInfo(
@@ -460,13 +490,7 @@ class KnowledgeHubService:
     ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
         """Get root level nodes (Apps, including Collection App)"""
         try:
-            # Get user's accessible apps: owned/created (USER_APP_RELATION) plus
-            # shared-with, direct or via team (PERMISSION) — otherwise a KB
-            # shared with this user would never show up here even though the
-            # sharing itself succeeded.
-            owned_app_ids = await self.graph_provider.get_user_app_ids(user_key)
-            shared_app_ids = await self.graph_provider.get_user_permission_app_ids(user_key, org_id)
-            user_apps_ids = list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))
+            user_apps_ids = await self._get_user_app_ids(user_key, org_id)
 
             # Filter apps by connector_ids if provided
             if connector_ids:
@@ -702,7 +726,8 @@ class KnowledgeHubService:
         Validate that a node exists and matches the expected type.
 
         Raises:
-            KnowledgeHubNodesResponse with error if validation fails
+            BrowseRequestError: the node is gone, or the link asks for it as the
+                wrong kind of thing.
         """
         # Get node info
         node_info = await self.graph_provider.get_knowledge_hub_node_info(
@@ -711,14 +736,20 @@ class KnowledgeHubService:
         )
 
         if not node_info:
-            raise ValueError(f"Node with ID '{node_id}' not found")
+            raise BrowseRequestError(not_found("This item"), 404)
 
         actual_type = node_info.get('nodeType')
 
         # Validate type matches
         if actual_type != expected_type:
-            raise ValueError(
-                f"Node type mismatch: node '{node_id}' is not '{expected_type}', it is '{actual_type}'. Use /nodes/{actual_type}/{node_id} instead."
+            self.logger.warning(
+                "⚠️ Node %s is a %s, not the %s the request asked for",
+                node_id, actual_type, expected_type,
+            )
+            raise BrowseRequestError(
+                "This link points to something else now. "
+                "Go back to the collection and open the item from there.",
+                400,
             )
 
         # Validate user has access (check permissions)

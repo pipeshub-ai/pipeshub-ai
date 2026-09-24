@@ -92,6 +92,7 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_KNOWLEDGE.value == "AgentKnowledge"
         assert Neo4jLabel.AGENT_TOOLSETS.value == "AgentToolset"
         assert Neo4jLabel.AGENT_TOOLS.value == "AgentTool"
+        assert Neo4jLabel.AGENT_MCP_SERVERS.value == "AgentMcpServer"
 
     def test_sales_labels(self) -> None:
         assert Neo4jLabel.DEALS.value == "Deals"
@@ -103,7 +104,7 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_SKILL_CANDIDATES.value == "AgentSkillCandidates"
 
     def test_total_member_count(self) -> None:
-        assert len(Neo4jLabel) == 47
+        assert len(Neo4jLabel) == 48
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +118,7 @@ class TestNeo4jRelationshipType:
         assert Neo4jRelationshipType.IS_OF_TYPE.value == "IS_OF_TYPE"
         assert Neo4jRelationshipType.PERMISSION.value == "PERMISSION"
         assert Neo4jRelationshipType.INHERIT_PERMISSIONS.value == "INHERIT_PERMISSIONS"
+        assert Neo4jRelationshipType.ENTITY_RELATIONS.value == "ENTITYRELATIONS"
         assert Neo4jRelationshipType.USER_APP_RELATION.value == "USER_APP_RELATION"
         assert Neo4jRelationshipType.ORG_APP_RELATION.value == "ORG_APP_RELATION"
         assert Neo4jRelationshipType.USER_DRIVE_RELATION.value == "USER_DRIVE_RELATION"
@@ -132,12 +134,14 @@ class TestNeo4jRelationshipType:
         assert Neo4jRelationshipType.AGENT_HAS_TOOLSET.value == "AGENT_HAS_TOOLSET"
         assert Neo4jRelationshipType.TOOLSET_HAS_TOOL.value == "TOOLSET_HAS_TOOL"
         assert Neo4jRelationshipType.AGENT_HAS_SKILL.value == "AGENT_HAS_SKILL"
+        assert Neo4jRelationshipType.AGENT_HAS_MCP_SERVER.value == "AGENT_HAS_MCP_SERVER"
+        assert Neo4jRelationshipType.MCP_SERVER_HAS_TOOL.value == "MCP_SERVER_HAS_TOOL"
 
     def test_agent_skill_relationship(self) -> None:
         assert Neo4jRelationshipType.AGENT_SKILL_RELATION.value == "AGENT_SKILL_RELATION"
 
     def test_total_member_count(self) -> None:
-        assert len(Neo4jRelationshipType) == 25
+        assert len(Neo4jRelationshipType) == 28
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +192,7 @@ class TestCollectionToLabelMapping:
             (CollectionNames.AGENT_KNOWLEDGE.value, Neo4jLabel.AGENT_KNOWLEDGE.value),
             (CollectionNames.AGENT_TOOLSETS.value, Neo4jLabel.AGENT_TOOLSETS.value),
             (CollectionNames.AGENT_TOOLS.value, Neo4jLabel.AGENT_TOOLS.value),
+            (CollectionNames.AGENT_MCP_SERVERS.value, Neo4jLabel.AGENT_MCP_SERVERS.value),
             (CollectionNames.ARTIFACTS.value, Neo4jLabel.ARTIFACTS.value),
             (CollectionNames.AGENT_SKILLS.value, Neo4jLabel.AGENT_SKILLS.value),
             (CollectionNames.AGENT_SKILL_VERSIONS.value, Neo4jLabel.AGENT_SKILL_VERSIONS.value),
@@ -200,7 +205,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self) -> None:
-        assert len(COLLECTION_TO_LABEL) == 45
+        assert len(COLLECTION_TO_LABEL) == 46
 
     def test_all_values_are_strings(self) -> None:
         for k, v in COLLECTION_TO_LABEL.items():
@@ -220,6 +225,7 @@ class TestEdgeCollectionToRelationshipMapping:
             (CollectionNames.IS_OF_TYPE.value, Neo4jRelationshipType.IS_OF_TYPE.value),
             (CollectionNames.PERMISSION.value, Neo4jRelationshipType.PERMISSION.value),
             (CollectionNames.INHERIT_PERMISSIONS.value, Neo4jRelationshipType.INHERIT_PERMISSIONS.value),
+            (CollectionNames.ENTITY_RELATIONS.value, Neo4jRelationshipType.ENTITY_RELATIONS.value),
             (CollectionNames.USER_APP_RELATION.value, Neo4jRelationshipType.USER_APP_RELATION.value),
             (CollectionNames.ORG_APP_RELATION.value, Neo4jRelationshipType.ORG_APP_RELATION.value),
             (CollectionNames.USER_DRIVE_RELATION.value, Neo4jRelationshipType.USER_DRIVE_RELATION.value),
@@ -231,6 +237,8 @@ class TestEdgeCollectionToRelationshipMapping:
             (CollectionNames.AGENT_HAS_TOOLSET.value, Neo4jRelationshipType.AGENT_HAS_TOOLSET.value),
             (CollectionNames.TOOLSET_HAS_TOOL.value, Neo4jRelationshipType.TOOLSET_HAS_TOOL.value),
             (CollectionNames.AGENT_HAS_SKILL.value, Neo4jRelationshipType.AGENT_HAS_SKILL.value),
+            (CollectionNames.AGENT_HAS_MCP_SERVER.value, Neo4jRelationshipType.AGENT_HAS_MCP_SERVER.value),
+            (CollectionNames.MCP_SERVER_HAS_TOOL.value, Neo4jRelationshipType.MCP_SERVER_HAS_TOOL.value),
             (CollectionNames.AGENT_SKILL_RELATION.value, Neo4jRelationshipType.AGENT_SKILL_RELATION.value),
             (CollectionNames.SOLD_IN.value, Neo4jRelationshipType.SOLD_IN.value),
             (CollectionNames.DEAL_OF.value, Neo4jRelationshipType.DEAL_OF.value),
@@ -245,7 +253,7 @@ class TestEdgeCollectionToRelationshipMapping:
             assert EDGE_COLLECTION_TO_RELATIONSHIP[arango_key] == neo4j_rel
 
     def test_mapping_size(self) -> None:
-        assert len(EDGE_COLLECTION_TO_RELATIONSHIP) == 25
+        assert len(EDGE_COLLECTION_TO_RELATIONSHIP) == 28
 
     def test_all_values_are_strings(self) -> None:
         for k, v in EDGE_COLLECTION_TO_RELATIONSHIP.items():

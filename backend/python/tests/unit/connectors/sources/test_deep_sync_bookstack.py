@@ -91,6 +91,10 @@ def connector():
         dep.on_record_metadata_update = AsyncMock()
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_user_by_user_id = AsyncMock(return_value=MagicMock(email="test@example.com"))
+        dep.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-db-1"))
+        dep.delete_edges_between_collections = AsyncMock()
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -168,7 +172,7 @@ class TestProcessBookstackPage:
         existing.external_revision_id = "1"
         existing.version = 1
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         page = _make_page(name="New Name")
         connector.data_source.get_content_permissions = AsyncMock(
             return_value=_make_response(data={"permissions": []})
@@ -185,7 +189,7 @@ class TestProcessBookstackPage:
         existing.external_revision_id = "1"
         existing.version = 1
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         page = _make_page(revision_count=5)
         connector.data_source.get_content_permissions = AsyncMock(
             return_value=_make_response(data={"permissions": []})
@@ -236,14 +240,9 @@ class TestProcessBookstackPage:
         assert result.new_permissions == []
 
     async def test_page_exception_returns_none(self, connector):
-        connector.data_store_provider = MagicMock()
-
-        @asynccontextmanager
-        async def _fail():
-            raise RuntimeError("db error")
-            yield  # noqa
-
-        connector.data_store_provider.transaction = _fail
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=RuntimeError("db error")
+        )
         result = await connector._process_bookstack_page(_make_page(), {}, [])
         assert result is None
 
@@ -260,8 +259,10 @@ class TestBookstackHandleRecordUpdates:
             metadata_changed=False, content_changed=False, permissions_changed=False,
             external_record_id="page/1",
         )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_called_once()
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(connector.connector_id, "page/1")
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
     async def test_new_record_logs_only(self, connector):
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -313,6 +314,7 @@ class TestBookstackHandleRecordUpdates:
 
     async def test_exception_handled(self, connector):
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         connector.data_entities_processor.on_record_deleted = AsyncMock(
             side_effect=RuntimeError("err")
         )
@@ -322,6 +324,7 @@ class TestBookstackHandleRecordUpdates:
             external_record_id="page/1",
         )
         await connector._handle_record_updates(update)  # Should not raise
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ---------------------------------------------------------------------------

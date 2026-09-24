@@ -7,6 +7,7 @@ import { SidebarBase } from '@/app/components/sidebar';
 import { useChatStore } from '@/chat/store';
 import { debugLog } from '@/chat/debug-logger';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
+import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from './footer';
@@ -16,6 +17,7 @@ import { ChatSections } from './chat-sections';
 import { MoreChatsSidebar } from './more-chats-sidebar';
 import { AgentsSidebar } from './agents-sidebar';
 import { AgentScopedChatSidebar } from './agent-scoped-chat-sidebar';
+import { ProjectConversationsSidebar } from './project-conversations-sidebar';
 
 /**
  * Chat sidebar — uses SidebarBase shell with header, footer, and custom content.
@@ -77,7 +79,17 @@ function ChatSidebarInner() {
  * Chooses the main chat sidebar vs agent-scoped conversation list from URL.
  */
 function ChatSidebarRoot() {
-  const agentId = useSearchParams().get('agentId');
+  const searchParams = useSearchParams();
+  const agentId = searchParams.get('agentId');
+  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  // A thread can't be scoped to both an agent and a project — agentId wins.
+  const rawProjectId = searchParams.get('projectId');
+  // `/chat/?projectId=…` is both the new-chat resting state and the
+  // in-conversation state. Show the project sidebar in either case.
+  const projectId =
+    !agentId && projectsEnabled && rawProjectId?.trim()
+      ? rawProjectId
+      : null;
   const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
   const prevAgentIdRef = useRef<string | null>(null);
 
@@ -94,6 +106,9 @@ function ChatSidebarRoot() {
 
   if (agentId) {
     return <AgentScopedChatSidebar agentId={agentId} />;
+  }
+  if (projectId) {
+    return <ProjectConversationsSidebar projectId={projectId} />;
   }
   return <ChatSidebarInner />;
 }

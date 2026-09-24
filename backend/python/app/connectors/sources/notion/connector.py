@@ -10,7 +10,7 @@ import mimetypes
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Union
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
@@ -20,9 +20,20 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    PermissionModel,
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+    RecordRelations,
+)
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -38,13 +49,14 @@ from app.connectors.core.registry.auth_builder import (
     OAuthScopeConfig,
 )
 from app.connectors.core.registry.connector_builder import (
+    AuthField,
     CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.core.constants import CONNECTOR_NOTION_TEAM_ACCESS_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -83,10 +95,17 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
-from app.sources.client.notion.notion import NotionClient
+from app.sources.client.notion.notion import NotionClient, NotionRESTClientViaOAuth
 from app.sources.external.notion.notion import NotionDataSource
+from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 
 # Notion OAuth URLs
 # Note: Notion OAuth doesn't use traditional scopes. Permissions are configured
@@ -95,10 +114,71 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 AUTHORIZE_URL = "https://api.notion.com/v1/oauth/authorize"
 TOKEN_URL = "https://api.notion.com/v1/oauth/token"
 
+# HTTP statuses on an image fetch that no amount of retrying will fix.
+# 401/403 are deliberately absent: Notion serves images as S3 pre-signed URLs
+# (X-Amz-Expires=3600), and an expired one answers 403. Treating that as
+# permanent would drop the image for good; it needs a retry so the block is
+# re-read with a fresh URL.
+_PERMANENT_IMAGE_STATUSES = frozenset({404, 410, 415})
+
+# Notion answers 404 object_not_found both for "deleted" and for "not shared with this
+# integration" — the two are indistinguishable over the API, which is why a 404 never
+# deletes a record that already has content. It only stops us re-queueing it forever.
+_NOT_FOUND_STATUS = 404
+_OAUTH_REQUIRED_SCOPES = (
+    ("read_content", "Read content"),
+    ("read_comment", "Read comments"),
+)
+
+
+class _RecordGone:
+    """Sentinel: the source object is definitively unreachable (404).
+
+    Distinct from ``None``, which every caller already reads as "unchanged, reindex it".
+    Conflating the two is what re-published a reindex event for a 404 page on every pass.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<RECORD_GONE>"
+
+
+RECORD_GONE = _RecordGone()
+
+
+class _DatabaseGone(Exception):
+    """Notion returned a definitive 404/trash for a database container."""
+
+
+class _DatabaseUnavailable(RuntimeError):
+    """Notion could not answer for a database right now (429, 5xx, unusable payload)."""
+
+
+class UnconvertibleImageError(Exception):
+    """An image that will never convert: the SVG converter is unavailable, or the
+    object is permanently gone or of an unsupported type.
+
+    Retrying the record cannot fix it, so the page is streamed without the image
+    rather than failing forever — a single bad image used to make the whole page
+    permanently unstreamable, and the indexing pipeline retried it in a loop.
+
+    Kept deliberately narrow. Anything that might merely be a bad moment — an
+    expired signed URL, a truncated body, a proxy error page — must stay a plain
+    exception so the record is retried, because a misclassification here loses
+    the image silently and forever.
+    """
+
 @ConnectorBuilder("Notion")\
     .in_group("Notion")\
     .with_description("Sync pages, databases, and users from Notion")\
     .with_categories(["Knowledge Management", "Collaboration"])\
+    .with_resilience_config(
+        rate_limit=3,        # Notion allows ~3 requests/second average per integration
+        max_retries=3,       # 4 attempts total
+        base_delay=1.0,
+        max_delay=60.0,
+    )\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
@@ -120,11 +200,30 @@ TOKEN_URL = "https://api.notion.com/v1/oauth/token"
             app_description="OAuth application for accessing Notion API",
             app_categories=["Knowledge Management", "Collaboration"],
             additional_params={}
-        )
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="apiToken",
+                display_name="Internal Integration Secret",
+                placeholder="ntn_...",
+                description=(
+                    "Internal integration secret from notion.so/my-integrations. "
+                    "Personal access tokens are not supported — the workspace is identified "
+                    "from the integration's bot user."
+                ),
+                field_type="PASSWORD",
+                required=True,
+                max_length=2000,
+                is_secret=True,
+            )
+        ])
     ])\
-    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
+    .with_info(CONNECTOR_NOTION_TEAM_ACCESS_INFO)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.NOTION.value))
+        # Names the personal alternative the info text points at. required=False:
+        # Notion team setup needs no admin access, so this only supplies the link.
+        .with_admin_access_required(False, personal_connector_type="Notion Personal")
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Notion OAuth Setup",
@@ -174,6 +273,12 @@ class NotionConnector(BaseConnector):
 
     # Constants for external_record_id parsing
     MIN_PARTS_NEW_FORMAT = 2  # Minimum parts for ID format: {id}_{hash}
+    # Notion API page size for users/search pagination (API max is 100).
+    _SYNC_PAGE_SIZE = 20
+    # Above the connector's own rate_limit=3 the limiter just serializes them anyway.
+    _PLACEHOLDER_SWEEP_CONCURRENCY = 3
+    # Runaway backstop only — `visited` already guarantees termination.
+    _PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
 
     def __init__(
         self,
@@ -221,16 +326,34 @@ class NotionConnector(BaseConnector):
         self.workspace_id: Optional[str] = None
         self.workspace_name: Optional[str] = None
 
+    def _oauth_config_type(self) -> str:
+        """Key this connector's shared OAuth apps are stored under.
+
+        Must match ``_get_oauth_config_path`` in the connectors router, which
+        normalizes the connector type the same way — otherwise a variant such as
+        Notion Personal looks up its ``oauthConfigId`` in the wrong list and
+        silently falls back to empty credentials.
+        """
+        name = self.connector_name
+        return (name.value if isinstance(name, Connectors) else str(name)).lower().replace(" ", "")
+
     async def init(self) -> bool:
         """Initialize the Notion connector with credentials and client."""
         try:
             self.logger.info("🔧 Initializing Notion Connector...")
 
+            # Re-initialising a live connector would otherwise strand the previous
+            # keep-alive pool. self.resilience is cached on the instance, so the
+            # rate limiter and any armed backoff survive the client swap.
+            await self._close_client()
+
             # Build client from services
             self.notion_client = await NotionClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
-                connector_instance_id=self.connector_id
+                connector_instance_id=self.connector_id,
+                resilience=self.resilience,
+                connector_type=self._oauth_config_type(),
             )
 
             # Initialize data source
@@ -243,6 +366,42 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"❌ Failed to initialize Notion connector: {e}", exc_info=True)
             return False
 
+    async def _assert_required_capabilities(self, _datasource: NotionDataSource) -> None:
+        """OAuth only: require ``read_content`` and ``read_comment`` from introspect.
+
+        Internal API tokens have no scope list; they are not gated here.
+        """
+        client = self.notion_client.get_client() if self.notion_client else None
+        if not isinstance(client, NotionRESTClientViaOAuth) or not client.access_token:
+            return
+
+        try:
+            payload = await client.introspect_access_token(client.access_token)
+        except Exception as e:
+            self.logger.warning("Notion OAuth introspect failed: %s", e)
+            raise ConnectorInitError(
+                "Could not validate Notion OAuth token capabilities. "
+                "Re-authorize this connector."
+            ) from e
+
+        if payload.get("active") is False:
+            raise ConnectorInitError(
+                "Notion OAuth token is no longer active. Re-authorize this connector."
+            )
+        scopes = str(payload.get("scope") or "").split()
+        missing = [
+            label
+            for scope, label in _OAUTH_REQUIRED_SCOPES
+            if scope not in scopes
+        ]
+        if missing:
+            names = " and ".join(missing)
+            noun = "capability" if len(missing) == 1 else "capabilities"
+            raise ConnectorInitError(
+                f"Notion token is missing the {names} {noun}. "
+                f"Enable {names} on the integration and re-authorize this connector."
+            )
+
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to Notion API."""
         try:
@@ -251,15 +410,24 @@ class NotionConnector(BaseConnector):
                 return False
 
             datasource = await self._get_fresh_datasource()
-            response = await datasource.retrieve_bot_user()
+            await self._assert_required_capabilities(datasource)
 
-            if not response or not response.success:
-                self.logger.error(f"Connection test failed: {response.error if response else 'No response'}")
-                return False
+            # API tokens have no introspect payload — only confirm Notion accepts them.
+            client = self.notion_client.get_client() if self.notion_client else None
+            if not isinstance(client, NotionRESTClientViaOAuth):
+                response = await datasource.retrieve_bot_user()
+                if not response or not response.success:
+                    self.logger.error(
+                        "Connection test failed: %s",
+                        response.error if response else "No response",
+                    )
+                    return False
 
             self.logger.info("✅ Notion connector connection test passed")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
             return False
@@ -282,6 +450,9 @@ class NotionConnector(BaseConnector):
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Notion sync for org: {org_id}")
 
+            datasource = await self._get_fresh_datasource()
+            await self._assert_required_capabilities(datasource)
+
             # Load filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "notion", self.connector_id, self.logger
@@ -297,6 +468,19 @@ class NotionConnector(BaseConnector):
             # along with all page attachments and comments
             await self._sync_objects_by_type("page")
 
+            # Step 4: Reconcile parent stubs the passes above left behind. Deliberately
+            # outside the raising path — a sweep failure must not fail a sync whose records
+            # all landed.
+            try:
+                await self._sweep_placeholder_records()
+            except Exception as e:
+                self.logger.error(f"Placeholder sweep failed: {e}", exc_info=True)
+
+            try:
+                await self._retire_leftover_database_records()
+            except Exception as e:
+                self.logger.error(f"Leftover database pass failed: {e}", exc_info=True)
+
             self.logger.info("✅ Notion sync completed successfully")
 
         except Exception as e:
@@ -306,6 +490,396 @@ class NotionConnector(BaseConnector):
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (delegates to full sync)."""
         await self.run_sync()
+
+    # ==================== Placeholder reconciliation ====================
+
+    # Which endpoint answers for a stub of each record type. A stub whose type is absent
+    # here (FILE, or a block id that leaked in) is left alone rather than guessed at.
+    _PLACEHOLDER_OBJECT_TYPES = {
+        RecordType.WEBPAGE: "page",
+        RecordType.DATASOURCE: "data_source",
+    }
+
+    async def _fetch_placeholder_object(self, stub: Record) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """Resolve one stub against Notion. Returns (verdict, payload).
+
+        Verdicts: ``in_scope`` (payload set), ``gone``, ``unknown``. Only a real 404 or an
+        explicitly archived object is ``gone``; every other failure is ``unknown`` and the
+        stub is left for the next sync. Getting this wrong the other way would tear down
+        good hierarchy on a rate limit.
+        """
+        object_type = self._PLACEHOLDER_OBJECT_TYPES.get(stub.record_type)
+        if not object_type or not stub.external_record_id:
+            return "unknown", None
+
+        datasource = await self._get_fresh_datasource()
+        if object_type == "page":
+            response = await datasource.retrieve_page(stub.external_record_id)
+        elif object_type == "data_source":
+            response = await datasource.retrieve_data_source_by_id(stub.external_record_id)
+        else:
+            return "unknown", None
+
+        if self._is_definitive_not_found(response):
+            return "gone", None
+        if not response or not response.success or not response.data:
+            return "unknown", None
+
+        payload = response.data.json()
+        if not isinstance(payload, dict):
+            return "unknown", None
+        if payload.get("archived") or payload.get("in_trash"):
+            # Trashed objects still answer 200. Sync skips them (see _sync_objects_by_type),
+            # so they will never become real records — treat as gone. A restore bumps
+            # last_edited_time, so the object re-syncs and the link re-forms on its own.
+            return "gone", None
+        return "in_scope", payload
+
+    async def _detach_placeholder_children(self, stub: Record) -> int:
+        """Clear the dangling parent pointer on a stub's children, before deleting it.
+
+        Deleting the stub on its own is not enough: the record-group root listing selects
+        on the persisted ``externalParentId`` while child expansion walks edges, so a child
+        left pointing at a deleted parent is excluded from the root *and* has nothing to
+        expand from — it disappears from the browse tree entirely.
+
+        Writes the base node directly rather than going through ``on_new_records``: that
+        path gates its only upsert on a revision change, so the field write would be
+        silently dropped, and it would republish indexing events for these records.
+        """
+        children = await self.data_entities_processor.get_records_by_parent(
+            self.connector_id, stub.external_record_id
+        )
+        if not children:
+            return 0
+
+        nodes = []
+        for child in children:
+            child.parent_external_record_id = None
+            child.parent_record_type = None
+            nodes.append(child.to_arango_base_record())
+
+        async with self.data_store_provider.transaction() as tx_store:
+            # Base node only — batch_upsert_records would also rewrite the type doc, and
+            # these come back as base Records whose type payload is the wrong shape.
+            updated = await tx_store.batch_update_nodes(nodes, CollectionNames.RECORDS.value)
+
+        # The providers report a partial write by returning False, not by raising. Deleting
+        # the stub anyway would strand whichever children kept their now-dangling parent
+        # pointer — the exact orphaning this method exists to prevent — so refuse to let the
+        # caller proceed and leave the stub for the next sweep to retry.
+        if updated is not True:
+            raise RuntimeError(
+                f"detach of {len(children)} child record(s) from {stub.external_record_id} "
+                f"did not fully apply (batch_update_nodes returned {updated!r})"
+            )
+        return len(children)
+
+    async def _rehome_children(
+        self,
+        children: List[Record],
+        *,
+        new_parent_external_id: Optional[str],
+        new_parent_type: Optional[RecordType],
+    ) -> None:
+        """Point children at a new parent (field + PARENT_CHILD edge), or detach them.
+
+        Browse lists roots by ``externalParentId IS NULL`` and expands children by
+        edges. Updating the field without the edge (or the edge without nulling the
+        field) hides the child. If the new parent is not in the graph yet, detach
+        so they stay visible at the workspace root.
+        """
+        parent_record = None
+        if new_parent_external_id:
+            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, new_parent_external_id
+            )
+            if parent_record is None:
+                new_parent_external_id = None
+                new_parent_type = None
+
+        nodes = []
+        for child in children:
+            child.parent_external_record_id = new_parent_external_id
+            child.parent_record_type = new_parent_type
+            nodes.append(child.to_arango_base_record())
+
+        async with self.data_store_provider.transaction() as tx_store:
+            if nodes:
+                updated = await tx_store.batch_update_nodes(
+                    nodes, CollectionNames.RECORDS.value
+                )
+                if updated is not True:
+                    raise RuntimeError(
+                        f"re-home of {len(children)} child record(s) did not fully apply "
+                        f"(batch_update_nodes returned {updated!r})"
+                    )
+            for child in children:
+                await tx_store.delete_parent_child_edge_to_record(child.id)
+                if parent_record is not None:
+                    await tx_store.create_record_relation(
+                        parent_record.id,
+                        child.id,
+                        RecordRelations.PARENT_CHILD.value,
+                    )
+
+    async def _retire_database_container_record(self, record: Record) -> None:
+        """Re-home children of a leftover DATABASE container, then delete it.
+
+        Only a definitive 404/trash is treated as gone. A 429/5xx raises so the
+        caller leaves the container for the next run.
+        """
+        if not record.id:
+            return
+        if not record.external_record_id:
+            await self.data_entities_processor.on_record_deleted(record.id)
+            return
+
+        children = await self.data_entities_processor.get_records_by_parent(
+            self.connector_id, record.external_record_id
+        )
+
+        try:
+            payload = await self._retrieve_database_payload(record.external_record_id)
+        except _DatabaseGone:
+            if children:
+                await self._rehome_children(
+                    children, new_parent_external_id=None, new_parent_type=None
+                )
+            await self.data_entities_processor.on_record_deleted(record.id)
+            self.logger.info(
+                "Retired unreachable Notion database container %s and detached %d child record(s)",
+                record.external_record_id, len(children),
+            )
+            return
+
+        data_source_id = self._first_data_source_id(payload)
+        hop_id, hop_type = await self._parent_ref_from_database_payload(
+            payload, {record.external_record_id}
+        )
+
+        datasource_children = [
+            child for child in children if child.record_type == RecordType.DATASOURCE
+        ]
+        other_children = [
+            child for child in children if child.record_type != RecordType.DATASOURCE
+        ]
+        if datasource_children:
+            await self._rehome_children(
+                datasource_children,
+                new_parent_external_id=hop_id,
+                new_parent_type=hop_type,
+            )
+        if other_children:
+            await self._rehome_children(
+                other_children,
+                new_parent_external_id=data_source_id or hop_id,
+                new_parent_type=(
+                    RecordType.DATASOURCE if data_source_id else hop_type
+                ),
+            )
+
+        await self.data_entities_processor.on_record_deleted(record.id)
+        self.logger.info(
+            "Retired leftover Notion database container %s and re-homed %d child record(s)",
+            record.external_record_id, len(children),
+        )
+
+    async def _retire_leftover_database_records(self) -> None:
+        """Drop DATABASE containers the old sweep already promoted to real records."""
+        try:
+            leftovers = await self.data_entities_processor.get_records_by_record_type(
+                self.connector_id, RecordType.DATABASE
+            )
+        except Exception as e:
+            self.logger.error(
+                "Could not load leftover Notion database containers: %s", e, exc_info=True
+            )
+            return
+
+        if not leftovers:
+            return
+
+        retired = 0
+        for record in leftovers:
+            try:
+                await self._retire_database_container_record(record)
+                retired += 1
+            except Exception as e:
+                self.logger.warning(
+                    "Leaving Notion database container %s for the next sync: %s",
+                    record.external_record_id, e,
+                )
+        self.logger.info(
+            "Leftover database pass: retired %d of %d container(s)",
+            retired, len(leftovers),
+        )
+
+    async def _sweep_placeholder_records(self) -> None:
+        """Reconcile parent stubs left behind when a child synced but its parent did not.
+
+        Notion lets a user share individual nested pages, so "child in scope, parent out of
+        scope" is a permanent state, not a race — the framework's stub would otherwise wait
+        forever to be reconciled and stay visible as a raw UUID. Resolving each stub by id
+        also reaches parents the search pass cannot, since a fetch by id ignores the
+        last_edited_time watermark.
+
+        Runs at the tail of every sync; idempotent and keyed by external id, so an
+        interrupted sweep is finished by the next one.
+        """
+        try:
+            seeds = await self.data_entities_processor.get_placeholder_records(self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Placeholder sweep: could not load placeholders: {e}", exc_info=True)
+            return
+
+        visited: set = set()
+        frontier: List[Record] = []
+        for stub in seeds:
+            if stub.external_record_id and stub.external_record_id not in visited:
+                visited.add(stub.external_record_id)
+                frontier.append(stub)
+
+        if not frontier:
+            return
+
+        self.logger.info(f"Placeholder sweep: {len(frontier)} stub(s) to reconcile")
+        promoted = detached = untouched = 0
+        total = 0
+
+        while frontier:
+            results = await gather_with_concurrency(
+                self._PLACEHOLDER_SWEEP_CONCURRENCY,
+                *[self._fetch_placeholder_object(stub) for stub in frontier],
+                return_exceptions=True,
+            )
+
+            next_frontier: List[Record] = []
+            for stub, result in zip(frontier, results):
+                if isinstance(result, BaseException):
+                    self.logger.warning(
+                        "Placeholder sweep: %s failed, leaving stub for next sync: %s",
+                        stub.external_record_id, result,
+                    )
+                    untouched += 1
+                    continue
+
+                if stub.record_type == RecordType.DATABASE:
+                    try:
+                        await self._retire_database_container_record(stub)
+                        detached += 1
+                    except Exception as e:
+                        self.logger.error(
+                            "Placeholder sweep: failed to retire database container %s: %s",
+                            stub.external_record_id, e, exc_info=True,
+                        )
+                        untouched += 1
+                    continue
+
+                verdict, payload = result
+                try:
+                    if verdict == "in_scope":
+                        parent_ref = await self._materialize_placeholder(stub, payload)
+                        promoted += 1
+                        if parent_ref and parent_ref not in visited:
+                            visited.add(parent_ref)
+                            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                                self.connector_id, parent_ref
+                            )
+                            if parent_record is not None and parent_record.is_placeholder:
+                                next_frontier.append(parent_record)
+                    elif verdict == "gone":
+                        moved = await self._detach_placeholder_children(stub)
+                        await self.data_entities_processor.on_record_deleted(stub.id)
+                        detached += 1
+                        self.logger.info(
+                            "Placeholder sweep: %s is not reachable in Notion; removed the "
+                            "stub and moved %d child record(s) to the workspace root",
+                            stub.external_record_id, moved,
+                        )
+                    else:
+                        untouched += 1
+                except _DatabaseGone:
+                    moved = await self._detach_placeholder_children(stub)
+                    await self.data_entities_processor.on_record_deleted(stub.id)
+                    detached += 1
+                    self.logger.info(
+                        "Placeholder sweep: %s parent database is gone; removed the "
+                        "stub and moved %d child record(s) to the workspace root",
+                        stub.external_record_id, moved,
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        "Placeholder sweep: failed to reconcile %s: %s",
+                        stub.external_record_id, e, exc_info=True,
+                    )
+                    untouched += 1
+
+            total += len(frontier)
+            if total > self._PLACEHOLDER_SWEEP_SAFETY_MAX:
+                self.logger.error(
+                    f"Placeholder sweep exceeded safety bound "
+                    f"({self._PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
+                )
+                break
+            frontier = next_frontier
+
+        self.logger.info(
+            "Placeholder sweep done: %d promoted, %d removed, %d left for next sync",
+            promoted, detached, untouched,
+        )
+
+    async def _materialize_placeholder(
+        self, stub: Record, payload: Dict[str, Any]
+    ) -> Optional[str]:
+        """Turn a resolvable stub into the real record. Returns its own parent external id.
+
+        ``on_new_records`` promotes in place: the processor matches on external id, reuses
+        the stub's record id, and flips ``is_placeholder`` to False once a real record with
+        the same id is upserted.
+        """
+        object_type = self._PLACEHOLDER_OBJECT_TYPES.get(stub.record_type)
+        database_parent_id = None
+        database_parent_record_type = None
+        if object_type == "data_source":
+            parent = payload.get("parent", {}) or {}
+            if parent.get("type") == "database_id" and parent.get("database_id"):
+                # A failure here must not upsert with parent=None — that would clear the
+                # PARENT_CHILD edge — so leave the stub alone and retry next sync.
+                database_parent_id, database_parent_record_type = (
+                    await self._get_database_parent_ref(parent["database_id"])
+                )
+
+        record = await self._transform_to_webpage_record(
+            payload,
+            object_type,
+            database_parent_id=database_parent_id,
+            database_parent_record_type=database_parent_record_type,
+        )
+        if not record:
+            raise RuntimeError(f"could not transform {object_type} {stub.external_record_id}")
+
+        record.id = stub.id
+        record.record_group_id = stub.record_group_id
+        if not record.external_record_group_id:
+            record.external_record_group_id = stub.external_record_group_id or self.workspace_id
+        record.inherit_permissions = True
+
+        # Same gate the search pass applies (see _sync_objects_by_type). Without it the
+        # sweep is a way in for content the user filtered off: promoting a stub publishes a
+        # newRecord event and indexes a page whose type has indexing disabled.
+        indexing_enabled = self.indexing_filters.is_enabled(
+            IndexingFilterKey.PAGES if object_type == "page" else IndexingFilterKey.DATABASES
+        )
+        if not indexing_enabled:
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        await self.data_entities_processor.on_new_records([(record, [])])
+        self.logger.info(
+            "Placeholder sweep: resolved %s -> %r",
+            stub.external_record_id, record.record_name,
+        )
+        return record.parent_external_record_id
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """
@@ -317,7 +891,7 @@ class NotionConnector(BaseConnector):
         """
         try:
             if not self.data_source:
-                return None
+                raise connector_not_ready(self.display_name)
 
             external_id = record.external_record_id
             if external_id.startswith("ca_") or external_id.startswith("comment_attachment_"):
@@ -325,9 +899,11 @@ class NotionConnector(BaseConnector):
             else:
                 return await self._get_block_file_url(record)
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to get signed URL for {record.external_record_id}: {e}", exc_info=True)
-            raise e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_comment_attachment_url(self, record: Record) -> Optional[str]:
         """
@@ -364,8 +940,18 @@ class NotionConnector(BaseConnector):
         # Fetch comment data from Notion API
         datasource = await self._get_fresh_datasource()
         response = await datasource.retrieve_comment(comment_id)
-        if not response.success or not response.data:
+        # The stored signed_url expires in ~1h, so falling back to it turns a
+        # revoked token into an opaque 403 from Notion's file host.
+        if not response.success:
             self.logger.warning(f"Failed to fetch comment {comment_id} for attachment")
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.error,
+            )
+        if not response.data:
             return record.signed_url
 
         comment_data = response.data.json() if hasattr(response.data, 'json') else {}
@@ -410,7 +996,17 @@ class NotionConnector(BaseConnector):
 
         datasource = await self._get_fresh_datasource()
         response = await datasource.retrieve_block(block_id)
-        if not response.success or not response.data:
+        # The stored signed_url expires in ~1h, so falling back to it turns a
+        # revoked token into an opaque 403 from Notion's file host.
+        if not response.success:
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.error,
+            )
+        if not response.data:
             return record.signed_url
 
         block_data = response.data.json() if hasattr(response.data, 'json') else {}
@@ -444,28 +1040,29 @@ class NotionConnector(BaseConnector):
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
 
             if not self.data_source:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Notion data source not initialized"
-                )
+                raise connector_not_ready(self.display_name)
 
             # Handle file records
             if record.record_type == RecordType.FILE:
                 signed_url = await self.get_signed_url(record)
 
                 if not signed_url:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="File URL not available"
-                    )
+                    raise not_found_at_source(self.display_name)
 
                 # Stream file from signed URL
                 async def generate_file_stream() -> AsyncGenerator[bytes, None]:
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        async with client.stream("GET", signed_url) as response:
-                            response.raise_for_status()
-                            async for chunk in response.aiter_bytes():
-                                yield chunk
+                    try:
+                        async with httpx.AsyncClient(timeout=30.0) as client:
+                            async with client.stream("GET", signed_url) as response:
+                                response.raise_for_status()
+                                async for chunk in response.aiter_bytes():
+                                    yield chunk
+                    except Exception as e:
+                        self.logger.error(
+                            f"❌ Failed to stream file for record {record.id}: {e}",
+                            exc_info=True,
+                        )
+                        raise to_stream_error(e, connector=self.display_name) from e
 
                 # Determine content type from record
                 media_type = record.mime_type if record.mime_type else "application/octet-stream"
@@ -503,6 +1100,11 @@ class NotionConnector(BaseConnector):
                     headers={
                         "Content-Disposition": f'inline; filename="{record.external_record_id}_data_source.json"'
                     }
+                )
+            elif record.record_type == RecordType.DATABASE:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Notion database containers are not indexed",
                 )
             elif record.record_type == RecordType.WEBPAGE:
                 parser = NotionBlockParser(self.logger, self.config_service)
@@ -556,9 +1158,7 @@ class NotionConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500, detail=f"Failed to stream record: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def reindex_records(self, records: List[Record]) -> None:
         """
@@ -578,15 +1178,134 @@ class NotionConnector(BaseConnector):
                 return
 
             self.logger.info(f"Starting reindex for {len(records)} Notion records")
+            await self._ensure_workspace_from_bot()
 
-            # TODO: Implement reindex logic
-            # 1. Check each record at source for updates
-            # 2. Update DB only for records that changed at source
-            # 3. Publish reindex events for all records
+            updated_records: List[Tuple[Record, List[Permission]]] = []
+            non_updated_records: List[Record] = []
+            gone_count = 0
+            for record in records:
+                try:
+                    updated = await self._check_and_fetch_updated_record(record)
+                    if updated is RECORD_GONE:
+                        # Unreachable at source. Republishing would make the indexing
+                        # pipeline fetch it, 404, and store an empty document — on every
+                        # pass, forever. Keep the record; just stop re-queueing it.
+                        gone_count += 1
+                        continue
+                    if updated:
+                        updated_records.append(updated)
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    # Deliberately still reindexed. Only a definitive 404 suppresses a
+                    # record; an unrecognised failure here must not silently turn reindex
+                    # into a no-op for the whole connector.
+                    self.logger.error("Error checking Notion record %s at source: %s", record.id, e,)
+                    non_updated_records.append(record)
 
+            if gone_count:
+                self.logger.info(
+                    "Notion reindex: %d record(s) unreachable at source (404); "
+                    "kept in the graph, reindex skipped",
+                    gone_count,
+                )
+
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non updated records")
         except Exception as e:
             self.logger.error(f"Error during Notion reindex: {e}", exc_info=True)
             raise
+
+    @staticmethod
+    def _is_definitive_not_found(response: Any) -> bool:
+        """True only for a real HTTP 404 — never for a transient failure.
+
+        ``NotionResponse`` keeps the ``HTTPResponse`` in ``.data`` on non-2xx, but the
+        generated wrappers' ``except`` branch returns ``data=None`` for transport errors,
+        so the status has to be read defensively. The ``isinstance`` check also matters:
+        test doubles build ``.data`` as a bare ``MagicMock``, whose auto-created ``status``
+        would otherwise sail through any comparison.
+        """
+        if response is None or getattr(response, "success", False):
+            return False
+        status = getattr(getattr(response, "data", None), "status", None)
+        return isinstance(status, int) and status == _NOT_FOUND_STATUS
+
+    async def _check_and_fetch_updated_record(
+        self, record: Record
+    ) -> Optional[Union[Tuple[Record, List[Permission]], _RecordGone]]:
+        if not record.external_record_id or record.record_type == RecordType.FILE:
+            return None
+
+        if record.record_type == RecordType.DATABASE:
+            await self._retire_database_container_record(record)
+            return RECORD_GONE
+
+        datasource = await self._get_fresh_datasource()
+        if record.record_type == RecordType.WEBPAGE:
+            response = await datasource.retrieve_page(record.external_record_id)
+            object_type = "page"
+        elif record.record_type == RecordType.DATASOURCE:
+            response = await datasource.retrieve_data_source_by_id(record.external_record_id)
+            object_type = "data_source"
+        else:
+            return None
+
+        if self._is_definitive_not_found(response):
+            return RECORD_GONE
+
+        if not response or not response.success or not response.data:
+            return None
+
+        obj_data = response.data.json()
+        if not isinstance(obj_data, dict):
+            return None
+        if obj_data.get("archived") or obj_data.get("in_trash"):
+            return RECORD_GONE
+
+        database_parent_id = None
+        database_parent_record_type = None
+        if object_type == "data_source":
+            parent = obj_data.get("parent", {})
+            if parent.get("type") == "database_id":
+                database_id = parent.get("database_id")
+                if database_id:
+                    try:
+                        (
+                            database_parent_id,
+                            database_parent_record_type,
+                        ) = await self._get_database_parent_ref(database_id)
+                    except Exception as e:
+                        self.logger.error(
+                            "Error fetching database parent for data source %s: %s. "
+                            "Skipping update to avoid clearing parent.",
+                            record.external_record_id,
+                            e,
+                        )
+                        return None
+
+        updated = await self._transform_to_webpage_record(
+            obj_data,
+            object_type,
+            database_parent_id=database_parent_id,
+            database_parent_record_type=database_parent_record_type,
+        )
+        if not updated or updated.external_revision_id == record.external_revision_id:
+            return None
+
+        updated.id = record.id
+        updated.record_group_id = record.record_group_id
+        if not updated.external_record_group_id:
+            updated.external_record_group_id = (
+                record.external_record_group_id or self.workspace_id
+            )
+        updated.inherit_permissions = True
+        return (updated, [])
 
     async def get_filter_options(
         self,
@@ -599,20 +1318,37 @@ class NotionConnector(BaseConnector):
         """Notion connector does not support dynamic filter options."""
         raise NotImplementedError("Notion connector does not support dynamic filter options")
 
+    async def _close_client(self) -> None:
+        """Close the pooled httpx client, if one is open.
+
+        HTTPClient holds a keep-alive pool; without this it outlives every
+        disable / delete / credential change and every client rebuild.
+        """
+        if getattr(self, 'notion_client', None):
+            try:
+                await self.notion_client.get_client().close()
+            except Exception as e:
+                self.logger.warning(f"Failed to close Notion HTTP client: {e}")
+        # Drop the references even if the close failed: if a rebuild after this
+        # raises, _get_fresh_datasource must report "not initialized" rather than
+        # hand callers a client whose pool is already closed.
+        self.notion_client = None
+        self.data_source = None
+
     async def cleanup(self) -> None:
         """
         Cleanup resources when shutting down the connector.
 
         Notion connector cleanup includes:
+        - Closing the pooled HTTP client
         - Clearing client references
         - Clearing datasource reference
         - Logging completion
-
-        Note: Notion uses stateless HTTP requests, so no persistent connections
-        or subscriptions to clean up.
         """
         try:
             self.logger.info("🧹 Starting Notion connector cleanup")
+
+            await self._close_client()
 
             # Clear client references
             if hasattr(self, 'notion_client'):
@@ -640,16 +1376,10 @@ class NotionConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "NotionConnector":
         """Factory method to create a Notion connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-
-        await data_entities_processor.initialize()
-
         return cls(
             logger,
             data_entities_processor,
@@ -678,10 +1408,11 @@ class NotionConnector(BaseConnector):
             self.logger.info("🔄 Starting user synchronization...")
 
             # Pagination variables
-            page_size = 20  # Max allowed by Notion API : 100
+            page_size = self._SYNC_PAGE_SIZE
             cursor = None
             total_synced = 0
             total_skipped = 0
+            workspace_emails: List[str] = []
 
             # Paginate through all users
             while True:
@@ -698,6 +1429,16 @@ class NotionConnector(BaseConnector):
 
                 response_data = response.data.json() if response.data else {}
                 users_data = response_data.get("results", [])
+                has_more = response_data.get("has_more", False)
+                next_cursor = response_data.get("next_cursor")
+                if next_cursor is not None and next_cursor == cursor:
+                    self.logger.warning(
+                        "Notion users pagination cursor did not advance "
+                        "(start_cursor=%s next_cursor=%s has_more=%r)",
+                        cursor,
+                        next_cursor,
+                        has_more,
+                    )
 
                 if not users_data:
                     self.logger.info("No more users to process")
@@ -741,59 +1482,61 @@ class NotionConnector(BaseConnector):
 
                         self.logger.info(f"Extracted workspace info - ID: {self.workspace_id}, Name: {self.workspace_name}")
 
-                        # Create RecordGroup for workspace
                         await self._create_workspace_record_group()
                     else:
                         self.logger.warning("Bot user found but missing workspace_id")
 
                 if not person_user_ids:
-                    continue
+                    self.logger.debug("Notion users page has no person users; advancing cursor")
+                else:
+                    # Fetch full user details in parallel to get emails
+                    user_detail_tasks = [datasource.retrieve_user(user_id) for user_id in person_user_ids]
+                    user_detail_responses = await asyncio.gather(*user_detail_tasks, return_exceptions=True)
 
-                # Fetch full user details in parallel to get emails
-                user_detail_tasks = [datasource.retrieve_user(user_id) for user_id in person_user_ids]
-                user_detail_responses = await asyncio.gather(*user_detail_tasks, return_exceptions=True)
+                    # Process fetched user details
+                    app_users = []
+                    for i, result in enumerate(user_detail_responses):
+                        user_id = person_user_ids[i]
 
-                # Process fetched user details
-                app_users = []
-                for i, result in enumerate(user_detail_responses):
-                    user_id = person_user_ids[i]
+                        if isinstance(result, Exception):
+                            self.logger.error(f"❌ Failed to process user {user_id}: {result}", exc_info=False)
+                            total_skipped += 1
+                            continue
 
-                    if isinstance(result, Exception):
-                        self.logger.error(f"❌ Failed to process user {user_id}: {result}", exc_info=False)
-                        total_skipped += 1
-                        continue
+                        if not result or not result.success:
+                            self.logger.warning(
+                                f"Failed to retrieve user details for {user_id}: "
+                                f"{result.error if result else 'No response'}"
+                            )
+                            total_skipped += 1
+                            continue
 
-                    if not result or not result.success:
-                        self.logger.warning(
-                            f"Failed to retrieve user details for {user_id}: "
-                            f"{result.error if result else 'No response'}"
+                        user_detail = result.data.json() if result.data else {}
+                        app_user = self._transform_to_app_user(user_detail)
+                        if app_user:
+                            app_users.append(app_user)
+                        else:
+                            # _transform_to_app_user logs warnings for invalid data
+                            total_skipped += 1
+
+                    # Save batch to database
+                    if app_users:
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                        total_synced += len(app_users)
+                        workspace_emails.extend(
+                            app_user.email for app_user in app_users if app_user.email
                         )
-                        total_skipped += 1
-                        continue
+                        self.logger.info(f"✅ Synced {len(app_users)} users in this batch")
 
-                    user_detail = result.data.json() if result.data else {}
-                    app_user = self._transform_to_app_user(user_detail)
-                    if app_user:
-                        app_users.append(app_user)
-                    else:
-                        # _transform_to_app_user logs warnings for invalid data
-                        total_skipped += 1
-
-                # Save batch to database
-                if app_users:
-                    await self.data_entities_processor.on_new_app_users(app_users)
-                    total_synced += len(app_users)
-                    self.logger.info(f"✅ Synced {len(app_users)} users in this batch")
-
-                    # Add permissions for these users to workspace record group (if workspace exists)
-                    if self.workspace_id:
-                        await self._add_users_to_workspace_permissions([app_user.email for app_user in app_users])
-
-                has_more = response_data.get("has_more", False)
-                cursor = response_data.get("next_cursor")
-
-                if not has_more or not cursor:
+                if not has_more or not next_cursor:
                     break
+                if next_cursor == cursor:
+                    self.logger.warning("Notion users pagination stopping: next_cursor equals start_cursor (%s)", cursor)
+                    break
+                cursor = next_cursor
+
+            if self.workspace_id and workspace_emails:
+                await self._add_users_to_workspace_permissions(workspace_emails)
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped: {total_skipped}")
 
@@ -816,11 +1559,10 @@ class NotionConnector(BaseConnector):
                 return
 
             # Get the existing record group by external_id (if it exists)
-            async with self.data_store_provider.transaction() as tx_store:
-                record_group = await tx_store.get_record_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=self.workspace_id
-                )
+            record_group = await self.data_entities_processor.get_record_group_by_external_id(
+                connector_id=self.connector_id,
+                external_id=self.workspace_id
+            )
 
             # Create record group if it doesn't exist
             if not record_group:
@@ -828,9 +1570,10 @@ class NotionConnector(BaseConnector):
                     org_id=self.data_entities_processor.org_id,
                     name=self.workspace_name,
                     external_group_id=self.workspace_id,
-                    connector_name=Connectors.NOTION,
+                    connector_name=self.connector_name,
                     connector_id=self.connector_id,
                     group_type=RecordGroupType.NOTION_WORKSPACE,
+                    permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                     created_at=get_epoch_timestamp_in_ms(),
                     updated_at=get_epoch_timestamp_in_ms(),
                 )
@@ -892,7 +1635,7 @@ class NotionConnector(BaseConnector):
                 self.logger.info(f"🆕 Full sync: Fetching all {object_type}s (first time)")
 
             cursor = None
-            page_size = 20  # Max allowed by Notion API : 100
+            page_size = self._SYNC_PAGE_SIZE
             total_synced = 0
             total_files = 0
             latest_edit_time = None
@@ -924,6 +1667,8 @@ class NotionConnector(BaseConnector):
 
                 data = response.data.json() if response.data else {}
                 objects = data.get("results", [])
+                has_more = data.get("has_more") if isinstance(data, dict) else None
+                next_cursor = data.get("next_cursor") if isinstance(data, dict) else None
 
                 if not objects:
                     self.logger.info(f"No {object_type}s found after time {last_sync_time}")
@@ -941,56 +1686,78 @@ class NotionConnector(BaseConnector):
                         continue
 
                     # Delta sync check: if have a sync point, stop when records older than it is found
-                    # Since records are sorted in descending order, records are newest first
+                    # Since records are sorted in descending order, records are newest first.
+                    #
+                    # Strictly older, not "older or equal": Notion truncates last_edited_time to
+                    # the minute, and the checkpoint is the newest one we processed — so it always
+                    # sits exactly on a minute. Stopping on equality drops everything else written
+                    # during that minute, and drops it permanently, because the timestamp never
+                    # moves again. The cost of `<` is re-processing the records sharing the newest
+                    # minute; that upsert is a no-op when the revision is unchanged.
                     if last_sync_time and last_edited_time:
                         # Compare timestamps (ISO format strings)
-                        if last_edited_time <= last_sync_time:
+                        if last_edited_time < last_sync_time:
                             self.logger.info(
                                 f"Reached sync point threshold for {object_type}s. "
-                                f"Record {obj_id} has last_edited_time {last_edited_time} <= sync point {last_sync_time}. "
+                                f"Record {obj_id} has last_edited_time {last_edited_time} < sync point {last_sync_time}. "
                             )
                             should_stop = True
                             break
 
-                    # Track latest edit time for sync point update
-                    if last_edited_time and (not latest_edit_time or last_edited_time > latest_edit_time):
-                        latest_edit_time = last_edited_time
-
-                    # For data sources, fetch the database's parent ID
+                    # For data sources, fetch the database's parent ID. Failures must not
+                    # upsert with parent=None (that clears PARENT_CHILD) and must abort the
+                    # sync so the checkpoint is not advanced past this record.
                     database_parent_id = None
+                    database_parent_record_type = None
                     if object_type == "data_source":
                         parent = obj_data.get("parent", {})
                         if parent.get("type") == "database_id":
                             database_id = parent.get("database_id")
                             if database_id:
                                 try:
-                                    database_parent_id = await self._get_database_parent_page_id(database_id)
+                                    (
+                                        database_parent_id,
+                                        database_parent_record_type,
+                                    ) = await self._get_database_parent_ref(database_id)
                                     # None is valid when database parent is workspace
+                                except _DatabaseGone:
+                                    self.logger.info(
+                                        "Skipping data source %s: parent database %s is gone",
+                                        obj_id, database_id,
+                                    )
+                                    continue
                                 except Exception as e:
                                     self.logger.error(
                                         f"Error fetching database parent for data source {obj_id}: {e}. "
-                                        f"Parent will be None."
+                                        f"Aborting sync to avoid clearing parent or advancing checkpoint."
                                     )
-                                    # Leave database_parent_id as None - direct connection to record group
+                                    raise
 
                     # Transform (returns tuple for both types)
                     record = await self._transform_to_webpage_record(
                         obj_data,
                         object_type,
-                        database_parent_id=database_parent_id
+                        database_parent_id=database_parent_id,
+                        database_parent_record_type=database_parent_record_type,
                     )
 
                     if record:
-                        # Set indexing status based on filter
-                        if object_type == "page":
-                            if not pages_indexing_enabled:
-                                record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                        else:  # data_source (database)
-                            if not databases_indexing_enabled:
-                                record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                        indexing_enabled = (
+                            pages_indexing_enabled
+                            if object_type == "page"
+                            else databases_indexing_enabled
+                        )
+                        if not indexing_enabled:
+                            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                         records_with_permissions.append((record, []))
                         total_synced += 1
+                        # Only advance the checkpoint watermark for successfully processed
+                        # records (after parent lookup), so skips/aborts cannot hide work.
+                        if last_edited_time and (
+                            not latest_edit_time or last_edited_time > latest_edit_time
+                        ):
+                            latest_edit_time = last_edited_time
                         self.logger.debug(f"Synced {object_type}: {record.record_name} (last_edited: {last_edited_time})")
 
                     # Fetch attachments and comment attachments from blocks (for pages only)
@@ -1002,7 +1769,6 @@ class NotionConnector(BaseConnector):
 
                             # Save block attachment FileRecords
                             for file_record in attachment_records:
-                                # Set indexing status based on filter
                                 if not files_indexing_enabled:
                                     file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                                 records_with_permissions.append((file_record, []))
@@ -1014,7 +1780,6 @@ class NotionConnector(BaseConnector):
                                     comments_by_block, obj_id, page_url
                                 )
                                 for file_record in comment_attachment_records:
-                                    # Set indexing status based on filter
                                     if not files_indexing_enabled:
                                         file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                                     records_with_permissions.append((file_record, []))
@@ -1031,25 +1796,33 @@ class NotionConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Saved batch of {len(records_with_permissions)} {object_type}(s) and files")
 
-                # Update sync point after each iteration with latest edit time from this batch
-                # Note: still use the original last_sync_time for comparison in the next iteration
-                if latest_edit_time:
-                    await self.pages_sync_point.update_sync_point(
-                        sync_point_key,
-                        {"last_sync_time": latest_edit_time}
-                    )
-                    self.logger.debug(f"Updated {object_type}s sync checkpoint to {latest_edit_time} after batch")
-
                 # Pagination - only continue if we haven't hit the sync point threshold
                 if should_stop:
                     break
 
-                if not data.get("has_more") or not data.get("next_cursor"):
+                if not has_more or not next_cursor:
                     break
-                cursor = data.get("next_cursor")
+                if next_cursor == cursor:
+                    self.logger.warning(
+                        "Notion %s search cursor did not advance (cursor=%s); stopping",
+                        object_type,
+                        cursor,
+                    )
+                    break
+                cursor = next_cursor
 
-            # Final sync point update (in case no records were found but this is first sync)
-            if not latest_edit_time and not last_sync_time:
+            # Commit sync point only after a clean loop exit. Updating per-batch with the
+            # newest edit time while search is descending would skip unprocessed pages on a
+            # mid-run failure (e.g. 429).
+            if latest_edit_time:
+                await self.pages_sync_point.update_sync_point(
+                    sync_point_key,
+                    {"last_sync_time": latest_edit_time}
+                )
+                self.logger.debug(
+                    f"Updated {object_type}s sync checkpoint to {latest_edit_time}"
+                )
+            elif not last_sync_time:
                 # First sync - initialize sync point even if no records found
                 current_time = self._get_current_iso_time()
                 await self.pages_sync_point.update_sync_point(
@@ -1137,7 +1910,14 @@ class NotionConnector(BaseConnector):
 
         if not metadata_response.success:
             self.logger.error(f"Failed to fetch data source metadata: {metadata_response.error}")
-            return BlocksContainer(blocks=[], block_groups=[])
+            # An empty container here streams a 200 with no content at all.
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=metadata_response.status_code,
+                message=metadata_response.error,
+            )
 
         metadata = metadata_response.data.json() if metadata_response.data else {}
 
@@ -1381,18 +2161,19 @@ class NotionConnector(BaseConnector):
                     page_size=page_size
                 )
 
-                # Check if response.data exists before trying to parse
-                if response.data:
-                    try:
-                        response_data = response.data.json()
-                        if isinstance(response_data, dict) and response_data.get("object") == "error":
-                            self.logger.error(f"Notion API error for block {block_id}: {response_data}")
-                    except Exception as parse_error:
-                        self.logger.error(f"Failed to parse response.data: {parse_error}")
-
                 if not response.success:
-                    error_msg = response.error if response else "No response"
-                    self.logger.warning(f"API call failed for block {block_id}: {error_msg}")
+                    # 404 is Notion's answer for both "deleted" and "not shared with
+                    # this integration". Comments are optional; skip and continue.
+                    if self._is_definitive_not_found(response):
+                        self.logger.debug(
+                            "Comments unavailable for block %s (not shared or deleted); skipping",
+                            block_id,
+                        )
+                    else:
+                        error_msg = response.error if response else "No response"
+                        self.logger.warning(
+                            "API call failed for block %s: %s", block_id, error_msg
+                        )
                     break
 
                 # Only try to parse JSON if response is successful
@@ -1406,11 +2187,21 @@ class NotionConnector(BaseConnector):
                 else:
                     break
 
-                # Check if the response is an error object
                 if isinstance(data, dict) and data.get("object") == "error":
-                    error_msg = data.get("message", "Unknown error")
                     error_code = data.get("code", "unknown")
-                    self.logger.error(f"Notion API returned error for block {block_id}: [{error_code}] {error_msg}")
+                    if error_code == "object_not_found":
+                        self.logger.debug(
+                            "Comments unavailable for block %s (not shared or deleted); skipping",
+                            block_id,
+                        )
+                    else:
+                        error_msg = data.get("message", "Unknown error")
+                        self.logger.warning(
+                            "Notion API returned error for block %s: [%s] %s",
+                            block_id,
+                            error_code,
+                            error_msg,
+                        )
                     break
 
                 if not isinstance(data, dict):
@@ -1560,42 +2351,49 @@ class NotionConnector(BaseConnector):
                     start_cursor=cursor,
                     page_size=page_size
                 )
-
-                if not response.success:
-                    self.logger.error(
-                        "recursive_flatten: retrieve_block_children failed block_id=%s error=%r",
-                        block_id,
-                        response.error if response else None,
-                    )
-                    break
-
                 # Convert response.data to dictionary (response.data is a Response object with .json() method)
-                data = response.data.json() if response.data else {}
-
-                if not isinstance(data, dict):
-                    self.logger.warning(
-                        f"Expected dictionary but got {type(data)} for block {block_id}: {data}"
-                    )
-                    break
-
-                results = data.get("results", [])
-                if not results:
-                    break
-
-                all_blocks.extend(results)
-
-                # Check for more pages
-                has_more = data.get("has_more", False)
-                cursor = data.get("next_cursor")
-
-                if not has_more or not cursor:
-                    break
-
+                data = response.data.json() if response.success and response.data else {}
             except Exception as e:
                 self.logger.error(
                     f"Error fetching block children for {block_id}: {e}",
                     exc_info=True
                 )
+                # Returning the blocks gathered so far would stream a silently
+                # truncated page with a 200. This is a streaming-only path, so
+                # there is no sync caller relying on partial results.
+                raise to_stream_error(e, connector=self.display_name) from e
+
+            if not response.success:
+                self.logger.error(
+                    "recursive_flatten: retrieve_block_children failed block_id=%s error=%r",
+                    block_id,
+                    response.error,
+                )
+                raise_for_stream_fetch(
+                    success=False,
+                    has_payload=False,
+                    connector=self.display_name,
+                    status=response.status_code,
+                    message=response.error,
+                )
+
+            if not isinstance(data, dict):
+                self.logger.warning(
+                    f"Expected dictionary but got {type(data)} for block {block_id}: {data}"
+                )
+                break
+
+            results = data.get("results", [])
+            if not results:
+                break
+
+            all_blocks.extend(results)
+
+            # Check for more pages
+            has_more = data.get("has_more", False)
+            cursor = data.get("next_cursor")
+
+            if not has_more or not cursor:
                 break
 
         return all_blocks
@@ -1807,6 +2605,20 @@ class NotionConnector(BaseConnector):
 
         return current_level_indices
 
+    @staticmethod
+    def _demote_image_block_to_text(block: Block) -> None:
+        """Turn an unconvertible image into a text block carrying its caption.
+
+        Indexing rejects any IMAGE block whose format is not base64 — a hard
+        validation error that fails the whole record. So skipping the conversion
+        is only safe if the block stops claiming to be an image; otherwise the
+        page streams fine and then dies in the indexing pipeline instead.
+        """
+        block.type = BlockType.TEXT
+        block.format = DataFormat.TXT
+        block.data = block.data if isinstance(block.data, str) else ""
+        block.public_data_link = None
+
     async def _convert_image_blocks_to_base64(
         self,
         blocks: List[Block],
@@ -1826,7 +2638,9 @@ class NotionConnector(BaseConnector):
             parent_page_url: Optional parent page URL (not used, kept for backwards compatibility)
 
         Raises:
-            Exception: If any image fails to download or convert (includes block ID and URL in message)
+            Exception: on a transient failure (network, timeout, 5xx), so the
+                record is retried. Permanently unconvertible images are logged
+                and left untouched instead — see :class:`UnconvertibleImageError`.
         """
         # Filter image blocks with public_data_link (signed URLs from Notion)
         image_blocks = [
@@ -1861,12 +2675,16 @@ class NotionConnector(BaseConnector):
 
                         # Validate it's an image
                         if not content_type_clean.startswith('image/'):
+                            # Retryable: a 200 that is not an image is usually a CDN
+                            # or proxy error page, not a permanently bad block.
                             raise Exception(f"Invalid content type: {content_type_clean}")
 
                         # Read image bytes
                         image_bytes = await response.read()
 
                         if not image_bytes:
+                            # Retryable: an empty body is more often a truncated
+                            # transfer than an image that will never have bytes.
                             raise Exception("Empty image content received")
 
                         # Determine if SVG
@@ -1879,7 +2697,14 @@ class NotionConnector(BaseConnector):
                         if is_svg:
                             # Convert SVG to base64, then to PNG base64
                             svg_base64 = base64.b64encode(image_bytes).decode('utf-8')
-                            png_base64 = image_parser.svg_base64_to_png_base64(svg_base64)
+                            try:
+                                png_base64 = image_parser.svg_base64_to_png_base64(svg_base64)
+                            except Exception as svg_error:
+                                # A missing cairosvg or a malformed SVG: fetching
+                                # the same bytes again cannot change the outcome.
+                                raise UnconvertibleImageError(
+                                    f"SVG conversion failed: {svg_error}"
+                                ) from svg_error
                             base64_data_url = f"data:image/png;base64,{png_base64}"
                         else:
                             # Get extension from MIME type
@@ -1899,6 +2724,18 @@ class NotionConnector(BaseConnector):
 
                         return block, base64_data_url, None
 
+            except UnconvertibleImageError as e:
+                return block, None, UnconvertibleImageError(
+                    f"Skipping image for block {block_id} ({image_url}): {e}"
+                )
+            except aiohttp.ClientResponseError as e:
+                if e.status in _PERMANENT_IMAGE_STATUSES:
+                    return block, None, UnconvertibleImageError(
+                        f"Skipping image for block {block_id} ({image_url}): HTTP {e.status}"
+                    )
+                return block, None, Exception(
+                    f"Failed to fetch image for block {block_id} from URL {image_url}: {e}"
+                )
             except Exception as e:
                 return block, None, Exception(f"Failed to fetch image for block {block_id} from URL {image_url}: {str(e)}")
 
@@ -1916,6 +2753,10 @@ class NotionConnector(BaseConnector):
             block, base64_data_url, error = result
 
             if error:
+                if isinstance(error, UnconvertibleImageError):
+                    self.logger.warning(str(error))
+                    self._demote_image_block_to_text(block)
+                    continue
                 # Re-raise exception with block ID and URL
                 raise error
 
@@ -1933,13 +2774,14 @@ class NotionConnector(BaseConnector):
 
     async def _batch_get_or_create_child_records(
         self,
-        children_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]]
+        children_to_resolve: Dict[str, tuple]
     ) -> Dict[str, ChildRecord]:
         """
         Batch get or create child records for multiple external IDs.
 
-        Uses a single transaction for lookup and a single on_new_records call for creation,
-        avoiding race conditions and improving performance.
+        Looks up each external ID via the shared data entities processor and issues
+        a single on_new_records call for creation, avoiding race conditions and
+        improving performance.
 
         Args:
             children_to_resolve: Dict mapping external_id -> (name, record_type, parent_external_id)
@@ -1953,16 +2795,15 @@ class NotionConnector(BaseConnector):
         external_ids = list(children_to_resolve.keys())
         child_record_map: Dict[str, ChildRecord] = {}
 
-        # Step 1: Batch lookup all external IDs in one transaction
+        # Step 1: Batch lookup all external IDs
         existing_records: Dict[str, Record] = {}
-        async with self.data_store_provider.transaction() as tx_store:
-            for ext_id in external_ids:
-                record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=ext_id
-                )
-                if record:
-                    existing_records[ext_id] = record
+        for ext_id in external_ids:
+            record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=ext_id
+            )
+            if record:
+                existing_records[ext_id] = record
 
         # Step 2: Build ChildRecord for existing records
         for ext_id, record in existing_records.items():
@@ -1979,7 +2820,9 @@ class NotionConnector(BaseConnector):
             records_to_create: List[Tuple[Record, List]] = []
 
             for ext_id in missing_ids:
-                name, record_type, parent_ext_id = children_to_resolve[ext_id]
+                spec = children_to_resolve[ext_id]
+                name, record_type, parent_ext_id = spec[0], spec[1], spec[2]
+                explicit_parent_type = spec[3] if len(spec) > 3 else None
 
                 if record_type == RecordType.FILE:
                     minimal_record = FileRecord(
@@ -1989,7 +2832,7 @@ class NotionConnector(BaseConnector):
                         external_record_id=ext_id,
                         external_revision_id="minimal",
                         connector_id=self.connector_id,
-                        connector_name=Connectors.NOTION,
+                        connector_name=self.connector_name,
                         record_group_type=RecordGroupType.NOTION_WORKSPACE,
                         external_record_group_id=self.workspace_id or "",
                         mime_type=MimeTypes.BIN.value,
@@ -2006,12 +2849,10 @@ class NotionConnector(BaseConnector):
                 else:
                     # Determine parent_record_type based on record_type
                     # For datasources, parent is a webpage (WEBPAGE)
-                    parent_record_type = None
-                    if parent_ext_id:
+                    parent_record_type = explicit_parent_type
+                    if parent_ext_id and parent_record_type is None:
                         if record_type == RecordType.DATASOURCE:
-                            # Datasources have pages as parents
                             parent_record_type = RecordType.WEBPAGE
-                        # For other record types, parent_record_type can be determined when the parent is synced
 
                     minimal_record = WebpageRecord(
                         org_id=self.data_entities_processor.org_id,
@@ -2020,10 +2861,11 @@ class NotionConnector(BaseConnector):
                         external_record_id=ext_id,
                         external_revision_id="minimal",
                         connector_id=self.connector_id,
-                        connector_name=Connectors.NOTION,
+                        connector_name=self.connector_name,
                         record_group_type=RecordGroupType.NOTION_WORKSPACE,
                         external_record_group_id=self.workspace_id or "",
                         mime_type=MimeTypes.BLOCKS.value,
+                        preview_renderable=False,
                         indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                         version=1,
                         origin=OriginTypes.CONNECTOR,
@@ -2075,28 +2917,22 @@ class NotionConnector(BaseConnector):
                 self.logger.debug(f"Database {database_id} has no data_sources")
                 return []
 
-            # Extract the database's parent ID
-            database_parent = database_data.get("parent", {})
-            database_parent_id = None
+            # A transient failure falls through to the outer handler: no stubs beats stubs
+            # created without their parent.
+            try:
+                database_parent_id, database_parent_type = (
+                    await self._parent_ref_from_database_payload(
+                        database_data, {database_id}
+                    )
+                )
+            except _DatabaseGone as e:
+                self.logger.info(
+                    "Parent of database %s is gone; its data sources get no parent: %s",
+                    database_id, e,
+                )
+                database_parent_id, database_parent_type = None, None
 
-            parent_type = database_parent.get("type")
-            if parent_type == "page_id":
-                database_parent_id = database_parent.get("page_id")
-            elif parent_type == "database_id":
-                database_parent_id = database_parent.get("database_id")
-            elif parent_type == "block_id":
-                # Recursively resolve block_id to find the actual page/database/datasource parent
-                block_id = database_parent.get("block_id")
-                if block_id:
-                    resolved_parent_id, _ = await self._resolve_block_parent_recursive(block_id)
-                    database_parent_id = resolved_parent_id
-            elif parent_type == "data_source_id":
-                database_parent_id = database_parent.get("data_source_id")
-            # If parent_type is None or workspace, database_parent_id remains None
-
-            # Batch resolve all data_sources to ChildRecords
-            # Collect data_sources to resolve
-            data_sources_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]] = {}
+            data_sources_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str], Optional[RecordType]]] = {}
             for data_source in data_sources:
                 data_source_id = data_source.get("id")
                 data_source_name = data_source.get("name", "Untitled Data Source")
@@ -2104,12 +2940,11 @@ class NotionConnector(BaseConnector):
                 if not data_source_id:
                     continue
 
-                # Use DATASOURCE as the record type for data sources
-                # Pass the database's parent ID in the tuple
                 data_sources_to_resolve[data_source_id] = (
                     data_source_name,
                     RecordType.DATASOURCE,
-                    database_parent_id  # Use database's parent ID instead of None
+                    database_parent_id,
+                    database_parent_type,
                 )
 
             # Batch resolve/create all data_sources using the same logic as other child records
@@ -2685,8 +3520,30 @@ class NotionConnector(BaseConnector):
                     # Calculate comment group index
                     comment_group_index = len(block_groups)
 
+                    comment_block_indices: List[BlockContainerIndex] = []
+
+                    # The body as a child TEXT block, as Confluence does. Indexing only
+                    # embeds blocks, so text kept solely in the group's data is invisible.
+                    # The author is prefixed because the group's name/description are not
+                    # embedded either, leaving "who said this" unsearchable otherwise.
+                    if block_comment.text and block_comment.text.strip():
+                        author = block_comment.author_name
+                        body_block = Block(
+                            id=str(uuid4()),
+                            index=len(blocks),
+                            parent_index=comment_group_index,
+                            type=BlockType.TEXT,
+                            format=DataFormat.TXT,
+                            data=f"{author}: {block_comment.text}" if author else block_comment.text,
+                            source_id=comment_id,
+                            weburl=block_comment.weburl or page_url,
+                        )
+                        blocks.append(body_block)
+                        comment_block_indices.append(
+                            BlockContainerIndex(block_index=body_block.index)
+                        )
+
                     # Create CHILD_RECORD blocks for attachments
-                    attachment_block_indices: List[BlockContainerIndex] = []
                     if block_comment.attachments:
                         for attachment in block_comment.attachments:
                             # attachment.id is the FileRecord.id (internal DB ID)
@@ -2712,7 +3569,7 @@ class NotionConnector(BaseConnector):
                                     weburl=file_record.weburl or page_url,
                                 )
                                 blocks.append(attachment_block)
-                                attachment_block_indices.append(BlockContainerIndex(block_index=attachment_block.index))
+                                comment_block_indices.append(BlockContainerIndex(block_index=attachment_block.index))
 
                     # Sync: Create COMMENT BlockGroup (parser)
                     comment_group = parser.create_comment_group(
@@ -2720,7 +3577,7 @@ class NotionConnector(BaseConnector):
                         group_index=comment_group_index,
                         parent_group_index=thread_group_index,  # Parent is the thread group
                         source_id=comment_id,
-                        attachment_block_indices=attachment_block_indices if attachment_block_indices else None
+                        attachment_block_indices=comment_block_indices if comment_block_indices else None
                     )
 
                     # Orchestration: Add to list
@@ -2746,6 +3603,27 @@ class NotionConnector(BaseConnector):
 
     # ==================== Transform Helpers ====================
 
+    async def _ensure_workspace_from_bot(self) -> None:
+        if self.workspace_id:
+            return
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.retrieve_bot_user()
+            if not response or not response.success or not response.data:
+                return
+            bot_user = response.data.json()
+            if not isinstance(bot_user, dict):
+                return
+            bot_data = bot_user.get("bot") or {}
+            workspace_id = bot_data.get("workspace_id") or bot_user.get("workspace_id")
+            workspace_name = bot_data.get("workspace_name") or bot_user.get("workspace_name")
+            if workspace_id:
+                self.workspace_id = workspace_id
+                if workspace_name:
+                    self.workspace_name = workspace_name
+        except Exception as e:
+            self.logger.warning("Could not load Notion workspace from bot user: %s", e)
+
     async def _create_workspace_record_group(self) -> None:
         """
         Create a RecordGroup for the Notion workspace.
@@ -2757,13 +3635,25 @@ class NotionConnector(BaseConnector):
                 self.logger.warning("Cannot create workspace record group: missing workspace info")
                 return
 
+            async with self.data_store_provider.transaction() as tx_store:
+                existing = await tx_store.get_record_group_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=self.workspace_id,
+                )
+            if existing:
+                self.logger.info(
+                    "Workspace record group already exists: %s", self.workspace_id
+                )
+                return
+
             record_group = RecordGroup(
                 org_id=self.data_entities_processor.org_id,
                 name=self.workspace_name,
                 external_group_id=self.workspace_id,
-                connector_name=Connectors.NOTION,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.NOTION_WORKSPACE,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 created_at=get_epoch_timestamp_in_ms(),
                 updated_at=get_epoch_timestamp_in_ms(),
             )
@@ -2826,7 +3716,7 @@ class NotionConnector(BaseConnector):
                 return None
 
             return AppUser(
-                app_name=Connectors.NOTION,
+                app_name=self.connector_name,
                 connector_id=self.connector_id,
                 source_user_id=user_id,
                 org_id=self.data_entities_processor.org_id,
@@ -2845,10 +3735,10 @@ class NotionConnector(BaseConnector):
         visited: Optional[set] = None
     ) -> Tuple[Optional[str], Optional[RecordType]]:
         """
-        Recursively resolve a block_id parent until we find a page_id, database_id, or data_source_id.
+        Recursively resolve a block_id parent until we find a page or data source.
 
-        This handles the case where a page/database/datasource has a block_id as parent,
-        and we need to traverse up the block hierarchy to find the actual page/database/datasource parent.
+        This handles the case where a page/datasource has a block_id as parent,
+        and we need to traverse up the block hierarchy to find the actual page/datasource parent.
 
         Args:
             block_id: Notion block ID to resolve
@@ -2857,8 +3747,8 @@ class NotionConnector(BaseConnector):
 
         Returns:
             Tuple of (parent_id, parent_record_type) where:
-            - parent_id: The resolved parent ID (page_id, database_id, or data_source_id)
-            - parent_record_type: The RecordType enum (WEBPAGE, DATABASE, or DATASOURCE)
+            - parent_id: The resolved parent ID (page_id or data_source_id)
+            - parent_record_type: WEBPAGE or DATASOURCE
             Returns (None, None) if no parent found, error occurred, or max depth reached
         """
         if visited is None:
@@ -2894,7 +3784,10 @@ class NotionConnector(BaseConnector):
             if parent_type == "page_id":
                 return parent.get("page_id"), RecordType.WEBPAGE
             elif parent_type == "database_id":
-                return parent.get("database_id"), RecordType.DATABASE
+                database_id = parent.get("database_id")
+                if database_id:
+                    return await self._resolve_database_id_as_record_parent(database_id)
+                return None, None
             elif parent_type == "data_source_id":
                 return parent.get("data_source_id"), RecordType.DATASOURCE
             elif parent_type == "block_id":
@@ -2912,6 +3805,8 @@ class NotionConnector(BaseConnector):
                 # No parent or workspace parent
                 return None, None
 
+        except _DatabaseUnavailable:
+            raise
         except Exception as e:
             self.logger.warning(
                 f"Error resolving block parent for {block_id}: {e}",
@@ -2919,82 +3814,123 @@ class NotionConnector(BaseConnector):
             )
             return None, None
 
-    async def _get_database_parent_page_id(self, database_id: str) -> Optional[str]:
-        """
-        Fetch a database and return its parent ID (page_id, database_id, block_id, or data_source_id).
+    @staticmethod
+    def _first_data_source_id(payload: Dict[str, Any]) -> Optional[str]:
+        for source in payload.get("data_sources") or []:
+            if isinstance(source, dict) and source.get("id"):
+                return source["id"]
+        return None
 
-        Args:
-            database_id: Notion database ID
+    async def _retrieve_database_payload(self, database_id: str) -> Dict[str, Any]:
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.retrieve_database(database_id)
 
-        Returns:
-            Parent ID if database has a parent, None otherwise
-        """
-        try:
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.retrieve_database(database_id)
+        if self._is_definitive_not_found(response):
+            raise _DatabaseGone(f"database {database_id} not found")
 
-            if not response.success or not response.data:
-                self.logger.warning(
-                    f"Failed to retrieve database {database_id}: "
-                    f"{response.error if response else 'No response'}"
-                )
-                return None
-
-            database_data = response.data.json()
-            database_parent = database_data.get("parent", {})
-
-            parent_type = database_parent.get("type")
-            if parent_type == "page_id":
-                return database_parent.get("page_id")
-            elif parent_type == "database_id":
-                return database_parent.get("database_id")
-            elif parent_type == "block_id":
-                # Recursively resolve block_id to find the actual page/database/datasource parent
-                block_id = database_parent.get("block_id")
-                if block_id:
-                    resolved_parent_id, _ = await self._resolve_block_parent_recursive(block_id)
-                    return resolved_parent_id
-                return None
-            elif parent_type == "data_source_id":
-                return database_parent.get("data_source_id")
-
-            # If parent_type is None or workspace, return None
-            return None
-
-        except Exception as e:
-            self.logger.warning(
-                f"Error fetching database {database_id} to get parent: {e}"
+        if not response or not response.success or not response.data:
+            error_msg = response.error if response else "No response"
+            raise _DatabaseUnavailable(
+                f"Failed to retrieve database {database_id} for parent lookup: {error_msg}"
             )
-            return None
+
+        database_data = response.data.json()
+        if not isinstance(database_data, dict):
+            raise _DatabaseUnavailable(
+                f"Invalid database payload for {database_id}: expected object"
+            )
+        if database_data.get("archived") or database_data.get("in_trash"):
+            raise _DatabaseGone(f"database {database_id} is archived")
+        return database_data
+
+    async def _parent_ref_from_database_payload(
+        self,
+        database_data: Dict[str, Any],
+        visited: set,
+    ) -> Tuple[Optional[str], Optional[RecordType]]:
+        """Hop over a database container to a page, data source, or workspace."""
+        database_parent = database_data.get("parent", {}) or {}
+        parent_type = database_parent.get("type")
+        if parent_type == "page_id":
+            return database_parent.get("page_id"), RecordType.WEBPAGE
+        if parent_type == "database_id":
+            parent_db_id = database_parent.get("database_id")
+            if parent_db_id:
+                return await self._get_database_parent_ref(parent_db_id, visited)
+            return None, None
+        if parent_type == "block_id":
+            block_id = database_parent.get("block_id")
+            if block_id:
+                return await self._resolve_block_parent_recursive(block_id)
+            return None, None
+        if parent_type == "data_source_id":
+            return database_parent.get("data_source_id"), RecordType.DATASOURCE
+        return None, None
+
+    async def _get_database_parent_ref(
+        self,
+        database_id: str,
+        visited: Optional[set] = None,
+    ) -> Tuple[Optional[str], Optional[RecordType]]:
+        """
+        Fetch a database and return its parent as an (id, record_type) pair.
+
+        Databases are containers, not records. If the parent is another database
+        (wikis), hop again until a page, data source, or workspace.
+
+        Raises:
+            RuntimeError: If the database cannot be retrieved (API failure). Callers must not
+                treat this as "no parent" — that would clear PARENT_CHILD edges.
+        """
+        if visited is None:
+            visited = set()
+        if database_id in visited:
+            return None, None
+        visited.add(database_id)
+        database_data = await self._retrieve_database_payload(database_id)
+        return await self._parent_ref_from_database_payload(database_data, visited)
+
+    async def _resolve_database_id_as_record_parent(
+        self, database_id: str
+    ) -> Tuple[Optional[str], Optional[RecordType]]:
+        """Map a leftover database_id parent to the record we actually store.
+
+        Row-like objects belong to the database's data source. If the container
+        has no data sources, hop to the database's own parent instead.
+        """
+        payload = await self._retrieve_database_payload(database_id)
+        data_source_id = self._first_data_source_id(payload)
+        if data_source_id:
+            return data_source_id, RecordType.DATASOURCE
+        return await self._parent_ref_from_database_payload(payload, {database_id})
 
     async def _transform_to_webpage_record(
         self,
         obj_data: Dict[str, Any],
         object_type: str,
-        database_parent_id: Optional[str] = None
+        database_parent_id: Optional[str] = None,
+        database_parent_record_type: Optional[RecordType] = None,
     ) -> Optional[WebpageRecord]:
         """
-        Unified transform for pages, databases, and data_sources to WebpageRecord.
+        Unified transform for pages and data_sources to WebpageRecord.
 
         Args:
-            obj_data: Raw data from Notion API (page, database, or data_source)
-            object_type: "page", "database", or "data_source"
+            obj_data: Raw data from Notion API (page or data_source)
+            object_type: "page" or "data_source"
             database_parent_id: Optional parent ID for data sources (when parent is a database)
 
         Returns:
-            For database/data_source: (WebpageRecord)
-            For page: (WebpageRecord)
+            WebpageRecord, or None when the object is not a page/data source
+
+        Raises:
+            _DatabaseUnavailable: a database parent could not be resolved right now
         """
         try:
             obj_id = obj_data.get("id")
 
-            # Extract title based on type
             if object_type == "database":
-                # Database: title is directly in the response
-                title_parts = obj_data.get("title", [])
-                title = "".join([t.get("plain_text", "") for t in title_parts]) or "Untitled Database"
-                record_type = RecordType.DATABASE
-            elif object_type == "data_source":
+                return None
+            if object_type == "data_source":
                 # Data Source: title is directly in the response (same as database)
                 title_parts = obj_data.get("title", [])
                 title = "".join([t.get("plain_text", "") for t in title_parts]) or "Untitled Data Source"
@@ -3016,16 +3952,17 @@ class NotionConnector(BaseConnector):
             parent_record_type = None
 
             if object_type == "data_source":
-                # Data Source: use the database's parent ID if provided
                 if database_parent_id:
                     parent_id = database_parent_id
-                    # For datasources, parent is typically a page (WEBPAGE)
-                    # This allows _handle_parent_record to create a placeholder if parent doesn't exist yet
-                    parent_record_type = RecordType.WEBPAGE
-                # When database_parent_id is None (e.g., database parent is workspace),
-                # parent_id and parent_record_type remain None - datasource connects only to record group
+                    parent_record_type = database_parent_record_type or RecordType.WEBPAGE
+                else:
+                    raw_parent = obj_data.get("parent") or {}
+                    if raw_parent.get("type") == "data_source_id" and raw_parent.get(
+                        "data_source_id"
+                    ):
+                        parent_id = raw_parent["data_source_id"]
+                        parent_record_type = RecordType.DATASOURCE
             else:
-                # Page/Database: standard parent structure
                 parent = obj_data.get("parent", {})
                 parent_type = parent.get("type")
 
@@ -3033,8 +3970,17 @@ class NotionConnector(BaseConnector):
                     parent_id = parent.get("page_id")
                     parent_record_type = RecordType.WEBPAGE
                 elif parent_type == "database_id":
-                    parent_id = parent.get("database_id")
-                    parent_record_type = RecordType.DATABASE
+                    database_id = parent.get("database_id")
+                    if database_id:
+                        try:
+                            parent_id, parent_record_type = (
+                                await self._resolve_database_id_as_record_parent(database_id)
+                            )
+                        except _DatabaseGone:
+                            self.logger.info(
+                                "Database parent %s of %s is gone; syncing it without a parent",
+                                database_id, obj_id,
+                            )
                 elif parent_type == "block_id":
                     # Recursively resolve block_id to find the actual page/database/datasource parent
                     block_id = parent.get("block_id")
@@ -3067,14 +4013,19 @@ class NotionConnector(BaseConnector):
                 parent_record_type=parent_record_type,
                 version=1,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.NOTION,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 mime_type=MimeTypes.BLOCKS.value,
+                preview_renderable=False,
+                inherit_permissions=True,
                 weburl=obj_data.get("url"),
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
             )
 
+        except _DatabaseUnavailable:
+            # Saving without the parent would clear its PARENT_CHILD edge; let the caller retry.
+            raise
         except Exception as e:
             self.logger.error(f"Failed to transform {object_type}: {e}", exc_info=True)
             return None
@@ -3189,7 +4140,7 @@ class NotionConnector(BaseConnector):
                 external_record_group_id=self.workspace_id or "",
                 version=1,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.NOTION,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 mime_type=mime_type,
                 signed_url=file_url,
@@ -3282,7 +4233,7 @@ class NotionConnector(BaseConnector):
                 external_record_group_id=self.workspace_id or "",
                 version=1,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.NOTION,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 mime_type=mime_type,
                 signed_url=file_url,
@@ -3368,13 +4319,11 @@ class NotionConnector(BaseConnector):
         """
         try:
             # First check if we have the record in ArangoDB
-            async with self.data_store_provider.transaction() as tx_store:
-                record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=page_id
-                )
-                if record and record.record_name:
-                    return record.record_name
+            record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, page_id
+            )
+            if record and record.record_name:
+                return record.record_name
 
             # If not in DB, fetch from Notion API
             datasource = await self._get_fresh_datasource()
@@ -3449,11 +4398,9 @@ class NotionConnector(BaseConnector):
             Record object if found, None otherwise
         """
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                return await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_id
-                )
+            return await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_id
+            )
         except Exception as e:
             self.logger.warning(f"Failed to get record for {external_id}: {e}")
             return None
@@ -3501,10 +4448,11 @@ class NotionConnector(BaseConnector):
                     external_record_id=external_id,
                     external_revision_id="temporary",
                     connector_id=self.connector_id,
-                    connector_name=Connectors.NOTION,
+                    connector_name=self.connector_name,
                     record_group_type=RecordGroupType.NOTION_WORKSPACE,
                     external_record_group_id=self.workspace_id or "",
                     mime_type=MimeTypes.BLOCKS.value,
+                    preview_renderable=False,
                     indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                     version=1,
                     origin=OriginTypes.CONNECTOR,
@@ -3549,11 +4497,10 @@ class NotionConnector(BaseConnector):
         """
         try:
             # Query user from database by source_user_id
-            async with self.data_store_provider.transaction() as tx_store:
-                user = await tx_store.get_user_by_source_id(
-                    source_user_id=user_id,
-                    connector_id=self.connector_id
-                )
+            user = await self.data_entities_processor.get_user_by_source_id(
+                source_user_id=user_id,
+                connector_id=self.connector_id
+            )
 
             if user:
                 # User found in database - use database user ID
@@ -3589,8 +4536,17 @@ class NotionConnector(BaseConnector):
             return None
 
     def _get_current_iso_time(self) -> str:
-        """Get current time in ISO 8601 format with Z suffix (matching Notion format)."""
-        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        """Now, in the exact shape Notion emits: minute-truncated, millisecond-padded.
+
+        Used only to seed the delta checkpoint when a sync processes no records, and that
+        value is later string-compared against Notion's own ``last_edited_time``. Notion
+        truncates to the minute and always writes ``.000Z``, so a wall-clock timestamp with
+        real seconds compares as *newer* than anything edited in the same minute and skips
+        it for good. ``isoformat()`` also drops the fractional part entirely at exactly
+        zero microseconds, and ``'Z' > '.'``, which flips the comparison the other way —
+        hence the explicit format rather than a ``replace()``.
+        """
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:00.000Z")
 
     def _is_embed_platform_url(self, url: Optional[str]) -> bool:
         """
@@ -3644,39 +4600,45 @@ class NotionConnector(BaseConnector):
         """
         Get NotionDataSource with ALWAYS-FRESH access token.
 
-        This method:
-        1. Fetches current OAuth token from config
-        2. Compares with existing client's token
-        3. Updates client ONLY if token changed (mutation)
-        4. Returns datasource with current token
-
-        Returns:
-            NotionDataSource with current valid token
+        Supports both OAuth (`credentials.access_token`) and API token
+        (`auth.apiToken`) connectors. Updates the client only when the
+        configured token differs from what the client is currently using.
         """
         if not self.notion_client:
-            raise Exception("Notion client not initialized. Call init() first.")
+            raise connector_not_ready(self.display_name)
 
-        # Fetch current config from etcd (async I/O)
-        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        config = await self.config_service.get_config(
+            f"/services/connectors/{self.connector_id}/config"
+        )
 
         if not config:
-            raise Exception("Notion configuration not found")
+            raise connector_not_ready(self.display_name)
 
-        # Extract fresh OAuth access token from credentials section
-        credentials = config.get("credentials", {}) or {}
-        fresh_token = credentials.get("access_token", "")
+        auth = config.get("auth", {}) or {}
+        auth_type = auth.get("authType", "API_TOKEN")
+        if auth_type == "OAUTH":
+            credentials = config.get("credentials", {}) or {}
+            fresh_token = credentials.get("access_token", "")
+        else:
+            fresh_token = auth.get("apiToken", "")
 
         if not fresh_token:
-            raise Exception("No OAuth access token available")
+            raise connector_not_ready(self.display_name)
 
-        # Get current token from client
         internal_client = self.notion_client.get_client()
-        current_token = internal_client.access_token
+        current_token = getattr(internal_client, "access_token", None) or ""
+        if not current_token:
+            auth_header = (getattr(internal_client, "headers", None) or {}).get(
+                "Authorization", ""
+            )
+            if isinstance(auth_header, str) and auth_header.startswith("Bearer "):
+                current_token = auth_header[len("Bearer ") :]
 
-        # Update client's token if it changed (mutation)
         if current_token != fresh_token:
             self.logger.debug("🔄 Updating client with refreshed access token")
-            internal_client.access_token = fresh_token
-            internal_client.headers["Authorization"] = f"Bearer {fresh_token}"
+            if hasattr(internal_client, "access_token"):
+                internal_client.access_token = fresh_token
+            if getattr(internal_client, "headers", None) is not None:
+                internal_client.headers["Authorization"] = f"Bearer {fresh_token}"
 
         return NotionDataSource(self.notion_client)

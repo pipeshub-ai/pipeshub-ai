@@ -11,6 +11,7 @@ import {
   isConnectorSyncInProgressError,
   isConnectorSyncLockedError,
 } from '../../utils/connector-sync-actions';
+import { localFsDesktopToast } from '../../utils/local-fs-helpers';
 import { useSyncConflictGuard } from '../../utils/use-sync-conflict-guard';
 
 // ========================================
@@ -86,6 +87,12 @@ export function PillDivider() {
 
 type SyncState = 'idle' | 'syncing' | 'failed';
 
+function syncErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  return fallback;
+}
+
 /** Self-contained button that triggers resync API and manages its own state */
 export function SyncButton({
   connectorId,
@@ -108,23 +115,25 @@ export function SyncButton({
       const outcome = await runConnectorResync({ connectorId, connectorType, force });
       if (outcome.kind === 'requires-desktop') {
         setState('idle');
-        addToast({
-          variant: 'info',
-          title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
-        });
+        addToast(localFsDesktopToast(outcome));
         return;
       }
       addToast({ variant: 'success', title: 'Sync started' });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
-    } catch (err) {
-      if (isConnectorSyncInProgressError(err) || isConnectorSyncLockedError(err)) {
+    } catch (error) {
+      if (isConnectorSyncInProgressError(error) || isConnectorSyncLockedError(error)) {
         setState('idle');
-        throw err;
+        throw error;
       }
+      console.error('Sync failed', { connectorId, error });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('failed');
-      addToast({ variant: 'error', title: 'Sync failed' });
+      addToast({
+        variant: 'error',
+        title: 'Sync failed',
+        description: syncErrorMessage(error, 'An unexpected error occurred.'),
+      });
     }
   };
 
@@ -197,23 +206,25 @@ export function FullSyncButton({
       });
       if (outcome.kind === 'requires-desktop') {
         setState('idle');
-        addToast({
-          variant: 'info',
-          title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
-        });
+        addToast(localFsDesktopToast(outcome));
         return;
       }
       addToast({ variant: 'success', title: 'Full sync started' });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
-    } catch (err) {
-      if (isConnectorSyncInProgressError(err) || isConnectorSyncLockedError(err)) {
+    } catch (error) {
+      if (isConnectorSyncInProgressError(error) || isConnectorSyncLockedError(error)) {
         setState('idle');
-        throw err;
+        throw error;
       }
+      console.error('Full sync failed', { connectorId, error });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('failed');
-      addToast({ variant: 'error', title: 'Full sync failed' });
+      addToast({
+        variant: 'error',
+        title: 'Full sync failed',
+        description: syncErrorMessage(error, 'An unexpected error occurred.'),
+      });
     } finally {
       setConfirmOpen(false);
     }

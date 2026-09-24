@@ -1,0 +1,996 @@
+# Acme Corp — synthetic demo company.
+#
+# One fixture drives two things: the knowledge-base harness (content tuning)
+# and the demo connector (connector-shaped records with relations and
+# per-record permissions). Every record here is fictional.
+#
+# Permissions: a record is readable by the group named on it, or by its
+# container's group when it names none. Nothing is organisation-wide.
+
+company: Acme Corp
+
+# installer_joins: whoever creates the connector is added to the group, so the
+# person who installs the demo sees the shared data straight away. The pricing
+# committee stays closed so the permission demo ("Bob can see it, you can't")
+# still works for the installer.
+groups:
+  - id: engineering-readers
+    name: Engineering readers
+    installer_joins: true
+  - id: support-readers
+    name: Support readers
+    installer_joins: true
+  - id: pricing-committee
+    name: Pricing committee
+
+people:
+  - id: alice
+    name: Alice Chen
+    email: alice@acme-demo.example
+    title: Senior engineer, Payments
+    login: true
+    groups: [engineering-readers, support-readers]
+  - id: bob
+    name: Bob Okafor
+    email: bob@acme-demo.example
+    title: Support lead
+    login: true
+    groups: [engineering-readers, support-readers, pricing-committee]
+  - id: priya
+    name: Priya Natarajan
+    email: priya@acme-demo.example
+    title: Engineer, Payments
+    groups: [engineering-readers]
+  - id: marcus
+    name: Marcus Webb
+    email: marcus@acme-demo.example
+    title: Engineering manager, Payments
+    groups: [engineering-readers, support-readers]
+  - id: dana
+    name: Dana Okafor
+    email: dana@acme-demo.example
+    title: Staff engineer, Platform
+    groups: [engineering-readers]
+  - id: sam
+    name: Sam Reyes
+    email: sam@acme-demo.example
+    title: Support engineer
+    groups: [support-readers]
+  - id: lena
+    name: Lena Fischer
+    email: lena@acme-demo.example
+    title: VP Sales
+    groups: [pricing-committee]
+
+containers:
+  - id: gh-svc-billing-worker
+    system: GITHUB
+    kind: repository
+    name: acme/svc-billing-worker
+    group: engineering-readers
+    web_url: https://github.com/acme-demo/svc-billing-worker
+  - id: gh-svc-export
+    system: GITHUB
+    kind: repository
+    name: acme/svc-export
+    group: engineering-readers
+    web_url: https://github.com/acme-demo/svc-export
+  - id: jira-inc
+    system: JIRA
+    kind: project
+    name: INC — Incidents
+    group: engineering-readers
+    web_url: https://acme-demo.atlassian.net/browse/INC
+  - id: jira-sup
+    system: JIRA
+    kind: project
+    name: SUP — Support escalations
+    group: support-readers
+    web_url: https://acme-demo.atlassian.net/browse/SUP
+  - id: slack-eng-payments
+    system: SLACK
+    kind: channel
+    name: "#eng-payments"
+    group: engineering-readers
+    web_url: https://acme-demo.slack.com/archives/C01ENGPAY
+  - id: slack-eng-exports
+    system: SLACK
+    kind: channel
+    name: "#eng-exports"
+    group: engineering-readers
+    web_url: https://acme-demo.slack.com/archives/C01ENGEXP
+  - id: slack-support-escalations
+    system: SLACK
+    kind: channel
+    name: "#support-escalations"
+    group: support-readers
+    web_url: https://acme-demo.slack.com/archives/C01SUPESC
+  - id: slack-pricing-committee
+    system: SLACK
+    kind: channel
+    name: "#pricing-committee"
+    group: pricing-committee
+    web_url: https://acme-demo.slack.com/archives/C01PRICE
+  - id: drive-engineering
+    system: DRIVE
+    kind: folder
+    name: Engineering
+    group: engineering-readers
+    web_url: https://drive.google.com/drive/folders/acme-eng
+  - id: drive-support
+    system: DRIVE
+    kind: folder
+    name: Support
+    group: support-readers
+    web_url: https://drive.google.com/drive/folders/acme-support
+  - id: drive-pricing
+    system: DRIVE
+    kind: folder
+    name: Pricing (restricted)
+    group: pricing-committee
+    web_url: https://drive.google.com/drive/folders/acme-pricing
+  - id: servicenow
+    system: SERVICENOW
+    kind: desk
+    name: Acme Customer Service
+    group: support-readers
+    web_url: https://acme-demo.service-now.com/nav_to.do?uri=sn_customerservice_case_list.do
+
+# Slack messages that share a `thread` are indexed as one record per thread,
+# titled here, because that is how the Slack connector groups message bursts.
+threads:
+  - id: slack-eng-payments-0315
+    container: slack-eng-payments
+    title: "#eng-payments thread: fixing the billing worker retry storm (2026-03-15)"
+  - id: slack-eng-exports-0404
+    container: slack-eng-exports
+    title: "#eng-exports thread: export timeouts on large workspaces (2026-04-04)"
+  - id: slack-pricing-0402
+    container: slack-pricing-committee
+    title: "#pricing-committee thread: 2026 enterprise pricing draft (2026-04-02)"
+
+records:
+
+  # ---------------------------------------------------------------------------
+  # Story 1 — the billing worker retries (Engineering)
+  # ---------------------------------------------------------------------------
+
+  - id: jira-inc-2031
+    container: jira-inc
+    type: TICKET
+    title: "INC-2031: Synchronised billing retries overloaded the payments provider"
+    author: marcus
+    created: 2026-03-14T11:05:00Z
+    updated: 2026-03-18T16:20:00Z
+    web_url: https://acme-demo.atlassian.net/browse/INC-2031
+    body: |
+      **Severity:** SEV-2 · **Owner:** Marcus Webb · **Status:** Resolved
+
+      ## Impact
+      Roughly 3,400 subscription renewals were delayed by up to 90 minutes on
+      2026-03-14. No charges were lost or duplicated.
+
+      ## Timeline (UTC)
+      - 09:12 Stripe returned elevated 429 (rate-limit) responses after a brief upstream blip.
+      - 09:13 All 12 billing worker replicas began retrying failed charges on a fixed 5-second schedule.
+      - 09:20 Retry volume reached 12× steady state; Stripe's rate limiting tightened further.
+      - 09:45 On-call (Marcus) paused the workers to let the queue drain.
+      - 10:40 Workers resumed at reduced concurrency; backlog cleared.
+
+      ## Root cause
+      The billing worker used a fixed, un-jittered retry interval. When a transient
+      upstream failure hit every replica at once, every replica retried at the same
+      moment, turning a small blip into a sustained overload — a thundering herd.
+
+      ## Action items
+      1. Replace the fixed retry with exponential backoff and jitter — PR #482 (Priya).
+      2. Add a retry-delay histogram so this pattern is visible on the dashboard — PR #482.
+      3. Write up the resilience approach — "Billing worker resilience" design doc (Dana).
+
+  - id: slack-eng-payments-0315-1
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Marcus Webb, 2026-03-15 08:41"
+    author: marcus
+    created: 2026-03-15T08:41:00Z
+    thread: slack-eng-payments-0315
+    body: |
+      Postmortem for yesterday's INC-2031 is up. Short version: every worker retried
+      Stripe on the same 5s tick and we DDoS'd ourselves.
+
+  - id: slack-eng-payments-0315-2
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Priya Natarajan, 2026-03-15 08:47"
+    author: priya
+    created: 2026-03-15T08:47:00Z
+    thread: slack-eng-payments-0315
+    body: |
+      I'll take the fix. Proposal: exponential backoff with full jitter, cap at 2
+      minutes, and bump max attempts to 6 since they'll be spread out. That's the
+      pattern from the AWS architecture blog.
+
+  - id: slack-eng-payments-0315-3
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Dana Okafor, 2026-03-15 08:52"
+    author: dana
+    created: 2026-03-15T08:52:00Z
+    thread: slack-eng-payments-0315
+    body: |
+      +1 on full jitter over equal jitter — with 12 replicas we want the spread.
+      Can we also emit the actual delay as a histogram? I want to see the
+      distribution on the dashboard, not guess.
+
+  - id: slack-eng-payments-0315-4
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Priya Natarajan, 2026-03-15 08:55"
+    author: priya
+    created: 2026-03-15T08:55:00Z
+    thread: slack-eng-payments-0315
+    body: |
+      Yes, adding `billing_retry_delay_seconds`. PR #482 incoming this week.
+
+  - id: slack-eng-payments-0315-5
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Marcus Webb, 2026-03-15 09:02"
+    author: marcus
+    created: 2026-03-15T09:02:00Z
+    thread: slack-eng-payments-0315
+    body: |
+      Great. Dana, can you write up the resilience approach as a short design doc
+      so we don't re-derive this next year?
+
+  - id: slack-eng-payments-0315-6
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Dana Okafor, 2026-03-15 09:03"
+    author: dana
+    created: 2026-03-15T09:03:00Z
+    thread: slack-eng-payments-0315
+    body: |
+      On it — "Billing worker resilience", in the Engineering Drive folder.
+
+  - id: drive-billing-resilience
+    container: drive-engineering
+    type: FILE
+    title: "Billing worker resilience"
+    author: dana
+    created: 2026-03-17T14:00:00Z
+    updated: 2026-03-19T10:30:00Z
+    web_url: https://docs.google.com/document/d/acme-billing-resilience
+    body: |
+      **Author:** Dana Okafor · **Status:** Approved · **Last updated:** 2026-03-19
+
+      ## Context
+      The billing worker charges subscription renewals through Stripe. INC-2031
+      showed that our retry strategy could turn a brief upstream failure into a
+      self-inflicted outage, because all replicas retried in lockstep.
+
+      ## Decision
+      Retries use **exponential backoff with full jitter** so that retry load is
+      spread across time and across replicas, and a transient provider error
+      decays instead of amplifying. The base delay, cap and attempt limit are set
+      in the implementing pull request, not here.
+
+      ## How this was decided
+      The options — fixed interval, backoff without jitter, equal jitter, full
+      jitter — and the choice of max attempts were discussed in #eng-payments on
+      2026-03-15, the day after the incident. That thread is the record of the
+      reasoning; this document records the outcome.
+
+      ## Observability
+      `billing_retry_delay_seconds` (histogram) and `billing_retry_attempt_total`
+      (counter) are on the Payments dashboard.
+
+      ## Implemented in
+      PR #482 in acme/svc-billing-worker, merged 2026-03-21.
+
+  - id: gh-pr-482
+    container: gh-svc-billing-worker
+    type: PULL_REQUEST
+    title: "PR #482: Add jittered exponential backoff to the billing worker"
+    author: priya
+    created: 2026-03-18T15:10:00Z
+    updated: 2026-03-21T11:45:00Z
+    web_url: https://github.com/acme-demo/svc-billing-worker/pull/482
+    relations:
+      - { type: RELATED, to: jira-inc-2031 }
+      - { type: RELATED, to: drive-billing-resilience }
+    body: |
+      **Merged** 2026-03-21 · **Reviewers:** Marcus Webb (approved), Dana Okafor (approved after her requested histogram-bucket change)
+      **References:** INC-2031
+
+      ## Summary
+      Replaces the fixed 5-second retry in `charge_retry.py` with exponential
+      backoff (base 2s, cap 120s) plus full jitter. Retries across worker replicas
+      are no longer synchronised.
+
+      ## Why
+      During INC-2031 on 2026-03-14, all 12 billing worker replicas retried failed
+      charges on the same 5-second cadence. Stripe rate-limited us, which produced
+      more failures, which produced more synchronised retries. See the postmortem
+      and the #eng-payments thread from 2026-03-15.
+
+      ## Changes
+      - `charge_retry.py`: `backoff = min(120, 2 ** attempt) * random.uniform(0, 1)`
+      - `worker_config.yaml`: `max_attempts` raised from 3 to 6
+      - Metrics: new `billing_retry_delay_seconds` histogram
+
+      ## Review
+      - Dana Okafor requested changes: add an explicit 120s bucket to the
+        `billing_retry_delay_seconds` histogram so the cap is visible on the
+        dashboard. Added in the second revision; Dana then approved.
+      - Marcus Webb approved and asked for the `max_attempts` change to be
+        noted in the release notes for support.
+
+  - id: gh-pr-482-c1
+    container: gh-svc-billing-worker
+    type: COMMENT
+    title: "Review comment on PR #482 — Dana Okafor"
+    author: dana
+    created: 2026-03-19T09:20:00Z
+    parent: gh-pr-482
+    body: |
+      Dana Okafor requested changes before merge: please add an explicit 120s
+      bucket to the `billing_retry_delay_seconds` histogram so the cap shows up
+      as its own bucket on the dashboard. Otherwise this is exactly the
+      full-jitter shape we discussed — approving once that is in.
+
+  - id: gh-pr-482-c2
+    container: gh-svc-billing-worker
+    type: COMMENT
+    title: "Review comment on PR #482 — Marcus Webb"
+    author: marcus
+    created: 2026-03-20T17:05:00Z
+    parent: gh-pr-482
+    body: |
+      Marcus Webb: Approved. Please note the max_attempts change in the release
+      notes — support will want to know renewals can now take longer to give up.
+
+  # ---------------------------------------------------------------------------
+  # Story 2 — export timeouts (Support → Engineering)
+  # ---------------------------------------------------------------------------
+
+  - id: sn-4471
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004471: Export timeout on full-workspace export — Northwind Traders"
+    author: sam
+    created: 2026-04-02T13:12:00Z
+    updated: 2026-04-09T10:00:00Z
+    web_url: https://acme-demo.service-now.com/sn_customerservice_case.do?number=CS0004471
+    body: |
+      **Customer:** Northwind Traders (Enterprise) · **Status:** Solved
+
+      Northwind Traders reports that "Export workspace" spins for about 30 seconds and then
+      shows "Request timed out." Their workspace has ~48,000 records. Reproduced on
+      our side with a similar-sized workspace: the export request is cut off at the
+      30-second gateway limit.
+
+      Workaround given: export per-project instead of the whole workspace.
+      Escalated to engineering as SUP-114 on 2026-04-03.
+
+  - id: sn-4478
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004478: Export timeout, twice in one day — Contoso"
+    author: sam
+    created: 2026-04-03T09:40:00Z
+    updated: 2026-04-09T10:05:00Z
+    web_url: https://acme-demo.service-now.com/sn_customerservice_case.do?number=CS0004478
+    body: |
+      **Customer:** Contoso (Enterprise) · **Status:** Solved
+
+      Contoso is the second customer this week reporting export timeouts on a large workspace (about
+      61,000 records). Same symptom as #4471: 30 seconds, then "Request timed out."
+      Linked to SUP-114. Customer accepted the per-project workaround for now and
+      asked to be told when full-workspace export works again.
+
+  - id: sn-4480
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004480: Export timeout, page hangs then fails — Fabrikam"
+    author: sam
+    created: 2026-04-03T15:22:00Z
+    updated: 2026-04-09T10:06:00Z
+    web_url: https://acme-demo.service-now.com/sn_customerservice_case.do?number=CS0004480
+    body: |
+      **Customer:** Fabrikam (Business) · **Status:** Solved
+
+      Fabrikam reports the same export timeout on a smaller workspace (~19,000 records). Third report; added to
+      SUP-114. Workaround applied.
+
+  - id: jira-sup-114
+    container: jira-sup
+    type: TICKET
+    title: "SUP-114: Escalation — workspace export times out for large workspaces"
+    author: sam
+    created: 2026-04-03T10:15:00Z
+    updated: 2026-04-14T12:00:00Z
+    web_url: https://acme-demo.atlassian.net/browse/SUP-114
+    relations:
+      - { type: RELATED, to: sn-4471 }
+      - { type: RELATED, to: sn-4478 }
+      - { type: RELATED, to: sn-4480 }
+    body: |
+      **Priority:** High · **Reporter:** Sam Reyes · **Status:** Done
+
+      Three customers (ServiceNow cases CS0004471, CS0004478, CS0004480) report that full-workspace
+      export fails with "Request timed out" after 30 seconds. Reproduced internally
+      at ~20k records and above.
+
+      Customer-facing workaround: export per project. Needs an engineering fix —
+      exports for large workspaces cannot complete inside a single request.
+
+      Engineering tracking: acme/svc-export issue #207. Resolved by PR #211
+      (exports moved to a background queue with a download link), released
+      2026-04-14. Customers on all three tickets notified — see the ServiceNow cases
+      for who was affected.
+
+  - id: slack-eng-exports-0404-1
+    container: slack-eng-exports
+    type: MESSAGE
+    title: "#eng-exports — Sam Reyes, 2026-04-04 09:10"
+    author: sam
+    created: 2026-04-04T09:10:00Z
+    thread: slack-eng-exports-0404
+    body: |
+      Escalating SUP-114 here — three customers now with export timeouts on big
+      workspaces. It's always exactly 30 seconds, which smells like the API gateway
+      limit rather than the export itself.
+
+  - id: slack-eng-exports-0404-2
+    container: slack-eng-exports
+    type: MESSAGE
+    title: "#eng-exports — Dana Okafor, 2026-04-04 09:18"
+    author: dana
+    created: 2026-04-04T09:18:00Z
+    thread: slack-eng-exports-0404
+    body: |
+      It is the gateway limit. The export runs synchronously inside the request
+      handler and streams the zip back; anything over ~20k records can't finish
+      in 30s. We should have made this a background job from the start.
+
+  - id: slack-eng-exports-0404-3
+    container: slack-eng-exports
+    type: MESSAGE
+    title: "#eng-exports — Alice Chen, 2026-04-04 09:25"
+    author: alice
+    created: 2026-04-04T09:25:00Z
+    thread: slack-eng-exports-0404
+    body: |
+      I can pick this up. Plan: enqueue the export, write the zip to object
+      storage, email a signed download link, and show "Export in progress" in the
+      UI. Filing it as #207 in svc-export.
+
+  - id: slack-eng-exports-0404-4
+    container: slack-eng-exports
+    type: MESSAGE
+    title: "#eng-exports — Sam Reyes, 2026-04-04 09:27"
+    author: sam
+    created: 2026-04-04T09:27:00Z
+    thread: slack-eng-exports-0404
+    body: |
+      Thanks Alice. I'll keep the per-project workaround in the tickets until it
+      ships. Can we get a runbook for support once it's done?
+
+  - id: slack-eng-exports-0404-5
+    container: slack-eng-exports
+    type: MESSAGE
+    title: "#eng-exports — Alice Chen, 2026-04-04 09:28"
+    author: alice
+    created: 2026-04-04T09:28:00Z
+    thread: slack-eng-exports-0404
+    body: |
+      Yes — "Export runbook" in the Support Drive folder, I'll write it alongside
+      the PR.
+
+  - id: slack-eng-exports-0404-6
+    container: slack-eng-exports
+    type: MESSAGE
+    title: "#eng-exports — Dana Okafor, 2026-04-04 09:31"
+    author: dana
+    created: 2026-04-04T09:31:00Z
+    thread: slack-eng-exports-0404
+    body: |
+      One thing: keep the synchronous path for small workspaces (say under 5k
+      records) so the common case stays instant. Only queue when it would time out.
+
+  - id: slack-eng-exports-0404-7
+    container: slack-eng-exports
+    type: MESSAGE
+    title: "#eng-exports — Alice Chen, 2026-04-04 09:33"
+    author: alice
+    created: 2026-04-04T09:33:00Z
+    thread: slack-eng-exports-0404
+    body: |
+      Good call, will add a threshold. Small exports stay synchronous, large ones
+      go to the queue.
+
+  - id: gh-issue-207
+    container: gh-svc-export
+    type: TICKET
+    title: "Issue #207: Full-workspace export blocks the request past the 30s gateway limit"
+    author: alice
+    created: 2026-04-04T09:40:00Z
+    updated: 2026-04-14T11:00:00Z
+    web_url: https://github.com/acme-demo/svc-export/issues/207
+    relations:
+      - { type: RELATED, to: jira-sup-114 }
+    body: |
+      **Status:** Closed by #211
+
+      Export for workspaces above roughly 20,000 records cannot finish inside the
+      API gateway's 30-second request limit, so customers see "Request timed out"
+      (support escalation SUP-114; three enterprise customers affected).
+
+      Proposed fix: move large exports to a background queue. Enqueue the job,
+      write the archive to object storage, email a signed download link, and show
+      progress in the UI. Keep the synchronous path below a size threshold so
+      small exports stay instant.
+
+  - id: gh-pr-211
+    container: gh-svc-export
+    type: PULL_REQUEST
+    title: "PR #211: Move large workspace exports to a background queue"
+    author: alice
+    created: 2026-04-09T16:30:00Z
+    updated: 2026-04-14T10:50:00Z
+    web_url: https://github.com/acme-demo/svc-export/pull/211
+    relations:
+      - { type: IMPLEMENTS, to: gh-issue-207 }
+      - { type: RELATED, to: drive-export-runbook }
+    body: |
+      **Merged** 2026-04-14 · **Reviewers:** Dana Okafor (approved), Marcus Webb (approved)
+      **Closes** #207
+
+      ## Summary
+      Workspace exports above 5,000 records are now queued instead of run inside
+      the request. The worker writes the archive to object storage and emails a
+      signed download link (valid 24 hours). Exports under the threshold keep the
+      existing synchronous path.
+
+      ## Changes
+      - New `ExportJob` queue consumer in `export_worker.py`
+      - `POST /export` returns `202 Accepted` with a job id when queued
+      - UI shows "Export in progress — we'll email you a link"
+      - `export_threshold_records` config (default 5000)
+
+      ## Rollout
+      Released 2026-04-14. Support notified via SUP-114; runbook in the Support
+      Drive folder.
+
+  - id: gh-pr-211-c1
+    container: gh-svc-export
+    type: COMMENT
+    title: "Review comment on PR #211 — Dana Okafor"
+    author: dana
+    created: 2026-04-10T11:00:00Z
+    parent: gh-pr-211
+    body: |
+      Signed link expiry — 24h is fine, but please make it configurable; some
+      enterprise customers will ask for shorter.
+
+  - id: gh-pr-211-c2
+    container: gh-svc-export
+    type: COMMENT
+    title: "Review comment on PR #211 — Marcus Webb"
+    author: marcus
+    created: 2026-04-13T15:40:00Z
+    parent: gh-pr-211
+    body: |
+      Approved. Nice that the threshold keeps small exports instant.
+
+  - id: drive-export-runbook
+    container: drive-support
+    type: FILE
+    title: "Export runbook"
+    author: alice
+    created: 2026-04-13T12:00:00Z
+    updated: 2026-04-14T12:30:00Z
+    web_url: https://docs.google.com/document/d/acme-export-runbook
+    body: |
+      **For:** Support · **Owner:** Alice Chen · **Updated:** 2026-04-14
+
+      ## How exports work now (since 2026-04-14)
+      - Workspaces under 5,000 records: export is immediate, as before.
+      - Larger workspaces: the export is queued. The customer sees "Export in
+        progress" and receives an email with a download link within a few minutes.
+        Links are valid for 24 hours.
+
+      ## If a customer reports a timeout
+      1. Check the workspace size in the admin panel.
+      2. If it's over 5,000 records and they saw a timeout, they are on a version
+         before 2026-04-14 — confirm they've refreshed and try again.
+      3. If the queued export hasn't emailed a link within 30 minutes, escalate in
+         #eng-exports with the job id from the admin panel.
+
+      ## Background
+      This replaced the synchronous export that hit the 30-second gateway limit
+      (SUP-114, svc-export #207, fixed by PR #211).
+
+  # ---------------------------------------------------------------------------
+  # Story 3 — pricing (restricted; the permission demo)
+  # ---------------------------------------------------------------------------
+
+  - id: drive-pricing-2026
+    container: drive-pricing
+    type: FILE
+    title: "Enterprise pricing strategy 2026"
+    author: lena
+    created: 2026-03-28T09:00:00Z
+    updated: 2026-04-02T17:15:00Z
+    web_url: https://docs.google.com/document/d/acme-pricing-2026
+    group: pricing-committee
+    body: |
+      **Owner:** Lena Fischer · **Restricted to the pricing committee**
+
+      ## Direction for 2026
+      Move Enterprise from per-seat pricing to a platform fee plus usage bands.
+      Target: a $48,000 annual platform fee covering up to 250 seats, with usage
+      bands at 250, 1,000, and 5,000 seats. Existing customers are grandfathered
+      through their current term and offered a 12% discount to migrate early.
+
+      ## Rationale
+      Per-seat pricing penalises the broad rollouts we most want. Three of the five
+      largest expansion deals last year stalled on seat count.
+
+      ## Timing
+      Announce to the sales team in May; new contracts from 1 July; public price
+      page update in Q3.
+
+  - id: slack-pricing-0402-1
+    container: slack-pricing-committee
+    type: MESSAGE
+    title: "#pricing-committee — Lena Fischer, 2026-04-02 16:50"
+    author: lena
+    created: 2026-04-02T16:50:00Z
+    thread: slack-pricing-0402
+    group: pricing-committee
+    body: |
+      Final draft of the 2026 enterprise pricing strategy is in the Pricing folder.
+      Platform fee plus usage bands, $48k base for 250 seats, 12% early-migration
+      discount. Please read before Thursday.
+
+  - id: slack-pricing-0402-2
+    container: slack-pricing-committee
+    type: MESSAGE
+    title: "#pricing-committee — Bob Okafor, 2026-04-02 17:05"
+    author: bob
+    created: 2026-04-02T17:05:00Z
+    thread: slack-pricing-0402
+    group: pricing-committee
+    body: |
+      Read it. From the support side the grandfathering clause matters most — we
+      need a clean answer for customers mid-term who ask why their renewal looks
+      different. Otherwise looks good.
+
+  # ---------------------------------------------------------------------------
+  # Shared reference (everyone in engineering or support can read)
+  # ---------------------------------------------------------------------------
+
+  - id: drive-oncall-handbook
+    container: drive-engineering
+    type: FILE
+    title: "Engineering on-call handbook"
+    author: marcus
+    created: 2025-11-10T10:00:00Z
+    updated: 2026-02-03T09:15:00Z
+    web_url: https://docs.google.com/document/d/acme-oncall-handbook
+    body: |
+      ## Rota
+      One primary and one secondary per team, rotating weekly. Swaps are recorded
+      in the rota by the Thursday before.
+
+      ## Public holidays
+      On-call over a public holiday is voluntary and paid at 1.5× the standard
+      on-call rate. Nobody is scheduled on a public holiday without agreeing to it.
+
+      ## Escalation
+      SEV-1: page the incident commander immediately. SEV-2: page the owning
+      team's on-call; incident commander is optional. Open an incident channel
+      within 15 minutes for SEV-2 and above.
+
+      ## Postmortems
+      Every SEV-2 or higher gets a blameless postmortem within five working days,
+      owned by the on-call engineer at the time of the incident.
+
+  - id: drive-release-notes-q2
+    container: drive-engineering
+    type: FILE
+    title: "Release notes — April 2026"
+    author: marcus
+    created: 2026-04-30T16:00:00Z
+    web_url: https://docs.google.com/document/d/acme-release-notes-2026-04
+    body: |
+      ## svc-export
+      - Large workspace exports (over 5,000 records) now run in the background and
+        deliver a download link by email (PR #211).
+
+      ## svc-billing-worker
+      - Retries now use exponential backoff with jitter; renewals may take longer
+        to give up on a failing charge (PR #482, March).
+      - Dependency bump: stripe-python 9.4 (PR #490).
+
+      ## svc-search
+      - Query logging now excludes personal data (PR #133).
+
+  - id: drive-payments-sync-0407
+    container: drive-engineering
+    type: FILE
+    title: "Payments team sync — 2026-04-07"
+    author: marcus
+    created: 2026-04-07T15:30:00Z
+    web_url: https://docs.google.com/document/d/acme-payments-sync-0407
+    body: |
+      Attendees: Marcus, Priya, Dana, Alice
+
+      - Backoff change (#482) has been live three weeks; no retry-storm since. Priya
+        to add an alert on `billing_retry_attempt_total` exceeding 3× baseline.
+      - Alice is on the export queue work (#207); reviewing Thursday.
+      - Q2 planning: dunning emails for failed renewals — Priya to draft a proposal.
+
+  # ---------------------------------------------------------------------------
+  # Decoys — plausible, related-sounding, must NOT be cited for the golden questions
+  # ---------------------------------------------------------------------------
+
+  - id: gh-pr-490
+    container: gh-svc-billing-worker
+    type: PULL_REQUEST
+    title: "PR #490: Bump stripe-python to 9.4"
+    author: priya
+    created: 2026-04-11T10:00:00Z
+    web_url: https://github.com/acme-demo/svc-billing-worker/pull/490
+    body: |
+      Routine dependency bump. No behaviour change; changelog reviewed. Merged 2026-04-11.
+
+  - id: gh-pr-476
+    container: gh-svc-billing-worker
+    type: PULL_REQUEST
+    title: "PR #476: Fix flaky test_charge_idempotency"
+    author: dana
+    created: 2026-03-05T14:20:00Z
+    web_url: https://github.com/acme-demo/svc-billing-worker/pull/476
+    body: |
+      The idempotency test raced the fake clock. Pinned the clock in the fixture.
+      Merged 2026-03-06.
+
+  - id: gh-pr-198
+    container: gh-svc-export
+    type: PULL_REQUEST
+    title: "PR #198: Structured logging for export requests"
+    author: alice
+    created: 2026-02-20T11:00:00Z
+    web_url: https://github.com/acme-demo/svc-export/pull/198
+    body: |
+      Switches export request logs to structured JSON with workspace id, record
+      count, and duration, so slow exports are easier to find. Merged 2026-02-21.
+
+  - id: gh-pr-203
+    container: gh-svc-export
+    type: PULL_REQUEST
+    title: "PR #203: README — document export formats"
+    author: sam
+    created: 2026-03-12T09:00:00Z
+    web_url: https://github.com/acme-demo/svc-export/pull/203
+    body: |
+      Adds a table of supported export formats (CSV, JSON, zip of markdown) to the
+      README. Docs only.
+
+  - id: gh-issue-201
+    container: gh-svc-export
+    type: TICKET
+    title: "Issue #201: Export CSV uses semicolons in some locales"
+    author: sam
+    created: 2026-03-01T10:30:00Z
+    web_url: https://github.com/acme-demo/svc-export/issues/201
+    body: |
+      Customers in Germany get semicolon-delimited CSV. Should follow the
+      workspace locale setting explicitly rather than the server locale. Open.
+
+  - id: gh-issue-193
+    container: gh-svc-export
+    type: TICKET
+    title: "Issue #193: Add export to Parquet"
+    author: dana
+    created: 2026-01-22T13:00:00Z
+    web_url: https://github.com/acme-demo/svc-export/issues/193
+    body: |
+      Feature request from two data-team customers. Not scheduled.
+
+  - id: gh-issue-471
+    container: gh-svc-billing-worker
+    type: TICKET
+    title: "Issue #471: Renewal emails sent twice for annual plans"
+    author: marcus
+    created: 2026-02-27T09:45:00Z
+    web_url: https://github.com/acme-demo/svc-billing-worker/issues/471
+    body: |
+      Annual-plan customers received the renewal reminder twice in February. The
+      scheduler ran on both the old and new cron after the timezone change. Fixed
+      by removing the old cron entry. Closed.
+
+  - id: jira-inc-2018
+    container: jira-inc
+    type: TICKET
+    title: "INC-2018: Search indexing lag after storage migration"
+    author: dana
+    created: 2026-02-11T08:30:00Z
+    updated: 2026-02-13T17:00:00Z
+    web_url: https://acme-demo.atlassian.net/browse/INC-2018
+    body: |
+      **Severity:** SEV-3 · **Status:** Resolved
+
+      After the storage migration on 2026-02-10, the search indexer fell 40 minutes
+      behind for about six hours because the new volume's IOPS limit was lower than
+      the old one. Raised the IOPS tier. No customer-visible errors, only stale
+      search results.
+
+  - id: jira-sup-098
+    container: jira-sup
+    type: TICKET
+    title: "SUP-098: Customer wants SSO group sync (Fabrikam)"
+    author: sam
+    created: 2026-02-18T14:00:00Z
+    web_url: https://acme-demo.atlassian.net/browse/SUP-098
+    body: |
+      Fabrikam asks for automatic group membership from their identity provider.
+      Logged as a feature request; no engineering ticket yet. Open.
+
+  - id: jira-sup-121
+    container: jira-sup
+    type: TICKET
+    title: "SUP-121: Invoice PDF shows wrong VAT line (Contoso)"
+    author: sam
+    created: 2026-04-20T11:15:00Z
+    web_url: https://acme-demo.atlassian.net/browse/SUP-121
+    body: |
+      Contoso's April invoice shows VAT on a line that should be exempt. Finance is
+      reissuing; engineering to check the VAT rule for reverse-charge customers. Open.
+
+  - id: sn-4455
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004455: Password reset email not arriving"
+    author: sam
+    created: 2026-03-28T10:00:00Z
+    web_url: https://acme-demo.service-now.com/sn_customerservice_case.do?number=CS0004455
+    body: |
+      Customer's password reset email was filtered by their spam gateway. Asked
+      them to allowlist our sending domain. Solved.
+
+  - id: sn-4462
+    container: servicenow
+    type: TICKET
+    title: "ServiceNow CS0004462: Update billing address on invoices"
+    author: sam
+    created: 2026-03-30T15:45:00Z
+    web_url: https://acme-demo.service-now.com/sn_customerservice_case.do?number=CS0004462
+    body: |
+      Customer moved office and needs the new address on future invoices. Updated
+      in the admin panel. Solved.
+
+  - id: slack-eng-payments-0322
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Priya Natarajan, 2026-03-22 10:12"
+    author: priya
+    created: 2026-03-22T10:12:00Z
+    body: |
+      #482 is live in prod as of this morning. Watching the retry histogram — the
+      spread looks exactly like the design doc predicted.
+
+  - id: slack-eng-payments-0411
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Priya Natarajan, 2026-04-11 11:40"
+    author: priya
+    created: 2026-04-11T11:40:00Z
+    body: |
+      Bumped stripe-python to 9.4 in #490, no behaviour change. Also: does anyone
+      know why the sandbox webhook is delayed on Fridays?
+
+  - id: slack-eng-payments-0411-r
+    container: slack-eng-payments
+    type: MESSAGE
+    title: "#eng-payments — Marcus Webb, 2026-04-11 11:52"
+    author: marcus
+    created: 2026-04-11T11:52:00Z
+    body: |
+      Stripe's sandbox batches webhooks on their side on Fridays — not us. Ignore.
+
+  - id: slack-eng-exports-0302
+    container: slack-eng-exports
+    type: MESSAGE
+    title: "#eng-exports — Sam Reyes, 2026-03-02 14:05"
+    author: sam
+    created: 2026-03-02T14:05:00Z
+    body: |
+      Filed #201 for the semicolon CSV thing — a couple of German customers hit
+      it. Not urgent.
+
+  - id: slack-eng-exports-0415
+    container: slack-eng-exports
+    type: MESSAGE
+    title: "#eng-exports — Alice Chen, 2026-04-15 09:00"
+    author: alice
+    created: 2026-04-15T09:00:00Z
+    body: |
+      Queue-based exports have been live for a day. 41 large exports processed,
+      median 4 minutes to the email. No timeouts.
+
+  - id: slack-support-escalations-0403
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Sam Reyes, 2026-04-03 10:20"
+    author: sam
+    created: 2026-04-03T10:20:00Z
+    body: |
+      Opened SUP-114 for the export timeouts — three tickets now. Per-project
+      export is the workaround until engineering has a fix.
+
+  - id: slack-support-escalations-0414
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Bob Okafor, 2026-04-14 13:00"
+    author: bob
+    created: 2026-04-14T13:00:00Z
+    body: |
+      Export fix is released. Sam, please close out the three SUP-114 tickets and
+      point customers at the new "Export in progress" flow. Runbook is in the
+      Support folder.
+
+  - id: slack-support-escalations-0420
+    container: slack-support-escalations
+    type: MESSAGE
+    title: "#support-escalations — Sam Reyes, 2026-04-20 11:30"
+    author: sam
+    created: 2026-04-20T11:30:00Z
+    body: |
+      New one: SUP-121, Contoso's invoice has VAT on an exempt line. Finance is
+      reissuing; flagging in case it's a rule bug.
+
+questions:
+  - id: q1
+    ask: "Why was the payment service architecture changed, and how was the decision made?"
+    must_cite: [gh-pr-482, jira-inc-2031, slack-eng-payments-0315, drive-billing-resilience]
+    min_cite: 3
+    must_not_cite: [gh-pr-211, jira-sup-114, drive-export-runbook, drive-pricing-2026, drive-oncall-handbook]
+    personas: { alice: cites, bob: cites }
+
+  - id: q2
+    ask: "Which customers reported export timeouts, and what fixed it?"
+    # The answer names the customers from the ServiceNow cases every time, but the
+    # model doesn't always attach a citation marker to a bulleted list; the fix
+    # citation is the reliable one. ServiceNow cited is the stretch, tracked separately.
+    must_cite_any_of: [gh-pr-211, gh-issue-207, drive-export-runbook]
+    stretch_cite_any_of: [sn-4471, sn-4478, sn-4480]
+    answer_must_mention: ["Northwind", "Contoso", "Fabrikam", "queue"]
+    must_not_cite: [gh-pr-482, jira-inc-2031, drive-billing-resilience, drive-pricing-2026]
+    personas: { alice: cites, bob: cites }
+
+  - id: q3
+    ask: "What's our policy on being on-call over a public holiday?"
+    must_cite: [drive-oncall-handbook]
+    must_not_cite: [gh-pr-482, jira-inc-2031, gh-pr-211, jira-sup-114, drive-pricing-2026, drive-release-notes-q2]
+    personas: { alice: cites, bob: cites }
+
+  - id: q4
+    ask: "Who reviewed and approved PR #482 in the billing worker, and what did Dana ask for before it merged?"
+    must_cite_any_of: [gh-pr-482, gh-pr-482-c1, gh-pr-482-c2, slack-eng-payments-0315]
+    answer_must_mention: ["Marcus Webb", "Dana Okafor", "histogram"]
+    must_not_cite: [jira-inc-2031, drive-billing-resilience, gh-pr-211]
+    personas: { alice: cites, bob: cites }
+
+  - id: q5
+    ask: "What is the enterprise pricing strategy for 2026?"
+    must_cite: [drive-pricing-2026]
+    must_not_cite: [gh-pr-482]
+    answer_must_mention: ["platform fee", "48"]
+    # For Alice, "none" means: no restricted record cited and the answer says it found nothing.
+    # Citing an unrestricted near-miss (the release notes) while saying so is correct behaviour.
+    restricted: [drive-pricing-2026, slack-pricing-0402]
+    personas: { alice: none, bob: cites }

@@ -23,14 +23,16 @@ export interface UserData {
   createdAt: string;
   updatedAt: string;
   slug?: string;
+  role?: string;
 }
 
 export interface UpdateUserPayload {
-  fullName: string;
+  fullName?: string;
   firstName?: string;
   lastName?: string;
   designation?: string;
   email?: string;
+  role?: string;
 }
 
 export interface ChangePasswordPayload {
@@ -62,8 +64,12 @@ export const ProfileApi = {
   },
 
   /** PUT /api/v1/users/{userId} */
-  async updateUser(userId: string, payload: UpdateUserPayload): Promise<void> {
-    await apiClient.put(`${USERS_URL}/${userId}`, payload);
+  async updateUser(
+    userId: string,
+    payload: UpdateUserPayload,
+    config?: { suppressErrorToast?: boolean },
+  ): Promise<void> {
+    await apiClient.put(`${USERS_URL}/${userId}`, payload, config);
   },
 
   /** GET /api/v1/users/dp — download current user's avatar (resolved from JWT) */

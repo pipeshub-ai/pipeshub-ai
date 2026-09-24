@@ -254,56 +254,47 @@ class TestDeleteSkillRoute:
 
     @pytest.mark.asyncio
     async def test_blocks_delete_when_required_by_other_skills(self) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillInUseError
         from app.api.routes.skills import delete_skill
 
         manager = AsyncMock()
+        manager.delete = AsyncMock(side_effect=SkillInUseError(
+            "pdf-extractor", used_by_agents=[], required_by_skills=["other-skill"],
+        ))
         gp = AsyncMock()
-        with (
-            patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, self._ctx(gp)))),
-            patch(
-                "app.api.routes.skills._check_usage",
-                new=AsyncMock(return_value={"usedByAgents": [], "requiredBySkills": ["other-skill"]}),
-            ),
-        ):
+        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, self._ctx(gp)))):
             with pytest.raises(HTTPException) as exc_info:
                 await delete_skill(MagicMock(), "pdf-extractor", detach=False)
         assert exc_info.value.status_code == 409
         assert exc_info.value.detail["requiredBySkills"] == ["other-skill"]
-        manager.delete.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_blocks_delete_when_used_by_agents_without_detach(self) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillInUseError
         from app.api.routes.skills import delete_skill
 
         manager = AsyncMock()
+        usage_agents = [{"id": "agent-1", "name": "Support Bot"}]
+        manager.delete = AsyncMock(side_effect=SkillInUseError(
+            "pdf-extractor", used_by_agents=usage_agents, required_by_skills=[],
+        ))
         gp = AsyncMock()
-        usage = {"usedByAgents": [{"id": "agent-1", "name": "Support Bot"}], "requiredBySkills": []}
-        with (
-            patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, self._ctx(gp)))),
-            patch("app.api.routes.skills._check_usage", new=AsyncMock(return_value=usage)),
-        ):
+        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, self._ctx(gp)))):
             with pytest.raises(HTTPException) as exc_info:
                 await delete_skill(MagicMock(), "pdf-extractor", detach=False)
         assert exc_info.value.status_code == 409
-        assert exc_info.value.detail["usedByAgents"] == usage["usedByAgents"]
-        manager.delete.assert_not_called()
-        gp.batch_delete_edges.assert_not_called()
+        assert exc_info.value.detail["usedByAgents"] == usage_agents
 
     @pytest.mark.asyncio
-    async def test_detach_true_removes_edges_then_deletes(self) -> None:
+    async def test_detach_true_forwards_to_manager(self) -> None:
         from app.api.routes.skills import delete_skill
 
         manager = AsyncMock()
         manager.delete = AsyncMock(return_value=True)
         gp = AsyncMock()
-        usage = {"usedByAgents": [{"id": "agent-1", "name": "Support Bot"}], "requiredBySkills": []}
-        with (
-            patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, self._ctx(gp)))),
-            patch("app.api.routes.skills._check_usage", new=AsyncMock(return_value=usage)),
-        ):
+        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, self._ctx(gp)))):
             response = await delete_skill(MagicMock(), "pdf-extractor", detach=True)
-        gp.batch_delete_edges.assert_awaited_once()
-        manager.delete.assert_awaited_once_with("pdf-extractor")
+        manager.delete.assert_awaited_once_with("pdf-extractor", detach=True)
         assert response.status_code == 200
 
     @pytest.mark.asyncio
@@ -313,14 +304,10 @@ class TestDeleteSkillRoute:
         manager = AsyncMock()
         manager.delete = AsyncMock(return_value=True)
         gp = AsyncMock()
-        usage = {"usedByAgents": [], "requiredBySkills": []}
-        with (
-            patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, self._ctx(gp)))),
-            patch("app.api.routes.skills._check_usage", new=AsyncMock(return_value=usage)),
-        ):
+        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, self._ctx(gp)))):
             response = await delete_skill(MagicMock(), "pdf-extractor", detach=False)
         assert response.status_code == 200
-        gp.batch_delete_edges.assert_not_called()
+        manager.delete.assert_awaited_once_with("pdf-extractor", detach=False)
 
     @pytest.mark.asyncio
     async def test_manager_delete_returning_false_raises_404(self) -> None:
@@ -329,11 +316,7 @@ class TestDeleteSkillRoute:
         manager = AsyncMock()
         manager.delete = AsyncMock(return_value=False)
         gp = AsyncMock()
-        usage = {"usedByAgents": [], "requiredBySkills": []}
-        with (
-            patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, self._ctx(gp)))),
-            patch("app.api.routes.skills._check_usage", new=AsyncMock(return_value=usage)),
-        ):
+        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, self._ctx(gp)))):
             with pytest.raises(HTTPException) as exc_info:
                 await delete_skill(MagicMock(), "missing-skill", detach=False)
         assert exc_info.value.status_code == 404
@@ -399,3 +382,78 @@ class TestFinalizeImportRoute:
         manager.create.assert_awaited_once()
         manager.write_resource.assert_awaited_once_with("pdf-extractor", "scripts/run.py", "print(1)")
         assert response.status_code == 201
+
+
+class TestParseIfMatch:
+    def test_absent_and_star_are_unconditional(self) -> None:
+        from app.api.routes.skills import _parse_if_match
+
+        assert _parse_if_match(None) is None
+        assert _parse_if_match("") is None
+        assert _parse_if_match("*") is None
+        assert _parse_if_match("  *  ") is None
+
+    def test_strips_quotes_and_weak_validator(self) -> None:
+        from app.api.routes.skills import _parse_if_match
+
+        assert _parse_if_match("1710000000000") == 1710000000000
+        assert _parse_if_match('"1710000000000"') == 1710000000000
+        assert _parse_if_match('W/"1710000000000"') == 1710000000000
+
+    def test_rejects_non_integer(self) -> None:
+        from app.api.routes.skills import _parse_if_match
+
+        with pytest.raises(HTTPException) as exc:
+            _parse_if_match("abc")
+        assert exc.value.status_code == 400
+
+
+class TestUpdateSkillConflict:
+    @pytest.mark.asyncio
+    async def test_conflict_maps_to_409_with_current_token(self) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillConflictError
+        from app.api.routes.skills import SkillWriteRequest, update_skill
+
+        manager = AsyncMock()
+        manager.update = AsyncMock(side_effect=SkillConflictError(
+            "pdf-extractor", current_updated_at=99, current_version="1.0.3",
+        ))
+        payload = SkillWriteRequest(description="d", body="body")
+        with (
+            patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, {}))),
+            patch("app.api.routes.skills._build_content", return_value="content"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await update_skill(MagicMock(), "pdf-extractor", payload, if_match="1")
+        assert exc.value.status_code == 409
+        assert exc.value.detail["currentUpdatedAt"] == 99
+        assert exc.value.detail["currentVersion"] == "1.0.3"
+        manager.update.assert_awaited_once()
+        assert manager.update.await_args.kwargs["expected_updated_at"] == 1
+
+    def test_conflict_is_not_a_registry_error(self) -> None:
+        from app.agent_loop_lib.core.exceptions import RegistryError
+        from app.agent_loop_lib.modules.providers.skills.base import SkillConflictError
+
+        err = SkillConflictError("pdf-extractor", current_updated_at=1)
+        assert not isinstance(err, RegistryError)
+
+
+class TestPatchSkillBodyConflict:
+    @pytest.mark.asyncio
+    async def test_conflict_maps_to_409(self) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillConflictError
+        from app.api.routes.skills import PatchBodyRequest, patch_skill_body
+
+        manager = AsyncMock()
+        manager.patch = AsyncMock(side_effect=SkillConflictError(
+            "pdf-extractor", current_updated_at=42, current_version="1.0.1",
+        ))
+        payload = PatchBodyRequest(old_string="old", new_string="new")
+        with patch("app.api.routes.skills._build_manager", new=AsyncMock(return_value=(manager, {}))):
+            with pytest.raises(HTTPException) as exc:
+                await patch_skill_body(MagicMock(), "pdf-extractor", payload, if_match="1")
+        assert exc.value.status_code == 409
+        assert exc.value.detail["currentUpdatedAt"] == 42
+        manager.patch.assert_awaited_once()
+        assert manager.patch.await_args.kwargs["expected_updated_at"] == 1

@@ -12,8 +12,10 @@ from qdrant_client.http.models import (  # type: ignore
     Prefetch,
     QueryRequest,
     SparseVector as QdrantSparseVector,
+    ValuesCount,
 )
 
+from app.services.vector_db.filters import canonical_filter_key
 from app.services.vector_db.models import (
     FieldCondition as GenericFieldCondition,
     FilterExpression,
@@ -35,13 +37,14 @@ class QdrantUtils:
     def build_conditions(filters: Dict[str, Any]) -> List[FieldCondition]:
         """Build Qdrant-native FieldCondition list from a key→value dict.
 
-        Keys are automatically prefixed with ``metadata.``.
+        Keys are automatically prefixed with ``metadata.`` except top-level
+        membership arrays (``connectorIds``, ``recordGroupIds``).
         """
         conditions: List[FieldCondition] = []
         for key, value in filters.items():
             if value is None:
                 continue
-            field_key = key if key.startswith("metadata.") else f"metadata.{key}"
+            field_key = canonical_filter_key(key)
             if isinstance(value, (list, tuple)):
                 filtered = [v for v in value if v is not None]
                 if filtered:
@@ -67,7 +70,7 @@ class QdrantUtils:
         for key, value in filters.items():
             if value is None:
                 continue
-            field_key = key if key.startswith("metadata.") else f"metadata.{key}"
+            field_key = canonical_filter_key(key)
             if isinstance(value, (list, tuple)):
                 filtered = [v for v in value if v is not None]
                 if filtered:
@@ -117,6 +120,19 @@ class QdrantUtils:
 
     @staticmethod
     def _generic_to_qdrant(cond: GenericFieldCondition) -> FieldCondition:
+        if cond.values_count_lte is not None:
+            # Qdrant expresses an array-length bound natively, alongside an
+            # optional match on the same key.
+            match = None
+            if cond.values is not None:
+                match = MatchAny(any=cond.values)
+            elif cond.value is not None:
+                match = MatchValue(value=cond.value)
+            return FieldCondition(
+                key=cond.key,
+                match=match,
+                values_count=ValuesCount(lte=cond.values_count_lte),
+            )
         if cond.values is not None:
             return FieldCondition(key=cond.key, match=MatchAny(any=cond.values))
         return FieldCondition(key=cond.key, match=MatchValue(value=cond.value))

@@ -1,5 +1,6 @@
 from dependency_injector import containers, providers
 
+from app.agents.agent_loop.cancellation.factory import build_run_cancellation_registry
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
@@ -19,11 +20,20 @@ class QueryAppContainer(BaseAppContainer):
     # Override config_service to use the service-specific logger
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
+    # Caches the accessible-record maps every search resolves; falls back to
+    # live queries when Redis is unavailable or the kill-switch is set.
+    accessible_records_cache = providers.Resource(
+        container_utils.create_accessible_records_cache,
+        logger=logger,
+        config_service=config_service,
+    )
+
     # Graph Database Provider via Factory (HTTP mode - fully async)
     graph_provider = providers.Resource(
         container_utils.create_graph_provider,
         logger=logger,
         config_service=config_service,
+        accessible_records_cache=accessible_records_cache,
     )
 
     vector_db_service =  providers.Resource(
@@ -38,6 +48,13 @@ class QueryAppContainer(BaseAppContainer):
         graph_provider=graph_provider,
     )
 
+    collection_registry = providers.Resource(
+        container_utils.create_collection_registry,
+        logger=logger,
+        config_service=config_service,
+        vector_db_service=vector_db_service,
+    )
+
     retrieval_service = providers.Resource(
         container_utils.create_retrieval_service,
         config_service=config_service,
@@ -45,11 +62,19 @@ class QueryAppContainer(BaseAppContainer):
         vector_db_service=vector_db_service,
         graph_provider=graph_provider,
         blob_store=blob_store,
+        collection_registry=collection_registry,
     )
     reranker_service = providers.Singleton(
         RerankerService,
         model_name="BAAI/bge-reranker-base",  # Choose model based on speed/accuracy needs
     )
+
+    # Stop Generation (Phase 3a): one registry per worker process, shared by
+    # every `/chat/stream`, `/{agent_id}/chat/stream`, and `/chat/cancel`
+    # request this process handles. KV-backed when a KV store is
+    # configured (always, in practice), else in-process-only — see
+    # `agents/agent_loop/cancellation/factory.py`.
+    run_cancellation_registry = providers.Singleton(build_run_cancellation_registry)
 
     # Query-specific wiring configuration
     wiring_config = containers.WiringConfiguration(

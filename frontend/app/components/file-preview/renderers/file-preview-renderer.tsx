@@ -20,6 +20,13 @@ import type { FilePreviewRendererProps } from '../types';
 export function FilePreviewRenderer({ fileUrl, fileName, fileType, fileBlob, pagination, highlightBox, highlightPage, citations, activeCitationId, citationClickVersion, onHighlightClick, webUrl, previewRenderable }: FilePreviewRendererProps) {
   const rendererType = getRendererType(fileType || '', fileName);
 
+  // Callers skip the stream for non-previewable records, so there is no content to
+  // hand a renderer. Without this the type-matched renderer reports "File URL not
+  // available" instead of the fallback panel with its "Open in Browser" link.
+  if (previewRenderable === false && !fileUrl?.trim() && !fileBlob) {
+    return <UnknownPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} webUrl={webUrl} previewRenderable={previewRenderable} />;
+  }
+
   switch (rendererType) {
     case 'pdf':
       // PDFs support pagination

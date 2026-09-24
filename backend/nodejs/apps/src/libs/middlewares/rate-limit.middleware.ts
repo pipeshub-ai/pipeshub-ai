@@ -110,46 +110,48 @@ export function createGlobalRateLimiter(logger: Logger, maxRequestsPerMinute: nu
   return rateLimit(config);
 }
 
+export interface KeyedRateLimiterOptions {
+  prefix: string;
+  maxRequestsPerMinute: number;
+  message: string;
+}
+
 /**
- * Rate limiter for OAuth client management endpoints
- * Stricter limits: 10 requests per minute per user/IP
- * Used for creating, updating, and deleting OAuth applications
+ * Per-user (fallback: per-IP) limiter used by the OAuth-client and skills-import
+ * surfaces. The store is in-process, matching `createOAuthClientRateLimiter`'s
+ * historical behaviour — N replicas therefore admit N×max/min until a shared
+ * store is wired.
  */
-export function createOAuthClientRateLimiter(logger: Logger, maxRequestsPerMinute: number): RequestHandler {
+export function createKeyedRateLimiter(
+  logger: Logger,
+  options: KeyedRateLimiterOptions,
+): RequestHandler {
+  const { prefix, maxRequestsPerMinute, message } = options;
+
+  const keyFor = (req: Request): string => {
+    const authenticatedUserReq = req as AuthenticatedUserRequest;
+    if (authenticatedUserReq.user?.userId) {
+      return `${prefix}:user:${authenticatedUserReq.user.userId}`;
+    }
+    return `${prefix}:ip:${getClientIp(req)}`;
+  };
+
   const config: Partial<Options> = {
-    windowMs: 60 * 1000, // 1 minute
+    windowMs: 60 * 1000,
     max: maxRequestsPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
-
-    keyGenerator: (req: Request): string => {
-      const authenticatedUserReq = req as AuthenticatedUserRequest;
-
-      if (authenticatedUserReq.user?.userId) {
-        return `oauth-client:user:${authenticatedUserReq.user.userId}`;
-      }
-      const ip = getClientIp(req);
-      return `oauth-client:ip:${ip}`;
-    },
-
+    keyGenerator: keyFor,
     handler: (req: Request, res: Response): void => {
       const retryAfter = res.getHeader('Retry-After');
-      const authenticatedUserReq = req as AuthenticatedUserRequest;
-      const key = authenticatedUserReq.user?.userId
-        ? `oauth-client:user:${authenticatedUserReq.user.userId}`
-        : `oauth-client:ip:${getClientIp(req)}`;
-
-      logger.warn('OAuth client rate limit exceeded', {
-        key,
+      logger.warn('Rate limit exceeded', {
+        key: keyFor(req),
         path: req.path,
         method: req.method,
         ip: getClientIp(req),
         retryAfter,
       });
-
-      const error = new TooManyRequestsError(
-        'Too many OAuth client requests. Please try again later.',
-      );
+      const error = new TooManyRequestsError(message);
       res.status(429).json({
         error: {
           code: error.code,
@@ -161,4 +163,36 @@ export function createOAuthClientRateLimiter(logger: Logger, maxRequestsPerMinut
   };
 
   return rateLimit(config);
+}
+
+/**
+ * Rate limiter for OAuth client management endpoints
+ * Stricter limits: 10 requests per minute per user/IP
+ * Used for creating, updating, and deleting OAuth applications
+ */
+export function createOAuthClientRateLimiter(
+  logger: Logger,
+  maxRequestsPerMinute: number,
+): RequestHandler {
+  return createKeyedRateLimiter(logger, {
+    prefix: 'oauth-client',
+    maxRequestsPerMinute,
+    message: 'Too many OAuth client requests. Please try again later.',
+  });
+}
+
+/**
+ * Stricter limiter for skill package-import endpoints (npm/URL fetch + upload).
+ * Default 10 req/min per user; the upload route must mount this BEFORE multer
+ * so a throttled client never has a 25 MB archive buffered.
+ */
+export function createSkillsImportRateLimiter(
+  logger: Logger,
+  maxRequestsPerMinute = 10,
+): RequestHandler {
+  return createKeyedRateLimiter(logger, {
+    prefix: 'skills-import',
+    maxRequestsPerMinute,
+    message: 'Too many skill import requests. Please try again later.',
+  });
 }

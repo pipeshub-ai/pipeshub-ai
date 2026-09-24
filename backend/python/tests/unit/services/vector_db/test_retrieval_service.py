@@ -1,6 +1,6 @@
 """Unit tests for the updated RetrievalService (capability-aware hybrid search)."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -8,14 +8,10 @@ import pytest
 pytest.importorskip("langchain_core", reason="langchain_core not installed")
 
 from app.services.vector_db.models import (
-    FieldCondition,
     FilterExpression,
-    FusionMethod,
-    HybridSearchRequest,
     SearchResult,
     VectorDBCapabilities,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,6 +36,7 @@ def _make_vector_db_service(supports_sparse=True, supports_text=False):
 def _make_retrieval_service(vector_db_service, with_graph_provider=None):
     """Build a RetrievalService using mock dependencies."""
     import asyncio
+
     from app.modules.retrieval.retrieval_service import RetrievalService
 
     service = RetrievalService.__new__(RetrievalService)
@@ -49,7 +46,8 @@ def _make_retrieval_service(vector_db_service, with_graph_provider=None):
     service.graph_provider = with_graph_provider or AsyncMock()
     service.blob_store = AsyncMock()
     service.vector_db_service = vector_db_service
-    service.collection_name = "records"
+    service.collection_registry = MagicMock()
+    service.collection_registry.resolve_for_query = AsyncMock(return_value=["records"])
     service._capabilities = vector_db_service.get_capabilities()
     service._sparse_embedder = None
     service._sparse_embedder_lock = asyncio.Lock()
@@ -80,6 +78,7 @@ class TestExecuteParallelSearches:
             queries=["What is AI?"],
             filter=FilterExpression(),
             limit=5,
+            org_id="org-1",
         )
 
         # Verify query_nearest_points was called
@@ -99,7 +98,7 @@ class TestExecuteParallelSearches:
         mock_embed.aembed_query = AsyncMock(return_value=[0.1])
         rs.get_embedding_model_instance = AsyncMock(return_value=mock_embed)
 
-        await rs._execute_parallel_searches(["test"], FilterExpression(), 5)
+        await rs._execute_parallel_searches(["test"], FilterExpression(), 5, "org-1")
 
         requests = svc.query_nearest_points.call_args.args[1] if svc.query_nearest_points.call_args.args else svc.query_nearest_points.call_args.kwargs.get("requests")
         assert requests[0].sparse_query is None
@@ -125,7 +124,7 @@ class TestExecuteParallelSearches:
             supports_server_side_text_search=False,
         )
 
-        await rs._execute_parallel_searches(["test"], FilterExpression(), 5)
+        await rs._execute_parallel_searches(["test"], FilterExpression(), 5, "org-1")
 
         requests = svc.query_nearest_points.call_args.args[1] if svc.query_nearest_points.call_args.args else svc.query_nearest_points.call_args.kwargs.get("requests")
         assert requests[0].sparse_query is not None
@@ -145,7 +144,7 @@ class TestExecuteParallelSearches:
         mock_embed.aembed_query = AsyncMock(return_value=[0.1])
         rs.get_embedding_model_instance = AsyncMock(return_value=mock_embed)
 
-        results = await rs._execute_parallel_searches(["q1", "q2"], FilterExpression(), 10)
+        results = await rs._execute_parallel_searches(["q1", "q2"], FilterExpression(), 10, "org-1")
         # De-dup: even though 2 batches return the same ID, only one result
         ids = [r["metadata"]["point_id"] for r in results]
         assert len(set(ids)) == len(ids)
@@ -159,7 +158,7 @@ class TestExecuteParallelSearches:
         mock_embed.aembed_query = AsyncMock(return_value=[0.1])
         rs.get_embedding_model_instance = AsyncMock(return_value=mock_embed)
 
-        await rs._execute_parallel_searches(["q"], FilterExpression(), 3)
+        await rs._execute_parallel_searches(["q"], FilterExpression(), 3, "org-1")
 
         # Must be awaited, not just called
         svc.query_nearest_points.assert_awaited()
@@ -192,6 +191,7 @@ class TestExecuteParallelSearches:
             queries=["What is machine learning?"],
             filter=FilterExpression(),
             limit=5,
+            org_id="org-1",
         )
 
         requests = (
@@ -218,6 +218,7 @@ class TestExecuteParallelSearches:
             queries=["find documents"],
             filter=FilterExpression(),
             limit=5,
+            org_id="org-1",
         )
 
         requests = (

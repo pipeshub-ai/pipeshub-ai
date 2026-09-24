@@ -1,46 +1,59 @@
-import asyncio
-import json
-import os
-from typing import Optional
+from __future__ import annotations
 
+import asyncio
+import os
+from typing import TYPE_CHECKING, Optional
+
+from app.models.blocks import BlocksContainer
+from app.services.base_client import BaseServiceClient, ServiceCallError
+from app.services.messaging.backpressure import get_default_backpressure_coordinator
+
+if TYPE_CHECKING:
+    from app.services.messaging.backpressure import BackpressureCoordinator
 import httpx
+from docling_core.types.doc.document import DoclingDocument
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.models.blocks import BlocksContainer
 from app.utils.logger import create_logger
+from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count
 from app.utils.request_context import inject_request_headers
 
 MAX_PDF_BYTES = 100 * 1024 * 1024
-SERVICE_UNAVAILABLE_STATUS_CODES = (502, 503, 504)
 
 
-class DoclingClient:
-    """Client for communicating with the Docling processing service"""
+class DoclingClient(BaseServiceClient):
+    """Client for communicating with the Docling processing service.
 
-    def __init__(self, service_url: Optional[str] = None, timeout: float = 2400.0) -> None:
-        self.service_url = (service_url or os.getenv("DOCLING_SERVICE_URL", "http://localhost:8081")).rstrip('/')
+    Extends :class:`BaseServiceClient` for its retry/circuit-breaker/429
+    handling; failures are swallowed here (logged, ``None`` returned) so the
+    ``Optional[...]`` contract callers (e.g. ``DoclingServiceParser``) already
+    depend on is unchanged.
+    """
 
+    def __init__(
+        self,
+        service_url: Optional[str] = None,
+        timeout: float = 2450.0,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+        backpressure_coordinator: "BackpressureCoordinator | None" = None,
+    ) -> None:
+        # 2400s (Docling's own internal PDF_PROCESSING_TIMEOUT_SECONDS) plus a
+        # margin for the resource governor's admission-gate wait on the
+        # Docling side (see docling_service.py's DOCLING_GATE_TIMEOUT_SECONDS)
+        # — without this margin, a request that legitimately queues for
+        # admission and then runs to Docling's own timeout could have its
+        # response arrive after this client already gave up.
+        super().__init__(
+            service_url=service_url or os.getenv("DOCLING_SERVICE_URL", "http://localhost:8081"),
+            service_name="DoclingService",
+            read_timeout=timeout,
+            write_timeout=60.0,  # PDF uploads
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+            backpressure_coordinator=backpressure_coordinator or get_default_backpressure_coordinator(),
+        )
         self.timeout = timeout
-        self.logger = create_logger(__name__)
-        self.max_retries = 3
-        self.retry_delay = 1.0  # seconds
-
-    def _parse_blocks_container(self, block_containers_data) -> BlocksContainer:
-        """
-        Create BlocksContainer object from dictionary or JSON string.
-        This method runs in a thread pool to avoid blocking the event loop.
-        """
-        try:
-            # Handle both dict and JSON string cases
-            if isinstance(block_containers_data, str):
-                block_containers_dict = json.loads(block_containers_data)
-            else:
-                block_containers_dict = block_containers_data
-
-            return BlocksContainer(**block_containers_dict)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to parse blocks container: {str(e)}")
-            raise
 
     def _validate_pdf_binary(self, pdf_binary: bytes) -> bool:
         if not isinstance(pdf_binary, bytes):
@@ -123,40 +136,11 @@ class DoclingClient:
                     return await asyncio.to_thread(response.json)
 
                 self.logger.error(f"❌ {description} returned HTTP {response.status_code}: {response.text}")
-                if response.status_code in SERVICE_UNAVAILABLE_STATUS_CODES:
-                    self.logger.warning(f"⚠️ Docling service temporarily unavailable (HTTP {response.status_code})")
                 if not await self._sleep_before_retry(attempt):
                     break
 
         self.logger.error(f"❌ {description} failed after {self.max_retries} attempts")
         return None
-
-    async def process_pdf(self, record_name: str, pdf_binary: bytes) -> Optional[BlocksContainer]:
-        """Parse a PDF and build its blocks via the Docling service in a single request.
-
-        The service parses the PDF in page batches internally, so the binary is uploaded
-        once regardless of page count.
-
-        Returns:
-            BlocksContainer if successful, None if failed
-        """
-        if not self._validate_pdf_binary(pdf_binary):
-            return None
-
-        result = await self._post_with_retry(
-            "/process-pdf",
-            f"Processing PDF {record_name}",
-            data={"record_name": record_name},
-            files={"file": (record_name, pdf_binary, "application/pdf")},
-            write_timeout=60.0,
-        )
-        if result is None:
-            return None
-        if not result.get("success"):
-            self.logger.error(f"❌ Docling service returned error for {record_name}: {result.get('error', 'Unknown error')}")
-            return None
-
-        return await asyncio.to_thread(self._parse_blocks_container, result["block_containers"])
 
     async def parse_pdf(
         self,
@@ -183,14 +167,23 @@ class DoclingClient:
             form_data["start_page"] = str(page_range[0])
             form_data["end_page"] = str(page_range[1])
 
-        result = await self._post_with_retry(
-            "/parse-pdf",
-            f"Parsing PDF {record_name}",
-            data=form_data,
-            files={"file": (record_name, pdf_binary, "application/pdf")},
-            write_timeout=60.0,
-        )
-        if result is None:
+        try:
+            response = await self._post_multipart(
+                "/parse-pdf",
+                files={"file": (record_name, pdf_binary, "application/pdf")},
+                data=form_data,
+                operation=f"parse_pdf({record_name})",
+            )
+        except ServiceCallError as exc:
+            self.logger.error(f"❌ Parsing PDF {record_name} failed: {exc}")
+            return None
+
+        try:
+            result = await asyncio.to_thread(response.json)
+        except ValueError:
+            self.logger.error(
+                f"❌ Docling service returned non-JSON body for {record_name} (status {response.status_code})"
+            )
             return None
         if not result.get("success"):
             self.logger.error(f"❌ Docling service returned error for {record_name}: {result.get('error', 'Unknown error')}")
@@ -198,29 +191,47 @@ class DoclingClient:
 
         return result["parse_result"]
 
-    async def create_blocks(self, parse_result: str, page_number: int = None) -> Optional[BlocksContainer]:
-        """
-        Create blocks from parse result using the external Docling service (phase 2).
-
-        Args:
-            parse_result: Serialized parse result from parse_pdf
-            page_number: Optional page number for page-specific processing
+    async def parse_pdf_batched(
+        self, record_name: str, pdf_binary: bytes, batch_size: int = PAGE_BATCH_SIZE
+    ) -> Optional[DoclingDocument]:
+        """Parse a PDF via the Docling service, splitting it into page-range batches
+        to cap Docling's peak memory usage, then concatenate the results into a
+        single DoclingDocument.
 
         Returns:
-            BlocksContainer if successful, None if failed
+            DoclingDocument if successful, None if failed
         """
-        result = await self._post_with_retry(
-            "/create-blocks",
-            "Creating blocks",
-            json_body={"parse_result": parse_result, "page_number": page_number},
-        )
-        if result is None:
-            return None
-        if not result.get("success"):
-            self.logger.error(f"❌ Docling service returned error: {result.get('error', 'Unknown error')}")
+        if not self._validate_pdf_binary(pdf_binary):
             return None
 
-        return await asyncio.to_thread(self._parse_blocks_container, result["block_containers"])
+        try:
+            page_count = await asyncio.to_thread(get_pdf_page_count, pdf_binary)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to read page count for {record_name}: {str(e)}")
+            return None
+
+        if page_count <= batch_size:
+            serialized = await self.parse_pdf(record_name, pdf_binary)
+            if serialized is None:
+                return None
+            return await asyncio.to_thread(DoclingDocument.model_validate_json, serialized)
+
+        self.logger.info(
+            f"Parsing '{record_name}' ({page_count} pages) in batches of {batch_size} pages"
+        )
+        docs: list[DoclingDocument] = []
+        for start in range(1, page_count + 1, batch_size):
+            end = min(start + batch_size - 1, page_count)
+            serialized = await self.parse_pdf(record_name, pdf_binary, page_range=(start, end))
+            if serialized is None:
+                return None
+            docs.append(await asyncio.to_thread(DoclingDocument.model_validate_json, serialized))
+            self.logger.info(f"Parsed pages {start}-{end} of {page_count} for '{record_name}'")
+
+        merged = await asyncio.to_thread(DoclingDocument.concatenate, docs)
+        # concatenate() names the result by joining every input name with " + ".
+        merged.name = record_name
+        return merged
 
     async def _check_service_health(self, client: httpx.AsyncClient) -> bool:
         """

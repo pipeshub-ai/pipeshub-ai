@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.utils.user_messages import action_failed
 from app.config.constants.service import DefaultEndpoints
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.models.entities import FileRecord
@@ -46,6 +47,21 @@ def _setup_kb_owner_resolve(service):
     service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
         side_effect=_mock_mongo_to_graph
     )
+    service.graph_provider.get_nodes_by_field_in = AsyncMock(
+        side_effect=_teams_in_org({"org-1": ["t1", "t2"], "org-2": ["t-other-org"]})
+    )
+
+
+def _teams_in_org(teams_by_org):
+    async def lookup(collection, field, values, return_fields=None):
+        assert (collection, field) == (CollectionNames.TEAMS.value, "id")
+        return [
+            {"id": team, "orgId": org}
+            for org, teams in teams_by_org.items()
+            for team in teams
+            if team in values
+        ]
+    return lookup
 
 
 def _setup_writer(service):
@@ -123,6 +139,7 @@ class TestCreateKnowledgeBase:
 
         kb_data = service.graph_provider.batch_upsert_nodes.call_args[0][0][0]
         assert kb_data["createdBy"] == "external-user-1"
+        assert kb_data["vectorMembershipBackfilled"] is True
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):
@@ -726,6 +743,43 @@ class TestDeleteFolder:
         assert result["success"] is False
         assert result["code"] == 500
 
+    @pytest.mark.asyncio
+    async def test_success_but_vector_cleanup_pending(self, service):
+        """The folder (graph data) is genuinely gone even though the
+        vector-cleanup event could not be published; the caller must see an
+        honest success + pending-cleanup flag, not a false 500 (#3008)."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.processor.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True,
+            "successfully_deleted": 1,
+            "total_requested": 1,
+            "vectorCleanupPending": True,
+            "vectorCleanupFailedRecordIds": ["f1"],
+        })
+
+        result = await service.delete_folder("kb1", "f1", "user1")
+        assert result["success"] is True
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedRecordIds"] == ["f1"]
+
+    @pytest.mark.asyncio
+    async def test_cascade_failure_is_not_reported_as_success(self, service):
+        """If the recursive delete itself failed (not just the cleanup-event
+        publish), delete_folder must not paper over it with a hardcoded
+        success response."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.processor.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": False,
+            "reason": "graph write failed",
+        })
+
+        result = await service.delete_folder("kb1", "f1", "user1")
+        assert result["success"] is False
+
 
 # ===========================================================================
 # update_record
@@ -995,6 +1049,24 @@ class TestDeleteRecordsInKb:
         assert result["success"] is False
         assert result["code"] == 500
 
+    @pytest.mark.asyncio
+    async def test_surfaces_vector_cleanup_pending(self, service):
+        """Deletion succeeded; only the cleanup-event publish failed after
+        retries. The bulk path must report this honestly too (#3008)."""
+        _setup_writer(service)
+        service.processor.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True,
+            "total_requested": 1,
+            "successfully_deleted": 1,
+            "vectorCleanupPending": True,
+            "vectorCleanupFailedRecordIds": ["r1"],
+        })
+
+        result = await service.delete_records_in_kb("kb1", ["r1"], "user1")
+        assert result["success"] is True
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedRecordIds"] == ["r1"]
+
 
 # ===========================================================================
 # delete_records_in_folder
@@ -1118,6 +1190,36 @@ class TestCreateKbPermissions:
         })
         result = await service.create_kb_permissions("kb1", "requester1", [], ["t1"], "")
         assert result["success"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("team_ids", [["t-missing"], ["t1", "t-missing"], ["t-other-org"]])
+    async def test_team_outside_requester_org_is_not_found(self, service, team_ids):
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.create_kb_permissions = AsyncMock()
+
+        result = await service.create_kb_permissions("kb1", "requester1", [], team_ids, "")
+
+        assert result["success"] is False
+        assert result["code"] == 404
+        # The person sharing sees what to do, never raw team ids.
+        assert "Refresh the page" in result["reason"]
+        assert not any(team_id in result["reason"] for team_id in team_ids)
+        service.graph_provider.create_kb_permissions.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_teams_in_requester_org_are_granted(self, service):
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.create_kb_permissions = AsyncMock(return_value={
+            "success": True, "grantedCount": 3
+        })
+
+        result = await service.create_kb_permissions(
+            "kb1", "requester1", ["u1"], ["t1", "t2"], "READER"
+        )
+
+        assert result["success"] is True
+        kwargs = service.graph_provider.create_kb_permissions.await_args.kwargs
+        assert kwargs["team_ids"] == ["t1", "t2"]
 
     @pytest.mark.asyncio
     async def test_graph_create_failure(self, service):
@@ -1903,6 +2005,14 @@ class TestResolveUserIds:
         assert err["code"] == 400
 
     @pytest.mark.asyncio
+    async def test_unknown_requester_gets_a_next_step_not_an_id(self, service) -> None:
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        _, _, err = await service._resolve_user_and_kb_access("kb1", "user-mongo-123")
+        assert err["code"] == 404
+        assert "Sign out and sign back in" in err["reason"]
+        assert "user-mongo-123" not in err["reason"]
+
+    @pytest.mark.asyncio
     async def test_malformed_user_record(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"fullName": "No Key"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
@@ -2148,10 +2258,22 @@ class TestGetFolderChildren:
     async def test_provider_not_found(self, service):
         _setup_writer(service)
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
-        service.graph_provider.get_folder_children = AsyncMock(return_value={"success": False})
+        service.graph_provider.get_folder_children = AsyncMock(
+            return_value={"success": False, "reason": "Folder not found", "code": 404}
+        )
         result = await service.get_folder_children("kb1", "f1", "user1")
         assert result["success"] is False
         assert result["code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_provider_failure_without_a_code_is_not_a_404(self, service):
+        """A failure the provider did not word for a reader is ours to explain."""
+        _setup_writer(service)
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_folder_children = AsyncMock(return_value={"success": False})
+        result = await service.get_folder_children("kb1", "f1", "user1")
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("open this folder")
 
     @pytest.mark.asyncio
     async def test_exception(self, service):
@@ -2180,6 +2302,7 @@ class TestGetFolderChildren:
 class TestGetKbChildrenExtended:
     @pytest.mark.asyncio
     async def test_provider_failure(self, service):
+        """Wording we don't recognise may be exception text, so it isn't passed on."""
         _setup_writer(service)
         service.graph_provider.get_kb_children = AsyncMock(return_value={
             "success": False,
@@ -2187,7 +2310,22 @@ class TestGetKbChildrenExtended:
         })
         result = await service.get_kb_children("kb1", "user1")
         assert result["success"] is False
+        assert result["code"] == 500
+        assert result["reason"] == action_failed("open this knowledge base")
+        assert "KB missing" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_provider_says_not_found(self, service):
+        """The providers' own not-found line is what a person needs to read."""
+        _setup_writer(service)
+        service.graph_provider.get_kb_children = AsyncMock(return_value={
+            "success": False,
+            "reason": "Knowledge base not found",
+            "code": 404,
+        })
+        result = await service.get_kb_children("kb1", "user1")
         assert result["code"] == 404
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
     async def test_exception(self, service):

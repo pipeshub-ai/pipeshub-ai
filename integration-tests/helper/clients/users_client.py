@@ -57,6 +57,7 @@ class UsersClient(APIClient):
         self,
         email: str,
         full_name: str,
+        role: str = "member",
         **kwargs: Any,
     ) -> requests.Response:
         """Create a new user.
@@ -64,9 +65,16 @@ class UsersClient(APIClient):
         Args:
             email: User's email address
             full_name: User's full name (fullName in API)
+            role: Org role — ``admin`` or ``member``. Optional; omitted/default is ``member``.
             **kwargs: Additional fields (firstName, lastName, designation, etc.)
         """
-        return self.post("/", json={"email": email, "fullName": full_name, **kwargs})
+        payload: dict[str, Any] = {
+            "email": email,
+            "fullName": full_name,
+            "role": role,
+            **kwargs,
+        }
+        return self.post("/", json=payload)
 
     def update_user(self, user_id: str, **kwargs: Any) -> requests.Response:
         """Update user by ID.

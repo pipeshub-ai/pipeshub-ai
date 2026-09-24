@@ -211,6 +211,7 @@ export interface OAuthAuthFieldVisibilityContext {
   isCreateMode: boolean;
   isAdmin: boolean | null;
   hasLinkedOAuthApp: boolean;
+  disableCredentialEditWhenLinked?: boolean;
 }
 
 /**
@@ -222,7 +223,8 @@ export function resolveOAuthFieldVisibility(
   formAuth: { oauthConfigId?: unknown; [key: string]: unknown } | undefined,
   connectorConfig: ConnectorConfig | null | undefined,
   isCreateMode: boolean,
-  isAdmin: boolean | null
+  isAdmin: boolean | null,
+  disableCredentialEditWhenLinked?: boolean
 ): { linkedOAuthAppId: string; oauthFieldVisibility: OAuthAuthFieldVisibilityContext } {
   const linkedOAuthAppId = resolveLinkedOAuthAppId(formAuth, connectorConfig);
   return {
@@ -231,6 +233,7 @@ export function resolveOAuthFieldVisibility(
       isCreateMode,
       isAdmin,
       hasLinkedOAuthApp: Boolean(linkedOAuthAppId),
+      disableCredentialEditWhenLinked,
     },
   };
 }
@@ -244,6 +247,9 @@ export function shouldRenderOAuthAuthSchemaField(
   fieldName: string,
   ctx: OAuthAuthFieldVisibilityContext
 ): boolean {
+  if (ctx.disableCredentialEditWhenLinked && ctx.hasLinkedOAuthApp) {
+    return false;
+  }
   if (fieldName === 'oauthInstanceName') {
     return ctx.isAdmin === true && !ctx.hasLinkedOAuthApp;
   }

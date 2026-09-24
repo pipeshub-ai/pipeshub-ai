@@ -54,8 +54,12 @@ def _make_request(
 ):
     """Build a minimal mock Request object used by most handler tests."""
     req = MagicMock()
-    req.state.user = {"userId": user_id, "orgId": org_id}
-    req.headers = {"X-Is-Admin": "true" if is_admin else "false"}
+    req.state.user = {
+        "userId": user_id,
+        "orgId": org_id,
+        "role": "admin" if is_admin else "member",
+    }
+    req.headers = {}
     if body is not None:
         req.json = AsyncMock(return_value=body)
     else:
@@ -142,15 +146,15 @@ class TestGetUserContext:
             _get_user_context(req)
         assert exc_info.value.status_code == 401
 
-    def test_is_admin_header_case_insensitive(self):
+    def test_is_admin_from_jwt_role_case_insensitive(self):
         req = _make_request()
-        req.headers = {"X-Is-Admin": "TRUE"}
+        req.state.user = {"userId": "u1", "orgId": "o1", "role": "Admin"}
         ctx = _get_user_context(req)
         assert ctx["is_admin"] is True
 
     def test_is_admin_default_false(self):
         req = _make_request()
-        req.headers = {"X-Is-Admin": "false"}
+        req.state.user = {"userId": "u1", "orgId": "o1", "role": "member"}
         ctx = _get_user_context(req)
         assert ctx["is_admin"] is False
 
@@ -2430,6 +2434,112 @@ class TestToggleConnectorInstance:
         mock_existing_connector.cleanup.assert_called_once()
 
 
+class TestToggleLocalFsOwnerClaim:
+    """Enabling Local FS sync claims the owner device or refuses another one."""
+
+    async def _enable(
+        self, body: dict, owner: dict | None = None, init: AsyncMock | None = None
+    ):
+        from app.connectors.api.router import toggle_connector_instance
+
+        req = _make_request(user_id="u1", body={"type": "sync", **body})
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "o1", "accountType": "individual"}
+        )
+        instance = _make_instance(
+            connector_type="Local FS",
+            scope="personal",
+            created_by="u1",
+            auth_type="NONE",
+            is_active=False,
+            is_configured=True,
+            extra=owner,
+        )
+        registry = req.app.state.connector_registry
+        registry.get_connector_instance = AsyncMock(return_value=instance)
+        registry.update_connector_instance = AsyncMock(return_value=True)
+        init = init or AsyncMock()
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._ensure_connector_initialized", new=init), \
+             patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=1000):
+            await toggle_connector_instance("c1", req, graph_provider=graph_provider)
+        return registry.update_connector_instance.await_args.kwargs["updates"], init
+
+    async def test_unclaimed_without_device_is_refused(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await self._enable({})
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail.startswith("DESKTOP_UNCLAIMED:")
+
+    async def test_unclaimed_with_device_claims_ownership(self):
+        updates, init = await self._enable({"deviceId": "dev-a", "deviceName": "Laptop A"})
+
+        assert updates["isActive"] is True
+        assert updates["ownerDeviceId"] == "dev-a"
+        assert updates["ownerDeviceName"] == "Laptop A"
+        init.assert_awaited_once()
+
+    async def test_other_device_is_refused_before_initializing(self):
+        init = AsyncMock()
+        with pytest.raises(HTTPException) as exc_info:
+            await self._enable(
+                {"deviceId": "dev-b", "deviceName": "Laptop B"},
+                owner={"ownerDeviceId": "dev-a", "ownerDeviceName": "Laptop A"},
+                init=init,
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail.startswith("DESKTOP_OWNED_BY_OTHER_DEVICE:")
+        assert "Laptop A" in exc_info.value.detail
+        init.assert_not_awaited()
+
+    async def test_owned_connector_without_device_is_refused(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await self._enable(
+                {}, owner={"ownerDeviceId": "dev-a", "ownerDeviceName": "Laptop A"}
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail.startswith("DESKTOP_OWNED_BY_OTHER_DEVICE:")
+
+    async def test_owner_device_refreshes_a_changed_name_only(self):
+        owner = {"ownerDeviceId": "dev-a", "ownerDeviceName": "Old name"}
+
+        renamed, _ = await self._enable(
+            {"deviceId": "dev-a", "deviceName": "New name"}, owner=owner
+        )
+        unchanged, _ = await self._enable(
+            {"deviceId": "dev-a", "deviceName": "Old name"}, owner=owner
+        )
+
+        assert renamed["ownerDeviceName"] == "New name"
+        assert "ownerDeviceId" not in renamed
+        assert "ownerDeviceName" not in unchanged
+
+    async def test_other_connectors_ignore_device_fields(self):
+        from app.connectors.api.router import toggle_connector_instance
+
+        req = _make_request(user_id="u1", is_admin=True, body={"type": "sync"})
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "o1", "accountType": "individual"}
+        )
+        instance = _make_instance(
+            connector_type="Web", auth_type="NONE", is_active=False, is_configured=True
+        )
+        registry = req.app.state.connector_registry
+        registry.get_connector_instance = AsyncMock(return_value=instance)
+        registry.update_connector_instance = AsyncMock(return_value=True)
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._ensure_connector_initialized", new=AsyncMock()), \
+             patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=1000):
+            await toggle_connector_instance("c1", req, graph_provider=graph_provider)
+
+        updates = registry.update_connector_instance.await_args.kwargs["updates"]
+        assert "ownerDeviceId" not in updates
+
+
 # ===========================================================================
 # Route handler tests: delete_connector_instance
 # ===========================================================================
@@ -2451,7 +2561,7 @@ class TestDeleteConnectorInstance:
         from app.connectors.api.router import delete_connector_instance
 
         req = _make_request(is_admin=True)
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=None
         )
 
@@ -2464,7 +2574,7 @@ class TestDeleteConnectorInstance:
 
         req = _make_request(is_admin=True)
         instance = _make_instance(scope="team", created_by="u1", extra={"status": "DELETING"})
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -2479,7 +2589,7 @@ class TestDeleteConnectorInstance:
 
         req = _make_request(is_admin=True)
         instance = _make_instance(scope="team", created_by="u1")
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -2498,13 +2608,90 @@ class TestDeleteConnectorInstance:
 
         assert result.status_code == 202
 
+    async def _delete_through_the_real_gate(self, *, caller, is_admin, org_id, created_by):
+        """Drive the route with the registry's *real* authorization, not a mock.
+
+        Every other test here stubs `get_connector_instance_for_deletion` and
+        patches `_validate_connector_deletion_permissions`, so none of them can
+        see the two gates disagree. That is exactly where the bug lived: the
+        helper allowed an administrator to delete a personal connector while
+        the lookup in front of it returned None, so the route 404'd before the
+        allowance was ever reached.
+        """
+        from unittest.mock import patch as _patch
+
+        from app.connectors.api.router import delete_connector_instance
+        from app.connectors.core.registry.connector_builder import ConnectorScope
+        from app.connectors.core.registry.connector_registry import ConnectorRegistry
+
+        registry = ConnectorRegistry.__new__(ConnectorRegistry)
+        registry.logger = MagicMock()
+        registry._connectors = {"GMAIL": {"name": "Gmail"}}
+        registry._drivers_lock = None  # unused here
+        document = _make_instance(
+            scope=ConnectorScope.PERSONAL.value, created_by=created_by
+        )
+        document["orgId"] = "o1"
+        registry._get_connector_instance_from_db = AsyncMock(return_value=document)
+        registry._build_connector_info = MagicMock(return_value=document)
+
+        req = _make_request(user_id=caller, org_id=org_id, is_admin=is_admin)
+        req.app.state.connector_registry = registry
+
+        graph_provider = AsyncMock()
+        graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(return_value=[])
+        req.app.container.messaging_producer.send_message = AsyncMock()
+
+        with _patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             _patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=1000):
+            return await delete_connector_instance(
+                "c1", req, graph_provider=graph_provider
+            )
+
+    async def test_admin_can_delete_another_users_personal_connector(self):
+        """The regression: this returned 404 before the deletion-specific
+        lookup existed, making the admin allowance unreachable for exactly the
+        orphaned connectors it was added to clean up."""
+        result = await self._delete_through_the_real_gate(
+            caller="admin-b", is_admin=True, org_id="o1", created_by="user-a"
+        )
+
+        assert result.status_code == 202
+
+    async def test_creator_can_delete_their_own_personal_connector(self):
+        result = await self._delete_through_the_real_gate(
+            caller="user-a", is_admin=False, org_id="o1", created_by="user-a"
+        )
+
+        assert result.status_code == 202
+
+    async def test_a_non_admin_stranger_still_gets_404(self):
+        """The widening must stop at administrators."""
+        with pytest.raises(HTTPException) as exc_info:
+            await self._delete_through_the_real_gate(
+                caller="user-c", is_admin=False, org_id="o1", created_by="user-a"
+            )
+
+        assert exc_info.value.status_code == 404
+
+    async def test_an_admin_of_another_org_still_gets_404(self):
+        """Tenant isolation runs before the role, so the wider deletion
+        allowance never becomes a cross-tenant one."""
+        with pytest.raises(HTTPException) as exc_info:
+            await self._delete_through_the_real_gate(
+                caller="admin-b", is_admin=True, org_id="other-org", created_by="user-a"
+            )
+
+        assert exc_info.value.status_code == 404
+
     async def test_in_use_by_one_agent_raises_409(self):
         """Connector referenced by one agent: 409, no Kafka events emitted."""
         from app.connectors.api.router import delete_connector_instance
 
         req = _make_request(is_admin=True)
         instance = _make_instance(scope="team", created_by="u1", extra={"name": "Jira Prod"})
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -2532,7 +2719,7 @@ class TestDeleteConnectorInstance:
 
         req = _make_request(is_admin=True)
         instance = _make_instance(scope="team", created_by="u1", extra={"name": "Slack"})
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -2560,7 +2747,7 @@ class TestDeleteConnectorInstance:
 
         req = _make_request(is_admin=True)
         instance = _make_instance(scope="team", created_by="u1")
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -2586,7 +2773,7 @@ class TestDeleteConnectorInstance:
 
         req = _make_request(is_admin=True)
         instance = _make_instance(scope="team", created_by="u1")
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -2608,12 +2795,14 @@ class TestDeleteConnectorInstance:
         assert "Unable to verify" in exc_info.value.detail
         producer.send_message.assert_not_called()
 
-    async def test_team_connector_non_admin_raises_403(self):
+    async def test_team_connector_non_admin_non_creator_raises_403(self):
+        """`u1` here is neither an admin nor the creator. A caller who *is* the
+        creator is now allowed, so the denial has to come from someone else."""
         from app.connectors.api.router import delete_connector_instance
 
         req = _make_request(is_admin=False)
-        instance = _make_instance(scope="team", created_by="u1")
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        instance = _make_instance(scope="team", created_by="someone-else")
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 

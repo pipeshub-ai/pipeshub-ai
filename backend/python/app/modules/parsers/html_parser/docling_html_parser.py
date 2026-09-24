@@ -22,8 +22,9 @@ from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.models.blocks import BlockType, BlocksContainer
+from app.models.blocks import BlocksContainer
 from app.modules.parsers.html_parser import url_utils
+from app.utils.converters.caption_map import apply_caption_map
 
 
 class DoclingHtmlParser:
@@ -210,13 +211,19 @@ class DoclingHtmlParser:
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
 
-        block_containers = await self.parse_to_blocks(
-            modified_html,
-            caption_map=caption_map if caption_map else None,
-        )
+        from html_to_markdown import convert  # noqa: PLC0415
+        from app.modules.parsers.pdf.docling_processor import DoclingProcessor  # noqa: PLC0415
+
+        markdown = convert(modified_html)
+        md_bytes = markdown.encode("utf-8")
+
+        processor = DoclingProcessor(logger=self._logger, config=self._config_service)
+        filename = f"{Path(record_name).stem}.md" if record_name else "document.md"
+        doc = await processor.parse_document(filename, md_bytes)
+
         return ParseResult(
-            block_container=block_containers,
-            metadata={"record_name": record_name},
+            raw_document=doc.model_dump_json(),
+            metadata={"record_name": record_name, "caption_map": caption_map or None},
         )
     
     async def parse_to_blocks(
@@ -251,33 +258,7 @@ class DoclingHtmlParser:
         container = await processor.create_blocks(doc)
 
         if caption_map:
-            _apply_caption_map(container, caption_map, self._logger)
+            apply_caption_map(container, caption_map, self._logger)
 
         return container
-
-
-def _apply_caption_map(
-    container: BlocksContainer,
-    caption_map: Dict[str, str],
-    logger: logging.Logger,
-) -> None:
-    """Attach base-64 URIs to image blocks using caption keys."""
-    for block in container.blocks:
-        if block.type == BlockType.IMAGE.value and block.image_metadata:
-            captions = block.image_metadata.captions
-            if captions:
-                caption = captions[0]
-                uri = caption_map.get(caption)
-                if uri:
-                    if block.data is None:
-                        block.data = {}
-                    if isinstance(block.data, dict):
-                        block.data["uri"] = uri
-                    else:
-                        block.data = {"uri": uri}
-                else:
-                    logger.warning(
-                        "Skipping image with caption '%s' - no valid base64 data available",
-                        caption,
-                    )
 

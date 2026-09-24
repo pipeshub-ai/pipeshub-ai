@@ -1,6 +1,7 @@
 """Tests for entities module: Record, TicketRecord, ProjectRecord, FileRecord, MailRecord, LinkRecord, ProductRecord, DealRecord."""
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,6 +31,7 @@ from app.models.entities import (
     SQLViewRecord,
     TicketRecord,
 )
+from app.models.permission import EntityType, Permission, PermissionType
 
 
 def _record_kwargs(**overrides):
@@ -45,6 +47,45 @@ def _record_kwargs(**overrides):
     }
     defaults.update(overrides)
     return defaults
+
+
+class TestTimestampDefaults:
+    """Defaults are evaluated per instance, not once at import.
+
+    Evaluated at import, every record built on the default carried the process
+    start time: after an hour of uptime all of them looked an hour old, and the
+    stranded-record sweep re-sent every one still queued.
+    """
+
+    def test_each_record_gets_its_own_timestamps(self) -> None:
+        first = Record(**_record_kwargs())
+        time.sleep(0.005)
+        second = Record(**_record_kwargs())
+        assert second.created_at > first.created_at
+        assert second.updated_at > first.updated_at
+
+    def test_each_permission_gets_its_own_timestamps(self) -> None:
+        first = Permission(type=PermissionType.READ, entity_type=EntityType.USER)
+        time.sleep(0.005)
+        second = Permission(type=PermissionType.READ, entity_type=EntityType.USER)
+        assert second.created_at > first.created_at
+
+    def test_queued_at_is_stored_only_once_set(self) -> None:
+        record = Record(**_record_kwargs())
+        assert "queuedAtTimestamp" not in record.to_arango_base_record()
+        record.queued_at = 123
+        assert record.to_arango_base_record()["queuedAtTimestamp"] == 123
+
+    def test_the_sweep_clocks_are_declared_in_the_record_schema(self) -> None:
+        """Arango enforces record_schema strictly: an undeclared field is rejected."""
+        schema = get_node_schema(CollectionNames.RECORDS.value)
+        doc = {
+            k: v
+            for k, v in Record(**_record_kwargs(queued_at=123)).to_arango_base_record().items()
+            if k != "_key"
+        }
+        doc["lastRepublishedAt"] = 456
+        jsonschema.validate(instance=doc, schema=schema)
 
 
 # ============================================================================
@@ -1719,16 +1760,16 @@ class TestRecordToLlmContextEdgeCases:
         assert "https://app.example.com/path/to/doc" in ctx
 
     def test_to_llm_context_weburl_without_http_no_frontend(self):
-        """Weburl not starting with http without frontend_url falls back to localhost."""
+        """Weburl not starting with http without frontend_url is omitted."""
         rec = Record(**_record_kwargs(weburl="/path/to/doc"))
         ctx = rec.to_llm_context(frontend_url=None)
-        assert "http://localhost:3000/path/to/doc" in ctx
+        assert "Web URL:" not in ctx
 
     def test_to_llm_context_relative_weburl_without_frontend_url(self):
-        """Relative weburl like /record/<id> should be prefixed with localhost fallback."""
+        """Relative weburl like /record/<id> is dropped when no frontend host is known."""
         rec = Record(**_record_kwargs(weburl="/record/abc"))
         ctx = rec.to_llm_context()
-        assert "Web URL: http://localhost:3000/record/abc" in ctx
+        assert "Web URL:" not in ctx
 
     def test_to_llm_context_frontend_url_with_trailing_slash(self):
         """Trailing slash on frontend_url should not produce a double slash."""
@@ -2752,8 +2793,7 @@ class TestFileRecordToLlmFullContext:
 
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]), \
              patch("app.agents.actions.util.parse_file.LlmTextContent", LlmTextContent):
-            from jinja2 import Template
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="TABLE_RENDERED")
                 items = rec.to_llm_full_context()
 
@@ -2769,8 +2809,7 @@ class TestFileRecordToLlmFullContext:
         rec = _make_file_record_with_blocks(blocks=[row0, row1], block_groups=[group])
 
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
-            from jinja2 import Template
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 captured = {}
 
                 def _render(**kwargs):
@@ -2826,7 +2865,7 @@ class TestFileRecordToLlmFullContextExtended:
         group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
         rec = _make_file_record_with_blocks(blocks=[row], block_groups=[group])
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="STR_ROW")
                 items = rec.to_llm_full_context()
         assert any("STR_ROW" in i.text for i in items)
@@ -2838,7 +2877,7 @@ class TestFileRecordToLlmFullContextExtended:
         group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
         rec = _make_file_record_with_blocks(blocks=[row0, row1], block_groups=[group])
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="TBL")
                 items = rec.to_llm_full_context()
         texts = " ".join(i.text for i in items)
@@ -2872,7 +2911,7 @@ class TestFileRecordToLlmFullContextExtended:
         rec.virtual_record_id = "vr-1"
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]), \
              patch("app.utils.chat_helpers.build_group_blocks", return_value=[{"content": "GROUP_BODY"}]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="GROUP_RENDERED")
                 items = rec.to_llm_full_context()
         assert any("GROUP_RENDERED" in i.text for i in items)
@@ -2907,12 +2946,21 @@ class TestFileRecordToLlmFullContextExtended:
         with pytest.raises(RuntimeError, match="Error in record_to_message_content"):
             rec.to_llm_full_context()
 
-    def test_unsupported_block_type_hits_else_continue(self):
+    def test_top_level_code_block_is_rendered(self):
+        # Code belongs to no group, so before it had its own branch it fell to
+        # `else: continue` and never reached the model.
         block = Block(type=BlockType.CODE, data="print(1)", parent_index=None)
         rec = _make_file_record_with_blocks(blocks=[block])
         with patch("app.utils.chat_helpers.valid_group_labels", []):
             items = rec.to_llm_full_context()
-        assert not any("print(1)" in i.text for i in items)
+        assert any("print(1)" in i.text for i in items)
+
+    def test_unsupported_block_type_hits_else_continue(self):
+        block = Block(type=BlockType.DIVIDER, data="---", parent_index=None)
+        rec = _make_file_record_with_blocks(blocks=[block])
+        with patch("app.utils.chat_helpers.valid_group_labels", []):
+            items = rec.to_llm_full_context()
+        assert not any("---" in i.text for i in items)
 
     def test_parent_block_skips_duplicate_seen_group(self):
         b1 = Block(type=BlockType.TEXT, data="first", parent_index=0)
@@ -2921,7 +2969,7 @@ class TestFileRecordToLlmFullContextExtended:
         rec = _make_file_record_with_blocks(blocks=[b1, b2], block_groups=[group])
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]), \
              patch("app.utils.chat_helpers.build_group_blocks", return_value=[{"content": "G"}]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="ONCE")
                 items = rec.to_llm_full_context()
         assert " ".join(i.text for i in items).count("ONCE") == 1
@@ -3280,6 +3328,7 @@ class TestAppMetadataCoverage:
             "isAuthenticated": False,
             "createdBy": "u1",
             "updatedBy": "u2",
+            "lastSyncedBy": "u3",
             "createdAtTimestamp": 100,
             "updatedAtTimestamp": 200,
             "status": "SYNCING",
@@ -3290,6 +3339,27 @@ class TestAppMetadataCoverage:
         assert meta.is_agent_active is True
         assert meta.status == "SYNCING"
         assert meta.is_locked is True
+        assert meta.last_synced_by == "u3"
+        assert meta.vector_membership_backfilled is False
+        assert meta.vector_membership_backfill_after_key is None
+
+    def test_from_db_document_reads_backfill_fields(self):
+        from app.models.entities import AppMetadata
+
+        doc = {
+            "_key": "conn-99",
+            "name": "Drive",
+            "type": "connector",
+            "appGroup": "Google",
+            "scope": "team",
+            "createdAtTimestamp": 100,
+            "updatedAtTimestamp": 200,
+            "vectorMembershipBackfilled": True,
+            "vectorMembershipBackfillAfterKey": "rec-9",
+        }
+        meta = AppMetadata.from_db_document(doc)
+        assert meta.vector_membership_backfilled is True
+        assert meta.vector_membership_backfill_after_key == "rec-9"
 
 
 class TestMeetingRecordCoverage:

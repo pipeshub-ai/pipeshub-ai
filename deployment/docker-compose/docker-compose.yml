@@ -1,19 +1,30 @@
 # PipesHub AI — unified, profile-driven Docker Compose
 #
 # Usage: run install.sh (in this directory) to generate .env and launch.
-# Manual quick-start:
-#   cp env.template .env && $EDITOR .env
-#   COMPOSE_PROFILES=graph-neo4j          docker compose -p pipeshub-ai up -d   # slim/neo4j/redis-streams
-#   COMPOSE_PROFILES=graph-arango,kv-etcd,broker-kafka \
-#     docker compose -p pipeshub-ai up -d                                        # full/arango/etcd/kafka
 #
-# Profile catalogue
-#   graph-neo4j   — start Neo4j (set DATA_STORE=neo4j in .env)
-#   graph-arango  — start ArangoDB (set DATA_STORE=arangodb in .env)
-#   kv-etcd       — start etcd (set KV_STORE_TYPE=etcd in .env; default is redis)
-#   broker-kafka  — start Zookeeper + Kafka (set MESSAGE_BROKER=kafka in .env; default is redis)
+# Manual quick-start — env.template ships a working slim stack (Neo4j, Redis
+# Streams, Redis KV). Set the passwords in it, then start:
 #
-# Always-on: pipeshub-ai, redis, mongodb, qdrant, sandbox-image
+#   cp env.template .env && $EDITOR .env      # set NEO4J_PASSWORD and MONGO_PASSWORD
+#   docker compose -p pipeshub-ai up -d
+#
+# Do not pass COMPOSE_PROFILES on the command line: it replaces the value in
+# .env rather than adding to it, so a profile set there would be dropped.
+# Change the stack by editing .env instead.
+#
+# Profile catalogue — each profile starts a container, and the variable beside it
+# tells the app to use it. Set both or neither.
+#   graph-neo4j   — Neo4j             (with DATA_STORE=neo4j)
+#   graph-arango  — ArangoDB          (with DATA_STORE=arangodb)
+#   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
+#   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
+#   sandbox       — coding-sandbox image pull (SANDBOX_MODE=docker)
+#
+# Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=etcd, MESSAGE_BROKER=kafka and
+# COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka,sandbox
+#
+# Always-on: pipeshub-ai, redis, mongodb, qdrant.
+# Eval omits the sandbox profile (run_code is unavailable).
 #
 # Requires Docker Compose v2.20+ for `required: false` on depends_on.
 
@@ -24,7 +35,6 @@ services:
   # ---------------------------------------------------------------------------
   pipeshub-ai:
     image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
-    container_name: pipeshub-ai
     restart: always
     # build: is used only when `docker compose up --build` (or install.sh --build) is run.
     # It is ignored for the default prebuilt-image path. context is the repo root.
@@ -46,7 +56,18 @@ services:
       resources:
         limits:
           # OOM cap only (not reserved). Lower via APP_MEMORY_LIMIT on smaller hosts.
-          memory: ${APP_MEMORY_LIMIT:-12G}
+          memory: ${APP_MEMORY_LIMIT:-10G}
+    # Lets the kernel page out memory that a co-located idle service (e.g.
+    # Docling's model weights between documents) is holding but not
+    # actively using, instead of counting it against the hard OOM cap above
+    # forever. memswap_limit is the combined memory+swap ceiling (not a
+    # separate swap allowance), so the 10G/16G defaults give 6G of swap on
+    # top of APP_MEMORY_LIMIT. Keep APP_MEMSWAP_LIMIT >= APP_MEMORY_LIMIT and
+    # raise/lower both together to change the swap budget.
+    # mem_swappiness (per-container swap aggressiveness) is a cgroup v1-only
+    # knob and is silently discarded with a warning on cgroup v2 hosts
+    # (Docker Desktop, modern Linux distros) -- intentionally omitted here.
+    memswap_limit: ${APP_MEMSWAP_LIMIT:-16G}
     shm_size: 2gb
     # 7 services (node, frontend, 5 python) share one container's fd budget;
     # docker's 1024 default hits EMFILE on accept() during startup.
@@ -55,6 +76,21 @@ services:
         soft: 65536
         hard: 65536
     init: true
+    # Compose `${VAR:-}` injects "" when the key is blank. Hub slim still does
+    # int(os.getenv(KEY, default)) and crashes on "". Unset blanks so the key
+    # is absent (slim uses its built-in default; new Python sizes from CPU).
+    # A numeric value in .env is kept as an operator cap.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        for k in MAX_CONCURRENT_PARSING MAX_CONCURRENT_INDEXING
+        MAX_PENDING_INDEXING_TASKS EMBEDDING_SERVER_MAX_CONCURRENCY
+        EMBEDDING_BATCH_CONCURRENCY; do
+        v=$$(printenv "$$k" || true);
+        [ -z "$$v" ] && unset "$$k";
+        done;
+        exec /app/process_monitor.sh
     logging:
       driver: local
       options:
@@ -71,6 +107,10 @@ services:
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       - SECRET_KEY=${SECRET_KEY:-}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-}
+      - COOKIE_SECRET=${COOKIE_SECRET:-}
+      - ROTATE_SIGNING_SECRETS=${ROTATE_SIGNING_SECRETS:-}
 
       # Public endpoints
       - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
@@ -82,8 +122,8 @@ services:
       - EMBEDDING_SERVER_URL=http://localhost:8002
 
       # Graph database selection — set by install.sh
-      # DATA_STORE accepted values: "arangodb" (default) | "neo4j"
-      - DATA_STORE=${DATA_STORE:-arangodb}
+      # DATA_STORE accepted values: "neo4j" (default) | "arangodb"
+      - DATA_STORE=${DATA_STORE:-neo4j}
 
       # ArangoDB (active when DATA_STORE=arangodb)
       - ARANGO_URL=http://arango:8529
@@ -116,14 +156,37 @@ services:
       - KAFKA_PASSWORD=${KAFKA_PASSWORD:-}
       - KAFKA_SASL_MECHANISM=${KAFKA_SASL_MECHANISM:-}
 
-      # Redis (always on)
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      # Redis (always on). REDIS_MODE selects the connection provider:
+      # "standalone" (default, this compose file's own `redis` container) or
+      # "cluster" (Redis Cluster / AWS MemoryDB's wire protocol) when
+      # REDIS_HOST/PORT above are overridden to point at one. REDIS_DB is
+      # rejected outright once REDIS_MODE != standalone -- use
+      # REDIS_KEY_NAMESPACE for tenant isolation instead.
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379
+      - REDIS_USERNAME=${REDIS_USERNAME:-}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
       - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
       - REDIS_DB=${REDIS_DB:-0}
+      # Isolates releases sharing one endpoint: config KV + invalidation
+      # channel, caches, retry counters, leases, BullMQ prefix. It does NOT
+      # cover Redis Streams topic names, so combining it with
+      # MESSAGE_BROKER=redis is rejected at startup (see backend/env.template).
+      - REDIS_KEY_NAMESPACE=${REDIS_KEY_NAMESPACE:-}
+      - REDIS_MODE=${REDIS_MODE:-standalone}
+      - REDIS_CLUSTER_ENDPOINTS=${REDIS_CLUSTER_ENDPOINTS:-}
+      - REDIS_CLUSTER_SCALE_READS=${REDIS_CLUSTER_SCALE_READS:-master}
+      - REDIS_CLUSTER_NAT_MAP=${REDIS_CLUSTER_NAT_MAP:-}
+      - REDIS_PROVIDER_MODULE=${REDIS_PROVIDER_MODULE:-}
+      - REDIS_TLS_ENABLED=${REDIS_TLS_ENABLED:-false}
+      - REDIS_TLS_REJECT_UNAUTHORIZED=${REDIS_TLS_REJECT_UNAUTHORIZED:-true}
+      - REDIS_TLS_CA_PATH=${REDIS_TLS_CA_PATH:-}
+      # Celery has no Redis Cluster transport; required when REDIS_MODE is
+      # not "standalone" (fails fast at startup otherwise).
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-}
 
       # MongoDB
       - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-}@mongodb:27017/?authSource=admin
@@ -142,6 +205,7 @@ services:
       # AWS Bedrock (optional)
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_REGION=${AWS_REGION:-}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
 
       # Rate limits
@@ -155,23 +219,72 @@ services:
       - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      # RFC 7591 DCR is off unless "true". RFC 8628 device grant is on unless "false".
+      - PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}
+      - PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}
 
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
-      # Indexing concurrency
-      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
-      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}
-      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
+      # HuggingFace Hub offline mode. Leave unset so slim images can download
+      # the embedding model on first use. The dense loader tries the local
+      # cache first; sparse BM25 does the same. Set both to 1 only for
+      # air-gapped hosts that already have models cached (the full `latest` image).
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}
+
+      # Leave unset so new images size parse/index from CPU. Hub slim int()s
+      # empty strings; entrypoint unsets blanks before start. Set an integer
+      # to cap.
+      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
+      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
+      # Slots-per-CPU / indexing multiplier (in-tree defaults 1 / 10 / 100).
+      # Empty is safe: Hub slim ignores these; new Python treats empty as unset.
+      - GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=${GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU:-}
+      - GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=${GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU:-}
+      - INDEXING_SPLIT_LEASE_POOLS=${INDEXING_SPLIT_LEASE_POOLS:-}
+      - GOVERNOR_LIGHT_PARSE_MAX=${GOVERNOR_LIGHT_PARSE_MAX:-}
+      - GOVERNOR_INDEX_HEADROOM=${GOVERNOR_INDEX_HEADROOM:-}
+      - GOVERNOR_INDEX_MAX=${GOVERNOR_INDEX_MAX:-}
+      - GOVERNOR_INDEX_HEAVY_WORKING_SET_GB=${GOVERNOR_INDEX_HEAVY_WORKING_SET_GB:-}
+      - GOVERNOR_INDEX_LIGHT_WORKING_SET_GB=${GOVERNOR_INDEX_LIGHT_WORKING_SET_GB:-}
+      # Memory assumed resident per in-flight heavy parse (GiB); sizes the
+      # memory gate that holds heavy parsing below its CPU-derived ceiling.
+      - GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=${GOVERNOR_HEAVY_PARSE_WORKING_SET_GB:-}
+      # Memory the governor should credit to co-located idle services (all 7
+      # run in this one container) rather than to parse/index workload, so a
+      # large resident footprint doesn't hold every pool at its floor. Leave
+      # unset to auto-calibrate from the lowest working set observed; set an
+      # explicit MiB figure when the idle footprint is known. Growth-side
+      # only — the shrink brake always reads true cgroup occupancy.
+      - GOVERNOR_BASELINE_MEMORY_MB=${GOVERNOR_BASELINE_MEMORY_MB:-}
+      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-}
+      - QUERY_UVICORN_WORKERS=${QUERY_UVICORN_WORKERS:-}
+      # Query-service runtime tuning. Defaults reproduce current behaviour:
+      # langchain transport, accessible-records cache on, signed-URL cache off.
+      - PIPESHUB_AGENT_TRANSPORT=${PIPESHUB_AGENT_TRANSPORT:-langchain}
+      - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
+      - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
+      - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
+      # Raising this above 1 gives /stream/record requests more headroom
+      # during a large connector sync, but sync/reindex dedup
+      # (sync_task_manager/reindex_task_manager) is in-memory per worker
+      # process — only raise if concurrent duplicate syncs are acceptable.
+      - CONNECTOR_UVICORN_WORKERS=${CONNECTOR_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
+      - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
+      - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}
+      # Skip per-sentence embeddings unless the block has more than this many
+      # words (default 100). Set 0 to split every multi-sentence block.
+      - EMBED_SENTENCE_MIN_WORDS=${EMBED_SENTENCE_MIN_WORDS:-100}
 
       # Slack bot (optional)
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
@@ -185,6 +298,8 @@ services:
       # Code sandbox
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      # Eval deploy type skips the Slack bot process inside the app container.
+      - PIPESHUB_SKIP_SLACKBOT=${PIPESHUB_SKIP_SLACKBOT:-false}
 
       # Standalone parsing / extraction services (opt-in)
       - PARSING_SERVICE_URL=http://localhost:8092
@@ -193,6 +308,8 @@ services:
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
       # Set to "true" to defer graph enrichment until after vectordb indexing completes
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
+
+      - VECTOR_COLLECTION_STRATEGY=${VECTOR_COLLECTION_STRATEGY:-single}
 
     depends_on:
       qdrant:
@@ -218,6 +335,7 @@ services:
         required: false
       sandbox-image:
         condition: service_completed_successfully
+        required: false
 
     volumes:
       - pipeshub_data:/data/pipeshub
@@ -232,11 +350,16 @@ services:
       - "host.docker.internal:host-gateway"
 
     healthcheck:
+      # Gate on the core services only. embedding is intentionally excluded: it
+      # may be absent (not deployed) or sit 'unhealthy' for minutes while it
+      # downloads its model on first run, and it is not required for the app to
+      # be usable. This mirrors the installer's readiness check so `docker ps`
+      # health agrees with what install.sh reports.
       test:
         - CMD-SHELL
         - >
           curl -sf http://localhost:3000/api/v1/health/services -o /tmp/hc.json &&
-          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) and s.get('embedding') in ('healthy','starting') else 1)"
+          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) else 1)"
       interval: 15s
       timeout: 10s
       retries: 5
@@ -249,7 +372,6 @@ services:
   mongodb:
     # Pin via MONGO_IMAGE_TAG to recover from host-specific MongoDB 8.x crashes.
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
-    container_name: mongodb
     restart: always
     # Shared ~16 GB hosts: WiredTiger otherwise grabs ~half of RAM. Cap cache at
     # 1 GB / container at 2 GB. Sibling deploy.limits (app/graph/vector) are OOM
@@ -278,8 +400,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:bookworm
-    container_name: redis
+    image: redis:7.4-bookworm
     restart: always
     command: >
       sh -c "redis-server
@@ -298,16 +419,18 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.15
-    container_name: qdrant
+    stop_grace_period: 120s
     restart: always
     environment:
+      - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-}
       - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
       - QDRANT__SERVICE__GRPC_PORT=6334
       - QDRANT__SERVICE__HTTP_PORT=6333
-      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=0
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=4
       - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=8
-      - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=50000
+      - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=10000  # KB, not points: memory-map any segment over 10 MB
+      - QDRANT__STORAGE__OPTIMIZERS__INDEXING_THRESHOLD_KB=20000
       - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=256
       - QDRANT__CLUSTER__CONSENSUS__MAX_MESSAGE_QUEUE_SIZE=1000
     volumes:
@@ -316,7 +439,7 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 4G
+          memory: 6G
         reservations:
           cpus: '2'
           memory: 2G
@@ -337,12 +460,14 @@ services:
 
   # Pull-only helper: ensures the sandbox image exists before pipeshub-ai starts.
   # With --build it builds the sandbox image locally from deployment/sandbox/Dockerfile.
+  # Profile-gated so eval can skip the pull; slim/full include `sandbox` in
+  # COMPOSE_PROFILES. depends_on above is required:false for the same reason.
   sandbox-image:
+    profiles: ["sandbox"]
     image: ${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
     build:
       context: ../../deployment/sandbox
       dockerfile: Dockerfile
-    container_name: sandbox-image
     restart: "no"
     command: ["sh", "-c", "echo 'sandbox image ready'"]
     networks:
@@ -354,7 +479,6 @@ services:
   arango:
     profiles: ["graph-arango"]
     image: arangodb:3.12.4
-    container_name: arango
     restart: always
     environment:
       - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-}
@@ -374,7 +498,6 @@ services:
   neo4j:
     profiles: ["graph-neo4j"]
     image: neo4j:5.26.0
-    container_name: neo4j
     restart: always
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-}
@@ -410,7 +533,6 @@ services:
   etcd:
     profiles: ["kv-etcd"]
     image: quay.io/coreos/etcd:v3.5.17
-    container_name: etcd
     restart: always
     command: >
       etcd
@@ -438,7 +560,6 @@ services:
   zookeeper:
     profiles: ["broker-kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
-    container_name: zookeeper
     restart: always
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
@@ -457,7 +578,6 @@ services:
   kafka-1:
     profiles: ["broker-kafka"]
     image: confluentinc/cp-kafka:7.9.0
-    container_name: kafka-1
     restart: always
     depends_on:
       zookeeper:
@@ -522,4 +642,3 @@ volumes:
 networks:
   pipeshub:
     driver: bridge
-    name: pipeshub-ai_network

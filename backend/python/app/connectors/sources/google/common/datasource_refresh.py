@@ -114,6 +114,8 @@ async def refresh_google_datasource_credentials(
                 ).replace(tzinfo=None)
                 new_credentials.expiry = token_expiry
 
-            # Replace the credentials object in the client
-            current_client._http.credentials = new_credentials
+            def replace_credentials() -> None:
+                current_client._http.credentials = new_credentials
+
+            await data_source.execute(replace_credentials)
             logger.info("✅ Credentials updated successfully")

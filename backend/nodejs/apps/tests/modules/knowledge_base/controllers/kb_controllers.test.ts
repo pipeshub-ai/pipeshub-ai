@@ -3,6 +3,12 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import axios from 'axios'
 import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector_service/connector.service.command'
+import { registerDesktopPresence } from '../../../../src/libs/services/desktop-presence.provider'
+const makePresence = (online: boolean | null, connected: boolean | null = null) => ({
+  isLocalFsDeviceOnline: sinon.stub().returns(online),
+  isDesktopConnected: sinon.stub().returns(connected),
+})
+import { ConnectorSyncLockedError } from '../../../../src/libs/errors/http.errors'
 import {
   BadRequestError,
   InternalServerError,
@@ -36,7 +42,6 @@ import {
   reindexConnector,
   resyncConnectorRecords,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
-import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 
 // ---------------------------------------------------------------------------
@@ -49,13 +54,28 @@ function createMockRequest(overrides: Record<string, any> = {}): any {
     body: {},
     params: {},
     query: {},
-    user: { userId: 'user-1', orgId: 'org-1', email: 'test@test.com', fullName: 'Test User' },
+    // isUserAdmin reads req.user.role (JWT / auth-attached). Default member.
+    user: {
+      userId: 'user-1',
+      orgId: 'org-1',
+      email: 'test@test.com',
+      fullName: 'Test User',
+      role: 'member',
+    },
     context: { requestId: 'req-123' },
     // Streaming upload clears the per-response socket timeout and listens for close.
     socket: { setTimeout: sinon.stub() },
     on: sinon.stub(),
     ...overrides,
   }
+}
+
+/** Valid ObjectIds for authenticated KB controller tests. */
+const VALID_USER_IDS = {
+  userId: '507f1f77bcf86cd799439011',
+  orgId: '507f1f77bcf86cd799439012',
+  email: 'test@test.com',
+  fullName: 'Test User',
 }
 
 function createMockResponse(): any {
@@ -1913,15 +1933,13 @@ describe('Knowledge Base Controller', () => {
   describe('reindexConnector (happy path)', () => {
     it('should reindex connector successfully', async () => {
       const handler = reindexConnector(createMockAppConfig())
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
-      } as any)
       const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { message: 'Connector reindexed' },
       })
 
       const req = createMockRequest({
+        user: { ...VALID_USER_IDS, role: 'admin' },
         params: { connectorId: 'c1' },
         body: { statusFilters: ['FAILED'] },
       })
@@ -1933,20 +1951,18 @@ describe('Knowledge Base Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
       }
-      expect(execStub.firstCall.args[2]['X-Is-Admin']).to.equal('true')
+      expect(execStub.firstCall.args[2]).to.not.have.property('X-Is-Admin')
     })
 
     it('should reindex connector with no statusFilters (reindex all)', async () => {
       const handler = reindexConnector(createMockAppConfig())
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'member' }]),
-      } as any)
       const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { message: 'Connector reindexed' },
       })
 
       const req = createMockRequest({
+        user: { ...VALID_USER_IDS, role: 'member' },
         params: { connectorId: 'c1' },
         body: {},
       })
@@ -1958,16 +1974,13 @@ describe('Knowledge Base Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
       }
-      expect(execStub.firstCall.args[2]['X-Is-Admin']).to.equal('false')
+      expect(execStub.firstCall.args[2]).to.not.have.property('X-Is-Admin')
     })
   })
 
   describe('resyncConnectorRecords (happy path)', () => {
     it('should resync connector records successfully', async () => {
       const mockRecordRelation = createMockRecordRelationService()
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
-      } as any)
       const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
       execStub.onCall(0).resolves({
         statusCode: 200,
@@ -1999,9 +2012,6 @@ describe('Knowledge Base Controller', () => {
 
     it('should call next when connector is not active', async () => {
       const mockRecordRelation = createMockRecordRelationService()
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
-      } as any)
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connectors: [{ _key: 'other-connector' }] },
@@ -2915,7 +2925,7 @@ describe('Knowledge Base Controller', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
-      expect(next.firstCall.args[0].message).to.include('File upload failed')
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to save this file')
       expect(connectorStub.callCount).to.equal(1)
     })
 
@@ -3305,13 +3315,11 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when reindexConnector connector throws', async () => {
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').rejects(new Error('Service down'))
 
       const handler = reindexConnector(createMockAppConfig())
       const req = createMockRequest({
+        user: { ...VALID_USER_IDS, role: 'admin' },
         params: { connectorId: 'c1' },
         body: { statusFilters: ['FAILED'] },
       })
@@ -3325,13 +3333,11 @@ describe('Knowledge Base Controller', () => {
 
     it('should call next when resyncConnectorRecords connector throws', async () => {
       const mockRecordRelation = createMockRecordRelationService()
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').rejects(new Error('Resync error'))
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
+        user: { ...VALID_USER_IDS, role: 'admin' },
         params: { connectorId: 'c1' },
         body: { connectorName: 'Google Drive', fullSync: false },
       })
@@ -3454,9 +3460,6 @@ describe('Knowledge Base Controller', () => {
   describe('resyncConnectorRecords (connector locked)', () => {
     it('should call next when connector is locked', async () => {
       const mockRecordRelation = createMockRecordRelationService()
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
-      } as any)
       const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
       execStub.onCall(0).resolves({
         statusCode: 200,
@@ -3481,5 +3484,151 @@ describe('Knowledge Base Controller', () => {
       expect(next.firstCall.args[0].code).to.equal('HTTP_CONNECTOR_SYNC_LOCKED')
       expect(mockRecordRelation.resyncConnectorRecords.called).to.be.false
     })
+  })
+})
+
+describe('resyncConnectorRecords (Local FS desktop presence)', () => {
+  afterEach(() => {
+    sinon.restore()
+    registerDesktopPresence(null)
+  })
+
+  function stubActiveAndInstance(instance: Record<string, unknown>) {
+    const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
+    executeStub.onFirstCall().resolves({
+      statusCode: 200,
+      data: { connectors: [{ _key: 'c1' }] },
+    })
+    executeStub.onSecondCall().resolves({
+      statusCode: 200,
+      data: { connector: { _key: 'c1', isLocked: false, ...instance } },
+    })
+    return executeStub
+  }
+
+  it('answers 409 DESKTOP_OFFLINE and does not publish when the owner device is offline', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1', ownerDeviceId: 'dev-a' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS', fullSync: false },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(next.called).to.be.false
+    expect(res.status.calledWith(409)).to.be.true
+    const body = res.json.firstCall.args[0]
+    expect(body.details.code).to.equal('DESKTOP_OFFLINE')
+    expect(mockRecordRelation.resyncConnectorRecords.called).to.be.false
+    // Keyed on the connector's creator and owner device, not the caller.
+    expect(presence.isLocalFsDeviceOnline.calledOnceWithExactly('org-1', 'owner-1', 'dev-a')).to.be.true
+  })
+
+  it('answers DESKTOP_UNCLAIMED when the connector has no owner device', async () => {
+    const presence = makePresence(true, true)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({ params: { connectorId: 'c1' }, body: { connectorName: 'Local FS' } })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(res.status.calledWith(409)).to.be.true
+    expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_UNCLAIMED')
+    expect(mockRecordRelation.resyncConnectorRecords.called).to.be.false
+    expect(presence.isLocalFsDeviceOnline.called).to.be.false
+  })
+
+  it('publishes when the desktop is online', async () => {
+    registerDesktopPresence(makePresence(true))
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1', ownerDeviceId: 'dev-a' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(next.called).to.be.false
+    expect(res.status.calledWith(200)).to.be.true
+    expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
+  })
+
+  it('lets the request through when presence cannot tell', async () => {
+    registerDesktopPresence(makePresence(null))
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1', ownerDeviceId: 'dev-a' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(res.status.calledWith(200)).to.be.true
+    expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
+  })
+
+  it('ignores presence for non-Local-FS connectors', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Google Drive', createdBy: 'owner-1' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Google Drive' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(res.status.calledWith(200)).to.be.true
+    expect(presence.isLocalFsDeviceOnline.called).to.be.false
+  })
+
+  it('still reports a running sync as a conflict before checking presence', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1', isLocked: true, status: 'SYNCING' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(next.calledOnce).to.be.true
+    // Still a 409, with the code the UI reads as "please wait".
+    expect(next.firstCall.args[0]).to.be.instanceOf(ConnectorSyncLockedError)
+    expect(res.status.called).to.be.false
+    expect(presence.isLocalFsDeviceOnline.called).to.be.false
   })
 })

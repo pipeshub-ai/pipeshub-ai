@@ -133,6 +133,9 @@ _OPTIONAL_PACKAGES = [
     "etcd3",
     "docling",
     "docling_core",
+    "chardet",
+    "talon",
+    "crawl4ai",
     "cv2",
     "spacy",
     "openpyxl",
@@ -161,6 +164,24 @@ _mock_finder.load_module("docling_parse")
 
 for _pkg in _OPTIONAL_PACKAGES:
     _ensure_module(_pkg)
+
+# ``docling`` may be installed as an incomplete stub/namespace (importable root
+# but missing datamodel/document_converter). Force-mock the submodules production
+# code needs so connector/query unit tests can import without a full docling install.
+try:
+    __import__("docling.datamodel.document")
+    __import__("docling.document_converter")
+except Exception:
+    for _dotted in (
+        "docling",
+        "docling.datamodel",
+        "docling.datamodel.document",
+        "docling.document_converter",
+    ):
+        _MOCK_PACKAGE_NAMES.add(_dotted)
+        for _k in [k for k in list(sys.modules) if k == _dotted or k.startswith(_dotted + ".")]:
+            del sys.modules[_k]
+        _mock_finder.load_module(_dotted)
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +224,19 @@ def _inject_document_stub() -> None:
 _inject_document_stub()
 
 
+@pytest.fixture(autouse=True)
+def _reset_default_backpressure_coordinator():
+    """ParsingClient/DoclingClient default to a process-wide
+    BackpressureCoordinator singleton when the caller doesn't pass one
+    explicitly (see app.services.messaging.backpressure) — without a reset,
+    a 429 signalled in one test's client would leak a pause into unrelated
+    tests constructed later in the same worker process."""
+    from app.services.messaging.backpressure import set_default_backpressure_coordinator
+    set_default_backpressure_coordinator(None)
+    yield
+    set_default_backpressure_coordinator(None)
+
+
 @pytest.fixture
 def logger():
     """Provide a silent logger for tests."""
@@ -214,11 +248,21 @@ def logger():
 @pytest.fixture
 def mock_graph_provider():
     """Mock IGraphDBProvider with common async methods."""
+    from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+
     provider = AsyncMock()
     provider.get_accessible_virtual_record_ids = AsyncMock(return_value={})
     provider.get_user_by_user_id = AsyncMock(return_value={"email": "test@example.com"})
     provider.get_records_by_record_ids = AsyncMock(return_value=[])
     provider.get_document = AsyncMock(return_value={})
+    # Stubbed explicitly rather than left to AsyncMock's auto-children: those
+    # return a MagicMock, whose `fallback_reason` is truthy and whose sets are
+    # empty, so the container path would take an arbitrary branch instead of an
+    # obviously-unstubbed one. A test that wants containers overrides these.
+    provider.get_accessible_containers = AsyncMock(
+        return_value=AccessibleContainers(fallback_reason="not stubbed in this test")
+    )
+    provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
     return provider
 
 

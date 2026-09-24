@@ -2,7 +2,7 @@ import base64
 import json
 from typing import Any
 
-from pydantic import BaseModel, Field  # type: ignore
+from pydantic import BaseModel, ConfigDict, Field  # type: ignore
 
 
 class HTTPRequest(BaseModel):
@@ -15,6 +15,12 @@ class HTTPRequest(BaseModel):
         path_params: The path parameters to use
         query_params: The query parameters to use
     """
+
+    # path_params/query_params are aliased to path/query. Without this, passing
+    # them by field name is silently ignored — pydantic drops the unknown key and
+    # falls back to the empty default, so the request goes out with no query
+    # string at all. Every generated datasource constructs them by field name.
+    model_config = ConfigDict(populate_by_name=True)
 
     url: str = Field(alias="url")
     method: str = Field(default="GET")

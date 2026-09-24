@@ -1,9 +1,14 @@
 'use client';
 
 import React from 'react';
-import { Flex, Box, Text, Badge } from '@radix-ui/themes';
+import { Flex, Box, Text, Badge, IconButton, Tooltip } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useChatStore } from '@/chat/store';
+import { useCitationActions } from '../message-area/response-tabs/citations/use-citation-actions';
 import { SearchResultCard } from './search-result-card';
+import { searchResultToCitationData } from './search-result-to-citation';
 import type { SearchResultItem } from '@/chat/types';
 
 /**
@@ -97,18 +102,24 @@ function SearchResultSkeleton() {
  * Width is owned by the shared chat content column in page.tsx.
  */
 export function SearchResultsView() {
+  const { t } = useTranslation();
   const searchResults = useChatStore((s) => s.searchResults);
   const searchQuery = useChatStore((s) => s.searchQuery);
   const isSearching = useChatStore((s) => s.isSearching);
   const searchError = useChatStore((s) => s.searchError);
   const setMode = useChatStore((s) => s.setMode);
+  const { onPreview } = useCitationActions();
 
   const handleOpenSource = (_result: SearchResultItem) => {
     // webUrl is already opened in SearchResultCard via window.open
   };
 
-  const handleChat = (_result: SearchResultItem) => {
-    // Switch to chat mode and clear search data
+  const handlePreview = (result: SearchResultItem) => {
+    onPreview(searchResultToCitationData(result));
+  };
+
+  const backToChatLabel = t('chat.backToChat', { defaultValue: 'Back to chat' });
+  const handleBackToChat = () => {
     setMode('chat');
     useChatStore.getState().clearSearchResults();
   };
@@ -142,9 +153,10 @@ export function SearchResultsView() {
         </Box>
       )}
 
-      {/* "Results" tab header with count */}
+      {/* "Results" tab header with count + close/back-to-chat button */}
       <Flex
         align="center"
+        justify="between"
         gap="2"
         style={{
           height: 'var(--space-7)',
@@ -152,46 +164,62 @@ export function SearchResultsView() {
           marginBottom: 'var(--space-2)',
         }}
       >
-        <Box
-          style={{
-            height: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            paddingLeft: 'var(--space-2)',
-            paddingRight: 'var(--space-2)',
-            position: 'relative',
-          }}
-        >
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            Results
-          </Text>
-          {/* Active tab underline */}
+        <Flex align="center" gap="2">
           <Box
             style={{
-              position: 'absolute',
-              bottom: 0,
-              left: 0,
-              right: 0,
-              height: '2px',
-              backgroundColor: 'var(--accent-10)',
-            }}
-          />
-        </Box>
-        {!isSearching && searchResults.length > 0 && (
-          <Badge
-            size="1"
-            variant="soft"
-            style={{
-              background: 'var(--accent-a3)',
-              color: 'var(--accent-a11)',
-              fontWeight: 500,
-              borderRadius: 'var(--radius-1)',
+              height: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingLeft: 'var(--space-2)',
+              paddingRight: 'var(--space-2)',
+              position: 'relative',
             }}
           >
-            {searchResults.length}
-          </Badge>
-        )}
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              {t('chat.results')}
+            </Text>
+            {/* Active tab underline */}
+            <Box
+              style={{
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                right: 0,
+                height: '2px',
+                backgroundColor: 'var(--accent-10)',
+              }}
+            />
+          </Box>
+          {!isSearching && searchResults.length > 0 && (
+            <Badge
+              size="1"
+              variant="soft"
+              style={{
+                background: 'var(--accent-a3)',
+                color: 'var(--accent-a11)',
+                fontWeight: 500,
+                borderRadius: 'var(--radius-1)',
+              }}
+            >
+              {searchResults.length}
+            </Badge>
+          )}
+        </Flex>
+
+        {/* Close search results — returns to chat mode */}
+        <Tooltip content={backToChatLabel} side="top">
+          <IconButton
+            variant="ghost"
+            color="gray"
+            size="2"
+            aria-label={backToChatLabel}
+            onClick={handleBackToChat}
+            style={{ margin: 0 }}
+          >
+            <MaterialIcon name="close" size={ICON_SIZES.PRIMARY} color="var(--slate-11)" />
+          </IconButton>
+        </Tooltip>
       </Flex>
 
       {/* Separator */}
@@ -262,7 +290,7 @@ export function SearchResultsView() {
               key={`${result.metadata.recordId}-${result.block_index}-${index}`}
               result={result}
               onOpenSource={handleOpenSource}
-              onChat={handleChat}
+              onPreview={handlePreview}
             />
           ))}
       </Flex>

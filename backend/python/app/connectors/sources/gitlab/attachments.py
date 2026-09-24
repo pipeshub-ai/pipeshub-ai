@@ -19,10 +19,13 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
+from fastapi import HTTPException
+
 from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.models.blocks import ChildRecord, ChildType, CommentAttachment
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -129,10 +132,9 @@ class AttachmentsHelper:
             if attach.category == GitlabLiterals.IMAGE.value:
                 continue
             full_attachment_url = f"{base_url}{attach.href}"
-            async with c.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=c.connector_id, external_id=full_attachment_url
-                )
+            existing_record = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, full_attachment_url
+            )
             filerecord = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 org_id=c.data_entities_processor.org_id,
@@ -178,10 +180,9 @@ class AttachmentsHelper:
             if attach.category == GitlabLiterals.IMAGE.value:
                 continue
             full_attachment_url = f"{base_url}{attach.href}"
-            async with c.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=c.connector_id, external_id=full_attachment_url
-                )
+            existing_record = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, full_attachment_url
+            )
             if existing_record:
                 child_records.append(ChildRecord(
                     child_id=existing_record.id, child_type=ChildType.RECORD,
@@ -211,10 +212,9 @@ class AttachmentsHelper:
             if attach.category == GitlabLiterals.IMAGE.value:
                 continue
             full_attachment_url = f"{base_url}{attach.href}"
-            async with c.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=c.connector_id, external_id=full_attachment_url
-                )
+            existing_record = await c.data_entities_processor.get_record_by_external_id(
+                c.connector_id, full_attachment_url
+            )
             if existing_record:
                 comment_attachments.append(CommentAttachment(name=existing_record.record_name, id=existing_record.id))
             else:
@@ -279,14 +279,18 @@ class AttachmentsHelper:
     async def fetch_attachment_content(self, record: Record) -> AsyncGenerator[bytes, None]:
         """Stream raw attachment bytes from GitLab."""
         c = self.c
-        try:
-            attachment_id = record.external_record_id
-            if not attachment_id:
-                raise Exception(f"No attachment ID available for record {record.id}")
-            record_url = record.weburl
-            if not record_url:
-                raise ValueError(f"No record URL available for record {record.id}")
-            async for chunk in c.data_source.get_attachment_files_content(record_url):
-                yield chunk
-        except Exception as e:
-            raise Exception(f"Error fetching attachment content for record {record.id}: {e}") from e
+        if not record.external_record_id:
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value,
+                f"No attachment ID available for record {record.id}",
+            )
+        record_url = record.weburl
+        if not record_url:
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value,
+                f"No record URL available for record {record.id}",
+            )
+        # httpx.HTTPStatusError propagates: its status is what the router maps
+        # to a real response code, and wrapping it here would erase that.
+        async for chunk in c.data_source.get_attachment_files_content(record_url):
+            yield chunk

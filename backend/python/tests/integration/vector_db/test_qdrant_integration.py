@@ -1,7 +1,7 @@
 """
 Integration tests for the Qdrant vector DB provider.
 
-Requires: docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d
+Requires: docker compose -f tests/integration/compose/vector-db.yml up -d
 Run: pytest tests/integration/vector_db/test_qdrant_integration.py -m integration --timeout=120
 """
 
@@ -21,11 +21,15 @@ from tests.integration.vector_db.helpers import (
     make_collection_config,
     make_dense,
     org_filter,
+    point_id,
     sample_points,
 )
 from tests.integration.vector_db.conftest import make_collection
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+# loop_scope matches the module-scoped provider fixtures in conftest.
+# Without it each test gets its own loop and the shared client raises
+# "Event loop is closed" on first use.
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
 def sample_points_with_sparse(org_id: str = "org1"):
@@ -99,7 +103,7 @@ class TestQdrantUpsertQuery:
             )
             results = (await qdrant_service.query_nearest_points(col, [req]))[0]
             assert len(results) > 0
-            assert results[0].id == "doc-python"
+            assert results[0].id == point_id("doc-python")
         finally:
             await qdrant_service.delete_collection(col)
 
@@ -118,7 +122,7 @@ class TestQdrantUpsertQuery:
                 limit=3,
             )
             results = (await qdrant_service.query_nearest_points(col, [req]))[0]
-            assert results[0].id == "doc-python"
+            assert results[0].id == point_id("doc-python")
         finally:
             await qdrant_service.delete_collection(col)
 
@@ -130,7 +134,7 @@ class TestQdrantUpsertQuery:
             points_a = sample_points("org-a")
             points_b = [
                 VectorPoint(
-                    id="doc-b1",
+                    id=point_id("doc-b1"),
                     dense_vector=make_dense([0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                     payload={
                         "page_content": "Ruby on Rails",
@@ -147,7 +151,7 @@ class TestQdrantUpsertQuery:
             )
             results = (await qdrant_service.query_nearest_points(col, [req]))[0]
             ids = {r.id for r in results}
-            assert "doc-b1" not in ids
+            assert point_id("doc-b1") not in ids
         finally:
             await qdrant_service.delete_collection(col)
 
@@ -174,7 +178,7 @@ class TestQdrantMutations:
                 limit=5,
             )
             results = (await qdrant_service.query_nearest_points(col, [req]))[0]
-            assert not any(r.id == "doc-python" for r in results)
+            assert not any(r.id == point_id("doc-python") for r in results)
         finally:
             await qdrant_service.delete_collection(col)
 

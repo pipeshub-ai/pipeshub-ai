@@ -1201,6 +1201,51 @@ class TestInvokeWithStructuredOutputAndReflection:
         )
         assert result is None
 
+    async def test_recovers_json_retained_by_eager_pydantic_error(self):
+        """An eager parser exception must not hide recoverable raw content."""
+        from langchain_openai import ChatOpenAI
+
+        with pytest.raises(ValueError) as error_info:
+            self.SimpleSchema.model_validate_json(
+                '{{"answer": "recovered", "confidence": "High"}'
+            )
+
+        mock_llm = MagicMock(spec=ChatOpenAI)
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.ainvoke = AsyncMock(side_effect=error_info.value)
+        mock_llm.with_structured_output = MagicMock(return_value=mock_structured_llm)
+
+        result = await invoke_with_structured_output_and_reflection(
+            mock_llm, [HumanMessage(content="test")], self.SimpleSchema
+        )
+
+        assert result is not None
+        assert result.answer == "recovered"
+
+    async def test_recovers_json_from_reflection_invocation_error(self):
+        """Reflection must recover schema-valid JSON retained by its parser error."""
+        from langchain_openai import ChatOpenAI
+
+        with pytest.raises(ValueError) as error_info:
+            self.SimpleSchema.model_validate_json(
+                '{{"answer": "recovered", "confidence": "High"}'
+            )
+
+        mock_llm = MagicMock(spec=ChatOpenAI)
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.ainvoke = AsyncMock(
+            side_effect=[AIMessage(content="not valid json"), error_info.value]
+        )
+        mock_llm.with_structured_output = MagicMock(return_value=mock_structured_llm)
+
+        result = await invoke_with_structured_output_and_reflection(
+            mock_llm, [HumanMessage(content="test")], self.SimpleSchema
+        )
+
+        assert result is not None
+        assert result.answer == "recovered"
+        assert mock_structured_llm.ainvoke.await_count == 2
+
     async def test_parse_failure_then_reflection_success(self):
         """Initial parse fails, but reflection succeeds."""
         from langchain_openai import ChatOpenAI
@@ -2009,7 +2054,7 @@ class TestStreamContentCoverage:
 
     @pytest.mark.asyncio
     async def test_stream_content_400_error(self):
-        """400 Bad Request should raise HTTPException."""
+        """400 Bad Request maps to 422 - the source refused the request."""
         from fastapi import HTTPException
 
         from app.utils.streaming import stream_content
@@ -2029,7 +2074,7 @@ class TestStreamContentCoverage:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in stream_content("https://example.com/file.pdf", "rec-1", "file.pdf"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_content_403_error(self):

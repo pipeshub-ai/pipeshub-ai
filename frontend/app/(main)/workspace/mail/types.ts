@@ -8,6 +8,7 @@ export interface SmtpConfig {
   fromEmail: string;
   username?: string;
   password?: string;
+  inherited?: boolean;
 }
 
 export type SmtpFormData = {

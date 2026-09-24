@@ -167,6 +167,15 @@ class SyncTaskManager:
         task = self._tasks.get(key)
         return task is not None and not task.done()
 
+    def active_keys(self) -> list[str]:
+        """Keys with a task still running.
+
+        In-process only: another replica's syncs are invisible here, so treat a
+        clear result as "nothing running *here*", not a global guarantee. The
+        authoritative cross-replica signal is record indexingStatus in the graph.
+        """
+        return [key for key, task in self._tasks.items() if not task.done()]
+
     def _on_task_done(self, key: str, task: asyncio.Task) -> None:
         """
         Callback invoked automatically when a task finishes (completed, cancelled,

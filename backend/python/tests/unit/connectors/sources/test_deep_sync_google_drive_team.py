@@ -127,6 +127,7 @@ def connector():
         dep.add_permission_to_record = AsyncMock()
         dep.delete_permission_from_record = AsyncMock()
         dep.get_all_active_users = AsyncMock(return_value=[])
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -483,7 +484,9 @@ class TestProcessDriveItemDeep:
         existing.indexing_status = "completed"
         existing.extraction_status = "completed"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "u@t.com"}],
         })
@@ -509,7 +512,9 @@ class TestProcessDriveItemDeep:
         existing.indexing_status = "completed"
         existing.extraction_status = "completed"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "u@t.com"}],
         })
@@ -587,16 +592,9 @@ class TestProcessDriveItemDeep:
 
     async def test_exception_returns_none(self, connector):
         """Exception during processing returns None."""
-        # Make data_store_provider raise
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _failing_tx():
-            raise RuntimeError("DB error")
-            yield  # noqa: unreachable
-
-        provider.transaction = _failing_tx
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=RuntimeError("DB error")
+        )
 
         metadata = _make_file_metadata(file_id="f1", parents=["d1"])
         result = await connector._process_drive_item(
@@ -619,7 +617,9 @@ class TestProcessDriveItemDeep:
         existing.indexing_status = "completed"
         existing.extraction_status = "completed"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
 
         mock_resp = MagicMock()
         mock_resp.status = HttpStatusCode.FORBIDDEN.value
@@ -645,6 +645,12 @@ class TestHandleRecordUpdatesDeep:
 
     async def test_deleted_record(self, connector):
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        existing = MagicMock()
+        existing.id = "rec-123"
+        existing.record_name = "file-123"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         update = RecordUpdate(
             record=None, is_new=False, is_updated=False, is_deleted=True,
             metadata_changed=False, content_changed=False, permissions_changed=False,
@@ -652,7 +658,7 @@ class TestHandleRecordUpdatesDeep:
         )
         await connector._handle_record_updates(update)
         connector.data_entities_processor.on_record_deleted.assert_called_once_with(
-            record_id="file-123"
+            record_id="rec-123"
         )
 
     async def test_new_record_no_op(self, connector):

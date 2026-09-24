@@ -14,11 +14,17 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import INTERNAL_CONNECTOR_GROUP_NAME
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.connectors.core.thread_pool import (
+    SharedConnectorThreadPool,
+    ThreadPoolLease,
+    acquire_connector_lease,
+)
 from app.models.entities import AppUser, AppUserGroup, Record
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
+from app.sources.client.resilience import ResiliencePolicy
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
@@ -37,6 +43,15 @@ class ConnectorInitError(Exception):
     as a failure, so raising it there is safe."""
 
 
+class ConnectorSyncSkippedError(Exception):
+    """Sync could not run now. Callers log ``code`` and treat the task as
+    skipped, not crashed; nothing is persisted."""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
 class BaseConnector(ABC):
     """Base abstract class for all connectors"""
     logger: Logger
@@ -49,8 +64,12 @@ class BaseConnector(ABC):
     scope: str
     created_by: str
     creator_email: Optional[str]
+    last_synced_by: Optional[str]
     _notification_service: NotificationService | None
     _notification_cache: dict[str, tuple[int, int]] = {}
+    # Set by ConnectorFactory after construction, before init(). Connectors built
+    # directly (tests, scripts) fall back to the process-wide pool.
+    _shared_thread_pool: SharedConnectorThreadPool | None = None
 
     def __init__(
         self,
@@ -72,6 +91,10 @@ class BaseConnector(ABC):
         self.connector_id = connector_id
         self.scope = scope
         self.created_by = created_by
+        # User-given instance name from the connector's apps doc (e.g. "Engineering Jira").
+        # Injected post-construction by ConnectorFactory, same as _notification_service.
+        self.connector_instance_name: Optional[str] = None
+        self.last_synced_by: Optional[str] = None
         self.creator_email = None
         # Cached GROUP permission for the pseudo "ConnectorGroup" (see
         # ensure_connector_group_permission). Populated lazily by personal-scope
@@ -80,6 +103,91 @@ class BaseConnector(ABC):
         self._connector_group_permission: Optional[Permission] = None
         self._notification_service = None
         self._background_tasks: set[asyncio.Task] = set()
+        self._resilience: Optional[ResiliencePolicy] = None
+        self._resilience_loaded = False
+        self._thread_pool_lease: ThreadPoolLease | None = None
+        self.instance_name: Optional[str] = None
+
+    @property
+    def connector_metadata(self) -> Dict[str, Any]:
+        """Metadata recorded by the ``@Connector`` decorator."""
+        return getattr(self.__class__, '_connector_metadata', {})
+
+    @property
+    def resilience(self) -> Optional[ResiliencePolicy]:
+        """Shared rate limit / retry policy, or None if the connector declares none.
+
+        Built once and cached for the life of the instance: ``init()`` is re-run on
+        live connectors after an auth failure, and rebuilding the policy there
+        would reset the rate limiter and discard an armed backoff mid-throttle.
+        """
+        if not self._resilience_loaded:
+            self._resilience = ResiliencePolicy.from_config(
+                self.connector_metadata.get('resilienceConfig'),
+                name=str(self.connector_name),
+                logger=self.logger,
+            )
+            self._resilience_loaded = True
+        return self._resilience
+
+    def _thread_lease(self, max_concurrency: int) -> ThreadPoolLease:
+        """This connector's capped share of the shared connector thread pool.
+
+        Acquire from ``init()``, not ``__init__``: the factory injects the pool
+        between construction and initialization.
+        """
+        lease = self._thread_pool_lease
+        if lease is None:
+            lease = acquire_connector_lease(
+                self,
+                max_concurrency,
+                label=f"{self.connector_name}-{self.connector_id}",
+            )
+            self._thread_pool_lease = lease
+        return lease
+
+    async def _release_thread_lease(self) -> None:
+        """Cancel this connector's queued work and await what is in flight.
+
+        The shared pool is deliberately left running — other connectors are using
+        it. The closed lease stays on the connector so a sync racing cleanup()
+        fails loudly instead of silently falling back to the loop's default
+        executor.
+        """
+        lease = self._thread_pool_lease
+        if lease is None:
+            return
+        try:
+            await lease.shutdown_and_drain()
+        except Exception as e:
+            self.logger.warning(f"Thread lease drain raised; ignoring: {e}")
+
+    @property
+    def display_name(self) -> str:
+        """The connector's name as shown to the user.
+
+        User-facing errors must use this: they tell the user to go to Connector
+        Settings, so the name has to match what they will find there. Prefers
+        the specific instance name ("Engineering Docs") over the connector type
+        ("Collections"), falling back to the ``@ConnectorBuilder`` metadata —
+        which also makes shared base classes (e.g. S3 vs MinIO) report their
+        own concrete name.
+
+        Every lookup is defensive: this feeds error messages, so it must never
+        raise and mask the failure it is describing.
+        """
+        instance_name = getattr(self, "instance_name", None)
+        if instance_name:
+            return str(instance_name)
+        metadata = getattr(type(self), "_connector_metadata", None)
+        if metadata and metadata.get("name"):
+            return str(metadata["name"])
+        # Fallback for classes registered without the decorator. `Connectors`
+        # is not a str-Enum, so str() on a member yields "Connectors.S3".
+        connector_name = getattr(self, "connector_name", None)
+        if connector_name is None:
+            return "the source"
+        return getattr(connector_name, "value", None) or str(connector_name)
 
     @abstractmethod
     async def init(self) -> bool:
@@ -119,7 +227,7 @@ class BaseConnector(ABC):
 
     @classmethod
     @abstractmethod
-    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> "BaseConnector":
+    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str, data_entities_processor: "DataSourceEntitiesProcessor", **kwargs) -> "BaseConnector":
         NotImplementedError("This method should be implemented by the subclass")
 
     @abstractmethod
@@ -145,6 +253,25 @@ class BaseConnector(ABC):
             FilterOptionsResponse object with options and pagination metadata
         """
         raise NotImplementedError("This method should be implemented by the subclass")
+
+    def _get_inherited_org_id(self, auth_config: dict) -> str | None:
+        return None
+
+    async def _fetch_oauth_config_by_id(
+        self,
+        oauth_config_id: str,
+        connector_type: str,
+        auth_config: dict | None = None,
+    ) -> dict | None:
+        """Fetch a shared OAuth app config."""
+        from app.utils.oauth_config import fetch_oauth_config_by_id
+
+        return await fetch_oauth_config_by_id(
+            oauth_config_id=oauth_config_id,
+            connector_type=connector_type,
+            config_service=self.config_service,
+            logger=self.logger,
+        )
 
     def get_app(self) -> App:
         return self.app
@@ -365,7 +492,10 @@ class BaseConnector(ABC):
             redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + f"{self.scope}/?connectorType={connector_type}"
 
         if not recipient_user_ids and not recipient_roles:
-            recipient_user_ids = [self.created_by]
+            ids = [self.created_by]
+            if self.last_synced_by and self.last_synced_by != self.created_by:
+                ids.append(self.last_synced_by)
+            recipient_user_ids = ids
 
         async def _run() -> None:
             await svc.publish_notification(

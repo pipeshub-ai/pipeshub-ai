@@ -41,16 +41,19 @@ def _mock_request(
     body: dict | None = None,
     container: Any | None = None,
     connector_registry: Any | None = None,
+    is_admin: bool = False,
 ):
     """Build a minimal mock FastAPI Request for update_connector_instance_config."""
     req = MagicMock()
 
-    user_data = user or {"userId": "user-1", "orgId": "org-1"}
+    _headers = headers or {}
+    user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
+    if "role" not in user_data:
+        user_data["role"] = "admin" if is_admin else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
 
-    _headers = headers or {}
     req.headers = MagicMock()
     req.headers.get = lambda k, default=None: _headers.get(k, default)
 
@@ -229,7 +232,7 @@ class TestUpdateConfigOAuthWithConfigId:
         request = _mock_request(
             container=container,
             connector_registry=registry,
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body={
                 "auth": {"connectorScope": "personal"},
                 "oauthConfigId": "oa1",
@@ -346,7 +349,9 @@ class TestUpdateConfigOAuthWithConfigId:
         with pytest.raises(HTTPException) as exc:
             await update_connector_instance_config("conn1", request)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "Failed to fetch OAuth configuration" in exc.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc.value.detail == "We couldn't save this connector's settings. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to fetch OAuth configuration" not in exc.value.detail
 
     @pytest.mark.asyncio
     @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
@@ -654,6 +659,41 @@ class TestUpdateConfigCleanup:
     @pytest.mark.asyncio
     @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
     @patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock)
+    async def test_unchanged_auth_does_not_deauthenticate(self, mock_get_inst, mock_ts):
+        """Saving identical credentials must not disable a working connector.
+
+        The teardown clears isAuthenticated and isActive, so keying it on the
+        presence of an "auth" key means any client that round-trips the whole
+        config to edit a sync setting knocks the connector offline every save.
+        """
+        mock_get_inst.return_value = _instance(auth_type="OAUTH")
+        config_service = _build_config_service()
+        registry = _build_connector_registry()
+        mock_connector = AsyncMock()
+        container = _build_container(
+            config_service,
+            has_connectors_map=True,
+            connectors_map={"conn1": mock_connector},
+        )
+
+        request = _mock_request(
+            container=container,
+            connector_registry=registry,
+            body={
+                # Byte-identical to the stored auth.
+                "auth": {"connectorScope": "personal"},
+                "baseUrl": "https://app.example.com",
+            },
+        )
+
+        result = await update_connector_instance_config("conn1", request)
+
+        assert result["success"] is True
+        assert "conn1" in container.connectors_map
+        mock_connector.cleanup.assert_not_awaited()
+
+    @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
+    @patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock)
     async def test_auth_update_cleans_up_existing_connector(self, mock_get_inst, mock_ts):
         """If connector exists in connectors_map, pop + cleanup on auth update."""
         mock_get_inst.return_value = _instance(auth_type="OAUTH")
@@ -675,7 +715,9 @@ class TestUpdateConfigCleanup:
             container=container,
             connector_registry=registry,
             body={
-                "auth": {"connectorScope": "personal"},
+                # Genuinely different from the stored auth: teardown is keyed on
+                # the credentials changing, not on an "auth" key being present.
+                "auth": {"connectorScope": "team"},
                 "baseUrl": "https://app.example.com",
             },
         )
@@ -890,7 +932,9 @@ class TestUpdateConfigGeneralException:
         with pytest.raises(HTTPException) as exc:
             await update_connector_instance_config("conn1", request)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "Failed to update connector configuration" in exc.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc.value.detail == "We couldn't save this connector's settings. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to update connector configuration" not in exc.value.detail
 
 
 # ============================================================================
@@ -1072,7 +1116,7 @@ def _mock_record(**overrides):
 
 class TestStreamRecordInternalGoogleDrivePaths:
     """Cover the Google Drive / Google Mail branching in stream_record_internal
-    (lines 582-585) and the org retry path (lines 532-535)."""
+    and its confinement to the token's org."""
 
     def _setup_stream(
         self,
@@ -1084,8 +1128,6 @@ class TestStreamRecordInternalGoogleDrivePaths:
         record_org_id="org-1",
     ):
         """Build all mocks needed for stream_record_internal."""
-        import jwt as pyjwt
-
         record = _mock_record(connector_name=connector_name, org_id=record_org_id)
 
         org_doc = {"_key": "org-1", "name": "Test Org"} if org_found else None
@@ -1114,171 +1156,82 @@ class TestStreamRecordInternalGoogleDrivePaths:
         else:
             container.connectors_map = {}
 
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "test-secret"})
-
-        jwt_secret = "test-secret"
-        token = pyjwt.encode({"orgId": "org-1", "userId": "user-1"}, jwt_secret, algorithm="HS256")
+        claims = {
+            "token_type": "scoped",
+            "orgId": "org-1",
+            "userId": "user-1",
+            "scopes": ["connector:signedUrl"],
+        }
 
         req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {
-            "Authorization": f"Bearer {token}",
-        }.get(k, default)
         req.app = MagicMock()
         req.app.container = container
         req.app.state = MagicMock()
         req.app.state.connector_registry = MagicMock()
 
-        return req, graph_provider, config_service, connector_obj
+        return req, graph_provider, AsyncMock(), connector_obj, claims
 
     @pytest.mark.asyncio
     async def test_google_drive_workspace_passes_user_id(self):
         """Google Drive Workspace calls stream_record(record, userId)."""
-        req, gp, cs, conn_obj = self._setup_stream(
+        req, gp, cs, conn_obj, claims = self._setup_stream(
             app_name=Connectors.GOOGLE_DRIVE_WORKSPACE,
         )
 
-        result = await stream_record_internal(req, "rec-1", gp, cs)
+        await stream_record_internal(req, "rec-1", gp, cs, claims=claims)
 
         conn_obj.stream_record.assert_awaited_once()
-        call_args = conn_obj.stream_record.call_args[0]
-        assert len(call_args) == 2  # record, userId
+        assert conn_obj.stream_record.call_args[0][1] == "user-1"
 
     @pytest.mark.asyncio
     async def test_google_mail_workspace_passes_user_id(self):
         """Google Mail Workspace also calls stream_record(record, userId)."""
-        req, gp, cs, conn_obj = self._setup_stream(
+        req, gp, cs, conn_obj, claims = self._setup_stream(
             app_name=Connectors.GOOGLE_MAIL_WORKSPACE,
         )
 
-        result = await stream_record_internal(req, "rec-1", gp, cs)
+        await stream_record_internal(req, "rec-1", gp, cs, claims=claims)
 
         conn_obj.stream_record.assert_awaited_once()
-        call_args = conn_obj.stream_record.call_args[0]
-        assert len(call_args) == 2
+        assert conn_obj.stream_record.call_args[0][1] == "user-1"
 
     @pytest.mark.asyncio
     async def test_non_google_connector_no_user_id(self):
         """Non-Google connector calls stream_record(record) only."""
-        req, gp, cs, conn_obj = self._setup_stream(
+        req, gp, cs, conn_obj, claims = self._setup_stream(
             app_name=Connectors.SLACK,
         )
 
-        result = await stream_record_internal(req, "rec-1", gp, cs)
+        await stream_record_internal(req, "rec-1", gp, cs, claims=claims)
 
         conn_obj.stream_record.assert_awaited_once()
-        call_args = conn_obj.stream_record.call_args[0]
-        assert len(call_args) == 1  # only record
+        assert len(conn_obj.stream_record.call_args[0]) == 1  # only record
 
     @pytest.mark.asyncio
-    async def test_org_retry_with_different_record_org_id(self):
-        """When org not found initially but record has different org_id, retry succeeds."""
-        import jwt as pyjwt
+    async def test_record_org_mismatch_raises_404(self):
+        """A record from a different org than the token is rejected, not re-scoped."""
+        req, gp, cs, conn_obj, claims = self._setup_stream(
+            app_name=Connectors.SLACK,
+            record_org_id="record-org-id",
+        )
 
-        record = _mock_record(org_id="record-org-id")
-
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value=record)
-
-        call_count = 0
-
-        async def _get_doc(doc_id, collection):
-            nonlocal call_count
-            if collection == "orgs":
-                call_count += 1
-                if call_count == 1:
-                    # First call (with jwt org_id) returns None
-                    return None
-                else:
-                    # Retry with record org_id returns the org
-                    return {"_key": "record-org-id", "name": "Record Org"}
-            # connector instance
-            return {"name": "My Conn", "type": "slack", "isActive": True}
-
-        graph_provider.get_document = AsyncMock(side_effect=_get_doc)
-
-        connector_obj = AsyncMock()
-        connector_obj.get_app_name = MagicMock(return_value=Connectors.SLACK)
-        connector_obj.stream_record = AsyncMock(return_value=b"data")
-
-        container = MagicMock()
-        container.connectors_map = {"conn-1": connector_obj}
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "test-secret"})
-
-        token = pyjwt.encode({"orgId": "org-1", "userId": "user-1"}, "test-secret", algorithm="HS256")
-
-        req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {
-            "Authorization": f"Bearer {token}",
-        }.get(k, default)
-        req.app = MagicMock()
-        req.app.container = container
-        req.app.state = MagicMock()
-        req.app.state.connector_registry = MagicMock()
-
-        result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
-
-        # Should have succeeded despite first org lookup failing
-        connector_obj.stream_record.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_validation_error_raises_400(self):
-        """ValidationError in token payload -> 400."""
-        from pydantic import ValidationError as PydanticValidationError
-
-        req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {
-            "Authorization": "Bearer bad-token",
-        }.get(k, default)
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
-
-        # jwt.decode will raise a different error, but we can test ValidationError path
-        # by patching jwt.decode to raise ValidationError
-        with patch("app.connectors.api.router.jwt.decode") as mock_decode:
-            # Create a real ValidationError
-            from pydantic import BaseModel
-
-            class DummyModel(BaseModel):
-                x: int
-
-            try:
-                DummyModel(x="not-an-int")  # This actually succeeds with coercion
-            except Exception:
-                pass
-
-            # Use a simpler approach - mock it to raise a ValidationError-like exception
-            mock_decode.side_effect = PydanticValidationError.from_exception_data(
-                title="test",
-                line_errors=[],
-            )
-
-            with pytest.raises(HTTPException) as exc:
-                await stream_record_internal(req, "rec-1", AsyncMock(), config_service)
-            assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        with pytest.raises(HTTPException) as exc:
+            await stream_record_internal(req, "rec-1", gp, cs, claims=claims)
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+        conn_obj.stream_record.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_generic_exception_raises_500(self):
         """Unexpected exception -> 500."""
-        req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {
-            "Authorization": "Bearer some-token",
-        }.get(k, default)
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(side_effect=RuntimeError("boom"))
+        req, gp, cs, _, claims = self._setup_stream()
+        gp.get_record_by_id = AsyncMock(side_effect=RuntimeError("boom"))
 
         with pytest.raises(HTTPException) as exc:
-            await stream_record_internal(req, "rec-1", AsyncMock(), config_service)
+            await stream_record_internal(req, "rec-1", gp, cs, claims=claims)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "Error streaming record" in exc.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc.value.detail == "We couldn't open this file. Please try again; if it keeps failing, contact your admin."
+        assert "Error streaming record" not in exc.value.detail
 
 
 # ============================================================================
@@ -1339,6 +1292,7 @@ class TestDownloadFileErrorPaths:
         req.app.container = container
         req.app.state = MagicMock()
         req.app.state.connector_registry = MagicMock()
+        req.state.user = {"userId": "user-1", "orgId": "org-1"}
 
         return req, handler, graph_provider, connector_obj
 
@@ -1389,7 +1343,7 @@ class TestDownloadFileErrorPaths:
         with pytest.raises(HTTPException) as exc:
             await download_file(req, "org-1", "rec-1", "googledrive", "tok", handler, gp)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "Error downloading file" in exc.value.detail
+        assert exc.value.detail == "Could not retrieve this item. Please try again."
 
     @pytest.mark.asyncio
     async def test_inner_http_exception_re_raised(self):
@@ -1414,7 +1368,7 @@ class TestDownloadFileErrorPaths:
         with pytest.raises(HTTPException) as exc:
             await download_file(req, "org-1", "rec-1", "googledrive", "tok", handler, AsyncMock())
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "Error downloading file" in exc.value.detail
+        assert exc.value.detail == "Could not retrieve this item. Please try again."
 
     @pytest.mark.asyncio
     async def test_connector_instance_no_type_raises_404(self):
@@ -1441,6 +1395,7 @@ class TestDownloadFileErrorPaths:
 
         req = MagicMock()
         req.app = MagicMock()
+        req.state.user = {"userId": "user-1", "orgId": "org-1"}
 
         with pytest.raises(HTTPException) as exc:
             await download_file(req, "org-1", "rec-1", "googledrive", "tok", handler, graph_provider)

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.utils.chat_helpers import (
     CitationRefMapper,
+    ImageBudget,
     build_message_content_array,
     enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
@@ -60,6 +61,13 @@ class PrefetchResult:
     citation_ref_mapper: CitationRefMapper
     is_empty: bool
     error_message: str | None = field(default=None)
+    # IMAGE blocks captured during formatting (`collected_images` side-
+    # channel — see `chat_helpers.build_message_content_array`). `bridge.py`
+    # merges these into `context.attachment_image_blocks` so the existing
+    # `shape_image_injection` PRE_MODEL hook delivers them to the model,
+    # since prefetch produces plain text (folded into `goal.constraints`),
+    # not a tool result that could carry a multipart `ToolMessage`.
+    collected_images: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -84,6 +92,7 @@ async def prefetch_retrieval(
     logger: "logging.Logger",
     force: bool = False,
     ref_mapper: CitationRefMapper | None = None,
+    image_budget: ImageBudget | None = None,
 ) -> PrefetchResult | None:
     """Runs upfront retrieval for the current query.
 
@@ -173,9 +182,12 @@ async def prefetch_retrieval(
             is_empty=True,
         )
 
+    collected_images: list[dict[str, Any]] = []
     message_content_array, ref_mapper = build_message_content_array(
         final_results, virtual_record_id_to_result,
         is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper, from_tool=True,
+        collected_images=collected_images,
+        image_budget=image_budget if image_budget is not None else ImageBudget(),
     )
     flat_parts = [item for sublist in message_content_array for item in sublist]
     formatted_context = "\n".join(
@@ -189,4 +201,5 @@ async def prefetch_retrieval(
         tool_records=list(virtual_record_id_to_result.values()),
         citation_ref_mapper=ref_mapper,
         is_empty=not formatted_context.strip(),
+        collected_images=collected_images,
     )

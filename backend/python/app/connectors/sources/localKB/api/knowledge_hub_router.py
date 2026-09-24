@@ -1,5 +1,6 @@
 """Knowledge Hub Unified Browse API Router"""
 
+import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Union
 
@@ -22,6 +23,11 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 )
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
+from app.utils.user_messages import action_failed
+
+# Handlers bind their own ``logger`` inside the request, so the module logger
+# needs a name a half-run handler cannot shadow.
+_log = logging.getLogger(__name__)
 
 knowledge_hub_router = APIRouter(
     prefix="/api/v1/knowledge-hub",
@@ -32,6 +38,8 @@ knowledge_hub_router = APIRouter(
 MAX_TIMESTAMP_MS = 9999999999999  # Year 2286 in milliseconds
 MAX_FILE_SIZE_BYTES = 1099511627776  # 1 TB in bytes
 MAX_SEARCH_QUERY_LENGTH = 500
+HTTP_CLIENT_ERROR_MIN = 400
+HTTP_SERVER_ERROR_MIN = 500
 MIN_SEARCH_QUERY_LENGTH = 2
 MAX_COMMA_SEPARATED_ITEMS = 100
 
@@ -409,15 +417,19 @@ async def _handle_get_nodes(
         )
 
         if not result.success:
-            error_detail = result.error if result.error else "Failed to retrieve nodes"
-
-            # Determine status code based on error message
-            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-            if error_detail:
-                if "not found" in error_detail.lower():
-                    status_code = status.HTTP_404_NOT_FOUND
-                elif "type mismatch" in error_detail.lower() or "invalid" in error_detail.lower():
-                    status_code = status.HTTP_400_BAD_REQUEST
+            # The service flags what it wrote for a person with a 4xx code (a node
+            # that is gone, a link that asks for the wrong kind of thing). Anything
+            # else is ours to explain, so its text never reaches the toast — and
+            # the words themselves decide nothing, since an exception's text can
+            # read like anything.
+            said = result.error or ""
+            code = result.errorCode or 0
+            if said and HTTP_CLIENT_ERROR_MIN <= code < HTTP_SERVER_ERROR_MIN:
+                status_code = code
+                error_detail = said
+            else:
+                status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+                error_detail = action_failed("open this collection")
 
             raise HTTPException(
                 status_code=status_code,
@@ -429,8 +441,9 @@ async def _handle_get_nodes(
     except HTTPException as he:
         raise he
     except Exception as e:
+        _log.error("_handle_get_nodes failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}"
+            detail=action_failed("open this collection")
         ) from e
 

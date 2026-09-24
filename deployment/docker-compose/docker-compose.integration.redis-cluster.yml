@@ -1,0 +1,49 @@
+# 3-master, 0-replica Redis Cluster for the "redis-cluster" CI job and local
+# testing of the `IRedisConnectionProvider` cluster path (Phase 0/6, R17).
+#
+#   docker compose -f deployment/docker-compose/docker-compose.integration.redis-cluster.yml up -d
+#   cd backend/python && REDIS_MODE=cluster \
+#     REDIS_CLUSTER_ENDPOINTS=127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002 \
+#     pytest tests/integration/redis_cluster -m integration
+#
+# Uses grokzen/redis-cluster (https://github.com/Grokzen/docker-redis-cluster),
+# not the Bitnami image: Bitnami removed free `bitnami/redis-cluster` tags
+# from Docker Hub in 2025 in favour of a paid "Bitnami Secure Images"
+# subscription, so a compose file pinned to `bitnami/redis-cluster:*` no
+# longer pulls at all. grokzen/redis-cluster runs every node inside one
+# container via supervisord and bootstraps `redis-cli --cluster create`
+# itself on startup -- no separate creator/healthcheck dance needed.
+#
+# All three nodes gossip over the container's own loopback (they are one
+# container), so each corrects its own advertised address to 127.0.0.1 once
+# `CLUSTER MEET` runs -- see the "IP address for this node updated to
+# 127.0.0.1" log line. That means the *published* host ports are the only
+# addresses a client (this repo's tests, `redis-cli`, etc.) ever needs,
+# identically on Linux CI and Docker Desktop for Mac/Windows.
+#
+# Ports 17000-17002 (not the project's usual 7000-7002) because 7000 is
+# bound by default on macOS (ControlCenter's AirPlay receiver) and 6379 by
+# any local standalone Redis dev instance; the cluster bus does not need a
+# separate published port range here since nothing outside the container
+# ever talks to it.
+services:
+  redis-cluster-it:
+    image: grokzen/redis-cluster:7.0.10
+    container_name: redis-cluster-it
+    environment:
+      IP: "0.0.0.0"
+      INITIAL_PORT: "17000"
+      MASTERS: "3"
+      SLAVES_PER_MASTER: "0"
+    ports:
+      - "17000-17002:17000-17002"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -p 17000 cluster info | grep -q 'cluster_state:ok' && redis-cli -p 17001 cluster info | grep -q 'cluster_state:ok' && redis-cli -p 17002 cluster info | grep -q 'cluster_state:ok'",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s

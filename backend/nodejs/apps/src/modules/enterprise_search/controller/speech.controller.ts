@@ -6,8 +6,17 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadGatewayError,
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  HttpError,
+  NotFoundError,
   ServiceUnavailableError,
+  TooManyRequestsError,
+  UnauthorizedError,
+  UnprocessableEntityError,
 } from '../../../libs/errors/http.errors';
+import { serverFailureMessage } from '../../../libs/errors/reader-friendly';
 import { AppConfig } from '../../tokens_manager/config/config';
 
 const logger = Logger.getInstance({ service: 'Chat Speech Proxy' });
@@ -47,6 +56,65 @@ function buildForwardHeaders(
   return { ...headers, ...extra };
 }
 
+/**
+ * Shown when one PipesHub service cannot reach another. The fault is on the
+ * server, so it never asks the reader to check their own connection, and it
+ * never names the service that is down.
+ */
+const SERVICE_UNAVAILABLE_MESSAGE =
+  'PipesHub is having trouble reaching one of its services. Try again in a minute; if it continues, ask your admin to check the services page.';
+
+// The status the speech service chose, kept rather than flattened to one code.
+const CLIENT_ERRORS = {
+  400: BadRequestError,
+  401: UnauthorizedError,
+  403: ForbiddenError,
+  404: NotFoundError,
+  409: ConflictError,
+  422: UnprocessableEntityError,
+  429: TooManyRequestsError,
+} as const;
+
+const readerText = (data: unknown): string | undefined => {
+  if (typeof data !== 'object' || data === null) return undefined;
+  const body = data as Record<string, unknown>;
+  for (const key of ['detail', 'message']) {
+    const value = body[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
+};
+
+/**
+ * The body to send on for a speech service reply of 400 or worse.
+ *
+ * Every route here forwards the upstream status as-is, so this decides only
+ * what the reader is told. A 4xx keeps the service's own words — those are
+ * written for the person who made the request. A 5xx does not: its words
+ * describe the machine that broke, so they go to the log and plain advice
+ * goes to the person.
+ */
+function bodyForUpstreamError(
+  status: number,
+  data: unknown,
+  action: string,
+): unknown {
+  if (status < 400) return data;
+  const ownWords = readerText(data);
+  if (status < 500) {
+    logger.info(`${action} upstream returned ${status}`, { status });
+    return ownWords !== undefined ? { detail: ownWords } : data;
+  }
+  logger.error(`${action} upstream returned ${status}`, { status, data });
+  return { detail: serverFailureMessage(action) };
+}
+
+/**
+ * Turn a thrown call to the speech service into the error a caller can hand
+ * to the error middleware. These routes accept any status without throwing,
+ * so this runs for transport failures — an unreachable service, a timeout —
+ * and keeps the status meaningful if a response ever does come with one.
+ */
 function mapAxiosError(error: unknown, action: string): Error {
   const err = error as {
     response?: { status: number; data: unknown };
@@ -54,25 +122,28 @@ function mapAxiosError(error: unknown, action: string): Error {
     message?: string;
   };
   if (err?.response) {
-    logger.error(`${action} upstream returned ${err.response.status}`, {
-      status: err.response.status,
-      data: err.response.data,
-    });
-    return new BadGatewayError(
-      typeof err.response.data === 'object' && err.response.data !== null
-        ? ((err.response.data as Record<string, unknown>).detail as string) ||
-          ((err.response.data as Record<string, unknown>).message as string) ||
-          `${action} failed (upstream ${err.response.status})`
-        : `${action} failed (upstream ${err.response.status})`,
-    );
+    const { status, data } = err.response;
+    logger.error(`${action} upstream returned ${status}`, { status, data });
+    const ownWords = readerText(data);
+    if (status >= 400 && status < 500) {
+      // Keep the status the service chose: 404 must not read as 502, and an
+      // unmapped one (413 for an oversized recording, say) must not read as
+      // 400 either, or the caller cannot tell what to do about it. The words
+      // are the service's when it wrote any, matching bodyForUpstreamError.
+      const message = ownWords ?? serverFailureMessage(action);
+      if (status in CLIENT_ERRORS) {
+        const ClientError = CLIENT_ERRORS[status as keyof typeof CLIENT_ERRORS];
+        return new ClientError(message);
+      }
+      return new HttpError('UPSTREAM_CLIENT_ERROR', message, status);
+    }
+    return new BadGatewayError(serverFailureMessage(action));
   }
   logger.error(`${action} upstream unreachable`, {
     code: err?.code,
     message: err?.message,
   });
-  return new ServiceUnavailableError(
-    `${action} failed: AI backend is unavailable`,
-  );
+  return new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE);
 }
 
 /**
@@ -101,9 +172,17 @@ export const getSpeechCapabilities =
         validateStatus: () => true,
       });
 
-      res.status(response.status).json(response.data);
+      res
+        .status(response.status)
+        .json(
+          bodyForUpstreamError(
+            response.status,
+            response.data,
+            'check the speech settings',
+          ),
+        );
     } catch (error) {
-      next(mapAxiosError(error, 'Speech capabilities fetch'));
+      next(mapAxiosError(error, 'check the speech settings'));
     }
   };
 
@@ -143,7 +222,15 @@ export const synthesizeSpeech =
       // can show the specific failure reason instead of a binary blob.
       if (response.status >= 400) {
         const payload = parseUpstreamError(response);
-        res.status(response.status).json(payload);
+        res
+          .status(response.status)
+          .json(
+            bodyForUpstreamError(
+              response.status,
+              payload,
+              'read this message aloud',
+            ),
+          );
         return;
       }
 
@@ -161,7 +248,7 @@ export const synthesizeSpeech =
       }
       res.send(Buffer.from(response.data));
     } catch (error) {
-      next(mapAxiosError(error, 'Speech synthesis'));
+      next(mapAxiosError(error, 'read this message aloud'));
     }
   };
 
@@ -215,9 +302,17 @@ export const transcribeAudio =
         validateStatus: () => true,
       });
 
-      res.status(response.status).json(response.data);
+      res
+        .status(response.status)
+        .json(
+          bodyForUpstreamError(
+            response.status,
+            response.data,
+            'turn your recording into text',
+          ),
+        );
     } catch (error) {
-      next(mapAxiosError(error, 'Speech transcription'));
+      next(mapAxiosError(error, 'turn your recording into text'));
     }
   };
 

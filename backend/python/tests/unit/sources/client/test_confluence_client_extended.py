@@ -232,7 +232,7 @@ class TestBuildFromToolsetApiToken:
         logger = logging.getLogger("test")
 
         with patch(
-            "app.sources.client.confluence.confluence.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "auth": {"baseUrl": "https://mysite.atlassian.net"},
@@ -273,7 +273,7 @@ class TestBuildFromToolsetApiToken:
         logger = logging.getLogger("test")
 
         with patch(
-            "app.sources.client.confluence.confluence.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value=None,
         ):

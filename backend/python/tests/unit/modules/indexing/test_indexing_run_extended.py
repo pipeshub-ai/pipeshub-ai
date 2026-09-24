@@ -8,11 +8,14 @@ from app.exceptions.indexing_exceptions import (
     IndexingError,
     MetadataProcessingError,
 )
-
+from tests.support.vector_db import (
+    make_collection_registry as _make_collection_registry,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_pipeline():
     """Create an IndexingPipeline with all dependencies mocked."""
@@ -26,7 +29,7 @@ def _make_pipeline():
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            collection_name="test_collection",
+            collection_registry=_make_collection_registry(),
             vector_db_service=AsyncMock(),
         )
         return pipeline
@@ -57,7 +60,7 @@ class TestIndexingPipelineInitCatchAll:
                         logger=MagicMock(),
                         config_service=AsyncMock(),
                         graph_provider=AsyncMock(),
-                        collection_name="test",
+                        collection_registry=_make_collection_registry("test"),
                         vector_db_service=AsyncMock(),
                     )
 
@@ -119,7 +122,13 @@ class TestBulkDeleteBatchError:
 
     @pytest.mark.asyncio
     async def test_batch_exception_continues(self):
-        """When a batch fails, deletion continues with next batch."""
+        """A failing batch is logged and the run carries on to the next one.
+
+        The failed batch's ids are not counted as processed, and — the part
+        that matters — their mapping rows are kept. The points are still in the
+        store, and that mapping is the only handle the orphan sweeper has on
+        them.
+        """
         pipeline = _make_pipeline()
         pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(
             return_value=[]
@@ -132,7 +141,8 @@ class TestBulkDeleteBatchError:
         result = await pipeline.bulk_delete_embeddings(["vr-1"])
 
         assert result["success"] is True
-        assert result["virtual_record_ids_processed"] == 1
+        assert result["virtual_record_ids_processed"] == 0
+        pipeline.graph_provider.delete_nodes.assert_not_awaited()
 
 
 # ===================================================================

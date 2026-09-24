@@ -23,3 +23,14 @@ export function trimAuthPayloadForApi<T extends Record<string, unknown>>(auth: T
   const { [OAUTH_FORM_WANTS_NEW_REGISTRATION]: _ui, ...rest } = auth;
   return trimConnectorConfig(rest as T);
 }
+
+/**
+ * When linking to an existing OAuth app, strip all fields except `oauthConfigId`.
+ * Prevents masked/stale values from overriding stored credentials on the backend.
+ * Schema-agnostic: works regardless of which credential fields the connector defines.
+ */
+export function stripLinkedOAuthAppCredentials<T extends Record<string, unknown>>(auth: T): T {
+  const id = auth.oauthConfigId;
+  if (!id || (typeof id === 'string' && !id.trim())) return auth;
+  return { oauthConfigId: auth.oauthConfigId } as unknown as T;
+}

@@ -14,6 +14,7 @@ import type {
   OrgDetailsResponse,
   UserBackgroundSurveyResponse,
 } from './types';
+import { resolveS3Credentials } from './utils/s3-credentials';
 
 // ===============================
 // Onboarding Status Gate
@@ -185,8 +186,16 @@ export async function saveStorageConfig(
   const body: Record<string, unknown> = { storageType: form.providerType };
 
   if (form.providerType === 's3') {
-    body.s3AccessKeyId = form.s3AccessKeyId;
-    body.s3SecretAccessKey = form.s3SecretAccessKey;
+    // Both keys omitted tells the API to use the instance IAM role; a half-filled
+    // pair is still sent so the API rejects it instead of silently switching mode.
+    const credentials = resolveS3Credentials({
+      accessKeyId: form.s3AccessKeyId,
+      secretAccessKey: form.s3SecretAccessKey,
+    });
+    if (credentials.kind !== 'iamRole') {
+      body.s3AccessKeyId = form.s3AccessKeyId?.trim() ?? '';
+      body.s3SecretAccessKey = form.s3SecretAccessKey?.trim() ?? '';
+    }
     body.s3Region = form.s3Region;
     body.s3BucketName = form.s3BucketName;
   } else if (form.providerType === 'azureBlob') {

@@ -8,7 +8,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useChatStore, ctxKeyFromAgent, ASSISTANT_CTX } from '@/chat/store';
-import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
+import { fetchModelsForContext, OrgModelsFetchError } from '@/chat/utils/fetch-models-for-context';
 import {
   PROVIDER_FRIENDLY_NAMES,
   MODEL_DESCRIPTIONS,
@@ -88,6 +88,7 @@ export function ModelSelectorPanel({
   const models: AvailableLlmModel[] = cached?.models ?? [];
 
   const reasoningEffort = normalizeReasoningEffort(useChatStore((s) => s.settings.reasoningEffort[ctxKey] ?? null));
+  const agentDefaultEffort = useChatStore((s) => s.settings.agentDefaultReasoningEffort[ctxKey] ?? null);
   const setReasoningEffortForCtx = useChatStore((s) => s.setReasoningEffortForCtx);
   const hydrateReasoningEffortForCtx = useChatStore((s) => s.hydrateReasoningEffortForCtx);
 
@@ -111,19 +112,23 @@ export function ModelSelectorPanel({
     fetchModelsForContext(ctxKey, { force: true })
       .then((fresh) => {
         if (cancelled) return;
+        // An agent with no models of its own now falls back to fetching the
+        // org-wide list (see `fetchModelsForContext`), so an empty result
+        // here always means the organization has no LLMs configured at all
+        // — not that this particular agent is missing a model.
         if (fresh.length === 0) {
-          setError(
-            ctxKey === ASSISTANT_CTX
-              ? t('chat.noModelsAvailable')
-              : t('chat.agentNoModelsConfigured'),
-          );
+          setError(t('chat.noModelsAvailable'));
         }
       })
       .catch((err) => {
         if (cancelled) return;
         console.error('Failed to fetch models:', err);
+        // An `OrgModelsFetchError` means the agent's own config fetch
+        // succeeded (it just has no models) and the org-wide fallback list
+        // failed — that's an org-models failure, not an agent-config one.
+        const isOrgModelsFailure = ctxKey === ASSISTANT_CTX || err instanceof OrgModelsFetchError;
         setError(
-          ctxKey === ASSISTANT_CTX
+          isOrgModelsFailure
             ? t('chat.failedToLoadModels')
             : t('chat.failedToLoadAgentConfig'),
         );
@@ -178,7 +183,7 @@ export function ModelSelectorPanel({
   );
 
   return (
-    <Flex direction="column" gap="4" style={{ flex: 1, overflow: 'hidden' }}>
+    <Flex direction="column" gap="4" data-testid="chat-model-panel" style={{ flex: 1, overflow: 'hidden' }}>
       {/* Header — matches QueryModePanel "Different Modes of Query" style */}
       {!hideHeader && (
         <Flex align="center" justify="between">
@@ -214,6 +219,7 @@ export function ModelSelectorPanel({
         <ReasoningEffortSelector
           value={reasoningEffort}
           onSelect={handleReasoningEffortSelect}
+          effectiveDefault={agentDefaultEffort ?? DEFAULT_REASONING_EFFORT}
         />
       )}
 
@@ -254,16 +260,16 @@ export function ModelSelectorPanel({
             >
               {error}
             </Text>
-            {error === t('chat.agentNoModelsConfigured') && agentId && (
-              <Button 
-                variant="soft" 
+            {isAdmin && (
+              <Button
+                variant="soft"
                 size="2"
                 onClick={() => {
-                  router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId)}`);
+                  router.push('/workspace/ai-models');
                 }}
               >
                 <MaterialIcon name="settings" size={16} />
-                {t('chat.configureModels')}
+                {t('chat.openModels', 'Open Models')}
               </Button>
             )}
           </Flex>
@@ -288,9 +294,10 @@ interface ReasoningEffortSelectorProps {
   /** `null` = no explicit override, model/provider uses its own default. */
   value: ReasoningEffort | null;
   onSelect: (value: ReasoningEffort) => void;
+  effectiveDefault?: ReasoningEffort;
 }
 
-function ReasoningEffortSelector({ value, onSelect }: ReasoningEffortSelectorProps) {
+function ReasoningEffortSelector({ value, onSelect, effectiveDefault = DEFAULT_REASONING_EFFORT }: ReasoningEffortSelectorProps) {
   const { t } = useTranslation();
   return (
     <Flex
@@ -309,7 +316,7 @@ function ReasoningEffortSelector({ value, onSelect }: ReasoningEffortSelectorPro
       </Text>
       <Flex align="center" gap="2" wrap="wrap" role="radiogroup" aria-label={t('chat.reasoningEffort.label', 'Reasoning Effort')}>
         {REASONING_EFFORT_OPTIONS.map((option) => {
-          const isActive = value === option.value || (!value && option.value === DEFAULT_REASONING_EFFORT);
+          const isActive = value === option.value || (!value && option.value === effectiveDefault);
           return (
             <Flex
               key={option.value}
@@ -347,7 +354,10 @@ function ReasoningEffortSelector({ value, onSelect }: ReasoningEffortSelectorPro
       <Text size="1" style={{ color: 'var(--slate-10)' }}>
         {value
           ? t('chat.reasoningEffort.overrideHint', 'Click again to use the default.')
-          : t('chat.reasoningEffort.defaultHint', 'Defaults to High when not set.')}
+          : t('chat.reasoningEffort.defaultHintWithLevel', {
+              defaultValue: 'Defaults to {{level}} when not set.',
+              level: getReasoningEffortLabel(t, effectiveDefault),
+            })}
       </Text>
     </Flex>
   );

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from enum import Enum
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -40,6 +42,11 @@ __all__ = [
     "EnvironmentSetupError",
     "OUTPUT_DIR_NAME",
     "normalize_sandbox_path",
+    "IsolationLevel",
+    "SandboxCapabilities",
+    "SandboxContext",
+    "SandboxRef",
+    "ExecutionEvent",
 ]
 
 CodingLanguage = Literal["typescript", "python"]
@@ -100,6 +107,21 @@ class ErrorCategory(str, Enum):
     TIMEOUT = "timeout"
     PERMISSION = "permission"
     UNKNOWN = "unknown"
+
+
+class IsolationLevel(str, Enum):
+    """How strongly a sandbox is isolated from the host.
+
+    `HOST` is a process boundary only — rlimits and, where available,
+    Seatbelt/bubblewrap. There is no network namespace, so code run at this
+    level reaches whatever the host can reach and no configuration can
+    prevent it. Treat `HOST` as suitable for development, not for running
+    untrusted code.
+    """
+
+    HOST = "host"
+    CONTAINER = "container"
+    MICROVM = "microvm"
 
 
 class ErrorAnalysis(BaseModel):
@@ -164,6 +186,66 @@ class InstallResult(BaseModel):
     stderr: str = ""
 
 
+class SandboxCapabilities(BaseModel):
+    """Declares what a sandbox backend supports, queried at runtime."""
+
+    isolation: IsolationLevel
+    supported_languages: list[CodingLanguage] = ["typescript", "python"]
+    # Whether code in this sandbox can reach the network. This describes
+    # what the sandbox DOES, not what it was asked for: a `HOST` sandbox
+    # has the host's network and no way to take it away, so it reports
+    # True regardless of configuration. Only a backend that can actually
+    # enforce a denial (its own netns) may report False.
+    supports_network: bool = False
+    supports_package_install: bool = True
+    supports_streaming: bool = False
+    supports_reconnect: bool = False
+    is_metered: bool = False
+    max_timeout_s: float | None = None
+    persistent_filesystem: bool = True
+
+
+class SandboxContext(BaseModel):
+    """Who/what this sandbox serves.
+
+    Used for provider tags, audit logs and the governor's per-org fairness
+    cap.  Never contains secrets; never shown to the model.
+    """
+
+    org_id: str | None = None
+    user_id: str | None = None
+    conversation_id: str | None = None
+    request_id: str | None = None
+
+
+class SandboxRef(BaseModel):
+    """Serializable identity: enough to reconnect, nothing live, no credentials.
+
+    `backend` is the REGISTRY KEY (`"e2b"`, `"daytona"`), not a class name —
+    reconnecting means `registry.get(ref.backend).reconnect(ref)`, so a
+    class name here would make the ref unusable for the one thing it
+    exists to do.
+
+    `created_at`/`expires_at` are wall-clock (`time.time()`) because a ref
+    outlives the process that made it; a monotonic clock is meaningless
+    once deserialised elsewhere.
+    """
+
+    backend: str
+    sandbox_id: str
+    created_at: float
+    expires_at: float | None = None
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class ExecutionEvent(BaseModel):
+    """A single event emitted during streamed code execution."""
+
+    kind: Literal["stdout", "stderr", "artifact", "result"]
+    text: str | None = None
+    result: CodeResult | None = None
+
+
 class CodingSandboxBackend(ABC):
     """One sandbox instance = one isolated working directory that can host
     BOTH a Node environment (`node_modules/`) and a Python virtualenv
@@ -183,6 +265,14 @@ class CodingSandboxBackend(ABC):
         async with LocalCodingSandbox(cfg) as sb:
             result = await sb.execute(CodeRequest(code="console.log(1+1)"))
     """
+
+    # Registry key for this backend ("local", "docker", "e2b", ...). Used
+    # by `ref` so a serialised handle can be routed back to the factory
+    # that can reconnect it.
+    backend_name: ClassVar[str] = "unknown"
+
+    # Wall-clock provision time, set by `provision()`. See `ref`.
+    _created_at: float | None = None
 
     @property
     @abstractmethod
@@ -251,6 +341,50 @@ class CodingSandboxBackend(ABC):
         """Tear down the sandbox and release all resources (temp dir,
         subprocess handles, remote billing for cloud backends)."""
         ...
+
+    @property
+    @abstractmethod
+    def capabilities(self) -> SandboxCapabilities:
+        """What this backend supports — every backend must declare."""
+        ...
+
+    @property
+    def ref(self) -> SandboxRef:
+        """Serializable handle for this sandbox instance.
+
+        `created_at` is captured at provision, not read here: a property
+        that returns `time.time()` reports the moment it was *called*, so
+        every ref would claim to be brand new and no TTL computed from it
+        could ever expire.
+        """
+        return SandboxRef(
+            backend=self.backend_name,
+            sandbox_id=self.sandbox_id,
+            created_at=self._created_at if self._created_at is not None else time.time(),
+            expires_at=self.expires_at,
+        )
+
+    @property
+    def expires_at(self) -> float | None:
+        """Wall-clock time the provider will reclaim this sandbox, when it
+        sets a TTL of its own. `None` for backends with no provider-side
+        expiry (local, docker) — those are reclaimed by the manager."""
+        return None
+
+    async def execute_stream(self, request: CodeRequest) -> AsyncIterator[ExecutionEvent]:
+        """Yield execution events incrementally.
+
+        The default implementation calls `execute()` and emits discrete
+        stdout / stderr / result events.  Backends whose
+        ``capabilities.supports_streaming`` is ``True`` should override
+        with a real incremental implementation.
+        """
+        result = await self.execute(request)
+        if result.stdout:
+            yield ExecutionEvent(kind="stdout", text=result.stdout)
+        if result.stderr:
+            yield ExecutionEvent(kind="stderr", text=result.stderr)
+        yield ExecutionEvent(kind="result", result=result)
 
     async def __aenter__(self) -> "CodingSandboxBackend":
         await self.provision()

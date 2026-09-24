@@ -94,6 +94,30 @@ class TestOCRStrategyNeedsOcr:
 
         assert OCRStrategy.needs_ocr(page, logger) is False
 
+    def test_needs_ocr_for_dominant_image_with_little_text(self, logger):
+        """A flattened page image must not be mistaken for native PDF text."""
+        page = self._make_page(
+            text="Specification sheet heading and footer",
+            words=[(0, 0, 200, 30, "heading", 0, 0, 0)] * 20,
+            images=[{"width": 540, "height": 620}],
+            width=600,
+            height=800,
+        )
+
+        assert OCRStrategy.needs_ocr(page, logger) is True
+
+    def test_no_ocr_for_small_image_with_usable_text(self, logger):
+        """A normal inline image must not force OCR on a text-heavy page."""
+        page = self._make_page(
+            text="Readable document text " * 20,
+            words=[(0, 0, 580, 490, "text", 0, 0, 0)],
+            images=[{"width": 120, "height": 120}],
+            width=600,
+            height=800,
+        )
+
+        assert OCRStrategy.needs_ocr(page, logger) is False
+
     def test_images_below_min_size_not_significant(self, logger):
         """Small images are not counted as significant."""
         images = [

@@ -44,4 +44,21 @@ describe('telemetry modules/http-metrics', () => {
       'pipeshub_http_requests_total{service="node_api",route="/api/v1/repeat",method="GET",status="200",org="org2",domain="x.io"} 2',
     );
   });
+
+  // Must run last: fills the module-level unique-route set up to the cap.
+  it('should collapse routes beyond the unique-route cap into "other"', async () => {
+    for (let i = 0; i < 300; i++) {
+      recordHttpRequest(`/api/v1/cap/${i}`, 'GET', 200, 'org1', undefined, 'a.io');
+    }
+    recordHttpRequest('/api/v1/overflow', 'GET', 200, 'org1', undefined, 'a.io');
+    recordHttpRequest('/api/v1/repeat', 'GET', 200, 'org2', undefined, 'x.io');
+
+    const text = await metricsBackend.serialize();
+    expect(text).to.not.include('route="/api/v1/overflow"');
+    expect(text).to.match(/pipeshub_http_requests_total\{[^}]*route="other"/);
+    // Routes seen before the cap keep recording under their own label.
+    expect(text).to.include(
+      'pipeshub_http_requests_total{service="node_api",route="/api/v1/repeat",method="GET",status="200",org="org2",domain="x.io"} 3',
+    );
+  });
 });

@@ -28,7 +28,7 @@ class OAuthConfigRegistry:
         """
         self._configs: Dict[str, OAuthConfig] = {}
 
-    def register(self, config: OAuthConfig) -> None:
+    def register(self, config: OAuthConfig, *, source: str = "connector") -> None:
         """
         Register an OAuth configuration for a connector/toolset.
 
@@ -39,6 +39,9 @@ class OAuthConfigRegistry:
 
         Args:
             config: OAuthConfig instance to register
+            source: Unused here; accepted so namespaced registry
+                subclass (which dispatches by source) can share the same
+                call sites without a TypeError.
         """
         self._configs[config.connector_name] = config
 

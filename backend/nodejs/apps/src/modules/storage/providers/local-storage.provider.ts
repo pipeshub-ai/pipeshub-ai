@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { randomUUID } from 'crypto';
 import { injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { StorageServiceInterface } from '../services/storage.service';
@@ -112,6 +113,45 @@ class LocalStorageAdapter implements StorageServiceInterface {
   }
 
   /**
+   * Writes beside the target and renames over it, so a write that fails part
+   * way (disk full, storage gone) leaves the previous file whole instead of cut short.
+   */
+  private async writeFileAtomically(
+    fullPath: string,
+    data: Buffer,
+  ): Promise<void> {
+    // Named independently of the target: a long but valid filename plus a suffix
+    // can pass the filesystem's limit for one name component.
+    const tempPath = path.join(path.dirname(fullPath), `.${randomUUID()}.tmp`);
+    try {
+      await fs.writeFile(tempPath, data, { mode: 0o600 });
+      await fs.rename(tempPath, fullPath);
+    } catch (error) {
+      await fs.rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * Whether a file is stored at this path. Only a missing file answers false;
+   * anything else (an unreadable folder, storage gone) rejects.
+   */
+  async objectExistsAtPath(documentPath: string): Promise<boolean> {
+    const fullPath = this.assertInsideMount(
+      path.join(this.mountPath, this.sanitizePath(documentPath)),
+    );
+    try {
+      await fs.stat(fullPath);
+      return true;
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Uploads a document to local storage
    */
   async uploadDocumentToStorageService(
@@ -120,7 +160,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
     try {
       this.validateFilePayload(documentInPayload);
       const relativePath = this.sanitizePath(documentInPayload.documentPath);
-      const fullPath = path.join(this.mountPath, relativePath);
+      const fullPath = this.assertInsideMount(
+        path.join(this.mountPath, relativePath),
+      );
       const dirPath = path.dirname(fullPath);
       if (process.env.NODE_ENV == 'development') {
         this.logger.info('Uploading document to local storage', {
@@ -133,12 +175,11 @@ class LocalStorageAdapter implements StorageServiceInterface {
       // Ensure directory exists
       await fs.mkdir(dirPath, { recursive: true });
 
-      // Write file with proper permissions
-      await fs.writeFile(fullPath, documentInPayload.buffer, { mode: 0o600 });
+      await this.writeFileAtomically(fullPath, documentInPayload.buffer);
 
       const fileUrl = this.getFileUrl(relativePath);
 
-      this.logger.info('Local storage upload successful');
+      this.logger.debug('Local storage upload successful');
 
       return {
         statusCode: 200,
@@ -171,10 +212,11 @@ class LocalStorageAdapter implements StorageServiceInterface {
         throw new StorageNotFoundError('Local file path not found');
       }
 
-      const fullPath = path.join(this.mountPath, localPath);
+      const fullPath = this.assertInsideMount(
+        path.join(this.mountPath, localPath),
+      );
 
-      // Write updated content
-      await fs.writeFile(fullPath, bufferDataInPayLoad, { mode: 0o600 });
+      await this.writeFileAtomically(fullPath, bufferDataInPayLoad);
 
       const fileUrl = this.getFileUrl(localPath);
       if (process.env.NODE_ENV == 'development') {
@@ -227,7 +269,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
         throw new StorageNotFoundError('Invalid file URL format');
       }
 
-      const fullPath = path.join(this.mountPath, localPath);
+      const fullPath = this.assertInsideMount(
+        path.join(this.mountPath, localPath),
+      );
 
       // Read file content
       const buffer = await fs.readFile(fullPath);
@@ -330,12 +374,16 @@ class LocalStorageAdapter implements StorageServiceInterface {
   ): Promise<StorageServiceResponse<{ url: string }>> {
     try {
       const relativePath = this.sanitizePath(documentPath);
+      this.assertInsideMount(path.join(this.mountPath, relativePath));
       const fileUrl = this.getFileUrl(relativePath);
       return {
         statusCode: 200,
         data: { url: fileUrl },
       };
     } catch (error) {
+      if (error instanceof StorageError) {
+        throw error;
+      }
       throw new PresignedUrlError(
         'Failed to generate direct upload URL for local storage',
         {
@@ -414,12 +462,51 @@ class LocalStorageAdapter implements StorageServiceInterface {
     }
   }
 
+  /**
+   * Confirm a resolved path stays inside the mount. Does not follow
+   * symlinks (no realpath); a symlink placed under the mount can still
+   * escape — that is out of scope.
+   */
+  private assertInsideMount(fullPath: string): string {
+    const mountRoot = path.resolve(this.mountPath);
+    const resolved = path.resolve(fullPath);
+    const prefix = mountRoot.endsWith(path.sep)
+      ? mountRoot
+      : `${mountRoot}${path.sep}`;
+    if (resolved === mountRoot || !resolved.startsWith(prefix)) {
+      throw new StorageValidationError('Invalid document path');
+    }
+    return resolved;
+  }
+
   private sanitizePath(filePath: string): string {
-    // Remove any parent directory references for security
-    const normalizedPath = path
-      .normalize(filePath)
-      .replace(/^(\.\.[\/\\])+/, '');
-    return normalizedPath;
+    if (!filePath || filePath.includes('\0')) {
+      throw new StorageValidationError('Invalid document path');
+    }
+
+    let unified = filePath.split('\\').join('/');
+    while (unified.endsWith('/')) {
+      unified = unified.slice(0, -1);
+    }
+    if (
+      !unified ||
+      unified === '.' ||
+      unified === './' ||
+      path.isAbsolute(unified) ||
+      /^[a-zA-Z]:/.test(unified)
+    ) {
+      throw new StorageValidationError('Invalid document path');
+    }
+
+    if (unified.split('/').some((segment) => segment === '..')) {
+      throw new StorageValidationError('Invalid document path');
+    }
+
+    const normalized = path.normalize(unified);
+    const resolved = this.assertInsideMount(
+      path.join(this.mountPath, normalized),
+    );
+    return path.relative(path.resolve(this.mountPath), resolved);
   }
 }
 

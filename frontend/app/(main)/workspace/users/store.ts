@@ -6,6 +6,7 @@ import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
 import type { User, UsersFilter, UsersSort } from './types';
 import type { TagItem } from '../components/tag-input';
+import { USER_ROLES } from '../constants';
 
 enableMapSet();
 
@@ -234,6 +235,7 @@ export const useUsersStore = create<UsersStore>()(
         set((state) => {
           state.isInvitePanelOpen = true;
           state.editingInviteUser = null;
+          state.inviteRole = USER_ROLES.MEMBER;
         }),
 
       closeInvitePanel: () =>
@@ -247,7 +249,7 @@ export const useUsersStore = create<UsersStore>()(
           state.inviteEmails = [
             { id: user.userId, value: user.email || '', isValid: true },
           ];
-          state.inviteRole = user.role || 'Member';
+          state.inviteRole = user.role || USER_ROLES.MEMBER;
           // Group IDs are resolved by name in the sidebar after groups are fetched
           // (user.userGroups only contains { name, type }, not _id)
           state.inviteGroupIds = [];

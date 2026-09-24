@@ -1,5 +1,4 @@
 import {
-  buildAIFailureResponseMessage,
   buildMessageSortOptions,
   markConversationFailed,
   saveCompleteAgentConversation,
@@ -31,12 +30,11 @@ import {
   NotFoundError,
   HttpError,
   UnauthorizedError,
-  ForbiddenError,
-  ServiceUnavailableError,
-  BadGatewayError,
-  GatewayTimeoutError,
-  UnprocessableEntityError,
 } from '../../../libs/errors/http.errors';
+import {
+  handleBackendError,
+  SERVICE_UNAVAILABLE_MESSAGE,
+} from '../../../libs/errors/backend-error';
 import {
   AICommandOptions,
   AIServiceCommand,
@@ -47,16 +45,20 @@ import {
   IAgentConversation,
   IAIModel,
   IAIResponse,
-  IConversationDocument,
+  IChatSession,
+  IChatSessionDocument,
   IMessage,
   IMessageCitation,
   IMessageDocument,
 } from '../types/conversation.interfaces';
 import { IConversation } from '../types/conversation.interfaces';
-import { Conversation } from '../schema/conversation.schema';
+import { ChatSession } from '../schema/chat.session.schema';
+import { ChatSessionMessage } from '../schema/chat.session.message.schema';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   addComputedFields,
+  attachSharedBy,
+  attachSharedByIfRecipient,
   assignAiModelField,
   buildAIResponseMessage,
   buildFiltersMetadata,
@@ -68,13 +70,28 @@ import {
   buildUserQueryMessage,
   extractModelInfo,
   formatPreviousConversations,
+  StageTimer,
   getPaginationParams,
   sortMessages,
   attachPopulatedCitations,
+  appendMessages,
+  getMessages,
+  attachMessages,
+  appendMessageFeedback,
+  findSessionIdsMatchingContent,
+  validateAndEscapeSearch,
+  recordClassifiedFailureOnSession,
+  savePartialConversation,
 } from '../utils/utils';
+import {
+  attachUpstreamAbort,
+  isUpstreamAbortError,
+  StreamedContentAccumulator,
+} from '../utils/stream-lifecycle';
 import {
   AGUIEventType,
   AGUI_PROTOCOL,
+  aguiErrorCodeFromPayload,
   frameAGUI,
   isAGUI,
   resolveProtocol,
@@ -88,11 +105,11 @@ import Citation, {
   AiSearchResponse,
   ICitation,
 } from '../schema/citation.schema';
-import { CONVERSATION_STATUS } from '../constants/constants';
 import {
-  AgentConversation,
-  IAgentConversationDocument,
-} from '../schema/agent.conversation.schema';
+  CONVERSATION_STATUS,
+  EXCLUDE_AGENT,
+  ONLY_AGENT,
+} from '../constants/constants';
 import { Users } from '../../user_management/schema/users.schema';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
@@ -103,18 +120,76 @@ import {
 import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
 import { Org } from '../../user_management/schema/org.schema';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import {
+  applyProjectScope,
+  loadProjectForSession,
+  resolveProjectLink,
+  type ResolvedProjectLink,
+} from '../utils/project-context';
+import {
+  CHAT_ERROR_MESSAGES,
+  userFacingChatError,
+  userFacingAIResponseError,
+} from '../utils/chat-error-messages';
+import { ProjectService } from '../../projects/services/project.service';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
+/**
+ * A chat failure whose saved state has to commit before the error reaches
+ * the caller.
+ */
+class CommittedFailure {
+  constructor(readonly error: Error) {}
+}
+
+const throwIfFailed = <T>(result: T | CommittedFailure): T => {
+  if (result instanceof CommittedFailure) throw result.error;
+  return result;
+};
+
+/** `cause` is read through a cast: the compiler's lib target predates it. */
+const causeCode = (error: unknown): string | undefined => {
+  if (error === null || typeof error !== 'object') return undefined;
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause === null || typeof cause !== 'object') return undefined;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+};
+
+/**
+ * The error a failed chat request sends back. Only a deliberate 4xx we raised
+ * keeps its own message; anything else carries the user-facing reason with no
+ * raw error attached, since the error middleware shows messages and metadata.
+ */
+const clientChatError = (error: unknown, failReason: string): Error => {
+  logger.error('Chat request failed', {
+    error: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+  if (causeCode(error) === 'ECONNREFUSED') {
+    return new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
+  }
+  if (error instanceof HttpError) {
+    if (error.statusCode < 500) {
+      return error;
+    }
+    if (error.message === SERVICE_UNAVAILABLE_MESSAGE) {
+      return new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
+    }
+  }
+  return new InternalServerError(failReason);
+};
+
 /** Remove `id` from graph document clones (Neo4j vs Arango shape) before returning search to the client. */
-function omitId<T>(doc: T): T {
+export function omitId<T>(doc: T): T {
   if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return doc;
   const o = { ...(doc as Record<string, unknown>) };
   delete o.id;
   return o as T;
 }
 
-function buildSearchResponseForClient(data: AiSearchResponse & Record<string, unknown>): Record<string, unknown> {
+export function buildSearchResponseForClient(data: AiSearchResponse & Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...data };
   if (Array.isArray(data.records)) out.records = data.records.map(omitId);
   const vmap = data.virtual_to_record_map;
@@ -146,7 +221,7 @@ const AGENT_ARCHIVES_INITIAL_AGENT_LIMIT = 5;
  * these keys in Mongo (e.g. `agentKey: { $nin: keys }`). Returns null when the AI
  * backend cannot be queried so callers can omit filtering instead of hiding all results.
  */
-async function fetchDeletedAgentKeysForUser(
+export async function fetchDeletedAgentKeysForUser(
   appConfig: AppConfig,
   req: AuthenticatedUserRequest,
 ): Promise<string[] | null> {
@@ -218,7 +293,7 @@ async function fetchDeletedAgentKeysForUser(
  * @param requestChatMode - The chatMode value from request body
  * @returns Object containing the parsed chatMode and agentMode flag
  */
-const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
+export const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
   let chatMode: string = requestChatMode || 'quick';
   let agentMode: boolean = false;
 
@@ -233,7 +308,7 @@ const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode:
 // Forwards the user-selected tool list to the AI payload when the client
 // explicitly sent `tools`. Omitting it tells Python to use all configured
 // tools (Python receives None); sending `[]` disables tools entirely.
-const assignToolsToPayload = (
+export const assignToolsToPayload = (
   payload: Record<string, unknown>,
   tools: unknown,
 ): void => {
@@ -246,7 +321,7 @@ const assignToolsToPayload = (
  * Does not change retrieval ACL — the Python agent still keys permissions on the service-account
  * agent creator's userId/orgId.
  */
-const assignCallerContextToAiPayload = (
+export const assignCallerContextToAiPayload = (
   payload: Record<string, unknown>,
   body: Record<string, unknown>,
 ): void => {
@@ -265,7 +340,7 @@ const assignCallerContextToAiPayload = (
  * Only passes through when the value is a non-null object — ignores scalars and arrays.
  * Capability booleans narrow what the Python backend enables; they never expand permissions.
  */
-const assignAgentCapabilitiesToPayload = (
+export const assignAgentCapabilitiesToPayload = (
   payload: Record<string, unknown>,
   body: Record<string, unknown>,
 ): void => {
@@ -277,16 +352,28 @@ const assignAgentCapabilitiesToPayload = (
 
 
 /** 24-char hex suitable for Mongo ObjectId; stable per email for Slack/service-account callers without a User row. */
-const stableObjectIdHexForExternalEmail = (email: string): string =>
+export const stableObjectIdHexForExternalEmail = (email: string): string =>
   crypto
     .createHash('sha256')
     .update(`slack-service-account:${email.toLowerCase().trim()}`)
     .digest('hex')
     .slice(0, 24);
-const AI_SERVICE_UNAVAILABLE_MESSAGE =
-  'AI Service is currently unavailable. Please check your network connection or try again later.';
 
-const hydrateScopedRequestAsUser = async (
+const failReasonFromCaughtError = (
+  conversation: { failReason?: unknown } | null | undefined,
+  error: { message?: string; cause?: { code?: string } },
+): string => {
+  if (error.cause?.code === 'ECONNREFUSED') {
+    return CHAT_ERROR_MESSAGES.unavailable;
+  }
+  const existing = conversation?.failReason;
+  if (typeof existing === 'string' && existing.trim()) {
+    return existing;
+  }
+  return userFacingChatError(error);
+};
+
+export const hydrateScopedRequestAsUser = async (
   req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
   appConfig: AppConfig,
   keyValueStoreService?: KeyValueStoreService,
@@ -372,107 +459,18 @@ const hydrateScopedRequestAsUser = async (
   };
 };
 
-  const handleBackendError = (error: any, operation: string): Error => {
-    const resolveErrorMessage = (err: any): string =>
-      err?.message || err?.msg || 'Unknown error';
-
-    // Network/connection failure handling first
-    if (
-      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
-    (typeof error?.message === 'string' &&
-      error.message.includes('fetch failed'))
-    ) {
-      return new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
-    }
-
-    if (error instanceof HttpError) {
-      return error;
-    }
-
-    if (error.response) {
-      const { status, data } = error.response;
-      const errorDetail =
-        data?.detail || data?.reason || data?.message || error.msg || 'Unknown error';
-  
-      logger.error(`Backend error during ${operation}`, {
-        status,
-        errorDetail,
-        fullResponse: data,
-      });
-  
-      switch (status) {
-        case 400:
-          return new BadRequestError(errorDetail);
-        case 401:
-          return new UnauthorizedError(errorDetail);
-        case 403:
-          return new ForbiddenError(errorDetail);
-        case 404:
-          return new NotFoundError(errorDetail);
-        case 422:
-          return new UnprocessableEntityError(errorDetail);
-        case 500:
-          return new InternalServerError(errorDetail);
-        case 502:
-          return new BadGatewayError(errorDetail);
-        case 503:
-          return new ServiceUnavailableError(errorDetail);
-        case 504:
-          return new GatewayTimeoutError(errorDetail);
-        default:
-          return new InternalServerError(`Backend error: ${errorDetail}`);
-      }
-    }
-  
-    if (error.request) {
-      logger.error(`No response from backend during ${operation}`);
-      return new ServiceUnavailableError('Backend service unavailable');
-    }
-
-    // Handle AIServiceResponse format { statusCode, data, msg } from AIServiceCommand.execute()
-    if (typeof error.statusCode === 'number' && error.statusCode >= 400) {
-      const data = error.data as Record<string, unknown> | undefined;
-      const errorDetail = String(data?.detail || data?.reason || data?.message || error.msg || 'Unknown error');
-      switch (error.statusCode) {
-        case 400:
-          return new BadRequestError(errorDetail);
-        case 401:
-          return new UnauthorizedError(errorDetail);
-        case 403:
-          return new ForbiddenError(errorDetail);
-        case 404:
-          return new NotFoundError(errorDetail);
-        case 422:
-          return new UnprocessableEntityError(errorDetail);
-        case 500:
-          return new InternalServerError(errorDetail);
-        case 502:
-          return new BadGatewayError(errorDetail);
-        case 503:
-          return new ServiceUnavailableError(errorDetail);
-        case 504:
-          return new GatewayTimeoutError(errorDetail);
-        default:
-          return new InternalServerError(`Backend error: ${errorDetail}`);
-      }
-    }
-
-    if (error.detail) {
-      return new BadRequestError(error.detail);
-    }
-
-    return new InternalServerError(`${operation} failed: ${resolveErrorMessage(error)}`);
-  };
+  export { handleBackendError };
   
   // Common helper to start AI streams with consistent error mapping and logging
-  const startAIStream = async (
+  export const startAIStream = async (
     options: AICommandOptions,
     operation: string,
     logContext: Record<string, any> = {},
+    signal?: AbortSignal,
   ) => {
     const aiServiceCommand = new AIServiceCommand(options);
     try {
-      return await aiServiceCommand.executeStream();
+      return await aiServiceCommand.executeStream(signal);
     } catch (error: any) {
       const mappedError = handleBackendError(error, operation);
       logger.error('AI service stream start failed', {
@@ -498,14 +496,14 @@ const IMAGE_COMPRESS_TARGET_BYTES = 1 * 1024 * 1024;
 const IMAGE_MAX_LONGEST_SIDE_PX = 2048;
 const IMAGE_QUALITY_LADDER = [85, 75, 65, 55, 45];
 
-interface NormalizedAttachmentFile {
+export interface NormalizedAttachmentFile {
   fileName: string;
   mimeType: string;
   size: number;
   buffer: Buffer;
 }
 
-const formatBytes = (bytes: number): string => {
+export const formatBytes = (bytes: number): string => {
   if (bytes >= 1024 * 1024) {
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   }
@@ -515,7 +513,7 @@ const formatBytes = (bytes: number): string => {
   return `${bytes} B`;
 };
 
-const compressImageIfNeeded = async (
+export const compressImageIfNeeded = async (
   file: Express.Multer.File,
 ): Promise<NormalizedAttachmentFile> => {
   const mime = (file.mimetype || '').toLowerCase();
@@ -612,7 +610,8 @@ const compressImageIfNeeded = async (
   }
 };
 
-const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
+/** Shared with `projects/controller/project.controller.ts` — project file uploads reuse this same chat-attachment pipeline. */
+export const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
   'image/jpeg',
   'image/jpg',
   'image/png',
@@ -707,7 +706,7 @@ export const deleteChatAttachment =
       const aiUrl = `${appConfig.aiBackend}/api/v1/chat/attachments/${encodeURIComponent(recordId.trim())}`;
 
       // Mirror the header-filtering that BaseCommand.sanitizeHeaders() applies.
-      const allowedHeaders = new Set(['content-type', 'authorization', 'x-is-admin']);
+      const allowedHeaders = new Set(['content-type', 'authorization']);
       const forwardHeaders: Record<string, string> = Object.fromEntries(
         Object.entries(req.headers as Record<string, string>).filter(([k]) =>
           allowedHeaders.has(k.toLowerCase()),
@@ -780,11 +779,12 @@ export const streamChat =
   async (req: AuthenticatedUserRequest, res: Response) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
+    const timer = new StageTimer();
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
 
     let session: ClientSession | null = null;
-    let savedConversation: IConversationDocument | null = null;
+    let savedConversation: IChatSessionDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -815,28 +815,51 @@ export const streamChat =
         req.body.attachments,
       );
 
-      const userConversationData: Partial<IConversation> = {
+      const projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
+      const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
         initiator: userId,
         title: req.body.query.slice(0, 100),
-        messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         // Store model and mode information
         modelInfo: modelInfo,
+        sessionType: 'chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
       // Start transaction if replica set is available
       if (rsAvailable) {
         session = await mongoose.startSession();
         await session.withTransaction(async () => {
-          const conversation = new Conversation(userConversationData);
+          const conversation = new ChatSession(userConversationData);
           savedConversation = await conversation.save({ session });
+          await appendMessages(
+            savedConversation._id as mongoose.Types.ObjectId,
+            orgId as mongoose.Types.ObjectId,
+            [userQueryMessage],
+            session,
+          );
         });
       } else {
-        const conversation = new Conversation(userConversationData);
+        const conversation = new ChatSession(userConversationData);
         savedConversation = await conversation.save();
+        await appendMessages(
+          savedConversation._id as mongoose.Types.ObjectId,
+          orgId as mongoose.Types.ObjectId,
+          [userQueryMessage],
+        );
       }
 
       if (!savedConversation) {
@@ -863,15 +886,18 @@ export const streamChat =
               value: {
                 conversationId: newConversationId,
                 title: savedConversation.title || undefined,
+                ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
               },
             })
           : `event: connected\ndata: ${JSON.stringify({
               message: 'SSE connection established',
               conversationId: newConversationId,
               title: savedConversation.title || undefined,
+              ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
             })}\n\n`,
       );
       (res as any).flush?.();
+      timer.mark('conversation_created');
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
@@ -890,6 +916,9 @@ export const streamChat =
         conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        // Lets a later `POST /conversations/:id/cancel` target this run —
+        // see `RunCancellationRegistry`/`cancellationRunIdSchema`.
+        runId: req.body.runId || null,
         // Explicit protocol propagation — Node hand-builds this request body,
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
@@ -897,6 +926,10 @@ export const streamChat =
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
         assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+      }
+      applyProjectScope(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -909,28 +942,76 @@ export const streamChat =
         body: aiPayload,
       };
 
-      const stream = await startAIStream(aiCommandOptions, 'Chat Stream', {
-        requestId,
+      // Variables to collect complete response data
+      let completeData: IAIResponse | null = null;
+      let buffer = '';
+      let firstAiChunkSeen = false;
+      /** True when AI backend already emitted a terminal `error` SSE we forwarded */
+      let upstreamAiErrorEventForwarded = false;
+      /** Guards `onDisconnect` against also running after the normal
+       * `stream.on('end')`/`'error'` path already finalized this run. */
+      let streamSettled = false;
+      const contentAccumulator = new StreamedContentAccumulator();
+
+      // Plain `let` would appear permanently `null` to the type checker's
+      // narrowing (it never sees the reassignment inside the closure below),
+      // so `no-unnecessary-condition` would flag the read as dead code even
+      // though it's live at runtime — a mutable holder sidesteps that.
+      const disconnectSave: { pending: Promise<void> | null } = {
+        pending: null,
+      };
+      const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+        if (streamSettled || completeData || !savedConversation) return;
+        streamSettled = true;
+        // `session` is request-scoped and ends (see `finally` below) as
+        // soon as this handler finishes registering stream listeners — long
+        // before a disconnect can fire, so never reuse it here.
+        disconnectSave.pending = savePartialConversation(
+          savedConversation,
+          contentAccumulator.getText(),
+        ).catch((err: any) => {
+          logger.error('Failed to save partial conversation on disconnect', {
+            requestId,
+            error: err?.message,
+          });
+        });
       });
+      let stream: Awaited<ReturnType<typeof startAIStream>>;
+      try {
+        stream = await startAIStream(
+          aiCommandOptions,
+          'Chat Stream',
+          { requestId },
+          upstreamAbort.signal,
+        );
+      } catch (streamOpenError) {
+        // Client disconnected while the AI backend request was still in
+        // flight — the disconnect callback above already started the
+        // STOPPED save; await it and bail out before the outer `catch`
+        // can race it with a FAILED save.
+        if (upstreamAbort.isClientDisconnected()) {
+          logger.debug('Client disconnected before AI stream opened', {
+            requestId,
+          });
+          if (disconnectSave.pending) await disconnectSave.pending;
+          return;
+        }
+        throw streamOpenError;
+      }
+      timer.mark('ai_stream_open');
 
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
       }
-
-      // Variables to collect complete response data
-      let completeData: IAIResponse | null = null;
-      let buffer = '';
-      /** True when AI backend already emitted a terminal `error` SSE we forwarded */
-      let upstreamAiErrorEventForwarded = false;
-
-      // Handle client disconnect
-      req.on('close', () => {
-        logger.debug('Client disconnected', { requestId });
-        stream.destroy();
-      });
+      upstreamAbort.bindStream(stream);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
+        if (!firstAiChunkSeen) {
+          firstAiChunkSeen = true;
+          timer.mark('ai_first_byte');
+          timer.emit('chat stream (node)', { requestId, agentMode });
+        }
         const chunkStr = chunk.toString();
         buffer += chunkStr;
 
@@ -981,19 +1062,28 @@ export const streamChat =
                 });
                 filteredChunk += event + '\n\n';
               }
+            } else if (agui && eventType === AGUIEventType.TEXT_MESSAGE_CONTENT && dataLine) {
+              // Feed the passive-disconnect accumulator so a partial answer
+              // survives a dropped connection — see savePartialConversation.
+              try {
+                contentAccumulator.feedTextMessageContent(JSON.parse(dataLine));
+              } catch {
+                // Non-fatal: still forward the frame below.
+              }
+              filteredChunk += event + '\n\n';
             } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine) as Record<string, unknown>;
                 const errorMessage =
                   (typeof errorData.message === 'string' && errorData.message) ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   void markConversationFailed(
-                    savedConversation as IConversationDocument,
+                    savedConversation,
                     errorMessage,
                     session,
-                    'streaming_error',
+                    aguiErrorCodeFromPayload(errorData),
                     typeof errorData.stack === 'string' ? errorData.stack : undefined,
                   ).catch((markErr: any) => {
                     logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
@@ -1031,13 +1121,25 @@ export const streamChat =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (!agui && eventType === 'answer_chunk' && dataLine) {
+              // `accumulated` is the running full text, not a delta — see
+              // LegacyFormatter.answer_delta.
+              try {
+                const parsed = JSON.parse(dataLine) as Record<string, unknown>;
+                if (typeof parsed.accumulated === 'string') {
+                  contentAccumulator.setAccumulatedText(parsed.accumulated);
+                }
+              } catch {
+                // Non-fatal: still forward the frame below.
+              }
+              filteredChunk += event + '\n\n';
             } else if (!agui && eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine) as Record<string, unknown>;
                 const errorMessage =
                   (typeof errorData.message === 'string' && errorData.message) ||
                   (typeof errorData.error === 'string' && errorData.error) ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   const meta =
@@ -1045,7 +1147,7 @@ export const streamChat =
                       ? new Map(Object.entries(errorData.metadata as Record<string, unknown>))
                       : undefined;
                   void markConversationFailed(
-                    savedConversation as IConversationDocument,
+                    savedConversation,
                     errorMessage,
                     session,
                     'streaming_error',
@@ -1067,9 +1169,9 @@ export const streamChat =
                 });
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
-                  const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
+                  const parseFailMsg = CHAT_ERROR_MESSAGES.failed;
                   void markConversationFailed(
-                    savedConversation as IConversationDocument,
+                    savedConversation,
                     parseFailMsg,
                     session,
                     'parse_error',
@@ -1097,9 +1199,10 @@ export const streamChat =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void Conversation.findByIdAndUpdate(
-                    savedConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    savedConversation._id as mongoose.Types.ObjectId,
+                    savedConversation.orgId,
+                    [toolCallMessage],
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -1129,9 +1232,10 @@ export const streamChat =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void Conversation.findByIdAndUpdate(
-                    savedConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    savedConversation._id as mongoose.Types.ObjectId,
+                    savedConversation.orgId,
+                    [toolCallMessage],
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -1162,6 +1266,7 @@ export const streamChat =
       });
 
       stream.on('end', async () => {
+        streamSettled = true;
         logger.debug('Stream ended successfully', { requestId });
         try {
           // Save the complete conversation data to database
@@ -1201,22 +1306,24 @@ export const streamChat =
             );
           } else if (!upstreamAiErrorEventForwarded) {
             // Mark as failed if no complete data received (and AI did not already send error SSE)
-            await markConversationFailed(
-              savedConversation as IConversationDocument,
-              'No complete response received from AI service',
-              session,
-              'incomplete_response',
-            );
+            if (savedConversation) {
+              await markConversationFailed(
+                savedConversation,
+                CHAT_ERROR_MESSAGES.interrupted,
+                session,
+                'no_response',
+              );
+            }
 
             // Send error event
             res.write(
               isAGUI(protocol)
                 ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                    message: 'No complete response received from AI service',
+                    message: CHAT_ERROR_MESSAGES.interrupted,
                     code: 'no_response',
                   })
                 : `event: error\ndata: ${JSON.stringify({
-                    error: 'No complete response received from AI service',
+                    error: CHAT_ERROR_MESSAGES.interrupted,
                   })}\n\n`,
             );
           }
@@ -1229,10 +1336,10 @@ export const streamChat =
 
           if (savedConversation) {
             await markConversationFailed(
-              savedConversation as IConversationDocument,
-              `Failed to save conversation: ${dbError.message}`,
+              savedConversation,
+              CHAT_ERROR_MESSAGES.saveFailed,
               session,
-              'database_error',
+              'save_error',
               dbError.stack,
             );
           }
@@ -1241,12 +1348,11 @@ export const streamChat =
           res.write(
             isAGUI(protocol)
               ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: 'Failed to save conversation',
+                  message: CHAT_ERROR_MESSAGES.saveFailed,
                   code: 'save_error',
                 })
               : `event: error\ndata: ${JSON.stringify({
-                  error: 'Failed to save conversation',
-                  details: dbError.message,
+                  error: CHAT_ERROR_MESSAGES.saveFailed,
                 })}\n\n`,
           );
         }
@@ -1255,13 +1361,18 @@ export const streamChat =
       });
 
       stream.on('error', async (error: Error) => {
+        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
+          logger.debug('Stream aborted due to client disconnect', { requestId });
+          return;
+        }
+        streamSettled = true;
         logger.error('Stream error', { requestId, error: error.message });
         try {
           // Mark conversation as failed
           if (savedConversation) {
             await markConversationFailed(
-              savedConversation as IConversationDocument,
-              `Stream error: ${error.message}`,
+              savedConversation,
+              userFacingChatError(error),
               session,
               'stream_error',
               error.stack,
@@ -1277,12 +1388,11 @@ export const streamChat =
 
         const errorEvent = isAGUI(protocol)
           ? frameAGUI(AGUIEventType.RUN_ERROR, {
-              message: error.message || 'Stream error occurred',
+              message: userFacingChatError(error),
               code: 'stream_error',
             })
           : `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Stream error occurred',
-              details: error.message,
+              error: userFacingChatError(error),
             })}\n\n`;
         res.write(errorEvent);
         res.end();
@@ -1294,8 +1404,8 @@ export const streamChat =
         // Mark conversation as failed if it was created
         if (savedConversation) {
           await markConversationFailed(
-            savedConversation as IConversationDocument,
-            error.message || 'Internal server error',
+            savedConversation,
+            userFacingChatError(error),
             session,
             'internal_error',
             error.stack,
@@ -1318,12 +1428,11 @@ export const streamChat =
       });
       const errorEvent = isAGUI(protocol)
         ? frameAGUI(AGUIEventType.RUN_ERROR, {
-            message: error.message || 'Internal server error',
+            message: userFacingChatError(error),
             code: 'internal_error',
           })
         : `event: error\ndata: ${JSON.stringify({
-            error: error.message || 'Internal server error',
-            details: error.message,
+            error: userFacingChatError(error),
           })}\n\n`;
       res.write(errorEvent);
       res.end();
@@ -1441,6 +1550,8 @@ export const createConversation =
       throw new BadRequestError('Query is required');
     }
 
+    let projectLink: ResolvedProjectLink = {};
+
     // Helper function that contains the common conversation operations.
     async function createConversationUtil(
       session?: ClientSession | null,
@@ -1452,42 +1563,60 @@ export const createConversation =
         req.body.attachments,
       );
 
-      const userConversationData: Partial<IConversation> = {
+      const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
         initiator: userId,
         title: req.body.query.slice(0, 100),
-        messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         modelInfo: modelInfo,
+        sessionType: 'chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
-      const conversation = new Conversation(userConversationData);
+      const conversation = new ChatSession(userConversationData);
       const savedConversation = session
         ? await conversation.save({ session })
         : await conversation.save();
       if (!savedConversation) {
         throw new InternalServerError('Failed to create conversation');
       }
+      await appendMessages(
+        savedConversation._id as mongoose.Types.ObjectId,
+        savedConversation.orgId,
+        [userQueryMessage],
+        session,
+      );
+
+      const aiPayload: Record<string, unknown> = {
+        query: req.body.query,
+        previousConversations: req.body.previousConversations || [],
+        recordIds: req.body.recordIds || [],
+        filters: req.body.filters || {},
+        attachments: req.body.attachments || [],
+        // New fields for multi-model support
+        modelKey: req.body.modelKey || null,
+        modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
+        chatMode: req.body.chatMode || 'quick',
+      };
+      applyProjectScope(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/chat`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
-        body: {
-          query: req.body.query,
-          previousConversations: req.body.previousConversations || [],
-          recordIds: req.body.recordIds || [],
-          filters: req.body.filters || {},
-          attachments: req.body.attachments || [],
-          // New fields for multi-model support
-          modelKey: req.body.modelKey || null,
-          modelName: req.body.modelName || null,
-          modelFriendlyName: req.body.modelFriendlyName || null,
-          reasoningEffort: req.body.reasoningEffort || null,
-          chatMode: req.body.chatMode || 'quick',
-        },
+        body: aiPayload,
       };
 
       logger.debug('Sending query to AI service', {
@@ -1502,7 +1631,8 @@ export const createConversation =
           (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
         if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
           savedConversation.status = CONVERSATION_STATUS.FAILED;
-          savedConversation.failReason = `AI service error: ${aiResponseData?.msg || 'Unknown error'} (Status: ${aiResponseData?.statusCode})`;
+          const failReason = userFacingAIResponseError(aiResponseData);
+          savedConversation.failReason = failReason;
 
           const updatedWithError = session
             ? await savedConversation.save({ session })
@@ -1510,12 +1640,12 @@ export const createConversation =
 
           if (!updatedWithError) {
             throw new InternalServerError(
-              'Failed to update conversation status',
+              CHAT_ERROR_MESSAGES.saveFailed,
             );
           }
 
           throw new InternalServerError(
-            'Failed to get AI response',
+            failReason,
             aiResponseData?.data,
           );
         }
@@ -1540,11 +1670,19 @@ export const createConversation =
           aiResponseData,
           citations,
           modelInfo,
-        ) as IMessageDocument;
+        );
         // Add the AI message to the conversation
-        savedConversation.messages.push(aiResponseMessage);
+        const [insertedAiMessage] = await appendMessages(
+          savedConversation._id as mongoose.Types.ObjectId,
+          savedConversation.orgId,
+          [aiResponseMessage],
+          session,
+        );
         savedConversation.lastActivityAt = Date.now();
-        savedConversation.status = CONVERSATION_STATUS.COMPLETE; // Successful conversation
+        recordClassifiedFailureOnSession(
+          savedConversation,
+          aiResponseData.data as IAIResponse,
+        );
 
         const updatedConversation = session
           ? await savedConversation.save({ session })
@@ -1554,10 +1692,9 @@ export const createConversation =
           throw new InternalServerError('Failed to update conversation');
         }
         const responseConversation = await attachPopulatedCitations(
-          updatedConversation._id as mongoose.Types.ObjectId,
-          updatedConversation.toObject() as IConversation,
+          updatedConversation.toObject(),
+          [insertedAiMessage!.toObject()],
           citations,
-          false,
           session,
         );
         return {
@@ -1570,38 +1707,27 @@ export const createConversation =
         // TODO: Add support for retry mechanism and generate response from retry
         // and append the response to the correct messageId
 
-        savedConversation.status = CONVERSATION_STATUS.FAILED;
-        if (error.cause?.code === 'ECONNREFUSED') {
-          savedConversation.failReason = `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
-        } else {
-          savedConversation.failReason =
-            error.message || 'Unknown error occurred';
-        }
-        // persist and serve the error message to the user.
-        const failedMessage =
-          buildAIFailureResponseMessage() as IMessageDocument;
-        savedConversation.messages.push(failedMessage);
-        savedConversation.lastActivityAt = Date.now();
-
-        const savedWithError = session
-          ? await savedConversation.save({ session })
-          : await savedConversation.save();
-
-        if (!savedWithError) {
-          logger.error('Failed to save conversation error state', {
-            requestId,
-            conversationId: savedConversation._id,
-            error: error.message,
-          });
-        }
-        if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
-        }
-        throw error;
+        const failReason = failReasonFromCaughtError(savedConversation, error);
+        await markConversationFailed(
+          savedConversation,
+          failReason,
+          session,
+          'internal_error',
+          error.stack,
+        );
+        // Returned, not thrown: inside a transaction a throw would roll back
+        // the failed state just saved, so replica-set installs lose it.
+        return new CommittedFailure(clientChatError(error, failReason));
       }
     }
 
     try {
+      projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
       logger.debug('Creating new conversation', {
         requestId,
         userId,
@@ -1615,12 +1741,12 @@ export const createConversation =
       if (rsAvailable) {
         // Start a session and run the operations inside a transaction.
         session = await mongoose.startSession();
-        responseData = await session.withTransaction(() =>
-          createConversationUtil(session),
+        responseData = throwIfFailed(
+          await session.withTransaction(() => createConversationUtil(session)),
         );
       } else {
         // Execute without session/transaction.
-        responseData = await createConversationUtil();
+        responseData = throwIfFailed(await createConversationUtil());
       }
 
       logger.debug('Conversation created successfully', {
@@ -1744,11 +1870,12 @@ export const addMessage =
       // Extract common operations into a helper function.
       async function performAddMessage(session?: ClientSession | null) {
         // Get existing conversation
-        const conversation = await Conversation.findOne({
+        const conversation = await ChatSession.findOne({
           _id: req.params.conversationId,
           orgId,
           userId,
           isDeleted: false,
+          ...EXCLUDE_AGENT,
         });
 
         if (!conversation) {
@@ -1763,7 +1890,11 @@ export const addMessage =
         // in case of bot_response message
         // Format previous conversations for context
         const previousConversations = formatPreviousConversations(
-          conversation.messages,
+          (await getMessages(
+            conversation._id as mongoose.Types.ObjectId,
+            {},
+            session,
+          )) as IMessage[],
         );
         logger.debug('Previous conversations', {
           previousConversations,
@@ -1776,7 +1907,12 @@ export const addMessage =
           req.body.attachments,
         );
         // First, add the user message to the existing conversation
-        conversation.messages.push(userQueryMessage as IMessageDocument);
+        await appendMessages(
+          conversation._id as mongoose.Types.ObjectId,
+          conversation.orgId,
+          [userQueryMessage],
+          session,
+        );
         conversation.lastActivityAt = Date.now();
 
         // Save the user message to the existing conversation first
@@ -1798,21 +1934,34 @@ export const addMessage =
           },
         });
 
+        const aiPayload: Record<string, unknown> = {
+          query: req.body.query,
+          previousConversations: previousConversations,
+          filters: req.body.filters || {},
+          attachments: req.body.attachments || [],
+          // New fields for multi-model support
+          modelKey: req.body.modelKey || null,
+          modelName: req.body.modelName || null,
+          reasoningEffort: req.body.reasoningEffort || null,
+          chatMode: req.body.chatMode || 'quick',
+        };
+        // Project context always comes from the session row, never the
+        // request body — a follow-up turn cannot move itself into a project.
+        const followUpProject = await loadProjectForSession(
+          conversation.orgId.toString(),
+          (conversation.userId as unknown as Types.ObjectId).toString(),
+          conversation.projectId,
+        );
+        applyProjectScope(aiPayload, followUpProject);
+        if (conversation.projectId) {
+          void ProjectService.touchActivity(conversation.projectId.toString());
+        }
+
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/chat`,
           method: HttpMethod.POST,
           headers: req.headers as Record<string, string>,
-          body: {
-            query: req.body.query,
-            previousConversations: previousConversations,
-            filters: req.body.filters || {},
-            attachments: req.body.attachments || [],
-            // New fields for multi-model support
-            modelKey: req.body.modelKey || null,
-            modelName: req.body.modelName || null,
-            reasoningEffort: req.body.reasoningEffort || null,
-            chatMode: req.body.chatMode || 'quick',
-          },
+          body: aiPayload,
         };
         try {
           const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -1824,10 +1973,9 @@ export const addMessage =
             // Update conversation status for AI service connection errors
             conversation.status = CONVERSATION_STATUS.FAILED;
             if (error.cause?.code === 'ECONNREFUSED') {
-              conversation.failReason = `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
+              conversation.failReason = CHAT_ERROR_MESSAGES.unavailable;
             } else {
-              conversation.failReason =
-                error.message || 'Unknown connection error';
+              conversation.failReason = userFacingChatError(error);
             }
 
             const saveErrorStatus = session
@@ -1841,19 +1989,17 @@ export const addMessage =
               });
             }
             if (error.cause && error.cause.code === 'ECONNREFUSED') {
-              throw new InternalServerError(
-                AI_SERVICE_UNAVAILABLE_MESSAGE,
-                error,
-              );
+              throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
             }
             logger.error(' Failed error ', error);
-            throw new InternalServerError('Failed to get AI response', error);
+            throw new InternalServerError(userFacingChatError(error));
           }
 
           if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
             // Update conversation status for API errors
             conversation.status = CONVERSATION_STATUS.FAILED;
-            conversation.failReason = `AI service API error: ${aiResponseData?.msg || 'Unknown error'} (Status: ${aiResponseData?.statusCode})`;
+            const failReason = userFacingAIResponseError(aiResponseData);
+            conversation.failReason = failReason;
 
             const saveApiError = session
               ? await conversation.save({ session })
@@ -1867,7 +2013,7 @@ export const addMessage =
             }
 
             throw new InternalServerError(
-              'Failed to get AI response',
+              failReason,
               aiResponseData?.data,
             );
           }
@@ -1892,11 +2038,19 @@ export const addMessage =
             aiResponseData,
             savedCitations,
             modelInfo,
-          ) as IMessageDocument;
+          );
           // Add the AI message to the existing conversation
-          savedConversation.messages.push(aiResponseMessage);
+          const [insertedAiMessage] = await appendMessages(
+            savedConversation._id as mongoose.Types.ObjectId,
+            savedConversation.orgId,
+            [aiResponseMessage],
+            session,
+          );
           savedConversation.lastActivityAt = Date.now();
-          savedConversation.status = CONVERSATION_STATUS.COMPLETE;
+          recordClassifiedFailureOnSession(
+            savedConversation,
+            aiResponseData.data as IAIResponse,
+          );
 
           // Save the updated conversation with AI response
           const updatedConversation = session
@@ -1911,10 +2065,9 @@ export const addMessage =
 
           // Return the updated conversation with new messages.
           const responseConversation = await attachPopulatedCitations(
-            updatedConversation._id as mongoose.Types.ObjectId,
-            updatedConversation.toObject() as IConversation,
+            updatedConversation.toObject(),
+            [insertedAiMessage!.toObject()],
             savedCitations,
-            false,
             session,
           );
           return {
@@ -1925,43 +2078,28 @@ export const addMessage =
           // TODO: Add support for retry mechanism and generate response from retry
           // and append the response to the correct messageId
 
-          // Update conversation status for general errors
-          conversation.status = CONVERSATION_STATUS.FAILED;
-          conversation.failReason = error.message || 'Unknown error occurred';
-
-          // persist and serve the error message to the user.
-          const failedMessage =
-            buildAIFailureResponseMessage() as IMessageDocument;
-          conversation.messages.push(failedMessage);
-          conversation.lastActivityAt = Date.now();
-          const saveGeneralError = session
-            ? await conversation.save({ session })
-            : await conversation.save();
-
-          if (!saveGeneralError) {
-            logger.error('Failed to save conversation general error status', {
-              requestId,
-              conversationId: conversation._id,
-            });
-          }
-          if (error.cause && error.cause.code === 'ECONNREFUSED') {
-            throw new InternalServerError(
-              AI_SERVICE_UNAVAILABLE_MESSAGE,
-              error,
-            );
-          }
-          throw error;
+          const failReason = failReasonFromCaughtError(conversation, error);
+          await markConversationFailed(
+            conversation,
+            failReason,
+            session,
+            'internal_error',
+            error.stack,
+          );
+          // Returned, not thrown: inside a transaction a throw would roll
+          // back the failed state just saved, so replica-set installs lose it.
+          return new CommittedFailure(clientChatError(error, failReason));
         }
       }
 
       let responseData;
       if (rsAvailable) {
         session = await mongoose.startSession();
-        responseData = await session.withTransaction(() =>
-          performAddMessage(session),
+        responseData = throwIfFailed(
+          await session.withTransaction(() => performAddMessage(session)),
         );
       } else {
-        responseData = await performAddMessage();
+        responseData = throwIfFailed(await performAddMessage());
       }
 
       logger.debug('Message added successfully', {
@@ -2011,7 +2149,7 @@ export const addMessageStream =
     const { conversationId } = req.params;
 
     let session: ClientSession | null = null;
-    let existingConversation: IConversationDocument | null = null;
+    let existingConversation: IChatSessionDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -2028,11 +2166,12 @@ export const addMessageStream =
       session?: ClientSession | null,
     ): Promise<void> {
       // Get existing conversation
-      const conversation = await Conversation.findOne({
+      const conversation = await ChatSession.findOne({
         _id: conversationId,
         orgId,
         userId,
         isDeleted: false,
+        ...EXCLUDE_AGENT,
       });
 
       if (!conversation) {
@@ -2060,13 +2199,18 @@ export const addMessageStream =
       }
 
       // First, add the user message to the existing conversation
-      conversation.messages.push(
-        buildUserQueryMessage(
-          req.body.query,
-          req.body.appliedFilters,
-          req.body.chatMode,
-          req.body.attachments,
-        ) as IMessageDocument,
+      await appendMessages(
+        conversation._id as mongoose.Types.ObjectId,
+        conversation.orgId,
+        [
+          buildUserQueryMessage(
+            req.body.query,
+            req.body.appliedFilters,
+            req.body.chatMode,
+            req.body.attachments,
+          ),
+        ],
+        session,
       );
       conversation.lastActivityAt = Date.now();
 
@@ -2132,13 +2276,16 @@ export const addMessageStream =
       if (!existingConversation) {
         throw new NotFoundError('Conversation not found');
       }
+      const confirmedConversation = existingConversation as IChatSessionDocument;
 
       // Format previous conversations for context (excluding the user message we just added)
+      const allMessagesSoFar = (await getMessages(
+        confirmedConversation._id as mongoose.Types.ObjectId,
+        {},
+        session,
+      )) as IMessage[];
       const previousConversations = formatPreviousConversations(
-        (existingConversation as IConversationDocument).messages.slice(
-          0,
-          -1,
-        ) as IMessage[],
+        allMessagesSoFar.slice(0, -1),
       );
 
       const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
@@ -2157,6 +2304,7 @@ export const addMessageStream =
         conversationId: conversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        runId: req.body.runId || null,
         // Explicit protocol propagation — Node hand-builds this request body,
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
@@ -2164,6 +2312,15 @@ export const addMessageStream =
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
         assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+      }
+      const followUpProject = await loadProjectForSession(
+        confirmedConversation.orgId.toString(),
+        (confirmedConversation.userId as unknown as Types.ObjectId).toString(),
+        confirmedConversation.projectId,
+      );
+      applyProjectScope(aiPayload, followUpProject);
+      if (confirmedConversation.projectId) {
+        void ProjectService.touchActivity(confirmedConversation.projectId.toString());
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -2176,27 +2333,66 @@ export const addMessageStream =
         body: aiPayload,
       };
 
-      const stream = await startAIStream(
-        aiCommandOptions,
-        'Add Message Stream',
-        { requestId },
-      );
-
-      if (!stream) {
-        throw new Error('Failed to get stream from AI service');
-      }
-
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
+      /** Guards `onDisconnect` against also running after the normal
+       * `stream.on('end')`/`'error'` path already finalized this run. */
+      let streamSettled = false;
+      const contentAccumulator = new StreamedContentAccumulator();
 
-      // Handle client disconnect
-      req.on('close', () => {
-        logger.debug('Client disconnected', { requestId });
-        stream.destroy();
+      // Plain `let` would appear permanently `null` to the type checker's
+      // narrowing (it never sees the reassignment inside the closure below),
+      // so `no-unnecessary-condition` would flag the read as dead code even
+      // though it's live at runtime — a mutable holder sidesteps that.
+      const disconnectSave: { pending: Promise<void> | null } = {
+        pending: null,
+      };
+      const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+        if (streamSettled || completeData || !existingConversation) return;
+        streamSettled = true;
+        // `session` is request-scoped and ends (see `finally` below) as
+        // soon as this handler finishes registering stream listeners — long
+        // before a disconnect can fire, so never reuse it here.
+        disconnectSave.pending = savePartialConversation(
+          existingConversation,
+          contentAccumulator.getText(),
+        ).catch((err: any) => {
+          logger.error('Failed to save partial conversation on disconnect', {
+            requestId,
+            error: err?.message,
+          });
+        });
       });
+      let stream: Awaited<ReturnType<typeof startAIStream>>;
+      try {
+        stream = await startAIStream(
+          aiCommandOptions,
+          'Add Message Stream',
+          { requestId },
+          upstreamAbort.signal,
+        );
+      } catch (streamOpenError) {
+        // Client disconnected while the AI backend request was still in
+        // flight — the disconnect callback above already started the
+        // STOPPED save; await it and bail out before the outer `catch`
+        // can race it with a FAILED save.
+        if (upstreamAbort.isClientDisconnected()) {
+          logger.debug('Client disconnected before AI stream opened', {
+            requestId,
+          });
+          if (disconnectSave.pending) await disconnectSave.pending;
+          return;
+        }
+        throw streamOpenError;
+      }
+
+      if (!stream) {
+        throw new Error('Failed to get stream from AI service');
+      }
+      upstreamAbort.bindStream(stream);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -2249,23 +2445,35 @@ export const addMessageStream =
                 });
                 filteredChunk += event + '\n\n';
               }
+            } else if (agui && eventType === AGUIEventType.TEXT_MESSAGE_CONTENT && dataLine) {
+              // Feed the passive-disconnect accumulator so a partial answer
+              // survives a dropped connection — see savePartialConversation.
+              try {
+                contentAccumulator.feedTextMessageContent(JSON.parse(dataLine));
+              } catch {
+                // Non-fatal: still forward the frame below.
+              }
+              filteredChunk += event + '\n\n';
             } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
-                const errorMessage = errorData.message || 'Unknown error occurred';
+                const errorMessage =
+                  errorData.message || CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
-                void markConversationFailed(
-                  existingConversation as IConversationDocument,
-                  errorMessage,
-                  session,
-                  'streaming_error',
-                  errorData.stack,
-                ).catch((markErr: any) => {
-                  logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
-                    requestId,
-                    error: markErr?.message,
+                if (existingConversation) {
+                  void markConversationFailed(
+                    existingConversation,
+                    errorMessage,
+                    session,
+                    aguiErrorCodeFromPayload(errorData as Record<string, unknown>),
+                    errorData.stack,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
                   });
-                });
+                }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse RUN_ERROR event data', {
@@ -2295,29 +2503,43 @@ export const addMessageStream =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (!agui && eventType === 'answer_chunk' && dataLine) {
+              // `accumulated` is the running full text, not a delta — see
+              // LegacyFormatter.answer_delta.
+              try {
+                const parsed = JSON.parse(dataLine) as Record<string, unknown>;
+                if (typeof parsed.accumulated === 'string') {
+                  contentAccumulator.setAccumulatedText(parsed.accumulated);
+                }
+              } catch {
+                // Non-fatal: still forward the frame below.
+              }
+              filteredChunk += event + '\n\n';
             } else if (!agui && eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
                 const errorMessage =
                   errorData.message ||
                   errorData.error ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
-                void markConversationFailed(
-                  existingConversation as IConversationDocument,
-                  errorMessage,
-                  session,
-                  'streaming_error',
-                  errorData.stack,
-                  errorData.metadata
-                    ? new Map(Object.entries(errorData.metadata))
-                    : undefined,
-                ).catch((markErr: any) => {
-                  logger.error('Failed to mark conversation from AI error SSE', {
-                    requestId,
-                    error: markErr?.message,
+                if (existingConversation) {
+                  void markConversationFailed(
+                    existingConversation,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    errorData.stack,
+                    errorData.metadata
+                      ? new Map(Object.entries(errorData.metadata))
+                      : undefined,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation from AI error SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
                   });
-                });
+                }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse error event data', {
@@ -2326,10 +2548,10 @@ export const addMessageStream =
                   dataLine,
                 });
                 upstreamAiErrorEventForwarded = true;
-                const errorMessage = `Failed to parse error event: ${parseError.message}`;
+                const errorMessage = CHAT_ERROR_MESSAGES.failed;
                 if (existingConversation) {
                   void markConversationFailed(
-                    existingConversation as IConversationDocument,
+                    existingConversation,
                     errorMessage,
                     session,
                     'parse_error',
@@ -2357,9 +2579,11 @@ export const addMessageStream =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void Conversation.findByIdAndUpdate(
-                    existingConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -2389,9 +2613,11 @@ export const addMessageStream =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void Conversation.findByIdAndUpdate(
-                    existingConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -2423,6 +2649,7 @@ export const addMessageStream =
 
       stream.on('end', async () => {
         logger.debug('Stream ended successfully', { requestId });
+        streamSettled = true;
         try {
           // Save the AI response to the existing conversation
           if (completeData && existingConversation) {
@@ -2451,9 +2678,16 @@ export const addMessageStream =
               ) as IMessageDocument;
 
               // Add the AI message to the existing conversation
-              existingConversation.messages.push(aiResponseMessage);
+              const insertedAiMessage = (
+                await appendMessages(
+                  existingConversation._id as mongoose.Types.ObjectId,
+                  existingConversation.orgId,
+                  [aiResponseMessage],
+                  session,
+                )
+              )[0];
               existingConversation.lastActivityAt = Date.now();
-              existingConversation.status = CONVERSATION_STATUS.COMPLETE;
+              recordClassifiedFailureOnSession(existingConversation, completeData);
 
               // Save the updated conversation with AI response
               const updatedConversation = session
@@ -2468,10 +2702,9 @@ export const addMessageStream =
 
               // Return the updated conversation in the same format as addMessage
               const responseConversation = await attachPopulatedCitations(
-                updatedConversation._id as mongoose.Types.ObjectId,
-                updatedConversation.toObject() as IConversation,
+                updatedConversation.toObject(),
+                [insertedAiMessage!.toObject()],
                 savedCitations,
-                false,
                 session,
               );
 
@@ -2505,34 +2738,18 @@ export const addMessageStream =
             } catch (error: any) {
               // Update conversation status for general errors
               if (existingConversation) {
-                existingConversation.status = CONVERSATION_STATUS.FAILED;
-                existingConversation.failReason =
-                  error.message || 'Unknown error occurred';
-
-                // Add error message using existing utility
-                const failedMessage =
-                  buildAIFailureResponseMessage() as IMessageDocument;
-                existingConversation.messages.push(failedMessage);
-                existingConversation.lastActivityAt = Date.now();
-
-                const saveGeneralError = session
-                  ? await existingConversation.save({ session })
-                  : await existingConversation.save();
-
-                if (!saveGeneralError) {
-                  logger.error(
-                    'Failed to save conversation general error status',
-                    {
-                      requestId,
-                      conversationId: existingConversation._id,
-                    },
-                  );
-                }
+                await markConversationFailed(
+                  existingConversation,
+                  userFacingChatError(error),
+                  session,
+                  'internal_error',
+                  error.stack,
+                );
               }
 
               if (error.cause && error.cause.code === 'ECONNREFUSED') {
                 throw new InternalServerError(
-                  AI_SERVICE_UNAVAILABLE_MESSAGE,
+                  SERVICE_UNAVAILABLE_MESSAGE,
                   error,
                 );
               }
@@ -2541,32 +2758,23 @@ export const addMessageStream =
           } else if (!upstreamAiErrorEventForwarded) {
           // Mark as failed if no complete data received (and AI did not already send error SSE)
           if (existingConversation) {
-            existingConversation.status = CONVERSATION_STATUS.FAILED;
-            existingConversation.failReason =
-              'No complete response received from AI service';
-            existingConversation.lastActivityAt = Date.now();
-
-            const savedWithError = session
-              ? await existingConversation.save({ session })
-              : await existingConversation.save();
-
-            if (!savedWithError) {
-              logger.error('Failed to save conversation error state', {
-                requestId,
-                conversationId: existingConversation._id,
-              });
-            }
+            await markConversationFailed(
+              existingConversation,
+              CHAT_ERROR_MESSAGES.interrupted,
+              session,
+              'no_response',
+            );
           }
 
           // Send error event
           res.write(
             isAGUI(protocol)
               ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: 'No complete response received from AI service',
+                  message: CHAT_ERROR_MESSAGES.interrupted,
                   code: 'no_response',
                 })
               : `event: error\ndata: ${JSON.stringify({
-                  error: 'No complete response received from AI service',
+                  error: CHAT_ERROR_MESSAGES.interrupted,
                 })}\n\n`,
           );
         }
@@ -2581,12 +2789,11 @@ export const addMessageStream =
           res.write(
             isAGUI(protocol)
               ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: 'Failed to save AI response',
+                  message: CHAT_ERROR_MESSAGES.saveFailed,
                   code: 'save_error',
                 })
               : `event: error\ndata: ${JSON.stringify({
-                  error: 'Failed to save AI response',
-                  details: dbError.message,
+                  error: CHAT_ERROR_MESSAGES.saveFailed,
                 })}\n\n`,
           );
         }
@@ -2595,12 +2802,17 @@ export const addMessageStream =
       });
 
       stream.on('error', async (error: Error) => {
+        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
+          logger.debug('Stream aborted due to client disconnect', { requestId });
+          return;
+        }
+        streamSettled = true;
         logger.error('Stream error', { requestId, error: error.message });
         try {
           if (existingConversation) {
             await markConversationFailed(
-              existingConversation as IConversationDocument,
-              error.message,
+              existingConversation,
+              userFacingChatError(error),
               session,
               'stream_error',
               error.stack,
@@ -2616,12 +2828,11 @@ export const addMessageStream =
 
         const errorEvent = isAGUI(protocol)
           ? frameAGUI(AGUIEventType.RUN_ERROR, {
-              message: error.message || 'Stream error occurred',
+              message: userFacingChatError(error),
               code: 'stream_error',
             })
           : `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Stream error occurred',
-              details: error.message,
+              error: userFacingChatError(error),
             })}\n\n`;
         res.write(errorEvent);
         res.end();
@@ -2636,36 +2847,13 @@ export const addMessageStream =
       try {
         // Mark conversation as failed if it exists
         if (existingConversation) {
-          (existingConversation as IConversationDocument).status =
-            CONVERSATION_STATUS.FAILED;
-          (existingConversation as IConversationDocument).failReason =
-            error.message || 'Internal server error';
-
-          // Add error message using existing utility
-          const failedMessage =
-            buildAIFailureResponseMessage() as IMessageDocument;
-          (existingConversation as IConversationDocument).messages.push(
-            failedMessage,
+          await markConversationFailed(
+            existingConversation as IChatSessionDocument,
+            userFacingChatError(error),
+            session,
+            'internal_error',
+            error.stack,
           );
-          (existingConversation as IConversationDocument).lastActivityAt =
-            Date.now();
-
-          const saveGeneralError = session
-            ? await (existingConversation as IConversationDocument).save({
-                session,
-              })
-            : await (existingConversation as IConversationDocument).save();
-
-          if (!saveGeneralError) {
-            logger.error(
-              'Failed to save conversation general error status in catch block',
-              {
-                requestId,
-                conversationId: (existingConversation as IConversationDocument)
-                  ._id,
-              },
-            );
-          }
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
@@ -2681,12 +2869,11 @@ export const addMessageStream =
 
       const errorEvent = isAGUI(protocol)
         ? frameAGUI(AGUIEventType.RUN_ERROR, {
-            message: error.message || 'Internal server error',
+            message: userFacingChatError(error),
             code: 'internal_error',
           })
         : `event: error\ndata: ${JSON.stringify({
-            error: error.message || 'Internal server error',
-            details: error.message,
+            error: userFacingChatError(error),
           })}\n\n`;
       res.write(errorEvent);
       res.end();
@@ -2745,32 +2932,53 @@ export const getAllConversations = async (
     const sortOptions = buildSortOptions(req);
 
     const isOwned = source === 'owned';
-    const filter = buildFilter(
-      req,
-      orgId,
-      userId,
-      conversationId as string,
-      isOwned,
-      !isOwned,
-    );
-    let selection = Conversation.find(filter)
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search);
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
+    const accessibleProjectIds = !isOwned
+      ? await ProjectService.getAccessibleProjectIds(orgId, userId)
+      : undefined;
+    const filter = {
+      ...buildFilter(
+        req,
+        orgId,
+        userId,
+        conversationId as string,
+        isOwned,
+        !isOwned,
+        contentMatchIds,
+        accessibleProjectIds,
+      ),
+      ...EXCLUDE_AGENT,
+    };
+    let selection = ChatSession.find(filter)
       .sort(sortOptions as any)
       .skip(skip)
       .limit(limit)
-      .select('-__v')
-      .select('-messages');
+      .select('-__v');
     if (!isOwned) {
-      selection = selection.select('-sharedWith');
+      selection = selection.select('-sharedWith') as typeof selection;
     }
 
     const [conversations, totalCount] = await Promise.all([
       selection.lean().exec(),
-      Conversation.countDocuments(filter),
+      ChatSession.countDocuments(filter),
     ]);
 
-    const processedConversations = conversations.map((conversation: any) =>
+    let processedConversations = conversations.map((conversation: any) =>
       addComputedFields(conversation as IConversation, userId),
     );
+    if (!isOwned) {
+      processedConversations = await attachSharedBy(
+        processedConversations,
+        orgId,
+      );
+    }
 
     const response = {
       conversations: processedConversations,
@@ -2827,7 +3035,28 @@ export const getConversationById = async (
     const { page, limit } = getPaginationParams(req);
 
     // Build the base filter with access control
-    const baseFilter = buildFilter(req, orgId, userId, conversationId);
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search);
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
+    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
+      orgId,
+      userId,
+    );
+    const baseFilter = buildFilter(
+      req,
+      orgId,
+      userId,
+      conversationId,
+      true,
+      true,
+      contentMatchIds,
+      accessibleProjectIds,
+    );
 
     // Build message filter
     const messageFilter = buildMessageFilter(req);
@@ -2838,25 +3067,11 @@ export const getConversationById = async (
       sortOrder as string,
     );
 
-    const countResult = await Conversation.aggregate([
-      { $match: baseFilter },
-      { $project: { messageCount: { $size: '$messages' } } },
-    ]);
-
-    if (!countResult.length) {
-      throw new NotFoundError('Conversation not found');
-    }
-
-    const totalMessages = countResult[0].messageCount;
-
-    // Calculate skip and limit for backward pagination
-    const skip = Math.max(0, totalMessages - page * limit);
-    const effectiveLimit = Math.min(limit, totalMessages - skip);
-
-    // Get conversation with paginated messages
-    const conversationWithMessages = await Conversation.findOne(baseFilter)
+    const session = await ChatSession.findOne({
+      ...baseFilter,
+      ...EXCLUDE_AGENT,
+    })
       .select({
-        messages: { $slice: [skip, effectiveLimit] },
         title: 1,
         initiator: 1,
         createdAt: 1,
@@ -2864,15 +3079,34 @@ export const getConversationById = async (
         sharedWith: 1,
         status: 1,
         failReason: 1,
-        modelInfo:1,
-      })
-      .populate({
-        path: 'messages.citations.citationId',
-        model: 'citation',
-        select: '-__v',
+        modelInfo: 1,
+        projectId: 1,
+        projectVisibility: 1,
       })
       .lean()
       .exec();
+
+    if (!session) {
+      throw new NotFoundError('Conversation not found');
+    }
+
+    const sessionId = session._id as unknown as Types.ObjectId;
+
+    const totalMessages = await ChatSessionMessage.countDocuments({
+      sessionId,
+    });
+
+    // Calculate skip and limit for backward pagination
+    const skip = Math.max(0, totalMessages - page * limit);
+    const effectiveLimit = Math.min(limit, totalMessages - skip);
+
+    const messages = await getMessages(sessionId, {
+      skip,
+      limit: effectiveLimit,
+      populateCitations: true,
+    });
+
+    const conversationWithMessages = attachMessages(session, messages);
 
     // Sort messages using existing helper
     const sortedMessages = sortMessages(
@@ -2881,19 +3115,21 @@ export const getConversationById = async (
       messageSortOptions as { field: keyof IMessage },
     );
 
-    // Build conversation response using existing helper
-    const conversationResponse = buildConversationResponse(
-      conversationWithMessages as unknown as IConversationDocument,
-      userId,
-      {
-        page,
-        limit,
-        skip,
-        totalMessages,
-        hasNextPage: skip > 0,
-        hasPrevPage: skip + effectiveLimit < totalMessages,
-      },
-      sortedMessages,
+    const conversationResponse = await attachSharedByIfRecipient(
+      buildConversationResponse(
+        conversationWithMessages as unknown as IChatSessionDocument,
+        userId,
+        {
+          page,
+          limit,
+          skip,
+          totalMessages,
+          hasNextPage: skip > 0,
+          hasPrevPage: skip + effectiveLimit < totalMessages,
+        },
+        sortedMessages,
+      ),
+      orgId,
     );
 
     // Build filters metadata using existing helper
@@ -2961,24 +3197,29 @@ export const deleteConversationById = async (
     // Common helper that performs the delete operation.
     async function performDeleteConversation(session?: ClientSession | null) {
       // Get conversation with access control
-      const conversation: IConversation | null = await Conversation.findOne({
-        _id: conversationId,
-        userId,
-        orgId,
-        isDeleted: false,
-        $or: [
-          { initiator: userId },
-          { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
-        ],
-      });
+      const conversation = await ChatSession.findOne(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          isDeleted: false,
+          $or: [
+            { initiator: userId },
+            { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
+          ],
+          ...EXCLUDE_AGENT,
+        },
+        undefined,
+        { session },
+      );
 
       if (!conversation) {
         throw new NotFoundError('Conversation not found');
       }
 
       // Perform soft delete on the conversation
-      const updatedConversation = await Conversation.findByIdAndUpdate(
-        conversationId,
+      const updatedConversation = await ChatSession.findOneAndUpdate(
+        { _id: conversationId, ...EXCLUDE_AGENT },
         {
           $set: {
             isDeleted: true,
@@ -2997,10 +3238,16 @@ export const deleteConversationById = async (
         throw new InternalServerError('Failed to delete conversation');
       }
 
-      // Extract all citation IDs from messages
-      const citationIds = conversation.messages
-        .filter((msg: IMessage) => msg.citations && msg.citations.length)
-        .flatMap((msg: IMessage) =>
+      // Extract all citation IDs from messages (projected query, not the
+      // full document — message bodies are no longer embedded)
+      const sessionMessages = await ChatSessionMessage.find(
+        { sessionId: conversationId },
+        { citations: 1 },
+        { session: session || undefined },
+      ).lean();
+      const citationIds = sessionMessages
+        .filter((msg) => msg.citations && msg.citations.length)
+        .flatMap((msg) =>
           msg.citations?.map(
             (citation: IMessageCitation) => citation.citationId,
           ),
@@ -3114,12 +3361,13 @@ export const shareConversationById =
         }
 
         // Get conversation with access control
-        const conversation: IConversation | null = await Conversation.findOne({
+        const conversation = await ChatSession.findOne({
           _id: conversationId,
           orgId,
           userId,
           isDeleted: false,
           initiator: userId, // Only initiator can share
+          ...EXCLUDE_AGENT,
         });
 
         if (!conversation) {
@@ -3190,8 +3438,8 @@ export const shareConversationById =
         updateObject.sharedWith = mergedSharedWith;
 
         // Update the conversation
-        const updatedConversation = await Conversation.findByIdAndUpdate(
-          conversationId,
+        const updatedConversation = await ChatSession.findOneAndUpdate(
+          { _id: conversationId, ...EXCLUDE_AGENT },
           updateObject,
           {
             new: true,
@@ -3208,7 +3456,7 @@ export const shareConversationById =
         return updatedConversation;
       }
 
-      let updatedConversation: IConversationDocument | null = null;
+      let updatedConversation: IChatSessionDocument | null = null;
       if (rsAvailable) {
         session = await mongoose.startSession();
         session.startTransaction();
@@ -3220,10 +3468,14 @@ export const shareConversationById =
 
       // Grant READER permission edges on all attachments in this conversation
       // to every user it was just shared with.
+      const sessionMessages = await ChatSessionMessage.find(
+        { sessionId: conversationId },
+        { attachments: 1 },
+      ).lean();
       const attachmentRecordIds = [
         ...new Set(
-          (updatedConversation.messages ?? [])
-            .flatMap((msg: IMessage) => msg.attachments ?? [])
+          sessionMessages
+            .flatMap((msg) => msg.attachments ?? [])
             .map((att: any) => att.recordId as string | undefined)
             .filter((id): id is string => Boolean(id)),
         ),
@@ -3328,11 +3580,12 @@ export const unshareConversationById =
 
     async function performUnshareConversation(session?: ClientSession | null) {
       // Get conversation with access control
-      const conversation = await Conversation.findOne({
+      const conversation = await ChatSession.findOne({
         _id: conversationId,
         orgId,
         isDeleted: false,
         initiator: userId, // Only initiator can unshare
+        ...EXCLUDE_AGENT,
       });
 
       if (!conversation) {
@@ -3359,8 +3612,8 @@ export const unshareConversationById =
       }
 
       // Update the conversation
-      const updatedConversation = await Conversation.findByIdAndUpdate(
-        conversationId,
+      const updatedConversation = await ChatSession.findOneAndUpdate(
+        { _id: conversationId, ...EXCLUDE_AGENT },
         updateObject,
         {
           new: true,
@@ -3377,7 +3630,7 @@ export const unshareConversationById =
       return updatedConversation;
     }
 
-    let updatedConversation: IConversationDocument | null = null;
+    let updatedConversation: IChatSessionDocument | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
       session.startTransaction();
@@ -3389,10 +3642,14 @@ export const unshareConversationById =
 
     // Revoke READER permission edges on all attachments in this conversation
     // for the users who were just removed from sharing.
+    const sessionMessages = await ChatSessionMessage.find(
+      { sessionId: conversationId },
+      { attachments: 1 },
+    ).lean();
     const attachmentRecordIds = [
       ...new Set(
-        (updatedConversation.messages ?? [])
-          .flatMap((msg: IMessage) => msg.attachments ?? [])
+        sessionMessages
+          .flatMap((msg) => msg.attachments ?? [])
           .map((att: any) => att.recordId as string | undefined)
           .filter((id): id is string => Boolean(id)),
       ),
@@ -3465,10 +3722,154 @@ export const unshareConversationById =
 };
 
 /**
+ * PUT /api/v1/conversations/:conversationId/project
+ * PUT /api/v1/agents/:agentKey/conversations/:conversationId/project
+ * @desc Link or unlink a chat/agent session to a project. Initiator-only
+ * (mirrors `shareConversationById`'s ownership check) — a chat shared to
+ * this user does not let them move someone else's conversation between
+ * projects. `projectId: null` unlinks. `ProjectService.assertAccess`
+ * enforces the caller has at least viewer access to the target project
+ * (cross-org / no-access -> 404, never a leak of the project's existence).
+ */
+export const setConversationProject = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    const { conversationId, agentKey } = req.params;
+    const { projectId } = req.body as { projectId: string | null };
+
+    const sessionTypeFilter = agentKey
+      ? { ...ONLY_AGENT, agentKey }
+      : EXCLUDE_AGENT;
+
+    const conversation = await ChatSession.findOne({
+      _id: conversationId,
+      orgId,
+      userId,
+      initiator: userId,
+      isDeleted: false,
+      ...sessionTypeFilter,
+    });
+    if (!conversation) {
+      throw new NotFoundError('Conversation not found or unauthorized');
+    }
+
+    let update: Record<string, unknown>;
+    if (projectId === null) {
+      update = { $unset: { projectId: '', projectVisibility: '' } };
+    } else {
+      const { project } = await ProjectService.assertAccess(
+        orgId,
+        userId,
+        projectId,
+        'viewer',
+      );
+      const projectVisibility =
+        conversation.projectVisibility === 'project'
+          ? 'project'
+          : project.chatSharing === 'members'
+            ? 'project'
+            : 'private';
+      update = {
+        $set: {
+          projectId: new mongoose.Types.ObjectId(projectId),
+          projectVisibility,
+        },
+      };
+      void ProjectService.touchActivity(projectId);
+    }
+
+    const updated = await ChatSession.findOneAndUpdate(
+      { _id: conversationId, ...sessionTypeFilter },
+      update,
+      { new: true },
+    );
+    if (!updated) {
+      throw new InternalServerError('Failed to update conversation project link');
+    }
+
+    // Explicit nulls: an unlinked session has no projectId, and JSON would drop the key.
+    res.status(200).json({
+      conversationId: updated._id,
+      projectId: updated.projectId ?? null,
+      projectVisibility: updated.projectVisibility ?? null,
+    });
+  } catch (error: any) {
+    logger.error('Error linking conversation to project', {
+      requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  }
+};
+
+/**
+ * PATCH /api/v1/conversations/:conversationId/project-visibility
+ * PATCH /api/v1/agents/:agentKey/conversations/:conversationId/project-visibility
+ * @desc Override, per conversation, whether this chat is visible to other
+ * members of its project ('project') or stays visible only to its owner
+ * ('private', the default — see plan's "Chats in shared projects are
+ * private by default"). Requires the session already be linked to a project.
+ */
+export const setConversationProjectVisibility = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    const { conversationId, agentKey } = req.params;
+    const { visibility } = req.body as { visibility: 'private' | 'project' };
+
+    const sessionTypeFilter = agentKey
+      ? { ...ONLY_AGENT, agentKey }
+      : EXCLUDE_AGENT;
+
+    const conversation = await ChatSession.findOne({
+      _id: conversationId,
+      orgId,
+      userId,
+      initiator: userId,
+      isDeleted: false,
+      ...sessionTypeFilter,
+    });
+    if (!conversation) {
+      throw new NotFoundError('Conversation not found or unauthorized');
+    }
+    if (!conversation.projectId) {
+      throw new BadRequestError('Conversation is not linked to a project');
+    }
+
+    const updated = await ChatSession.findOneAndUpdate(
+      { _id: conversationId, ...sessionTypeFilter },
+      { $set: { projectVisibility: visibility } },
+      { new: true },
+    );
+    if (!updated) {
+      throw new InternalServerError('Failed to update conversation visibility');
+    }
+
+    res.status(200).json({
+      conversationId: updated._id,
+      projectVisibility: updated.projectVisibility,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Configuration for regeneration function
  */
 interface RegenerationConfig {
-  conversationModel: typeof Conversation | typeof AgentConversation;
+  isAgentSession: boolean;
   buildQueryFilter: (
     conversationId: string,
     orgId: string | undefined,
@@ -3494,11 +3895,7 @@ async function regenerateAnswersInternal(
   const userId = req.user?.userId;
   const orgId = req.user?.orgId;
 
-  let existingConversation:
-    | IConversationDocument
-    | IAgentConversationDocument
-    | null = null;
-  let messageIndex = -1;
+  let existingConversation: IChatSessionDocument | null = null;
 
   const modelInfo = extractModelInfo(req.body);
   const protocol = resolveProtocol(
@@ -3509,7 +3906,7 @@ async function regenerateAnswersInternal(
   // Helper function to validate and get conversation
   async function performRegenerateAnswersValidation(
     session?: ClientSession | null,
-  ): Promise<IConversationDocument | IAgentConversationDocument> {
+  ): Promise<{ conversation: IChatSessionDocument; userQuery: IMessage }> {
     if (!conversationId) {
       throw new BadRequestError('Conversation ID is required');
     }
@@ -3522,8 +3919,7 @@ async function regenerateAnswersInternal(
       agentKey,
     );
 
-    // Type assertion needed because TypeScript can't infer the correct overload
-    const conversation = await (config.conversationModel as any).findOne(
+    const conversation = await ChatSession.findOne(
       queryFilter,
       null,
       session ? { session } : undefined,
@@ -3533,15 +3929,20 @@ async function regenerateAnswersInternal(
       throw new NotFoundError('Conversation not found or unauthorized');
     }
 
-    // Ensure there are messages
-    if (!conversation.messages || conversation.messages.length === 0) {
+    // Fetch the last 2 messages (newest first) to validate without positional
+    // addressing into a (now non-existent) embedded array.
+    const lastTwoMessages = (await getMessages(
+      conversation._id as mongoose.Types.ObjectId,
+      { limit: 2, sort: -1 },
+      session,
+    )) as Array<IMessage & { _id: mongoose.Types.ObjectId }>;
+
+    if (lastTwoMessages.length === 0) {
       throw new BadRequestError('No messages found in conversation');
     }
 
     // Get the last message and validate it
-    const lastMessage: IMessageDocument = conversation.messages[
-      conversation.messages.length - 1
-    ] as IMessageDocument;
+    const lastMessage = lastTwoMessages[0]!;
 
     if (lastMessage._id?.toString() !== messageId) {
       throw new BadRequestError(
@@ -3553,27 +3954,22 @@ async function regenerateAnswersInternal(
     }
 
     // Get user query from the previous message
-    if (conversation.messages.length < 2) {
+    if (lastTwoMessages.length < 2) {
       throw new BadRequestError('No user query found to regenerate response');
     }
-    const userQuery = conversation.messages[
-      conversation.messages.length - 2
-    ] as IMessageDocument;
+    const userQuery = lastTwoMessages[1]!;
     if (userQuery.messageType !== 'user_query') {
       throw new BadRequestError('Previous message must be a user query');
     }
-
-    messageIndex = conversation.messages.length - 1;
 
     logger.debug('Regenerate answers validation passed', {
       requestId,
       conversationId,
       messageId,
-      messageIndex,
       timestamp: new Date().toISOString(),
     });
 
-    return conversation;
+    return { conversation, userQuery };
   }
 
   try {
@@ -3588,27 +3984,34 @@ async function regenerateAnswersInternal(
     });
 
     // Validate conversation and message
+    let validationResult: {
+      conversation: IChatSessionDocument;
+      userQuery: IMessage;
+    } | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
-      existingConversation = await session.withTransaction(() =>
+      validationResult = await session.withTransaction(() =>
         performRegenerateAnswersValidation(session),
       );
     } else {
-      existingConversation = await performRegenerateAnswersValidation();
+      validationResult = await performRegenerateAnswersValidation();
     }
 
-    if (!existingConversation || messageIndex === -1) {
+    if (!validationResult) {
       throw new NotFoundError('Conversation or message not found');
     }
+    existingConversation = validationResult.conversation;
+    const userQuery = validationResult.userQuery;
 
-    // Get user query from the previous message
-    const userQuery = existingConversation.messages[
-      messageIndex - 1
-    ] as IMessageDocument;
-
-    // Format previous conversations up to this message
+    // Format previous conversations up to this message (exclude last bot
+    // response and the user query that triggered it)
+    const allMessagesForRegen = (await getMessages(
+      existingConversation._id as mongoose.Types.ObjectId,
+      {},
+      session,
+    )) as IMessage[];
     const previousConversations = formatPreviousConversations(
-      existingConversation.messages.slice(0, -2), // Exclude last bot response and user query
+      allMessagesForRegen.slice(0, -2),
     );
 
     // For the assistant (non-agent-key) path, detect universal agent mode from chatMode
@@ -3630,11 +4033,21 @@ async function regenerateAnswersInternal(
       conversationId: conversationId || null,
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
+      runId: req.body.runId || null,
       ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
     };
     if (agentKey || regenIsAgentMode) {
       assignToolsToPayload(aiPayload, req.body.tools);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+    }
+    const regenProject = await loadProjectForSession(
+      existingConversation.orgId.toString(),
+      (existingConversation.userId as unknown as Types.ObjectId).toString(),
+      existingConversation.projectId,
+    );
+    applyProjectScope(aiPayload, regenProject);
+    if (existingConversation.projectId) {
+      void ProjectService.touchActivity(existingConversation.projectId.toString());
     }
 
     const regenEndpoint = regenIsAgentMode
@@ -3651,25 +4064,66 @@ async function regenerateAnswersInternal(
       body: aiPayload,
     };
 
-    const stream = await startAIStream(
-      aiCommandOptions,
-      'Regenerate Answers Stream',
-      { requestId },
-    );
+    // Variables to collect complete response data
+    let completeData: IAIResponse | null = null;
+    let buffer = '';
+    /** Guards `onDisconnect` against also running after the normal
+     * `stream.on('end')`/`'error'` path already finalized this run. */
+    let streamSettled = false;
+    const contentAccumulator = new StreamedContentAccumulator();
+
+    // Plain `let` would appear permanently `null` to the type checker's
+    // narrowing (it never sees the reassignment inside the closure below),
+    // so `no-unnecessary-condition` would flag the read as dead code even
+    // though it's live at runtime — a mutable holder sidesteps that.
+    const disconnectSave: { pending: Promise<void> | null } = {
+      pending: null,
+    };
+    const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+      if (streamSettled || completeData || !existingConversation) return;
+      streamSettled = true;
+      // `session` is request-scoped and ends (see `finally` below) as soon
+      // as this handler finishes registering stream listeners — long before
+      // a disconnect can fire, so never reuse it here.
+      disconnectSave.pending = savePartialConversation(
+        existingConversation,
+        contentAccumulator.getText(),
+        null,
+        { replaceMessageId: messageId || undefined },
+      ).catch((err: any) => {
+        logger.error('Failed to save partial conversation on disconnect', {
+          requestId,
+          error: err?.message,
+        });
+      });
+    });
+    let stream: Awaited<ReturnType<typeof startAIStream>>;
+    try {
+      stream = await startAIStream(
+        aiCommandOptions,
+        'Regenerate Answers Stream',
+        { requestId },
+        upstreamAbort.signal,
+      );
+    } catch (streamOpenError) {
+      // Client disconnected while the AI backend request was still in
+      // flight — the disconnect callback above already started the STOPPED
+      // save; await it and bail out before the outer `catch` can race it
+      // with a FAILED save.
+      if (upstreamAbort.isClientDisconnected()) {
+        logger.debug('Client disconnected before AI stream opened', {
+          requestId,
+        });
+        if (disconnectSave.pending) await disconnectSave.pending;
+        return;
+      }
+      throw streamOpenError;
+    }
 
     if (!stream) {
       throw new Error('Failed to get stream from AI service');
     }
-
-    // Variables to collect complete response data
-    let completeData: IAIResponse | null = null;
-    let buffer = '';
-
-    // Handle client disconnect
-    req.on('close', () => {
-      logger.debug('Client disconnected', { requestId });
-      stream.destroy();
-    });
+    upstreamAbort.bindStream(stream);
 
     // Process SSE events, capture complete event, and forward non-complete events
     stream.on('data', (chunk: Buffer) => {
@@ -3677,7 +4131,7 @@ async function regenerateAnswersInternal(
         chunk,
         buffer,
         existingConversation,
-        messageIndex,
+        messageId || null,
         session,
         requestId || '',
         res,
@@ -3690,11 +4144,14 @@ async function regenerateAnswersInternal(
             citationsCount: completeData?.citations?.length || 0,
           });
         },
+        config.isAgentSession,
         protocol,
+        contentAccumulator,
       );
     });
 
     stream.on('end', async () => {
+      streamSettled = true;
       logger.debug('Stream ended successfully', { requestId });
       try {
         // Save the AI response to the conversation, replacing the existing message
@@ -3704,7 +4161,7 @@ async function regenerateAnswersInternal(
               await handleRegenerationSuccess(
                 completeData,
                 existingConversation,
-                messageIndex,
+                messageId || '',
                 orgId || '',
                 session,
                 modelInfo,
@@ -3731,12 +4188,12 @@ async function regenerateAnswersInternal(
             );
           } catch (error: any) {
             // Update conversation status for general errors
-            if (existingConversation && messageIndex >= 0) {
+            if (existingConversation && messageId) {
               await handleRegenerationError(
                 res,
                 error,
                 existingConversation,
-                messageIndex,
+                messageId,
                 conversationId || '',
                 session,
                 requestId || '',
@@ -3747,7 +4204,7 @@ async function regenerateAnswersInternal(
 
             if (error.cause && error.cause.code === 'ECONNREFUSED') {
               throw new InternalServerError(
-                AI_SERVICE_UNAVAILABLE_MESSAGE,
+                SERVICE_UNAVAILABLE_MESSAGE,
                 error,
               );
             }
@@ -3755,23 +4212,31 @@ async function regenerateAnswersInternal(
           }
         } else {
           // Mark as failed if no complete data received
-          if (existingConversation && messageIndex >= 0) {
+          if (existingConversation && messageId) {
             const errorMessage =
-              'No complete response received from AI service';
+              CHAT_ERROR_MESSAGES.interrupted;
             await replaceMessageWithError(
               existingConversation,
-              messageIndex,
+              messageId,
               errorMessage,
               session,
-              'incomplete_response',
+              'no_response',
             );
 
             // Reload conversation to get updated state
-            const updatedConversation = await (config.conversationModel as any).findById(
+            const updatedConversation = await ChatSession.findById(
               conversationId || '',
             );
             if (updatedConversation) {
-              const plainConversation = updatedConversation.toObject();
+              const messages = await getMessages(
+                updatedConversation._id as mongoose.Types.ObjectId,
+                {},
+                session,
+              );
+              const plainConversation = attachMessages(
+                updatedConversation.toObject(),
+                messages,
+              );
               await sendSSEErrorEvent(
                 res,
                 errorMessage,
@@ -3785,7 +4250,7 @@ async function regenerateAnswersInternal(
           } else {
             await sendSSEErrorEvent(
               res,
-              'No complete response received from AI service',
+              CHAT_ERROR_MESSAGES.interrupted,
               undefined,
               undefined,
               protocol,
@@ -3802,25 +4267,33 @@ async function regenerateAnswersInternal(
           },
         );
 
-        // Try to replace message with error if we have the index
-        if (existingConversation && messageIndex >= 0) {
+        // Try to replace message with error if we have the message id
+        if (existingConversation && messageId) {
           try {
-            const errorMessage = `Failed to save regenerated AI response: ${dbError.message}`;
+            const errorMessage = CHAT_ERROR_MESSAGES.saveFailed;
             await replaceMessageWithError(
               existingConversation,
-              messageIndex,
+              messageId,
               errorMessage,
               session,
-              'database_error',
+              'save_error',
               dbError.stack,
             );
 
             // Reload conversation to get updated state
-            const updatedConversation = await (config.conversationModel as any).findById(
+            const updatedConversation = await ChatSession.findById(
               conversationId || '',
             );
             if (updatedConversation) {
-              const plainConversation = updatedConversation.toObject();
+              const messages = await getMessages(
+                updatedConversation._id as mongoose.Types.ObjectId,
+                {},
+                session,
+              );
+              const plainConversation = attachMessages(
+                updatedConversation.toObject(),
+                messages,
+              );
               await sendSSEErrorEvent(
                 res,
                 errorMessage,
@@ -3841,7 +4314,7 @@ async function regenerateAnswersInternal(
             );
             await sendSSEErrorEvent(
               res,
-              'Failed to save regenerated AI response',
+              CHAT_ERROR_MESSAGES.saveFailed,
               dbError.message,
               undefined,
               protocol,
@@ -3850,7 +4323,7 @@ async function regenerateAnswersInternal(
         } else {
           await sendSSEErrorEvent(
             res,
-            'Failed to save regenerated AI response',
+            CHAT_ERROR_MESSAGES.saveFailed,
             dbError.message,
             undefined,
             protocol,
@@ -3862,6 +4335,11 @@ async function regenerateAnswersInternal(
     });
 
     stream.on('error', async (error: Error) => {
+      if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
+        logger.debug('Stream aborted due to client disconnect', { requestId });
+        return;
+      }
+      streamSettled = true;
       logger.error('Stream error in regenerateAnswers', {
         requestId,
         error: error.message,
@@ -3871,7 +4349,7 @@ async function regenerateAnswersInternal(
           res,
           error,
           existingConversation,
-          messageIndex,
+          messageId || null,
           conversationId || '',
           session,
           requestId || '',
@@ -3886,7 +4364,7 @@ async function regenerateAnswersInternal(
         });
         await sendSSEErrorEvent(
           res,
-          error.message || 'Stream error occurred',
+          userFacingChatError(error),
           error.message,
           undefined,
           protocol,
@@ -3912,7 +4390,7 @@ async function regenerateAnswersInternal(
         res,
         error,
         existingConversation,
-        messageIndex,
+        messageId || null,
         conversationId || '',
         session,
         requestId || '',
@@ -3927,7 +4405,7 @@ async function regenerateAnswersInternal(
       });
       await sendSSEErrorEvent(
         res,
-        error.message || 'Internal server error',
+        userFacingChatError(error),
         error.message,
         undefined,
         protocol,
@@ -3945,12 +4423,13 @@ export const regenerateAnswers =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
     await regenerateAnswersInternal(appConfig, req, res, {
-      conversationModel: Conversation,
+      isAgentSession: false,
       buildQueryFilter: (conversationId, orgId, userId) => ({
         _id: conversationId,
         orgId,
         userId,
         isDeleted: false,
+        ...EXCLUDE_AGENT,
         $or: [
           { initiator: userId },
           { 'sharedWith.userId': userId },
@@ -3960,6 +4439,73 @@ export const regenerateAnswers =
       buildAIEndpoint: (appConfig) =>
         `${appConfig.aiBackend}/api/v1/chat/stream`,
     });
+  };
+
+/**
+ * Cooperatively stop an in-flight `/conversations/:conversationId/stream` or
+ * `/messages/stream` run. Same owner filter as `addMessageStream` (initiator
+ * only, no `sharedWith` — a shared viewer never gets to stop someone else's
+ * generation) so a caller can't probe/cancel a run on a conversation they
+ * don't own; Python's `/chat/cancel` (`RunOwner` check against the registry
+ * entry) is the second, independent check on the `runId` itself.
+ *
+ * `{ cancelled: false }` (not a 4xx) is the normal response for a `runId`
+ * that already finished or was never registered — the UI only cares whether
+ * the stream is now stopped, not why.
+ */
+export const cancelConversationStream =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    const { conversationId } = req.params;
+    const { runId } = req.body;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    try {
+      const conversation = await ChatSession.findOne({
+        _id: conversationId,
+        orgId,
+        userId,
+        isDeleted: false,
+        ...EXCLUDE_AGENT,
+      });
+      if (!conversation) {
+        throw new NotFoundError('Conversation not found or unauthorized');
+      }
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/chat/cancel`,
+        method: HttpMethod.POST,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        // conversationId is forwarded (not just runId) so Python's own
+        // RunOwner check can reject a runId that belongs to a DIFFERENT
+        // conversation this same user owns — the Mongo lookup above only
+        // proves the caller owns `conversationId`, not that `runId` was
+        // ever issued for it.
+        body: { runId, conversationId },
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(aiResponse, 'Cancel Conversation Stream');
+      }
+      res.status(HTTP_STATUS.OK).json(aiResponse.data);
+    } catch (error: any) {
+      logger.error('Error cancelling conversation stream', {
+        requestId,
+        conversationId,
+        runId,
+        error: error.message,
+      });
+      const backendError = handleBackendError(error, 'Cancel Conversation Stream');
+      next(backendError);
+    }
   };
 
 export const updateTitle = async (
@@ -3985,12 +4531,13 @@ export const updateTitle = async (
     });
 
     const applyTitleUpdate = async (txnSession: ClientSession | null) => {
-      const conv = await Conversation.findOne(
+      const conv = await ChatSession.findOne(
         {
           _id: conversationId,
           orgId,
           userId,
           isDeleted: false,
+          ...EXCLUDE_AGENT,
         },
         null,
         txnSession ? { session: txnSession } : {},
@@ -4050,7 +4597,6 @@ export const updateTitle = async (
 };
 
 async function performFeedbackUpdate(params: {
-  model: mongoose.Model<any>;
   query: Record<string, any>;
   conversationId: string;
   messageId: string;
@@ -4059,21 +4605,27 @@ async function performFeedbackUpdate(params: {
   userAgent: string | undefined;
   session?: ClientSession | null;
 }): Promise<{ updatedConversation: any; feedbackEntry: any }> {
-  const { model, query, conversationId, messageId, userId, body, userAgent, session } = params;
+  const { query, messageId, userId, body, userAgent, session } = params;
 
-  const conversation = await model.findOne(query);
+  const conversation = await ChatSession.findOne(
+    query,
+    null,
+    session ? { session } : undefined,
+  );
   if (!conversation) {
     throw new NotFoundError('Conversation not found');
   }
 
-  const messageIndex = conversation.messages.findIndex(
-    (msg: IMessageDocument) => msg._id?.toString() === messageId,
+  const message = await ChatSessionMessage.findOne(
+    { _id: messageId, sessionId: conversation._id },
+    null,
+    session ? { session } : undefined,
   );
-  if (messageIndex === -1) {
+  if (!message) {
     throw new NotFoundError('Message not found');
   }
 
-  if (conversation.messages[messageIndex]?.messageType !== 'bot_response') {
+  if (message.messageType !== 'bot_response') {
     throw new BadRequestError('Feedback is only allowed for bot responses');
   }
 
@@ -4082,25 +4634,23 @@ async function performFeedbackUpdate(params: {
     feedbackProvider: userId,
     timestamp: Date.now(),
     metrics: {
-      timeToFeedback:
-        Date.now() - Number(conversation.messages[messageIndex]?.createdAt),
+      timeToFeedback: Date.now() - Number(message.createdAt),
       userInteractionTime: body.metrics?.userInteractionTime,
       feedbackSessionId: body.metrics?.feedbackSessionId,
       userAgent,
     },
   };
 
-  const updatePath = `messages.${messageIndex}.feedback`;
-  const updatedConversation = await model.findByIdAndUpdate(
-    conversationId,
-    { $push: { [updatePath]: feedbackEntry } },
-    { new: true, session, runValidators: true },
+  const updatedMessage = await appendMessageFeedback(
+    messageId,
+    feedbackEntry,
+    session,
   );
-  if (!updatedConversation) {
+  if (!updatedMessage) {
     throw new InternalServerError('Failed to update feedback');
   }
 
-  return { updatedConversation, feedbackEntry };
+  return { updatedConversation: conversation, feedbackEntry };
 }
 
 export const updateFeedback = async (
@@ -4129,6 +4679,7 @@ export const updateFeedback = async (
       _id: conversationId,
       orgId,
       isDeleted: false,
+      ...EXCLUDE_AGENT,
       $or: [
         { initiator: userId },
         { 'sharedWith.userId': userId },
@@ -4141,13 +4692,13 @@ export const updateFeedback = async (
       session = await mongoose.startSession();
       ({ updatedConversation, feedbackEntry } = await session.withTransaction(
         () => performFeedbackUpdate({
-          model: Conversation, query, conversationId: conversationId!, messageId: messageId!,
+          query, conversationId: conversationId!, messageId: messageId!,
           userId: userId!, body: req.body, userAgent: req.headers['user-agent'], session,
         }),
       ));
     } else {
       ({ updatedConversation, feedbackEntry } = await performFeedbackUpdate({
-        model: Conversation, query, conversationId: conversationId!, messageId: messageId!,
+        query, conversationId: conversationId!, messageId: messageId!,
         userId: userId!, body: req.body, userAgent: req.headers['user-agent'],
       }));
     }
@@ -4210,11 +4761,12 @@ export const archiveConversation = async (
 
     async function performArchiveConversation(session?: ClientSession | null) {
       // Get conversation with access control
-      const conversation = await Conversation.findOne({
+      const conversation = await ChatSession.findOne({
         _id: conversationId,
         userId,
         orgId,
         isDeleted: false,
+        ...EXCLUDE_AGENT,
         $or: [
           { initiator: userId },
           { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
@@ -4232,9 +4784,9 @@ export const archiveConversation = async (
       }
 
       // Perform soft delete
-      const updatedConversation: IConversationDocument | null =
-        await Conversation.findByIdAndUpdate(
-          conversationId,
+      const updatedConversation: IChatSessionDocument | null =
+        await ChatSession.findOneAndUpdate(
+          { _id: conversationId, ...EXCLUDE_AGENT },
           {
             $set: {
               isArchived: true,
@@ -4256,7 +4808,7 @@ export const archiveConversation = async (
       return updatedConversation;
     }
 
-    let updatedConversation: IConversationDocument | null = null;
+    let updatedConversation: IChatSessionDocument | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
       session.startTransaction();
@@ -4321,11 +4873,12 @@ export const unarchiveConversation = async (
       session?: ClientSession | null,
     ) {
       // Get conversation with access control
-      const conversation = await Conversation.findOne({
+      const conversation = await ChatSession.findOne({
         _id: conversationId,
         userId,
         orgId,
         isDeleted: false,
+        ...EXCLUDE_AGENT,
         $or: [
           { initiator: userId },
           { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
@@ -4343,9 +4896,9 @@ export const unarchiveConversation = async (
       }
 
       // Perform soft delete
-      const updatedConversation: IConversationDocument | null =
-        await Conversation.findByIdAndUpdate(
-          conversationId,
+      const updatedConversation: IChatSessionDocument | null =
+        await ChatSession.findOneAndUpdate(
+          { _id: conversationId, ...EXCLUDE_AGENT },
           {
             $set: {
               isArchived: false,
@@ -4366,7 +4919,7 @@ export const unarchiveConversation = async (
       return updatedConversation;
     }
 
-    let updatedConversation: IConversationDocument | null = null;
+    let updatedConversation: IChatSessionDocument | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
       session.startTransaction();
@@ -4427,30 +4980,72 @@ export const listAllArchivesConversation = async (
     });
 
     const { skip, limit, page } = getPaginationParams(req);
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search);
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
     const filter = {
-      ...buildFilter(req, orgId, userId, conversationId as string),
+      ...buildFilter(
+        req,
+        orgId,
+        userId,
+        conversationId as string,
+        true,
+        true,
+        contentMatchIds,
+      ),
       isArchived: true, // Add archived filter
       archivedBy: { $exists: true }, // Ensure it was properly archived
     };
     const sortOptions = buildSortOptions(req);
+    const sessionFilter = { ...filter, ...EXCLUDE_AGENT };
 
     // Execute query
     const [conversations, totalCount] = await Promise.all([
-      Conversation.find(filter)
+      ChatSession.find(sessionFilter)
         .sort(sortOptions as any)
         .skip(skip)
         .limit(limit)
         .select('-__v')
-        .select('-citations')
         .lean()
         .exec(),
-      Conversation.countDocuments(filter),
+      ChatSession.countDocuments(sessionFilter),
     ]);
+
+    // Batch-fetch every message for the page in one query, grouped in
+    // memory by sessionId — never a per-row query.
+    const pageIds = conversations.map((c: any) => c._id);
+    const allMessages = await ChatSessionMessage.find({
+      sessionId: { $in: pageIds },
+    })
+      .sort({ seq: 1 })
+      .lean()
+      .exec();
+    const messagesBySession = new Map<string, any[]>();
+    for (const message of allMessages) {
+      const key = message.sessionId.toString();
+      const bucket = messagesBySession.get(key);
+      if (bucket) {
+        bucket.push(message);
+      } else {
+        messagesBySession.set(key, [message]);
+      }
+    }
 
     // Process results with computed fields and restructured citations
     const processedConversations = conversations.map((conversation: any) => {
+      const sessionMessages =
+        messagesBySession.get(conversation._id.toString()) || [];
+      const conversationWithMessages = attachMessages(
+        conversation,
+        sessionMessages,
+      );
       const conversationWithComputedFields = addComputedFields(
-        conversation as IConversation,
+        conversationWithMessages as IConversation,
         userId,
       );
 
@@ -4526,16 +5121,10 @@ export const searchArchivedConversations =
     if (!rawSearch || typeof rawSearch !== 'string' || !rawSearch.trim()) {
       throw new BadRequestError('search query parameter is required');
     }
-    if (Array.isArray(rawSearch)) {
-      throw new BadRequestError('Search parameter must be a string, not an array');
-    }
     const searchValue = rawSearch.trim();
-    validateNoXSS(searchValue, 'search parameter');
-    validateNoFormatSpecifiers(searchValue, 'search parameter');
-    if (searchValue.length > 1000) {
-      throw new BadRequestError('Search parameter too long (max 1000 characters)');
-    }
-    const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedSearch = validateAndEscapeSearch(searchValue, {
+      formatSpecifiers: true,
+    });
 
     // ── Pagination ─────────────────────────────────────────────────
     const { skip, limit, page } = getPaginationParams(req);
@@ -4552,19 +5141,24 @@ export const searchArchivedConversations =
     const orgOid = new mongoose.Types.ObjectId(`${orgId}`);
     const userOid = new mongoose.Types.ObjectId(`${userId}`);
 
-    const searchCondition = {
+    // Message content now lives in chatSessionMessages; resolve matching
+    // session ids up front instead of an inline `messages.content` regex.
+    const contentMatchIds = await findSessionIdsMatchingContent(
+      orgId,
+      escapedSearch,
+    );
+    const titleOrContentMatch = {
       $or: [
         { title: { $regex: escapedSearch, $options: 'i' } },
-        { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
+        ...(contentMatchIds.length > 0
+          ? [{ _id: { $in: contentMatchIds } }]
+          : []),
       ],
     };
 
-    // ── Assistant (Conversation) filter ─────────────────────────────
-    const assistantFilter: any = {
-      orgId: orgOid,
-      isDeleted: false,
-      isArchived: true,
-      archivedBy: { $exists: true },
+    // ── Per-type access predicates (both now against chatSessions) ──
+    const assistantAccessPredicate: any = {
+      ...EXCLUDE_AGENT,
       $or: [
         { userId: userOid },
         {
@@ -4574,46 +5168,49 @@ export const searchArchivedConversations =
           ],
         },
       ],
-      $and: [searchCondition],
     };
 
-    // ── Agent (AgentConversation) filter ─────────────────────────────
-    const agentFilter: any = {
+    const agentAccessPredicate: any = {
+      ...ONLY_AGENT,
+      userId: userOid,
+    };
+    if (deletedAgentKeys !== null) {
+      agentAccessPredicate.agentKey = { $nin: deletedAgentKeys };
+    }
+
+    const baseFilter = {
       orgId: orgOid,
       isDeleted: false,
       isArchived: true,
       archivedBy: { $exists: true },
-      userId: userOid,
-      $and: [searchCondition],
+      $and: [titleOrContentMatch],
     };
-    if (deletedAgentKeys !== null) {
-      agentFilter.agentKey = { $nin: deletedAgentKeys };
-    }
 
-    // ── Execute queries: $unionWith aggregation + per-source counts ──
-    // $unionWith (Mongo 4.4+) merges both collections server-side so that
-    // sort, skip, and limit are pushed to MongoDB — avoiding unbounded
-    // in-memory loads when the search matches many documents.
+    // ── Execute: single $match ORing both per-type predicates, one
+    // combined aggregation replacing the old cross-collection $unionWith,
+    // and one countDocuments per predicate ──
     const [aggregateResult, assistantCount, agentCount] = await Promise.all([
-      Conversation.aggregate([
-        { $match: assistantFilter },
-        { $addFields: { source: 'assistant' } },
+      ChatSession.aggregate([
         {
-          $unionWith: {
-            coll: AgentConversation.collection.name,
-            pipeline: [
-              { $match: agentFilter },
-              { $addFields: { source: 'agent' } },
-            ],
+          $match: {
+            ...baseFilter,
+            $or: [assistantAccessPredicate, agentAccessPredicate],
+          },
+        },
+        {
+          $addFields: {
+            source: {
+              $cond: [{ $eq: ['$sessionType', 'agent'] }, 'agent', 'assistant'],
+            },
           },
         },
         { $sort: { lastActivityAt: -1 } },
         { $skip: skip },
         { $limit: limit },
-        { $project: { messages: 0, __v: 0 } },
+        { $project: { __v: 0, nextSeq: 0, sessionType: 0 } },
       ]),
-      Conversation.countDocuments(assistantFilter),
-      AgentConversation.countDocuments(agentFilter),
+      ChatSession.countDocuments({ ...baseFilter, ...assistantAccessPredicate }),
+      ChatSession.countDocuments({ ...baseFilter, ...agentAccessPredicate }),
     ]);
 
     const totalCount = assistantCount + agentCount;
@@ -4699,10 +5296,10 @@ export const search =
           (await aiCommand.execute()) as AIServiceResponse<AiSearchResponse>;
       } catch (error: any) {
         if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
+          throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE, error);
         }
         logger.error(' Failed error ', error);
-        throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
+        throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE, error);
       }
       
       if (!aiResponse || !aiResponse.data) {
@@ -5735,7 +6332,7 @@ export const deleteAgent =
     const { agentKey } = req.params;
 
     let session: ClientSession | null = null;
-    let savedConversation: IAgentConversationDocument | null = null;
+    let savedConversation: IChatSessionDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -5766,31 +6363,58 @@ export const deleteAgent =
         req.body.attachments,
       );
 
-      const userConversationData: Partial<IAgentConversation> = {
+      const projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
+      const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
         initiator: userId,
         title: req.body.query.slice(0, 100),
-        messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         agentKey,
         modelInfo,
+        sessionType: 'agent',
+        // Set explicitly: the legacy agentConversations schema defaulted this,
+        // the unified chatSessions schema can't (it also backs plain chats).
+        conversationSource: 'agent_chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
       // Start transaction if replica set is available
       if (rsAvailable) {
         session = await mongoose.startSession();
         await session.withTransaction(async () => {
-          const conversation = new AgentConversation(userConversationData);
+          const conversation = new ChatSession(userConversationData);
           savedConversation = (await conversation.save({
             session,
-          })) as IAgentConversationDocument;
+          })) as IChatSessionDocument;
+          await appendMessages(
+            savedConversation._id as mongoose.Types.ObjectId,
+            savedConversation.orgId,
+            [userQueryMessage],
+            session,
+          );
         });
       } else {
-        const conversation = new AgentConversation(userConversationData);
+        const conversation = new ChatSession(userConversationData);
         savedConversation =
-          (await conversation.save()) as IAgentConversationDocument;
+          (await conversation.save()) as IChatSessionDocument;
+        await appendMessages(
+          savedConversation._id as mongoose.Types.ObjectId,
+          savedConversation.orgId,
+          [userQueryMessage],
+          session,
+        );
       }
 
       if (!savedConversation) {
@@ -5819,12 +6443,14 @@ export const deleteAgent =
               value: {
                 conversationId: newAgentConversationId,
                 title: savedConversation.title || undefined,
+                ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
               },
             })
           : `event: connected\ndata: ${JSON.stringify({
               message: 'SSE connection established',
               conversationId: newAgentConversationId,
               title: savedConversation.title || undefined,
+              ...(projectLink.projectId ? { projectId: projectLink.projectId } : {}),
             })}\n\n`,
       );
       (res as any).flush?.();
@@ -5845,12 +6471,20 @@ export const deleteAgent =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: newAgentConversationId || null,
+        runId: req.body.runId || null,
         // Explicit protocol propagation — Node hand-builds this request body,
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
       };
-
       assignToolsToPayload(aiPayload, req.body.tools);
+      // Must run after assignToolsToPayload — a project's own tool scope
+      // always wins over whatever the request carried (see
+      // applyProjectScope's doc comment in project-context.ts).
+      applyProjectScope(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
+      }
+
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
 
@@ -5866,27 +6500,66 @@ export const deleteAgent =
         body: aiPayload,
       };
 
-      const stream = await startAIStream(
-        aiCommandOptions,
-        'Agent Chat Stream',
-        { requestId, agentKey },
-      );
-
-      if (!stream) {
-        throw new Error('Failed to get stream from AI service');
-      }
-
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
+      /** Guards `onDisconnect` against also running after the normal
+       * `stream.on('end')`/`'error'` path already finalized this run. */
+      let streamSettled = false;
+      const contentAccumulator = new StreamedContentAccumulator();
 
-      // Handle client disconnect
-      req.on('close', () => {
-        logger.debug('Client disconnected', { requestId });
-        stream.destroy();
+      // Plain `let` would appear permanently `null` to the type checker's
+      // narrowing (it never sees the reassignment inside the closure below),
+      // so `no-unnecessary-condition` would flag the read as dead code even
+      // though it's live at runtime — a mutable holder sidesteps that.
+      const disconnectSave: { pending: Promise<void> | null } = {
+        pending: null,
+      };
+      const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+        if (streamSettled || completeData || !savedConversation) return;
+        streamSettled = true;
+        // `session` is request-scoped and ends (see `finally` below) as
+        // soon as this handler finishes registering stream listeners — long
+        // before a disconnect can fire, so never reuse it here.
+        disconnectSave.pending = savePartialConversation(
+          savedConversation,
+          contentAccumulator.getText(),
+        ).catch((err: any) => {
+          logger.error('Failed to save partial conversation on disconnect', {
+            requestId,
+            error: err?.message,
+          });
+        });
       });
+      let stream: Awaited<ReturnType<typeof startAIStream>>;
+      try {
+        stream = await startAIStream(
+          aiCommandOptions,
+          'Agent Chat Stream',
+          { requestId, agentKey },
+          upstreamAbort.signal,
+        );
+      } catch (streamOpenError) {
+        // Client disconnected while the AI backend request was still in
+        // flight — the disconnect callback above already started the
+        // STOPPED save; await it and bail out before the outer `catch`
+        // can race it with a FAILED save.
+        if (upstreamAbort.isClientDisconnected()) {
+          logger.debug('Client disconnected before AI stream opened', {
+            requestId,
+          });
+          if (disconnectSave.pending) await disconnectSave.pending;
+          return;
+        }
+        throw streamOpenError;
+      }
+
+      if (!stream) {
+        throw new Error('Failed to get stream from AI service');
+      }
+      upstreamAbort.bindStream(stream);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -5941,19 +6614,28 @@ export const deleteAgent =
                 });
                 filteredChunk += event + '\n\n';
               }
+            } else if (agui && eventType === AGUIEventType.TEXT_MESSAGE_CONTENT && dataLine) {
+              // Feed the passive-disconnect accumulator so a partial answer
+              // survives a dropped connection — see savePartialConversation.
+              try {
+                contentAccumulator.feedTextMessageContent(JSON.parse(dataLine));
+              } catch {
+                // Non-fatal: still forward the frame below.
+              }
+              filteredChunk += event + '\n\n';
             } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine) as Record<string, unknown>;
                 const errorMessage =
                   (typeof errorData.message === 'string' && errorData.message) ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   void markAgentConversationFailed(
-                    savedConversation as IAgentConversationDocument,
+                    savedConversation,
                     errorMessage,
                     session,
-                    'streaming_error',
+                    aguiErrorCodeFromPayload(errorData),
                     typeof errorData.stack === 'string' ? errorData.stack : undefined,
                   ).catch((markErr: any) => {
                     logger.error('Failed to mark agent conversation from AI RUN_ERROR SSE', {
@@ -5985,9 +6667,11 @@ export const deleteAgent =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void AgentConversation.findByIdAndUpdate(
-                    savedConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    savedConversation._id as mongoose.Types.ObjectId,
+                    savedConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -6024,13 +6708,25 @@ export const deleteAgent =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (!agui && eventType === 'answer_chunk' && dataLine) {
+              // `accumulated` is the running full text, not a delta — see
+              // LegacyFormatter.answer_delta.
+              try {
+                const parsed = JSON.parse(dataLine) as Record<string, unknown>;
+                if (typeof parsed.accumulated === 'string') {
+                  contentAccumulator.setAccumulatedText(parsed.accumulated);
+                }
+              } catch {
+                // Non-fatal: still forward the frame below.
+              }
+              filteredChunk += event + '\n\n';
             } else if (!agui && eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine) as Record<string, unknown>;
                 const errorMessage =
                   (typeof errorData.message === 'string' && errorData.message) ||
                   (typeof errorData.error === 'string' && errorData.error) ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   const meta =
@@ -6038,7 +6734,7 @@ export const deleteAgent =
                       ? new Map(Object.entries(errorData.metadata as Record<string, unknown>))
                       : undefined;
                   void markAgentConversationFailed(
-                    savedConversation as IAgentConversationDocument,
+                    savedConversation,
                     errorMessage,
                     session,
                     'streaming_error',
@@ -6060,9 +6756,9 @@ export const deleteAgent =
                 });
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
-                  const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
+                  const parseFailMsg = CHAT_ERROR_MESSAGES.failed;
                   void markAgentConversationFailed(
-                    savedConversation as IAgentConversationDocument,
+                    savedConversation,
                     parseFailMsg,
                     session,
                     'parse_error',
@@ -6090,9 +6786,11 @@ export const deleteAgent =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void AgentConversation.findByIdAndUpdate(
-                    savedConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    savedConversation._id as mongoose.Types.ObjectId,
+                    savedConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -6123,6 +6821,7 @@ export const deleteAgent =
       });
 
       stream.on('end', async () => {
+        streamSettled = true;
         logger.debug('Stream ended successfully', { requestId });
         try {
           // Save the complete conversation data to database
@@ -6163,25 +6862,28 @@ export const deleteAgent =
             );
           } else if (!upstreamAiErrorEventForwarded) {
             // Mark as failed if no complete data received (and AI did not already send error SSE)
-            await markAgentConversationFailed(
-              savedConversation as IAgentConversationDocument,
-              'No complete response received from AI service',
-              session,
-            );
+            if (savedConversation) {
+              await markAgentConversationFailed(
+                savedConversation,
+                CHAT_ERROR_MESSAGES.interrupted,
+                session,
+                'no_response',
+              );
+            }
 
             // Send error event
             res.write(
               isAGUI(protocol)
                 ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                    message: 'No complete response received from AI service',
+                    message: CHAT_ERROR_MESSAGES.interrupted,
                     code: 'no_response',
                   })
                 : `event: error\ndata: ${JSON.stringify({
-                    error: 'No complete response received from AI service',
+                    error: CHAT_ERROR_MESSAGES.interrupted,
                   })}\n\n`,
             );
           }
-        } catch (dbError: any) {
+          } catch (dbError: any) {
           logger.error('Failed to save complete conversation', {
             requestId,
             conversationId: savedConversation?._id,
@@ -6189,16 +6891,25 @@ export const deleteAgent =
             error: dbError.message,
           });
 
+          if (savedConversation) {
+            await markAgentConversationFailed(
+              savedConversation,
+              CHAT_ERROR_MESSAGES.saveFailed,
+              session,
+              'save_error',
+              dbError.stack,
+            );
+          }
+
           // Send error event
           res.write(
             isAGUI(protocol)
               ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: 'Failed to save conversation',
+                  message: CHAT_ERROR_MESSAGES.saveFailed,
                   code: 'save_error',
                 })
               : `event: error\ndata: ${JSON.stringify({
-                  error: 'Failed to save conversation',
-                  details: dbError.message,
+                  error: CHAT_ERROR_MESSAGES.saveFailed,
                 })}\n\n`,
           );
         }
@@ -6207,13 +6918,18 @@ export const deleteAgent =
       });
 
       stream.on('error', async (error: Error) => {
+        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
+          logger.debug('Stream aborted due to client disconnect', { requestId });
+          return;
+        }
+        streamSettled = true;
         logger.error('Stream error', { requestId, error: error.message });
         try {
           // Mark conversation as failed
           if (savedConversation) {
             await markAgentConversationFailed(
-              savedConversation as IAgentConversationDocument,
-              `Stream error: ${error.message}`,
+              savedConversation,
+              userFacingChatError(error),
               session,
             );
           }
@@ -6228,12 +6944,11 @@ export const deleteAgent =
 
         const errorEvent = isAGUI(protocol)
           ? frameAGUI(AGUIEventType.RUN_ERROR, {
-              message: error.message || 'Stream error occurred',
+              message: userFacingChatError(error),
               code: 'stream_error',
             })
           : `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Stream error occurred',
-              details: error.message,
+              error: userFacingChatError(error),
             })}\n\n`;
         res.write(errorEvent);
         res.end();
@@ -6245,8 +6960,8 @@ export const deleteAgent =
         // Mark conversation as failed if it was created
         if (savedConversation) {
           await markAgentConversationFailed(
-            savedConversation as IAgentConversationDocument,
-            error.message || 'Internal server error',
+            savedConversation,
+            userFacingChatError(error),
             session,
           );
         }
@@ -6263,12 +6978,11 @@ export const deleteAgent =
 
       const errorEvent = isAGUI(protocol)
         ? frameAGUI(AGUIEventType.RUN_ERROR, {
-            message: error.message || 'Internal server error',
+            message: userFacingChatError(error),
             code: 'internal_error',
           })
         : `event: error\ndata: ${JSON.stringify({
-            error: error.message || 'Internal server error',
-            details: error.message,
+            error: userFacingChatError(error),
           })}\n\n`;
       res.write(errorEvent);
       res.end();
@@ -6319,6 +7033,8 @@ export const createAgentConversation =
       throw new BadRequestError('Query is required');
     }
 
+    let projectLink: ResolvedProjectLink = {};
+
     // Helper function that contains the common conversation operations.
     async function createConversationUtil(
       session?: ClientSession | null,
@@ -6330,25 +7046,40 @@ export const createAgentConversation =
         req.body.attachments,
       );
 
-      const userConversationData: Partial<IAgentConversation> = {
+      const userConversationData: Partial<IChatSession> = {
         orgId,
         userId,
         initiator: userId,
         title: req.body.query.slice(0, 100),
-        messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         agentKey,
         modelInfo,
+        sessionType: 'agent',
+        // Set explicitly: the legacy agentConversations schema defaulted this,
+        // the unified chatSessions schema can't (it also backs plain chats).
+        conversationSource: 'agent_chat',
+        ...(projectLink.projectId
+          ? {
+              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
+              projectVisibility: projectLink.projectVisibility,
+            }
+          : {}),
       };
 
-      const conversation = new AgentConversation(userConversationData);
+      const conversation = new ChatSession(userConversationData);
       const savedConversation = session
         ? await conversation.save({ session })
-        : ((await conversation.save()) as IAgentConversationDocument);
+        : ((await conversation.save()) as IChatSessionDocument);
       if (!savedConversation) {
         throw new InternalServerError('Failed to create conversation');
       }
+      await appendMessages(
+        savedConversation._id as mongoose.Types.ObjectId,
+        savedConversation.orgId,
+        [userQueryMessage],
+        session,
+      );
 
       const aiPayload: Record<string, unknown> = {
         query: req.body.query,
@@ -6364,7 +7095,12 @@ export const createAgentConversation =
         currentTime: req.body.currentTime || null,
         attachments: req.body.attachments || [],
       };
+      assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+      applyProjectScope(aiPayload, projectLink.project);
+      if (projectLink.projectId) {
+        void ProjectService.touchActivity(projectLink.projectId);
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
@@ -6385,7 +7121,8 @@ export const createAgentConversation =
           (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
         if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
           savedConversation.status = CONVERSATION_STATUS.FAILED as any;
-          savedConversation.failReason = `AI service error: ${aiResponseData?.msg || 'Unknown error'} (Status: ${aiResponseData?.statusCode})`;
+          const failReason = userFacingAIResponseError(aiResponseData);
+          savedConversation.failReason = failReason;
 
           const updatedWithError = session
             ? await savedConversation.save({ session })
@@ -6393,12 +7130,12 @@ export const createAgentConversation =
 
           if (!updatedWithError) {
             throw new InternalServerError(
-              'Failed to update conversation status',
+              CHAT_ERROR_MESSAGES.saveFailed,
             );
           }
 
           throw new InternalServerError(
-            'Failed to get AI response',
+            failReason,
             aiResponseData?.data,
           );
         }
@@ -6425,9 +7162,19 @@ export const createAgentConversation =
           modelInfo,
         ) as IMessageDocument;
         // Add the AI message to the conversation
-        savedConversation.messages.push(aiResponseMessage);
+        const insertedAiMessage = (
+          await appendMessages(
+            savedConversation._id as mongoose.Types.ObjectId,
+            savedConversation.orgId,
+            [aiResponseMessage],
+            session,
+          )
+        )[0];
         savedConversation.lastActivityAt = Date.now();
-        savedConversation.status = CONVERSATION_STATUS.COMPLETE as any; // Successful conversation
+        recordClassifiedFailureOnSession(
+          savedConversation,
+          aiResponseData.data as IAIResponse,
+        );
 
         const updatedConversation = session
           ? await savedConversation.save({ session })
@@ -6437,10 +7184,9 @@ export const createAgentConversation =
           throw new InternalServerError('Failed to update conversation');
         }
         const responseConversation = await attachPopulatedCitations(
-          updatedConversation._id as mongoose.Types.ObjectId,
-          updatedConversation.toObject() as IAgentConversation,
+          updatedConversation.toObject(),
+          [insertedAiMessage!.toObject()],
           citations,
-          true,
           session,
         );
         return {
@@ -6453,38 +7199,27 @@ export const createAgentConversation =
         // TODO: Add support for retry mechanism and generate response from retry
         // and append the response to the correct messageId
 
-        savedConversation.status = CONVERSATION_STATUS.FAILED as any;
-        if (error.cause?.code === 'ECONNREFUSED') {
-          savedConversation.failReason = `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
-        } else {
-          savedConversation.failReason =
-            error.message || 'Unknown error occurred';
-        }
-        // persist and serve the error message to the user.
-        const failedMessage =
-          buildAIFailureResponseMessage() as IMessageDocument;
-        savedConversation.messages.push(failedMessage);
-        savedConversation.lastActivityAt = Date.now();
-
-        const savedWithError = session
-          ? await savedConversation.save({ session })
-          : await savedConversation.save();
-
-        if (!savedWithError) {
-          logger.error('Failed to save conversation error state', {
-            requestId,
-            conversationId: savedConversation._id,
-            error: error.message,
-          });
-        }
-        if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
-        }
-        throw error;
+        const failReason = failReasonFromCaughtError(savedConversation, error);
+        await markAgentConversationFailed(
+          savedConversation,
+          failReason,
+          session,
+          'internal_error',
+          error.stack,
+        );
+        // Returned, not thrown: inside a transaction a throw would roll back
+        // the failed state just saved, so replica-set installs lose it.
+        return new CommittedFailure(clientChatError(error, failReason));
       }
     }
 
     try {
+      projectLink = await resolveProjectLink(
+        orgId as unknown as string,
+        userId as unknown as string,
+        req.body as Record<string, unknown>,
+      );
+
       logger.debug('Creating new conversation', {
         requestId,
         userId,
@@ -6498,12 +7233,12 @@ export const createAgentConversation =
       if (rsAvailable) {
         // Start a session and run the operations inside a transaction.
         session = await mongoose.startSession();
-        responseData = await session.withTransaction(() =>
-          createConversationUtil(session),
+        responseData = throwIfFailed(
+          await session.withTransaction(() => createConversationUtil(session)),
         );
       } else {
         // Execute without session/transaction.
-        responseData = await createConversationUtil();
+        responseData = throwIfFailed(await createConversationUtil());
       }
 
       logger.debug('Conversation created successfully', {
@@ -6575,12 +7310,13 @@ export const createAgentConversation =
       // Extract common operations into a helper function.
       async function performAddMessage(session?: ClientSession | null) {
         // Get existing conversation
-        const conversation = await AgentConversation.findOne({
+        const conversation = await ChatSession.findOne({
           _id: req.params.conversationId,
           agentKey,
           orgId,
           userId,
           isDeleted: false,
+          ...ONLY_AGENT,
         });
 
         if (!conversation) {
@@ -6594,9 +7330,13 @@ export const createAgentConversation =
         // add previous conversations to the conversation
         // in case of bot_response message
         // Format previous conversations for context
-        const previousConversations = formatPreviousConversations(
-          conversation.messages,
-        );
+        const existingMessages = (await getMessages(
+          conversation._id as mongoose.Types.ObjectId,
+          {},
+          session,
+        )) as IMessage[];
+        const previousConversations =
+          formatPreviousConversations(existingMessages);
         logger.debug('Previous conversations', {
           previousConversations,
         });
@@ -6608,7 +7348,12 @@ export const createAgentConversation =
           req.body.attachments,
         );
         // First, add the user message to the existing conversation
-        conversation.messages.push(userQueryMessage as IMessageDocument);
+        await appendMessages(
+          conversation._id as mongoose.Types.ObjectId,
+          conversation.orgId,
+          [userQueryMessage],
+          session,
+        );
         conversation.lastActivityAt = Date.now();
 
         const fieldsToUpdate: Array<keyof IAIModel> = [
@@ -6629,7 +7374,7 @@ export const createAgentConversation =
         // Save the user message to the existing conversation first
         const savedConversation = session
           ? await conversation.save({ session })
-          : ((await conversation.save()) as IAgentConversationDocument);
+          : ((await conversation.save()) as IChatSessionDocument);
 
         if (!savedConversation) {
           throw new InternalServerError(
@@ -6660,6 +7405,15 @@ export const createAgentConversation =
         };
         assignToolsToPayload(aiPayload, req.body.tools);
         assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+        const followUpProject = await loadProjectForSession(
+          conversation.orgId.toString(),
+          (conversation.userId as unknown as Types.ObjectId).toString(),
+          conversation.projectId,
+        );
+        applyProjectScope(aiPayload, followUpProject);
+        if (conversation.projectId) {
+          void ProjectService.touchActivity(conversation.projectId.toString());
+        }
 
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
@@ -6677,10 +7431,9 @@ export const createAgentConversation =
             // Update conversation status for AI service connection errors
             conversation.status = CONVERSATION_STATUS.FAILED;
             if (error.cause?.code === 'ECONNREFUSED') {
-              conversation.failReason = `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
+              conversation.failReason = CHAT_ERROR_MESSAGES.unavailable;
             } else {
-              conversation.failReason =
-                error.message || 'Unknown connection error';
+              conversation.failReason = userFacingChatError(error);
             }
 
             const saveErrorStatus = session
@@ -6694,19 +7447,17 @@ export const createAgentConversation =
               });
             }
             if (error.cause && error.cause.code === 'ECONNREFUSED') {
-              throw new InternalServerError(
-                AI_SERVICE_UNAVAILABLE_MESSAGE,
-                error,
-              );
+              throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
             }
             logger.error(' Failed error ', error);
-            throw new InternalServerError('Failed to get AI response', error);
+            throw new InternalServerError(userFacingChatError(error));
           }
 
           if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
             // Update conversation status for API errors
             conversation.status = CONVERSATION_STATUS.FAILED as any;
-            conversation.failReason = `AI service API error: ${aiResponseData?.msg || 'Unknown error'} (Status: ${aiResponseData?.statusCode})`;
+            const failReason = userFacingAIResponseError(aiResponseData);
+            conversation.failReason = failReason;
 
             const saveApiError = session
               ? await conversation.save({ session })
@@ -6720,7 +7471,7 @@ export const createAgentConversation =
             }
 
             throw new InternalServerError(
-              'Failed to get AI response',
+              failReason,
               aiResponseData?.data,
             );
           }
@@ -6747,9 +7498,19 @@ export const createAgentConversation =
             modelInfo,
           ) as IMessageDocument;
           // Add the AI message to the existing conversation
-          savedConversation.messages.push(aiResponseMessage);
+          const insertedAiMessage = (
+            await appendMessages(
+              savedConversation._id as mongoose.Types.ObjectId,
+              savedConversation.orgId,
+              [aiResponseMessage],
+              session,
+            )
+          )[0];
           savedConversation.lastActivityAt = Date.now();
-          savedConversation.status = CONVERSATION_STATUS.COMPLETE as any;
+          recordClassifiedFailureOnSession(
+            savedConversation,
+            aiResponseData.data as IAIResponse,
+          );
 
           // Save the updated conversation with AI response
           const updatedConversation = session
@@ -6764,10 +7525,9 @@ export const createAgentConversation =
 
           // Return the updated conversation with new messages.
           const responseConversation = await attachPopulatedCitations(
-            updatedConversation._id as mongoose.Types.ObjectId,
-            updatedConversation.toObject() as IAgentConversation,
+            updatedConversation.toObject(),
+            [insertedAiMessage!.toObject()],
             savedCitations,
-            true,
             session,
           );
           return {
@@ -6779,42 +7539,28 @@ export const createAgentConversation =
           // and append the response to the correct messageId
 
           // Update conversation status for general errors
-          conversation.status = CONVERSATION_STATUS.FAILED as any;
-          conversation.failReason = error.message || 'Unknown error occurred';
-
-          // persist and serve the error message to the user.
-          const failedMessage =
-            buildAIFailureResponseMessage() as IMessageDocument;
-          conversation.messages.push(failedMessage);
-          conversation.lastActivityAt = Date.now();
-          const saveGeneralError = session
-            ? await conversation.save({ session })
-            : await conversation.save();
-
-          if (!saveGeneralError) {
-            logger.error('Failed to save conversation general error status', {
-              requestId,
-              conversationId: conversation._id,
-            });
-          }
-          if (error.cause && error.cause.code === 'ECONNREFUSED') {
-            throw new InternalServerError(
-              AI_SERVICE_UNAVAILABLE_MESSAGE,
-              error,
-            );
-          }
-          throw error;
+          const failReason = failReasonFromCaughtError(conversation, error);
+          await markAgentConversationFailed(
+            conversation,
+            failReason,
+            session,
+            'internal_error',
+            error.stack,
+          );
+          // Returned, not thrown: inside a transaction a throw would roll
+          // back the failed state just saved, so replica-set installs lose it.
+          return new CommittedFailure(clientChatError(error, failReason));
         }
       }
 
       let responseData;
       if (rsAvailable) {
         session = await mongoose.startSession();
-        responseData = await session.withTransaction(() =>
-          performAddMessage(session),
+        responseData = throwIfFailed(
+          await session.withTransaction(() => performAddMessage(session)),
         );
       } else {
-        responseData = await performAddMessage();
+        responseData = throwIfFailed(await performAddMessage());
       }
 
       logger.debug('Message added successfully', {
@@ -6880,7 +7626,7 @@ export const addMessageStreamToAgentConversation =
     const { conversationId, agentKey } = req.params;
 
     let session: ClientSession | null = null;
-    let existingConversation: IAgentConversationDocument | null = null;
+    let existingConversation: IChatSessionDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -6897,12 +7643,13 @@ export const addMessageStreamToAgentConversation =
       session?: ClientSession | null,
     ): Promise<void> {
       // Get existing conversation
-      const conversation = await AgentConversation.findOne({
+      const conversation = await ChatSession.findOne({
         _id: conversationId,
         agentKey,
         orgId,
         userId,
         isDeleted: false,
+        ...ONLY_AGENT,
       });
 
       if (!conversation) {
@@ -6929,20 +7676,25 @@ export const addMessageStreamToAgentConversation =
       }
 
       // First, add the user message to the existing conversation
-      conversation.messages.push(
-        buildUserQueryMessage(
-          req.body.query,
-          req.body.appliedFilters,
-          req.body.chatMode,
-          req.body.attachments,
-        ) as IMessageDocument,
+      await appendMessages(
+        conversation._id as mongoose.Types.ObjectId,
+        conversation.orgId,
+        [
+          buildUserQueryMessage(
+            req.body.query,
+            req.body.appliedFilters,
+            req.body.chatMode,
+            req.body.attachments,
+          ),
+        ],
+        session,
       );
       conversation.lastActivityAt = Date.now();
 
       // Save the user message to the existing conversation first
       const savedConversation = session
         ? await conversation.save({ session })
-        : ((await conversation.save()) as IAgentConversationDocument);
+        : ((await conversation.save()) as IChatSessionDocument);
 
       if (!savedConversation) {
         throw new InternalServerError(
@@ -7003,13 +7755,16 @@ export const addMessageStreamToAgentConversation =
       if (!existingConversation) {
         throw new NotFoundError('Conversation not found');
       }
+      const confirmedConversation = existingConversation as IChatSessionDocument;
 
       // Format previous conversations for context (excluding the user message we just added)
+      const allMessagesSoFar = (await getMessages(
+        confirmedConversation._id as mongoose.Types.ObjectId,
+        {},
+        session,
+      )) as IMessage[];
       const previousConversations = formatPreviousConversations(
-        (existingConversation as IConversationDocument).messages.slice(
-          0,
-          -1,
-        ) as IMessage[],
+        allMessagesSoFar.slice(0, -1),
       );
 
       // Prepare AI payload
@@ -7027,6 +7782,7 @@ export const addMessageStreamToAgentConversation =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: conversationId || null,
+        runId: req.body.runId || null,
         // Explicit protocol propagation — Node hand-builds this request body,
         // so a header alone would never reach Python (see agui.ts docstring).
         ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
@@ -7034,6 +7790,15 @@ export const addMessageStreamToAgentConversation =
       assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+      const followUpProject = await loadProjectForSession(
+        confirmedConversation.orgId.toString(),
+        (confirmedConversation.userId as unknown as Types.ObjectId).toString(),
+        confirmedConversation.projectId,
+      );
+      applyProjectScope(aiPayload, followUpProject);
+      if (confirmedConversation.projectId) {
+        void ProjectService.touchActivity(confirmedConversation.projectId.toString());
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
@@ -7045,27 +7810,66 @@ export const addMessageStreamToAgentConversation =
         body: aiPayload,
       };
 
-      const stream = await startAIStream(
-        aiCommandOptions,
-        'Add Message Agent Stream',
-        { requestId, agentKey },
-      );
-
-      if (!stream) {
-        throw new Error('Failed to get stream from AI service');
-      }
-
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
+      /** Guards `onDisconnect` against also running after the normal
+       * `stream.on('end')`/`'error'` path already finalized this run. */
+      let streamSettled = false;
+      const contentAccumulator = new StreamedContentAccumulator();
 
-      // Handle client disconnect
-      req.on('close', () => {
-        logger.debug('Client disconnected', { requestId });
-        stream.destroy();
+      // Plain `let` would appear permanently `null` to the type checker's
+      // narrowing (it never sees the reassignment inside the closure below),
+      // so `no-unnecessary-condition` would flag the read as dead code even
+      // though it's live at runtime — a mutable holder sidesteps that.
+      const disconnectSave: { pending: Promise<void> | null } = {
+        pending: null,
+      };
+      const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
+        if (streamSettled || completeData || !existingConversation) return;
+        streamSettled = true;
+        // `session` is request-scoped and ends (see `finally` below) as
+        // soon as this handler finishes registering stream listeners — long
+        // before a disconnect can fire, so never reuse it here.
+        disconnectSave.pending = savePartialConversation(
+          existingConversation,
+          contentAccumulator.getText(),
+        ).catch((err: any) => {
+          logger.error('Failed to save partial conversation on disconnect', {
+            requestId,
+            error: err?.message,
+          });
+        });
       });
+      let stream: Awaited<ReturnType<typeof startAIStream>>;
+      try {
+        stream = await startAIStream(
+          aiCommandOptions,
+          'Add Message Agent Stream',
+          { requestId, agentKey },
+          upstreamAbort.signal,
+        );
+      } catch (streamOpenError) {
+        // Client disconnected while the AI backend request was still in
+        // flight — the disconnect callback above already started the
+        // STOPPED save; await it and bail out before the outer `catch`
+        // can race it with a FAILED save.
+        if (upstreamAbort.isClientDisconnected()) {
+          logger.debug('Client disconnected before AI stream opened', {
+            requestId,
+          });
+          if (disconnectSave.pending) await disconnectSave.pending;
+          return;
+        }
+        throw streamOpenError;
+      }
+
+      if (!stream) {
+        throw new Error('Failed to get stream from AI service');
+      }
+      upstreamAbort.bindStream(stream);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -7118,18 +7922,35 @@ export const addMessageStreamToAgentConversation =
                 });
                 filteredChunk += event + '\n\n';
               }
+            } else if (agui && eventType === AGUIEventType.TEXT_MESSAGE_CONTENT && dataLine) {
+              // Feed the passive-disconnect accumulator so a partial answer
+              // survives a dropped connection — see savePartialConversation.
+              try {
+                contentAccumulator.feedTextMessageContent(JSON.parse(dataLine));
+              } catch {
+                // Non-fatal: still forward the frame below.
+              }
+              filteredChunk += event + '\n\n';
             } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
-                const errorMessage = errorData.message || 'Unknown error occurred';
+                const errorMessage =
+                  errorData.message || CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
-                markAgentConversationFailed(
-                  existingConversation as IAgentConversationDocument,
-                  errorMessage,
-                  session,
-                  'streaming_error',
-                  errorData.stack,
-                );
+                if (existingConversation) {
+                  void markAgentConversationFailed(
+                    existingConversation,
+                    errorMessage,
+                    session,
+                    aguiErrorCodeFromPayload(errorData as Record<string, unknown>),
+                    errorData.stack,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation from AI RUN_ERROR SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse RUN_ERROR event data', {
@@ -7153,9 +7974,11 @@ export const addMessageStreamToAgentConversation =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void AgentConversation.findByIdAndUpdate(
-                    existingConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -7191,24 +8014,43 @@ export const addMessageStreamToAgentConversation =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
+            } else if (!agui && eventType === 'answer_chunk' && dataLine) {
+              // `accumulated` is the running full text, not a delta — see
+              // LegacyFormatter.answer_delta.
+              try {
+                const parsed = JSON.parse(dataLine) as Record<string, unknown>;
+                if (typeof parsed.accumulated === 'string') {
+                  contentAccumulator.setAccumulatedText(parsed.accumulated);
+                }
+              } catch {
+                // Non-fatal: still forward the frame below.
+              }
+              filteredChunk += event + '\n\n';
             } else if (!agui && eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
                 const errorMessage =
                   errorData.message ||
                   errorData.error ||
-                  'Unknown error occurred';
+                  CHAT_ERROR_MESSAGES.failed;
                 upstreamAiErrorEventForwarded = true;
-                markAgentConversationFailed(
-                  existingConversation as IAgentConversationDocument,
-                  errorMessage,
-                  session,
-                  'streaming_error',
-                  errorData.stack,
-                  errorData.metadata
-                    ? new Map(Object.entries(errorData.metadata))
-                    : undefined,
-                );
+                if (existingConversation) {
+                  void markAgentConversationFailed(
+                    existingConversation,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    errorData.stack,
+                    errorData.metadata
+                      ? new Map(Object.entries(errorData.metadata))
+                      : undefined,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation from AI error SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse error event data', {
@@ -7218,13 +8060,18 @@ export const addMessageStreamToAgentConversation =
                 });
                 upstreamAiErrorEventForwarded = true;
                 if (existingConversation) {
-                  markAgentConversationFailed(
-                    existingConversation as IAgentConversationDocument,
-                    `Failed to parse error event: ${parseError.message}`,
+                  void markAgentConversationFailed(
+                    existingConversation,
+                    CHAT_ERROR_MESSAGES.failed,
                     session,
                     'parse_error',
                     parseError.stack,
-                  );
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation after error-event parse failure', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
                 }
                 filteredChunk += event + '\n\n';
               }
@@ -7242,9 +8089,11 @@ export const addMessageStreamToAgentConversation =
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
-                  void AgentConversation.findByIdAndUpdate(
-                    existingConversation._id,
-                    { $push: { messages: toolCallMessage } },
+                  void appendMessages(
+                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation.orgId,
+                    [toolCallMessage as unknown as IMessage],
+                    session,
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
                       requestId,
@@ -7276,6 +8125,7 @@ export const addMessageStreamToAgentConversation =
 
       stream.on('end', async () => {
         logger.debug('Stream ended successfully', { requestId });
+        streamSettled = true;
         try {
           // Save the AI response to the existing conversation
           if (completeData && existingConversation) {
@@ -7304,14 +8154,21 @@ export const addMessageStreamToAgentConversation =
               ) as IMessageDocument;
 
               // Add the AI message to the existing conversation
-              existingConversation.messages.push(aiResponseMessage);
+              const insertedAiMessage = (
+                await appendMessages(
+                  existingConversation._id as mongoose.Types.ObjectId,
+                  existingConversation.orgId,
+                  [aiResponseMessage],
+                  session,
+                )
+              )[0];
               existingConversation.lastActivityAt = Date.now();
-              existingConversation.status = CONVERSATION_STATUS.COMPLETE as any;
+              recordClassifiedFailureOnSession(existingConversation, completeData);
 
               // Save the updated conversation with AI response
               const updatedConversation = session
                 ? await existingConversation.save({ session })
-                : ((await existingConversation.save()) as IAgentConversationDocument);
+                : ((await existingConversation.save()) as IChatSessionDocument);
 
               if (!updatedConversation) {
                 throw new InternalServerError(
@@ -7321,10 +8178,9 @@ export const addMessageStreamToAgentConversation =
 
               // Return the updated conversation in the same format as addMessage
               const responseConversation = await attachPopulatedCitations(
-                updatedConversation._id as mongoose.Types.ObjectId,
-                updatedConversation.toObject() as IAgentConversation,
+                updatedConversation.toObject(),
+                [insertedAiMessage!.toObject()],
                 savedCitations,
-                true,
                 session,
               );
 
@@ -7356,36 +8212,19 @@ export const addMessageStreamToAgentConversation =
                 },
               );
             } catch (error: any) {
-              // Update conversation status for general errors
               if (existingConversation) {
-                existingConversation.status = CONVERSATION_STATUS.FAILED as any;
-                existingConversation.failReason =
-                  error.message || 'Unknown error occurred';
-
-                // Add error message using existing utility
-                const failedMessage =
-                  buildAIFailureResponseMessage() as IMessageDocument;
-                existingConversation.messages.push(failedMessage);
-                existingConversation.lastActivityAt = Date.now();
-
-                const saveGeneralError = session
-                  ? await existingConversation.save({ session })
-                  : await existingConversation.save();
-
-                if (!saveGeneralError) {
-                  logger.error(
-                    'Failed to save conversation general error status',
-                    {
-                      requestId,
-                      conversationId: existingConversation._id,
-                    },
-                  );
-                }
+                await markAgentConversationFailed(
+                  existingConversation,
+                  userFacingChatError(error),
+                  session,
+                  'internal_error',
+                  error.stack,
+                );
               }
 
               if (error.cause && error.cause.code === 'ECONNREFUSED') {
                 throw new InternalServerError(
-                  AI_SERVICE_UNAVAILABLE_MESSAGE,
+                  SERVICE_UNAVAILABLE_MESSAGE,
                   error,
                 );
               }
@@ -7394,32 +8233,23 @@ export const addMessageStreamToAgentConversation =
           } else if (!upstreamAiErrorEventForwarded) {
             // Mark as failed if no complete data received (and AI did not already send error SSE)
             if (existingConversation) {
-              existingConversation.status = CONVERSATION_STATUS.FAILED as any;
-              existingConversation.failReason =
-                'No complete response received from AI service';
-              existingConversation.lastActivityAt = Date.now();
-
-              const savedWithError = session
-                ? await existingConversation.save({ session })
-                : ((await existingConversation.save()) as IAgentConversationDocument);
-
-              if (!savedWithError) {
-                logger.error('Failed to save conversation error state', {
-                  requestId,
-                  conversationId: existingConversation._id,
-                });
-              }
+              await markAgentConversationFailed(
+                existingConversation,
+                CHAT_ERROR_MESSAGES.interrupted,
+                session,
+                'no_response',
+              );
             }
 
             // Send error event
             res.write(
               isAGUI(protocol)
                 ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                    message: 'No complete response received from AI service',
+                    message: CHAT_ERROR_MESSAGES.interrupted,
                     code: 'no_response',
                   })
                 : `event: error\ndata: ${JSON.stringify({
-                    error: 'No complete response received from AI service',
+                    error: CHAT_ERROR_MESSAGES.interrupted,
                   })}\n\n`,
             );
           }
@@ -7434,12 +8264,11 @@ export const addMessageStreamToAgentConversation =
           res.write(
             isAGUI(protocol)
               ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: 'Failed to save AI response',
+                  message: CHAT_ERROR_MESSAGES.saveFailed,
                   code: 'save_error',
                 })
               : `event: error\ndata: ${JSON.stringify({
-                  error: 'Failed to save AI response',
-                  details: dbError.message,
+                  error: CHAT_ERROR_MESSAGES.saveFailed,
                 })}\n\n`,
           );
         }
@@ -7448,12 +8277,18 @@ export const addMessageStreamToAgentConversation =
       });
 
       stream.on('error', async (error: Error) => {
+        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
+          logger.debug('Stream aborted due to client disconnect', { requestId });
+          return;
+        }
+        streamSettled = true;
         logger.error('Stream error', { requestId, error: error.message });
         try {
           if (existingConversation) {
-            markAgentConversationFailed(
-              existingConversation as IAgentConversationDocument,
-              error.message,
+            // Awaited so the catch below actually observes a rejection.
+            await markAgentConversationFailed(
+              existingConversation,
+              userFacingChatError(error),
               session,
             );
           }
@@ -7468,12 +8303,11 @@ export const addMessageStreamToAgentConversation =
 
         const errorEvent = isAGUI(protocol)
           ? frameAGUI(AGUIEventType.RUN_ERROR, {
-              message: error.message || 'Stream error occurred',
+              message: userFacingChatError(error),
               code: 'stream_error',
             })
           : `event: error\ndata: ${JSON.stringify({
-              error: error.message || 'Stream error occurred',
-              details: error.message,
+              error: userFacingChatError(error),
             })}\n\n`;
         res.write(errorEvent);
         res.end();
@@ -7487,39 +8321,14 @@ export const addMessageStreamToAgentConversation =
       });
 
       try {
-        // Mark conversation as failed if it exists
         if (existingConversation) {
-          (existingConversation as IAgentConversationDocument).status =
-            CONVERSATION_STATUS.FAILED as any;
-          (existingConversation as IAgentConversationDocument).failReason =
-            error.message || 'Internal server error';
-
-          // Add error message using existing utility
-          const failedMessage =
-            buildAIFailureResponseMessage() as IMessageDocument;
-          (existingConversation as IAgentConversationDocument).messages.push(
-            failedMessage,
+          await markAgentConversationFailed(
+            existingConversation as IChatSessionDocument,
+            userFacingChatError(error),
+            session,
+            'internal_error',
+            error.stack,
           );
-          (existingConversation as IAgentConversationDocument).lastActivityAt =
-            Date.now();
-
-          const saveGeneralError = session
-            ? await (existingConversation as IAgentConversationDocument).save({
-                session,
-              })
-            : await (existingConversation as IAgentConversationDocument).save();
-
-          if (!saveGeneralError) {
-            logger.error(
-              'Failed to save conversation general error status in catch block',
-              {
-                requestId,
-                conversationId: (
-                  existingConversation as IAgentConversationDocument
-                )._id,
-              },
-            );
-          }
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
@@ -7536,12 +8345,11 @@ export const addMessageStreamToAgentConversation =
 
       const errorEvent = isAGUI(protocol)
         ? frameAGUI(AGUIEventType.RUN_ERROR, {
-            message: error.message || 'Internal server error',
+            message: userFacingChatError(error),
             code: 'internal_error',
           })
         : `event: error\ndata: ${JSON.stringify({
-            error: error.message || 'Internal server error',
-            details: error.message,
+            error: userFacingChatError(error),
           })}\n\n`;
       res.write(errorEvent);
       res.end();
@@ -7574,13 +8382,14 @@ export const regenerateAgentAnswers =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
     await regenerateAnswersInternal(appConfig, req, res, {
-      conversationModel: AgentConversation,
+      isAgentSession: true,
       buildQueryFilter: (conversationId, orgId, userId, agentKey) => ({
         _id: conversationId,
         agentKey,
         orgId,
         userId,
         isDeleted: false,
+        ...ONLY_AGENT,
         $or: [
           { initiator: userId },
           { 'sharedWith.userId': userId },
@@ -7590,6 +8399,67 @@ export const regenerateAgentAnswers =
       buildAIEndpoint: (appConfig, agentKey) =>
         `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
     });
+  };
+
+/**
+ * Agent-conversation counterpart of `cancelConversationStream` — same
+ * `buildAgentConversationFilter` ownership check used by
+ * `getAgentConversationById`/`deleteAgentConversationById`, then forwards to
+ * the SAME Python `/chat/cancel` endpoint (registry is keyed by `runId`
+ * alone, not by which route created it).
+ */
+export const cancelAgentConversationStream =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    const { conversationId, agentKey } = req.params;
+    const { runId } = req.body;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    try {
+      const filter = buildAgentConversationFilter(
+        req,
+        orgId as string,
+        userId as string,
+        agentKey as string,
+        conversationId as string,
+      );
+      const conversation = await ChatSession.findOne(filter);
+      if (!conversation) {
+        throw new NotFoundError('Conversation not found or unauthorized');
+      }
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/chat/cancel`,
+        method: HttpMethod.POST,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        // See cancelConversationStream: conversationId is forwarded so
+        // Python can scope the RunOwner check to it, not just user/org.
+        body: { runId, conversationId },
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(aiResponse, 'Cancel Agent Conversation Stream');
+      }
+      res.status(HTTP_STATUS.OK).json(aiResponse.data);
+    } catch (error: any) {
+      logger.error('Error cancelling agent conversation stream', {
+        requestId,
+        conversationId,
+        agentKey,
+        runId,
+        error: error.message,
+      });
+      const backendError = handleBackendError(error, 'Cancel Agent Conversation Stream');
+      next(backendError);
+    }
   };
 
 export const getAllAgentConversations = async (
@@ -7616,6 +8486,20 @@ export const getAllAgentConversations = async (
     });
 
     const { skip, limit, page } = getPaginationParams(req);
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search, {
+        formatSpecifiers: true,
+      });
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
+    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
+      orgId,
+      userId,
+    );
     const filter = {
       ...buildAgentConversationFilter(
         req,
@@ -7623,6 +8507,8 @@ export const getAllAgentConversations = async (
         userId,
         agentKey as string,
         conversationId as string,
+        contentMatchIds,
+        accessibleProjectIds,
       ),
       // Sidebar / chat list: omit archived threads (archived view uses a dedicated route).
       isArchived: { $ne: true },
@@ -7631,28 +8517,26 @@ export const getAllAgentConversations = async (
 
     // sharedWith Me Conversation
     const sharedWithMeFilter = {
-      ...buildAgentSharedWithMeFilter(req, userId, agentKey as string),
+      ...buildAgentSharedWithMeFilter(req, orgId, userId, agentKey as string),
       isArchived: { $ne: true },
     };
 
     // Execute query
     const [conversations, totalCount, sharedWithMeConversations] =
       await Promise.all([
-        AgentConversation.find(filter)
+        ChatSession.find(filter)
           .sort(sortOptions as any)
           .skip(skip)
           .limit(limit)
           .select('-__v')
-          .select('-messages')
           .lean()
           .exec(),
-        AgentConversation.countDocuments(filter),
-        AgentConversation.find(sharedWithMeFilter)
+        ChatSession.countDocuments(filter),
+        ChatSession.find(sharedWithMeFilter)
           .sort(sortOptions as any)
           .skip(skip)
           .limit(limit)
           .select('-__v')
-          .select('-messages')
           .select('-sharedWith')
           .lean()
           .exec(),
@@ -7735,12 +8619,28 @@ export const getAgentConversationById = async (
     const { page, limit } = getPaginationParams(req);
 
     // Build the base filter with access control
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search, {
+        formatSpecifiers: true,
+      });
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
+    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
+      orgId,
+      userId,
+    );
     const baseFilter = buildAgentConversationFilter(
       req,
       orgId,
       userId,
       agentKey as string,
       conversationId as string,
+      contentMatchIds,
+      accessibleProjectIds,
     );
 
     // Build message filter
@@ -7752,25 +8652,11 @@ export const getAgentConversationById = async (
       sortOrder as string,
     );
 
-    const countResult = await AgentConversation.aggregate([
-      { $match: baseFilter },
-      { $project: { messageCount: { $size: '$messages' } } },
-    ]);
-
-    if (!countResult.length) {
-      throw new NotFoundError('Conversation not found');
-    }
-
-    const totalMessages = countResult[0].messageCount;
-
-    // Calculate skip and limit for backward pagination
-    const skip = Math.max(0, totalMessages - page * limit);
-    const effectiveLimit = Math.min(limit, totalMessages - skip);
-
-    // Get conversation with paginated messages
-    const conversationWithMessages = await AgentConversation.findOne(baseFilter)
+    const session = await ChatSession.findOne({
+      ...baseFilter,
+      ...ONLY_AGENT,
+    })
       .select({
-        messages: { $slice: [skip, effectiveLimit] },
         title: 1,
         initiator: 1,
         createdAt: 1,
@@ -7779,14 +8665,33 @@ export const getAgentConversationById = async (
         status: 1,
         failReason: 1,
         modelInfo: 1,
-      })
-      .populate({
-        path: 'messages.citations.citationId',
-        model: 'citation',
-        select: '-__v',
+        projectId: 1,
+        projectVisibility: 1,
       })
       .lean()
       .exec();
+
+    if (!session) {
+      throw new NotFoundError('Conversation not found');
+    }
+
+    const sessionId = session._id as unknown as Types.ObjectId;
+
+    const totalMessages = await ChatSessionMessage.countDocuments({
+      sessionId,
+    });
+
+    // Calculate skip and limit for backward pagination
+    const skip = Math.max(0, totalMessages - page * limit);
+    const effectiveLimit = Math.min(limit, totalMessages - skip);
+
+    const messages = await getMessages(sessionId, {
+      skip,
+      limit: effectiveLimit,
+      populateCitations: true,
+    });
+
+    const conversationWithMessages = attachMessages(session, messages);
 
     // Sort messages using existing helper
     const sortedMessages = sortMessages(
@@ -7797,7 +8702,7 @@ export const getAgentConversationById = async (
 
     // Build conversation response using existing helper
     const conversationResponse = buildConversationResponse(
-      conversationWithMessages as unknown as IAgentConversationDocument,
+      conversationWithMessages as unknown as IChatSessionDocument,
       userId,
       {
         page,
@@ -7908,13 +8813,14 @@ export const archiveAgentConversation = async (
     });
 
     async function performArchive(s?: ClientSession | null) {
-      const conversation = await AgentConversation.findOne(
+      const conversation = await ChatSession.findOne(
         {
           _id: conversationId,
           userId,
           orgId,
           agentKey,
           isDeleted: false,
+          ...ONLY_AGENT,
         },
         null,
         { session: s },
@@ -7928,8 +8834,8 @@ export const archiveAgentConversation = async (
         throw new BadRequestError('Agent conversation already archived');
       }
 
-      const updated = await AgentConversation.findByIdAndUpdate(
-        conversationId,
+      const updated = await ChatSession.findOneAndUpdate(
+        { _id: conversationId, ...ONLY_AGENT },
         {
           $set: {
             isArchived: true,
@@ -8009,13 +8915,14 @@ export const unarchiveAgentConversation = async (
     });
 
     async function performUnarchive(s?: ClientSession | null) {
-      const conversation = await AgentConversation.findOne(
+      const conversation = await ChatSession.findOne(
         {
           _id: conversationId,
           userId,
           orgId,
           agentKey,
           isDeleted: false,
+          ...ONLY_AGENT,
         },
         null,
         { session: s },
@@ -8029,8 +8936,8 @@ export const unarchiveAgentConversation = async (
         throw new BadRequestError('Agent conversation is not archived');
       }
 
-      const updated = await AgentConversation.findByIdAndUpdate(
-        conversationId,
+      const updated = await ChatSession.findOneAndUpdate(
+        { _id: conversationId, ...ONLY_AGENT },
         {
           $set: {
             isArchived: false,
@@ -8103,23 +9010,39 @@ export const listAllArchivesAgentConversation = () =>
     });
 
     const { skip, limit, page } = getPaginationParams(req);
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search, {
+        formatSpecifiers: true,
+      });
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
     const filter = {
-      ...buildAgentConversationFilter(req, orgId, userId, agentKey as string),
+      ...buildAgentConversationFilter(
+        req,
+        orgId,
+        userId,
+        agentKey as string,
+        undefined,
+        contentMatchIds,
+      ),
       isArchived: true,
       archivedBy: { $exists: true },
     };
     const sortOptions = buildSortOptions(req);
 
     const [conversations, totalCount] = await Promise.all([
-      AgentConversation.find(filter)
+      ChatSession.find(filter)
         .sort(sortOptions as any)
         .skip(skip)
         .limit(limit)
         .select('-__v')
-        .select('-messages')
         .lean()
         .exec(),
-      AgentConversation.countDocuments(filter),
+      ChatSession.countDocuments(filter),
     ]);
 
     const processedConversations = conversations.map((conversation: any) => ({
@@ -8184,12 +9107,13 @@ export const updateAgentConversationTitle = async (
       timestamp: new Date().toISOString(),
     });
 
-    const conversation = await AgentConversation.findOne({
+    const conversation = await ChatSession.findOne({
       _id: conversationId,
       orgId,
       userId,
       agentKey,
       isDeleted: false,
+      ...ONLY_AGENT,
     });
 
     if (!conversation) {
@@ -8262,6 +9186,7 @@ export const updateAgentFeedback = async (
       userId,
       agentKey,
       isDeleted: false,
+      ...ONLY_AGENT,
     };
 
     let updatedConversation, feedbackEntry;
@@ -8269,13 +9194,13 @@ export const updateAgentFeedback = async (
       session = await mongoose.startSession();
       ({ updatedConversation, feedbackEntry } = await session.withTransaction(
         () => performFeedbackUpdate({
-          model: AgentConversation, query, conversationId: conversationId!, messageId: messageId!,
+          query, conversationId: conversationId!, messageId: messageId!,
           userId: userId!, body: req.body, userAgent: req.headers['user-agent'], session,
         }),
       ));
     } else {
       ({ updatedConversation, feedbackEntry } = await performFeedbackUpdate({
-        model: AgentConversation, query, conversationId: conversationId!, messageId: messageId!,
+        query, conversationId: conversationId!, messageId: messageId!,
         userId: userId!, body: req.body, userAgent: req.headers['user-agent'],
       }));
     }
@@ -8364,6 +9289,7 @@ export const listAllAgentsArchivedConversationsGrouped =
       isArchived: true,
       archivedBy: { $exists: true },
       isDeleted: false,
+      ...ONLY_AGENT,
     };
     if (deletedAgentKeys !== null) {
       filter.agentKey = { $nin: deletedAgentKeys };
@@ -8372,18 +9298,18 @@ export const listAllAgentsArchivedConversationsGrouped =
     // Amazon DocumentDB does not support the $facet stage (see AWS aggregation compatibility).
     // Use a cheap count pipeline + the full data pipeline instead of $facet.
     const [countRows, rawGroups] = await Promise.all([
-      AgentConversation.aggregate<{ totalAgentCount: number }>([
+      ChatSession.aggregate<{ totalAgentCount: number }>([
         { $match: filter },
         { $group: { _id: '$agentKey' } },
         { $count: 'totalAgentCount' },
       ]),
-      AgentConversation.aggregate([
+      ChatSession.aggregate([
         { $match: filter },
         // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
         // so that the initial 5 chats here align with page 1 of the per-agent pagination
         { $sort: { lastActivityAt: -1 as const } },
         // Exclude heavy fields before grouping
-        { $project: { __v: 0, messages: 0 } },
+        { $project: { __v: 0, messages: 0, nextSeq: 0, sessionType: 0 } },
         {
           $group: {
             _id: '$agentKey',

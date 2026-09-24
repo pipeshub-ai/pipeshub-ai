@@ -1,13 +1,15 @@
 import asyncio
-import hashlib
-import json
+import math
+import os
 import time
 import traceback
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
+
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -20,22 +22,46 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.fastapi_responses import Status
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import GroupType
+from app.modules.retrieval.result_merging import (
+    CollectionResults,
+    ResultMerger,
+    merge_collection_results,
+    merger_for,
+)
 from app.modules.transformers.blob_storage import BlobStorage
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.featureflag.config.config import CONFIG
+from app.services.featureflag.platform_settings import read_platform_feature_flag
+from app.services.graph_db.interface.graph_db_provider import (
+    AccessibleContainers,
+    IGraphDBProvider,
+    _unsupported_container_filters,
+    requested_scope_ids,
+)
+from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     FusionMethod,
     HybridSearchRequest,
 )
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
+from app.services.vector_db.strategy import ContextAxis, QueryContext
 from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
+    embedding_config_hash,
     get_default_embedding_model,
     get_embedding_model,
     get_generator_model,
 )
+from app.utils.embedding_retry import await_with_retry
 from app.utils.chat_helpers import (
+    GRAPH_BATCH_CHUNK_SIZE,
     get_flattened_results,
     get_record,
 )
@@ -45,6 +71,70 @@ from app.utils.image_utils import get_extension_from_mimetype
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
 USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
+
+# Applied when a caller passes no limit at all. Matches `search_with_filters`'s
+# own default so the None path and the omitted path retrieve the same amount.
+DEFAULT_SEARCH_LIMIT = 20
+
+_RETRIEVAL_EMBED_MAX_RETRIES = 3
+
+# Caps concurrent per-collection queries during search fan-out. One under the
+# default SingleCollectionStrategy; a multi-collection strategy must not turn
+# one user search into an unbounded burst against the vector DB.
+def _fanout_concurrency() -> int:
+    """Read at import; a malformed value must not take the service down."""
+    raw = os.getenv("SEARCH_FANOUT_CONCURRENCY", "5")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 5
+
+
+SEARCH_FANOUT_CONCURRENCY = _fanout_concurrency()
+
+
+# One retry. A shortfall the first over-fetch did not cover is rare by design;
+# a user who can see a sliver of a huge record-level group would never converge,
+# and an uncapped loop turns a recall problem into a latency one as well.
+MAX_SEARCH_ATTEMPTS = 2
+
+# Fraction of `verify` containers assumed to be denied when sizing the first
+# fetch. Assuming all of them (1.0) makes the multiplier diverge as the verify
+# share approaches 1; half is a defensible prior and the retry covers the tail.
+_ASSUMED_DENY_RATE = 0.5
+
+# Ceiling on the first fetch's multiplier and the growth factor for the retry.
+# Note the first fetch never reaches it: with a deny rate of 0.5 the multiplier
+# is 1/(1 - p/2), which tops out at 2x as the verify share approaches 1. It
+# binds only on the retry.
+_OVERFETCH_MAX_MULTIPLIER = 3.0
+
+# The vector limit is already amplified downstream — OpenSearch takes
+# `max(limit*2, 20)` per leg, Redis `max(k*2, 20)`, Qdrant `limit*2` per prefetch
+# leg — and `_fan_out_searches` asks *each* collection for the full limit. This
+# bounds one leg; the product is bounded by the retry cap.
+_OVERFETCH_ABSOLUTE_CAP = 300
+
+@dataclass
+class _QueryPlan:
+    """Per-search cache so a re-query does not pay for embeddings twice.
+
+    Owned by the caller and filled in by ``_execute_parallel_searches``,
+    rather than hoisting the embedding step into its own method: ~40 tests
+    replace that method with an ``AsyncMock``, and a hoisted helper would
+    become real code running in every one of them, building a real embedding
+    client. Passing state through keeps the expensive work inside the mocked
+    boundary.
+    """
+
+    dense: list | None = None
+    sparse: list | None = None
+    collections: list[str] | None = None
+    # Largest single-query batch of the last attempt, before the cross-query
+    # dedupe. Exhaustion is a per-query property: the merged total cannot show
+    # it, because overlapping queries shrink it for a reason that has nothing
+    # to do with the corpus running out.
+    max_batch: int | None = None
 
 # User-facing guidance when the graph/permissions yield no searchable corpus
 ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE = (
@@ -68,7 +158,7 @@ class RetrievalService:
         self,
         logger,
         config_service: ConfigurationService,
-        collection_name: str,
+        collection_registry: CollectionRegistry,
         vector_db_service: IVectorDBService,
         graph_provider: IGraphDBProvider,
         blob_store: BlobStorage,
@@ -77,7 +167,7 @@ class RetrievalService:
         Initialize the retrieval service with necessary configurations.
 
         Args:
-            collection_name: Name of the collection
+            collection_registry: Resolves which collection(s) a search fans out to
             vector_db_service: Vector DB service
             config_service: Configuration service
             graph_provider: Graph database provider
@@ -89,7 +179,7 @@ class RetrievalService:
         self.graph_provider = graph_provider
         self.blob_store = blob_store
         self.vector_db_service = vector_db_service
-        self.collection_name = collection_name
+        self.collection_registry = collection_registry
 
         # Capability negotiation — determines which embedding legs are needed.
         self._capabilities = vector_db_service.get_capabilities()
@@ -106,11 +196,27 @@ class RetrievalService:
         self._embedding_model_lock = asyncio.Lock()
 
         self.logger.info(
-            f"Retrieval service initialised: collection='{collection_name}', "
+            f"Retrieval service initialised: strategy='{collection_registry.strategy_name}', "
             f"provider='{vector_db_service.get_service_name()}', "
             f"supports_sparse={self._capabilities.supports_sparse_vectors}, "
             f"supports_text_search={self._capabilities.supports_server_side_text_search}"
         )
+
+    @property
+    def _result_merger(self) -> ResultMerger:
+        """How several collections' results may be combined.
+
+        Derived from the provider's declared score semantics rather than stored
+        alongside them: two copies of the same fact drift, and this one decides
+        whether a multi-collection search is ranked correctly. Memoised because
+        the answer cannot change for a live service — capabilities are read
+        once at construction.
+        """
+        merger = getattr(self, "_merger_cache", None)
+        if merger is None:
+            merger = merger_for(self._capabilities.score_semantics)
+            self._merger_cache = merger
+        return merger
 
     async def _ensure_sparse_embedder(self) -> SparseEmbedder | None:
         """Return the SparseEmbedder if this provider uses client-side sparse vectors."""
@@ -127,12 +233,16 @@ class RetrievalService:
 
     async def get_llm_instance(self, use_cache: bool = False) -> BaseChatModel | None:
         try:
-            self.logger.info("Getting LLM")
+            self.logger.debug("Getting LLM")
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value,
                 use_cache=use_cache
             )
-            llm_configs = ai_models["llm"]
+            llm_configs = (ai_models or {}).get("llm") or []
+            if not llm_configs:
+                # The normal state until an admin configures a model, not an error.
+                self.logger.info("No LLM configured")
+                return self.llm
 
             # For now, we'll use the first available provider that matches our supported types
             # We will add logic to choose a specific provider based on our needs
@@ -162,23 +272,6 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    @staticmethod
-    def _embedding_config_hash(embedding_configs: list[dict[str, Any]] | None) -> str:
-        """Deterministic hash of the embedding config for cache invalidation."""
-        if not embedding_configs:
-            return "default"
-        serialisable = []
-        for cfg in embedding_configs:
-            serialisable.append({
-                "provider": cfg.get("provider"),
-                "isDefault": cfg.get("isDefault"),
-                "model": (cfg.get("configuration") or {}).get("model"),
-                "endpoint": (cfg.get("configuration") or {}).get("endpoint"),
-            })
-        return hashlib.sha256(
-            json.dumps(serialisable, sort_keys=True).encode()
-        ).hexdigest()[:16]
-
     async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
         """Return the dense embedding model, cached across calls while config is stable.
 
@@ -192,7 +285,7 @@ class RetrievalService:
                 config_node_constants.AI_MODELS.value, use_cache=use_cache
             )
             embedding_configs = (ai_models or {}).get("embedding")
-            config_hash = self._embedding_config_hash(embedding_configs)
+            config_hash = embedding_config_hash(embedding_configs)
 
             if (
                 self._cached_dense_embeddings is not None
@@ -323,7 +416,7 @@ class RetrievalService:
         user_id: str,
         org_id: str,
         filter_groups: dict[str, list[str]] | None = None,
-        limit: int = 20,
+        limit: int | None = 20,
         virtual_record_ids_from_tool: list[str] | None = None,
         knowledge_search: bool = False,
         time_range: dict[str, int] | None = None,
@@ -335,6 +428,18 @@ class RetrievalService:
             if not self.graph_provider:
                 raise ValueError("GraphProvider is required for permission checking")
 
+            # `None` reaches here from the prefetch path, which forwards the
+            # request's optional `limit` verbatim (chat_modes/bridge.py ->
+            # prefetch.py). A default argument cannot cover that -- an explicit
+            # None overrides it -- and HybridSearchRequest is a plain dataclass,
+            # so the None survived all the way to `req.limit * 2` in
+            # qdrant/utils.py and took the whole search down with a TypeError
+            # that the except below logged as "Filtered search failed",
+            # returning an empty result set. The turn then answered with no
+            # retrieved context and no visible error.
+            if limit is None:
+                limit = DEFAULT_SEARCH_LIMIT
+
             filter_groups = filter_groups or {}
 
             # Extract KB IDs for response metadata
@@ -344,29 +449,51 @@ class RetrievalService:
             filters = {}
             if filter_groups:  # Only process if filter_groups is not empty
                 for key, values in filter_groups.items():
+                    # strictScope is a control flag, not a metadata filter
+                    # key — lowercasing it to "strictscope" would silently
+                    # break the empty-project-scope short-circuit in
+                    # get_accessible_virtual_record_ids.
+                    if key == "strictScope":
+                        filters[key] = values
+                        continue
                     # Convert key to match collection naming
                     metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
                     filters[metadata_key] = values
 
-            init_tasks = [
-                self._get_accessible_virtual_ids_task(
-                    user_id, org_id, filters, self.graph_provider, time_range=time_range
-                ),
-                self._get_user_cached(user_id)  # Get user info in parallel with caching
-            ]
+            containers, accessible_virtual_id_to_record_id, user = (
+                await self._resolve_search_scope(user_id, org_id, filters, time_range)
+            )
+            use_containers = containers is not None
 
-            accessible_virtual_id_to_record_id, user = await asyncio.gather(*init_tasks)
-
-            if not accessible_virtual_id_to_record_id:
-                self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
+            # Under container scoping the accessible map is not built up front —
+            # it is the *output* of adjudicating what the search returned. So
+            # "reaches nothing" is a property of the containers instead.
+            #
+            # warning, not error, on both legs: #3254 downgraded this for the
+            # record-id path because a user who reaches nothing is not a system
+            # fault. The container leg states the same condition, so it matches.
+            if use_containers:
+                if containers.is_empty:
+                    self.logger.warning(f"No accessible containers for user {user_id} and org {org_id}")
+                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+            elif not accessible_virtual_id_to_record_id:
+                self.logger.warning(f"No accessible documents found for user {user_id} and org {org_id}")
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
-
-            self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_id_to_record_id)}")
 
             # Graph key for KH permission_role checks (Location trails).
             user_key = (user.get("_key") or user.get("id")) if user else None
 
-            if virtual_record_ids_from_tool:
+            if use_containers:
+                clauses = self._build_container_clauses(
+                    org_id, containers, virtual_record_ids_from_tool
+                )
+                if clauses is None:
+                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                must, should = clauses
+                filter = await self.vector_db_service.filter_collection(
+                    must=must, should=should
+                )
+            elif virtual_record_ids_from_tool:
                 filter  = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
                     )
@@ -374,13 +501,35 @@ class RetrievalService:
                 filter = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id, "virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
                     )
-            search_results = await self._execute_parallel_searches(queries, filter, limit)
+
+            if use_containers:
+                (
+                    search_results,
+                    accessible_virtual_id_to_record_id,
+                    verification_degraded,
+                ) = await self._search_and_adjudicate(
+                    queries, filter, limit, org_id, user_id, containers,
+                    allow_requery=not virtual_record_ids_from_tool,
+                    scope_connector_ids=containers.scope_connector_ids,
+                )
+                if verification_degraded:
+                    # The graph could not answer. Telling this user to upload
+                    # documents would be wrong and unactionable.
+                    return self._create_empty_response(
+                        "Could not verify document permissions right now. "
+                        "Please retry shortly.",
+                        Status.PERMISSION_CHECK_UNAVAILABLE,
+                    )
+            else:
+                search_results = await self._execute_parallel_searches(
+                    queries, filter, limit, org_id, user_id
+                )
 
             if not search_results:
                 self.logger.debug("No search results found")
                 return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
-            self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
+            self.logger.debug(f"Search results count: {len(search_results) if search_results else 0}")
 
             self.logger.debug("Extracting virtualRecordIds from search results")
             returned_virtual_record_ids = list({
@@ -434,7 +583,7 @@ class RetrievalService:
 
             if not unique_record_ids:
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
-            self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
+            self.logger.debug(f"Unique record IDs count: {len(unique_record_ids)}")
 
             file_record_ids_to_fetch = []
             mail_record_ids_to_fetch = []
@@ -503,45 +652,82 @@ class RetrievalService:
                                     continue
                                 new_type_results.append(result)
                                 continue
+                else:
+                    # A vid absent from the map did not survive permission
+                    # resolution, so there is no record to attribute this chunk
+                    # to. The completeness filter below would drop it anyway for
+                    # want of recordId/origin/mimeType — but that is a metadata
+                    # check standing in for a permission boundary, which one
+                    # refactor could quietly remove.
+                    continue
 
                 final_search_results.append(result)
 
             files_map = {}
             mails_map = {}
 
-            async def fetch_files() -> dict:
-                if not file_record_ids_to_fetch:
+            async def _fetch_by_ids(record_ids: list[str], collection: str, label: str) -> dict:
+                """One query per collection instead of one per chunk.
+
+                The id lists are appended per search result, so a record matched
+                by several chunks was previously fetched once per chunk.
+                """
+                if not record_ids:
                     return {}
+                unique_ids = list(dict.fromkeys(record_ids))
                 try:
-                    file_results = await asyncio.gather(*[
-                        self.graph_provider.get_document(record_id, CollectionNames.FILES.value)
-                        for record_id in file_record_ids_to_fetch
-                    ], return_exceptions=True)
-                    return {
-                        record_id: result
-                        for record_id, result in zip(file_record_ids_to_fetch, file_results)
-                        if result and not isinstance(result, Exception)
-                    }
+                    nodes: list[dict] = []
+                    for start in range(0, len(unique_ids), GRAPH_BATCH_CHUNK_SIZE):
+                        nodes.extend(
+                            await self.graph_provider.get_nodes_by_field_in(
+                                collection, "id", unique_ids[start:start + GRAPH_BATCH_CHUNK_SIZE]
+                            )
+                            or []
+                        )
                 except Exception as e:
-                    self.logger.warning(f"Failed to batch fetch files: {str(e)}")
-                    return {}
+                    self.logger.warning(
+                        f"Failed to batch fetch {label}, per-id fallback: {str(e)}"
+                    )
+                    nodes = []
+
+                resolved = {}
+                for node in nodes:
+                    key = (node or {}).get("id") or (node or {}).get("_key")
+                    if key:
+                        resolved[key] = node
+
+                # Losing the batch strips webUrl/mimeType from every record in
+                # it, and a result without mimeType is dropped outright by the
+                # required_fields filter below -- the citation disappears from
+                # the answer with no error. The except above cannot catch that:
+                # get_nodes_by_field_in swallows its own errors and returns [],
+                # so a failure looks exactly like "no rows". Recover on which
+                # ids actually came back instead.
+                missing = [rid for rid in unique_ids if rid not in resolved]
+                if missing:
+                    per_id = await asyncio.gather(
+                        *[
+                            self.graph_provider.get_document(rid, collection)
+                            for rid in missing
+                        ],
+                        return_exceptions=True,
+                    )
+                    resolved.update({
+                        rid: doc
+                        for rid, doc in zip(missing, per_id)
+                        if doc and not isinstance(doc, BaseException)
+                    })
+                return resolved
+
+            async def fetch_files() -> dict:
+                return await _fetch_by_ids(
+                    file_record_ids_to_fetch, CollectionNames.FILES.value, "files"
+                )
 
             async def fetch_mails() -> dict:
-                if not mail_record_ids_to_fetch:
-                    return {}
-                try:
-                    mail_results = await asyncio.gather(*[
-                        self.graph_provider.get_document(record_id, CollectionNames.MAILS.value)
-                        for record_id in mail_record_ids_to_fetch
-                    ], return_exceptions=True)
-                    return {
-                        record_id: result
-                        for record_id, result in zip(mail_record_ids_to_fetch, mail_results)
-                        if result and not isinstance(result, Exception)
-                    }
-                except Exception as e:
-                    self.logger.warning(f"Failed to batch fetch mails: {str(e)}")
-                    return {}
+                return await _fetch_by_ids(
+                    mail_record_ids_to_fetch, CollectionNames.MAILS.value, "mails"
+                )
 
             async def fetch_locations() -> dict[str, str]:
                 """Resolve permission-aware Location trails for retrieved records.
@@ -565,7 +751,7 @@ class RetrievalService:
                         user_key=user_key or "",
                         record_docs=record_id_to_record_map,
                     )
-                    self.logger.info(
+                    self.logger.debug(
                         "fetch_locations: %d/%d trails resolved",
                         len(result),
                         len(rids),
@@ -699,6 +885,363 @@ class RetrievalService:
                 return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
+    async def _container_filter_enabled(self) -> bool:
+        """Whether searches scope by container instead of by record id.
+
+        Read per request, uncached, so an admin toggling it in Labs takes
+        effect on the next search rather than after a restart.
+
+        Defaults OFF, and an unreadable setting keeps it off. This path now
+        grants records in an APP_LEVEL or RECORD_GROUP_LEVEL container without
+        resolving a per-record role, so it is no longer the stricter of the
+        two and must not be what a failed config read falls back to: a missing
+        settings blob, a non-dict featureFlags, or a KV outage all look alike
+        here, and an operator who turned this off to stop the shortcut would
+        otherwise have it silently turned back on.
+        """
+        return await read_platform_feature_flag(
+            CONFIG.ENABLE_CONTAINER_PERMISSION_FILTER,
+            self.config_service,
+            default=False,
+        )
+
+    async def _resolve_search_scope(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]],
+        time_range: dict[str, int] | None,
+    ) -> tuple["AccessibleContainers | None", dict[str, str], dict[str, Any] | None]:
+        """Decide how this search's permission filter is built.
+
+        Returns ``(containers, accessible_map, user)``. ``containers`` is None
+        whenever the legacy record-id path is in force — the flag is off, the
+        request carries a record-level predicate no container can express, or
+        the graph declined (an unbacklogged connector, a filter too large).
+        The two are never both authoritative.
+        """
+        # Built on demand, never eagerly: an un-awaited coroutine is a
+        # RuntimeWarning on every search, and the ON path does not want one.
+        def _legacy():
+            return self._get_accessible_virtual_ids_task(
+                user_id, org_id, filters, self.graph_provider, time_range=time_range
+            )
+
+        user_task = self._get_user_cached(user_id)
+
+        # Awaited before the branch rather than gathered with `user_task`: it is
+        # a single ~0.2ms KV read, and every branch below overlaps `user_task`
+        # with its own expensive call. Gathering the flag here instead would
+        # leave that call serialised behind the user lookup.
+        if not await self._container_filter_enabled():
+            accessible, user = await asyncio.gather(_legacy(), user_task)
+            return None, accessible, user
+
+        # Recognised locally, without asking the graph: no container expresses a
+        # date range or a per-record metadata term, so those keep the record-id
+        # path. This is a capability gap, not a preference. `apps` and `kb` are
+        # containers and do not land here.
+        if _unsupported_container_filters(filters, time_range):
+            accessible, user = await asyncio.gather(_legacy(), user_task)
+            return None, accessible, user
+
+        containers, user = await asyncio.gather(
+            self.graph_provider.get_accessible_containers(
+                user_id, org_id, filters, time_range
+            ),
+            user_task,
+        )
+        if containers.fallback_reason:
+            # A data-readiness condition, not a rollout switch: an app whose
+            # vector membership arrays were never built cannot be filtered by
+            # container without silently dropping its records.
+            self.logger.info(
+                "container filter declined (%s); using record ids for user=%s org=%s",
+                containers.fallback_reason,
+                user_id,
+                org_id,
+            )
+            return None, await _legacy(), user
+
+        # The scope is read from the request here as well as by the provider,
+        # and the two must agree. Everything downstream — the vector filter and
+        # the verifier — narrows by what the provider echoes, so a provider that
+        # ignored the scope would otherwise widen a Collection-scoped search to
+        # the user's whole corpus without any error.
+        requested = requested_scope_ids(filters)
+        expected = frozenset(requested) if requested is not None else None
+        if containers.scope_connector_ids != expected or (
+            expected is not None and not containers.app_ids <= expected
+        ):
+            self.logger.warning(
+                "container filter declined (scope_mismatch: requested=%s echoed=%s); "
+                "using record ids for user=%s org=%s",
+                sorted(expected) if expected is not None else None,
+                sorted(containers.scope_connector_ids)
+                if containers.scope_connector_ids is not None
+                else None,
+                user_id,
+                org_id,
+            )
+            return None, await _legacy(), user
+        return containers, {}, user
+
+    def _build_container_clauses(
+        self,
+        org_id: str,
+        containers: "AccessibleContainers",
+        virtual_record_ids_from_tool: list[str] | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """``(must, should)`` for a container-scoped filter, or None if nothing is reachable.
+
+        Two shapes here disclose the whole corpus rather than erroring, so both
+        are guarded deliberately:
+
+        ``must`` must never be empty. With an empty ``must`` and a populated
+        ``should``, OpenSearch does not set ``minimum_should_match``, the should
+        clauses become score-only, and every document in the index matches.
+        ``orgId`` is what prevents that.
+
+        ``should`` must never be built from empty lists. ``build_conditions``
+        skips them, ``min_should_match`` is then dropped, and the filter
+        degenerates to ``orgId`` alone — the same disclosure by another route.
+        Hence None, and a 404, rather than an empty ``should``.
+
+        ``min_should_match`` is deliberately not passed: Redis raises
+        ``NotImplementedError`` on it even with no should clauses, and all three
+        providers already mean "at least one" when ``must`` is non-empty.
+        """
+        should: dict[str, Any] = {}
+        if containers.app_ids:
+            should[CONNECTOR_IDS_FIELD] = sorted(containers.app_ids)
+        group_ids = containers.record_group_ids
+        if group_ids:
+            should[RECORD_GROUP_IDS_FIELD] = sorted(group_ids)
+        if containers.root_group_ids:
+            should[ROOT_RECORD_GROUP_IDS_FIELD] = sorted(containers.root_group_ids)
+        if containers.direct_records:
+            should["virtualRecordId"] = sorted(containers.direct_records)
+
+        if not should:
+            return None
+
+        must: dict[str, Any] = {"orgId": org_id}
+        if virtual_record_ids_from_tool:
+            # Narrowing, not authorising — the containers in `should` still
+            # decide what this user may see.
+            must["virtualRecordId"] = list(virtual_record_ids_from_tool)
+        return must, should
+
+    @staticmethod
+    def _overfetch_limit(limit: int, containers: "AccessibleContainers") -> int:
+        """How much to fetch so verification drops still leave ``limit`` results.
+
+        Sized from the trusted/verify split, which is known before querying, so
+        the retry stays the exception rather than a routine second round trip.
+        When nothing needs verifying — an all-app-level tenant — this returns
+        exactly ``limit`` and the change costs nothing.
+
+        Counts the same containers the adjudicator actually trusts. ``app_ids``
+        is wider than ``app_ids_trusted`` — it admits apps on type alone so
+        records carrying no recordGroupIds still have a term to match on — so
+        sizing from it would call a tenant fully trusted whose apps have not
+        declared a permission model, hand it zero headroom, and then pay for a
+        second vector fan-out on every search once a per-record check denied
+        anything.
+        """
+        untrusted_apps = len(containers.app_ids) - len(containers.app_ids_trusted)
+        checked = len(containers.record_group_ids_verify) + untrusted_apps
+        if checked == 0:
+            return limit
+        trusted = (
+            len(containers.app_ids_trusted) + len(containers.record_group_ids_trusted)
+        )
+        p_verify = checked / (trusted + checked)
+        survival = max(
+            1.0 - p_verify * _ASSUMED_DENY_RATE, 1.0 / _OVERFETCH_MAX_MULTIPLIER
+        )
+        multiplier = min(max(1.0 / survival, 1.0), _OVERFETCH_MAX_MULTIPLIER)
+        # The cap bounds the *over*-fetch, never the caller's own request:
+        # returning less than `limit` would under-fetch a large search while
+        # claiming to have widened it.
+        return max(
+            limit,
+            min(math.ceil(limit * multiplier), _OVERFETCH_ABSOLUTE_CAP),
+        )
+
+    @staticmethod
+    def _should_requery(
+        *,
+        attempt: int,
+        surviving: int,
+        limit: int,
+        raw: int,
+        fetch_limit: int,
+        max_batch: int,
+        denied: int,
+        allow_requery: bool,
+    ) -> bool:
+        """Whether a shortfall is worth a second, larger search.
+
+        Every clause here exists to stop a retry that cannot help.
+        """
+        if not allow_requery or attempt + 1 >= MAX_SEARCH_ATTEMPTS:
+            return False
+        if surviving >= limit:
+            return False
+        if max_batch < fetch_limit:
+            # Every query came back short of what it was asked for, so the
+            # corpus is exhausted and a bigger limit produces nothing. Judged
+            # per query on purpose: the merged total is reduced by overlap
+            # between expanded queries, which says nothing about the corpus,
+            # and comparing against it suppresses the retry almost always.
+            return False
+        if fetch_limit >= _OVERFETCH_ABSOLUTE_CAP:
+            # Per query, so it stays comparable to the cap that produced it —
+            # the fan-out total would trip this early on a multi-query search.
+            return False
+        if denied <= 0:
+            # The shortfall is not permission-related: a stale membership array,
+            # say, or chunks whose records have since been deleted. Fetching
+            # more only amplifies it.
+            return False
+        # Nothing granted is a denial, not an outage — the verifier raises when
+        # the graph cannot answer — so a larger fetch may still find readable
+        # records. That is the common shape of a narrow scope.
+        return True
+
+    async def _search_and_adjudicate(
+        self,
+        queries: list[str],
+        filter: Any,
+        limit: int,
+        org_id: str,
+        user_id: str,
+        containers: "AccessibleContainers",
+        *,
+        allow_requery: bool,
+        scope_connector_ids: frozenset[str] | None,
+    ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
+        """Search under a container filter, then resolve what the user may read.
+
+        Returns ``(results, accessible_map, verification_degraded)``. The third
+        element is what stops a graph outage being reported as an empty corpus.
+
+        The accessible map is the *output* here rather than an input. Container
+        scoping admits more than the user may see, and this is what narrows it
+        back — after which the intersection downstream behaves exactly as it did
+        against a precomputed map, so nothing past this point changes.
+        """
+        plan = _QueryPlan()
+        fetch_limit = self._overfetch_limit(limit, containers)
+        # `limit` is per query — `_run_searches` issues one request per expanded
+        # query and concatenates the deduped batches — so every comparison below
+        # is against the whole fan-out, not one query's share.
+        budget = limit * max(1, len(queries))
+        # The incumbent. A retry exists only to *improve* recall, so an attempt
+        # that comes back worse — because the vector call flaked, or the graph
+        # went down between rounds — must not replace a servable answer.
+        best_results: list[dict[str, Any]] = []
+        best_accessible: dict[str, str] = {}
+        best_surviving = -1
+        best_degraded = False
+
+        for attempt in range(MAX_SEARCH_ATTEMPTS):
+            # Per attempt, not per loop: a later attempt that fails verification
+            # must not condemn an earlier one that succeeded.
+            attempt_degraded = False
+            search_results = await self._execute_parallel_searches(
+                queries, filter, fetch_limit, org_id, user_id, plan=plan
+            )
+            returned_vids = {
+                result["metadata"]["virtualRecordId"]
+                for result in search_results
+                if result
+                and isinstance(result, dict)
+                and result.get("metadata")
+                and result["metadata"].get("virtualRecordId") is not None
+            }
+            if not returned_vids:
+                if best_surviving < 0:
+                    best_results, best_accessible, best_surviving = search_results, {}, 0
+                break
+
+            try:
+                accessible = await self.graph_provider.filter_accessible_virtual_record_ids(
+                    list(returned_vids),
+                    user_id,
+                    org_id,
+                    trusted_app_ids=containers.app_ids_trusted,
+                    trusted_group_ids=containers.record_group_ids_trusted,
+                    scope_connector_ids=scope_connector_ids,
+                )
+            except PermissionVerificationUnavailableError as exc:
+                # The caller turns this into a 503 rather than telling a user
+                # with a full workspace that nothing matched.
+                attempt_degraded = True
+                accessible = {}
+                self.logger.error(
+                    "container_search: verification unavailable for %d vrids "
+                    "(user=%s org=%s): %s",
+                    len(returned_vids), user_id, org_id, exc,
+                )
+            surviving = sum(
+                1
+                for result in search_results
+                if result
+                and isinstance(result, dict)
+                and (result.get("metadata") or {}).get("virtualRecordId") in accessible
+            )
+            denied = len(returned_vids) - len(accessible)
+
+            self.logger.debug(
+                "container_search attempt=%d vids=%d granted=%d surviving=%d",
+                attempt + 1, len(returned_vids), len(accessible), surviving,
+            )
+
+            if surviving > best_surviving:
+                best_results, best_accessible, best_surviving = (
+                    search_results, accessible, surviving
+                )
+                best_degraded = attempt_degraded
+
+            if attempt_degraded:
+                # Retrying would hammer a graph that has just failed to answer.
+                break
+
+            if not self._should_requery(
+                attempt=attempt,
+                surviving=surviving,
+                limit=budget,
+                raw=len(search_results),
+                fetch_limit=fetch_limit,
+                max_batch=plan.max_batch if plan.max_batch is not None else len(search_results),
+                denied=denied,
+                allow_requery=allow_requery,
+            ):
+                break
+
+            fetch_limit = min(
+                _OVERFETCH_ABSOLUTE_CAP,
+                math.ceil(fetch_limit * _OVERFETCH_MAX_MULTIPLIER),
+            )
+
+        # Over-fetching is a means, not a promise: drop the headroom this path
+        # added, best-scoring first. `budget` is the record-id path's *ceiling*,
+        # not its typical output — expanded queries overlap, so its deduped
+        # union usually lands under it. Matching the ceiling can therefore
+        # return somewhat more than the flag-off path; trimming to `limit`
+        # returned a fraction of it, which is the failure this replaces.
+        admitted = [
+            result
+            for result in best_results
+            if result
+            and isinstance(result, dict)
+            and (result.get("metadata") or {}).get("virtualRecordId") in best_accessible
+        ]
+        admitted.sort(key=lambda r: r.get("score") or 0, reverse=True)
+        return admitted[:budget], best_accessible, best_degraded
+
     async def _get_accessible_virtual_ids_task(
         self,
         user_id: str,
@@ -749,15 +1292,75 @@ class RetrievalService:
 
         return user_data
 
-    async def _execute_parallel_searches(self, queries, filter, limit) -> list[dict[str, Any]]:
+    async def _accessible_connector_names(
+        self, user_id: str | None, org_id: str
+    ) -> list[str] | None:
+        """Connector types to narrow the fan-out with, or None to not narrow.
+
+        Only gathered when the active strategy says it would help — under
+        ``single`` there is one collection and the query would be pure
+        overhead. Failures return None rather than an empty list: an empty list
+        means "this user reaches no connector type", which would resolve to no
+        collections and silently return nothing.
+        """
+        if ContextAxis.CONNECTOR_NAME not in self.collection_registry.strategy.read_narrowing_axes:
+            return None
+        if not user_id or not self.graph_provider:
+            return None
+        try:
+            names = await self.graph_provider.get_accessible_connector_types(
+                user_id, org_id
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not resolve accessible connector types; searching every "
+                "managed collection instead: %s",
+                e,
+            )
+            return None
+        return names or None
+
+    async def _resolve_search_collections(
+        self, org_id: str, user_id: str | None = None
+    ) -> list[str]:
+        """Which collection(s) this org's search should fan out to.
+
+        An empty list is the honest answer on a deployment where nothing has
+        been indexed yet: ``resolve_for_query`` already filters to collections
+        that exist, so the only names it drops are ones a search would find
+        nothing in. Falling back to a fabricated name would, under a strategy
+        that resolves per org or per connector, name a collection belonging to
+        nobody.
+        """
+        connector_names = await self._accessible_connector_names(user_id, org_id)
+        return await self.collection_registry.resolve_for_query(
+            QueryContext(org_id=org_id, accessible_connector_names=connector_names)
+        )
+
+    async def _execute_parallel_searches(
+        self, queries, filter, limit, org_id: str, user_id: str | None = None,
+        *, plan: "_QueryPlan | None" = None,
+    ) -> list[dict[str, Any]]:
         """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion.
 
         The search strategy adapts to provider capabilities:
         - Providers with sparse vector support (Qdrant): full dense+sparse hybrid with client-side BM25.
         - Providers without sparse support (OpenSearch, Redis): dense-only search,
           server-side BM25/text handled by the provider internally.
+
+        Fans out to every collection the active strategy resolves for ``org_id``
+        (one today; a per-connector/per-org strategy can resolve more) and
+        merges the raw results before the caller's global rerank/sort.
         """
-        all_results: list[tuple] = []
+        # Embedding is the only genuinely expensive, uncached step here, and a
+        # re-query differs from the first attempt in nothing but `limit`.
+        if plan is not None and plan.dense is not None:
+            dense_query_embeddings = plan.dense
+            sparse_query_embeddings = plan.sparse
+            return await self._run_searches(
+                queries, filter, limit, org_id, user_id,
+                dense_query_embeddings, sparse_query_embeddings, plan=plan,
+            )
 
         dense_embeddings = await self.get_embedding_model_instance()
         if not dense_embeddings:
@@ -765,9 +1368,16 @@ class RetrievalService:
 
         sparse_embedder = await self._ensure_sparse_embedder()
 
-        dense_tasks = [dense_embeddings.aembed_query(query) for query in queries]
+        dense_tasks = [
+            await_with_retry(
+                lambda q=query: dense_embeddings.aembed_query(q),
+                max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
+                operation="aembed_query",
+                service_name="retrieval",
+            )
+            for query in queries
+        ]
         supports_sparse = self._capabilities.supports_sparse_vectors
-        supports_text = self._capabilities.supports_server_side_text_search
 
         if sparse_embedder is not None and supports_sparse:
             # Parallelise dense and sparse embedding generation
@@ -779,6 +1389,36 @@ class RetrievalService:
         else:
             dense_query_embeddings = await asyncio.gather(*dense_tasks)
             sparse_query_embeddings = [None] * len(queries)
+
+        if plan is not None:
+            plan.dense = dense_query_embeddings
+            plan.sparse = sparse_query_embeddings
+
+        return await self._run_searches(
+            queries, filter, limit, org_id, user_id,
+            dense_query_embeddings, sparse_query_embeddings, plan=plan,
+        )
+
+    async def _run_searches(
+        self,
+        queries: list[str],
+        filter: Any,
+        limit: int,
+        org_id: str,
+        user_id: str | None,
+        dense_query_embeddings: list,
+        sparse_query_embeddings: list,
+        *,
+        plan: "_QueryPlan | None" = None,
+    ) -> list[dict[str, Any]]:
+        """Everything downstream of embedding: build requests, fan out, dedupe.
+
+        Split out so a re-query at a larger limit reuses the embeddings — the
+        only field that differs between attempts is ``HybridSearchRequest.limit``.
+        """
+        all_results: list[tuple] = []
+        supports_sparse = self._capabilities.supports_sparse_vectors
+        supports_text = self._capabilities.supports_server_side_text_search
 
         requests = [
             HybridSearchRequest(
@@ -796,10 +1436,15 @@ class RetrievalService:
             )
         ]
 
-        search_results = await self.vector_db_service.query_nearest_points(
-            collection_name=self.collection_name,
-            requests=requests,
-        )
+        if plan is not None and plan.collections is not None:
+            collections = plan.collections
+        else:
+            collections = await self._resolve_search_collections(org_id, user_id)
+            if plan is not None:
+                plan.collections = collections
+        search_results = await self._fan_out_searches(collections, requests, limit)
+        if plan is not None:
+            plan.max_batch = max((len(batch) for batch in search_results), default=0)
 
         seen_points: set = set()
         for batch in search_results:
@@ -817,6 +1462,70 @@ class RetrievalService:
 
         return self._format_results(all_results)
 
+    async def _fan_out_searches(
+        self, collections: list[str], requests: list[HybridSearchRequest], limit: int
+    ) -> list[list]:
+        """Query every collection in parallel and reduce each query to one top-K.
+
+        Each collection is asked for the full ``limit`` rather than a share of
+        it: nothing knows in advance which collection holds the best matches,
+        so splitting the budget would cost recall. That leaves N ranked lists
+        per query, which ``result_merging`` reduces according to what the
+        provider's scores actually mean.
+
+        A collection that fails degrades the result set instead of failing the
+        search — a search over three collections should not error because one
+        is briefly unreachable.
+        """
+        if not collections:
+            return [[] for _ in requests]
+
+        semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
+
+        async def _search(collection_name: str) -> list[list]:
+            async with semaphore:
+                return await self.vector_db_service.query_nearest_points(
+                    collection_name=collection_name,
+                    requests=requests,
+                )
+
+        outcomes = await asyncio.gather(
+            *[_search(name) for name in collections],
+            return_exceptions=True,
+        )
+
+        # Per query index, one CollectionResults per collection that answered.
+        per_query: list[list[CollectionResults]] = [[] for _ in requests]
+        failures: list[BaseException] = []
+        for collection_name, outcome in zip(collections, outcomes):
+            if isinstance(outcome, BaseException):
+                failures.append(outcome)
+                self.logger.warning(
+                    "Search against collection '%s' failed; continuing with the "
+                    "remaining %d collection(s): %s",
+                    collection_name,
+                    len(collections) - 1,
+                    outcome,
+                )
+                continue
+            for i, batch in enumerate(outcome):
+                if i < len(per_query):
+                    per_query[i].append(
+                        CollectionResults(collection_name=collection_name, results=batch)
+                    )
+
+        # Degrading when one collection is unreachable is the point of
+        # return_exceptions; degrading when *every* one failed is not — that is
+        # an outage, and reporting it as "no documents found" sends the user
+        # off to reword a query that was never run.
+        if failures and len(failures) == len(collections):
+            raise failures[0]
+
+        return [
+            merge_collection_results(batches, limit, self._result_merger)
+            for batches in per_query
+        ]
+
     def _create_empty_response(self, message: str, status: Status) -> dict[str, Any]:
         """Helper to create empty response with appropriate HTTP status codes"""
         # Map status types to appropriate HTTP status codes
@@ -827,6 +1536,7 @@ class RetrievalService:
             Status.VECTOR_DB_EMPTY: 503,  # Service Unavailable - vector DB is empty
             Status.VECTOR_DB_NOT_READY: 503,  # Service Unavailable - vector DB not ready
             Status.EMPTY_RESPONSE: 200,  # OK but no results found
+            Status.PERMISSION_CHECK_UNAVAILABLE: 503,  # graph could not adjudicate
         }
 
         status_code = status_code_mapping.get(status, 500)  # Default to 500 for unknown status

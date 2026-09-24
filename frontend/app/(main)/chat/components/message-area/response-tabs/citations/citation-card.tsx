@@ -10,6 +10,7 @@ import { getConnectorConfig, formatSyncLabel } from './utils';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { renderInlineMarkdown } from '@/app/components/ui/inline-markdown';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useTranslation } from 'react-i18next';
 import type { ResponseTab } from '@/chat/types';
 import type { CitationData, CitationCallbacks } from './types';
 
@@ -48,6 +49,7 @@ export function ReferenceCard({
   citationCount,
   reason,
 }: ReferenceCardProps) {
+  const { t } = useTranslation();
   const isSourcesTab = currentTab === 'sources';
   const isCitationsTab = currentTab === 'citation';
   const isMobile = useIsMobile();
@@ -57,7 +59,9 @@ export function ReferenceCard({
   // Determine if this is a collection (UPLOAD) or external connector source
   const isCollectionSource = citation.origin === 'UPLOAD';
   const isLocalFsSource = isLocalFsConnectorType(citation.connector ?? '');
-  const openInLabel = isCollectionSource ? 'Open in Collections' : `Open in ${config.label}`;
+  const openInLabel = isCollectionSource
+    ? t('chat.recordActions.openInCollections')
+    : t('chat.recordActions.openIn', { source: config.label });
 
   // Chat attachments are stored with connector === "ATTACHMENTS". They live in
   // the user's chat session only and have no Collections page to navigate to,
@@ -165,7 +169,7 @@ export function ReferenceCard({
                   onClick={handlePreview}
                   style={{ cursor: 'pointer', flexShrink: 0 }}
                 >
-                  Preview
+                  {t('chat.recordActions.preview')}
                 </Button>
               )}
             </Flex>
@@ -276,7 +280,7 @@ export function ReferenceCard({
                     color="gray"
                     style={{ fontWeight: 500, backgroundColor: 'var(--slate-a3)', color: 'var(--slate-a11)' }}
                   >
-                    Page {p}
+                    {t('filePreview.page', { number: p })}
                   </Badge>
                 ))}
                 {citation.blockNum?.map((b) => (
@@ -287,7 +291,7 @@ export function ReferenceCard({
                     color="gray"
                     style={{ fontWeight: 500, backgroundColor: 'var(--slate-a3)', color: 'var(--slate-a11)' }}
                   >
-                    Paragraph {b}
+                    {t('filePreview.paragraph', { number: b })}
                   </Badge>
                 ))}
               </>
@@ -303,7 +307,7 @@ export function ReferenceCard({
                 variant="outline"
                 color="gray"
                 onClick={handleOpenInSource}
-                style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
+                style={{ cursor: 'pointer', whiteSpace: 'nowrap', minHeight: '44px' }}
               >
                 {openInLabel}
               </Button>)}
@@ -314,9 +318,9 @@ export function ReferenceCard({
                   size="1"
                   variant="solid"
                   onClick={handlePreview}
-                  style={{ cursor: 'pointer' }}
+                  style={{ cursor: 'pointer', minHeight: '44px' }}
                 >
-                  Preview
+                  {t('chat.recordActions.preview')}
                 </Button>
               )}
             </Flex>

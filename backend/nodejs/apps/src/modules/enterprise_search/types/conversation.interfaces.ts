@@ -86,6 +86,15 @@ export interface IChatAttachmentRef {
   mimeType?: string;
   extension?: string;
   virtualRecordId?: string;
+  /**
+   * Origin of this attachment ('upload' = user-picked file, 'paste-text' =
+   * large clipboard text auto-converted to a .txt attachment on the frontend).
+   * Matches the frontend's `UploadedFileSource` vocabulary, where a bare
+   * 'paste' means a pasted image/file — a different thing entirely.
+   * Not populated by the upload endpoint today — reserved for future
+   * analytics/UX once the upload pipeline threads this through explicitly.
+   */
+  source?: 'upload' | 'paste-text';
 }
 export interface IToolCallItem {
   toolName: string;
@@ -121,6 +130,8 @@ export interface IMessagePart {
   content?: string;
   toolCallId?: string;
   toolName?: string;
+  /** Human-readable past-tense label for this tool call, computed server-side (see `Tool.display_name`); falls back to a generic humanized `toolName` on the frontend when absent (e.g. chats persisted before this field existed). */
+  displayName?: string;
   args?: string;
   /** Human-readable summary of `args`, computed server-side (see PipesHubToolSummarizer). */
   argsSummary?: string;
@@ -139,6 +150,8 @@ export interface IMessage {
   messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call';
   content: string;
   contentFormat?: 'MARKDOWN' | 'JSON' | 'HTML';
+  /** Set on a `bot_response` persisted from a cancelled/disconnected run. */
+  status?: 'stopped';
   citations?: IMessageCitation[];
   confidence?: string;
   followUpQuestions?: IFollowUpQuestion[];
@@ -192,6 +205,8 @@ export interface IConversation {
   conversationSourceRecordType?: string;
   createdAt?: Date;
   updatedAt?: Date;
+  /** Phase 2 migration bookkeeping — see chat_sessions.migration.ts. Legacy schema/model only. */
+  isMigrated?: boolean;
   failReason?: String;
   status?: String;
   // Model information used for this conversation
@@ -228,18 +243,117 @@ export interface IConversationModel extends Model<IConversationDocument> {
   // Static methods go here
 }
 
+/**
+ * A single row in the `chatSessions` collection — the Phase 1 replacement
+ * for the separate `conversations` and `agentConversations` collections.
+ * `sessionType` is the discriminator ('chat' | 'agent'); the agent-only
+ * fields below are undefined on plain chat sessions. `messages` moved out
+ * entirely — see IChatSessionMessage — so this interface intentionally does
+ * NOT extend IConversation (which still declares `messages` as required,
+ * for the legacy schema/model kept around for the kb-filters migration).
+ *
+ * `conversationSource` here is deliberately narrower than IConversation's
+ * (which conflates a semantic "how was this conversation started" enum with
+ * the agent.conversation.schema.ts override `enum: ['agent_chat']`) — this
+ * type only ever needs the latter, written on agent sessions.
+ */
+export interface IChatSession {
+  userId: Types.ObjectId;
+  orgId: Types.ObjectId;
+  title?: string;
+  initiator: Types.ObjectId;
+  isShared?: boolean;
+  shareLink?: string;
+  sharedWith?: Array<{
+    userId: Types.ObjectId;
+    accessLevel: 'read' | 'write';
+  }>;
+  isDeleted?: boolean;
+  deletedBy?: Types.ObjectId;
+  isArchived?: boolean;
+  archivedBy?: Types.ObjectId;
+  lastActivityAt?: Number;
+  tags?: Types.ObjectId[];
+  createdAt?: Date;
+  updatedAt?: Date;
+  failReason?: String;
+  status?: String;
+  modelInfo?: IAIModel;
+  conversationErrors?: Array<{
+    message: string;
+    errorType?: string;
+    timestamp?: Date;
+    messageId?: Types.ObjectId;
+    stack?: string;
+    metadata?: Map<string, any>;
+  }>;
+  metadata?: Map<string, any>;
+
+  /** Discriminator. Internal (`select: false` in the schema) — never returned in a response. */
+  sessionType: 'chat' | 'agent';
+  /** Seq allocation counter. Internal (`select: false` in the schema) — never returned in a response. */
+  nextSeq?: number;
+
+  // ---- Agent-only fields, present only when sessionType === 'agent' ----
+  agentKey?: string;
+  conversationSource?: 'agent_chat';
+  compactedSummary?: string;
+  compactedAtTurnIndex?: number;
+  compactedAtTimestamp?: number;
+
+  // ---- Project linking (optional on both chat and agent sessions) ----
+  /** Reference to `projects` collection — see modules/projects/types/project.interfaces.ts. */
+  projectId?: Types.ObjectId;
+  /** Per-conversation override of the project's default chat-sharing visibility. */
+  projectVisibility?: 'private' | 'project';
+}
+
+export interface IChatSessionDocument extends Document, IChatSession {
+  // Document methods are inherited
+}
+
+/**
+ * A single row in the `chatSessionMessages` collection — the unwound,
+ * separately-stored `messages[]` entry that used to live embedded inside a
+ * conversation/agentConversation document. `IMessage` remains the shared,
+ * response-facing shape (see buildConversationResponse / attachMessages);
+ * this adds only the internal addressing fields, all stripped before a
+ * message reaches a response.
+ */
+export interface IChatSessionMessage extends IMessage {
+  /** Internal addressing field — never returned in a response. */
+  sessionId: Types.ObjectId;
+  /** Internal addressing field — never returned in a response. */
+  orgId: Types.ObjectId;
+  /** Internal sort key — never returned in a response; gaps are legal. */
+  seq: number;
+}
+
+export interface IChatSessionMessageDocument
+  extends Document,
+    IChatSessionMessage {
+  // Document methods are inherited
+}
+
 export interface AIServiceResponse<T> {
   statusCode: number;
   data?: T;
   msg?: string;
 }
 
-export type AnswerMatchType = 'Exact Match' | 'Partial Match' | 'No Match';
+export type AnswerMatchType =
+  | 'Exact Match'
+  | 'Partial Match'
+  | 'No Match'
+  | 'Error';
 
 export interface IAIResponse {
   answer: string;
   citations: ICitation[];
   confidence?: ConfidenceLevel;
+  /** Set by Python's `AnswerFinalizer` cancelled branch (Phase 3) — `RUN_FINISHED`/
+   * `complete` payload for a cooperatively-stopped run carries the partial answer. */
+  status?: 'stopped';
   reason: string;
   answerMatchType: AnswerMatchType;
   documentIndexes: string[];
@@ -258,6 +372,8 @@ export interface IAIResponse {
   reasoning?: IReasoningTurn[];
   /** Ordered agent-activity transcript (`agui` protocol only) — see IMessagePart. */
   parts?: IMessagePart[];
+  /** Set by Python `classify_error` on a graceful failure answer (`auth_error`, …). */
+  errorCode?: string;
 }
 
 export interface IAIModel {

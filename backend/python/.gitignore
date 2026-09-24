@@ -12,3 +12,4 @@ build/
 dist/
 *.egg-info/
 htmlcov/*
+test_output*.txt

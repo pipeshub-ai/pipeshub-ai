@@ -1,16 +1,17 @@
 import mongoose from 'mongoose';
 import { UserGroups } from '../../user_management/schema/userGroup.schema';
+import { findOrgAdminUserIds } from '../../user_management/services/user-admin.service';
 
-const SUPPORTED_GROUP_ROLE_TYPES = new Set(['admin', 'standard', 'everyone', 'custom']);
+const SUPPORTED_GROUP_ROLE_TYPES = new Set(['standard', 'everyone', 'custom']);
 
 function normalizeRole(role: string): string {
   return role.trim().toLowerCase();
 }
 
 /**
- * Resolves Kafka `recipientRoles` entries to user IDs via org user groups.
- * Supports role names that match UserGroup.type (e.g. "admin").
- * Uses a single $in query instead of N sequential queries — one DB round-trip regardless of how many roles are supplied.
+ * Resolves Kafka `recipientRoles` entries to user IDs.
+ * - "admin" → Users with role === 'admin'
+ * - other names → UserGroup.type match (standard / everyone / custom)
  */
 export async function resolveRoleRecipientUserIds(
   orgId: mongoose.Types.ObjectId,
@@ -20,8 +21,7 @@ export async function resolveRoleRecipientUserIds(
     ...new Set(
       recipientRoles
         .filter((r): r is string => typeof r === 'string' && r.trim() !== '')
-        .map(normalizeRole)
-        .filter((r) => SUPPORTED_GROUP_ROLE_TYPES.has(r)),
+        .map(normalizeRole),
     ),
   ];
 
@@ -29,24 +29,36 @@ export async function resolveRoleRecipientUserIds(
     return [];
   }
 
-  const groups = await UserGroups.find({
-    orgId,
-    type: { $in: validRoles },
-    isDeleted: false,
-  })
-    .select('users')
-    .lean();
-
   const userIdStrings = new Set<string>();
-  for (const group of groups) {
-    const users = (group as { users?: unknown[] }).users ?? [];
-    for (const userId of users) {
-      const asString = String(userId);
-      if (mongoose.isValidObjectId(asString)) {
-        userIdStrings.add(asString);
+
+  if (validRoles.includes('admin')) {
+    const adminUserIds = await findOrgAdminUserIds(orgId);
+    for (const userId of adminUserIds) {
+      userIdStrings.add(userId);
+    }
+  }
+
+  const groupRoles = validRoles.filter((r) => SUPPORTED_GROUP_ROLE_TYPES.has(r));
+  if (groupRoles.length > 0) {
+    const groups = await UserGroups.find({
+      orgId,
+      type: { $in: groupRoles },
+      isDeleted: { $ne: true },
+    })
+      .select('users')
+      .lean();
+
+    for (const group of groups) {
+      const users = (group as { users?: unknown[] }).users ?? [];
+      for (const userId of users) {
+        const asString = String(userId);
+        if (mongoose.isValidObjectId(asString)) {
+          userIdStrings.add(asString);
+        }
       }
     }
   }
+
   return [...userIdStrings].map((id) => new mongoose.Types.ObjectId(id));
 }
 

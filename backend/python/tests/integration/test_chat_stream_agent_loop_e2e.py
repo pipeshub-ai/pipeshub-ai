@@ -16,6 +16,7 @@ together, not just each link in isolation.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -38,6 +39,43 @@ def _mock_config_service() -> AsyncMock:
     config_service = AsyncMock()
     config_service.get_config.return_value = {"providers": []}
     return config_service
+
+
+def _mock_cancellation_registry() -> AsyncMock:
+    """A stand-in for the run-cancellation registry.
+
+    Calling `askAIStream` directly bypasses FastAPI, so its
+    `Depends(get_run_cancellation_registry)` default is never resolved. The
+    stream path registers and unregisters a run against this; `is_active`
+    returns False so a supplied runId (none of these tests set one) would not
+    short-circuit as already cancelled.
+    """
+    registry = AsyncMock()
+    registry.is_active = AsyncMock(return_value=False)
+    return registry
+
+
+def _successful_stream_result(output: str) -> SimpleNamespace:
+    # Not a MagicMock: missing names would be truthy (cancelled, confidence).
+    return SimpleNamespace(
+        success=True,
+        error=None,
+        cancelled=False,
+        confidence=None,
+        output=output,
+    )
+
+
+async def _fake_finalizer_run(
+    self, *, agent_success, agent_error, event_sink, agent_output=None,
+    streamed_answer="", reasoning_turns=None, agent_confidence=None,
+    agent_cancelled=False, **_,  # tolerate new AnswerFinalizer.run kwargs
+):
+    await event_sink.write({
+        "event": "complete",
+        "data": {"answer": agent_output, "answerMatchType": "Match Found"},
+    })
+    return {"answer": agent_output}
 
 
 def _mock_retrieval_service(search_results: list[dict] | None = None) -> AsyncMock:
@@ -109,9 +147,9 @@ def _fake_agent_run():
     would need a live LLM/tool registry -- the one boundary this E2E test
     still mocks, at the exact same seam `test_bridge.py` uses."""
 
-    async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+    async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
         agent = MagicMock()
-        agent.last_stream_result = MagicMock(success=True, error=None, output="The answer, with citations.")
+        agent.last_stream_result = _successful_stream_result("The answer, with citations.")
 
         async def _fake_stream(goal, **kwargs):
             return
@@ -119,13 +157,6 @@ def _fake_agent_run():
 
         agent.stream = _fake_stream
         return agent, MagicMock(), MagicMock(constraints=[]), []
-
-    async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None):
-        await event_sink.write({
-            "event": "complete",
-            "data": {"answer": agent_output, "answerMatchType": "Match Found"},
-        })
-        return {"answer": agent_output}
 
     with (
         patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
@@ -144,6 +175,7 @@ class TestChatStreamAgentLoopEndToEnd:
             retrieval_service=_mock_retrieval_service(),
             graph_provider=MagicMock(),
             config_service=_mock_config_service(),
+            cancellation_registry=_mock_cancellation_registry(),
         )
         chunks = await _drain(response)
         events = _events_by_name(chunks)
@@ -164,6 +196,7 @@ class TestChatStreamAgentLoopEndToEnd:
             retrieval_service=_mock_retrieval_service(),
             graph_provider=MagicMock(),
             config_service=config_service,
+            cancellation_registry=_mock_cancellation_registry(),
         )
         chunks = await _drain(response)
         events = _events_by_name(chunks)
@@ -179,6 +212,7 @@ class TestChatStreamAgentLoopEndToEnd:
             retrieval_service=_mock_retrieval_service(),
             graph_provider=MagicMock(),
             config_service=_mock_config_service(),
+            cancellation_registry=_mock_cancellation_registry(),
         )
         chunks = await _drain(response)
         events = _events_by_name(chunks)
@@ -199,6 +233,7 @@ class TestChatStreamAgentLoopEndToEnd:
             retrieval_service=_mock_retrieval_service(),
             graph_provider=MagicMock(),
             config_service=_mock_config_service(),
+            cancellation_registry=_mock_cancellation_registry(),
         )
         chunks = await _drain(response)
         events = _events_by_name(chunks)
@@ -213,9 +248,11 @@ class TestChatStreamAgentLoopEndToEnd:
         not just the org's ambient knowledge base."""
         captured_goal = {}
 
-        async def _fake_create_capturing_goal(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create_capturing_goal(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
             agent = MagicMock()
-            agent.last_stream_result = MagicMock(success=True, error=None, output="Per the attached deck, revenue is up 12%.")
+            agent.last_stream_result = _successful_stream_result(
+                "Per the attached deck, revenue is up 12%."
+            )
 
             async def _fake_stream(goal, **kwargs):
                 captured_goal["goal"] = goal
@@ -225,10 +262,6 @@ class TestChatStreamAgentLoopEndToEnd:
             agent.stream = _fake_stream
             goal = MagicMock(constraints=[])
             return agent, MagicMock(), goal, []
-
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None):
-            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
-            return {"answer": agent_output}
 
         fake_record = {
             "id": "rec-attach-1",
@@ -261,6 +294,7 @@ class TestChatStreamAgentLoopEndToEnd:
                 retrieval_service=_mock_retrieval_service(),
                 graph_provider=MagicMock(),
                 config_service=_mock_config_service(),
+                cancellation_registry=_mock_cancellation_registry(),
             )
             chunks = await _drain(response)
 
@@ -280,12 +314,15 @@ class TestChatStreamAgentLoopEndToEnd:
                 retrieval_service=_mock_retrieval_service(),
                 graph_provider=MagicMock(),
                 config_service=_mock_config_service(),
+                cancellation_registry=_mock_cancellation_registry(),
             )
             chunks = await _drain(response)
 
         events = _events_by_name(chunks)
-        assert "error" in events
+        assert "RUN_ERROR" in events
+        assert events["RUN_ERROR"][-1]["code"] == "llm_initialization_failed"
         assert "complete" not in events
+        assert "RUN_FINISHED" not in events
 
 
 @pytest.mark.usefixtures("_no_connectors", "_agent_loop_llm")
@@ -310,7 +347,7 @@ class TestWebSearchCitationEndToEnd:
             }
         ]
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
             from app.agents.agent_loop.tool_loader import _build_dynamic_tools  # noqa: PLC0415
 
             tools = _build_dynamic_tools(context)
@@ -328,7 +365,7 @@ class TestWebSearchCitationEndToEnd:
             )
 
             agent = MagicMock()
-            agent.last_stream_result = MagicMock(success=True, error=None, output=answer)
+            agent.last_stream_result = _successful_stream_result(answer)
 
             async def _fake_stream(goal, **kwargs):
                 return
@@ -351,12 +388,13 @@ class TestWebSearchCitationEndToEnd:
                 retrieval_service=_mock_retrieval_service(),
                 graph_provider=MagicMock(),
                 config_service=_mock_config_service(),
+                cancellation_registry=_mock_cancellation_registry(),
             )
             chunks = await _drain(response)
 
         events = _events_by_name(chunks)
-        assert "complete" in events
-        completion = events["complete"][-1]
+        assert "RUN_FINISHED" in events
+        completion = events["RUN_FINISHED"][-1]["result"]
         assert completion["citations"], "web_search tool call should have produced a resolvable citation"
         assert completion["citations"][0]["citationType"] == "web|url"
         assert "[1]" in completion["answer"]

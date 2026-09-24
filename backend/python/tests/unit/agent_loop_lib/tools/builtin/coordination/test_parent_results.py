@@ -9,7 +9,10 @@ import json
 
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
+    ImagePart,
+    ImageSource,
     Message,
+    TextPart,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -71,6 +74,36 @@ class TestCollectParentToolResults:
         assert len(results) == 2
         assert results[0].tool_name == "jira_search_issues"
         assert results[1].tool_name == "confluence_search"
+
+    def test_multipart_tool_message_digest_keeps_text_drops_images(self) -> None:
+        """A statically composed child only ever receives a text goal
+        string, so a multipart ToolMessage (search/fetch result carrying
+        images) must digest to its text parts only — dropping images here
+        is correct, not a regression."""
+        messages: list[Message] = [
+            UserMessage(content="describe this record"),
+            _assistant_call("c1", "fetch_full_record"),
+            ToolMessage(
+                content=[
+                    TextPart(text="[ref1] (image)"),
+                    ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc123")),
+                ],
+                tool_call_id="c1",
+            ),
+        ]
+        results = collect_parent_tool_results(messages)
+        assert results == [ParentToolResult(tool_name="fetch_full_record", content="[ref1] (image)")]
+
+    def test_multipart_tool_message_with_no_text_is_excluded(self) -> None:
+        messages: list[Message] = [
+            UserMessage(content="go"),
+            _assistant_call("c1", "fetch_full_record"),
+            ToolMessage(
+                content=[ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc123"))],
+                tool_call_id="c1",
+            ),
+        ]
+        assert collect_parent_tool_results(messages) == []
 
     def test_excludes_errored_tool_results(self) -> None:
         messages: list[Message] = [

@@ -3,16 +3,23 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { EmailTemplateType, MailBody, SmtpConfig } from '../middlewares/types';
 import { MailModel } from '../schema/mailInfo.schema';
 import {
   accountCreation,
   appUserInvite,
+  domainLimitReached,
   loginWithOTPRequest,
   orgEmailVerification,
   resetEmail,
   resetPassword,
   suspiciousLoginAttempt,
+  joinRequestNotify,
+  joinRequestDecision,
 } from '../utils/emailTemplates';
 import nodemailer from 'nodemailer';
 import { inject, injectable } from 'inversify';
@@ -37,7 +44,11 @@ export class MailController {
       }
       result = await this.emailSender(body, this.config.smtp);
       if (!result.status) {
-        throw new InternalServerError(result.data || 'Error sending mail');
+        // `data` is the mail library's own complaint, packed in by emailSender.
+        this.logger.error('Sending the email failed', { reason: result.data });
+        throw markClientSafe(
+          new InternalServerError(serverFailureMessage('send that email')),
+        );
       }
       res.status(200).json({
         data: result,
@@ -81,6 +92,18 @@ export class MailController {
         emailContent = orgEmailVerification(templateData);
         return emailContent;
 
+      case EmailTemplateType.DomainLimitReached:
+        emailContent = domainLimitReached(templateData);
+        return emailContent;
+
+      case EmailTemplateType.JoinRequestNotify:
+        emailContent = joinRequestNotify(templateData);
+        return emailContent;
+
+      case EmailTemplateType.JoinRequestDecision:
+        emailContent = joinRequestDecision(templateData);
+        return emailContent;
+
       default:
         throw 'Unknown Template';
     }
@@ -122,6 +145,7 @@ export class MailController {
       });
 
       const mailEntry = new MailModel({
+        orgId: bodyData.orgId,
         subject: bodyData.subject,
         from: bodyData.fromEmailDomain,
         to: bodyData.sendEmailTo,

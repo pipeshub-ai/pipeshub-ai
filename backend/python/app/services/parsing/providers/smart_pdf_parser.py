@@ -13,6 +13,7 @@ from typing import Any
 
 import pdfplumber
 
+from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.parsing.interface import (
     IParser,
     ParseError,
@@ -24,46 +25,12 @@ from app.services.parsing.providers.ocr_parser import OCRParser
 
 logger = logging.getLogger(__name__)
 
-# Thresholds matching OCRStrategy.needs_ocr()
-_MIN_TEXT_LENGTH = 100
-_MIN_SIGNIFICANT_IMAGES = 2
-_MIN_IMAGE_WIDTH = 100
-_MIN_IMAGE_HEIGHT = 100
-_LOW_DENSITY_THRESHOLD = 0.01
-
-# Fraction of pages that must need OCR before we switch the whole document
+# Fraction of sampled pages that must meet the general OCR heuristics.
 _OCR_PAGE_THRESHOLD = 0.3
 
 
-def _page_needs_ocr(page: Any) -> bool:
-    """Replicate OCRStrategy.needs_ocr() without importing pdfplumber globally."""
-    try:
-        text = (page.extract_text() or "").strip()
-        words = page.extract_words()
-        images = page.images
-        page_area = page.width * page.height
-
-        significant_images = sum(
-            1
-            for img in images
-            if (img.get("width") or 0) > _MIN_IMAGE_WIDTH
-            and (img.get("height") or 0) > _MIN_IMAGE_HEIGHT
-        )
-        has_minimal_text = len(text) < _MIN_TEXT_LENGTH
-        has_significant_images = significant_images > _MIN_SIGNIFICANT_IMAGES
-        text_density = (
-            sum((w["x1"] - w["x0"]) * (w["bottom"] - w["top"]) for w in words) / page_area
-            if words and page_area > 0
-            else 0.0
-        )
-        low_density = text_density < _LOW_DENSITY_THRESHOLD
-        return (has_minimal_text and has_significant_images) or low_density
-    except Exception:  # noqa: BLE001
-        return True
-
-
 def _detect_needs_ocr(content: bytes) -> bool:
-    """Return True when enough pages appear scanned/image-heavy."""
+    """Return True when sampled pages indicate that OCR is needed."""
     try:
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             total = len(pdf.pages)
@@ -71,10 +38,18 @@ def _detect_needs_ocr(content: bytes) -> bool:
                 return False
             sample_size = min(5, total)
             sample_pages = random.sample(pdf.pages, sample_size)
-            ocr_pages = sum(1 for p in sample_pages if _page_needs_ocr(p))
+            if any(
+                OCRStrategy.has_dominant_image_with_limited_text(page)
+                for page in sample_pages
+            ):
+                return True
+            ocr_pages = sum(
+                1 for page in sample_pages if OCRStrategy.needs_ocr(page, logger)
+            )
             return (ocr_pages / sample_size) >= _OCR_PAGE_THRESHOLD
     except Exception:  # noqa: BLE001
         return False
+
 
 class SmartPDFParser:
     """Delegates to OCR when the document appears to be scanned; otherwise uses

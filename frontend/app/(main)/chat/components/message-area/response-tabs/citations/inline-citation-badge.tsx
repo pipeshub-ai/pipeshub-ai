@@ -20,7 +20,7 @@ interface InlineCitationBadgeProps {
 /**
  * Small inline citation pill rendered inside the answer markdown.
  */
-export function InlineCitationBadge({
+function InlineCitationBadgeImpl({
   chunkIndex,
   occurrenceKey,
   citation,
@@ -113,3 +113,29 @@ export function InlineCitationBadge({
     </Flex>
   );
 }
+
+/**
+ * A completed block's markdown source stops changing once it settles (see
+ * `MarkdownBlock` in `answer-content.tsx`), but its citation badges are
+ * still recreated as plain JSX on every parent render. Memoizing here
+ * avoids re-rendering an unaffected badge just because a sibling row's
+ * citation data arrived, or a still-growing block elsewhere re-rendered.
+ * Compares by the citation's *identity fields* rather than object identity
+ * — the SSE pipeline may hand back a differently-referenced but logically
+ * identical `CitationData` object across flushes.
+ */
+function inlineCitationBadgePropsEqual(
+  prev: InlineCitationBadgeProps,
+  next: InlineCitationBadgeProps,
+): boolean {
+  return (
+    prev.chunkIndex === next.chunkIndex &&
+    prev.occurrenceKey === next.occurrenceKey &&
+    prev.callbacks === next.callbacks &&
+    prev.citation?.citationId === next.citation?.citationId &&
+    prev.citation?.recordName === next.citation?.recordName &&
+    prev.citation?.webUrl === next.citation?.webUrl
+  );
+}
+
+export const InlineCitationBadge = React.memo(InlineCitationBadgeImpl, inlineCitationBadgePropsEqual);

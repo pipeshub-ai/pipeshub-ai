@@ -20,13 +20,15 @@ dependencies = [
   "bcrypt>=4.0.0",
   "beautifulsoup4==4.12.3",
   "box-sdk-gen==1.12.0",
+  "psycopg[binary]>=3.1",
+  "PyMySQL>=1.1",
   "Brotli==1.2.0",
   "CairoSVG==2.8.2",
   "celery==5.4.0",
   "confluent-kafka==2.8.0",
   "cachetools==6.2.4",
   "cloudscraper==1.2.71",
-  "cryptography==48.0.1",
+  "cryptography==50.0.0",
   "curl-cffi==0.14.0",
   "dependency-injector==4.44.0",
   "discord.py==2.6.3",
@@ -79,7 +81,7 @@ dependencies = [
   "msgraph-sdk==1.16.0",
   "nats-py==2.1.0",
   "notion-client==2.2.1",
-  "nltk==3.10.0",
+  "nltk==3.10.3",
   "numpy==2.3.2",
   "opencv-python-headless==4.11.0.86",
   "openpyxl==3.1.5",
@@ -125,7 +127,7 @@ include = ["helper", "connectors", "connectors.*", "messaging*", "response-valid
 validation = ["schemas/*.yaml", "schemas/edges/*.yaml"]
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.uv.sources]

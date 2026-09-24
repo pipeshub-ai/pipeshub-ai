@@ -12,15 +12,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import (
-    CollectionNames,
     EventTypes,
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
 )
-from app.events.events import EventProcessor
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
-
+from app.events.events import DedupDecision, EventProcessor
+from app.exceptions.indexing_exceptions import ProcessingError
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,6 +34,10 @@ def _make_event_processor():
     """Create an EventProcessor with mocked deps from events module."""
     logger = MagicMock()
     processor = MagicMock()
+    # Membership sync is awaited, so the pipeline must be an AsyncMock; a bare
+    # MagicMock raises TypeError, which the caller now propagates rather than
+    # swallowing.
+    processor.indexing_pipeline = AsyncMock()
     graph_provider = AsyncMock()
     graph_provider.update_node = AsyncMock(return_value=True)
     config_service = MagicMock()
@@ -200,15 +207,15 @@ class TestMarkRecordStatusEdgeCases:
         assert "indexingStage" not in doc
 
     @pytest.mark.asyncio
-    async def test_error_with_non_empty_status_does_not_raise(self):
-        """Errors with non-EMPTY statuses are swallowed."""
+    async def test_error_with_non_empty_status_raises_too(self):
+        """A status write that fails raises, whatever the status: a record left
+        at its old status with the failure swallowed is never retried."""
         ep, logger, _, gp = _make_event_processor()
         gp.update_node.side_effect = Exception("fail")
         doc = {"_key": "k6"}
 
-        # FAILED is not EMPTY, so exception should be swallowed
-        await ep.mark_record_status(doc, ProgressStatus.FAILED)
-        logger.error.assert_called()
+        with pytest.raises(Exception, match="fail"):
+            await ep.mark_record_status(doc, ProgressStatus.FAILED)
 
     @pytest.mark.asyncio
     async def test_error_with_empty_status_raises(self):
@@ -217,8 +224,28 @@ class TestMarkRecordStatusEdgeCases:
         gp.update_node.side_effect = Exception("fail")
         doc = {"_key": "k7"}
 
-        with pytest.raises(Exception, match="Failed to mark record status to EMPTY"):
+        with pytest.raises(Exception, match="fail"):
             await ep.mark_record_status(doc, ProgressStatus.EMPTY)
+
+    @pytest.mark.asyncio
+    async def test_silent_write_failure_raises_indexing_error(self):
+        """A write that fails without raising (update_node returns False,
+        e.g. a transient graph DB write failure) must not be swallowed.
+
+        Without this, mark_record_status would report success on a status
+        that was never actually persisted — leaving the record stuck at its
+        prior status forever, since reconciliation only revisits QUEUED/
+        IN_PROGRESS records and the caller would still yield completion
+        events as if the write had succeeded.
+        """
+        from app.exceptions.indexing_exceptions import IndexingError  # noqa: PLC0415
+
+        ep, _, _, gp = _make_event_processor()
+        gp.update_node = AsyncMock(return_value=False)
+        doc = {"_key": "k8"}
+
+        with pytest.raises(IndexingError):
+            await ep.mark_record_status(doc, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
 
 
 # ===========================================================================
@@ -238,7 +265,7 @@ class TestCheckDuplicateMd5EdgeCases:
         result = await ep._check_duplicate_by_md5("", doc)
 
         # Empty string is falsy in `if md5_checksum is None and content:` check
-        assert result is False
+        assert result.skip_indexing is False
 
     @pytest.mark.asyncio
     async def test_empty_bytes_content_no_md5(self):
@@ -248,7 +275,7 @@ class TestCheckDuplicateMd5EdgeCases:
 
         result = await ep._check_duplicate_by_md5(b"", doc)
 
-        assert result is False
+        assert result.skip_indexing is False
 
     @pytest.mark.asyncio
     async def test_completed_without_virtual_record_id_not_matched(self):
@@ -267,7 +294,7 @@ class TestCheckDuplicateMd5EdgeCases:
         # COMPLETED without virtualRecordId is NOT matched as processed_duplicate
         # (the condition requires virtualRecordId AND COMPLETED)
         # So it falls through. It's also not IN_PROGRESS, so returns False.
-        assert result is False
+        assert result.skip_indexing is False
 
     @pytest.mark.asyncio
     async def test_multiple_duplicates_prefers_processed(self):
@@ -290,7 +317,7 @@ class TestCheckDuplicateMd5EdgeCases:
         with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
             result = await ep._check_duplicate_by_md5(b"x", doc)
 
-        assert result is True
+        assert result.skip_indexing is True
         # Should be handled as processed, not queued
         assert doc["virtualRecordId"] == "vr-p"
         assert doc.get("indexingStatus") != ProgressStatus.QUEUED.value
@@ -312,8 +339,153 @@ class TestCheckDuplicateMd5EdgeCases:
         with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=200):
             result = await ep._check_duplicate_by_md5(b"x", doc)
 
-        assert result is True
+        assert result.skip_indexing is True
         gp.copy_document_relationships.assert_awaited_once_with("dup-src", "r-fallback")
+
+
+# ===========================================================================
+# _check_duplicate_by_md5 - cross-collection dedup matrix
+#
+# Under a hypothetical per-connector-type strategy (never shipped in OSS,
+# but the interface must support it), a duplicate found in a different
+# collection than the current record must not be treated the same as one
+# in the same collection: see the dedup decision matrix in the
+# flexible-collection-strategy plan.
+# ===========================================================================
+
+
+# The real contract double rather than a local stub: dedup compares its answer
+# against the write path's, so a stub that skips `required_axes` would let this
+# suite pass while production refused the same context.
+from app.services.vector_db.strategies.per_connector_type import (  # noqa: E402
+    PerConnectorTypeStrategy as _PerConnectorNameStrategy,
+)
+
+
+def _make_multi_collection_event_processor():
+    from app.events.events import EventProcessor
+
+    logger = MagicMock()
+    processor = MagicMock()
+    processor.indexing_pipeline = AsyncMock()
+    graph_provider = AsyncMock()
+    graph_provider.update_node = AsyncMock(return_value=True)
+    config_service = MagicMock()
+
+    ep = EventProcessor(
+        logger,
+        processor,
+        graph_provider,
+        config_service,
+        collection_strategy=_PerConnectorNameStrategy(),
+    )
+    return ep, graph_provider
+
+
+class TestCheckDuplicateMd5CrossCollectionMatrix:
+    @pytest.mark.asyncio
+    async def test_same_collection_completed_duplicate_skips_indexing(self):
+        """Same connectorName -> same collection -> full reuse, skip indexing."""
+        ep, gp = _make_multi_collection_event_processor()
+        dup = {
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+            "summaryDocumentId": "sum-1",
+        }
+        gp.find_duplicate_records.return_value = [dup]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert result.virtual_record_id == "vr-1"
+
+    @pytest.mark.asyncio
+    async def test_different_collection_completed_duplicate_indexes_anyway(self):
+        """Different connectorName -> different collection -> VRID reused but
+        this record still gets indexed into its own (empty) collection."""
+        ep, gp = _make_multi_collection_event_processor()
+        dup = {
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+            "summaryDocumentId": "sum-1",
+        }
+        gp.find_duplicate_records.return_value = [dup]
+        doc = {
+            "_key": "r1",
+            "connectorName": "SLACK",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is False
+        assert result.virtual_record_id == "vr-1"
+        # sync_vector_membership must not run for a collection this record
+        # isn't even part of.
+        ep.processor.indexing_pipeline.sync_vector_membership.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_same_collection_in_progress_duplicate_queues(self):
+        ep, gp = _make_multi_collection_event_processor()
+        in_progress = {
+            "_key": "dup-ip",
+            "connectorName": "GOOGLE_DRIVE",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+        }
+        gp.find_duplicate_records.return_value = [in_progress]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert result.virtual_record_id is None
+        assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
+
+    @pytest.mark.asyncio
+    async def test_different_collection_in_progress_duplicate_proceeds(self):
+        """Must not queue behind another collection's in-flight work."""
+        ep, gp = _make_multi_collection_event_processor()
+        in_progress = {
+            "_key": "dup-ip",
+            "connectorName": "GOOGLE_DRIVE",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+        }
+        gp.find_duplicate_records.return_value = [in_progress]
+        doc = {
+            "_key": "r1",
+            "connectorName": "SLACK",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is False
+        assert result.virtual_record_id is None
+        assert doc.get("indexingStatus") != ProgressStatus.QUEUED.value
 
 
 # ===========================================================================
@@ -331,7 +503,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             # No eventType key in data
             event_data = _make_event_payload(extension=ExtensionTypes.DOCX.value)
             events = await _drain(ep.on_event(event_data))
@@ -349,7 +522,8 @@ class TestOnEventEdgeCases:
         }
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 extension=ExtensionTypes.DOCX.value,
                 virtual_record_id=None,
@@ -370,7 +544,8 @@ class TestOnEventEdgeCases:
         }
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 extension=ExtensionTypes.DOCX.value,
                 virtual_record_id=None,
@@ -388,7 +563,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 mime_type=MimeTypes.PLAIN_TEXT.value,
                 connector_name="gmail",
@@ -405,7 +581,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 mime_type=MimeTypes.PLAIN_TEXT.value,
                 connector_name="",
@@ -438,7 +615,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             payload = {
                 "recordId": "rec-1",
                 "orgId": "org-1",
@@ -463,7 +641,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.DOCX.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -477,7 +656,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_excel_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.XLSX.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -491,7 +671,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_delimited_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.CSV.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -505,7 +686,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pptx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.PPTX.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -519,7 +701,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.MARKDOWN.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -538,7 +721,8 @@ class TestOnEventEdgeCases:
 
         processor.process_docx_document = MagicMock(side_effect=failing_processor)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.DOCX.value)
             with pytest.raises(ValueError, match="processor broke"):
                 await _drain(ep.on_event(event_data))
@@ -550,7 +734,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "true"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
@@ -571,7 +756,8 @@ class TestOnEventEdgeCases:
         processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=pymupdf_fails)
         processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "true"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
@@ -587,12 +773,65 @@ class TestOnEventEdgeCases:
         processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
-             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, side_effect=Exception("corrupted pdf")):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
             await _drain(ep.on_event(event_data))
 
         processor.process_pdf_with_docling.assert_called_once()
+
+
+class TestEpubDispatch:
+    """EPUB must be converted to PDF then routed through the identical PDF
+    decision logic used for native PDFs — never through PyMuPDF/fitz."""
+
+    @pytest.mark.asyncio
+    async def test_epub_converts_then_routes_to_docling_by_default(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
+             patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch(
+                 "app.events.events.convert_with_libreoffice",
+                 new_callable=AsyncMock,
+                 return_value=b"pdf bytes",
+             ) as mock_convert:
+            event_data = _make_event_payload(
+                extension=ExtensionTypes.EPUB.value, record_name="book.epub"
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        mock_convert.assert_called_once_with(b"hello", "epub", "pdf")
+        processor.process_pdf_with_docling.assert_called_once()
+        assert processor.process_pdf_with_docling.call_args.kwargs["recordName"] == "book.pdf"
+        assert processor.process_pdf_with_docling.call_args.kwargs["pdf_binary"] == b"pdf bytes"
+        assert len(events) == 3
+
+    @pytest.mark.asyncio
+    async def test_libreoffice_conversion_failure_bubbles_up(self):
+        """A LibreOffice failure (e.g. missing binary, corrupt EPUB) surfaces
+        as an indexing error rather than being silently swallowed."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch(
+                 "app.events.events.convert_with_libreoffice",
+                 new_callable=AsyncMock,
+                 side_effect=RuntimeError("LibreOffice is not installed"),
+             ):
+            event_data = _make_event_payload(extension=ExtensionTypes.EPUB.value)
+            with pytest.raises(RuntimeError, match="LibreOffice is not installed"):
+                await _drain(ep.on_event(event_data))
+
+        processor.process_pdf_with_docling.assert_not_called()
+        processor.process_pdf_document_with_ocr.assert_not_called()
 
 
 # ===========================================================================
@@ -609,7 +848,8 @@ class TestOnEventMimeTypeDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pptx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.GOOGLE_SLIDES.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -622,7 +862,8 @@ class TestOnEventMimeTypeDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.GOOGLE_DOCS.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -635,7 +876,8 @@ class TestOnEventMimeTypeDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_excel_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.GOOGLE_SHEETS.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -648,7 +890,8 @@ class TestOnEventMimeTypeDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_html_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.HTML.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -661,7 +904,8 @@ class TestOnEventMimeTypeDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.PLAIN_TEXT.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -674,7 +918,8 @@ class TestOnEventMimeTypeDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_blocks = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.BLOCKS.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -687,7 +932,8 @@ class TestOnEventMimeTypeDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_gmail_message = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.GMAIL.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -709,7 +955,8 @@ class TestOnEventExtensionDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_doc_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.DOC.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -722,7 +969,8 @@ class TestOnEventExtensionDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_xls_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.XLS.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -735,7 +983,8 @@ class TestOnEventExtensionDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_delimited_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.TSV.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -748,7 +997,8 @@ class TestOnEventExtensionDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_ppt_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.PPT.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -761,7 +1011,8 @@ class TestOnEventExtensionDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.MD.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -774,7 +1025,8 @@ class TestOnEventExtensionDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_mdx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.MDX.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -787,7 +1039,8 @@ class TestOnEventExtensionDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.TXT.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -800,7 +1053,8 @@ class TestOnEventExtensionDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_image = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.PNG.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -813,7 +1067,8 @@ class TestOnEventExtensionDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_image = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.JPG.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -825,7 +1080,8 @@ class TestOnEventExtensionDispatch:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension="xyz")
             with pytest.raises(Exception, match="Unsupported file extension"):
                 await _drain(ep.on_event(event_data))
@@ -836,7 +1092,8 @@ class TestOnEventExtensionDispatch:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_html_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.HTML.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -844,13 +1101,15 @@ class TestOnEventExtensionDispatch:
         processor.process_html_document.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_code_mime_routes_to_md_processor(self):
+    async def test_code_mime_routes_to_code_processor(self):
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_code_document = MagicMock(side_effect=_mock_processor_gen)
         processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
         processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 extension="exe",
                 mime_type="text/x-python",
@@ -859,17 +1118,63 @@ class TestOnEventExtensionDispatch:
             events = await _drain(ep.on_event(event_data))
 
         assert len(events) == 3
-        processor.process_md_document.assert_called_once()
+        processor.process_code_document.assert_called_once()
+        processor.process_md_document.assert_not_called()
         processor.process_txt_document.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_code_extension_routes_to_md_processor_when_mime_unknown(self):
+    async def test_code_file_arriving_as_text_plain_still_reaches_code_processor(self):
+        """Connectors walking a git tree default an unrecognised blob's mime to
+        text/plain. The PLAIN_TEXT branch returns early, so the code dispatch
+        has to precede it or every .jsx is silently parsed as prose."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_code_document = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+            event_data = _make_event_payload(
+                extension="",
+                mime_type="text/plain",
+                record_name="App.jsx",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 3
+        processor.process_code_document.assert_called_once()
+        processor.process_txt_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_plain_text_that_is_not_code_still_uses_txt_processor(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_code_document = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+            event_data = _make_event_payload(
+                extension="",
+                mime_type="text/plain",
+                record_name="notes.txt",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 3
+        processor.process_txt_document.assert_called_once()
+        processor.process_code_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_code_extension_routes_to_code_processor_when_mime_unknown(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_code_document = MagicMock(side_effect=_mock_processor_gen)
         processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
         processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 extension="py",
                 mime_type="application/octet-stream",
@@ -878,7 +1183,8 @@ class TestOnEventExtensionDispatch:
             events = await _drain(ep.on_event(event_data))
 
         assert len(events) == 3
-        processor.process_md_document.assert_called_once()
+        processor.process_code_document.assert_called_once()
+        processor.process_md_document.assert_not_called()
         processor.process_txt_document.assert_not_called()
 
 
@@ -899,7 +1205,7 @@ class TestCheckDuplicateMd5StringContent:
 
         result = await ep._check_duplicate_by_md5("hello world", doc)
 
-        assert result is False
+        assert result.skip_indexing is False
         assert doc.get("md5Checksum") is not None
         # Content goes through _normalize_content_for_dedup (plain text returns as-is)
         normalized = ep._normalize_content_for_dedup(b"hello world", record_type="FILE")
@@ -915,7 +1221,7 @@ class TestCheckDuplicateMd5StringContent:
 
         result = await ep._check_duplicate_by_md5(b"hello world", doc)
 
-        assert result is False
+        assert result.skip_indexing is False
         normalized = ep._normalize_content_for_dedup(b"hello world", record_type="FILE")
         expected = hashlib.md5(normalized).hexdigest()
         assert doc["md5Checksum"] == expected
@@ -940,7 +1246,8 @@ class TestOnEventUpdateEvent:
         }
         processor.process_excel_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 extension=ExtensionTypes.XLSX.value,
                 event_type=EventTypes.UPDATE_RECORD.value,
@@ -964,7 +1271,8 @@ class TestOnEventUpdateEvent:
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=[{"_key": "rec-1"}])
         processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 mime_type=MimeTypes.SQL_TABLE.value,
                 extension=ExtensionTypes.SQL_TABLE.value,
@@ -991,7 +1299,8 @@ class TestOnEventUpdateEvent:
         ])
         processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 mime_type=MimeTypes.SQL_TABLE.value,
                 extension=ExtensionTypes.SQL_TABLE.value,
@@ -1016,7 +1325,8 @@ class TestOnEventUpdateEvent:
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=[{"_key": "rec-1"}])
         processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 mime_type=MimeTypes.SQL_VIEW.value,
                 extension=ExtensionTypes.SQL_VIEW.value,
@@ -1039,7 +1349,8 @@ class TestOnEventUpdateEvent:
         }
         processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 mime_type=MimeTypes.SQL_TABLE.value,
                 extension=ExtensionTypes.SQL_TABLE.value,
@@ -1071,7 +1382,8 @@ class TestOnEventDoclingFallback:
         processor.process_pdf_with_docling = MagicMock(side_effect=docling_fails)
         processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
@@ -1177,30 +1489,79 @@ class TestOnEventEarlyReturns:
     """Test on_event early return edge cases."""
 
     @pytest.mark.asyncio
-    async def test_no_payload_returns_early(self):
-        """No payload in event data (lines 244-245)."""
-        ep, logger, _, _ = _make_event_processor()
+    async def test_no_payload_raises_terminal_error(self):
+        """A malformed envelope must fail loudly and once.
+
+        Returning bare here yielded neither completion event, which the
+        consumers read as an unexplained failure and retried to the dead-letter
+        ceiling — three deliveries and no diagnosis for something no retry can
+        fix.
+        """
+        ep, _logger, _, _ = _make_event_processor()
         event_data = {"eventType": "NEW_RECORD"}  # no payload key
-        events = await _drain(ep.on_event(event_data))
-        assert events == []
-        logger.error.assert_called()
+
+        with pytest.raises(ProcessingError):
+            await _drain(ep.on_event(event_data))
 
     @pytest.mark.asyncio
-    async def test_no_record_id_returns_early(self):
-        """No recordId in payload (lines 253-254)."""
-        ep, logger, _, _ = _make_event_processor()
+    async def test_no_record_id_raises_terminal_error(self):
+        """A payload with no recordId can never come good on a retry."""
+        ep, _logger, _, _ = _make_event_processor()
         event_data = {"payload": {"orgId": "org-1"}}  # no recordId
-        events = await _drain(ep.on_event(event_data))
-        assert events == []
+
+        with pytest.raises(ProcessingError):
+            await _drain(ep.on_event(event_data))
 
     @pytest.mark.asyncio
-    async def test_record_not_found_returns_early(self):
-        """Record not found in DB (lines 261-262)."""
-        ep, logger, _, gp = _make_event_processor()
+    async def test_record_not_found_drains_the_message(self):
+        """A deleted record is drained, not retried.
+
+        Unlike the two malformed cases above this is legitimately reachable —
+        a record can be deleted between an event being published and consumed —
+        so it completes the pipeline rather than raising.
+        """
+        ep, _logger, _, gp = _make_event_processor()
         gp.get_document.return_value = None
         event_data = _make_event_payload()
+
         events = await _drain(ep.on_event(event_data))
-        assert events == []
+
+        assert [e.event for e in events] == [
+            IndexingEvent.PARSING_COMPLETE,
+            IndexingEvent.INDEXING_COMPLETE,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_not_drained_as_a_deletion(self):
+        """The graph being unreachable must not read as "this record is gone".
+
+        Draining is permanent: the message is acknowledged and the record sits
+        at QUEUED until the stranded sweep republishes it an hour later. During
+        a graph restart every record in flight took that path.
+        """
+        ep, _logger, _, gp = _make_event_processor()
+
+        async def unreachable_graph(*_args, raise_on_error: bool = False, **_kwargs):
+            # What both providers do: swallow and answer None unless asked not to.
+            # A double that raised either way would pass without the fix.
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return None
+
+        gp.get_document.side_effect = unreachable_graph
+
+        with pytest.raises(RuntimeError):
+            await _drain(ep.on_event(_make_event_payload()))
+
+    @pytest.mark.asyncio
+    async def test_the_record_lookup_asks_for_failures_to_be_raised(self):
+        """`raise_on_error` is what makes the None above mean "deleted"."""
+        ep, _logger, _, gp = _make_event_processor()
+        gp.get_document.return_value = None
+
+        await _drain(ep.on_event(_make_event_payload()))
+
+        assert gp.get_document.await_args.kwargs.get("raise_on_error") is True
 
     @pytest.mark.asyncio
     async def test_no_buffer_proceeds_with_none_content(self):
@@ -1209,7 +1570,8 @@ class TestOnEventEarlyReturns:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(buffer=None, extension=ExtensionTypes.DOCX.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -1230,12 +1592,50 @@ class TestOnEventDuplicate:
         ep, _, _, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=True):
+        with patch.object(
+            ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+            return_value=DedupDecision(virtual_record_id=None, skip_indexing=True),
+        ):
             event_data = _make_event_payload()
             events = await _drain(ep.on_event(event_data))
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_skip_invalidates_accessible_records_cache(self):
+        """When dedup skips indexing, the accessible-records cache must still
+        be invalidated so the newly attached record is searchable immediately.
+
+        Without this, a KB file re-uploaded with identical content (matched by
+        MD5 to an existing record) would be marked COMPLETED but invisible to
+        search until the cache TTL expires.
+        """
+        ep, _, _, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "FILE",
+            "connectorName": "KB",
+            "connectorId": "hidden-kb-1",
+            "orgId": "org-1",
+        }
+
+        with patch.object(
+            ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+            return_value=DedupDecision(virtual_record_id=None, skip_indexing=True),
+        ), patch(
+            "app.events.events.notify_record_indexed", new_callable=AsyncMock,
+        ) as mock_notify:
+            event_data = _make_event_payload(
+                connector_name="KB",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        mock_notify.assert_awaited_once()
+        call_kwargs = mock_notify.call_args[1]
+        assert call_kwargs["connector_name"] == "KB"
+        assert call_kwargs["connector_id"] == "hidden-kb-1"
+        assert call_kwargs["org_id"] == "org-1"
 
     @pytest.mark.asyncio
     async def test_check_duplicate_in_progress_handling(self):
@@ -1250,7 +1650,7 @@ class TestOnEventDuplicate:
 
         doc = {"_key": "rec-1", "md5Checksum": "abc123", "recordType": "FILE", "sizeInBytes": 100}
         result = await ep._check_duplicate_by_md5(b"hello world", doc)
-        assert result is True
+        assert result.skip_indexing is True
         assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
 
 
@@ -1269,7 +1669,8 @@ class TestOnEventOcrPath:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, side_effect=RuntimeError("OCR check failed")), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}):
             event_data = _make_event_payload(extension="pdf")
@@ -1285,7 +1686,8 @@ class TestOnEventOcrPath:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=True):
             event_data = _make_event_payload(extension="pdf")
             events = await _drain(ep.on_event(event_data))
@@ -1443,7 +1845,7 @@ class TestCheckDuplicateSourceKeyFallback:
         with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=200):
             result = await ep._check_duplicate_by_md5(b"x", doc)
 
-        assert result is True
+        assert result.skip_indexing is True
         gp.copy_document_relationships.assert_awaited_once_with("dup-src-id", "target")
 
 
@@ -1461,7 +1863,8 @@ class TestOnEventSqlRouting:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "SQL_TABLE"}
         processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.SQL_TABLE.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -1475,7 +1878,8 @@ class TestOnEventSqlRouting:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "SQL_TABLE"}
         processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.SQL_TABLE.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -1488,7 +1892,8 @@ class TestOnEventSqlRouting:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "SQL_VIEW"}
         processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(mime_type=MimeTypes.SQL_VIEW.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -1502,7 +1907,8 @@ class TestOnEventSqlRouting:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "SQL_VIEW"}
         processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.SQL_VIEW.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -1524,7 +1930,8 @@ class TestOnEventPassesEventType:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 extension=ExtensionTypes.DOCX.value,
                 event_type=EventTypes.NEW_RECORD.value,
@@ -1540,7 +1947,8 @@ class TestOnEventPassesEventType:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_image = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 extension=ExtensionTypes.PNG.value,
                 event_type=EventTypes.NEW_RECORD.value,
@@ -1556,7 +1964,8 @@ class TestOnEventPassesEventType:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pptx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 mime_type=MimeTypes.GOOGLE_SLIDES.value,
                 event_type=EventTypes.UPDATE_RECORD.value,
@@ -1582,7 +1991,8 @@ class TestOnEventPrevVirtualRecordId:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 extension=ExtensionTypes.DOCX.value,
                 event_type=EventTypes.NEW_RECORD.value,
@@ -1604,7 +2014,8 @@ class TestOnEventPrevVirtualRecordId:
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=[{"_key": "rec-1"}])
         processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(
                 mime_type=MimeTypes.SQL_TABLE.value,
                 extension=ExtensionTypes.SQL_TABLE.value,
@@ -1615,3 +2026,253 @@ class TestOnEventPrevVirtualRecordId:
 
         call_kwargs = processor.process_sql_structured_data.call_args[1]
         assert call_kwargs["prev_virtual_record_id"] == "prev-vrid"
+
+
+class TestVectorMembershipHooks:
+    @pytest.mark.asyncio
+    async def test_duplicate_attach_syncs_membership(self):
+        ep, _, _, gp = _make_event_processor()
+        processed = {
+            "_key": "dup-p",
+            "virtualRecordId": "vr-shared",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+            "summaryDocumentId": "sum-p",
+        }
+        gp.find_duplicate_records.return_value = [processed]
+        doc = {"_key": "r-new", "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10}
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+                result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        sync.assert_awaited_once_with("vr-shared")
+
+    @pytest.mark.asyncio
+    async def test_n1_vrid_split_rewrites_old_vrid(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "shared-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1", "rec-2"])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+            with patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock) as rewrite:
+                event_data = _make_event_payload(
+                    mime_type=MimeTypes.SQL_TABLE.value,
+                    extension=ExtensionTypes.SQL_TABLE.value,
+                    event_type=EventTypes.UPDATE_RECORD.value,
+                    virtual_record_id="shared-vrid",
+                )
+                await _drain(ep.on_event(event_data))
+
+        rewrite.assert_awaited_once_with("shared-vrid")
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["virtual_record_id"] != "shared-vrid"
+        assert call_kwargs["prev_virtual_record_id"] == "shared-vrid"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_attach_skips_sync_when_vrid_missing(self):
+        ep, _, _, gp = _make_event_processor()
+        processed = {
+            "_key": "dup-empty",
+            "indexingStatus": ProgressStatus.EMPTY.value,
+        }
+        gp.find_duplicate_records.return_value = [processed]
+        doc = {"_key": "r-new", "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10}
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+                result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        sync.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_to_one_reconciliation_does_not_rewrite(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "solo-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+            with patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock) as rewrite:
+                event_data = _make_event_payload(
+                    mime_type=MimeTypes.SQL_TABLE.value,
+                    extension=ExtensionTypes.SQL_TABLE.value,
+                    event_type=EventTypes.UPDATE_RECORD.value,
+                    virtual_record_id="solo-vrid",
+                )
+                await _drain(ep.on_event(event_data))
+
+        rewrite.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_delegates_to_indexing_pipeline(self):
+        ep, _, processor, _ = _make_event_processor()
+        processor.indexing_pipeline.sync_vector_membership = AsyncMock()
+
+        await ep.sync_vector_membership("vr-1")
+
+        processor.indexing_pipeline.sync_vector_membership.assert_awaited_once_with("vr-1")
+
+    @pytest.mark.asyncio
+    async def test_sync_without_pipeline_fails_the_event(self):
+        """Must not acknowledge work that never happened.
+
+        The handler yields INDEXING_COMPLETE straight after this call, so
+        returning quietly would ack a syncVectorMembership event whose update was
+        never applied, with nothing to revisit it. IndexingError is transient, so
+        an event arriving before the pipeline is wired succeeds on retry and a
+        real misconfiguration dead-letters visibly.
+        """
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+
+        ep, _, processor, _ = _make_event_processor()
+        processor.indexing_pipeline = None
+
+        with pytest.raises(IndexingError) as exc:
+            await ep.sync_vector_membership("vr-1")
+
+        assert (
+            MessageErrorClassifier.classify_by_exception(exc.value)
+            == MessageErrorType.TRANSIENT
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_ignores_blank_vrid(self):
+        ep, _, processor, _ = _make_event_processor()
+        processor.indexing_pipeline.sync_vector_membership = AsyncMock()
+
+        await ep.sync_vector_membership("")
+
+        processor.indexing_pipeline.sync_vector_membership.assert_not_awaited()
+
+
+
+from app.exceptions.indexing_exceptions import IndexingError  # noqa: E402
+
+
+def _fail_every_write_except_md5():
+    """`_check_duplicate_by_md5` persists md5Checksum before it reaches any of
+    the writes under test, so a blanket failure would trip that one instead."""
+    async def _update(record_id, collection, fields):
+        return "md5Checksum" in fields
+
+    return AsyncMock(side_effect=_update)
+
+
+
+class TestFailedGraphWritesAreNotReportedAsSuccess:
+    """A failed write must not be turned into "skip indexing".
+
+    `on_event` answers `skip_indexing=True` by emitting PARSING_COMPLETE and
+    INDEXING_COMPLETE and consuming the message, and the reconciliation sweep in
+    `indexing_main` only revisits QUEUED/IN_PROGRESS records. So a write that
+    quietly failed here strands a record that is neither indexed nor ever looked
+    at again. `IndexingError` classifies as transient: the consumer redelivers,
+    and a persistent failure dead-letters visibly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_failed_md5_write_raises(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.update_node = AsyncMock(return_value=False)
+        doc = {"_key": "r1", "recordType": "FILE", "sizeInBytes": 10}
+
+        with pytest.raises(IndexingError, match="md5Checksum"):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+
+    @pytest.mark.asyncio
+    async def test_failed_duplicate_field_write_raises(self):
+        """Without this the record is marked complete with no virtualRecordId,
+        so it has neither vectors of its own nor a share of the duplicate's."""
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }]
+        gp.update_node = _fail_every_write_except_md5()
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        with pytest.raises(IndexingError, match="duplicate record fields"):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+
+    @pytest.mark.asyncio
+    async def test_failed_relationship_copy_raises(self):
+        """The record would otherwise be marked COMPLETED while missing the
+        departments/categories/topics edges it inherited the content of."""
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }]
+        gp.copy_document_relationships = AsyncMock(return_value=False)
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        with pytest.raises(IndexingError, match="relationships"):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+
+    @pytest.mark.asyncio
+    async def test_failed_queued_write_raises(self):
+        """The in-flight branch: QUEUED is the only handle the sweeper has, so
+        losing that write is what strands the record for good."""
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+        }]
+        gp.update_node = _fail_every_write_except_md5()
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        with pytest.raises(IndexingError, match="QUEUED"):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+
+    @pytest.mark.asyncio
+    async def test_a_successful_in_flight_duplicate_still_skips(self):
+        """The happy path is unchanged: raising is reserved for real failures."""
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+        }]
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"payload", doc)
+
+        assert result.skip_indexing is True
+        assert doc["indexingStatus"] == ProgressStatus.QUEUED.value

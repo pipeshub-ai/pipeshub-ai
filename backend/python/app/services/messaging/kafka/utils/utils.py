@@ -3,7 +3,11 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
-from app.connectors.services.event_service import EventService
+from app.edition_services import (
+    EntityEventService,
+    EventService,
+    RecordEventHandler,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
@@ -20,8 +24,6 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaProducerConfig,
 )
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
-from app.services.messaging.kafka.handlers.entity import EntityEventService
-from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
 
 class KafkaUtils:
@@ -102,7 +104,13 @@ class KafkaUtils:
 
     @staticmethod
     async def create_aiconfig_kafka_consumer_config(app_container: QueryAppContainer) -> KafkaConsumerConfig:
-        """Create Kafka configuration for AI config events"""
+        """Create Kafka configuration for AI config events.
+
+        Not used by the query service, which goes through
+        ``MessagingUtils.create_aiconfig_consumer_config``. Prefer that: this one uses a
+        single shared group, so with more than one query process only ONE of them would
+        receive a model change and the rest would serve a stale LLM until restart.
+        """
         return await KafkaUtils._create_base_consumer_config(
             app_container, KafkaConstants.CLIENT_ID_AICONFIG_CONSUMER.value, KafkaConstants.GROUP_ID_AICONFIG.value, [Topic.AI_CONFIG_EVENTS.value]
         )
@@ -170,9 +178,33 @@ class KafkaUtils:
         return handle_entity_message
 
     @staticmethod
+    async def create_record_event_handler(
+        app_container: IndexingAppContainer,
+        producer: Any = None,
+    ) -> RecordEventHandler:
+        """Build the record event handler.
+
+        Separate from ``create_record_message_handler`` because the consumer
+        needs this same instance as its ``AbandonedMessageSink`` — it is what
+        puts a record into a terminal status when its message is discarded — and
+        two instances would mean two graph clients for one job.
+        """
+        logger = app_container.logger()
+        event_processor = getattr(app_container, '_event_processor', None)
+        if not event_processor:
+            event_processor = await app_container.event_processor()
+        return RecordEventHandler(
+            logger=logger,
+            config_service=app_container.config_service(),
+            event_processor=event_processor,
+            producer=producer,
+        )
+
+    @staticmethod
     async def create_record_message_handler(
         app_container: IndexingAppContainer,
         producer: Any = None,
+        record_event_service: RecordEventHandler | None = None,
     ) -> IndexingMessageHandler:
         """Create a message handler for record events.
 
@@ -180,19 +212,16 @@ class KafkaUtils:
         next queued duplicate); pass the same producer used for retries so we
         don't spin up a second Kafka connection.
 
+        Pass `record_event_service` to reuse an instance already built for the
+        consumer's abandonment sink.
+
         Returns an async generator function that yields PipelineEvent during processing.
         """
         logger = app_container.logger()
-        event_processor = getattr(app_container, '_event_processor', None)
-        if not event_processor:
-            event_processor = await app_container.event_processor()
-        config_service = app_container.config_service()
-        record_event_service = RecordEventHandler(
-            logger=logger,
-            config_service=config_service,
-            event_processor=event_processor,
-            producer=producer,
-        )
+        if record_event_service is None:
+            record_event_service = await KafkaUtils.create_record_event_handler(
+                app_container, producer
+            )
 
         async def handle_record_message(message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:
             try:
@@ -215,7 +244,7 @@ class KafkaUtils:
                     payload = payload.copy()  # Don't mutate original
                 payload["is_final_failure"] = message.is_final_failure
 
-                logger.info(f"Processing record event: {event_type}")
+                logger.debug(f"Processing record event: {event_type}")
                 async for event in record_event_service.process_event(event_type, payload):
                     yield event
 
@@ -251,14 +280,13 @@ class KafkaUtils:
                     logger.error("Missing connector in event_type or payload")
                     return False
 
-                logger.info(f"Processing sync event: {event_type} for connector {connector}")
+                logger.debug(f"Processing sync event: {event_type} for connector {connector}")
 
                 event_service = EventService(
                     logger=logger,
                     graph_provider=graph_provider,
                     app_container=app_container,
                 )
-                logger.info(f"Processing sync event: {event_type} for {connector}")
                 return await event_service.process_event(event_type, payload)
 
             except Exception as e:

@@ -11,18 +11,66 @@ import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema';
 import { encodeCursor } from '../../../../src/modules/notification/utils/notification-api.utils';
 
+// Mimics the subset of Mongo query semantics buildRetentionFilter relies on
+// ($ne, $gte, plain equality) so tests can assert that mismatched docs are
+// actually excluded, not just that the filter object has the right shape.
+function matchesFilter(
+  doc: Record<string, unknown>,
+  filter: Record<string, unknown>,
+): boolean {
+  return Object.entries(filter).every(([key, condition]) => {
+    const value = doc[key];
+    const isPlainOperatorObject =
+      condition !== null &&
+      typeof condition === 'object' &&
+      !(condition instanceof Date) &&
+      !(condition instanceof mongoose.Types.ObjectId);
+    if (isPlainOperatorObject) {
+      if ('$ne' in condition) {
+        return String(value) !== String((condition as { $ne: unknown }).$ne);
+      }
+      if ('$gte' in condition) {
+        return (value as Date) >= (condition as { $gte: Date }).$gte;
+      }
+      return true;
+    }
+    return String(value) === String(condition);
+  });
+}
+
+interface FakeNotificationsFindQuery {
+  sort: sinon.SinonStub;
+  limit: sinon.SinonStub;
+  lean: sinon.SinonStub;
+}
+
+// Mongoose's real Model.find overloads don't line up with this simplified
+// mock, so the cast is isolated to the stub itself; the callback below stays
+// fully typed (no any).
+function stubNotificationsFind(
+  callsFake: (filter: Record<string, unknown>) => FakeNotificationsFindQuery,
+): sinon.SinonStub<[filter: Record<string, unknown>], FakeNotificationsFindQuery> {
+  const stub = sinon.stub(Notifications, 'find') as unknown as sinon.SinonStub<
+    [filter: Record<string, unknown>],
+    FakeNotificationsFindQuery
+  >;
+  return stub.callsFake(callsFake);
+}
+
 describe('notification/routes/notification.routes', () => {
   let container: Container;
   let userId: string;
+  let orgId: string;
   let app: express.Express;
   let server: Server | undefined;
 
   beforeEach(() => {
     userId = new mongoose.Types.ObjectId().toString();
+    orgId = new mongoose.Types.ObjectId().toString();
     container = new Container();
     const authMiddleware = {
       authenticate: sinon.stub().callsFake((req: any, _res: any, next: any) => {
-        req.user = { userId };
+        req.user = { userId, orgId };
         next();
       }),
     };
@@ -104,6 +152,68 @@ describe('notification/routes/notification.routes', () => {
     ]);
   });
 
+  it('GET / filters out notifications belonging to a different org', async () => {
+    const mine = {
+      _id: new mongoose.Types.ObjectId().toString(),
+      orgId,
+      assignedTo: userId,
+      isDeleted: false,
+      status: 'unread',
+      createdAt: new Date(),
+    };
+    const otherOrg = {
+      ...mine,
+      _id: new mongoose.Types.ObjectId().toString(),
+      orgId: new mongoose.Types.ObjectId().toString(),
+    };
+    stubNotificationsFind((filter) => {
+      const results = [mine, otherOrg].filter((doc) => matchesFilter(doc, filter));
+      return {
+        sort: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves(results),
+      };
+    });
+
+    const port = await listen();
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/`);
+    expect(res.status).to.equal(200);
+    const body = await res.json();
+    expect(body.notifications).to.have.lengthOf(1);
+    expect(body.notifications[0]._id).to.equal(mine._id);
+  });
+
+  it('GET / filters out notifications assigned to a different user', async () => {
+    const mine = {
+      _id: new mongoose.Types.ObjectId().toString(),
+      orgId,
+      assignedTo: userId,
+      isDeleted: false,
+      status: 'unread',
+      createdAt: new Date(),
+    };
+    const otherUser = {
+      ...mine,
+      _id: new mongoose.Types.ObjectId().toString(),
+      assignedTo: new mongoose.Types.ObjectId().toString(),
+    };
+    stubNotificationsFind((filter) => {
+      const results = [mine, otherUser].filter((doc) => matchesFilter(doc, filter));
+      return {
+        sort: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves(results),
+      };
+    });
+
+    const port = await listen();
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/`);
+    expect(res.status).to.equal(200);
+    const body = await res.json();
+    expect(body.notifications).to.have.lengthOf(1);
+    expect(body.notifications[0]._id).to.equal(mine._id);
+  });
+
   it('GET / returns 401 when userId missing', async () => {
     container.unbind('AuthMiddleware');
     container
@@ -151,6 +261,7 @@ describe('notification/routes/notification.routes', () => {
     const filterArg = updateManyStub.firstCall.args[0] as Record<string, unknown>;
     expect(filterArg.status).to.equal('unread');
     expect(String(filterArg.assignedTo)).to.equal(userId);
+    expect(String(filterArg.orgId)).to.equal(orgId);
     expect(filterArg.isDeleted).to.equal(false);
   });
 

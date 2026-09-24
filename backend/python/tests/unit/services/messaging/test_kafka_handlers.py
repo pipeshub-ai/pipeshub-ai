@@ -166,7 +166,7 @@ class TestEntityEventService:
         svc.graph_provider.batch_create_edges = AsyncMock(return_value=True)
 
         # Stub the KB connector creation
-        svc._EntityEventService__create_kb_connector_app_instance = AsyncMock(return_value=None)
+        svc._create_kb_connector_app_instance = AsyncMock(return_value=None)
 
         payload = {
             "orgId": "org1",
@@ -186,7 +186,7 @@ class TestEntityEventService:
         svc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
         svc.graph_provider.batch_create_edges = AsyncMock(return_value=True)
-        svc._EntityEventService__create_kb_connector_app_instance = AsyncMock(return_value=None)
+        svc._create_kb_connector_app_instance = AsyncMock(return_value=None)
 
         payload = {
             "orgId": "org1",
@@ -206,7 +206,7 @@ class TestEntityEventService:
             {"id": "dept2", "orgId": None},
         ])
         svc.graph_provider.batch_create_edges = AsyncMock(return_value=True)
-        svc._EntityEventService__create_kb_connector_app_instance = AsyncMock(return_value=None)
+        svc._create_kb_connector_app_instance = AsyncMock(return_value=None)
 
         payload = {
             "orgId": "org1",
@@ -294,8 +294,8 @@ class TestEntityEventService:
         svc.graph_provider.batch_create_edges = AsyncMock(return_value=True)
         svc.graph_provider.get_org_apps = AsyncMock(return_value=[])
 
-        svc._EntityEventService__get_or_create_knowledge_base = AsyncMock(return_value={})
-        svc._EntityEventService__create_user_kb_app_relation = AsyncMock(return_value=True)
+        svc._get_or_create_knowledge_base = AsyncMock(return_value={})
+        svc._create_user_kb_app_relation = AsyncMock(return_value=True)
 
         payload = {
             "userId": "u1",
@@ -319,8 +319,8 @@ class TestEntityEventService:
         svc.graph_provider.batch_create_edges = AsyncMock(return_value=True)
         svc.graph_provider.get_org_apps = AsyncMock(return_value=[])
 
-        svc._EntityEventService__get_or_create_knowledge_base = AsyncMock(return_value={})
-        svc._EntityEventService__create_user_kb_app_relation = AsyncMock(return_value=True)
+        svc._get_or_create_knowledge_base = AsyncMock(return_value={})
+        svc._create_user_kb_app_relation = AsyncMock(return_value=True)
 
         payload = {
             "userId": "u1",
@@ -361,10 +361,10 @@ class TestEntityEventService:
             {"name": "Gmail"},
         ])
 
-        svc._EntityEventService__get_or_create_knowledge_base = AsyncMock(return_value={})
-        svc._EntityEventService__create_user_kb_app_relation = AsyncMock(return_value=True)
-        svc._EntityEventService__get_or_create_all_team_and_add_user = AsyncMock(return_value=None)
-        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
+        svc._get_or_create_knowledge_base = AsyncMock(return_value={})
+        svc._create_user_kb_app_relation = AsyncMock(return_value=True)
+        svc._get_or_create_all_team_and_add_user = AsyncMock(return_value=None)
+        svc._handle_sync_event = AsyncMock(return_value=True)
 
         payload = {
             "userId": "u1",
@@ -375,7 +375,7 @@ class TestEntityEventService:
 
         result = await svc.process_event("userAdded", payload)
         assert result is True
-        svc._EntityEventService__handle_sync_event.assert_not_awaited()
+        svc._handle_sync_event.assert_not_awaited()
 
     # -- userUpdated --
 
@@ -431,7 +431,7 @@ class TestEntityEventService:
     async def test_app_enabled_success(self):
         svc = self._make_service()
         svc.graph_provider.get_document = AsyncMock(return_value={"accountType": "ENTERPRISE"})
-        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
+        svc._handle_sync_event = AsyncMock(return_value=True)
 
         payload = {
             "orgId": "org1",
@@ -442,13 +442,13 @@ class TestEntityEventService:
 
         result = await svc.process_event("appEnabled", payload)
         assert result is True
-        svc._EntityEventService__handle_sync_event.assert_awaited()
+        svc._handle_sync_event.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_app_enabled_no_sync(self):
         svc = self._make_service()
         svc.graph_provider.get_document = AsyncMock(return_value={"accountType": "ENTERPRISE"})
-        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
+        svc._handle_sync_event = AsyncMock(return_value=True)
 
         payload = {
             "orgId": "org1",
@@ -459,7 +459,7 @@ class TestEntityEventService:
         result = await svc.process_event("appEnabled", payload)
         assert result is True
         # sync event not called when syncAction != immediate
-        svc._EntityEventService__handle_sync_event.assert_not_awaited()
+        svc._handle_sync_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_app_enabled_org_not_found(self):
@@ -524,7 +524,7 @@ class TestEntityEventService:
     @pytest.mark.asyncio
     async def test_process_event_exception_returns_false(self):
         svc = self._make_service()
-        svc._EntityEventService__handle_org_created = AsyncMock(
+        svc._handle_org_created = AsyncMock(
             side_effect=Exception("boom")
         )
 

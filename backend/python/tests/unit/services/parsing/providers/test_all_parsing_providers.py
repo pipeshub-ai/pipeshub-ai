@@ -6,12 +6,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.models.blocks import BlocksContainer
-from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult, ParserProvider
+from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.services.parsing.interface import (
+    ParseError,
+    ParseErrorCode,
+    ParseResult,
+    ParserProvider,
+)
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
 from app.services.parsing.providers.local_docling_parser import LocalDoclingParser
 from app.services.parsing.providers.ocr_parser import OCRParser
 from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
-from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
+from app.services.parsing.providers.smart_pdf_parser import (
+    SmartPDFParser,
+    _detect_needs_ocr,
+)
 
 
 def _make_block_container() -> BlocksContainer:
@@ -25,38 +34,44 @@ class TestDoclingServiceParser:
     @pytest.mark.asyncio
     async def test_parse_success(self):
         mock_client = MagicMock()
-        mock_client.process_pdf = AsyncMock(return_value=_make_block_container())
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = '{"doc": true}'
+        mock_client.parse_pdf_batched = AsyncMock(return_value=mock_doc)
 
         parser = DoclingServiceParser(mock_client)
         result = await parser.parse(b"pdf content", "test.pdf")
 
         assert isinstance(result, ParseResult)
+        assert result.block_container is None
+        assert result.raw_document == '{"doc": true}'
         assert result.provider_used == ParserProvider.DOCLING
         assert result.metadata["record_name"] == "test.pdf"
-        mock_client.process_pdf.assert_awaited_once_with("test.pdf", b"pdf content")
+        mock_client.parse_pdf_batched.assert_awaited_once_with("test.pdf", b"pdf content")
 
     @pytest.mark.asyncio
     async def test_parse_adds_pdf_extension(self):
         mock_client = MagicMock()
-        mock_client.process_pdf = AsyncMock(return_value=_make_block_container())
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = "{}"
+        mock_client.parse_pdf_batched = AsyncMock(return_value=mock_doc)
 
         parser = DoclingServiceParser(mock_client)
         result = await parser.parse(b"content", "document")
 
-        mock_client.process_pdf.assert_awaited_once_with("document.pdf", b"content")
+        mock_client.parse_pdf_batched.assert_awaited_once_with("document.pdf", b"content")
         assert result.metadata["record_name"] == "document"
 
     @pytest.mark.asyncio
     async def test_parse_fails_when_process_returns_none(self):
         mock_client = MagicMock()
-        mock_client.process_pdf = AsyncMock(return_value=None)
+        mock_client.parse_pdf_batched = AsyncMock(return_value=None)
 
         parser = DoclingServiceParser(mock_client)
         with pytest.raises(ParseError) as exc_info:
             await parser.parse(b"content", "test.pdf")
 
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
-        assert "failed to process" in exc_info.value.message.lower()
+        assert "failed to parse" in exc_info.value.message.lower()
 
     def test_supported_formats(self):
         mock_client = MagicMock()
@@ -69,23 +84,27 @@ class TestLocalDoclingParser:
 
     @pytest.mark.asyncio
     async def test_parse_success_pdf(self):
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = '{"conversion": "result"}'
         mock_processor = MagicMock()
-        mock_processor.parse_document = AsyncMock(return_value={"conversion": "result"})
-        mock_processor.create_blocks = AsyncMock(return_value=_make_block_container())
+        mock_processor.parse_document = AsyncMock(return_value=mock_doc)
 
         parser = LocalDoclingParser(mock_processor)
         result = await parser.parse(b"pdf content", "document.pdf")
 
         assert isinstance(result, ParseResult)
+        assert result.block_container is None
+        assert result.raw_document == '{"conversion": "result"}'
         assert result.provider_used == ParserProvider.DOCLING
         assert result.metadata["record_name"] == "document.pdf"
         mock_processor.parse_document.assert_called_once_with("document.pdf", b"pdf content")
 
     @pytest.mark.asyncio
     async def test_parse_success_docx(self):
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = "{}"
         mock_processor = MagicMock()
-        mock_processor.parse_document = AsyncMock(return_value={"conversion": "result"})
-        mock_processor.create_blocks = AsyncMock(return_value=_make_block_container())
+        mock_processor.parse_document = AsyncMock(return_value=mock_doc)
 
         parser = LocalDoclingParser(mock_processor)
         result = await parser.parse(b"docx content", "document.docx")
@@ -95,9 +114,10 @@ class TestLocalDoclingParser:
 
     @pytest.mark.asyncio
     async def test_parse_normalizes_doc_to_docx(self):
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = "{}"
         mock_processor = MagicMock()
-        mock_processor.parse_document = AsyncMock(return_value={"conversion": "result"})
-        mock_processor.create_blocks = AsyncMock(return_value=_make_block_container())
+        mock_processor.parse_document = AsyncMock(return_value=mock_doc)
 
         parser = LocalDoclingParser(mock_processor)
         await parser.parse(b"doc content", "legacy.doc")
@@ -106,9 +126,10 @@ class TestLocalDoclingParser:
 
     @pytest.mark.asyncio
     async def test_parse_normalizes_ppt_to_pptx(self):
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = "{}"
         mock_processor = MagicMock()
-        mock_processor.parse_document = AsyncMock(return_value={"conversion": "result"})
-        mock_processor.create_blocks = AsyncMock(return_value=_make_block_container())
+        mock_processor.parse_document = AsyncMock(return_value=mock_doc)
 
         parser = LocalDoclingParser(mock_processor)
         await parser.parse(b"ppt content", "presentation.ppt")
@@ -116,10 +137,9 @@ class TestLocalDoclingParser:
         mock_processor.parse_document.assert_called_once_with("presentation.pptx", b"ppt content")
 
     @pytest.mark.asyncio
-    async def test_parse_fails_when_create_blocks_returns_none(self):
+    async def test_parse_fails_when_parse_document_returns_none(self):
         mock_processor = MagicMock()
-        mock_processor.parse_document = AsyncMock(return_value={"data": "value"})
-        mock_processor.create_blocks = AsyncMock(return_value=None)
+        mock_processor.parse_document = AsyncMock(return_value=None)
 
         parser = LocalDoclingParser(mock_processor)
         with pytest.raises(ParseError) as exc_info:
@@ -129,16 +149,52 @@ class TestLocalDoclingParser:
         assert "empty result" in exc_info.value.message.lower()
 
     @pytest.mark.asyncio
-    async def test_parse_fails_when_create_blocks_returns_false(self):
+    async def test_parse_fails_when_parse_document_returns_false(self):
         mock_processor = MagicMock()
-        mock_processor.parse_document = AsyncMock(return_value={"data": "value"})
-        mock_processor.create_blocks = AsyncMock(return_value=False)
+        mock_processor.parse_document = AsyncMock(return_value=False)
 
         parser = LocalDoclingParser(mock_processor)
         with pytest.raises(ParseError) as exc_info:
             await parser.parse(b"content", "test.pdf")
 
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
+
+    @pytest.mark.asyncio
+    async def test_parse_maps_conversion_error_to_unsupported_format(self):
+        from docling.exceptions import ConversionError
+
+        mock_processor = MagicMock()
+        mock_processor.parse_document = AsyncMock(
+            side_effect=ConversionError(
+                "File format not allowed: ._free-software-support-agreement.docx"
+            )
+        )
+
+        parser = LocalDoclingParser(mock_processor)
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"content", "._free-software-support-agreement.docx")
+
+        assert exc_info.value.code == ParseErrorCode.UNSUPPORTED_FORMAT
+        assert "File format not allowed" in exc_info.value.message
+        assert exc_info.value.details["record_name"] == "._free-software-support-agreement.docx"
+
+    @pytest.mark.asyncio
+    async def test_parse_maps_generic_conversion_error_to_parse_failed(self):
+        from docling.exceptions import ConversionError
+
+        mock_processor = MagicMock()
+        mock_processor.parse_document = AsyncMock(
+            side_effect=ConversionError("Invalid input: corrupted document stream")
+        )
+
+        parser = LocalDoclingParser(mock_processor)
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"content", "corrupted.pdf")
+
+        assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
+        assert "Invalid input" in exc_info.value.message
+        assert exc_info.value.details["record_name"] == "corrupted.pdf"
+        assert exc_info.value.__cause__ is not None
 
     def test_supported_formats(self):
         mock_processor = MagicMock()
@@ -275,6 +331,61 @@ class TestPdfPlumberParser:
 
 class TestSmartPDFParser:
     """Tests for SmartPDFParser."""
+
+    def test_single_dominant_image_page_routes_document_to_ocr(self) -> None:
+        """One dominant-image page must not be hidden by an aggregate ratio."""
+        pages = [MagicMock() for _ in range(5)]
+        pdf = MagicMock()
+        pdf.pages = pages
+        pdf_context = MagicMock()
+        pdf_context.__enter__.return_value = pdf
+
+        with (
+            patch(
+                "app.services.parsing.providers.smart_pdf_parser.pdfplumber.open",
+                return_value=pdf_context,
+            ),
+            patch(
+                "app.services.parsing.providers.smart_pdf_parser.random.sample",
+                return_value=pages,
+            ),
+            patch.object(
+                OCRStrategy,
+                "has_dominant_image_with_limited_text",
+                side_effect=[False, False, True, False, False],
+            ),
+        ):
+            assert _detect_needs_ocr(b"pdf content") is True
+
+    def test_single_general_ocr_page_keeps_existing_threshold(self) -> None:
+        """A single non-dominant OCR signal does not route the whole document."""
+        pages = [MagicMock() for _ in range(5)]
+        pdf = MagicMock()
+        pdf.pages = pages
+        pdf_context = MagicMock()
+        pdf_context.__enter__.return_value = pdf
+
+        with (
+            patch(
+                "app.services.parsing.providers.smart_pdf_parser.pdfplumber.open",
+                return_value=pdf_context,
+            ),
+            patch(
+                "app.services.parsing.providers.smart_pdf_parser.random.sample",
+                return_value=pages,
+            ),
+            patch.object(
+                OCRStrategy,
+                "has_dominant_image_with_limited_text",
+                return_value=False,
+            ),
+            patch.object(
+                OCRStrategy,
+                "needs_ocr",
+                side_effect=[False, False, True, False, False],
+            ),
+        ):
+            assert _detect_needs_ocr(b"pdf content") is False
 
     @pytest.mark.asyncio
     async def test_parse_uses_ocr_when_detected(self):

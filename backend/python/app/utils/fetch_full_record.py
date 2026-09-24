@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from collections.abc import Callable
 from typing import Any
 
@@ -145,6 +147,148 @@ async def _enrich_sql_table_with_fk_relations(
     return enriched_record
 
 
+# Concurrency for resolving record ids. Each miss is an ACL check, a graph
+# read and a blob download; a handful in flight cuts the wall clock of a
+# multi-record fetch without hammering the stores.
+_RESOLVE_CONCURRENCY = 5
+
+# Why an id produced no content. Deliberately coarse where it has to be:
+# "no access" and "does not exist" share one reason, because distinguishing
+# them turns this tool into an existence oracle for records the caller may
+# not read. The other two leak nothing and are worth telling the model.
+UNAVAILABLE = "not_available"
+NOT_INDEXED_YET = "not_indexed_yet"
+STORAGE_ERROR = "storage_error"
+
+
+class _RecordResolver:
+    """Turns one record id into a record, or into the reason there isn't one.
+
+    Holds the per-call collaborators — the blob client and the frontend URL
+    that used to be rebuilt inside the loop for every record.
+    """
+
+    def __init__(
+        self,
+        *,
+        virtual_record_id_to_result: dict[str, Any],
+        graph_provider: IGraphDBProvider | None,
+        blob_store: BlobStorage | None,
+        config_service: ConfigurationService | None,
+        org_id: str | None,
+        user_id: str | None,
+        frontend_url: str | None,
+    ) -> None:
+        self._map = virtual_record_id_to_result
+        self._graph_provider = graph_provider
+        self._blob_store = blob_store
+        self._config_service = config_service
+        self._org_id = org_id
+        self._user_id = user_id
+        self._frontend_url = frontend_url
+        self._endpoints_read = False
+
+    async def resolve(self, record_id: str) -> tuple[str, dict[str, Any] | None, str | None]:
+        cached = self._from_map(record_id)
+        if cached is not None:
+            return record_id, await self._enrich(cached), None
+
+        # An id that is not already in the (ACL-filtered) map is unverified.
+        # Without a user to check against, it is never served.
+        if not (self._org_id and self._graph_provider and self._user_id):
+            return record_id, None, UNAVAILABLE
+
+        try:
+            if not await self._graph_provider.check_record_access_with_details(
+                self._user_id, self._org_id, record_id,
+            ):
+                return record_id, None, UNAVAILABLE
+        except Exception:
+            logger.warning("Access check failed for %s", record_id, exc_info=True)
+            return record_id, None, STORAGE_ERROR
+
+        try:
+            graph_record = await self._graph_provider.get_document(
+                document_key=record_id, collection=CollectionNames.RECORDS.value,
+            )
+        except Exception:
+            logger.warning("Graph read failed for %s", record_id, exc_info=True)
+            return record_id, None, STORAGE_ERROR
+
+        if not graph_record:
+            return record_id, None, UNAVAILABLE
+        if graph_record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
+            # Actionable: "try again shortly" is a different instruction from
+            # "this record does not exist".
+            return record_id, None, NOT_INDEXED_YET
+
+        try:
+            record = await self._download(graph_record)
+        except Exception:
+            logger.warning("Blob read failed for %s", record_id, exc_info=True)
+            return record_id, None, STORAGE_ERROR
+
+        if record is None:
+            return record_id, None, UNAVAILABLE
+        return record_id, await self._enrich(record), None
+
+    def _from_map(self, record_id: str) -> dict[str, Any] | None:
+        for vrid, record in self._map.items():
+            if record is not None and record.get("id") == record_id:
+                record["virtual_record_id"] = vrid
+                return record
+        return None
+
+    async def _download(self, graph_record: dict[str, Any]) -> dict[str, Any] | None:
+        vrid = graph_record.get("virtualRecordId")
+        if not vrid:
+            return None
+        blob_store = await self._ensure_blob_store()
+        await self._ensure_frontend_url(blob_store)
+        await get_record(
+            vrid, self._map, blob_store, self._org_id, {vrid: graph_record},
+            self._graph_provider, self._frontend_url,
+        )
+        record = self._map.get(vrid)
+        if record:
+            record["virtual_record_id"] = vrid
+        return record
+
+    async def _ensure_blob_store(self) -> BlobStorage:
+        if self._blob_store is None:
+            self._blob_store = BlobStorage(
+                logger=logger,
+                config_service=self._graph_provider.config_service,
+                graph_provider=self._graph_provider,
+            )
+        return self._blob_store
+
+    async def _ensure_frontend_url(self, blob_store: BlobStorage) -> None:
+        if self._frontend_url is not None or self._endpoints_read:
+            return
+        self._endpoints_read = True
+        try:
+            endpoints = await blob_store.config_service.get_config(
+                config_node_constants.ENDPOINTS.value, default={},
+            )
+            if isinstance(endpoints, dict):
+                self._frontend_url = endpoints.get("frontend", {}).get("publicEndpoint")
+        except Exception:
+            logger.debug("Could not read the frontend endpoint", exc_info=True)
+
+    async def _enrich(self, record: dict[str, Any]) -> dict[str, Any]:
+        await _apply_live_ticket_context_metadata(
+            record,
+            config_service=self._config_service,
+            graph_provider=self._graph_provider,
+            frontend_url=self._frontend_url,
+        )
+        record_type = record.get("record_type") or record.get("recordType")
+        if record_type == "SQL_TABLE" and self._graph_provider:
+            return await _enrich_sql_table_with_fk_relations(record, self._graph_provider)
+        return record
+
+
 async def _fetch_multiple_records_impl(
     record_ids: list[str],
     virtual_record_id_to_result: dict[str, Any],
@@ -178,6 +322,7 @@ async def _fetch_multiple_records_impl(
     """
     found_records = []
     not_available_ids = []
+    unavailable_reasons: dict[str, str] = {}
 
     # Get frontend_url from the first non-None record already in the map
     frontend_url = next(
@@ -188,79 +333,36 @@ async def _fetch_multiple_records_impl(
 
     config_service = graph_provider.config_service if graph_provider else None
 
-    for record_id in record_ids:
-        virtual_record_id = None
-        found_record = None
+    # Built once, not once per record: this used to be constructed inside the
+    # loop, along with a fresh ENDPOINTS read.
+    resolver = _RecordResolver(
+        virtual_record_id_to_result=virtual_record_id_to_result,
+        graph_provider=graph_provider,
+        blob_store=blob_store,
+        config_service=config_service,
+        org_id=org_id,
+        user_id=user_id,
+        frontend_url=frontend_url,
+    )
 
-        for vrid, record in virtual_record_id_to_result.items():
-            if record is not None and record.get("id") == record_id:
-                virtual_record_id = vrid
-                found_record = record
-                break
+    # Records resolve concurrently -- each miss costs an ACL check, a graph
+    # read and a blob download, and ten ids were thirty sequential round
+    # trips. The map is shared with retrieval, so nothing writes to it from a
+    # worker: results come back in order and are applied on this task.
+    semaphore = asyncio.Semaphore(_RESOLVE_CONCURRENCY)
 
-        if found_record:
-            found_record["virtual_record_id"] = virtual_record_id
-            await _apply_live_ticket_context_metadata(
-                found_record,
-                config_service=config_service,
-                graph_provider=graph_provider,
-                frontend_url=frontend_url,
-            )
-            # Enrich SQL_TABLE records with FK relations
-            record_type = found_record.get("record_type") or found_record.get("recordType")
-            if record_type == "SQL_TABLE" and graph_provider:
-                found_record = await _enrich_sql_table_with_fk_relations(found_record, graph_provider)
-            found_records.append(found_record)
-            continue
+    async def _resolve(record_id: str) -> tuple[str, dict[str, Any] | None, str | None]:
+        async with semaphore:
+            return await resolver.resolve(record_id)
 
-        if org_id and graph_provider and user_id:
-            access = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
-            if not access:
-                not_available_ids.append(record_id)
-                continue
+    resolutions = await asyncio.gather(*(_resolve(rid) for rid in record_ids))
 
-            try:
-                graphDb_record = await graph_provider.get_document(
-                                document_key=record_id,
-                                collection=CollectionNames.RECORDS.value
-                            )
-
-                if graphDb_record:
-                    indexing_status = graphDb_record.get("indexingStatus")
-                    if indexing_status == ProgressStatus.COMPLETED.value:
-                        vrid = graphDb_record.get("virtualRecordId")
-                        blob_store = BlobStorage(logger=logger, config_service=graph_provider.config_service, graph_provider=graph_provider)
-                        frontend_url = None
-                        try:
-                            endpoints_config = await blob_store.config_service.get_config(
-                                config_node_constants.ENDPOINTS.value,
-                                default={}
-                            )
-                            if isinstance(endpoints_config, dict):
-                                frontend_url = endpoints_config.get("frontend", {}).get("publicEndpoint")
-                        except Exception:
-                            pass
-                        virtual_to_record_map = {vrid: graphDb_record}
-                        await get_record(vrid, virtual_record_id_to_result, blob_store, org_id, virtual_to_record_map, graph_provider, frontend_url)
-                        blob_record = virtual_record_id_to_result.get(vrid)
-                        if blob_record:
-                            blob_record["virtual_record_id"] = vrid
-                            await _apply_live_ticket_context_metadata(
-                                blob_record,
-                                config_service=config_service,
-                                graph_provider=graph_provider,
-                                frontend_url=frontend_url,
-                            )
-                            # Enrich SQL_TABLE records with FK relations
-                            record_type = blob_record.get("record_type") or blob_record.get("recordType")
-                            if record_type == "SQL_TABLE" and graph_provider:
-                                blob_record = await _enrich_sql_table_with_fk_relations(blob_record, graph_provider)
-                            found_records.append(blob_record)
-                            continue
-            except Exception:
-                pass
-
-        not_available_ids.append(record_id)
+    for record_id, record, reason in resolutions:
+        if record is not None:
+            found_records.append(record)
+        else:
+            not_available_ids.append(record_id)
+            unavailable_reasons[record_id] = reason or UNAVAILABLE
 
     result: dict[str, Any] = {}
     result["ok"] = False
@@ -270,10 +372,20 @@ async def _fetch_multiple_records_impl(
         result["records"] = found_records
         result["record_count"] = len(found_records)
     else:
-        return {"ok": False, "error": "None of the requested records were found."}
-
+        # Keep the per-id detail: "none were found" alone leaves the model
+        # unable to tell a typo from a record that is still indexing.
+        return {
+            "ok": False,
+            "error": (
+                "No record IDs were provided." if not record_ids
+                else "None of the requested records were available."
+            ),
+            "not_available_ids": not_available_ids,
+            "unavailable_reasons": unavailable_reasons,
+        }
 
     result["not_available_ids"] = not_available_ids
+    result["unavailable_reasons"] = unavailable_reasons
 
     return result
 

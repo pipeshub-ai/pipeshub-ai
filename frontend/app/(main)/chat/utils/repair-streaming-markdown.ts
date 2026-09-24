@@ -19,9 +19,48 @@
  *
  * 3. **Incomplete table rows** — `remark-gfm` requires each table row to be
  *    delimited by a trailing `|`. During streaming the last token is often a
- *    partial cell value without the closing pipe, causing the whole table to
- *    fall back to plain-text rendering. Appending ` |` makes it a valid row.
+ *    partial cell value without the closing pipe. Rather than force-closing
+ *    it (which used to make the cell's text grow one token at a time and
+ *    re-trigger `table-layout: auto` column-width resolution on every SSE
+ *    chunk — the main source of table flicker), the partial row is dropped
+ *    until a chunk arrives that completes it. The row then appears once,
+ *    fully formed.
  */
+
+/**
+ * Running state of a ``` / ~~~ fence scan, threaded line-by-line so callers
+ * (this file's own repair pass, and `split-streaming-markdown.ts`) can share
+ * one fence-tracking implementation instead of re-deriving CommonMark §4.5
+ * open/close matching twice.
+ */
+export interface FenceState {
+  inFence: boolean;
+  fenceChar: string;
+  fenceLen: number;
+}
+
+export function createFenceState(): FenceState {
+  return { inFence: false, fenceChar: '`', fenceLen: 3 };
+}
+
+/** Feed one line into the scan, returning the (possibly updated) state. */
+export function advanceFenceState(state: FenceState, line: string): FenceState {
+  const trimmed = line.trimStart();
+  if (!state.inFence) {
+    const m = trimmed.match(/^(`{3,}|~{3,})/);
+    if (m) {
+      return { inFence: true, fenceChar: m[1][0], fenceLen: m[1].length };
+    }
+    return state;
+  }
+  // A valid closing fence: same char, ≥ fenceLen repetitions, optional trailing whitespace
+  const closeRe = new RegExp(`^\\${state.fenceChar}{${state.fenceLen},}\\s*$`);
+  if (closeRe.test(trimmed)) {
+    return { ...state, inFence: false };
+  }
+  return state;
+}
+
 export function repairStreamingMarkdown(content: string): string {
   if (!content) return content;
 
@@ -31,49 +70,30 @@ export function repairStreamingMarkdown(content: string): string {
   const lines = result.split('\n');
 
   // ── 2. Detect and close unclosed code fences ─────────────────────────────
-  // Walk every line, toggling `inFence` when we spot opening / closing markers.
   // Both backtick fences (```) and tilde fences (~~~) are supported.
-  // The closing fence must use the same character and have at least as many
-  // repetitions as the opening fence (CommonMark spec §4.5).
-  let inFence = false;
-  let fenceChar = '`';
-  let fenceLen = 3;
-
+  let fenceState = createFenceState();
   for (const line of lines) {
-    const trimmed = line.trimStart();
-    if (!inFence) {
-      const m = trimmed.match(/^(`{3,}|~{3,})/);
-      if (m) {
-        inFence = true;
-        fenceChar = m[1][0];      // '`' or '~'
-        fenceLen = m[1].length;   // 3, 4, …
-      }
-    } else {
-      // A valid closing fence: same char, ≥ fenceLen repetitions, optional trailing whitespace
-      const closeRe = new RegExp(`^\\${fenceChar}{${fenceLen},}\\s*$`);
-      if (closeRe.test(trimmed)) {
-        inFence = false;
-      }
-    }
+    fenceState = advanceFenceState(fenceState, line);
   }
 
-  if (inFence) {
+  if (fenceState.inFence) {
     // Unclosed fence — append the closing marker.
     // Return immediately; the partial content *inside* the fence is already
     // being rendered as a code block, which is the correct intermediate state.
-    return result + '\n' + fenceChar.repeat(fenceLen);
+    return result + '\n' + fenceState.fenceChar.repeat(fenceState.fenceLen);
   }
 
-  // ── 3. Repair the last line if it is a partial table row ─────────────────
+  // ── 3. Drop the last line if it is a partial table row ───────────────────
   // A GFM table row must start AND end with `|`. During streaming the very
   // last chunk is often a cell value still being typed, e.g.:
   //   | Organization Name | PipesHub
-  // Appending ` |` makes it a syntactically complete row so the table renders.
+  // Dropping it (instead of force-closing with a trailing `|`) means the
+  // table only re-renders once per completed row instead of once per chunk.
   const lastLine = lines[lines.length - 1];
   if (lastLine !== undefined) {
     const trimmedLast = lastLine.trimStart();
     if (trimmedLast.startsWith('|') && !lastLine.trimEnd().endsWith('|')) {
-      lines[lines.length - 1] = lastLine.trimEnd() + ' |';
+      lines.pop();
       return lines.join('\n');
     }
   }

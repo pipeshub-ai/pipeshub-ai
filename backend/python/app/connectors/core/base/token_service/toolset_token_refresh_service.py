@@ -243,7 +243,7 @@ class ToolsetTokenRefreshService:
             # LEGACY: Old format was /services/toolsets/{userId}/{toolset_type}
             try:
                 all_keys = await self.configuration_service.list_keys_in_directory("/services/toolsets/")
-                self.logger.info(f"🔍 Found {len(all_keys)} toolset keys in key value store (scanning /services/toolsets/)")
+                self.logger.debug(f"🔍 Found {len(all_keys)} toolset keys in key value store (scanning /services/toolsets/)")
 
                 if all_keys:
                     self.logger.debug(f"📋 Sample keys found (first 5): {all_keys[:5]}")
@@ -356,7 +356,7 @@ class ToolsetTokenRefreshService:
                         self.logger.warning(f"Error processing toolset config {config_path}: {e}")
                         continue
 
-                self.logger.info(
+                self.logger.debug(
                     f"📊 Toolset scan summary: "
                     f"{len([v for v in processed_toolsets.values() if v])} authenticated OAuth toolsets processed, "
                     f"{skipped_counts['duplicate']} duplicates skipped, "
@@ -570,8 +570,8 @@ class ToolsetTokenRefreshService:
                     auth_config[key] = value
 
             self.logger.debug(
-                f"✅ Fetched OAuth credentials for token refresh from centralized config. "
-                f"Fields: {list(oauth_creds.keys())}"
+                "✅ Fetched OAuth credentials for token refresh from centralized config. "
+                f"Field count: {len(oauth_creds)}"
             )
 
         except Exception as e:

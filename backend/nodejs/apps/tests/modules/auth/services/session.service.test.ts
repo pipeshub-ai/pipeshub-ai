@@ -2,7 +2,15 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { SessionService, SessionData } from '../../../../src/modules/auth/services/session.service';
-import { RedisServiceNotInitializedError } from '../../../../src/libs/errors/redis.errors';
+
+/** Parallel mocha can load error classes twice; name/code are stable across copies. */
+function expectRedisNotInitialized(error: unknown): void {
+  expect(error).to.be.instanceOf(Error);
+  const err = error as Error & { code?: string };
+  expect(err.name).to.equal('RedisServiceNotInitializedError');
+  expect(err.code).to.equal('REDIS_ERROR');
+  expect(err.message).to.include('Redis service is not initialized');
+}
 
 describe('SessionService', () => {
   let sessionService: SessionService;
@@ -81,7 +89,7 @@ describe('SessionService', () => {
         });
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(RedisServiceNotInitializedError);
+        expectRedisNotInitialized(error);
       }
     });
   });
@@ -116,7 +124,7 @@ describe('SessionService', () => {
         await brokenService.getSession('token');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(RedisServiceNotInitializedError);
+        expectRedisNotInitialized(error);
       }
     });
   });
@@ -151,7 +159,7 @@ describe('SessionService', () => {
         });
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(RedisServiceNotInitializedError);
+        expectRedisNotInitialized(error);
       }
     });
   });

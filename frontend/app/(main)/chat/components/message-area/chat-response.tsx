@@ -23,6 +23,7 @@ import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
@@ -37,6 +38,8 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
+import { TextPreviewDialog } from '../text-preview-dialog';
+import { isPastedTextAttachment } from '../../utils/paste-attachment';
 import { useTranslation } from 'react-i18next';
 import { CitationMessageRowKeyContext } from './response-tabs/citations/citation-popover-control';
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
@@ -118,6 +121,14 @@ interface ChatResponseProps {
   persistedAskUserQuestion?: AskUserQuestionPayload;
   /** Persisted feedback value from the backend — initialises the like/dislike button state */
   feedbackInfo?: { value?: 'like' | 'dislike' };
+  /** Set when this response was cut short by a user-initiated Stop (see `IMessage.status`, Node). */
+  status?: 'stopped';
+  /**
+   * No assistant row exists for this question (see `buildMessagePairs`). The
+   * question is drawn on its own: an answer area, tabs and message actions
+   * would all be empty controls over a reply that was never produced.
+   */
+  unanswered?: boolean;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -144,6 +155,8 @@ export const ChatResponse = React.memo(function ChatResponse({
   createdAt,
   persistedAskUserQuestion,
   feedbackInfo,
+  status,
+  unanswered = false,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
@@ -166,7 +179,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     question, answer, citationMaps, citationCallbacks, confidence,
     isStreaming, modelInfo, collections, appliedFilters, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
-    streamingCitationMaps, streamingParts, persistedParts, createdAt, persistedAskUserQuestion,
+    streamingCitationMaps, streamingParts, persistedParts, createdAt, persistedAskUserQuestion, status,
   };
   const crReasons: string[] = [];
   for (const [k, v] of Object.entries(currentCRVals)) {
@@ -194,6 +207,9 @@ export const ChatResponse = React.memo(function ChatResponse({
   const activeSlotId = useChatStore((s) => s.activeSlotId);
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
+
+  /** Attachment currently shown in the lightweight text preview dialog (pasted-text attachments only). */
+  const [textPreviewAttachment, setTextPreviewAttachment] = useState<AttachmentRef | null>(null);
 
   const handleAttachmentPreview = useCallback(
     async (att: AttachmentRef) => {
@@ -407,15 +423,25 @@ export const ChatResponse = React.memo(function ChatResponse({
   const effectiveCitationMaps = isStreaming && streamingCitationMaps
     ? streamingCitationMaps
     : citationMaps;
+  // Read via ref (not a `useMemo` dep) by `wrappedCallbacks` below, so that
+  // object stays referentially stable across citation-only updates.
+  const effectiveCitationMapsRef = useRef(effectiveCitationMaps);
+  effectiveCitationMapsRef.current = effectiveCitationMaps;
 
   // Use streaming content when streaming, otherwise use the final answer.
   // Apply structural repair to in-progress content only — the final message
   // from the server is always complete and must not be patched.
   // Always strip backend citation links → `[N]` so `AnswerContent` can render chips.
-  const processedContent = processMarkdownContent(
-    isStreaming && streamingContent
-      ? repairStreamingMarkdown(streamingContent)
-      : answer,
+  // Memoized: these are whole-string regex passes, and `ChatResponse` can
+  // re-render for reasons unrelated to content (tab switch, citation
+  // arrival) — recomputing on every such render defeats the point of
+  // memoizing further down the tree in `AnswerContent`.
+  const processedContent = useMemo(
+    () =>
+      processMarkdownContent(
+        isStreaming && streamingContent ? repairStreamingMarkdown(streamingContent) : answer,
+      ),
+    [isStreaming, streamingContent, answer],
   );
   // Extract persisted artifact + legacy download-task markers so the markdown
   // pipeline doesn't try to render them as raw text. The backend appends these
@@ -478,15 +504,22 @@ export const ChatResponse = React.memo(function ChatResponse({
 
   // Wrap citation callbacks so that onPreview always receives this message's
   // citationMaps — the panel needs all citations for the previewed record.
+  // `effectiveCitationMaps` is read via `effectiveCitationMapsRef` instead of
+  // being a dependency here, so `wrappedCallbacks` keeps its identity across
+  // citation-only updates — it flows down as a prop to every citation badge
+  // (`answer-content.tsx`), whose `React.memo` compares `callbacks` by
+  // reference. Without this, a new citation batch arriving mid-stream would
+  // invalidate every badge on the page, not just the ones it actually affects.
   const wrappedCallbacks = useMemo<CitationCallbacks | undefined>(() => {
     if (!citationCallbacks) return undefined;
     return {
       ...citationCallbacks,
       onPreview: citationCallbacks.onPreview
-        ? (citation) => citationCallbacks.onPreview!(citation, effectiveCitationMaps)
+        ? (citation) => citationCallbacks.onPreview!(citation, effectiveCitationMapsRef.current)
         : undefined,
     };
-  }, [citationCallbacks, effectiveCitationMaps]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [citationCallbacks]);
 
   // Derive counts from citation maps
   const sourcesCount = effectiveCitationMaps.sourcesOrder.length;
@@ -564,7 +597,26 @@ export const ChatResponse = React.memo(function ChatResponse({
                 content={displayContent}
                 citationMaps={effectiveCitationMaps}
                 citationCallbacks={wrappedCallbacks}
+                isStreaming={isStreaming}
               />
+            )}
+
+            {/* Subtle marker for a response cut short by Stop. Only shown once
+                settled (never while still streaming/regenerating) — regenerate
+                remains available via MessageActions below, same as any other
+                completed response. */}
+            {!isStreaming && status === 'stopped' && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+              <Flex
+                align="center"
+                gap="1"
+                data-testid="chat-stopped-marker"
+                style={{ marginTop: 'var(--space-2)' }}
+              >
+                <MaterialIcon name="stop_circle" size={14} color="var(--slate-9)" />
+                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                  {t('chat.stoppedMarker', { defaultValue: 'Stopped' })}
+                </Text>
+              </Flex>
             )}
 
             {/* "Currently doing X…" status for SIMPLE (non-multi-step)
@@ -737,50 +789,73 @@ export const ChatResponse = React.memo(function ChatResponse({
           }}
           className="no-scrollbar"
         >
-          {attachments.map((att) => (
-            <Flex
-              key={att.virtualRecordId || att.recordId}
-              align="center"
-              gap="1"
-              role="button"
-              title={att.recordName}
-              onClick={() => handleAttachmentPreview(att)}
-              style={{
-                flexShrink: 0,
-                padding: 'var(--space-1) var(--space-2)',
-                backgroundColor: 'var(--olive-a2)',
-                border: '1px solid var(--olive-3)',
-                borderRadius: 'var(--radius-1)',
-                maxWidth: '200px',
-                cursor: 'pointer',
-                transition: 'background-color 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a4)';
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a2)';
-              }}
-            >
-              <FileIcon
-                extension={getMimeTypeExtension(att.mimeType) || att.extension || undefined}
-                filename={att.recordName}
-                size={14}
-                fallbackIcon="insert_drive_file"
-              />
-              <Text
-                size="1"
+          {attachments.map((att) => {
+            const isPastedText = isPastedTextAttachment(att);
+            const openAttachment = () =>
+              isPastedText ? setTextPreviewAttachment(att) : handleAttachmentPreview(att);
+            return (
+              <Flex
+                key={att.virtualRecordId || att.recordId}
+                align="center"
+                gap="1"
+                role="button"
+                tabIndex={0}
+                title={isPastedText ? t('chat.attachments.pastedText', { defaultValue: 'Pasted text' }) : att.recordName}
+                onClick={openAttachment}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    // Space would otherwise scroll the transcript.
+                    e.preventDefault();
+                    openAttachment();
+                  }
+                }}
                 style={{
-                  color: 'var(--slate-11)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                  padding: 'var(--space-1) var(--space-2)',
+                  backgroundColor: isPastedText ? 'var(--accent-a2)' : 'var(--olive-a2)',
+                  border: isPastedText ? '1px dashed var(--accent-a7)' : '1px solid var(--olive-3)',
+                  borderRadius: 'var(--radius-1)',
+                  maxWidth: '200px',
+                  cursor: 'pointer',
+                  transition: 'background-color 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.backgroundColor = isPastedText
+                    ? 'var(--accent-a4)'
+                    : 'var(--olive-a4)';
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.backgroundColor = isPastedText
+                    ? 'var(--accent-a2)'
+                    : 'var(--olive-a2)';
                 }}
               >
-                {att.recordName}
-              </Text>
-            </Flex>
-          ))}
+                {isPastedText ? (
+                  <MaterialIcon name="content_paste" size={14} color="var(--accent-9)" />
+                ) : (
+                  <FileIcon
+                    extension={getMimeTypeExtension(att.mimeType) || att.extension || undefined}
+                    filename={att.recordName}
+                    size={14}
+                    fallbackIcon="insert_drive_file"
+                  />
+                )}
+                <Text
+                  size="1"
+                  style={{
+                    color: 'var(--slate-11)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {isPastedText
+                    ? t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })
+                    : att.recordName}
+                </Text>
+              </Flex>
+            );
+          })}
         </Flex>
       )}
 
@@ -788,18 +863,20 @@ export const ChatResponse = React.memo(function ChatResponse({
       {/* Tabs — hide Sources/Citations counts when the ask_user_question card
           (streaming or persisted) owns this row; those tabs reflect answer
           chunks that are suppressed. */}
-      <ResponseTabs
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
-        citationCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : citationCount}
-      />
+      {!unanswered && (
+        <ResponseTabs
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
+          citationCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : citationCount}
+        />
+      )}
 
       {/* Tab Content */}
-      {renderTabContent()}
+      {!unanswered && renderTabContent()}
 
       {/* Message Actions (feedback, copy, regenerate, model info) */}
-      {activeTab === 'answer' && (
+      {!unanswered && activeTab === 'answer' && (
         <MessageActions
           content={speakContent}
           citationMaps={effectiveCitationMaps}
@@ -810,6 +887,22 @@ export const ChatResponse = React.memo(function ChatResponse({
           isLastMessage={isLastMessage && !askQuestionMatchesRow}
           appliedFilters={appliedFilters}
           feedbackInfo={feedbackInfo}
+        />
+      )}
+
+      {/* Pasted-text attachment preview — read-only (this message already sent) */}
+      {textPreviewAttachment && (
+        <TextPreviewDialog
+          key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
+          open
+          onOpenChange={(open) => {
+            if (!open) setTextPreviewAttachment(null);
+          }}
+          title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
+          loadText={async () => {
+            const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
+            return blob.text();
+          }}
         />
       )}
     </Box>

@@ -27,11 +27,18 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
@@ -85,6 +92,10 @@ from app.models.entities import (
     get_epoch_timestamp_in_ms,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationSeverity,
+    NotificationType,
+)
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
@@ -113,6 +124,18 @@ ISSUE_SEARCH_FIELDS: list[str] = [
 
 DC_EPIC_LINK_FIELD_NAME = "Epic Link"
 DC_EPIC_LINK_SCHEMA_CUSTOM = "com.pyxis.greenhopper.jira:gh-epic-link"
+DC_PARENT_LINK_FIELD_NAME = "Parent Link"
+DC_PARENT_LINK_SCHEMA_CUSTOM = "com.atlassian.jpo:jpo-custom-field-parent"
+
+# Placeholder ancestor sweep (mirrors Jira Cloud; DC fetches via JQL id in (...))
+PLACEHOLDER_SWEEP_BATCH: int = 50
+PLACEHOLDER_SWEEP_MAX_DEPTH: int = 10
+PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
+ANCESTOR_STUB_FIELDS: list[str] = [
+    "summary", "status", "priority", "issuetype",
+    "project", "parent", "created", "updated",
+    "creator", "reporter", "assignee",
+]
 
 
 def _normalize_jira_dc_group_row(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -348,10 +371,14 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_bulk_incomplete: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
-        # Epic Link field id: None = before init, "" = not found, else customfield id
+        # Hierarchy link field ids: None = before init, "" = not found, else customfield id
         self._epic_link_field_id: str | None = None
-        # Epic key -> numeric id; cleared at start of each project sync
+        self._parent_link_field_id: str | None = None
+        # Issue key -> numeric id; cleared at start of each project sync
         self._issue_key_to_id_cache: dict[str, str] = {}
+
+    def _notification_title(self, event: str) -> str:
+        return f"{self.connector_instance_name or 'Jira Data Center'} connector {event}"
 
     async def init(self) -> bool:
         try:
@@ -364,28 +391,23 @@ class JiraDataCenterConnector(BaseConnector):
             # silently succeeded.
             raw_auth_type = auth_config.get("authType")
             if not raw_auth_type:
-                self.logger.error(
-                    "Jira Data Center connector %s: authType is required in connector auth config "
-                    "(expected API_TOKEN or BASIC_AUTH)",
-                    self.connector_id,
+                raise ConnectorInitError(
+                    f"{self.connector_instance_name or 'Jira Data Center'} connector: authType is required "
+                    "in connector auth config (expected API_TOKEN or BASIC_AUTH)"
                 )
-                return False
             auth_type = str(raw_auth_type).strip().upper()
             if auth_type not in {"API_TOKEN", "BASIC_AUTH"}:
-                self.logger.error(
-                    "Jira Data Center connector %s: unsupported authType %s (expected API_TOKEN or BASIC_AUTH)",
-                    self.connector_id,
-                    auth_type,
+                raise ConnectorInitError(
+                    f"{self.connector_instance_name or 'Jira Data Center'} connector: unsupported authType "
+                    f"{auth_type} (expected API_TOKEN or BASIC_AUTH)"
                 )
-                return False
 
             base_url = (auth_config.get("baseUrl") or "").strip().rstrip("/")
             if not base_url:
-                self.logger.error(
-                    "Jira Data Center connector %s: baseUrl is required in connector auth config",
-                    self.connector_id,
+                raise ConnectorInitError(
+                    f"{self.connector_instance_name or 'Jira Data Center'} connector: baseUrl is required "
+                    "in connector auth config"
                 )
-                return False
             self.site_url = base_url
 
             client = await JiraClient.build_from_services(
@@ -409,12 +431,14 @@ class JiraDataCenterConnector(BaseConnector):
                 except Exception as e:
                     self.logger.warning("Could not resolve creator email for created_by %s: %s", self.created_by, e)
 
-            await self._discover_epic_link_field_id()
+            await self._discover_hierarchy_link_field_ids()
 
             return True
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error("Failed to initialize Jira Data Center connector: %s", e, exc_info=True)
-            return False
+            raise ConnectorInitError(str(e)) from e
     # -------------------------------------------------------------------------
     # HTTP client & datasource (no OAuth refresh — credentials from connector config)
     # -------------------------------------------------------------------------
@@ -429,7 +453,7 @@ class JiraDataCenterConnector(BaseConnector):
         run ``init()`` again to rebuild the client.
         """
         if not self.external_client:
-            raise RuntimeError("Jira client not initialized. Call init() first.")
+            raise connector_not_ready(self.display_name)
         return JiraDataSource(self.external_client)
 
     # ============================================================================
@@ -626,13 +650,49 @@ class JiraDataCenterConnector(BaseConnector):
 
             await self._handle_issue_deletions(last_sync_time)
 
+            placeholders_backfilled = await self._sweep_placeholder_records(
+                synced_project_ids={p.external_group_id for p, _ in projects},
+                full_sync_project_ids=sync_stats.get("full_sync_project_ids") or set(),
+            )
+
+            failed_keys = sync_stats.get("failed_project_keys") or []
+            if failed_keys:
+                preview = ", ".join(failed_keys[:10])
+                if len(failed_keys) > 10:
+                    preview = f"{preview}, and {len(failed_keys) - 10} more"
+                self.logger.warning(
+                    "⚠️ Jira DC sync: %s/%s project(s) failed to sync issues: %s",
+                    len(failed_keys), len(projects), preview,
+                )
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("couldn't sync some projects"),
+                    message=(
+                        f"Couldn't sync issues for {len(failed_keys)} project(s): {preview}. "
+                        "Retry sync; check Jira access if it keeps failing."
+                    ),
+                )
+
             self.logger.info(
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
-                f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})"
+                f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']}); "
+                f"placeholders backfilled: {placeholders_backfilled}"
             )
 
         except Exception as e:
             self.logger.error(f"❌ Error during Jira sync: {e}", exc_info=True)
+            if not isinstance(e, ConnectorInitError):
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("sync failed"),
+                    message=(
+                        f"The sync stopped due to an error: {str(e)[:200]}. Recent Jira changes "
+                        "may not be reflected yet. Run the sync again; if it keeps failing, "
+                        "check the connector's configuration."
+                    ),
+                )
             raise
 
     # ============================================================================
@@ -649,7 +709,7 @@ class JiraDataCenterConnector(BaseConnector):
         except Exception:
             return None
 
-    async def _update_issues_sync_checkpoint(self, stats: dict[str, int], project_count: int) -> None:
+    async def _update_issues_sync_checkpoint(self, stats: dict[str, Any], project_count: int) -> None:
         """
         Update global sync checkpoint.
         """
@@ -798,6 +858,18 @@ class JiraDataCenterConnector(BaseConnector):
                         "reconciliation.",
                         response.status,
                     )
+                    if response.status == HttpStatusCode.FORBIDDEN.value:
+                        await self.notify(
+                            type=NotificationType.CONNECTOR_WARNING,
+                            severity=NotificationSeverity.WARNING,
+                            title=self._notification_title("is missing the audit log permission"),
+                            message=(
+                                "The connector's Jira account lacks the System Administrator "
+                                "permission needed to read the audit log, so issues deleted in "
+                                "Jira may still appear in search. Ask a Jira admin to grant it "
+                                "to enable deletion detection."
+                            ),
+                        )
                     return []
 
                 if response.status == HttpStatusCode.NOT_FOUND.value:
@@ -1093,6 +1165,16 @@ class JiraDataCenterConnector(BaseConnector):
                         "reverse lookup only.",
                         response.status, len(users),
                     )
+                    if response.status == HttpStatusCode.FORBIDDEN.value:
+                        await self.notify(
+                            type=NotificationType.CONNECTOR_WARNING,
+                            severity=NotificationSeverity.WARNING,
+                            title=self._notification_title("couldn't list users"),
+                            message=(
+                                "Couldn't list users from Jira. The connector's Jira account "
+                                "needs the Browse users and groups global permission."
+                            ),
+                        )
                     return users
                 raise Exception(f"Failed to fetch users via /user/list: {response.text()}")
 
@@ -1146,6 +1228,16 @@ class JiraDataCenterConnector(BaseConnector):
                         "reverse lookup only.",
                         response.status, len(users),
                     )
+                    if response.status == HttpStatusCode.FORBIDDEN.value:
+                        await self.notify(
+                            type=NotificationType.CONNECTOR_WARNING,
+                            severity=NotificationSeverity.WARNING,
+                            title=self._notification_title("couldn't list users"),
+                            message=(
+                                "Couldn't list users from Jira. The connector's Jira account "
+                                "needs the Browse users and groups global permission."
+                            ),
+                        )
                     return users
                 raise Exception(f"Failed to fetch users: {response.text()}")
 
@@ -1350,6 +1442,16 @@ class JiraDataCenterConnector(BaseConnector):
                         "Projects whose permission scheme uses applicationRole holders will "
                         "grant the configuring user direct access instead."
                     )
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_WARNING,
+                        severity=NotificationSeverity.WARNING,
+                        title=self._notification_title("is missing the admin permission for application roles"),
+                        message=(
+                            "The connector's Jira account doesn't have Jira admin access, "
+                            "so some users may not see all the Jira issues they can access "
+                            "in Jira. Ask a Jira admin to grant it."
+                        ),
+                    )
                 else:
                     self.logger.warning(
                         "⚠️ Failed to fetch application roles (HTTP %s)", response.status
@@ -1381,7 +1483,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         return mapping
 
-    def _fallback_permissions_for_forbidden_scheme(
+    async def _fallback_permissions_for_forbidden_scheme(
         self,
         project_key: str,
         status: int,
@@ -1402,6 +1504,16 @@ class JiraDataCenterConnector(BaseConnector):
                 "Projects. Granting configuring user '%s' direct BROWSE access "
                 "instead of dropping all ACLs for this project.",
                 stage, project_key, status, self.creator_email,
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title(f"couldn't read permissions for project {project_key}"),
+                message=(
+                    f"The connector's Jira account can't read the permission scheme for "
+                    f"{project_key}. Grant it project admin access; until then, only the "
+                    "connector owner can access this project's issues in PipesHub."
+                ),
             )
             return [Permission(
                 entity_type=EntityType.USER,
@@ -1473,7 +1585,7 @@ class JiraDataCenterConnector(BaseConnector):
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
                 ):
-                    return self._fallback_permissions_for_forbidden_scheme(
+                    return await self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
                         status=scheme_response.status,
                         stage="permission scheme",
@@ -1502,7 +1614,7 @@ class JiraDataCenterConnector(BaseConnector):
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
                 ):
-                    return self._fallback_permissions_for_forbidden_scheme(
+                    return await self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
                         status=grants_response.status,
                         stage=f"permission grants (scheme {scheme_id})",
@@ -1667,6 +1779,17 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.error(f"❌ Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
             return []
 
+    async def _notify_group_sync_failed(self) -> None:
+        await self.notify(
+            type=NotificationType.CONNECTOR_GROUP_SYNC_ERROR,
+            severity=NotificationSeverity.WARNING,
+            title=self._notification_title("couldn't sync user groups"),
+            message=(
+                "Couldn't load groups from Jira. The connector's Jira account needs "
+                "the Browse users and groups global permission."
+            ),
+        )
+
     async def _sync_user_groups(self, jira_users: list[AppUser]) -> dict[str, list[AppUser]]:
         """
         Sync user groups and return a mapping of group_id/name -> list of AppUser members.
@@ -1757,6 +1880,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing user groups: {e}")
+            await self._notify_group_sync_failed()
             return {}
 
     async def _fetch_groups(self) -> list[dict[str, Any]]:
@@ -1777,6 +1901,8 @@ class JiraDataCenterConnector(BaseConnector):
                     response.status,
                     response.text()[:300],
                 )
+                if response.status == HttpStatusCode.FORBIDDEN.value:
+                    await self._notify_group_sync_failed()
                 return []
 
             payload = response.json() or {}
@@ -1961,6 +2087,7 @@ class JiraDataCenterConnector(BaseConnector):
         roles_to_sync: list[tuple[AppRole, list[AppUser]]] = []
         total_roles = 0
         total_members = 0
+        failed_project_keys: list[str] = []
 
         for project_key in project_keys:
             try:
@@ -1970,6 +2097,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"⚠️ Failed to fetch roles for project {project_key}: {response.status}")
+                    failed_project_keys.append(project_key)
                     continue
 
                 roles_dict = response.json()
@@ -1979,6 +2107,7 @@ class JiraDataCenterConnector(BaseConnector):
                     continue
 
                 # Step 2: For each role, fetch role details including actors
+                role_detail_failed = False
                 for role_name, role_url in roles_dict.items():
                     try:
                         # Skip app-only roles
@@ -1998,6 +2127,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                         if role_response.status != HttpStatusCode.OK.value:
                             self.logger.warning(f"  {project_key}: Failed to fetch role {role_name}: {role_response.status}")
+                            role_detail_failed = True
                             continue
 
                         role_data = role_response.json()
@@ -2079,11 +2209,36 @@ class JiraDataCenterConnector(BaseConnector):
                         self.logger.error(
                             f"  {project_key}: Error processing role {role_name}: {role_error}"
                         )
+                        role_detail_failed = True
                         continue
 
+                if role_detail_failed:
+                    failed_project_keys.append(project_key)
+
             except Exception as project_error:
+                failed_project_keys.append(project_key)
                 self.logger.error(f"❌ Error syncing roles for project {project_key}: {project_error}")
                 continue
+
+        if failed_project_keys:
+            preview = ", ".join(failed_project_keys[:10])
+            if len(failed_project_keys) > 10:
+                preview = f"{preview}, and {len(failed_project_keys) - 10} more"
+            self.logger.warning(
+                "⚠️ Project role sync failed for %s/%s projects: %s",
+                len(failed_project_keys), len(project_keys), preview,
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_ROLE_SYNC_ERROR,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("couldn't sync project roles"),
+                message=(
+                    f"Couldn't sync roles for: {preview}. "
+                    "This is usually because the connector's Jira account lacks Administer Projects "
+                    "on those projects, but can also be temporary — existing roles are "
+                    "preserved and will retry next sync."
+                ),
+            )
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
@@ -2302,11 +2457,13 @@ class JiraDataCenterConnector(BaseConnector):
         projects: list[tuple[RecordGroup, list[Permission]]],
         jira_users: list[AppUser],
         last_sync_time: Optional[int]
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         """Sync issues for all projects and return statistics."""
         total_synced = 0
         new_count = 0
         updated_count = 0
+        failed_project_keys: list[str] = []
+        full_sync_project_ids: set[str] = set()
 
         for project, _ in projects:
             try:
@@ -2316,14 +2473,19 @@ class JiraDataCenterConnector(BaseConnector):
                 total_synced += project_stats["total_synced"]
                 new_count += project_stats["new_count"]
                 updated_count += project_stats["updated_count"]
+                if project_stats.get("is_new_project"):
+                    full_sync_project_ids.add(project.external_group_id)
             except Exception as e:
+                failed_project_keys.append(project.short_name)
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
 
         return {
             "total_synced": total_synced,
             "new_count": new_count,
-            "updated_count": updated_count
+            "updated_count": updated_count,
+            "failed_project_keys": failed_project_keys,
+            "full_sync_project_ids": full_sync_project_ids,
         }
 
     async def _sync_project_issues(
@@ -2331,7 +2493,7 @@ class JiraDataCenterConnector(BaseConnector):
         project: RecordGroup,
         jira_users: list[AppUser],
         global_last_sync_time: Optional[int]
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         """
         Sync issues for a single project with project-level sync points.
         Processes in batches and updates sync point after each batch for fault tolerance.
@@ -2434,7 +2596,8 @@ class JiraDataCenterConnector(BaseConnector):
         return {
             "total_synced": total_issues_processed,
             "new_count": stats["new_count"],
-            "updated_count": stats["updated_count"]
+            "updated_count": stats["updated_count"],
+            "is_new_project": is_new_project,
         }
 
     async def _fetch_issues_batched(
@@ -2502,11 +2665,9 @@ class JiraDataCenterConnector(BaseConnector):
         # timezone-independent so the same query yields the same result regardless of
         # where the server is configured.
         now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
-        # Safety buffer absorbs clock skew between the connector host and the Jira
-        # server, plus the minute-level rounding inherent in ``-Nm``. Downstream
-        # ``_process_new_records`` dedupes unchanged issues by ``source_updated_at``,
-        # so a small overlap is harmless.
-        _jql_buffer_minutes = 5
+        # 1-minute buffer absorbs clock skew / ``-Nm`` minute rounding. Downstream
+        # ``_process_new_records`` dedupes unchanged issues by ``source_updated_at``.
+        _jql_buffer_minutes = 1
 
         def _jql_minutes_ago(epoch_ms: int) -> Optional[int]:
             """Convert ``epoch_ms`` to ``N`` for JQL ``-Nm``.
@@ -2591,11 +2752,10 @@ class JiraDataCenterConnector(BaseConnector):
                     last_issue_updated = self._parse_jira_timestamp(updated_str)
 
             # Build records for this batch
-            async with self.data_store_provider.transaction() as tx_store:
-                records_batch = await self._build_issue_records(
-                    batch_issues, project_id, users, tx_store,
-                    is_new_project=is_new_project,
-                )
+            records_batch = await self._build_issue_records(
+                batch_issues, project_id, users,
+                is_new_project=is_new_project,
+            )
 
             self.logger.debug(
                 f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records "
@@ -2738,20 +2898,21 @@ class JiraDataCenterConnector(BaseConnector):
 
         return related_records
 
-    async def _discover_epic_link_field_id(self) -> None:
-        """Discover Epic Link custom field id via GET /rest/api/2/field (once at init)."""
-        if self._epic_link_field_id is not None:
+    async def _discover_hierarchy_link_field_ids(self) -> None:
+        """Discover Epic Link and Parent Link custom field ids via GET /rest/api/2/field (once at init)."""
+        if self._epic_link_field_id is not None and self._parent_link_field_id is not None:
             return
         self._epic_link_field_id = ""
+        self._parent_link_field_id = ""
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_fields_v2()
             if response.status != HttpStatusCode.OK.value:
                 self.logger.warning(
-                    "Failed to discover Epic Link field: HTTP %s", response.status
+                    "Failed to discover hierarchy link fields: HTTP %s", response.status
                 )
                 return
-            fields_list = self._safe_json_parse(response, "Epic Link field discovery")
+            fields_list = self._safe_json_parse(response, "hierarchy link field discovery")
             if isinstance(fields_list, list):
                 for field in fields_list:
                     if not isinstance(field, dict):
@@ -2759,105 +2920,468 @@ class JiraDataCenterConnector(BaseConnector):
                     name = field.get("name")
                     schema = field.get("schema") or {}
                     custom = schema.get("custom") if isinstance(schema, dict) else None
-                    if name == DC_EPIC_LINK_FIELD_NAME or custom == DC_EPIC_LINK_SCHEMA_CUSTOM:
-                        field_id = field.get("id")
-                        if field_id:
-                            self._epic_link_field_id = str(field_id)
-                            self.logger.info(
-                                "Discovered Epic Link field: %s", self._epic_link_field_id
-                            )
-                        return
-            self.logger.debug(
-                "Epic Link field not found (non-Scrum or custom epic link configuration)"
-            )
+                    field_id = field.get("id")
+                    if not field_id:
+                        continue
+                    if (
+                        not self._epic_link_field_id
+                        and (name == DC_EPIC_LINK_FIELD_NAME or custom == DC_EPIC_LINK_SCHEMA_CUSTOM)
+                    ):
+                        self._epic_link_field_id = str(field_id)
+                        self.logger.info(
+                            "Discovered Epic Link field: %s", self._epic_link_field_id
+                        )
+                    elif (
+                        not self._parent_link_field_id
+                        and (
+                            name == DC_PARENT_LINK_FIELD_NAME
+                            or custom == DC_PARENT_LINK_SCHEMA_CUSTOM
+                        )
+                    ):
+                        self._parent_link_field_id = str(field_id)
+                        self.logger.info(
+                            "Discovered Parent Link field: %s", self._parent_link_field_id
+                        )
+                    if self._epic_link_field_id and self._parent_link_field_id:
+                        break
+            if not self._epic_link_field_id:
+                self.logger.debug(
+                    "Epic Link field not found (non-Scrum or custom epic link configuration)"
+                )
+            if not self._parent_link_field_id:
+                self.logger.debug(
+                    "Parent Link field not found (Advanced Roadmaps may be unavailable)"
+                )
         except Exception as e:
-            self.logger.warning("Epic Link field discovery failed: %s", e)
+            self.logger.warning("Hierarchy link field discovery failed: %s", e)
 
     def _get_issue_search_fields(self) -> list[str]:
+        fields = list(ISSUE_SEARCH_FIELDS)
         if self._epic_link_field_id:
-            return ISSUE_SEARCH_FIELDS + [self._epic_link_field_id]
-        return list(ISSUE_SEARCH_FIELDS)
+            fields.append(self._epic_link_field_id)
+        if self._parent_link_field_id:
+            fields.append(self._parent_link_field_id)
+        return fields
+
+    def _get_ancestor_stub_fields(self) -> list[str]:
+        fields = list(ANCESTOR_STUB_FIELDS)
+        if self._epic_link_field_id:
+            fields.append(self._epic_link_field_id)
+        if self._parent_link_field_id:
+            fields.append(self._parent_link_field_id)
+        return fields
+
+    @staticmethod
+    def _extract_link_ref_from_value(raw: Any) -> tuple[str | None, str | None]:
+        """Extract (issue_id, issue_key) from Epic Link / expanded issue ref shapes."""
+        if isinstance(raw, str) and raw.strip():
+            return None, raw.strip()
+        if isinstance(raw, dict):
+            key = raw.get("key")
+            inline_id = raw.get("id")
+            issue_key = str(key).strip() if key else None
+            issue_id = str(inline_id) if inline_id is not None and inline_id != "" else None
+            return issue_id, issue_key
+        return None, None
+
+    @staticmethod
+    def _extract_parent_link_ref(raw: Any) -> tuple[str | None, str | None]:
+        """Extract (issue_id, issue_key) from Parent Link field value.
+
+        Documented AR shape nests under ``data``; also tolerates plain string / top-level id/key.
+        """
+        if not raw:
+            return None, None
+        if isinstance(raw, str) and raw.strip():
+            return None, raw.strip()
+        if not isinstance(raw, dict):
+            return None, None
+        data = raw.get("data")
+        if isinstance(data, dict):
+            return JiraDataCenterConnector._extract_link_ref_from_value(data)
+        if data is None and ("hasEpicLinkFieldDependency" in raw or "showField" in raw):
+            return None, None
+        return JiraDataCenterConnector._extract_link_ref_from_value(raw)
+
+    async def _resolve_issue_id_from_key_or_id(
+        self,
+        *,
+        issue_id: str | None,
+        issue_key: str | None,
+        context: str,
+    ) -> str | None:
+        if issue_id:
+            if issue_key:
+                self._issue_key_to_id_cache[issue_key] = issue_id
+            return issue_id
+        if not issue_key:
+            return None
+
+        cached = self._issue_key_to_id_cache.get(issue_key)
+        if cached:
+            return cached
+
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_issue_v2(issueIdOrKey=issue_key, fields=["id"])
+            if response.status == HttpStatusCode.NOT_FOUND.value:
+                self.logger.debug("%s target issue %s not found", context, issue_key)
+                return None
+            if response.status != HttpStatusCode.OK.value:
+                self.logger.warning(
+                    "Failed to resolve %s key %s: HTTP %s", context, issue_key, response.status
+                )
+                return None
+            issue = self._safe_json_parse(response, f"{context} resolve {issue_key}")
+            resolved_id = issue.get("id") if issue else None
+        except Exception as e:
+            self.logger.warning("Failed to resolve %s key %s: %s", context, issue_key, e)
+            return None
+        if not resolved_id:
+            return None
+        resolved_id = str(resolved_id)
+        self._issue_key_to_id_cache[issue_key] = resolved_id
+        return resolved_id
 
     async def _resolve_hierarchy_parent_id(
         self,
         fields: dict[str, Any],
         *,
         is_subtask: bool,
-        is_epic: bool,
         parent_from_parent_field: str | None,
     ) -> str | None:
-        """Resolve parent id from fields.parent (sub-tasks) or Epic Link (stories)."""
-        if is_epic:
-            return None
+        """Resolve parent id from fields.parent, Epic Link, or Parent Link."""
         if is_subtask or parent_from_parent_field:
             return parent_from_parent_field
 
         epic_link_field_id = self._epic_link_field_id
-        if not epic_link_field_id:
-            return None
-
-        raw = fields.get(epic_link_field_id)
-        if not raw:
-            return None
-
-        epic_key: str | None = None
-        epic_id: str | None = None
-        if isinstance(raw, str) and raw.strip():
-            epic_key = raw.strip()
-        elif isinstance(raw, dict):
-            key = raw.get("key")
-            inline_id = raw.get("id")
-            epic_key = str(key).strip() if key else None
-            epic_id = str(inline_id) if inline_id else None
-
-        if epic_id:
-            if epic_key:
-                self._issue_key_to_id_cache[epic_key] = epic_id
-            return epic_id
-        if not epic_key:
-            return None
-
-        cached = self._issue_key_to_id_cache.get(epic_key)
-        if cached:
-            return cached
-
-        try:
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.get_issue_v2(issueIdOrKey=epic_key, fields=["id"])
-            if response.status == HttpStatusCode.NOT_FOUND.value:
-                self.logger.debug("Epic Link target issue %s not found", epic_key)
-                return None
-            if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(
-                    "Failed to resolve Epic Link key %s: HTTP %s", epic_key, response.status
+        if epic_link_field_id:
+            raw = fields.get(epic_link_field_id)
+            if raw:
+                epic_id, epic_key = self._extract_link_ref_from_value(raw)
+                resolved = await self._resolve_issue_id_from_key_or_id(
+                    issue_id=epic_id, issue_key=epic_key, context="Epic Link"
                 )
-                return None
-            issue = self._safe_json_parse(response, f"Epic Link resolve {epic_key}")
-            resolved_id = issue.get("id") if issue else None
-        except Exception as e:
-            self.logger.warning("Failed to resolve Epic Link key %s: %s", epic_key, e)
-            return None
-        if not resolved_id:
-            return None
-        resolved_id = str(resolved_id)
-        self._issue_key_to_id_cache[epic_key] = resolved_id
-        return resolved_id
+                if resolved:
+                    return resolved
+
+        parent_link_field_id = self._parent_link_field_id
+        if parent_link_field_id:
+            raw = fields.get(parent_link_field_id)
+            if raw:
+                parent_id, parent_key = self._extract_parent_link_ref(raw)
+                if parent_id or parent_key:
+                    return await self._resolve_issue_id_from_key_or_id(
+                        issue_id=parent_id, issue_key=parent_key, context="Parent Link"
+                    )
+                if not isinstance(raw, (str, dict)):
+                    self.logger.debug(
+                        "Unrecognized Parent Link value type: %s", type(raw).__name__
+                    )
+
+        return None
 
     async def _extract_issue_data_with_parent(
         self,
         issue: dict[str, Any],
         user_by_account_id: dict[str, AppUser],
     ) -> dict[str, Any]:
-        """Extract issue fields and resolve hierarchy parent (Epic Link + parent field)."""
+        """Extract issue fields and resolve hierarchy parent (parent / Epic Link / Parent Link)."""
         issue_data = self._extract_issue_data(issue, user_by_account_id)
         fields = issue.get("fields", {}) or {}
         issue_data["parent_external_id"] = await self._resolve_hierarchy_parent_id(
             fields,
             is_subtask=issue_data["is_subtask"],
-            is_epic=issue_data["is_epic"],
             parent_from_parent_field=issue_data["parent_external_id"],
         )
         return issue_data
+
+    # -------------------------------------------------------------------------
+    # Placeholder Sweep
+    # -------------------------------------------------------------------------
+
+    async def _sweep_placeholder_records(
+        self,
+        synced_project_ids: set[str],
+        full_sync_project_ids: set[str] | None = None,
+    ) -> int:
+        """Backfill metadata for placeholder ancestor stubs left unreconciled.
+
+        Time/created-time sync filters don't respect hierarchy: an in-scope child can be
+        synced while its parent (and higher ancestors) are filtered out, leaving stubs
+        keyed by the ancestors' issue ids with no name, status or weburl.
+
+        Seeds are ticket stubs inside ``synced_project_ids``. Of those, only never-backfilled
+        stubs (``external_revision_id is None``) or stubs in ``full_sync_project_ids``
+        (edge restore after full sync) are processed. Already-backfilled stubs are skipped
+        on incremental sync.
+
+        Returns:
+            Total number of placeholder stubs refreshed from source (all BFS depths).
+        """
+        if not synced_project_ids:
+            return 0
+
+        full_sync_project_ids = full_sync_project_ids or set()
+        visited: set[str] = set()
+        frontier: list[Record] = []
+        for stub in await self.data_entities_processor.get_placeholder_records(self.connector_id):
+            if (
+                stub.record_type != RecordType.TICKET
+                or stub.external_record_group_id not in synced_project_ids
+                or stub.external_record_id in visited
+            ):
+                continue
+            needs_backfill = stub.external_revision_id is None
+            needs_edge_restore = stub.external_record_group_id in full_sync_project_ids
+            if not (needs_backfill or needs_edge_restore):
+                continue
+            visited.add(stub.external_record_id)
+            frontier.append(stub)
+
+        if not frontier:
+            return 0
+
+        synced_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        user_by_account_id: dict[str, AppUser] = {
+            u.source_user_id: u for u in synced_users if u.source_user_id
+        }
+
+        total_backfilled = 0
+        depth = 0
+        while frontier:
+            depth += 1
+            self.logger.info("Placeholder sweep: backfilling %s ancestor stub(s)", len(frontier))
+            issues = await self._fetch_ancestor_level(frontier)
+
+            backfills: list[tuple[Record, list[Permission]]] = []
+            parent_refs: list[str] = []
+            for stub, issue in zip(frontier, issues):
+                if issue:
+                    record = await self._build_ancestor_stub(issue, stub, user_by_account_id)
+                    total_backfilled += 1
+                else:
+                    record = stub
+                record.is_placeholder = True
+                backfills.append((record, []))
+                if record.parent_external_record_id:
+                    parent_refs.append(record.parent_external_record_id)
+
+            await self.data_entities_processor.on_new_records(backfills)
+
+            next_frontier: list[Record] = []
+            for parent_ext_id in parent_refs:
+                if parent_ext_id in visited:
+                    continue
+                visited.add(parent_ext_id)
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=parent_ext_id,
+                )
+                if parent_record is None:
+                    continue
+                if not parent_record.is_placeholder:
+                    continue
+                next_frontier.append(parent_record)
+
+            if depth >= PLACEHOLDER_SWEEP_MAX_DEPTH and next_frontier:
+                self.logger.error(
+                    "Placeholder sweep hit the depth cap (%s) with %s stub(s) unresolved; aborting",
+                    PLACEHOLDER_SWEEP_MAX_DEPTH,
+                    len(next_frontier),
+                )
+                break
+            frontier = next_frontier
+
+        self.logger.info(
+            "Placeholder sweep: backfilled %s ancestor stub(s) total",
+            total_backfilled,
+        )
+        return total_backfilled
+
+    async def _fetch_ancestor_level(
+        self, frontier: list[Record]
+    ) -> list[dict[str, Any] | None]:
+        """Fetch one frontier level, aligned with ``frontier`` (``None`` if missing).
+
+        Prefer paginated ``_search_issues_with_retry`` with ``id in (...)`` per chunk
+        (``startAt`` / ``maxResults``). Jira DC rejects the whole query if any id is
+        unknown/deleted, so on non-OK / transport failure fall back to per-id
+        ``_get_issue_with_retry`` (tolerates 404s).
+        """
+        fields = self._get_ancestor_stub_fields()
+        issue_by_id: dict[str, dict[str, Any]] = {}
+
+        for i in range(0, len(frontier), PLACEHOLDER_SWEEP_BATCH):
+            chunk = frontier[i:i + PLACEHOLDER_SWEEP_BATCH]
+            # Preserve order for logging; dedupe for the API call.
+            issue_ids = list(dict.fromkeys(
+                str(stub.external_record_id)
+                for stub in chunk
+                if stub.external_record_id
+            ))
+            if not issue_ids:
+                continue
+            fetched = await self._search_ancestors_by_jql(issue_ids, fields)
+            if fetched is None:
+                fetched = await self._fetch_ancestors_by_get(issue_ids, fields)
+            issue_by_id.update(fetched)
+
+        return [issue_by_id.get(str(stub.external_record_id)) for stub in frontier]
+
+    async def _search_ancestors_by_jql(
+        self,
+        issue_ids: list[str],
+        fields: list[str],
+    ) -> dict[str, dict[str, Any]] | None:
+        """Fetch issues by id via paginated ``_search_issues_with_retry``.
+
+        Returns ``None`` when the caller should fall back to GET (e.g. DC rejects the
+        whole ``id in`` clause if any id is unknown/deleted).
+        """
+        # ORDER BY id ASC keeps startAt pagination stable (same as project issue sync).
+        jql = f"id in ({', '.join(issue_ids)}) ORDER BY id ASC"
+        page_size = min(DEFAULT_MAX_RESULTS, PLACEHOLDER_SWEEP_BATCH, len(issue_ids))
+        start_at = 0
+        issue_by_id: dict[str, dict[str, Any]] = {}
+
+        while True:
+            try:
+                response = await self._search_issues_with_retry(
+                    project_key="placeholder-sweep",
+                    jql=jql,
+                    start_at=start_at,
+                    max_results=page_size,
+                    fields=fields,
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "Placeholder sweep: JQL id-in failed at startAt=%s for %s id(s): %s — using get_issue_v2",
+                    start_at,
+                    len(issue_ids),
+                    e,
+                )
+                return None
+
+            if response.status != HttpStatusCode.OK.value:
+                # DC returns 400 with "A value with ID '…' does not exist for the field 'id'"
+                # when any id in the clause is unknown — the whole batch is rejected.
+                self.logger.warning(
+                    "Placeholder sweep: JQL id-in HTTP %s at startAt=%s for %s id(s) — using get_issue_v2 "
+                    "(often caused by a deleted/unknown issue id in the batch)",
+                    response.status,
+                    start_at,
+                    len(issue_ids),
+                )
+                return None
+
+            payload = self._safe_json_parse(response, "placeholder ancestor search")
+            if not isinstance(payload, dict):
+                self.logger.warning(
+                    "Placeholder sweep: JQL id-in returned unparseable body at startAt=%s — using get_issue_v2",
+                    start_at,
+                )
+                return None
+
+            page_issues = payload.get("issues") or []
+            for issue in page_issues:
+                if isinstance(issue, dict) and issue.get("id"):
+                    issue_by_id[str(issue["id"])] = issue
+
+            total_matching = int(payload.get("total", 0) or 0)
+            next_start = start_at + len(page_issues)
+            if not page_issues or next_start >= total_matching:
+                break
+            start_at = next_start
+
+        return issue_by_id
+
+    async def _fetch_ancestors_by_get(
+        self,
+        issue_ids: list[str],
+        fields: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Concurrent ``_get_issue_with_retry``; skips missing/inaccessible ids."""
+        if not issue_ids:
+            return {}
+
+        semaphore = asyncio.Semaphore(10)
+        results: dict[str, dict[str, Any]] = {}
+
+        async def fetch_one(issue_id: str) -> None:
+            async with semaphore:
+                try:
+                    response = await self._get_issue_with_retry(issue_id, fields)
+                    if response.status != HttpStatusCode.OK.value:
+                        return
+                    issue = self._safe_json_parse(response, f"placeholder ancestor {issue_id}")
+                    if isinstance(issue, dict) and issue.get("id"):
+                        results[str(issue["id"])] = issue
+                except Exception as e:
+                    self.logger.debug(
+                        "Placeholder sweep: get_issue_with_retry failed for %s: %s", issue_id, e
+                    )
+
+        await asyncio.gather(*(fetch_one(i) for i in issue_ids))
+        return results
+
+    async def _build_ancestor_stub(
+        self,
+        issue: dict[str, Any],
+        stub: Record,
+        user_by_account_id: dict[str, AppUser],
+    ) -> Record:
+        """Refresh a stub's metadata from source, keeping it a stub."""
+        issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
+        fields = issue.get("fields") or {}
+        project = fields.get("project") or {}
+        parent_external_id = issue_data["parent_external_id"]
+        issue_key = issue_data["issue_key"]
+        atlassian_domain = self.site_url or ""
+        project_id = project.get("id")
+        if project_id is not None:
+            project_id = str(project_id)
+
+        return TicketRecord(
+            id=stub.id,
+            org_id=self.data_entities_processor.org_id,
+            priority=issue_data["priority"],
+            status=issue_data["status"],
+            type=issue_data["issue_type"],
+            creator_email=issue_data["creator_email"],
+            creator_name=issue_data["creator_name"],
+            reporter_email=issue_data["reporter_email"],
+            reporter_name=issue_data["reporter_name"],
+            assignee=issue_data["assignee_name"],
+            assignee_email=issue_data["assignee_email"],
+            external_record_id=stub.external_record_id,
+            external_revision_id=f"{PLACEHOLDER_REVISION_PREFIX}{issue_data['updated_at']}",
+            record_name=issue_data["issue_name"],
+            record_type=RecordType.TICKET,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            record_group_type=RecordGroupType.PROJECT,
+            external_record_group_id=project_id or stub.external_record_group_id,
+            parent_external_record_id=parent_external_id,
+            parent_record_type=RecordType.TICKET if parent_external_id else None,
+            version=stub.version,
+            mime_type=MimeTypes.UNKNOWN.value,
+            weburl=(
+                f"{atlassian_domain}/browse/{issue_key}"
+                if atlassian_domain and issue_key
+                else None
+            ),
+            source_created_at=issue_data["created_at"],
+            source_updated_at=issue_data["updated_at"],
+            created_at=issue_data["created_at"],
+            updated_at=issue_data["updated_at"],
+            inherit_permissions=True,
+            preview_renderable=False,
+            is_dependent_node=False,
+            parent_node_id=None,
+            is_placeholder=True,
+        )
 
     def _extract_issue_data(
         self,
@@ -2985,7 +3509,6 @@ class JiraDataCenterConnector(BaseConnector):
         issues: list[dict[str, Any]],
         project_id: str,
         users: list[AppUser],
-        tx_store,
         is_new_project: bool = False,
     ) -> list[tuple[Record, list[Permission]]]:
         """
@@ -3012,8 +3535,6 @@ class JiraDataCenterConnector(BaseConnector):
             issue_key = issue_data["issue_key"]
             issue_name = issue_data["issue_name"]
             issue_type = issue_data["issue_type"]
-            is_epic = issue_data["is_epic"]
-            is_subtask = issue_data["is_subtask"]
             parent_external_id = issue_data["parent_external_id"]
             status = issue_data["status"]
             priority = issue_data["priority"]
@@ -3032,17 +3553,21 @@ class JiraDataCenterConnector(BaseConnector):
             fields = issue.get("fields", {})
 
             # Check for existing record (works for both Epics and regular issues)
-            existing_record = await tx_store.get_record_by_external_id(
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id,
-                external_id=issue_id
+                external_record_id=issue_id
             )
 
             record_id = existing_record.id if existing_record else str(uuid4())
             is_new = existing_record is None
+            # Stub created by _handle_parent_record when a child arrived before this
+            # ancestor was in scope — promote it like a new record so revision/content
+            # replace the placeholder breadcrumb.
+            is_placeholder = bool(existing_record and existing_record.is_placeholder)
 
             # Only increment version if issue content actually changed
             is_issue_changed = False
-            if is_new:
+            if is_new or is_placeholder:
                 version = 0
                 is_issue_changed = True
                 self.logger.debug(f"🆕 New issue found: {issue_key} (external_id: {issue_id})")
@@ -3067,15 +3592,7 @@ class JiraDataCenterConnector(BaseConnector):
             parent_record_id = None
             parent_record_type = None
 
-            if is_epic:
-                # Epic is a Record that belongs to Project RecordGroup
-                pass
-            elif parent_external_id and not is_subtask:
-                # Story/Task with Epic parent → Epic is now a Record, not RecordGroup
-                parent_record_id = parent_external_id
-                parent_record_type = RecordType.TICKET
-            elif is_subtask and parent_external_id:
-                # Sub-task → has parent Record (creates PARENT_CHILD edge in recordRelations)
+            if parent_external_id:
                 parent_record_id = parent_external_id
                 parent_record_type = RecordType.TICKET
 
@@ -3137,7 +3654,6 @@ class JiraDataCenterConnector(BaseConnector):
                     permissions,
                     external_record_group_id,
                     record_group_type,
-                    tx_store,
                     parent_node_id=issue_record.id,
                 )
                 if attachment_records:
@@ -3163,7 +3679,6 @@ class JiraDataCenterConnector(BaseConnector):
         parent_permissions: list[Permission],
         parent_record_group_id: str,
         parent_record_group_type: RecordGroupType,
-        tx_store,
         parent_node_id: Optional[str] = None,
     ) -> list[tuple[FileRecord, list[Permission]]]:
         """
@@ -3190,9 +3705,9 @@ class JiraDataCenterConnector(BaseConnector):
                     continue
 
                 # Check for existing attachment record
-                existing_record = await tx_store.get_record_by_external_id(
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=f"attachment_{attachment_id}"
+                    external_record_id=f"attachment_{attachment_id}"
                 )
 
                 # Get attachment metadata
@@ -3525,7 +4040,6 @@ class JiraDataCenterConnector(BaseConnector):
         issue_node_id: str,
         project_id: str,
         issue_weburl: Optional[str],
-        tx_store,
     ) -> dict[str, ChildRecord]:
         """
         Process issue attachments and create ChildRecords for TableRowMetadata.
@@ -3540,7 +4054,6 @@ class JiraDataCenterConnector(BaseConnector):
             issue_node_id: Internal record ID of issue
             project_id: Project ID for external_record_group_id
             issue_weburl: Issue web URL (used as weburl for FileRecords)
-            tx_store: Transaction store for looking up existing records
 
         Returns:
             Dict mapping attachment_id -> ChildRecord for proper location assignment
@@ -3556,9 +4069,9 @@ class JiraDataCenterConnector(BaseConnector):
 
                 # Look up existing attachment record from database
                 external_id = f"attachment_{attachment_id}"
-                existing_record = await tx_store.get_record_by_external_id(
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=external_id
+                    external_record_id=external_id
                 )
 
                 # Create FileRecord if it doesn't exist (new attachment added after sync)
@@ -3699,9 +4212,14 @@ class JiraDataCenterConnector(BaseConnector):
                 )
                 await asyncio.sleep(backoff)
 
-        raise Exception(
-            f"Failed to fetch issue {issue_id} after {max_attempts} attempts: {last_exc}"
-        ) from last_exc
+        # Re-raised bare: to_stream_error reads the status/timeout off the SDK
+        # exception itself and does not walk __cause__, so wrapping it here would
+        # turn a 504-worthy ReadTimeout into a generic 500.
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(
+            f"Failed to fetch issue {issue_id} after {max_attempts} attempts"
+        )
 
     async def _process_issue_blockgroups_for_streaming(self, record: Record) -> bytes:
         """
@@ -3747,11 +4265,15 @@ class JiraDataCenterConnector(BaseConnector):
             expand=["renderedFields"],
         )
         if response.status != HttpStatusCode.OK.value:
-            raise Exception(f"Failed to fetch issue content: {response.text()}")
+            self.logger.warning(
+                "Failed to fetch issue %s for streaming: HTTP %s — %s",
+                issue_id, response.status, response.text(),
+            )
+            raise map_source_status(response.status, connector=self.display_name)
 
         issue_data = response.json()
         if not issue_data:
-            raise Exception(f"No issue data found for ID: {issue_id}")
+            raise not_found_at_source(self.display_name)
 
         fields = issue_data.get("fields", {})
         rendered_fields = issue_data.get("renderedFields", {})
@@ -3808,17 +4330,15 @@ class JiraDataCenterConnector(BaseConnector):
         # Fetch child records from database - get map of attachment_id -> ChildRecord
         attachment_children_map: dict[str, ChildRecord] = {}
 
-        async with self.data_store_provider.transaction() as tx_store:
-            # Process attachments (including images)
-            if attachments_data:
-                attachment_children_map = await self._process_issue_attachments_for_children(
-                    attachments_data=attachments_data,
-                    issue_id=issue_id,
-                    issue_node_id=record.id,
-                    project_id=project_id,
-                    issue_weburl=issue_weburl,
-                    tx_store=tx_store
-                )
+        # Process attachments (including images)
+        if attachments_data:
+            attachment_children_map = await self._process_issue_attachments_for_children(
+                attachments_data=attachments_data,
+                issue_id=issue_id,
+                issue_node_id=record.id,
+                project_id=project_id,
+                issue_weburl=issue_weburl,
+            )
 
         # Add comments to issue_data for parsing
         issue_data["comments"] = comments_data
@@ -4311,6 +4831,13 @@ class JiraDataCenterConnector(BaseConnector):
             if not self.data_source:
                 await self.init()
 
+            if record.is_placeholder:
+                raise not_downloadable(
+                    f"Cannot stream placeholder record {record.external_record_id}: "
+                    "it is a stub for an out-of-scope ancestor and has no content",
+                    connector=self.display_name,
+                )
+
             if record.record_type == RecordType.TICKET:
                 # Stream BlocksContainer as JSON
                 content_bytes = await self._process_issue_blockgroups_for_streaming(record)
@@ -4341,7 +4868,6 @@ class JiraDataCenterConnector(BaseConnector):
 
                 if response.status != HttpStatusCode.OK.value:
                     error_body = response.text()
-                    detail = f"Failed to fetch attachment content: {error_body}"
                     if response.status == HttpStatusCode.NOT_FOUND.value:
                         self.logger.warning(
                             f"Attachment {attachment_id} not found at source "
@@ -4357,7 +4883,7 @@ class JiraDataCenterConnector(BaseConnector):
                             response.status,
                             error_body[:500],
                         )
-                    raise HTTPException(status_code=response.status, detail=detail)
+                    raise map_source_status(response.status, connector=self.display_name)
 
                 # Stream the attachment content
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
@@ -4399,8 +4925,10 @@ class JiraDataCenterConnector(BaseConnector):
             # the upstream status instead of collapsing it into a 500.
             raise
         except Exception as e:
-            self.logger.error(f"Error streaming record {record.external_record_id} ({record.record_type}): {e}")
-            raise
+            self.logger.error(
+                f"Error streaming record {record.external_record_id} ({record.record_type}): {e}"
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     # ============================================================================
     # Reindexing
@@ -4650,12 +5178,9 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.warning(f"Attachment {attachment_id} missing parent issue ID")
                 return None
 
-            # Get parent ticket's internal record ID
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_ticket_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=issue_id
-                )
+            parent_ticket_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, issue_id
+            )
             parent_node_id = parent_ticket_record.id if parent_ticket_record else None
 
             # Fetch issue to get attachment metadata
@@ -4751,7 +5276,7 @@ class JiraDataCenterConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
-        dep = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await dep.initialize()
-        return cls(logger, dep, data_store_provider, config_service, connector_id, scope, created_by)
+        return cls(logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by)

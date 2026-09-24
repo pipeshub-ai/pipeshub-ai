@@ -61,6 +61,9 @@ export class MailService {
       if (ccEmails) {
         data.sendCcTo = ccEmails;
       }
+      if (initiator.orgId) {
+        data.orgId = initiator.orgId;
+      }
 
       const config = {
         method: 'post' as const,

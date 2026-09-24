@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useState } from "react"
+import React, { Suspense, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import "../globals.css"
 import 'react-pdf-highlighter/dist/esm/style/PdfHighlighter.css';
@@ -21,6 +21,7 @@ import i18n from '@/lib/i18n/config'
 import { useLanguageStore } from '@/lib/store/language-store'
 import { UserProfileInitializer } from './components/user-profile-initializer'
 import { OrgProfileInitializer } from './components/org-profile-initializer'
+import { ElectronLocalSyncBootstrap } from './components/electron-local-sync-bootstrap'
 import { UserBackgroundSurvey } from "./components/surveys/user-background"
 import { OnboardingTour } from "./components/tours/onboarding"
 import { useOnboardingStore } from "./onboarding/store"
@@ -32,11 +33,13 @@ import { useIsMobile } from "@/lib/hooks/use-is-mobile"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
 import { HealthGate } from '@/app/components/ui/health-gate'
 import { AuthHydrator } from '@/lib/store/auth-hydrator'
+import { OrgUrlCleaner } from '@/lib/navigation'
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store'
 import { FullNameDialog } from './components/full-name-dialog'
 import { ServerUrlGuard } from '@/app/components/electron/server-url-setup'
 import { NotificationProvider } from './notifications/websocket-manager'
 import { NotificationsPanel } from './notifications/panel'
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button'
 
 // Extra pixels beyond sidebarWidth needed to accommodate the "More Chats"
 // secondary panel that SidebarBase adds when open (it widens the cluster).
@@ -89,6 +92,9 @@ export default function RootLayout({
         <I18nextProvider i18n={i18n}>
           <ThemeProvider>
             <AuthHydrator />
+            <Suspense fallback={null}>
+              <OrgUrlCleaner />
+            </Suspense>
             {/* Landscape block — pure CSS visibility, no JS */}
             <div className="landscape-block-overlay">
               <MaterialIcon name="screen_rotation" size={48} color="var(--gray-11)" />
@@ -132,7 +138,6 @@ function AppLayout({
   const isMobile = useIsMobile()
   const sidebarWidth = useSidebarWidthStore((s) => s.sidebarWidth)
   const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed)
-  const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed)
 
   // ── Full-name guard ────────────────────────────────────────────────────────
   const profile = useUserStore((s) => s.profile)
@@ -189,6 +194,10 @@ function AppLayout({
       {/* Hydrates user profile (name, email, isAdmin, avatar) once auth is ready */}
       <UserProfileInitializer />
       <OrgProfileInitializer />
+      {/* Desktop-only: brings up Local FS watchers already known to the
+          Electron journal as soon as auth is ready, without requiring the
+          user to open the connectors page first. */}
+      <ElectronLocalSyncBootstrap />
       <Flex
         style={{
           height: '100vh',
@@ -212,8 +221,12 @@ function AppLayout({
             maxWidth: (!isMobile && isNavCollapsed)
               ? 0
               : `${sidebarWidth + SIDEBAR_SECONDARY_PANEL_EXTRA_PX}px`,
+            overflow: 'hidden',
+            visibility: (!isMobile && isNavCollapsed) ? 'hidden' : 'visible',
             flexShrink: 0,
-            transition: 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
+            transition: (!isMobile && isNavCollapsed)
+              ? 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.28s'
+              : 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
             position: 'relative',
             // Must be an explicit height so the SidebarBase's height:'100%'
             // chain resolves correctly (this Box is a flex child of the outer
@@ -234,8 +247,11 @@ function AppLayout({
           data-main-content
           style={{ flex: 1, overflow: 'hidden', zIndex: 0, position: 'relative' }}
         >
-          {/* Mobile hamburger — fixed top-left, only visible on mobile.
-              On desktop the icon rail always shows a toggle, so no floating button needed. */}
+          {/* Desktop fallback to restore a collapsed sidebar on routes whose page
+              does not render its own SidebarExpandButton — otherwise the user
+              is stranded with no nav until a reload. */}
+          <SidebarExpandButton placement="shell" />
+          {/* Mobile hamburger — fixed top-left, only visible on mobile. */}
           {isMobile && (
             <Box
               key="app-mobile-menu-anchor"

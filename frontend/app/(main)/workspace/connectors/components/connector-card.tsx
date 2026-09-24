@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
+import { PermissionLockIcon } from '@/config';
 import type { Connector } from '../types';
 
 // ========================================
@@ -27,6 +28,8 @@ interface ConnectorCardProps {
   onAddInstance?: (connector: Connector) => void;
   /** Fired when the card body is clicked (navigate to type page). */
   onCardClick?: (connector: Connector) => void;
+  /** Show lock on labelled Setup (catalog + icon still uses the denied dialog). */
+  setupPermissionDenied?: boolean;
 }
 
 // ========================================
@@ -41,12 +44,14 @@ export function ConnectorCard({
   onSetup,
   onAddInstance,
   onCardClick,
+  setupPermissionDenied = false,
 }: ConnectorCardProps) {
   const [isHovered, setIsHovered] = useState(false);
 
   return (
     <Flex
       direction="column"
+      data-testid={`connector-card-${connector.type}`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       onClick={() => {
@@ -106,7 +111,10 @@ export function ConnectorCard({
 
       {/* ── Bottom action ── */}
       {variant === 'registry' ? (
-        <SetupButton onClick={() => onSetup?.(connector)} />
+        <SetupButton
+          permissionDenied={setupPermissionDenied}
+          onClick={() => onSetup?.(connector)}
+        />
       ) : (
         <ActiveInstanceBar
           activeCount={activeInstanceCount}
@@ -130,15 +138,23 @@ export function ConnectorCard({
 // ========================================
 
 /** "+ Setup" button for registry / unconfigured connectors. */
-function SetupButton({ onClick }: { onClick?: () => void }) {
+function SetupButton({
+  onClick,
+  permissionDenied = false,
+}: {
+  onClick?: () => void;
+  permissionDenied?: boolean;
+}) {
   const [isHovered, setIsHovered] = useState(false);
   const { t } = useTranslation();
 
   return (
     <button
       type="button"
+      data-testid="connector-setup"
       onClick={(e) => {
         e.stopPropagation();
+        if (permissionDenied) return;
         onClick?.();
       }}
       onMouseEnter={() => setIsHovered(true)}
@@ -157,7 +173,7 @@ function SetupButton({ onClick }: { onClick?: () => void }) {
         height: 32,
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
-        cursor: 'pointer',
+        cursor: permissionDenied ? 'not-allowed' : 'pointer',
         transition: 'background-color 150ms ease',
       }}
     >
@@ -172,6 +188,7 @@ function SetupButton({ onClick }: { onClick?: () => void }) {
       >
         {t('workspace.actions.cta.setup')}
       </span>
+      {permissionDenied && <PermissionLockIcon />}
     </button>
   );
 }
@@ -256,6 +273,8 @@ function ActiveInstanceBar({
       {/* Add button */}
       <button
         type="button"
+        data-testid="connector-add-instance"
+        aria-label={t('workspace.connectors.addInstance')}
         onClick={(e) => {
           e.stopPropagation();
           onAdd?.();

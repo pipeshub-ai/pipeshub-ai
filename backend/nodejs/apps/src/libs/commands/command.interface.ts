@@ -23,19 +23,44 @@ export abstract class BaseCommand<T> implements ICommand<T> {
     this.headers = headers || {};
   }
 
-  // Helper to build the full URL including query parameters.
+  /**
+   * Build the full URL including query parameters, with SSRF validation.
+   *
+   * User-controlled path segments (e.g. `agentKey`, `conversationId`) are
+   * interpolated into the URI string by callers.  This method validates the
+   * result before it reaches `fetch()`:
+   *
+   *  - Must be a valid, absolute URL (`new URL()` will throw otherwise).
+   *  - Protocol must be `http:` or `https:`.
+   *  - Must not contain embedded credentials (blocks `http://x@evil.com/` tricks).
+   */
   protected buildUrl(): string {
-    if (!this.queryParams) return this.uri;
-    const queryString = new URLSearchParams(
-      Object.entries(this.queryParams).reduce<Record<string, string>>(
-        (acc, [key, value]) => {
-          acc[key] = String(value);
-          return acc;
-        },
-        {},
-      ),
-    ).toString();
-    return `${this.uri}?${queryString}`;
+    let raw = this.uri;
+    if (this.queryParams) {
+      const queryString = new URLSearchParams(
+        Object.entries(this.queryParams).reduce<Record<string, string>>(
+          (acc, [key, value]) => {
+            acc[key] = String(value);
+            return acc;
+          },
+          {},
+        ),
+      ).toString();
+      raw = `${this.uri}?${queryString}`;
+    }
+
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new InternalServerError(
+        `Blocked request with disallowed protocol: ${parsed.protocol}`,
+      );
+    }
+    if (parsed.username || parsed.password) {
+      throw new InternalServerError(
+        'Blocked request: URL must not contain embedded credentials',
+      );
+    }
+    return parsed.href;
   }
 
   protected sanitizeBody(body: any): any {
@@ -59,19 +84,25 @@ export abstract class BaseCommand<T> implements ICommand<T> {
     const allowedHeaders = new Set([
       'content-type',
       'authorization',
-      'x-is-admin',
       HEADER_REQUEST_ID,
       'client-name'
     ]);
-    // Ensure content-type is set to application/json if not present
-    if (!headers['content-type'] && !headers['Content-Type']) {
-      headers['content-type'] = 'application/json';
+    // Normalize to lowercase keys so case-variants (e.g. content-type from
+    // Express + Content-Type from the caller) collapse to one entry. fetch
+    // otherwise emits "application/json, application/json", which FastAPI
+    // does not treat as JSON and then fails Pydantic body parsing with
+    // model_attributes_type.
+    const normalized: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+      const lower = key.toLowerCase();
+      if (allowedHeaders.has(lower) && value !== undefined && value !== null) {
+        normalized[lower] = String(value);
+      }
     }
-    return Object.fromEntries(
-      Object.entries(headers).filter(([key]) =>
-        allowedHeaders.has(key.toLowerCase()),
-      ),
-    );
+    if (!normalized['content-type']) {
+      normalized['content-type'] = 'application/json';
+    }
+    return normalized;
   }
 
   /**

@@ -22,6 +22,10 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { Logger } from '../../../libs/services/logger.service';
 import { ContainerRequest } from '../../auth/middlewares/types';
 import {
@@ -168,7 +172,7 @@ export class OrgController {
 
       if (!passwordValidator(password)) {
         throw new BadRequestError(
-          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character',
+          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character, and be no longer than 72 bytes',
         );
       }
 
@@ -193,6 +197,7 @@ export class OrgController {
         fullName: adminFullName,
         email: contactEmail,
         orgId: org._id,
+        role: 'admin',
       });
 
       const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
@@ -203,13 +208,6 @@ export class OrgController {
         isDeleted: false,
         hashedPassword,
         ipAddress: req.ip,
-      });
-
-      const adminUserGroup = new UserGroups({
-        type: 'admin',
-        name: 'admin',
-        orgId: org._id,
-        users: [adminUser._id],
       });
 
       const allUsersGroup = new UserGroups({
@@ -243,27 +241,59 @@ export class OrgController {
         ],
       });
 
+      // Built before the save so the transactional branch can store them with
+      // the same commit. An organisation that exists without the events that
+      // announce it is invisible to the permission graph, which is the pair
+      // this transaction is here to keep together.
+      const orgCreatedEvent: Event = {
+        eventType: EventType.OrgCreatedEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId: org._id,
+          accountType: org.accountType,
+          registeredName: org.registeredName,
+        } as OrgAddedEvent,
+      };
+      const adminUserEvent: Event = {
+        eventType: EventType.NewUserEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId: adminUser.orgId.toString(),
+          userId: adminUser._id,
+          fullName: adminUser.fullName,
+          email: adminUser.email,
+          syncAction: 'none',
+        } as UserAddedEvent,
+      };
+
       const rsAvailable = this.config.rsAvailable === 'true';
       if (rsAvailable) {
         session = await mongoose.startSession();
 
         session.startTransaction();
         await orgAuthConfig.save({ session });
-        await adminUserGroup.save({ session });
         await allUsersGroup.save({ session });
         await standardUsersGroup.save({ session });
         await adminUser.save({ session });
         await adminUserCredentials.save({ session });
         await org.save({ session });
+        // Inside the transaction: either the organisation and the events that
+        // describe it both land, or neither does.
+        await this.eventService.publishEvent(orgCreatedEvent, session);
+        await this.eventService.publishEvent(adminUserEvent, session);
         await session.commitTransaction();
       } else {
         await orgAuthConfig.save();
-        await adminUserGroup.save();
         await allUsersGroup.save();
         await standardUsersGroup.save();
         await adminUser.save();
         await adminUserCredentials.save();
         await org.save();
+        // No replica set, so no transaction to join. The events are still
+        // recorded durably and delivered with retries; only the atomicity is
+        // unavailable here.
+        await this.eventService.publishEvent(orgCreatedEvent);
+        await this.eventService.publishEvent(adminUserEvent);
       }
 
       recordEvent(ORG_CREATED_EVENT, {
@@ -282,6 +312,7 @@ export class OrgController {
               contactEmail,
               this.config.scopedJwtSecret,
             ),
+            orgId: org._id.toString(),
           },
           usersMails: [contactEmail],
           subject: 'New Org Account Creation',
@@ -294,36 +325,14 @@ export class OrgController {
         });
       }
 
-      await this.eventService.start();
-      let event: Event = {
-        eventType: EventType.OrgCreatedEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: org._id,
-          accountType: org.accountType,
-          registeredName: org.registeredName,
-        } as OrgAddedEvent,
-      };
-      await this.eventService.publishEvent(event);
-
-      event = {
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: adminUser.orgId.toString(),
-          userId: adminUser._id,
-          fullName: adminUser.fullName,
-          email: adminUser.email,
-          syncAction: 'none',
-        } as UserAddedEvent,
-      };
-      await this.eventService.publishEvent(event);
-
-      await this.eventService.stop();
       res.status(200).json(org);
     } catch (error) {
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Error retrieving users',
+      if (error instanceof BadRequestError || error instanceof NotFoundError) {
+        throw error;
+      }
+      this.logger.error('Creating the organisation failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('create the organisation')),
       );
     } finally {
       if (session) {
@@ -338,9 +347,9 @@ export class OrgController {
     next: NextFunction,
   ): Promise<void> {
     const orgId = req.user?.orgId;
-    this.logger.info(orgId);
+    this.logger.debug(orgId);
     try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
@@ -368,7 +377,7 @@ export class OrgController {
     try {
       const orgId = req.user?.orgId;
 
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
@@ -422,7 +431,7 @@ export class OrgController {
   ): Promise<void> {
     try {
       const orgId = req.user?.orgId;
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
 
       if (!org) {
         throw new NotFoundError('Organisation not found');

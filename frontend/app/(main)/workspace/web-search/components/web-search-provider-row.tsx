@@ -20,6 +20,7 @@ interface WebSearchProviderRowProps {
   isDefault: boolean;
   isSettingDefault: boolean;
   anyActionInProgress: boolean;
+  inherited?: boolean;
   onSetDefault: () => void;
   onConfigure: (type: ConfigurableProvider) => void;
   onDelete: () => void;
@@ -35,6 +36,7 @@ export function WebSearchProviderRow({
   isDefault,
   isSettingDefault,
   anyActionInProgress,
+  inherited = false,
   onSetDefault,
   onConfigure,
   onDelete,
@@ -131,7 +133,7 @@ export function WebSearchProviderRow({
         {renderBadge()}
 
         {/* Set as Default */}
-        {!isDefault && (
+        {!isDefault && !(inherited && isConfigurable) && (
           setDefaultTooltip ? (
             <Tooltip content={setDefaultTooltip}>
               <span style={{ display: 'inline-flex' }}>

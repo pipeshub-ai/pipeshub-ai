@@ -4,6 +4,7 @@ import hashlib
 import random
 import re
 import uuid
+from http import HTTPStatus
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -26,6 +27,7 @@ from app.config.constants.arangodb import (
     FILE_MIME_TYPES,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -36,6 +38,11 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    internal_service_status,
+    map_source_status,
+)
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
@@ -64,7 +71,11 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.connectors.sources.web.fetch_strategy import FetchResponse, fetch_url_with_fallback
+from app.connectors.sources.web.fetch_strategy import (
+    MAX_RATE_LIMIT_BACKOFF,
+    FetchResponse,
+    fetch_url_with_fallback,
+)
 from app.connectors.sources.web.crawl4ai_fetcher import Crawl4AIFetcher, FetchResult, get_shared_fetcher, release_shared_fetcher, resolve_fetch_status_code
 from app.connectors.sources.web.csr_detection import CSR_PROBE_JS, PRE_HYDRATION_INIT_SCRIPT, analyze_rendering
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint, generate_record_sync_point_key
@@ -119,10 +130,16 @@ class RetryUrl:
     depth: int = 0                  # depth at which the URL was first encountered
     referer: str | None = None   # referer at the time of first attempt
     retry_after: float | None = None  # server-requested backoff (seconds)
+    deferred: bool = False  # site asked to wait longer than we hold a sync open
 
 class Status(Enum):
     PENDING = "PENDING"
 
+
+# Node storage returns 308 + Location (S3/Azure PUT presigned URL) when it
+# cannot proxy the bytes. aiohttp would follow 308 as POST, which S3 rejects
+# with SignatureDoesNotMatch. Handle the redirect ourselves and PUT instead.
+STORAGE_UPLOAD_REDIRECT_STATUS_CODES = frozenset({301, 302, 307, 308})
 
 RETRYABLE_STATUS_CODES = {
     403, 408, 429,
@@ -165,12 +182,33 @@ class WebApp(App):
     def __init__(self, connector_id: str) -> None:
         super().__init__(Connectors.WEB, AppGroups.WEB, connector_id)
 
+
+def failed_page_reason(status_code: int | None) -> str:
+    """What a person sees as the reason a crawled page failed, with what to do next."""
+    try:
+        status = HTTPStatus(int(status_code))
+        label = f"{status.value} {status.phrase}"
+    except (TypeError, ValueError):
+        return "We couldn't reach this page. Check the URL is correct and publicly reachable, then sync again."
+    if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+        return (
+            f"The page refused access ({label}). It may need a login or block automated visitors; "
+            "make sure it's publicly reachable, then sync again."
+        )
+    if status in (HTTPStatus.NOT_FOUND, HTTPStatus.GONE):
+        return f"The page wasn't found ({label}). Check the URL is correct, then sync again."
+    if status in (HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.REQUEST_TIMEOUT) or status.value >= 500:
+        return f"The site didn't respond properly ({label}). PipesHub will try again on the next sync."
+    return f"The page returned an error ({label}). Check the URL is correct and publicly reachable, then sync again."
+
+
 @ConnectorBuilder("Web")\
     .in_group("Web")\
     .with_supported_auth_types("NONE")\
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
     .with_scopes([ConnectorScope.PERSONAL, ConnectorScope.TEAM])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.WEB.value))
         .with_realtime_support(False)
@@ -718,11 +756,9 @@ class WebConnector(BaseConnector):
                 self.full_sync = True
 
             if self.scope == ConnectorScope.TEAM.value:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.ensure_team_app_edge(
-                        self.connector_id,
-                        self.data_entities_processor.org_id,
-                    )
+                await self.data_entities_processor.ensure_team_app_edge(
+                    self.connector_id
+                )
                 app_users = []
             else:
                 # Personal: create user-app edge only for the creator
@@ -895,7 +931,11 @@ class WebConnector(BaseConnector):
                     record_group_type=RecordGroupType.WEB,
                     external_record_id=external_id,
                     external_record_group_id=self.url,
-                    version=0,
+                    # Placeholders carry no content of their own and this upsert runs
+                    # on every crawl, so the stored version is carried over rather than
+                    # bumped — and rather than reset to 0, which would discard the
+                    # version of an ancestor since crawled as a page in its own right.
+                    version=0 if not existing else (existing.version or 0),
                     origin=OriginTypes.CONNECTOR,
                     connector_name=self.connector_name,
                     connector_id=self.connector_id,
@@ -1044,7 +1084,8 @@ class WebConnector(BaseConnector):
                 # Re-enqueue retry candidates that haven't hit the max-retry limit.
                 # Exhausted entries are left for process_retry_urls() at the end.
                 retry_candidates = [
-                    r for r in self.retry_urls.values() if r.retries < MAX_RETRIES
+                    r for r in self.retry_urls.values()
+                    if r.retries < MAX_RETRIES and not r.deferred
                 ]
                 if not retry_candidates:
                     break
@@ -1058,7 +1099,7 @@ class WebConnector(BaseConnector):
                     domain = urlparse(r.url).netloc
                     domain_map.setdefault(domain, []).append(r)
 
-                for domain, candidates in domain_map.items():
+                for domain, candidates in list(domain_map.items()):
                     if domain not in self._domain_next_retry_at:
                         server_delays = [c.retry_after for c in candidates if c.retry_after]
                         if server_delays:
@@ -1066,11 +1107,29 @@ class WebConnector(BaseConnector):
                         else:
                             min_retries = min(c.retries for c in candidates)
                             backoff = min(_BACKOFF_BASE * (2 ** min_retries), _BACKOFF_CAP)
+
+                        # A site that asks for longer than the cap would hold this
+                        # sync open for its whole wait, so leave its pages for the
+                        # next sync instead and keep crawling everything else.
+                        if backoff > MAX_RATE_LIMIT_BACKOFF:
+                            for candidate in candidates:
+                                candidate.deferred = True
+                            del domain_map[domain]
+                            self.logger.info(
+                                "Rate-limited on %s: asked for %.0fs, longer than the %ds we wait; "
+                                "leaving %d URL(s) for the next sync",
+                                domain, backoff, MAX_RATE_LIMIT_BACKOFF, len(candidates),
+                            )
+                            continue
+
                         self._domain_next_retry_at[domain] = now + backoff
                         self.logger.info(
                             "Rate-limited on %s: backing off %.0fs before retry (%d URL(s))",
                             domain, backoff, len(candidates),
                         )
+
+                if not domain_map:
+                    continue
 
                 # Sleep only until the soonest eligible domain is ready.
                 earliest = min(self._domain_next_retry_at[d] for d in domain_map)
@@ -1712,7 +1771,14 @@ class WebConnector(BaseConnector):
                 external_record_id=external_id,
                 external_revision_id=content_md5_hash,
                 external_record_group_id=self.url,
-                version=0,
+                # Advance the version only when the page actually changed, so it stays
+                # a signal of change rather than a count of crawls. A re-crawl that
+                # finds nothing new is not persisted anyway.
+                version=(
+                    0
+                    if not existing_record
+                    else (existing_record.version or 0) + (1 if is_updated else 0)
+                ),
                 origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
@@ -1904,7 +1970,7 @@ class WebConnector(BaseConnector):
             parent_external_record_id=parent_url,
             parent_record_type=RecordType.FILE if parent_url else None,
             indexing_status=ProgressStatus.FAILED.value,
-            reason=f"Failed to process URL, status code: {status_code}",
+            reason=failed_page_reason(status_code),
         )
 
         permissions = []
@@ -2370,13 +2436,11 @@ class WebConnector(BaseConnector):
         config_service: ConfigurationService,
         connector_id: str,
         scope: str,
-        created_by: str
+        created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         """Factory method to create a WebConnector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
         return WebConnector(
             logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by
         )
@@ -2976,6 +3040,56 @@ class WebConnector(BaseConnector):
         sanitized = sanitized.strip(". ")
         return sanitized[:200] if sanitized else "untitled"
 
+    @staticmethod
+    def _storage_document_id_from_upload(headers, data) -> Optional[str]:
+        """Resolve a storage document id from upload headers or JSON body."""
+        doc_hdr = headers.get("x-document-id") or headers.get("X-Document-Id")
+        if isinstance(doc_hdr, str) and doc_hdr.strip():
+            return doc_hdr.strip()
+        if not isinstance(data, dict):
+            return None
+        doc_id = data.get("_id") or data.get("id")
+        if doc_id:
+            return str(doc_id)
+        nested = data.get("document")
+        if isinstance(nested, dict):
+            nested_id = nested.get("_id") or nested.get("id")
+            if nested_id:
+                return str(nested_id)
+        return None
+
+    async def _put_presigned_upload(
+        self,
+        session: aiohttp.ClientSession,
+        resp: aiohttp.ClientResponse,
+        content: bytes,
+    ) -> Optional[str]:
+        """PUT raw bytes to a storage-service redirect Location (presigned URL)."""
+        location = resp.headers.get("Location") or resp.headers.get("location")
+        if not location:
+            self.logger.error("Storage direct-upload redirect missing Location header")
+            return None
+        try:
+            data = await resp.json()
+        except Exception:
+            data = None
+        doc_id = self._storage_document_id_from_upload(resp.headers, data)
+        put_headers = {"Content-Length": str(len(content))}
+        async with session.put(
+            location,
+            data=content,
+            headers=put_headers,
+            allow_redirects=False,
+        ) as put_resp:
+            if put_resp.status < 200 or put_resp.status >= 300:
+                error = await put_resp.text()
+                self.logger.error(
+                    "Failed to upload to storage (status %d): %s",
+                    put_resp.status, error,
+                )
+                return None
+        return doc_id
+
     async def _upload_new_to_storage(
         self,
         content: bytes,
@@ -2987,6 +3101,10 @@ class WebConnector(BaseConnector):
 
         Creates the document record and writes the file in a single call,
         same as local KB uploads. Returns the storage document ID on success.
+
+        For S3/Azure, Node may 308 to a PUT-signed URL instead of proxying
+        the bytes. That redirect must be followed as PUT of the raw file,
+        not as another multipart POST.
         """
         try:
             storage_url = await self._get_storage_url()
@@ -3014,18 +3132,23 @@ class WebConnector(BaseConnector):
                     f"{storage_url}/api/v1/document/internal/upload",
                     data=form,
                     headers={"Authorization": f"Bearer {token}"},
+                    allow_redirects=False,
                 ) as resp:
+                    if resp.status in STORAGE_UPLOAD_REDIRECT_STATUS_CODES:
+                        return await self._put_presigned_upload(
+                            session, resp, content
+                        )
                     if resp.status == 200:
                         data = await resp.json()
-                        doc_id = data.get("_id") or data.get("id")
-                        return str(doc_id) if doc_id else None
-                    else:
-                        error = await resp.text()
-                        self.logger.error(
-                            "Failed to upload to storage (status %d): %s",
-                            resp.status, error,
+                        return self._storage_document_id_from_upload(
+                            resp.headers, data
                         )
-                        return None
+                    error = await resp.text()
+                    self.logger.error(
+                        "Failed to upload to storage (status %d): %s",
+                        resp.status, error,
+                    )
+                    return None
         except Exception as e:
             self.logger.error("Error uploading new doc to storage: %s", e, exc_info=True)
             return None
@@ -3160,6 +3283,10 @@ class WebConnector(BaseConnector):
 
             # Fallback: live fetch (for legacy records without stored content)
             if not record.weburl:
+                if record.storage_document_id:
+                    # The read above failed and there is no live URL to fall
+                    # back on — a storage outage, not a deleted page.
+                    raise internal_service_status(HttpStatusCode.BAD_GATEWAY.value)
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value,
                     detail=f"No stored content and no web URL for record {record.record_name} (id:{record.id})",
@@ -3168,10 +3295,7 @@ class WebConnector(BaseConnector):
             referer = self.url if self.url else None
 
             if self.session is None:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Session not initialized",
-                )
+                raise connector_not_ready(self.display_name)
 
             if self.use_headless_browser and self.crawl4ai_fetcher:
                 result = await self._headless_fetch(record.weburl)
@@ -3183,10 +3307,29 @@ class WebConnector(BaseConnector):
                     referer=referer,
                 )
 
-            if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
-                raise HTTPException(
-                    status_code=result.status_code if result else 502,
-                    detail=f"Failed to fetch {record.weburl}",
+            # The crawled site's status is never returned as our own: a 401 from
+            # any target site would trip the frontend's axios interceptor and log
+            # the user out of PipesHub, and sites emit non-standard codes (999)
+            # that Starlette would hand to the client verbatim.
+            if (
+                result is None
+                or not result.success
+                or result.status_code >= HttpStatusCode.BAD_REQUEST.value
+            ):
+                self.logger.warning(
+                    "Web fetch failed for record %s: status=%s error=%s",
+                    record.id,
+                    result.status_code if result else "no response",
+                    result.error_message if result else None,
+                )
+                raise map_source_status(
+                    result.status_code if result else HttpStatusCode.BAD_GATEWAY.value,
+                    connector=self.display_name,
+                    retry_after=(
+                        str(int(result.retry_after))
+                        if result and result.retry_after
+                        else None
+                    ),
                 )
 
             content_bytes = result.content_bytes

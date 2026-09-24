@@ -136,6 +136,18 @@ def connector():
         dep.on_new_records = AsyncMock()
         dep.on_new_app_users = AsyncMock()
         dep.on_new_record_groups = AsyncMock()
+        dep.on_record_deleted = AsyncMock()
+        dep.on_record_metadata_update = AsyncMock()
+        dep.on_record_content_update = AsyncMock()
+        dep.on_updated_record_permissions = AsyncMock()
+        dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.update_user_group_name = AsyncMock(return_value=True)
+        dep.get_user_by_email = AsyncMock(return_value=None)
+        dep.get_user_group_by_external_id = AsyncMock(return_value=None)
+        dep.upsert_permission_edge = AsyncMock()
+        dep.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+        dep.get_file_record_by_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -173,7 +185,7 @@ class TestDropboxInit:
         result = await connector.init()
         assert result is False
 
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_oauth_config_not_found(self, mock_fetch, connector):
         mock_fetch.return_value = None
         connector.config_service.get_config = AsyncMock(return_value={
@@ -328,7 +340,7 @@ class TestProcessDropboxEntry:
         existing.version = 0
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = ProgressStatus.COMPLETED.value
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         entry = self._make_file_entry()
         self._mock_temp_link(connector)
@@ -346,7 +358,7 @@ class TestProcessDropboxEntry:
         existing.record_name = "old_name.txt"
         existing.external_revision_id = "rev-1"
         existing.version = 0
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         entry = self._make_file_entry(name="new_name.txt")
         self._mock_temp_link(connector)
@@ -371,8 +383,23 @@ class TestHandleRecordUpdates:
             metadata_changed=False, content_changed=False, permissions_changed=False,
             external_record_id="ext-1",
         )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_awaited_once()
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(connector.connector_id, "ext-1")
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
+
+    @pytest.mark.asyncio
+    async def test_deleted_record_never_indexed(self, connector):
+        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
+        update = RecordUpdate(
+            record=None, is_new=False, is_updated=False, is_deleted=True,
+            metadata_changed=False, content_changed=False, permissions_changed=False,
+            external_record_id="ext-404",
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.on_record_deleted = AsyncMock()
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
     async def test_new_record(self, connector):
         from app.connectors.sources.dropbox_individual.connector import RecordUpdate
@@ -419,6 +446,7 @@ class TestHandleRecordUpdates:
 
     async def test_exception_swallowed(self, connector):
         from app.connectors.sources.dropbox_individual.connector import RecordUpdate
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         connector.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("err"))
         update = RecordUpdate(
             record=None, is_new=False, is_updated=False, is_deleted=True,
@@ -426,6 +454,7 @@ class TestHandleRecordUpdates:
             external_record_id="ext-1",
         )
         await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ---------------------------------------------------------------------------
@@ -515,21 +544,32 @@ class TestGetSignedUrl:
         assert result == "https://dl.dropbox.com/temp"
 
     async def test_no_external_id(self, connector):
+        from fastapi import HTTPException
+
         record = MagicMock(external_record_id=None, path=None, id="r1")
-        result = await connector.get_signed_url(record)
-        assert result is None
+        # A missing local path is not a file deleted at Dropbox.
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     async def test_not_initialized(self, connector):
         connector.data_source = None
         record = MagicMock(external_record_id="/test.txt", id="r1")
-        result = await connector.get_signed_url(record)
-        assert result is None
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     async def test_exception(self, connector):
+        from fastapi import HTTPException
+
         connector.data_source.files_get_temporary_link = AsyncMock(side_effect=Exception("err"))
         record = MagicMock(external_record_id="/test.txt", id="r1")
-        result = await connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Could not retrieve this item. Please try again."
 
 
 # ---------------------------------------------------------------------------

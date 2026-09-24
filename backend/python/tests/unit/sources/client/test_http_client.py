@@ -322,3 +322,32 @@ class TestContextManager:
             async with HTTPClient(token="t") as client:
                 assert client.client is not None
             mock_httpx.aclose.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Optional resilience (rate limiting / retries)
+# ---------------------------------------------------------------------------
+class TestResilience:
+    def test_defaults_to_none(self):
+        assert HTTPClient(token="t").resilience is None
+
+    @pytest.mark.asyncio
+    async def test_plain_client_when_unset(self):
+        """Regression guard for the 40+ HTTPClient subclasses that pass nothing."""
+        client = HTTPClient(token="t")
+        with patch("app.sources.client.http.http_client.httpx.AsyncClient") as MockAsyncClient:
+            await client._ensure_client()
+            assert "transport" not in MockAsyncClient.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_installs_transport_when_set(self):
+        from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
+        from app.sources.client.resilience import ResiliencePolicy
+
+        policy = ResiliencePolicy(rate_limit=3, max_retries=3)
+        client = HTTPClient(token="t", resilience=policy)
+        with patch("app.sources.client.http.http_client.httpx.AsyncClient") as MockAsyncClient:
+            await client._ensure_client()
+            transport = MockAsyncClient.call_args.kwargs["transport"]
+        assert isinstance(transport, ResilientHTTPTransport)
+        assert transport._policy is policy

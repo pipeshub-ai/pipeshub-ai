@@ -5,7 +5,7 @@ import mongoose, { Document, Schema, Model } from 'mongoose';
 // Define the interface for Org Document
 
 export type AccountType = 'individual' | 'business';
-interface IOrg extends Document {
+export interface IOrg extends Document {
   slug: string;
   registeredName: string;
   shortName?: string;
@@ -17,6 +17,8 @@ interface IOrg extends Document {
   isDeleted: boolean;
   deletedByUser?: string;
   onBoardingStatus : string;
+  /** Written during admin demotion txns to serialize last-admin checks. */
+  adminRoleGuardAt?: Date;
 }
 
 const orgSchema = new Schema<IOrg>(
@@ -65,6 +67,7 @@ const orgSchema = new Schema<IOrg>(
     },
     isDeleted: { type: Boolean, default: false },
     deletedByUser: { type: String },
+    adminRoleGuardAt: { type: Date },
   },
   { timestamps: true },
 );

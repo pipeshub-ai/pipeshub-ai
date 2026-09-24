@@ -1,7 +1,7 @@
 from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -98,6 +98,15 @@ class GitLabPersonalProjectsSync(ProjectsSync):
     .with_description("Sync content from your personal GitLab account")
     .with_categories(["Knowledge Management"])
     .with_scopes([ConnectorScope.PERSONAL.value])
+    # APP_LEVEL: the only USER_APP_RELATION this connector ever writes is the
+    # creator's (connector_service.ensure_connector_group_permission); the GitLab
+    # user-directory sync that fans edges out to real members belongs to the
+    # workspace connector and is never reached from run_sync here. Reaching the
+    # app therefore already means being the creator, so the per-user ACL
+    # traversal can only return what the connector-wide scan does. Anything that
+    # later grants a non-creator a USER_APP_RELATION to a personal instance must
+    # revert this — the scan does not consult ConnectorGroup membership.
+    .with_permission_model(PermissionModel.APP_LEVEL)
     .with_auth(
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(
@@ -182,14 +191,12 @@ class GitLabPersonalProjectsSync(ProjectsSync):
         .add_filter_field(
             FilterField(
                 name=SyncFilterKey.PROJECT_IDS.value,
-                display_name="Repositories",
-                description=(
-                    "Limit sync to specific repositories "
-                    "(path_with_namespace, e.g. my-org/my-repo)"
-                ),
-                filter_type=FilterType.MULTISELECT,
+                display_name="Repository",
+                description="Select the repository to sync.",
+                filter_type=FilterType.SELECT,
                 category=FilterCategory.SYNC,
                 option_source_type=OptionSourceType.DYNAMIC,
+                required=True,
             )
         )
         .add_filter_field(
@@ -214,15 +221,6 @@ class GitLabPersonalProjectsSync(ProjectsSync):
             FilterField(
                 name=IndexingFilterKey.CODE_FILES.value,
                 display_name="Index Code Files",
-                filter_type=FilterType.BOOLEAN,
-                category=FilterCategory.INDEXING,
-                default_value=True,
-            )
-        )
-        .add_filter_field(
-            FilterField(
-                name=IndexingFilterKey.COMMENTS.value,
-                display_name="Index Comments",
                 filter_type=FilterType.BOOLEAN,
                 category=FilterCategory.INDEXING,
                 default_value=True,
@@ -343,13 +341,10 @@ class GitLabPersonalConnector(GitLabConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         """Factory method to create a GitLab Personal connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
-
         return GitLabPersonalConnector(
             logger,
             data_entities_processor,

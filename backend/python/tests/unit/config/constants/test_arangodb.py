@@ -136,11 +136,14 @@ class TestCollectionNames:
         assert CollectionNames.AGENT_KNOWLEDGE.value == "agentKnowledge"
         assert CollectionNames.AGENT_TOOLSETS.value == "agentToolsets"
         assert CollectionNames.AGENT_TOOLS.value == "agentTools"
+        assert CollectionNames.AGENT_MCP_SERVERS.value == "agentMcpServers"
 
     def test_agent_edge_collections(self):
         assert CollectionNames.AGENT_HAS_KNOWLEDGE.value == "agentHasKnowledge"
         assert CollectionNames.AGENT_HAS_TOOLSET.value == "agentHasToolset"
         assert CollectionNames.TOOLSET_HAS_TOOL.value == "toolsetHasTool"
+        assert CollectionNames.AGENT_HAS_MCP_SERVER.value == "agentHasMcpServer"
+        assert CollectionNames.MCP_SERVER_HAS_TOOL.value == "mcpServerHasTool"
 
     def test_sql_collections(self):
         assert CollectionNames.SQL_TABLES.value == "sqlTables"
@@ -191,6 +194,9 @@ class TestExtensionTypes:
         assert ExtensionTypes.SQL_TABLE.value == "sql_table"
         assert ExtensionTypes.SQL_VIEW.value == "sql_view"
 
+    def test_epub_extension(self):
+        assert ExtensionTypes.EPUB.value == "epub"
+
     def test_no_duplicate_values(self):
         values = [e.value for e in ExtensionTypes]
         assert len(values) == len(set(values))
@@ -224,6 +230,9 @@ class TestMimeTypes:
     def test_blocks_mime_type(self):
         assert MimeTypes.BLOCKS.value == "application/blocks"
 
+    def test_epub_mime_type(self):
+        assert MimeTypes.EPUB.value == "application/epub+zip"
+
     def test_no_duplicate_values(self):
         values = [e.value for e in MimeTypes]
         assert len(values) == len(set(values))
@@ -232,6 +241,9 @@ class TestMimeTypes:
 class TestFileMimeTypes:
     def test_file_mime_types_maps_pdf_extension(self):
         assert FILE_MIME_TYPES[".pdf"] == MimeTypes.PDF
+
+    def test_file_mime_types_maps_epub_extension(self):
+        assert FILE_MIME_TYPES[".epub"] == MimeTypes.EPUB
 
     def test_normalize_file_extension_strips_dot_and_lowercases(self):
         assert normalize_file_extension(".PDF") == "pdf"
@@ -374,6 +386,12 @@ class TestEventTypes:
 
     def test_bulk_delete_event(self):
         assert EventTypes.BULK_DELETE_RECORDS.value == "bulkDeleteRecords"
+
+    def test_sync_vector_membership_event(self):
+        assert EventTypes.SYNC_VECTOR_MEMBERSHIP.value == "syncVectorMembership"
+
+    def test_delete_vector_collection_event(self):
+        assert EventTypes.DELETE_VECTOR_COLLECTION.value == "deleteVectorCollection"
 
 
 # ---------------------------------------------------------------------------

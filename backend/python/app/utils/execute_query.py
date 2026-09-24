@@ -51,6 +51,19 @@ async def has_sql_connector_configured(
         return False
 
 
+def connector_instances_have_sql(instances: list[dict] | None) -> bool:
+    """SQL check over an already-fetched connector-instance list.
+
+    Split out of :func:`has_sql_connector_configured` so a caller that also
+    needs the Slack answer can share one query instead of issuing the same
+    one twice (see `chat_modes/bridge.py`).
+    """
+    return any(
+        str(i.get("type", "")).upper() in _SQL_CONNECTOR_TYPES and bool(i.get("isConfigured"))
+        for i in (instances or [])
+    )
+
+
 def agent_knowledge_has_sql_connector(agent_knowledge: Optional[List[Dict[str, Any]]]) -> bool:
     """Return True if the agent's attached knowledge includes a SQL connector.
 

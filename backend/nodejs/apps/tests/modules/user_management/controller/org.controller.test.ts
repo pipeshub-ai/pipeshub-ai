@@ -450,6 +450,8 @@ describe('OrgController', () => {
         await controller.createOrg(req, res);
         expect.fail('Should have thrown');
       } catch (error: any) {
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect(error.statusCode).to.equal(400);
         expect(error.message).to.include(
           'Password should have minimum 8 characters with at least one uppercase',
         );
@@ -468,6 +470,8 @@ describe('OrgController', () => {
         await controller.createOrg(req, res);
         expect.fail('Should have thrown');
       } catch (error: any) {
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect(error.statusCode).to.equal(400);
         expect(error.message).to.include('Password should have minimum 8 characters');
       }
     });
@@ -484,6 +488,8 @@ describe('OrgController', () => {
         await controller.createOrg(req, res);
         expect.fail('Should have thrown');
       } catch (error: any) {
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect(error.statusCode).to.equal(400);
         expect(error.message).to.include('Password should have minimum 8 characters');
       }
     });
@@ -502,6 +508,8 @@ describe('OrgController', () => {
         await controller.createOrg(req, res);
         expect.fail('Should have thrown');
       } catch (error: any) {
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect(error.statusCode).to.equal(400);
         expect(error.message).to.equal('There is already an organization');
       }
     });
@@ -520,6 +528,8 @@ describe('OrgController', () => {
         await controller.createOrg(req, res);
         expect.fail('Should have thrown');
       } catch (error: any) {
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect(error.statusCode).to.equal(400);
         expect(error.message).to.include('Please specify a correct domain name');
       }
     });
@@ -538,7 +548,31 @@ describe('OrgController', () => {
         await controller.createOrg(req, res);
         expect.fail('Should have thrown');
       } catch (error: any) {
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect(error.statusCode).to.equal(400);
         expect(error.message).to.include('Please specify a correct domain name');
+      }
+    });
+
+    it('should wrap a genuine internal failure as InternalServerError (500), not BadRequestError', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+
+      sinon.stub(Org, 'countDocuments').rejects(new Error('Mongo connection lost'));
+
+      try {
+        await controller.createOrg(req, res);
+        expect.fail('Should have thrown');
+      } catch (error: any) {
+        expect(error).to.not.be.instanceOf(BadRequestError);
+        expect(error.statusCode).to.equal(500);
+        // The database's own words stay in the log, not on someone's screen.
+        expect(error.message).to.contain('PipesHub tried to create the organisation');
+        expect(error.message).to.not.contain('Mongo');
       }
     });
 
@@ -663,9 +697,10 @@ describe('OrgController', () => {
 
       try {
         await controller.createOrg(req, res);
-        expect(mockEventService.start.calledOnce).to.be.true;
+        // Both events are still recorded. They are no longer bracketed by
+        // start/stop: the events go to the outbox, and the dispatcher owns
+        // the broker connection.
         expect(mockEventService.publishEvent.calledTwice).to.be.true;
-        expect(mockEventService.stop.calledOnce).to.be.true;
       } catch (error: any) {
         expect.fail(`Unexpected error: ${error.message}`);
       }

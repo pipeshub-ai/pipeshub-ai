@@ -213,10 +213,10 @@ class GoogleAPIMethodGenerator:
         # Format parameters with each on a new line
         all_params = ['self'] + required_params + optional_params
         if len(all_params) == 1:
-            signature = f"def {method_full_name}(self) -> Dict[str, Any]:"
+            signature = f"async def {method_full_name}(self) -> Dict[str, Any]:"
         else:
             params_formatted = ',\n        '.join(all_params)
-            signature = f"def {method_full_name}(\n        {params_formatted}\n    ) -> Dict[str, Any]:"
+            signature = f"async def {method_full_name}(\n        {params_formatted}\n    ) -> Dict[str, Any]:"
         
         return signature, method_full_name
     
@@ -289,7 +289,7 @@ class GoogleAPIMethodGenerator:
         method_body = f"""        kwargs = {{}}
 {chr(10).join(param_mapping) if param_mapping else "        # No parameters for this method"}
 {body_handling}
-        return request.execute()"""
+        return await self._execute(request)"""
         
         return method_body
     
@@ -457,7 +457,15 @@ Generated from Google Discovery API schema definitions.
         all_methods = self._process_nested_resources(resources)
         
         # Generate class header
-        class_code = f'''from typing import Dict, Any, Optional, List
+        class_code = f'''import asyncio
+import functools
+from concurrent.futures import Executor
+from threading import Lock
+from typing import Any, Callable, Dict, List, Optional, TypeVar
+
+from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES
+
+T = TypeVar("T")
 
 
 class {class_name}:
@@ -470,14 +478,41 @@ class {class_name}:
     
     def __init__(
         self,
-        client: object
+        client: object,
+        *,
+        executor: Optional[Executor] = None
     ) -> None:
         """
         Initialize with {service_description} client.
         Args:
             client: {service_description} client from build('{self.service_name}', '{self.version}', credentials=credentials)
+            executor: Optional executor to run blocking calls on -- normally the
+                connector's capped lease on the shared connector thread pool. When
+                omitted, falls back to the event loop's default executor.
         """
         self.client = client
+        self._executor = executor
+        # googleapiclient services share one httplib2.Http per instance, which is
+        # not thread-safe, so at most one in-flight request per datasource instance.
+        self._transport_lock = Lock()
+
+    def _run_transport_operation(self, operation: Callable[[], T]) -> T:
+        with self._transport_lock:
+            return operation()
+
+    async def execute(self, operation: Callable[[], T]) -> T:
+        """Run one blocking operation without overlapping this client's HTTP transport."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self._run_transport_operation,
+            operation,
+        )
+
+    async def _execute(self, request: Any) -> Dict[str, Any]:
+        return await self.execute(
+            functools.partial(request.execute, num_retries=GOOGLE_HTTP_NUM_RETRIES)
+        )
 
 '''
         

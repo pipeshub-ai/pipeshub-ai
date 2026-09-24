@@ -1,21 +1,25 @@
 import asyncio
 import base64
+import hashlib
 import logging
 import re
+import time
 from collections import defaultdict
+from collections.abc import Iterable
 from itertools import groupby
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 from uuid import uuid4
 
-from jinja2 import Template
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.config.constants.service import config_node_constants
-from app.models.blocks import BlockType, GroupSubType, GroupType, SemanticMetadata
-from app.modules.reconciliation.service import ReconciliationMetadata
+from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
+    is_jira_ticket_record,
+)
+from app.models.blocks import BlockType, GroupType, SemanticMetadata
 from app.models.entities import (
+    CodeFileRecord,
     Connectors,
     DealRecord,
     FileRecord,
@@ -37,11 +41,13 @@ from app.modules.qna.prompt_templates import (
     qna_prompt_simple,
     table_prompt,
 )
-from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import is_jira_ticket_record
+from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.strategy import QueryContext
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.jinja_templates import compiled_template
 from app.utils.logger import create_logger
 
 valid_group_labels = [
@@ -55,15 +61,126 @@ valid_group_labels = [
         GroupType.CONVERSATION.value
     ]
 
-MAX_IMAGES_IN_MESSAGE = 25
+from app.utils.record_block_selection import describe_gaps  # noqa: E402
+from app.utils.render_budget import RenderBudget  # noqa: E402
+
+# Larger than any record: what a caller that passes no budget gets, so its
+# rendering is bounded only by `max_blocks` exactly as it was before budgets
+# existed.
+_UNBOUNDED_RENDER_CHARS = 1 << 40
+
+
+def _renderable_block_indices(record: dict[str, Any]) -> list[int]:
+    """Top-level block indices in document order — fragments belong to their
+    container and are rendered through it."""
+    containers = record.get("block_containers") or {}
+    blocks = containers.get("blocks", []) if isinstance(containers, dict) else []
+    return sorted(
+        b.get("index", 0)
+        for b in blocks
+        if isinstance(b, dict) and b.get("parent_block_index") is None
+    )
+
+
+# Re-exported from `image_admission`, which owns the image-selection rules;
+# this module is where the codebase has always imported them from.
+from app.utils.image_admission import (
+    MAX_IMAGES_IN_CONVERSATION,
+    DegradeReason,
+    ImageAdmission,
+    ImageBudget,
+    ImageCandidate,
+    ImageOrigin,
+)
+
+
+def image_dict_to_part(image: dict[str, Any]) -> Any | None:
+    """Convert a `collected_images` entry (`{"image_url": {"url": ...}, ...}`)
+    into an `ImagePart` for a multipart `ToolOutput`/`UserMessage`. Shared by
+    every tool (`retrieval.py`, `citations.py`) and hook
+    (`attachment_resolver.py`'s `shape_image_injection`/
+    `shape_retrieved_image_injection`) that needs to hand collected images to
+    the agent loop, so the dict-to-Part conversion lives in exactly one
+    place. Local import avoids a module-level dependency from this
+    low-level formatting module onto `agent_loop_lib`.
+    """
+    from app.agent_loop_lib.core.messages import ImagePart, ImageSource
+
+    image_url = image.get("image_url") or {}
+    url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
+    if not url:
+        return None
+    # A `data:` URI must become a real base64 source, not a `type="url"` one
+    # carrying the whole URI: Anthropic's image block takes `source.url` only
+    # for a fetchable http(s) URL and rejects a data URI there, so collapsing
+    # both cases into "url" made every collected image a 400 on that provider.
+    # The OpenAI-family formatters rebuild the same data URI via
+    # `image_data_url()`, so they are unaffected by the split.
+    if url.startswith("data:"):
+        header, _, payload = url[len("data:"):].partition(",")
+        if payload and ";base64" in header.lower():
+            from app.utils.image_utils import read_image_dimensions
+
+            media_type = header.split(";", 1)[0] or None
+            # Measured once, here, so `count_tokens` can size the image on
+            # every later shaper pass without decoding anything.
+            dimensions = read_image_dimensions(url) or (None, None)
+            return ImagePart(
+                source=ImageSource(type="base64", media_type=media_type, data=payload),
+                width=dimensions[0],
+                height=dimensions[1],
+            )
+    return ImagePart(source=ImageSource(type="url", data=url))
+
+
+
+def group_child_results(doc: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Children of a *group* flattened-result, or None when it is not a group.
+
+    `block_type` alone cannot tell the two apart: GroupType.CODE and
+    BlockType.CODE are both the string "code", so a code block and a code group
+    carry the same label. Only a group's content is a ``(summary, children)``
+    pair, so the shape is the reliable test -- keying off the label alone
+    unpacks a leaf's source string character by character.
+
+    None and [] are distinct on purpose: None means "treat this as a leaf",
+    while [] means "a group that contributed nothing", which must stay skipped.
+    """
+    content = doc.get("content")
+    if isinstance(content, tuple) and len(content) == 2:
+        children = content[1]
+        return children if isinstance(children, list) else []
+    return None
 
 def _safe_stringify_content(value: Any) -> str:
-    """Convert citation content to string without raising."""
+    """Convert citation content to string without raising.
+
+    A code block's ``data`` is a dict; stringifying it whole would put the
+    BM25 ``subtokens`` padding in front of the model as a Python repr, so the
+    source text is unwrapped first.
+    """
+    if isinstance(value, dict) and "text" in value:
+        value = value.get("text") or ""
     try:
         return str(value)
     except Exception as exc:
         logger.warning("Failed to cast citation content to string: %s", exc)
         return ""
+
+
+def block_qualified_name(block: dict[str, Any]) -> str:
+    """Qualified name of a code block, or "" for anything else."""
+    meta = block.get("code_metadata")
+    if not isinstance(meta, dict):
+        return ""
+    return meta.get("qualified_name") or ""
+
+
+def format_code_locator(file_path: str, qualified_name: str) -> str:
+    """`path#qualified_name` — human-readable locator for a code block."""
+    if file_path and qualified_name:
+        return f"{file_path}#{qualified_name}"
+    return file_path or qualified_name or ""
 
 def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> str:
     """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}"""
@@ -118,9 +235,10 @@ def is_base64_image(s: str) -> bool:
     if len(b64_data) % 4 != 0:
         return False
 
-    # Try to decode
+    # 272 chars -> 204 bytes: more than the longest magic number (8) and the
+    # SVG sniff's decoded[:200], and a multiple of 4 so the decoder accepts it.
     try:
-        decoded = base64.b64decode(b64_data)
+        decoded = base64.b64decode(b64_data[:272])
     except Exception:
         return False
 
@@ -151,8 +269,273 @@ def is_base64_image(s: str) -> bool:
     return False
 
 
+def image_block_text(block: dict[str, Any]) -> str:
+    """The text an image block carries, if any.
+
+    Three producers put text on an image block, and reading a block only for
+    its pixels loses all of them: `image_metadata.description` — prose a vision
+    model wrote at indexing time (`ImageDescriber`), the richest of the three
+    and the only one present for most PDFs; `data["description"]` — what a
+    vector point carries in place of the base64 URI, which is how a
+    search-sourced image block arrives; and the parser-captured
+    `image_metadata.captions/footnotes/annotations`. Whenever the pixels can't
+    be sent (non-multimodal LLM, image budget exhausted, a block whose URI
+    never came back), this text must still reach the model.
+    """
+    parts: list[str] = []
+    image_metadata = block.get("image_metadata")
+    if isinstance(image_metadata, dict):
+        # Written at indexing time by `ImageDescriber` — the richest text an
+        # image block carries, and the only one that exists for most PDFs.
+        described = image_metadata.get("description")
+        if isinstance(described, str) and described.strip():
+            parts.append(described.strip())
+
+    data = block.get("data")
+    if isinstance(data, dict):
+        description = data.get("description")
+        if isinstance(description, str) and description.strip():
+            parts.append(description.strip())
+    elif isinstance(data, str) and data.strip() and not is_base64_image(data):
+        parts.append(data.strip())
+
+    if isinstance(image_metadata, dict):
+        for field in ("captions", "footnotes", "annotations"):
+            values = image_metadata.get(field)
+            if isinstance(values, list):
+                parts.extend(v.strip() for v in values if isinstance(v, str) and v.strip())
+
+    media_metadata = block.get("media_metadata")
+    if isinstance(media_metadata, dict):
+        alt_text = media_metadata.get("alt_text")
+        if isinstance(alt_text, str) and alt_text.strip():
+            parts.append(alt_text.strip())
+
+    seen: set[str] = set()
+    unique = [p for p in parts if not (p in seen or seen.add(p))]
+    return " ".join(unique)
+
+
+def image_marker_text(
+    marker: str,
+    text: str = "",
+    *,
+    reason: "DegradeReason | None" = None,
+) -> str:
+    """The text an image block contributes, whether or not its pixels went.
+
+    Every image emits one of these, so a citation ref stays resolvable and the
+    model always knows a figure exists at that point in the record. `marker` is
+    the caller's citation label (`[ref3]` for a record render, `[7|ref3]` for a
+    search result), keeping this the single place the wording lives.
+
+    When the pixels were withheld the marker says so: a model told only
+    "(image)" for a picture it cannot see is being invited to describe it
+    anyway.
+    """
+    from app.utils.image_admission import DegradeReason as _Reason
+
+    withheld = reason is not None and reason in (
+        _Reason.TEXT_ONLY_MODEL, _Reason.OVER_REQUEST_CAP, _Reason.OVER_CONVERSATION_CAP,
+    )
+    # A duplicate's pixels are in the request already, attached to the first
+    # copy. Saying "not shown" would send the model looking for an image it
+    # can see; saying plain "(image)" would point it at pixels that are not
+    # at this block.
+    duplicate = reason is _Reason.DUPLICATE
+    if text:
+        if withheld:
+            label = "(image, not shown)"
+        elif duplicate:
+            label = "(image, shown above)"
+        else:
+            label = "(image)"
+        return f"{marker} {label} {text}\n\n"
+    if reason is _Reason.OVER_CONVERSATION_CAP:
+        return (
+            f"{marker} (image block - visual content not shown due to "
+            "conversation image limit)\n\n"
+        )
+    if withheld:
+        return (
+            f"{marker} (image block - visual content not shown; this model's "
+            "image limit for one request was reached)\n\n"
+        )
+    if duplicate:
+        return f"{marker} (image block - the same image is shown above)\n\n"
+    return f"{marker} (image)\n\n"
+
+
+def image_candidate_from_block(
+    block: dict[str, Any],
+    *,
+    ref: str,
+    origin: "ImageOrigin",
+    relevance: float = 0.0,
+    virtual_record_id: str | None = None,
+    data_uri: str | None = None,
+) -> "ImageCandidate | None":
+    """Build the selection input for one image block, or None when the block
+    carries no usable image.
+
+    Dimensions come from `image_metadata.image_size` when the parser recorded
+    it (only pdfplumber does) and are otherwise read from the image header --
+    see `read_image_dimensions`.
+    """
+    from app.utils.image_utils import read_image_dimensions
+
+    data = block.get("data")
+    uri = data_uri if data_uri is not None else (
+        data.get("uri", "") if isinstance(data, dict) else ""
+    )
+    if not uri or not is_base64_image(uri):
+        return None
+
+    width = height = None
+    size = (block.get("image_metadata") or {}).get("image_size")
+    if isinstance(size, dict):
+        width, height = size.get("width"), size.get("height")
+    if not (width and height):
+        measured = read_image_dimensions(uri)
+        if measured:
+            width, height = measured
+
+    return ImageCandidate(
+        ref=ref,
+        data_uri=uri,
+        origin=origin,
+        text=image_block_text(block),
+        relevance=relevance,
+        block_index=int(block.get("index") or 0),
+        width=width,
+        height=height,
+        virtual_record_id=virtual_record_id,
+    )
+
+
+def admission_for(
+    image_admission: "ImageAdmission | None", image_budget: "ImageBudget | None",
+) -> "ImageAdmission":
+    """The arbiter for this render.
+
+    Callers that have not been given the request's `ImageAdmission` yet (older
+    entry points, tests) get one bounded only by the conversation budget they
+    already pass, so their behaviour is unchanged.
+    """
+    from app.utils.image_policy import permissive_policy
+
+    if image_admission is not None:
+        return image_admission
+    budget = image_budget if image_budget is not None else ImageBudget()
+    # Bounded by the conversation ceiling, not by this budget's own maximum:
+    # the budget enforces itself through `can_add()`, and folding it into the
+    # policy would report an exhausted budget as a model capability.
+    return ImageAdmission(permissive_policy(MAX_IMAGES_IN_CONVERSATION), budget=budget)
+
+
+def _admit_search_result_images(
+    flattened_results: list[dict[str, Any]],
+    admission: "ImageAdmission",
+    *,
+    is_multimodal_llm: bool,
+) -> dict[int, "DegradeReason | None"]:
+    """Decide the whole search result set's images, keyed by `id(result)`.
+
+    Search hits already carry a relevance score, which is exactly the signal
+    ranking wants -- a chart the query matched should outrank a screenshot
+    that merely sits in the same record.
+    """
+    candidates: list[ImageCandidate] = []
+    by_id: dict[str, list[int]] = {}
+    for result in flattened_results:
+        if result.get("block_type") != BlockType.IMAGE.value:
+            continue
+        uri = result.get("content")
+        if not isinstance(uri, str) or not is_base64_image(uri):
+            continue
+        candidate = image_candidate_from_block(
+            {"data": {"uri": uri}, "index": result.get("block_index") or 0},
+            ref="",
+            origin=ImageOrigin.SEARCH_HIT,
+            relevance=float(result.get("score") or 0.0),
+            virtual_record_id=result.get("virtual_record_id"),
+            data_uri=uri,
+        )
+        if candidate is None:
+            continue
+        candidates.append(candidate)
+        by_id.setdefault(candidate.hash, []).append(id(result))
+
+    if not is_multimodal_llm:
+        return {
+            result_id: DegradeReason.TEXT_ONLY_MODEL
+            for ids in by_id.values() for result_id in ids
+        }
+
+    outcome = admission.admit(candidates)
+    decisions: dict[int, DegradeReason | None] = {}
+    for candidate in outcome.admitted:
+        for result_id in by_id.get(candidate.hash, []):
+            decisions[result_id] = None
+    for degraded in outcome.degraded:
+        for result_id in by_id.get(degraded.candidate.hash, []):
+            decisions.setdefault(result_id, degraded.reason)
+    return decisions
+
+
+def record_image_uris(record: dict[str, Any]) -> list[str]:
+    """Every image URI in `record`, fragments included.
+
+    Used to warm image normalization off the event loop before the
+    synchronous render reaches it (`ImageAdmission.warm`). Deliberately wider
+    than `admit_record_images`'s candidate filter: a figure inside a table is
+    rendered too, and costs the same Pillow decode.
+    """
+    containers = record.get("block_containers") or {}
+    blocks = containers.get("blocks", []) if isinstance(containers, dict) else []
+    uris: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != BlockType.IMAGE.value:
+            continue
+        data = block.get("data")
+        uri = data.get("uri", "") if isinstance(data, dict) else (data if isinstance(data, str) else "")
+        if uri and is_base64_image(uri):
+            uris.append(uri)
+    return uris
+
+
+def admit_record_images(
+    admission: "ImageAdmission", candidates: list["ImageCandidate"],
+) -> dict[int, "DegradeReason | None"]:
+    """Run selection over one record's images up front and index the outcome
+    by block index.
+
+    The renderers below emit blocks in document order as they walk them, but
+    ranking needs the whole set in hand -- deciding inline is what made the
+    old counter spend its allowance on whichever image happened to come first.
+    A value of None means "admitted".
+    """
+    result = admission.admit(candidates)
+    decisions: dict[int, "DegradeReason | None"] = {
+        c.block_index: None for c in result.admitted
+    }
+    for degraded in result.degraded:
+        decisions[degraded.candidate.block_index] = degraded.reason
+    return decisions
+
+
 _multimodal_logger = logging.getLogger(__name__)
 
+
+# Bounded page size for vector scrolls: providers cap a single request
+# (OpenSearch 10k, RediSearch MAXSEARCHRESULTS), so callers must page.
+SCROLL_PAGE_SIZE = 1000
+
+# Ceiling on points reconstructed for one virtual record. The walk below runs on
+# a request path and every point expands into a block and a payload, so one
+# oversized record would otherwise be an OOM; a record this large cannot be
+# rendered as citations anyway.
+MAX_SCROLL_POINTS = 50_000
 
 async def build_multimodal_user_content(
     text_content: str,
@@ -381,6 +764,7 @@ TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
 GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.JIRA,
     Connectors.JIRA_PERSONAL,
+    Connectors.JIRA_CLOUD_PERSONAL,
     Connectors.JIRA_DATA_CENTER,
     Connectors.JIRA_DATA_CENTER_PERSONAL,
     Connectors.LINEAR,
@@ -405,6 +789,10 @@ _GRAPH_TO_RECORD_FIELDS: dict[str, str] = {
     "sourceLastModifiedTimestamp": "source_updated_at",
 }
 
+# Matches BlobStorage.VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE: the graph accepts an IN
+# list, but an unbounded one turns one slow query into a timeout.
+GRAPH_BATCH_CHUNK_SIZE = 500
+
 collection_map = {
                     RecordType.TICKET.value: "tickets",
                     RecordType.PROJECT.value: "projects",
@@ -414,6 +802,10 @@ collection_map = {
                     RecordType.MEETING.value: "meetings",
                     RecordType.DEAL.value: "deals",
                     RecordType.MESSAGE.value: "messages",
+                    # filePath lives only on the codeFiles node -- the blob record
+                    # is built from a plain Record, which has no such field. Without
+                    # this entry every code file renders with no path at all.
+                    RecordType.CODE_FILE.value: "codeFiles",
                 }
 
 def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
@@ -502,6 +894,17 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "extension": graph_doc.get("extension"),
             }
             return FileRecord(**base_args, **specific_args)
+
+        elif record_type == RecordType.CODE_FILE.value and graph_doc:
+            specific_args = {
+                "record_type": RecordType.CODE_FILE,
+                "file_path": graph_doc.get("filePath"),
+                "file_hash": graph_doc.get("fileHash"),
+                "extension": graph_doc.get("extension"),
+                "language": graph_doc.get("language"),
+                "file_role": graph_doc.get("fileRole"),
+            }
+            return CodeFileRecord(**base_args, **specific_args)
 
         elif record_type == RecordType.MAIL.value and graph_doc:
             specific_args = {
@@ -689,6 +1092,57 @@ async def _fetch_type_specific_doc(
     except Exception:
         return None
 
+
+async def _fetch_type_specific_docs_batched(
+    graph_provider: IGraphDBProvider,
+    record_ids: Iterable[str],
+    doc_index: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Resolve type-specific docs for many records, one query per collection.
+
+    Each record otherwise costs its own `get_document`, and a turn enriches every
+    linked record it found. Records whose type has no entry in `collection_map`
+    are skipped rather than queried, matching `_fetch_type_specific_doc`.
+
+    A collection whose query fails is simply absent from the result; the caller
+    falls back to the per-record path for those ids.
+    """
+    by_collection: dict[str, list[str]] = {}
+    for rid in record_ids:
+        collection = collection_map.get((doc_index.get(rid) or {}).get("recordType"))
+        if collection:
+            by_collection.setdefault(collection, []).append(rid)
+    if not by_collection:
+        return {}
+
+    async def _one(collection: str, ids: list[str]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for start in range(0, len(ids), GRAPH_BATCH_CHUNK_SIZE):
+            out.extend(
+                await graph_provider.get_nodes_by_field_in(
+                    collection, "id", ids[start:start + GRAPH_BATCH_CHUNK_SIZE]
+                )
+                or []
+            )
+        return out
+
+    collections = list(by_collection)
+    results = await asyncio.gather(
+        *[_one(c, by_collection[c]) for c in collections], return_exceptions=True
+    )
+    resolved: dict[str, dict[str, Any]] = {}
+    for collection, result in zip(collections, results):
+        if isinstance(result, Exception):
+            logger.debug(
+                "Linked record context: type-doc batch failed for %s: %s", collection, result
+            )
+            continue
+        for node in result:
+            key = (node or {}).get("id") or (node or {}).get("_key")
+            if key:
+                resolved[key] = node
+    return resolved
+
 def _base_record_context_metadata_from_graph(
     base_graph_doc: dict[str, Any],
     frontend_url: str | None = None,
@@ -728,11 +1182,17 @@ async def _build_linked_record_context_metadata(
     vrid: str | None = None,
     blob_store: Any = None,
     org_id: str = "",
+    lookup_result: dict[str, Any] | None = None,
+    type_doc: dict[str, Any] | None = None,
 ) -> str | None:
     """Build linked-record context (metadata + type fields + summary, no blocks).
 
     The base doc is guaranteed present in doc_index by the caller. When the record
     is indexed (has a vrid), the blob supplies the summary; otherwise metadata only.
+
+    `lookup_result` and `type_doc` are pre-resolved by the caller in one batched
+    query each. Both fall back to the per-record path when absent, so a batch
+    miss costs a query rather than losing the field.
     """
     base_doc = doc_index.get(record_id)
     if not base_doc or not isinstance(base_doc, dict):
@@ -741,7 +1201,9 @@ async def _build_linked_record_context_metadata(
         blob_record = None
         if vrid and blob_store and org_id:
             try:
-                blob_record = await blob_store.get_record_from_storage(vrid, org_id)
+                blob_record = await blob_store.get_record_from_storage(
+                    vrid, org_id, lookup_result=lookup_result
+                )
             except Exception as e:
                 logger.debug(
                     "Linked record context: blob fetch failed for %s (vrid=%s): %s",
@@ -753,9 +1215,11 @@ async def _build_linked_record_context_metadata(
         else:
             record_dict = _build_record_dict_from_graph_base(base_doc)
 
-        type_graph_doc = await _fetch_type_specific_doc(
-            graph_provider, record_id, record_dict.get("record_type")
-        )
+        type_graph_doc = type_doc
+        if type_graph_doc is None:
+            type_graph_doc = await _fetch_type_specific_doc(
+                graph_provider, record_id, record_dict.get("record_type")
+            )
         record_instance = create_record_instance_from_dict(record_dict, type_graph_doc)
         if record_instance:
             return record_instance.to_llm_linked_context(frontend_url)
@@ -777,46 +1241,96 @@ def _relation_display_label(relation: RecordRelations, outgoing: bool) -> str:
     return relation.value
 
 
-async def _fetch_edges_for_record(
+async def _relations_per_record(
     graph_provider: IGraphDBProvider,
-    record_id: str,
-) -> list[tuple[str, str]]:
-    """Return (related_record_id, display_label) pairs from graph edges.
+    record_ids: list[str],
+    relation_types: list[str],
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Per-record equivalent of `get_record_relations_batch`, used when the
+    batch fails. Concurrent, and a failing pair costs only itself."""
+    async def one(record_id: str, relation_type: str, *, outgoing: bool) -> list[dict[str, Any]]:
+        fetch = (
+            graph_provider.get_parent_record_ids_by_relation_type
+            if outgoing
+            else graph_provider.get_child_record_ids_by_relation_type
+        )
+        return await fetch(record_id, relation_type)
 
-    Graph API naming is edge-direction based, not familial role:
-      get_parent_record_ids → records this hit points to (_from == hit)
-      get_child_record_ids  → records pointing to this hit (_to == hit)
-    """
-    query_specs = [
-        (outgoing, relation)
-        for relation in RECORD_RELATION_ENRICHMENT_TYPES
+    jobs = [
+        (record_id, relation_type, outgoing)
+        for record_id in record_ids
+        for relation_type in relation_types
         for outgoing in (True, False)
     ]
-    tasks = [
-        graph_provider.get_parent_record_ids_by_relation_type(record_id, rel.value)
-        if outgoing
-        else graph_provider.get_child_record_ids_by_relation_type(record_id, rel.value)
-        for outgoing, rel in query_specs
-    ]
+    results = await asyncio.gather(
+        *[one(rid, rel, outgoing=out) for rid, rel, out in jobs],
+        return_exceptions=True,
+    )
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    edges: list[tuple[str, str]] = []
-    for (outgoing, relation), result in zip(query_specs, results):
-        if isinstance(result, Exception):
+    out: dict[str, dict[str, list[dict[str, Any]]]] = {
+        record_id: {"parents": [], "children": []} for record_id in record_ids
+    }
+    for (record_id, relation_type, outgoing), result in zip(jobs, results):
+        if isinstance(result, BaseException):
             logger.warning(
-                "Graph context enrichment: edge query failed for %s (%s): %s",
-                record_id, relation.value, result,
+                "Graph context enrichment: %s edges failed for %s: %s",
+                relation_type, record_id, result,
             )
             continue
-        label = _relation_display_label(relation, outgoing)
+        bucket = "parents" if outgoing else "children"
         for edge in result or []:
-            related_id = edge.get("record_id") if isinstance(edge, dict) else None
-            if related_id:
-                edges.append((related_id, label))
-    return edges
+            out[record_id][bucket].append({**edge, "relationType": relation_type})
+    return out
 
 
-async def _resolve_frontend_url(
+async def _fetch_edges_for_records(
+    graph_provider: IGraphDBProvider,
+    record_ids: list[str],
+) -> dict[str, list[tuple[str, str]]]:
+    """Return {record_id: [(related_record_id, display_label), ...]} from graph edges.
+
+    Graph API naming is edge-direction based, not familial role:
+      parents  → records this hit points to (_from == hit)
+      children → records pointing to this hit (_to == hit)
+
+    Batched across records and relation types: the per-record form cost one
+    query per relation type per direction, so a turn enriching every hit spent
+    4x its hit count on round trips.
+    """
+    if not record_ids:
+        return {}
+    by_value = {rel.value: rel for rel in RECORD_RELATION_ENRICHMENT_TYPES}
+    try:
+        relations = await graph_provider.get_record_relations_batch(
+            record_ids, list(by_value),
+        )
+    except Exception as e:
+        # Returning {} here drops linked-record context for every hit in the
+        # turn. The per-record form this replaced used return_exceptions=True
+        # and lost only the failing pair, so fall back to it rather than
+        # degrading the whole turn on one bad batch.
+        logger.warning(
+            "Graph context enrichment: batch edge query failed, per-record fallback: %s", e
+        )
+        relations = await _relations_per_record(graph_provider, record_ids, list(by_value))
+
+    out: dict[str, list[tuple[str, str]]] = {}
+    for record_id in record_ids:
+        buckets = relations.get(record_id) or {}
+        edges: list[tuple[str, str]] = []
+        for bucket, outgoing in (("parents", True), ("children", False)):
+            for edge in buckets.get(bucket) or []:
+                if not isinstance(edge, dict):
+                    continue
+                related_id = edge.get("record_id")
+                relation = by_value.get(edge.get("relationType"))
+                if related_id and relation:
+                    edges.append((related_id, _relation_display_label(relation, outgoing)))
+        out[record_id] = edges
+    return out
+
+
+async def resolve_frontend_url(
     config_service: ConfigurationService | None,
 ) -> str | None:
     """Resolve frontend public URL from config service."""
@@ -908,13 +1422,52 @@ async def _resolve_target_metadata(
     """
     ids_needing_docs = [rid for rid in all_target_ids if rid not in doc_index]
 
-    async def _fetch_docs() -> list:
+    async def _fetch_docs() -> dict[str, dict[str, Any]]:
+        """One query per chunk instead of one per record.
+
+        Ids the batch does not return are absent from the result, which is what
+        the caller already did with a `get_document` that returned None. If the
+        batch itself fails, fall back to the per-id path rather than dropping
+        every linked record's metadata.
+        """
         if not ids_needing_docs:
-            return []
-        return await asyncio.gather(
-            *[graph_provider.get_document(rid, CollectionNames.RECORDS.value) for rid in ids_needing_docs],
-            return_exceptions=True,
-        )
+            return {}
+        collection = CollectionNames.RECORDS.value
+        try:
+            nodes: list[dict[str, Any]] = []
+            for start in range(0, len(ids_needing_docs), GRAPH_BATCH_CHUNK_SIZE):
+                nodes.extend(
+                    await graph_provider.get_nodes_by_field_in(
+                        collection, "id", ids_needing_docs[start:start + GRAPH_BATCH_CHUNK_SIZE]
+                    )
+                    or []
+                )
+        except Exception as e:
+            logger.warning("Linked record context: batch doc fetch failed, per-id fallback: %s", e)
+            nodes = []
+
+        resolved: dict[str, dict[str, Any]] = {}
+        for node in nodes:
+            key = (node or {}).get("id") or (node or {}).get("_key")
+            if key:
+                resolved[key] = node
+
+        # Recover on id coverage, not on an exception: get_nodes_by_field_in
+        # catches its own errors and returns [], so a dead database is
+        # indistinguishable from "no rows" and the except above never fires.
+        # Anything the batch did not account for is retried individually.
+        missing = [rid for rid in ids_needing_docs if rid not in resolved]
+        if missing:
+            per_id = await asyncio.gather(
+                *[graph_provider.get_document(rid, collection) for rid in missing],
+                return_exceptions=True,
+            )
+            resolved.update({
+                rid: doc
+                for rid, doc in zip(missing, per_id)
+                if isinstance(doc, dict) and doc
+            })
+        return resolved
 
     doc_results, vrid_result = await asyncio.gather(
         _fetch_docs(),
@@ -924,8 +1477,8 @@ async def _resolve_target_metadata(
 
     # Populate doc_index from fetched docs
     if ids_needing_docs and not isinstance(doc_results, Exception):
-        for rid, doc in zip(ids_needing_docs, doc_results):
-            if not isinstance(doc, Exception) and doc and isinstance(doc, dict):
+        for rid, doc in doc_results.items():
+            if doc and isinstance(doc, dict):
                 doc_index[rid] = doc
 
     # Build id -> vrid mapping
@@ -942,6 +1495,32 @@ async def _resolve_target_metadata(
 
     context_map: dict[str, str] = {}
     if out_of_context_ids:
+        # Resolve both per-record lookups once for the whole batch. Each linked
+        # record otherwise pays its own virtual-record mapping query inside
+        # get_record_from_storage, plus its own type-specific get_document.
+        blob_lookups: dict[str, dict[str, Any]] = {}
+        vrids_to_resolve = [
+            id_to_vrid[rid] for rid in out_of_context_ids if rid in id_to_vrid
+        ]
+        if blob_store and org_id and vrids_to_resolve:
+            try:
+                resolved_lookups = await blob_store.get_document_ids_by_virtual_record_ids(
+                    vrids_to_resolve
+                )
+                # Anything but a mapping means the pre-resolve did not happen;
+                # passing it through would hand the fetch a bogus lookup instead
+                # of letting it resolve the id itself.
+                if isinstance(resolved_lookups, dict):
+                    blob_lookups = resolved_lookups
+            except Exception as e:
+                logger.warning(
+                    "Linked record context: batch virtual-record lookup failed, "
+                    "resolving per record: %s", e,
+                )
+        type_docs = await _fetch_type_specific_docs_batched(
+            graph_provider, out_of_context_ids, doc_index
+        )
+
         ctx_results = await asyncio.gather(
             *[
                 _build_linked_record_context_metadata(
@@ -949,6 +1528,8 @@ async def _resolve_target_metadata(
                     vrid=id_to_vrid.get(rid),
                     blob_store=blob_store if rid in id_to_vrid else None,
                     org_id=org_id,
+                    lookup_result=blob_lookups.get(id_to_vrid.get(rid) or ""),
+                    type_doc=type_docs.get(rid),
                 )
                 for rid in out_of_context_ids
             ],
@@ -1055,7 +1636,7 @@ async def enrich_records_with_graph_context(
         doc_index = _build_record_id_to_graph_doc_index(virtual_to_record_map)
         _extend_record_id_index_from_hit_records(doc_index, virtual_record_id_to_result)
 
-    frontend_url = await _resolve_frontend_url(config_service)
+    frontend_url = await resolve_frontend_url(config_service)
     in_context_ids: set[str] = {
         rec["id"] for rec in virtual_record_id_to_result.values()
         if isinstance(rec, dict) and rec.get("id")
@@ -1071,10 +1652,9 @@ async def enrich_records_with_graph_context(
     # Step 2: Fetch edges for relation-eligible hits
     edge_results: list = []
     if relation_eligible:
-        edge_results = await asyncio.gather(
-            *[_fetch_edges_for_record(graph_provider, rid) for _, rid, _ in relation_eligible],
-            return_exceptions=True,
-        )
+        eligible_ids = [rid for _, rid, _ in relation_eligible]
+        edges_by_record = await _fetch_edges_for_records(graph_provider, eligible_ids)
+        edge_results = [edges_by_record.get(rid, []) for rid in eligible_ids]
 
     # Step 3: Build relation buckets from edges
     relation_buckets, all_related_ids = _build_relation_buckets(
@@ -1166,8 +1746,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     virtual_record_id_to_result: Dict[str, Dict[str, Any]],
     blob_store: BlobStorage,
     org_id: str,
-    graph_provider: Optional[IGraphDBProvider] = None,
-    flattened_results: Optional[List[Dict[str, Any]]] = None,
+    graph_provider: IGraphDBProvider | None = None,
+    flattened_results: List[Dict[str, Any]] | None = None,
 ) -> None:
     """
     For each SQL_TABLE record in virtual_record_id_to_result that has child_record_ids
@@ -1433,7 +2013,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_count,
         )
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: Optional[IGraphDBProvider] = None) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
@@ -1441,7 +2021,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     new_type_results = []
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
-    virtual_record_id_to_recon_metadata: Dict[str, Optional[Dict[str, Any]]] = {}
+    virtual_record_id_to_recon_metadata: Dict[str, Dict[str, Any] | None] = {}
     # Cache for fragment maps per virtual_record_id (container_index → fragment children)
     fragment_maps: Dict[str, Dict[int, list]] = {}
     if from_retrieval_service:
@@ -1478,7 +2058,37 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     except Exception as e:
         logger.warning(f"Failed to fetch frontend URL from config service: {str(e)}")
 
-    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url) for virtual_record_id in records_to_fetch])
+    # One mapping query for the whole batch instead of one (plus a fallback) per
+    # record; each get_record then goes straight to the download.
+    batched_lookups: dict[str, Any] = {}
+    if records_to_fetch:
+        try:
+            batched_lookups = await blob_store.get_document_ids_by_virtual_record_ids(
+                list(records_to_fetch)
+            )
+        except Exception as e:
+            logger.warning("Batch virtual-record lookup failed, resolving per record: %s", str(e))
+
+    # Type-specific metadata (ticket status, mail sender, ...) is one graph query
+    # per record inside get_record. The record type is already known here, so
+    # resolve the whole batch with one query per collection instead.
+    type_docs: dict[str, dict[str, Any]] = {}
+    if records_to_fetch and graph_provider:
+        # Records reach here carrying `_key` rather than `id` (the graph write
+        # path moves `id` into `_key`), so keying on `id` alone matched nothing
+        # and the batch silently no-opped back to one query per record.
+        by_record_id = {
+            key: gdb
+            for vrid in records_to_fetch
+            if isinstance(gdb := (virtual_to_record_map or {}).get(vrid), dict)
+            and (key := gdb.get("id") or gdb.get("_key"))
+        }
+        if by_record_id:
+            type_docs = await _fetch_type_specific_docs_batched(
+                graph_provider, list(by_record_id), by_record_id
+            )
+
+    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url,batched_lookups.get(virtual_record_id),type_docs) for virtual_record_id in records_to_fetch])
     # Prefetch reconciliation metadata in parallel (records were fully fetched above).
     vrids_needing_recon: set = set[Any]()
 
@@ -1652,6 +2262,13 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             result["content"] = block.get("data","")
             adjacent_chunks[virtual_record_id].append(index-1)
             adjacent_chunks[virtual_record_id].append(index+1)
+        elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
+            # Without this a top-level code hit is dropped here and never reaches
+            # build_message_content_array, however well it scored.
+            result["content"] = _safe_stringify_content(block.get("data", ""))
+            result["qualified_name"] = block_qualified_name(block)
+            adjacent_chunks[virtual_record_id].append(index-1)
+            adjacent_chunks[virtual_record_id].append(index+1)
         elif block_type == BlockType.IMAGE.value:
             data = block.get("data")
             if data:
@@ -1667,7 +2284,20 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                                 result["image_description"] = existing
                             result["content"] = image_uri
                         else:
-                            continue
+                            # No pixels to send (an image point carries only the
+                            # text description when embeddings are text-only —
+                            # see `image_block_text`). Keep that text: dropping
+                            # the hit here loses a block that matched the query.
+                            existing = result.get("content", "")
+                            description = (
+                                existing if existing and not is_base64_image(existing)
+                                else image_block_text(block)
+                            )
+                            if not description:
+                                continue
+                            # `build_message_content_array` renders a non-base64
+                            # IMAGE result as "[n|ref] (image) <text>".
+                            result["content"] = description
                     else:
                         if result.get("content") and is_base64_image(result.get("content")):
                             continue
@@ -1764,9 +2394,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                                                     "score": float(result.get("score", 0.0)),
                                                     "citationType": "vectordb|document",
                                                 })
-                                        elif frag_type == BlockType.IMAGE.value and is_multimodal_llm:
+                                        elif frag_type == BlockType.IMAGE.value:
                                             uri = (frag.get("data") or {}).get("uri")
-                                            if uri:
+                                            if is_multimodal_llm and uri:
                                                 child_results.append({
                                                     "content": uri,
                                                     "block_type": BlockType.IMAGE.value,
@@ -1776,6 +2406,19 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                                                     "score": float(result.get("score", 0.0)),
                                                     "citationType": "vectordb|document",
                                                 })
+                                            else:
+                                                frag_text = image_block_text(frag)
+                                                if frag_text:
+                                                    # Pixels can't go; the caption/description still can.
+                                                    child_results.append({
+                                                        "content": frag_text,
+                                                        "block_type": BlockType.TEXT.value,
+                                                        "virtual_record_id": virtual_record_id,
+                                                        "block_index": child_block_index,
+                                                        "metadata": get_enhanced_metadata(record, child_block, meta),
+                                                        "score": float(result.get("score", 0.0)),
+                                                        "citationType": "vectordb|document",
+                                                    })
 
                     table_result = {
                         "content":(table_summary,child_results),
@@ -1885,9 +2528,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                                             "citationType": "vectordb|document",
                                             "score": row_score,
                                         })
-                                elif frag_type == BlockType.IMAGE.value and is_multimodal_llm:
+                                elif frag_type == BlockType.IMAGE.value:
                                     uri = (frag.get("data") or {}).get("uri")
-                                    if uri:
+                                    if is_multimodal_llm and uri:
                                         child_results.append({
                                             "content": uri,
                                             "block_type": BlockType.IMAGE.value,
@@ -1897,6 +2540,18 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                                             "citationType": "vectordb|document",
                                             "score": row_score,
                                         })
+                                    else:
+                                        frag_text = image_block_text(frag)
+                                        if frag_text:
+                                            child_results.append({
+                                                "content": frag_text,
+                                                "block_type": BlockType.TEXT.value,
+                                                "metadata": enhanced_metadata,
+                                                "virtual_record_id": virtual_record_id,
+                                                "block_index": row_index,
+                                                "citationType": "vectordb|document",
+                                                "score": row_score,
+                                            })
             elif qdrant_content:
                 # Block not in blob (SQL row limit) — use Qdrant page_content
                 logger.debug(f"Using Qdrant page_content for row {row_index} of virtual record {virtual_record_id}")
@@ -1973,7 +2628,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         meta = result.get("metadata",{})
 
         if virtual_record_id not in virtual_record_id_to_result:
-            record,point_id_to_blockIndex = await create_record_from_vector_metadata(meta,org_id,virtual_record_id,blob_store)
+            record,point_id_to_blockIndex = await create_record_from_vector_metadata(
+                meta, org_id, virtual_record_id, blob_store
+            )
             virtual_record_id_to_result[virtual_record_id] = record
             point_id_to_blockIndex_mappings[virtual_record_id] = point_id_to_blockIndex
 
@@ -2034,6 +2691,15 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                     block_text = data
                 elif block_type == BlockType.IMAGE.value:
                     block_text = "image"
+                elif block_type == BlockType.CODE.value:
+                    # Code blocks store source text in data["text"]
+                    if isinstance(data, dict):
+                        if "text" in data:
+                            block_text = _safe_stringify_content(data["text"])
+                        else:
+                            block_text = ""
+                    else:
+                        block_text = str(data)
                 else:
                     block_text = meta.get("blockText","")
             else:
@@ -2089,6 +2755,19 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
             if not web_url and recordId:
                 web_url = f"/record/{recordId}"
 
+            record_updated_at_ms = record.get("updated_at")
+            if record_updated_at_ms is None:
+                record_updated_at_ms = record.get("updatedAtTimestamp")
+            record_updated_at_iso = None
+            if record_updated_at_ms is not None:
+                try:
+                    from datetime import datetime, timezone
+                    record_updated_at_iso = datetime.fromtimestamp(
+                        int(record_updated_at_ms) / 1000, tz=timezone.utc
+                    ).isoformat()
+                except (ValueError, TypeError, OSError, OverflowError):
+                    pass
+
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
                         "recordId": recordId,
@@ -2109,6 +2788,7 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                         "webUrl": web_url,
                         "previewRenderable": preview_renderable,
                         "hideWeburl": hide_weburl,
+                        "updatedAt": record_updated_at_iso,
                     }
             if extension == "xlsx" or meta.get("sheetName"):
                 if isinstance(data, dict):
@@ -2144,9 +2824,9 @@ def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None) -> None:
+async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None,lookup_result: dict[str, Any] | None = None,type_docs: dict[str, dict[str, Any]] | None = None) -> None:
     try:
-        record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
+        record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id, lookup_result=lookup_result)
         if record:
             graphDb_record = (virtual_to_record_map or {}).get(virtual_record_id)
             if graphDb_record:
@@ -2174,8 +2854,8 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                     record["external_record_id"] = graph_external_id
 
                 # Fetch type-specific metadata and generate formatted string
-                graph_doc = None
-                if graph_provider and record_key:
+                graph_doc = (type_docs or {}).get(record_key)
+                if graph_doc is None and graph_provider and record_key:
                     try:
                         # Determine collection name based on record type
 
@@ -2204,6 +2884,11 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 else:
                     record["context_metadata"] = ""
 
+                # Code blocks are addressed by (file path, symbol id), and the
+                # path exists only on the codeFiles node -- not in the blob.
+                if graph_doc and graph_doc.get("filePath"):
+                    record["file_path"] = graph_doc.get("filePath")
+
             record["frontend_url"] = frontend_url or ""
             record["virtual_record_id"] = virtual_record_id
             virtual_record_id_to_result[virtual_record_id] = record
@@ -2213,7 +2898,13 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
     except Exception as e:
         raise e
 
-async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: str, virtual_record_id: str,blob_store: BlobStorage) -> tuple[dict[str, Any], dict[str, int]]:
+async def create_record_from_vector_metadata(
+    metadata: dict[str, Any],
+    org_id: str,
+    virtual_record_id: str,
+    blob_store: BlobStorage,
+    collection_registry: Optional["CollectionRegistry"] = None,
+) -> tuple[dict[str, Any], dict[str, int]]:
     try:
         # Lazy import to avoid circular dependency: chat_helpers -> ContainerUtils -> RetrievalService -> chat_helpers
         from app.containers.utils.utils import ContainerUtils
@@ -2259,39 +2950,108 @@ async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: s
             "semantic_metadata": semantic_metadata,
             "extension": extension,
         }
-        blocks = []
         container_utils = ContainerUtils()
 
         vector_db_service = await container_utils.get_vector_db_service(blob_store.config_service)
+        if collection_registry is None:
+            # Built alongside the vector DB service this function already
+            # constructs, so the marginal cost is a memoised strategy read.
+            # The parameter exists so a caller wired through DI can hand one in
+            # instead, without this becoming a required argument everywhere.
+            collection_registry = await container_utils.create_collection_registry(
+                logger=logger,
+                config_service=blob_store.config_service,
+                vector_db_service=vector_db_service,
+            )
+        collection_names = await collection_registry.resolve_for_query(
+            QueryContext(org_id=org_id)
+        )
 
-# Create filter
+        # Create filter
         payload_filter = await vector_db_service.filter_collection(must={
             "virtualRecordId": virtual_record_id,
         })
 
-# Scroll through all points with the filter
+        # Page until the provider says there is no more. A single large-limit
+        # call silently truncates: OpenSearch caps size at 10k and RediSearch at
+        # MAXSEARCHRESULTS, so an oversized limit returns a partial set that
+        # looks complete.
+        # Every collection the strategy resolves, not just the first: under a
+        # strategy that splits by connector type, one VRID's blocks can be
+        # spread across several, and reconstructing from one would silently
+        # drop the rest of the document.
         points = []
-
-        result = await vector_db_service.scroll(
-                collection_name=VECTOR_DB_COLLECTION_NAME,
-                scroll_filter=payload_filter,
-                limit=100000,
-            )
-
-
-        points.extend(result[0])
+        for collection_name in collection_names:
+            next_offset = None
+            seen_offsets: set = set()
+            while True:
+                try:
+                    result = await vector_db_service.scroll(
+                        collection_name=collection_name,
+                        scroll_filter=payload_filter,
+                        limit=SCROLL_PAGE_SIZE,
+                        offset=next_offset,
+                    )
+                except RuntimeError as e:
+                    # A provider result ceiling (RediSearch MAXSEARCHRESULTS) is a
+                    # hard stop, not a reason to fail the whole rebuild: reconstruct
+                    # from what we have and say plainly that it is partial.
+                    logger.error(
+                        "Vector scroll for %s in %s stopped early after %d points: %s",
+                        virtual_record_id,
+                        collection_name,
+                        len(points),
+                        e,
+                    )
+                    break
+                points.extend(result.points)
+                next_offset = result.next_offset
+                if not next_offset:
+                    break
+                # Termination depends entirely on the provider advancing the cursor.
+                # A provider that repeats one refetches and re-appends the same page
+                # for ever, on a request path, so treat a repeat as the end.
+                if next_offset in seen_offsets:
+                    logger.error(
+                        "Vector scroll for %s in %s repeated offset %r after %d "
+                        "points; stopping with a partial result",
+                        virtual_record_id,
+                        collection_name,
+                        next_offset,
+                        len(points),
+                    )
+                    break
+                seen_offsets.add(next_offset)
+                if len(points) >= MAX_SCROLL_POINTS:
+                    logger.error(
+                        "Vector scroll for %s hit the %d point ceiling; "
+                        "result is partial",
+                        virtual_record_id,
+                        MAX_SCROLL_POINTS,
+                    )
+                    break
+            if len(points) >= MAX_SCROLL_POINTS:
+                break
 
         point_id_to_blockIndex = {}
         new_payloads = []
 
-        for i,point in enumerate(points):
+        # Each point is carried with the block it produced, so the mapping can
+        # be built from final positions. Recording `enumerate(points)` instead
+        # was wrong twice over: the index skipped no payload-less point, and it
+        # described the pre-sort order while the caller indexes the sorted list
+        # (`blocks[index]`), so a citation could resolve to another block
+        # entirely. Points arrive from several collections under a
+        # multi-collection strategy, so they are not in block order.
+        points_and_blocks = []
+
+        for point in points:
             payload = point.payload
             if payload:
                 meta = payload.get("metadata")
                 page_content = payload.get("page_content")
                 block = create_block_from_metadata(meta,page_content)
-                point_id_to_blockIndex[point.id] = i
-                blocks.append(block)
+                points_and_blocks.append((point.id, block))
                 new_payloads.append({"metadata":{
                     "virtualRecordId": virtual_record_id,
                     "blockIndex": block.get("index"),
@@ -2302,9 +3062,11 @@ async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: s
                 "page_content": payload.get("page_content")
                 })
 
-        sorted_blocks = sorted(blocks, key=lambda x: x.get("index", 0))
-        for i,block in enumerate(sorted_blocks):
+        points_and_blocks.sort(key=lambda pair: pair[1].get("index", 0))
+        sorted_blocks = [block for _, block in points_and_blocks]
+        for i,(point_id,block) in enumerate(points_and_blocks):
             block["index"] = i
+            point_id_to_blockIndex[point_id] = i
 
         record["block_containers"] = {
             "blocks": sorted_blocks,
@@ -2327,13 +3089,21 @@ def create_block_from_metadata(metadata: dict[str, Any],page_content: str) -> di
             "bounding_boxes": metadata.get("bounding_box")
         }
 
+        block_type = metadata.get("blockType","text")
+
         extension = metadata.get("extension")
-        if extension == "docx":
+        if block_type == BlockType.IMAGE.value:
+            # Image points never carry the raw base64 URI in page_content (only a
+            # text description, or empty — see VectorStore._build_image_points).
+            # Wrap as a dict with no "uri" so downstream image handling in
+            # _process_flattened_results takes its existing "missing uri" skip
+            # path instead of crashing on `str.get`.
+            data = {"uri": None, "description": page_content}
+        elif extension == "docx":
             data = page_content
         else:
             data = metadata.get("blockText",page_content)
 
-        block_type = metadata.get("blockType","text")
         # Create the Block structure
         return {
             "id": str(uuid4()),  # Generate unique ID
@@ -2549,14 +3319,42 @@ def _build_fragment_map(blocks: list[dict[str, Any]]) -> dict[int, list[dict[str
 def _render_blocks_with_images(
     blocks_list: list[dict[str, Any]],
     is_multimodal_llm: bool,
-    image_count: list[int] | None = None,
+    image_budget: "ImageBudget | None" = None,
+    collected_images: list[dict[str, Any]] | None = None,
+    allow_inline_images: bool = True,
+    image_admission: "ImageAdmission | None" = None,
 ) -> list[dict[str, Any]]:
     """Render a list of block entries (with possible IMAGE types) into LLM content entries.
 
     Groups consecutive entries sharing the same block_index so that the
     `[idx|ref]` header is emitted only once per container, with all
     fragment content listed underneath it.
+
+    When `collected_images` is provided (tool-result callers, see
+    `build_message_content_array`), inline table/group images are routed
+    into that side-channel instead of being embedded directly as
+    `image_url` content blocks — `ToolMessage` only gets images via its
+    multipart `content`, never buried inside a text-typed tool result
+    string. Direct-embedding callers (attachments) leave `collected_images`
+    `None` and keep the original inline behavior.
+
+    `allow_inline_images` is False for callers that can deliver neither way
+    (a tool result with no `collected_images` sink joins text only), so an
+    image that would be dropped downstream does not silently consume a slot
+    of the shared `image_budget`.
+
+    `image_admission` is the request's arbiter. These images live inside a
+    table or group, so they are fragments -- and the caller's up-front
+    `admit_record_images` pass only collects blocks with no parent, which is
+    how a figure inside a table came to skip admission entirely: no per-model
+    cap, no dedup, and no downscale to the provider's per-image limits. Each
+    one is admitted here as it is reached. That is first-come rather than
+    ranked (the walk has already begun by this point), but it debits the same
+    budget and applies the same limits as every other image.
     """
+    if image_budget is None:
+        image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
+    admission = admission_for(image_admission, image_budget)
     content: list[dict[str, Any]] = []
     for _block_idx, group_iter in groupby(blocks_list, key=lambda b: b.get("block_index")):
         group = list(group_iter)
@@ -2582,14 +3380,64 @@ def _render_blocks_with_images(
                 if item.get("block_type") == BlockType.IMAGE.value:
                     if is_multimodal_llm:
                         img_uri = item.get("content", "")
+                        item_ref = item.get("citation_ref", "")
                         if img_uri and is_base64_image(img_uri):
-                            if image_count is None or image_count[0] < MAX_IMAGES_IN_MESSAGE:
+                            deliverable = collected_images is not None or allow_inline_images
+                            outcome = (
+                                admission.admit([ImageCandidate(
+                                    ref=item_ref,
+                                    data_uri=img_uri,
+                                    origin=ImageOrigin.FETCHED_RECORD,
+                                    block_index=int(item.get("block_index") or 0),
+                                    virtual_record_id=item.get("virtual_record_id"),
+                                )])
+                                if deliverable and is_multimodal_llm
+                                else None
+                            )
+                            if outcome is not None and outcome.admitted:
+                                wire_uri = outcome.admitted[0].data_uri
+                                if collected_images is not None:
+                                    collected_images.append({
+                                        "ref": item_ref,
+                                        "block_index": item.get("block_index"),
+                                        "image_url": {"url": wire_uri},
+                                        "virtual_record_id": item.get("virtual_record_id"),
+                                    })
+                                    # Side-channel callers still need a text
+                                    # anchor in `content` — without it, the
+                                    # image (delivered separately via
+                                    # `collected_images`) has no `[ref]`
+                                    # citation the model can point back to.
+                                    content.append({
+                                        "type": "text",
+                                        "text": f"    [{item_ref}] (image)\n",
+                                    })
+                                else:
+                                    content.append({
+                                        "type": "image_url",
+                                        "image_url": {"url": wire_uri},
+                                    })
+                            elif not deliverable:
+                                # No sink and no way to inline (a tool result
+                                # joins text only). Emit the anchor without
+                                # spending budget an undeliverable image would
+                                # otherwise take from a later one.
                                 content.append({
-                                    "type": "image_url",
-                                    "image_url": {"url": img_uri}
+                                    "type": "text",
+                                    "text": f"    [{item_ref}] (image)\n",
                                 })
-                                if image_count is not None:
-                                    image_count[0] += 1
+                            else:
+                                degraded_reason = (
+                                    outcome.degraded[0].reason
+                                    if outcome is not None and outcome.degraded
+                                    else None
+                                )
+                                content.append({
+                                    "type": "text",
+                                    "text": "    " + image_marker_text(
+                                        f"[{item_ref}]", reason=degraded_reason,
+                                    ).rstrip() + "\n",
+                                })
                     continue
                 content.append({
                     "type": "text",
@@ -2656,9 +3504,9 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
                                     "score": float(result.get("score", 0.0)),
                                     "citationType": "vectordb|document",
                                 })
-                        elif frag_type == BlockType.IMAGE.value and is_multimodal_llm:
+                        elif frag_type == BlockType.IMAGE.value:
                             uri = (frag.get("data") or {}).get("uri")
-                            if uri:
+                            if is_multimodal_llm and uri:
                                 child_results.append({
                                     "content": uri,
                                     "block_type": BlockType.IMAGE.value,
@@ -2668,12 +3516,25 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
                                     "score": float(result.get("score", 0.0)),
                                     "citationType": "vectordb|document",
                                 })
+                            else:
+                                frag_text = image_block_text(frag)
+                                if frag_text:
+                                    child_results.append({
+                                        "content": frag_text,
+                                        "block_type": BlockType.TEXT.value,
+                                        "virtual_record_id": virtual_record_id,
+                                        "block_index": container_block_index,
+                                        "metadata": get_enhanced_metadata(record, block, meta),
+                                        "score": float(result.get("score", 0.0)),
+                                        "citationType": "vectordb|document",
+                                    })
             continue
         child_results.append({
             "content": data,
             "block_type": block.get("type"),
             "virtual_record_id": virtual_record_id,
             "block_index": block.get("index"),
+            "qualified_name": block_qualified_name(block),
             "metadata": get_enhanced_metadata(record, block, meta),
             "score": float(result.get("score",0.0)),
             "citationType": "vectordb|document",
@@ -2688,6 +3549,12 @@ def record_to_message_content(
     *,
     start_block: int = 0,
     max_blocks: int | None = None,
+    collected_images: list[dict[str, Any]] | None = None,
+    image_budget: "ImageBudget | None" = None,
+    image_admission: "ImageAdmission | None" = None,
+    image_origin: "ImageOrigin" = ImageOrigin.FETCHED_RECORD,
+    budget: "RenderBudget | None" = None,
+    include_blocks: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """
     Convert a record JSON object to message content format matching get_message_content.
@@ -2702,12 +3569,43 @@ def record_to_message_content(
             hint is appended: "Showing blocks N-M of T. Call
             dynamic_fetch_full_record with start_block=M+1 for the rest."
             None means no cap (today's default behaviour).
+        collected_images: When provided, IMAGE blocks are routed into this
+            list (`{"ref", "block_index", "image_url", "virtual_record_id"}`
+            dicts) instead of being embedded inline as `image_url` content
+            entries — used by tool callers (e.g. `_FetchFullRecordTool`)
+            that must deliver images via `ToolMessage`'s multipart content
+            rather than buried in the returned content list. `None` (the
+            default) preserves the original inline-embedding behavior for
+            direct UserMessage callers (attachment resolution).
+        image_budget: Conversation-wide `ImageBudget` to enforce the
+            50-image cap across all sources. Defaults to a fresh
+            (unbounded-in-practice) per-call budget when not shared by the
+            caller.
 
     Returns:
         Tuple of (content list, ref_mapper)
     """
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
+    if image_budget is None:
+        image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
+    admission = admission_for(image_admission, image_budget)
+    # A caller that passes no budget is bounded only by `max_blocks`, exactly
+    # as before: `_UNBOUNDED_RENDER_CHARS` is larger than any record.
+    render_budget = budget if budget is not None else RenderBudget(
+        max_chars=_UNBOUNDED_RENDER_CHARS, max_blocks=max_blocks,
+    )
+    render_budget.begin_record(str(record.get("id") or record.get("virtual_record_id") or ""))
+    _all_block_indices = _renderable_block_indices(record) if include_blocks is not None else []
+    gap_markers = (
+        describe_gaps(include_blocks, _all_block_indices) if include_blocks is not None else {}
+    )
+    # Blocks left out by relevance selection, in document order. A record
+    # rendered this way is never "read in full", however far the walk got.
+    _excluded_blocks = (
+        [i for i in _all_block_indices if i not in include_blocks]
+        if include_blocks is not None else []
+    )
 
     try:
         content = []
@@ -2723,16 +3621,43 @@ def record_to_message_content(
         fragment_map = _build_fragment_map(blocks)
 
         seen_block_groups = set()
+        blocks_by_index = {b.get("index", 0): b for b in blocks if isinstance(b, dict)}
         rec_frontend_url = record.get("frontend_url", "")
         rec_record_id = record.get("id", "")
+        record_file_path = record.get("file_path", "") or ""
+
+        # Decide which of this record's images get pixels BEFORE walking it:
+        # the walk emits in document order, but ranking needs the whole set.
+        record_vrid = record.get("virtual_record_id")
+        image_candidates = [
+            candidate
+            for b in blocks
+            if b.get("type") == BlockType.IMAGE.value
+            and b.get("parent_block_index") is None
+            and (b.get("index", 0) >= start_block)
+            and (candidate := image_candidate_from_block(
+                b,
+                ref=ref_mapper.get_or_create_ref(
+                    build_block_web_url(rec_frontend_url, rec_record_id, b.get("index", 0)),
+                ),
+                origin=image_origin,
+                virtual_record_id=record_vrid,
+            )) is not None
+        ]
+        image_decisions: dict[int, DegradeReason | None] = (
+            admit_record_images(admission, image_candidates) if is_multimodal_llm
+            else {c.block_index: DegradeReason.TEXT_ONLY_MODEL for c in image_candidates}
+        )
 
         # Windowing: track how many renderable (non-fragment) blocks we have
         # rendered so we can truncate at max_blocks and emit a continuation hint.
         _renderable_rendered = 0
         _truncated_at: int | None = None  # first block_index not rendered due to cap
 
-        # Process individual blocks
-        for block in blocks:
+        # Index order, not list order: the walk compares `block.index` against
+        # the window, and nothing guarantees the stored list is sorted.
+        # `blocks` itself stays untouched — group expansion indexes into it.
+        for block in sorted(blocks, key=lambda b: b.get("index", 0)):
             block_index = block.get("index", 0)
             block_type = block.get("type")
 
@@ -2744,36 +3669,110 @@ def record_to_message_content(
             if block_index < start_block:
                 continue
 
-            # Windowing: stop once we have hit the max_blocks cap.
-            if max_blocks is not None and _renderable_rendered >= max_blocks:
+            # Relevance selection (over-budget records): everything outside the
+            # chosen set is skipped, and the gaps are announced so the model
+            # knows it is not reading a contiguous document.
+            if include_blocks is not None and block_index not in include_blocks:
+                continue
+            if block_index in gap_markers:
+                content.append({"type": "text", "text": gap_markers[block_index]})
+
+            # Stop on either ceiling: the block count (unchanged meaning) or
+            # the character allowance, which is what actually bounds size.
+            if render_budget.blocks_exhausted or render_budget.exhausted:
                 if _truncated_at is None:
                     _truncated_at = block_index
-                continue
+                render_budget.stop_at(block_index)
+                break
 
             block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
             ref = ref_mapper.get_or_create_ref(block_web_url)
             data = block.get("data", "")
 
             if block_type == BlockType.IMAGE.value:
-                if is_multimodal_llm and isinstance(data, dict):
-                    image_uri = data.get("uri", "")
-                    if image_uri and is_base64_image(image_uri):
-                        content.append({
-                            "type": "text",
-                            "text": f"[{ref}]"
-                        })
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": image_uri}
-                        })
-                        _renderable_rendered += 1
+                # Text first, unconditionally: it is the only representation of
+                # the image a text-only model, or one that lost its slot, will
+                # ever get (see `image_block_text` / `image_marker_text`).
+                description = image_block_text(block)
+                image_uri = data.get("uri", "") if isinstance(data, dict) else ""
+                has_image = bool(image_uri) and is_base64_image(image_uri)
+                # What actually goes on the wire: admission downscales an image
+                # that exceeds the model's per-image limits, and the decision
+                # map carries only the verdict, so the bytes have to be looked
+                # up rather than re-read from the block.
+                wire_uri = admission.rendered_uri(image_uri) if has_image else image_uri
+                admitted = has_image and block_index in image_decisions and (
+                    image_decisions[block_index] is None
+                )
+                reason = (
+                    image_decisions.get(block_index)
+                    if has_image and is_multimodal_llm
+                    else (DegradeReason.TEXT_ONLY_MODEL if has_image else None)
+                )
+
+                if admitted and collected_images is not None:
+                    collected_images.append({
+                        "ref": ref,
+                        "block_index": block_index,
+                        "image_url": {"url": wire_uri},
+                        "virtual_record_id": record.get("virtual_record_id"),
+                    })
+                    marker = render_budget.take(image_marker_text(f"[{ref}]", description))
+                    if marker is None:
+                        _truncated_at = _truncated_at or block_index
+                        render_budget.stop_at(block_index)
+                        break
+                    content.append({"type": "text", "text": marker})
+                    _renderable_rendered += 1
+                    render_budget.count_block()
+                elif admitted:
+                    label = render_budget.take(
+                        f"[{ref}] {description}" if description else f"[{ref}]"
+                    )
+                    if label is None:
+                        _truncated_at = _truncated_at or block_index
+                        render_budget.stop_at(block_index)
+                        break
+                    content.append({"type": "text", "text": label})
+                    content.append({"type": "image_url", "image_url": {"url": wire_uri}})
+                    _renderable_rendered += 1
+                    render_budget.count_block()
+                elif has_image or description:
+                    marker = render_budget.take(
+                        image_marker_text(f"[{ref}]", description, reason=reason)
+                    )
+                    if marker is None:
+                        _truncated_at = _truncated_at or block_index
+                        render_budget.stop_at(block_index)
+                        break
+                    content.append({"type": "text", "text": marker})
+                    _renderable_rendered += 1
+                    render_budget.count_block()
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
-                content.append({
-                    "type": "text",
-                    "text": f"[{ref}] {data}\n\n"
-                })
+                emitted = render_budget.take(f"[{ref}] {data}\n\n")
+                if emitted is None:
+                    _truncated_at = _truncated_at or block_index
+                    render_budget.stop_at(block_index)
+                    break
+                content.append({"type": "text", "text": emitted})
                 _renderable_rendered += 1
+                render_budget.count_block()
+            elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
+                # Top-level code -- module functions, imports, module-level
+                # statements. These belong to no group, so without this branch
+                # they fall to `else: continue` and a file with no classes
+                # reaches the model empty.
+                locator = format_code_locator(record_file_path, block_qualified_name(block))
+                header = f"[{ref}] {locator}\n" if locator else f"[{ref}] "
+                emitted = render_budget.take(f"{header}{_safe_stringify_content(data)}\n\n")
+                if emitted is None:
+                    _truncated_at = _truncated_at or block_index
+                    render_budget.stop_at(block_index)
+                    break
+                content.append({"type": "text", "text": emitted})
+                _renderable_rendered += 1
+                render_budget.count_block()
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
@@ -2801,15 +3800,29 @@ def record_to_message_content(
 
                         child_results = []
                         has_row_images = False
+                        rows_total = len(rows_to_be_included_list)
+                        rows_shown = 0
+                        rows_exhausted = False
+                        # Resuming inside a table: skip the rows already read.
+                        rows_to_be_included_list = [
+                            r for r in rows_to_be_included_list if r >= start_block
+                        ]
                         for row_index in rows_to_be_included_list:
-                            if row_index < len(blocks):
-                                block = blocks[row_index]
+                            row_block = blocks_by_index.get(row_index)
+                            if row_block is not None:
+                                block = row_block
                                 block_data = block.get("data", {})
                                 if isinstance(block_data, dict):
                                     row_text = block_data.get("row_natural_language_text", "")
                                 else:
                                     row_text = str(block_data)
                                 if row_text:
+                                    if not render_budget.can_afford(row_text):
+                                        rows_exhausted = True
+                                        render_budget.stop_at(row_index)
+                                        break
+                                    render_budget.charge(row_text)
+                                    rows_shown += 1
                                     child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
                                     child_results.append({
                                         "content": row_text,
@@ -2837,9 +3850,9 @@ def record_to_message_content(
                                                         "block_web_url": child_block_web_url,
                                                         "citation_ref": child_citation_ref,
                                                     })
-                                            elif frag_type == BlockType.IMAGE.value and is_multimodal_llm:
+                                            elif frag_type == BlockType.IMAGE.value:
                                                 uri = (frag.get("data") or {}).get("uri")
-                                                if uri:
+                                                if is_multimodal_llm and uri:
                                                     has_row_images = True
                                                     child_results.append({
                                                         "content": uri,
@@ -2848,10 +3861,36 @@ def record_to_message_content(
                                                         "block_web_url": child_block_web_url,
                                                         "citation_ref": child_citation_ref,
                                                     })
+                                                else:
+                                                    frag_text = image_block_text(frag)
+                                                    if frag_text:
+                                                        child_results.append({
+                                                            "content": frag_text,
+                                                            "block_type": BlockType.TEXT.value,
+                                                            "block_index": row_index,
+                                                            "block_web_url": child_block_web_url,
+                                                            "citation_ref": child_citation_ref,
+                                                        })
+
+                        if rows_exhausted:
+                            render_budget.note_table_truncation(
+                                block_group_index or 0, rows_shown, rows_total,
+                            )
+                            _truncated_at = _truncated_at or block_index
+                            child_results.append({
+                                "content": (
+                                    f"[… showing {rows_shown} of {rows_total} rows; "
+                                    f"the rest did not fit …]"
+                                ),
+                                "block_type": BlockType.TABLE_ROW.value,
+                                "block_index": block_index,
+                                "block_web_url": "",
+                                "citation_ref": "",
+                            })
 
                         if child_results:
                             if not has_row_images:
-                                template = Template(table_prompt)
+                                template = compiled_template(table_prompt)
                                 rendered_form = template.render(
                                     block_group_index=block_group_index,
                                     block_group_web_url="",
@@ -2868,14 +3907,18 @@ def record_to_message_content(
                                     "type": "text",
                                     "text": header,
                                 })
-                                content.extend(_render_blocks_with_images(child_results, is_multimodal_llm))
+                                content.extend(_render_blocks_with_images(
+                                    child_results, is_multimodal_llm, image_budget, collected_images,
+                                    image_admission=admission,
+                                ))
                             _renderable_rendered += 1
+                            render_budget.count_block()
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
                 if block_group_id in seen_block_groups:
                     continue
-                template = Template(block_group_prompt)
+                template = compiled_template(block_group_prompt)
                 if parent_index >= len(block_groups):
                     continue
                 block_group = block_groups[parent_index]
@@ -2900,32 +3943,66 @@ def record_to_message_content(
                         block_group_web_url="",
                         label=block_group.get("type"),
                         blocks=group_blocks,
+                        file_path=record_file_path,
                     )
-                    content.append({
-                        "type": "text",
-                        "text": f"{rendered_form}\n\n"
-                    })
+                    emitted = render_budget.take(f"{rendered_form}\n\n")
+                    if emitted is None:
+                        _truncated_at = _truncated_at or block_index
+                        render_budget.stop_at(block_index)
+                        break
+                    content.append({"type": "text", "text": emitted})
                 else:
                     header = f"[{block_group.get('type')} #{parent_index}]\n"
-                    content.append({
-                        "type": "text",
-                        "text": header,
-                    })
-                    content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm))
+                    emitted = render_budget.take(header)
+                    if emitted is None:
+                        _truncated_at = _truncated_at or block_index
+                        render_budget.stop_at(block_index)
+                        break
+                    content.append({"type": "text", "text": emitted})
+                    content.extend(_render_blocks_with_images(
+                        group_blocks, is_multimodal_llm, image_budget, collected_images,
+                        image_admission=admission,
+                    ))
                 _renderable_rendered += 1
+                # A group is one renderable unit, the same as a table or a
+                # top-level block. Without this it cost nothing against
+                # `max_blocks`, and left `blocks_rendered` at zero -- which is
+                # what `execute_fetch_record` reads to decide a resumed fetch
+                # found nothing, so it appended "no blocks at offset N" under
+                # the group it had just rendered.
+                render_budget.count_block()
             else:
                 continue
 
-        # Windowing continuation hint — appended when truncation happened.
-        if _truncated_at is not None:
+        # Windowing continuation hint — appended when truncation happened. It
+        # names its record: a result carrying several records cannot be
+        # continued from an anonymous "start_block=138".
+        record_label = record.get("id") or record.get("virtual_record_id") or ""
+
+        if _excluded_blocks:
+            # Selection, not a window: the blocks shown are not contiguous, so
+            # a "next slice" offset would be the wrong instruction.
+            render_budget.stop_at(_excluded_blocks[0])
+            shown = len(_all_block_indices) - len(_excluded_blocks)
+            content.append({
+                "type": "text",
+                "text": (
+                    f"\n[Record {record_label}: showed the {shown} block(s) most relevant "
+                    f"to the question, of {len(_all_block_indices)}. To read it in order "
+                    f"instead, call knowledgegraph__fetch_record with "
+                    f"record_ids=[\"{record_label}\"] and start_block=0.]\n"
+                ),
+            })
+        elif _truncated_at is not None:
             total_blocks = len([b for b in blocks if b.get("parent_block_index") is None])
             end_block = _truncated_at - 1
             content.append({
                 "type": "text",
                 "text": (
-                    f"\n[Showing blocks {start_block}–{end_block} of approximately "
-                    f"{total_blocks} renderable blocks. Call knowledgegraph__fetch_record "
-                    f"with start_block={_truncated_at} for the next slice.]\n"
+                    f"\n[Record {record_label}: showing blocks {start_block}–{end_block} of "
+                    f"approximately {total_blocks} renderable blocks. To read on, call "
+                    f"knowledgegraph__fetch_record with record_ids=[\"{record_label}\"] and "
+                    f"start_block={_truncated_at} — one record at a time when continuing.]\n"
                 ),
             })
 
@@ -2957,6 +4034,12 @@ def record_to_message_content(
                 "type": "text",
                 "text": "\n".join(fk_lines) + "\n"
             })
+
+        # Closes the tag opened at the top. Without it a result carrying
+        # several records is a run of unbalanced `<record>` openings and the
+        # model has to guess where one ends — the search-path renderer has
+        # always closed its own.
+        content.append({"type": "text", "text": "\n</record>\n"})
 
         return content, ref_mapper
     except Exception as e:
@@ -2998,6 +4081,15 @@ def record_to_text(record: dict[str, Any]) -> str:
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append(f"* Block Type: {block_type}\n* Block Content: {data}\n\n")
+            elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
+                locator = format_code_locator(
+                    record.get("file_path", "") or "", block_qualified_name(block)
+                )
+                header = f"* Symbol: {locator}\n" if locator else ""
+                content.append(
+                    f"* Block Type: {block_type}\n{header}"
+                    f"* Block Content: {_safe_stringify_content(data)}\n\n"
+                )
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
@@ -3046,7 +4138,7 @@ def record_to_text(record: dict[str, Any]) -> str:
                                                     child_results.append({"content": _safe_stringify_content(frag_data)})
 
                         if child_results:
-                            template = Template(agent_block_group_prompt)
+                            template = compiled_template(agent_block_group_prompt)
                             rendered_form = template.render(
                                 block_group_index=block_group_index,
                                 label=GroupType.TABLE.value,
@@ -3058,7 +4150,7 @@ def record_to_text(record: dict[str, Any]) -> str:
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
                 if block_group_id in seen_block_groups:
                     continue
-                template = Template(agent_block_group_prompt)
+                template = compiled_template(agent_block_group_prompt)
                 if parent_index >= len(block_groups):
                     continue
                 block_group = block_groups[parent_index]
@@ -3076,6 +4168,7 @@ def record_to_text(record: dict[str, Any]) -> str:
                     block_group_index=parent_index,
                     label=block_group.get("type"),
                     blocks=group_blocks,
+                    file_path=record.get("file_path", "") or "",
                 )
                 content.append(f"{rendered_form}\n\n")
             else:
@@ -3173,26 +4266,64 @@ def get_message_content(
                 }
             })
 
-    rendered_form = Template(qna_prompt_simple).render(query=query, chunks=chunks)
+    rendered_form = compiled_template(qna_prompt_simple).render(query=query, chunks=chunks)
     content.append({"type": "text", "text": rendered_form})
     return content, ref_mapper
 
-def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any],is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, record_id_shortener: "RecordIdShortener | None" = None) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
+def build_message_content_array(
+    flattened_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, Any],
+    is_multimodal_llm: bool = False,
+    ref_mapper: CitationRefMapper | None = None,
+    from_tool: bool = True,
+    record_id_shortener: "RecordIdShortener | None" = None,
+    collected_images: list[dict[str, Any]] | None = None,
+    image_budget: "ImageBudget | None" = None,
+    image_admission: "ImageAdmission | None" = None,
+) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
+    """
+    Args (new):
+        collected_images: When `from_tool=True` and provided, IMAGE blocks
+            (standalone and inline table/group images) are routed into
+            this list instead of being silently dropped or embedded
+            inline — the side-channel a tool wrapper (e.g. `retrieval.py`)
+            reads to build a multipart `ToolOutput`. `None` preserves the
+            pre-existing behavior for each `from_tool` value.
+        image_budget: Conversation-wide `ImageBudget` (50-image cap by
+            default) shared across every image source in the turn.
+            Defaults to a fresh per-call budget when not supplied.
+    """
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
+    if image_budget is None:
+        image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
+    admission = admission_for(image_admission, image_budget)
+    # Same up-front decision as `record_to_message_content`: rank the whole
+    # result set before emitting any of it, so a high-scoring figure is not
+    # beaten to the last slot by whichever image sorted first. Keyed on the
+    # result object itself -- block_index alone repeats across records.
+    image_decisions = _admit_search_result_images(
+        flattened_results, admission, is_multimodal_llm=is_multimodal_llm,
+    )
     all_contents = []
     content = []
     seen_virtual_record_ids = set()
     seen_blocks = set()
     current_frontend_url = ""
     current_record_id = ""
+    current_file_path = ""
     # True so the first record's blocks get "Record blocks (sorted):"; later records reopen
     # pending via the i > 0 branch before the next record's metadata.
     pending_record_blocks_sorted_header = True
     record_page_url_for_summary: str | None = None
     summary_citation_insert_index: int | None = None
     current_record_has_blocks = False
-    image_count = [0]
+    # Table/group inline images only go through the collected_images side
+    # channel when the caller both wants tool-result delivery (from_tool)
+    # AND supplied somewhere to put them — preserves the from_tool=False
+    # direct-embed behavior (currently unused in practice, kept for API
+    # parity with the top-level IMAGE-block branch below).
+    _group_collected_images = collected_images if from_tool else None
 
     def insert_summary_citation_if_needed() -> None:
         nonlocal record_page_url_for_summary, summary_citation_insert_index, current_record_has_blocks
@@ -3238,8 +4369,9 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
 
             current_frontend_url = record.get("frontend_url", "")
             current_record_id = record.get("id", "")
+            current_file_path = record.get("file_path", "") or ""
 
-            template = Template(qna_prompt_context)
+            template = compiled_template(qna_prompt_context)
             rendered_form = template.render(
                 context_metadata=record.get("context_metadata", ""),
             )
@@ -3272,35 +4404,75 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             ref = ref_mapper.get_or_create_ref(block_web_url)
             result["citation_ref"] = ref
             if block_type == BlockType.IMAGE.value:
-                if is_base64_image(result.get("content")) and is_multimodal_llm and not from_tool:
+                image_content = result.get("content")
+                if is_base64_image(image_content) and is_multimodal_llm:
                     current_record_has_blocks = True
-                    if image_count[0] < MAX_IMAGES_IN_MESSAGE:
+                    decision = image_decisions.get(id(result), DegradeReason.OVER_REQUEST_CAP)
+                    if decision is None:
+                        if from_tool and collected_images is not None:
+                            # ToolMessage only carries images via its
+                            # multipart content (see agent_loop_lib
+                            # messages.py) — never inline them into the
+                            # text-typed content list a tool result's text
+                            # is built from.
+                            collected_images.append({
+                                "ref": ref,
+                                "block_index": block_index,
+                                "image_url": {"url": admission.rendered_uri(image_content)},
+                                "virtual_record_id": virtual_record_id,
+                            })
+                            content.append({
+                                "type": "text",
+                                "text": prepend_record_blocks_sorted_header(
+                                    f"[{block_index}|{ref}] (image)\n\n"
+                                ),
+                            })
+                        elif not from_tool:
+                            content.append({
+                                "type": "text",
+                                "text": prepend_record_blocks_sorted_header(
+                                    f"[{block_index}|{ref}]"
+                                ),
+                            })
+                            content.append({
+                                "type": "image_url",
+                                "image_url": {"url": admission.rendered_uri(image_content)},
+                            })
+                        else:
+                            # from_tool=True with no collected_images sink:
+                            # the caller has no way to carry an image
+                            # through its tool result, so fall back to a
+                            # text-only placeholder rather than inlining an
+                            # image_url block that would just be dropped by
+                            # a text-only join downstream.
+                            content.append({
+                                "type": "text",
+                                "text": prepend_record_blocks_sorted_header(
+                                    f"[{block_index}|{ref}] (image) "
+                                    f"{result.get('image_description', '')}\n\n"
+                                ),
+                            })
+                    else:
+                        # Lost its slot (or the model takes none): the text
+                        # still goes, and the marker says the picture did not.
                         content.append({
                             "type": "text",
                             "text": prepend_record_blocks_sorted_header(
-                                f"[{block_index}|{ref}]"
-                            ),
-                        })
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": result.get("content")}
-                        })
-                        image_count[0] += 1
-                    elif result.get("image_description"):
-                        content.append({
-                            "type": "text",
-                            "text": prepend_record_blocks_sorted_header(
-                                f"[{block_index}|{ref}] (image) {result.get('image_description')}\n\n"
+                                image_marker_text(
+                                    f"[{block_index}|{ref}]",
+                                    str(result.get("image_description") or ""),
+                                    reason=decision,
+                                )
                             ),
                         })
                 else:
-                    if is_base64_image(result.get("content")):
+                    if is_base64_image(image_content):
                         continue
                     current_record_has_blocks = True
                     content.append({
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(
-                            f"[{block_index}|{ref}] (image) {result.get('content')}\n\n"
+                            f"[{block_index}|{ref}] (image) {image_content}\n\n"
                         ),
                     })
             elif block_type == GroupType.TABLE.value:
@@ -3315,7 +4487,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     child["citation_ref"] = ref_mapper.get_or_create_ref(child["block_web_url"])
                 current_record_has_blocks = True
                 if not has_row_images:
-                    template = Template(table_prompt)
+                    template = compiled_template(table_prompt)
                     rendered_form = template.render(
                         block_group_index=block_group_index,
                         block_group_web_url="",
@@ -3332,13 +4504,32 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(f"{header}{fk_info}"),
                     })
-                    content.extend(_render_blocks_with_images(child_results, is_multimodal_llm, image_count))
+                    content.extend(_render_blocks_with_images(
+                        child_results, is_multimodal_llm, image_budget, _group_collected_images,
+                        allow_inline_images=not from_tool, image_admission=admission,
+                    ))
             elif block_type == BlockType.TEXT.value:
                 current_record_has_blocks = True
                 content.append({
                     "type": "text",
                     "text": prepend_record_blocks_sorted_header(
                         f"[{block_index}|{ref}] {result.get('content')}\n\n"
+                    ),
+                })
+            elif block_type == BlockType.CODE.value:
+                # A code hit is addressed by (file path, symbol id) so the model
+                # can pass it straight to the codegraph tools.
+                current_record_has_blocks = True
+                locator = format_code_locator(
+                    current_file_path, result.get("qualified_name", "") or ""
+                )
+                prefix = f"[{block_index}|{ref}]"
+                if locator:
+                    prefix = f"{prefix} {locator}"
+                content.append({
+                    "type": "text",
+                    "text": prepend_record_blocks_sorted_header(
+                        f"{prefix}\n{_safe_stringify_content(result.get('content'))}\n\n"
                     ),
                 })
             elif block_type in valid_group_labels:
@@ -3352,12 +4543,13 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
 
                 if not has_images:
-                    template = Template(block_group_prompt)
+                    template = compiled_template(block_group_prompt)
                     rendered_form = template.render(
                         block_group_index=block_group_index,
                         block_group_web_url="",
                         label=block_type,
                         blocks=group_blocks,
+                        file_path=current_file_path,
                     )
                     current_record_has_blocks = True
                     content.append({
@@ -3372,7 +4564,10 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(header),
                     })
-                    content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm, image_count))
+                    content.extend(_render_blocks_with_images(
+                        group_blocks, is_multimodal_llm, image_budget, _group_collected_images,
+                        allow_inline_images=not from_tool, image_admission=admission,
+                    ))
             else:
                 continue
         else:
@@ -3537,11 +4732,13 @@ def count_tokens(messages: list[Any], message_contents: list[list[dict[str, Any]
 
 FRAGMENT_WORD_COUNT = 4
 
+_FRAGMENT_WORD_PATTERN = re.compile(r"(?:(?<= )|^)[A-Za-z]+(?: [A-Za-z]+)+(?![A-Za-z'-])")
+
 def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
     if not snippet:
         return "", ""
-        
-    PATTERN = re.compile(r"(?:(?<= )|^)[A-Za-z]+(?: [A-Za-z]+)+(?![A-Za-z'-])")
+
+    PATTERN = _FRAGMENT_WORD_PATTERN
 
     # --- Find start_text: first match with at least FRAGMENT_WORD_COUNT words, else longest ---
     all_matches = list(PATTERN.finditer(snippet))
@@ -3588,7 +4785,45 @@ def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
 
     return start_text, end_text.strip()
 
+# Values are fragment URLs that embed a few URL-encoded snippet words in
+# #:~:text=… — not whole record blocks. Keys are digests of the snippet.
+# TTL + maxsize keep retention bounded across orgs in a long-lived process.
+_FRAGMENT_URL_CACHE: dict[tuple[str, bytes], tuple[str, float]] = {}
+_FRAGMENT_URL_CACHE_MAXSIZE = 8192
+_FRAGMENT_URL_CACHE_TTL_SECONDS = 300.0
+
+
 def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
+    """Memoized wrapper over `_build_text_fragment_url`.
+
+    The live citation overlay re-derives every citation's URL on each refresh,
+    so the same (base_url, snippet) pair is re-scanned many times per turn.
+    Snippets are keyed by digest so the cache does not retain full record text
+    as keys; cached values still hold the short start/end words used in the
+    text-fragment directive. Entries expire after
+    `_FRAGMENT_URL_CACHE_TTL_SECONDS` and the map is cleared wholesale when
+    full — eviction bookkeeping would cost more than the recompute it saves.
+    """
+    if not isinstance(base_url, str) or not isinstance(text_snippet, str):
+        return _build_text_fragment_url(base_url, text_snippet)
+
+    key = (base_url, hashlib.sha1(text_snippet.encode("utf-8", "surrogatepass")).digest())
+    now = time.monotonic()
+    cached = _FRAGMENT_URL_CACHE.get(key)
+    if cached is not None:
+        result, expires_at = cached
+        if expires_at > now:
+            return result
+        _FRAGMENT_URL_CACHE.pop(key, None)
+
+    result = _build_text_fragment_url(base_url, text_snippet)
+    if len(_FRAGMENT_URL_CACHE) >= _FRAGMENT_URL_CACHE_MAXSIZE:
+        _FRAGMENT_URL_CACHE.clear()
+    _FRAGMENT_URL_CACHE[key] = (result, now + _FRAGMENT_URL_CACHE_TTL_SECONDS)
+    return result
+
+
+def _build_text_fragment_url(base_url: str, text_snippet: str) -> str:
     """
     Generate a URL with text fragment for direct navigation to specific text.
 

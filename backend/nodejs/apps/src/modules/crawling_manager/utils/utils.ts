@@ -7,19 +7,21 @@ export const constructSyncConnectorEvent = (
   orgId: string,
   connector: string,
   connectorId: string,
+  userId?: string,
 ) : Event => {
 
   const eventType = connector.replace(' ', '').toLowerCase() + '.resync';
 
-  const payload = {
+  const payload: ConnectorSyncEvent = {
     orgId: orgId,
     origin: 'CONNECTOR',
     connector: connector,
     connectorId: connectorId,
+    syncedBy: userId,
     createdAtTimestamp: Date.now().toString(),
     updatedAtTimestamp: Date.now().toString(),
     sourceCreatedAtTimestamp: Date.now().toString(),
-  } as ConnectorSyncEvent;
+  };
 
   const event : Event = {
     eventType: eventType ,

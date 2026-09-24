@@ -486,6 +486,116 @@ class TestOnNewRecords:
             await proc.on_new_records([(_make_record(), [])])
 
 
+class TestUnchangedRecordsAreNotRepublished:
+    """A re-synced record whose content did not change must not re-embed.
+
+    The old behaviour reset every previously-COMPLETED record to NOT_STARTED
+    and published a newRecord event regardless of revision, so every full
+    re-sync (force-push fallback, first sync after a filter change, ...)
+    re-indexed the entire already-indexed set — and clobbered AUTO_INDEX_OFF
+    on manually-indexed records.
+    """
+
+    @staticmethod
+    def _proc_with_existing(existing) -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id.return_value = existing
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+        return proc, tx_store
+
+    @staticmethod
+    def _existing(revision: str, status: str):
+        existing = _make_record(version=1)
+        existing.id = "existing-id"
+        existing.external_revision_id = revision
+        existing.indexing_status = status
+        return existing
+
+    @pytest.mark.asyncio
+    async def test_unchanged_completed_record_publishes_nothing(self):
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.COMPLETED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_changed_completed_record_is_requeued_and_published(self):
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.COMPLETED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_content_change_requeues_a_manually_indexed_record(self):
+        """A record the user already indexed is refreshed when its content changes,
+        even though the connector stamps AUTO_INDEX_OFF for a manual-only filter.
+
+        Letting that stamp win downgraded a COMPLETED record to AUTO_INDEX_OFF on every
+        source change: the record lost the fact that it had been indexed, and its now-stale
+        vectors stayed in place with no event to correct them. Manual-only still holds for
+        records the user never indexed — see
+        ``test_never_indexed_record_stays_manual_only``.
+        """
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.COMPLETED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+        record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_never_indexed_record_stays_manual_only(self):
+        """Manual-only mode is intact for records the user has not indexed: the
+        stored status is not COMPLETED, so nothing re-queues them.
+        """
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.AUTO_INDEX_OFF.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+        record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_turning_indexing_on_still_backfills_auto_index_off_records(self):
+        """A record stored AUTO_INDEX_OFF whose connector filter is later enabled
+        arrives with a normal status and must still be published for indexing."""
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.AUTO_INDEX_OFF.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+
+
 # ===========================================================================
 # on_record_content_update
 # ===========================================================================
@@ -600,9 +710,14 @@ class TestOnRecordMetadataUpdate:
 class TestOnRecordDeleted:
     @pytest.mark.asyncio
     async def test_deletes_record(self):
-        """Calls delete_record_by_key within a transaction."""
         proc = _make_processor()
         tx_store = _make_tx_store()
+        tx_store.delete_single_record = AsyncMock(
+            return_value={
+                "success": True,
+                "eventData": {"payloads": [{"recordId": "rec-1", "virtualRecordId": "v1"}]},
+            }
+        )
 
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(return_value=tx_store)
@@ -612,6 +727,30 @@ class TestOnRecordDeleted:
         await proc.on_record_deleted("rec-1")
 
         tx_store.delete_record_by_key.assert_awaited_once_with("rec-1")
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deletes_record_publishes_when_vrid_present(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = MagicMock()
+        existing.virtual_record_id = "vr-9"
+        existing.org_id = "org-1"
+        existing.id = "rec-1"
+        existing.version = 1
+        existing.connector_id = "conn-9"
+        tx_store.get_record_by_key = AsyncMock(return_value=existing)
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+
+        await proc.on_record_deleted("rec-1")
+
+        proc.messaging_producer.send_message.assert_awaited()
+        body = proc.messaging_producer.send_message.await_args.args[1]
+        assert body["payload"]["virtualRecordId"] == "vr-9"
 
 
 # ===========================================================================
@@ -2676,3 +2815,181 @@ class TestUnchangedTracking:
         with patch(self.STORE_GETTER, AsyncMock(return_value=store)):
             await proc.flush_unchanged()
         store.add_unchanged.assert_not_awaited()
+
+
+# ===========================================================================
+# New records must not be born QUEUED
+# ===========================================================================
+
+
+class TestNewRecordsAreStoredNotStarted:
+    """The publish-then-CAS guard only works if new records start NOT_STARTED.
+
+    `_mark_queued_after_publish` is a CAS from NOT_STARTED that runs only for
+    records whose event was acked. The `Record` model defaults
+    `indexing_status` to QUEUED, and `_process_record` never overrode that for
+    a brand-new record, so it was persisted QUEUED *before* the publish -- the
+    CAS became a no-op, and a failed publish left the record QUEUED with no
+    event behind it and nothing to ever pick it up. Observed live: ten
+    connector records stuck QUEUED for hours after a Redis outage, absent
+    from every stream.
+    """
+
+    @staticmethod
+    def _proc_for_new_record() -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()  # get_record_by_external_id -> None: new
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_default_queued_is_stored_as_not_started(self) -> None:
+        proc, tx_store = self._proc_for_new_record()
+        record = _make_record()
+        record.id = "rec-1"
+        assert record.indexing_status == ProgressStatus.QUEUED.value  # the model default
+
+        await proc.on_new_records([(record, [])])
+
+        (upserted,), _ = tx_store.batch_upsert_records.await_args.args[0], None
+        assert upserted.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.parametrize(
+        "status",
+        [ProgressStatus.AUTO_INDEX_OFF.value, ProgressStatus.COMPLETED.value],
+    )
+    @pytest.mark.asyncio
+    async def test_a_deliberately_set_status_is_kept(self, status: str) -> None:
+        """Only the model default is remapped: a connector that stamps
+        AUTO_INDEX_OFF (manual-only filter) or COMPLETED (KB folders) on a
+        new record meant it."""
+        proc, tx_store = self._proc_for_new_record()
+        record = _make_record()
+        record.id = "rec-1"
+        record.indexing_status = status
+
+        await proc.on_new_records([(record, [])])
+
+        (upserted,) = tx_store.batch_upsert_records.await_args.args[0]
+        assert upserted.indexing_status == status
+
+    @pytest.mark.asyncio
+    async def test_a_failed_publish_leaves_the_record_not_started(self) -> None:
+        """The orphan scenario. With the publish rejected, the record must
+        stay NOT_STARTED -- recoverable by the stranded-record sweep -- and
+        must never be promoted to QUEUED, which nothing consumes."""
+        proc, tx_store = self._proc_for_new_record()
+        proc.messaging_producer.send_messages = AsyncMock(
+            side_effect=lambda topic, messages: [False] * len(messages)
+        )
+        record = _make_record()
+        record.id = "rec-1"
+
+        await proc.on_new_records([(record, [])])
+
+        (upserted,) = tx_store.batch_upsert_records.await_args.args[0]
+        assert upserted.indexing_status == ProgressStatus.NOT_STARTED.value
+        # Nothing was acked, so nothing may be swapped to QUEUED.
+        cas = proc.data_store_provider.compare_and_set_indexing_status
+        assert not cas.await_args_list or all(
+            call.args[0] == [] for call in cas.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_acked_publish_promotes_to_queued_via_cas(self) -> None:
+        """The happy path the guard was written for: stored NOT_STARTED, then
+        swapped to QUEUED only once the event is on the topic."""
+        proc, tx_store = self._proc_for_new_record()
+        record = _make_record()
+        record.id = "rec-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["rec-1"],
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        )
+
+
+# ===========================================================================
+# A failed lookup must not create a second group or role
+# ===========================================================================
+
+
+class TestUpsertDoesNotDuplicateOnAFailedLookup:
+    """on_new_user_groups and on_new_app_roles read by external id and, on
+    None, create with a fresh id. The providers answered a failed read with
+    None, so a graph that could not be read produced a second group (or role)
+    for the same external id, splitting members and permission edges across
+    the two. Pseudo-groups for users without an email reach the same code.
+
+    Everything is real except the Neo4j client: the processor, the transaction
+    store it is handed, and Neo4jProvider. The flag has to survive every hop,
+    and a stand-in at any layer could quietly drop it.
+    """
+
+    @staticmethod
+    def _processor_over_a_flapping_graph():
+        from app.connectors.core.base.data_store.graph_data_store import GraphTransactionStore
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        provider.client = AsyncMock()
+        calls = []
+
+        async def flapping(query, *args, **kwargs):
+            # The lookup is the first query and fails. Anything after it --
+            # the write that would create the duplicate -- succeeds.
+            calls.append(query)
+            if len(calls) == 1:
+                raise RuntimeError("graph is restarting")
+            return []
+
+        provider.client.execute_query = AsyncMock(side_effect=flapping)
+        tx_store = GraphTransactionStore(graph_provider=provider, txn="txn-1")
+
+        proc = _make_processor()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+        return proc, calls
+
+    @pytest.mark.asyncio
+    async def test_a_failed_group_lookup_does_not_create_a_second_group(self):
+        from app.models.entities import AppUserGroup, Connectors
+
+        proc, calls = self._processor_over_a_flapping_graph()
+        group = AppUserGroup(
+            app_name=Connectors.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_user_group_id="sg-1",
+            name="Engineering",
+        )
+
+        with pytest.raises(RuntimeError):
+            await proc.on_new_user_groups([(group, [])])
+
+        assert len(calls) == 1, f"a write followed the failed lookup: {calls[1:]}"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_role_lookup_does_not_create_a_second_role(self):
+        from app.models.entities import AppRole, Connectors
+
+        proc, calls = self._processor_over_a_flapping_graph()
+        role = AppRole(
+            app_name=Connectors.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_role_id="role-1",
+            name="Admin",
+        )
+
+        with pytest.raises(RuntimeError):
+            await proc.on_new_app_roles([(role, [])])
+
+        assert len(calls) == 1, f"a write followed the failed lookup: {calls[1:]}"

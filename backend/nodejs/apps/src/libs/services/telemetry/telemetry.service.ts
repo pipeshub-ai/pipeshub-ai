@@ -289,6 +289,15 @@ export class TelemetryService implements ITelemetryService {
       );
       logger.debug('Successfully pushed metrics to server');
     } catch (error: unknown) {
+      // The registry only grows, so a 413 would otherwise recur until restart.
+      if (axios.isAxiosError(error) && error.response?.status === 413) {
+        logger.warn(
+          'Collector rejected metrics payload as too large; resetting metric registry',
+          { serverUrl: this.metricsServerUrl },
+        );
+        metricsBackend.reset();
+        return;
+      }
       this.handlePushError(error);
     }
   }

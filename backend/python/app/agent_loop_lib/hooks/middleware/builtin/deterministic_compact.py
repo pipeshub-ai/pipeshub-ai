@@ -93,8 +93,11 @@ def _compact_tool(
         if len(args_str) > 200:
             args_str = args_str[:200] + "..."
         lines.append(f"args: {args_str}")
-    preview = msg.content[:preview_chars].strip()
-    if len(msg.content) > preview_chars:
+    # `.text` drops any image parts — old-turn images are expendable, same
+    # rule as text (see shape_tool_result_clearing / synthesis_guard).
+    text_content = msg.text
+    preview = text_content[:preview_chars].strip()
+    if len(text_content) > preview_chars:
         preview += "..."
     lines.append(f"summary: {preview}")
     return msg.model_copy(update={"content": "\n".join(lines)})

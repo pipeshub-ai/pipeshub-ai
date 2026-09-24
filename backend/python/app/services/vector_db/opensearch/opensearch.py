@@ -33,8 +33,10 @@ Performance optimisations
 - ``metadata.*`` string fields mapped to ``keyword`` via a dynamic_template so
   term/terms filters on any metadata subfield (blockId, etc.) work correctly.
 - ``upsert_points`` issues the bulk with ``refresh=False`` (no per-call refresh).
-- ``force_merge`` method exposed so callers can collapse segments after a
-  bulk load (single-segment shards show ~2× QPS improvement).
+- ``index.merge.policy.segments_per_tier`` lowered to 4 so TieredMergePolicy
+  keeps segment count (and therefore search cost) low continuously.
+- ``force_merge`` exposed as an explicit operator action for indices that are
+  no longer written to; it must not be run on a schedule against a live index.
 - ``warmup`` method calls the OpenSearch k-NN warmup API to load native
   library indexes into the OS page cache before the first search.
 - RRF ``rank_constant`` is now configurable via ``OpenSearchConfig``.
@@ -44,13 +46,20 @@ Performance optimisations
 
 import asyncio
 import json
+import re
 import time
 from typing import Any, Dict, List, Optional, Union
 
-from opensearchpy import AsyncOpenSearch, helpers as os_helpers  # type: ignore
+from opensearchpy import AsyncOpenSearch  # type: ignore
+from opensearchpy import helpers as os_helpers
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -62,6 +71,7 @@ from app.services.vector_db.models import (
     FusionMethod,
     HealthStatus,
     HybridSearchRequest,
+    QuantizationType,
     ScrollResult,
     SearchResult,
     VectorCollectionInfo,
@@ -85,6 +95,8 @@ _OS_CAPABILITIES = VectorDBCapabilities(
     supports_sparse_vectors=False,
     supports_server_side_text_search=True,
     supported_fusion_methods=[FusionMethod.RRF],
+    supports_multi_collection=True,
+    max_recommended_collections=200,
 )
 
 # Defaults used when _cfg is not yet loaded (e.g. connected_service fixture in tests)
@@ -92,6 +104,10 @@ _DEFAULT_M = 16
 _DEFAULT_EF_CONSTRUCTION = 128
 _DEFAULT_EF_SEARCH = 100
 _DEFAULT_QUANTIZATION_BITS = 7
+
+# Fallbacks for when _cfg is absent (unit tests inject a raw client).
+_DEFAULT_SEGMENTS_PER_TIER = 4
+_DEFAULT_MAX_CONCURRENT_SEARCHES = 8
 _DEFAULT_CONFIDENCE_INTERVAL = 0.99
 _DEFAULT_RRF_RANK_CONSTANT = 60
 
@@ -107,7 +123,6 @@ class OpenSearchService(IVectorDBService):
         self.client: Optional[AsyncOpenSearch] = None
         self._cfg: Optional[OpenSearchConfig] = None
         self._client_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._idle_merge_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------
     # Factory
@@ -318,15 +333,24 @@ class OpenSearchService(IVectorDBService):
         ef_search = self._cfg.ef_search if self._cfg else _DEFAULT_EF_SEARCH
         quantization_bits = self._cfg.quantization_bits if self._cfg else _DEFAULT_QUANTIZATION_BITS
         confidence_interval = self._cfg.confidence_interval if self._cfg else _DEFAULT_CONFIDENCE_INTERVAL
+        segments_per_tier = self._cfg.segments_per_tier if self._cfg else _DEFAULT_SEGMENTS_PER_TIER
 
         # Build HNSW parameters block
         hnsw_params: Dict[str, Any] = {
             "ef_construction": ef_construction,
             "m": m,
         }
-        # Lucene 7-bit scalar quantization: ~4× memory reduction (equivalent to
-        # Qdrant's INT8 default) with < 5% recall loss.  Set quantization_bits=0
-        # in config to disable (useful for very small test collections).
+        # QuantizationType.NONE is provider-agnostic and must actually disable
+        # quantization here too; without this the caller asks for full-precision
+        # vectors and silently keeps getting quantized ones.
+        if config.quantization == QuantizationType.NONE:
+            quantization_bits = 0
+
+        # Lucene scalar quantization at the configured bit depth (7 by default:
+        # ~4× memory reduction, equivalent to Qdrant's INT8, < 5% recall loss).
+        # Lucene keeps these memory-mapped, so there is no always-RAM pin to
+        # disable the way Qdrant needs — CollectionConfig.quantization_always_ram
+        # does not apply to this provider.
         if quantization_bits > 0:
             hnsw_params["encoder"] = {
                 "name": "sq",
@@ -355,6 +379,14 @@ class OpenSearchService(IVectorDBService):
                     # Allow the translog to accumulate up to 1 GiB before flushing so
                     # we don't pay a Lucene flush + segment build on every small batch.
                     "index.translog.flush_threshold_size": "1gb",
+                    # Search cost scales with segment count, and the way to keep
+                    # that low on a *live* index is the merge policy, not periodic
+                    # force-merges: TieredMergePolicy merges continuously, is
+                    # throttled, and keeps every segment under
+                    # max_merged_segment so it stays eligible for future merges.
+                    # Lower than the default 10 to trade a little more background
+                    # merge I/O for fewer segments at search time.
+                    "index.merge.policy.segments_per_tier": segments_per_tier,
                 },
                 "mappings": {
                     # Map every string field under metadata.* to keyword so that
@@ -383,6 +415,12 @@ class OpenSearchService(IVectorDBService):
                             },
                         },
                         "page_content": {"type": "text"},
+                        # Sortable stand-in for _id so scroll can page with
+                        # search_after; _id itself requires fielddata.
+                        "point_id": {"type": "keyword"},
+                        "connectorIds": {"type": "keyword"},
+                        "recordGroupIds": {"type": "keyword"},
+                        "rootRecordGroupIds": {"type": "keyword"},
                         # Keep explicit keyword declarations for the two most-used
                         # filter fields so the mapping is readable without introspection.
                         "metadata": {
@@ -551,6 +589,7 @@ class OpenSearchService(IVectorDBService):
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
+        max_values: Optional[Dict[str, int]] = None,
         **kwargs: FilterValue,
     ) -> FilterExpression:
         from app.services.vector_db.filters import build_filter_expression
@@ -561,6 +600,7 @@ class OpenSearchService(IVectorDBService):
             should=should,
             must_not=must_not,
             min_should_match=min_should_match,
+            max_values=max_values,
             extra_kwargs=kwargs or None,
             build_conditions=OpenSearchUtils.build_conditions,
         )
@@ -575,26 +615,34 @@ class OpenSearchService(IVectorDBService):
         scroll_filter: FilterExpression,
         limit: int,
         offset: Optional[str] = None,
+        with_payload: Optional[List[str]] = None,
     ) -> ScrollResult:
         """Scroll a page of points.
 
         ``offset`` is the opaque cursor returned in ``ScrollResult.next_offset``
         from the previous call.  It is the OpenSearch ``search_after`` value
         serialised as a JSON string.  Pass ``None`` for the first page.
+
+        ``with_payload`` maps to ``_source`` includes, so a caller that needs
+        two fields does not transfer every chunk's text.
         """
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(scroll_filter)
+        source: Dict[str, Any] = (
+            {"includes": list(with_payload)}
+            if with_payload
+            else {"exclude": ["dense_embedding"]}
+        )
         body: Dict[str, Any] = {
             "query": bool_query,
             "size": min(limit, 10000),
-            "_source": {"exclude": ["dense_embedding"]},
-            "sort": [{"_id": "asc"}],
+            "_source": source,
+            "sort": [{"point_id": "asc"}],
         }
 
         if offset is not None:
-            import json as _json
             try:
-                body["search_after"] = _json.loads(offset)
+                body["search_after"] = json.loads(offset)
             except (ValueError, TypeError):
                 body["search_after"] = [offset]
 
@@ -608,6 +656,15 @@ class OpenSearchService(IVectorDBService):
                 payload={
                     "metadata": hit.get("_source", {}).get("metadata", {}),
                     "page_content": hit.get("_source", {}).get("page_content", ""),
+                    CONNECTOR_IDS_FIELD: list(
+                        hit.get("_source", {}).get(CONNECTOR_IDS_FIELD) or []
+                    ),
+                    RECORD_GROUP_IDS_FIELD: list(
+                        hit.get("_source", {}).get(RECORD_GROUP_IDS_FIELD) or []
+                    ),
+                    ROOT_RECORD_GROUP_IDS_FIELD: list(
+                        hit.get("_source", {}).get(ROOT_RECORD_GROUP_IDS_FIELD) or []
+                    ),
                 },
             )
             for hit in hits
@@ -615,10 +672,18 @@ class OpenSearchService(IVectorDBService):
         # Return a cursor for the next page when the result set is full
         next_offset = None
         if len(hits) == limit and hits:
-            import json as _json
             last_sort = hits[-1].get("sort")
-            if last_sort:
-                next_offset = _json.dumps(last_sort)
+            if not last_sort:
+                # No sort value on a full page means the documents predate the
+                # point_id field, so there is nothing to anchor search_after to.
+                # Returning None here would look like "last page" and silently
+                # drop the remainder.
+                raise RuntimeError(
+                    f"Cannot page '{collection_name}': documents have no "
+                    f"'point_id' to sort on. This index was written before "
+                    f"point_id existed — reindex it to enable scrolling."
+                )
+            next_offset = json.dumps(last_sort)
 
         return ScrollResult(points=points, next_offset=next_offset)
 
@@ -657,7 +722,21 @@ class OpenSearchService(IVectorDBService):
             hits = result.get("hits", {}).get("hits", [])
             return [OpenSearchUtils.hit_to_search_result(h) for h in hits]
 
-        return list(await asyncio.gather(*[_one_search(r) for r in requests]))
+        # Agent retrieval issues one request per source, so this fan-out is
+        # caller-controlled and unbounded. Cap it so a wide query cannot open an
+        # arbitrary number of concurrent searches against the cluster.
+        max_concurrent = (
+            self._cfg.max_concurrent_searches
+            if self._cfg
+            else _DEFAULT_MAX_CONCURRENT_SEARCHES
+        )
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def _bounded(req: HybridSearchRequest) -> List[SearchResult]:
+            async with semaphore:
+                return await _one_search(req)
+
+        return list(await asyncio.gather(*[_bounded(r) for r in requests]))
 
     async def upsert_points(
         self,
@@ -686,8 +765,8 @@ class OpenSearchService(IVectorDBService):
           which naturally batches documents across concurrent upserts.
         - ``refresh`` defaults to ``False``.  Pass ``refresh=True`` only when the
           caller needs the documents to be immediately searchable on return
-          (e.g. a read-after-write test).  For post-bulk consolidation, prefer
-          calling ``force_merge()`` once after all batches complete.
+          (e.g. a read-after-write test).  Post-bulk consolidation is not needed:
+          the merge policy keeps the segment count low continuously.
         """
         await self._assert_connected()
         start = time.perf_counter()
@@ -718,29 +797,36 @@ class OpenSearchService(IVectorDBService):
             f"({len(points)/elapsed:.0f} pts/s)"
         )
 
-        # Schedule a debounced force_merge that will fire only after ingest
-        # has been idle for 5 minutes.  Repeated upserts keep resetting the
-        # timer, so it never runs mid-burst.
-        self.schedule_idle_force_merge(collection_name)
-
     async def delete_points(
         self,
         collection_name: str,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
                 "delete_points called with an empty filter — this would wipe the entire "
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        if not filter.has_positive_match():
+            raise ValueError(
+                "delete_points called with only array-length conditions — a point "
+                "whose field is absent satisfies those too, so this would delete "
+                "most of the index. Pair it with a value match (e.g. connectorIds)."
+            )
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(filter)
+        # Opt-in only: the index runs a 30s refresh_interval on purpose, and
+        # forcing a refresh per call creates a Lucene segment per call. The
+        # connector cleanup asks for it because it re-reads the matched set to
+        # decide when it is done; per-record deletes must not.
         await self.client.delete_by_query(  # type: ignore
             index=collection_name,
             body={"query": bool_query},
             conflicts="proceed",
             slices="auto",
             wait_for_completion=True,
+            refresh=refresh,
         )
         logger.info(f"Deleted points from OpenSearch index '{collection_name}'")
 
@@ -749,6 +835,7 @@ class OpenSearchService(IVectorDBService):
         collection_name: str,
         payload: dict,
         points: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         """Update fields in matched documents via a Painless script.
 
@@ -756,14 +843,19 @@ class OpenSearchService(IVectorDBService):
         field access (``ctx._source.metadata.status``), not treated as literal
         top-level key names.
         """
+        if points.is_empty():
+            raise ValueError(
+                "overwrite_payload called with an empty filter — this would rewrite "
+                "every document in the index. Populate at least one filter condition "
+                "(e.g. virtualRecordId)."
+            )
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(points)
         script_parts = []
         params: Dict[str, Any] = {}
         for key, value in payload.items():
             # Sanitise param name: replace non-alphanumeric chars with underscores
-            import re as _re
-            param_name = "p_" + _re.sub(r"[^a-zA-Z0-9]", "_", key)
+            param_name = "p_" + re.sub(r"[^a-zA-Z0-9]", "_", key)
             params[param_name] = value
             if "." in key:
                 # e.g. "metadata.status" → ctx._source.metadata.status = params.p_metadata_status
@@ -777,6 +869,13 @@ class OpenSearchService(IVectorDBService):
 
         await self.client.update_by_query(  # type: ignore
             index=collection_name,
+            # A version conflict means the document was rewritten underneath us —
+            # for membership that is a concurrent reindex, which already wrote the
+            # current arrays. Default "abort" would fail the whole update for the
+            # rest of the matched documents over a doc that is already correct.
+            conflicts="proceed",
+            # Opt-in, same reason as delete_points.
+            refresh=refresh,
             body={
                 "query": bool_query,
                 "script": {
@@ -786,6 +885,20 @@ class OpenSearchService(IVectorDBService):
                 },
             },
         )
+
+    async def set_payload(
+        self,
+        collection_name: str,
+        payload: dict,
+        filter: FilterExpression,
+        refresh: bool = False,
+    ) -> None:
+        if filter.is_empty():
+            raise ValueError(
+                "set_payload called with an empty filter — this would update the entire "
+                "index. Populate at least one filter condition (e.g. virtualRecordId)."
+            )
+        await self.overwrite_payload(collection_name, payload, filter, refresh=refresh)
 
     # ------------------------------------------------------------------
     # Performance utilities
@@ -803,11 +916,17 @@ class OpenSearchService(IVectorDBService):
         to a single segment eliminates this overhead and typically yields
         ~2× QPS improvement.
 
-        This is a blocking operation — it waits until the merge completes.
-        ``request_timeout=600`` gives up to 10 minutes for large indexes.
+        Explicit operator action only — never call this on a schedule.
 
-        Call this after a bulk indexing run completes, not after every upsert.
-        For continuous ingest use ``schedule_idle_force_merge()`` instead.
+        Merging to one segment produces a segment larger than
+        ``index.merge.policy.max_merged_segment``, which TieredMergePolicy then
+        excludes from ordinary merging: deleted documents inside it are no longer
+        reclaimed by normal merges. That is an acceptable trade for an index that
+        will not be written again, and a bad one for a live index — which is what
+        ``segments_per_tier`` below is tuned for instead.
+
+        Blocking; ``request_timeout=600`` allows up to 10 minutes. The merge
+        continues server-side even if that HTTP wait times out.
         """
         await self._assert_connected()
         await self.client.indices.forcemerge(  # type: ignore
@@ -815,62 +934,12 @@ class OpenSearchService(IVectorDBService):
             max_num_segments=max_segments,
             request_timeout=600,
         )
+        # Searches keep reading the pre-merge segments until the next refresh,
+        # up to the index's 30s refresh_interval, so publish the merge now.
+        await self.client.indices.refresh(index=collection_name)  # type: ignore
         logger.info(
             f"Force-merged '{collection_name}' to {max_segments} segment(s)"
         )
-
-    def schedule_idle_force_merge(
-        self,
-        collection_name: str,
-        idle_seconds: float = 300.0,
-        max_segments: int = 1,
-    ) -> None:
-        """Schedule a ``force_merge`` that fires only when ingest has been idle.
-
-        Each call resets a debounce timer.  The merge runs ``idle_seconds``
-        after the *last* call — so it never fires mid-burst.  Only one pending
-        task is kept at a time; a new call cancels the previous one.
-
-        This is the recommended hook for continuous-ingest workloads (e.g. the
-        Redis Streams consumer) where there is no natural "end of bulk load".
-        After a quiet period the index is collapsed to a single segment, giving
-        ~2× search QPS improvement.
-
-        The task is fire-and-forget; errors are logged but not re-raised.
-        """
-        if self._idle_merge_task is not None and not self._idle_merge_task.done():
-            self._idle_merge_task.cancel()
-
-        async def _delayed_merge() -> None:
-            await asyncio.sleep(idle_seconds)
-            try:
-                logger.info(
-                    f"Ingest idle for {idle_seconds:.0f}s — running force_merge "
-                    f"on '{collection_name}'"
-                )
-                await self.force_merge(collection_name, max_segments=max_segments)
-                logger.info(
-                    f"Idle force_merge on '{collection_name}' complete"
-                )
-                # force_merge creates new consolidated segment files; the OS
-                # page cache no longer holds the old graph files.  Re-warm
-                # immediately so the next search is not blocked by mmap I/O.
-                try:
-                    await self.warmup(collection_name)
-                except Exception as warmup_exc:
-                    logger.warning(
-                        f"Post-merge k-NN warmup on '{collection_name}' failed "
-                        f"(non-fatal): {warmup_exc}"
-                    )
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                logger.warning(
-                    f"Idle force_merge on '{collection_name}' failed "
-                    f"(non-fatal): {exc}"
-                )
-
-        self._idle_merge_task = asyncio.create_task(_delayed_merge())
 
     async def warmup(self, collection_name: str) -> None:
         """Load k-NN native library indexes into the OS page cache.

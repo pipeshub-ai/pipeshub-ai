@@ -46,16 +46,19 @@ def _make_request(
     body: dict | None = None,
     container: Any | None = None,
     connector_registry: Any | None = None,
+    is_admin: bool = False,
 ):
     """Build a minimal mock FastAPI Request."""
     req = MagicMock()
 
-    user_data = user or {"userId": "u1", "orgId": "o1"}
+    _headers = headers or {}
+    user_data = dict(user or {"userId": "u1", "orgId": "o1"})
+    if "role" not in user_data:
+        user_data["role"] = "admin" if is_admin else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
 
-    _headers = headers or {}
     req.headers = MagicMock()
     req.headers.get = lambda k, default=None: _headers.get(k, default)
 
@@ -187,7 +190,7 @@ class TestAdminOAuthCreatesNewConfig:
             "baseUrl": "https://app.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -249,7 +252,7 @@ class TestAdminOAuthUpdatesExistingConfigFound:
             "baseUrl": "https://app.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -312,7 +315,7 @@ class TestAdminOAuthUpdatesExistingConfigNotFound:
             "baseUrl": "https://app.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -339,7 +342,9 @@ class TestAdminOAuthUpdatesExistingConfigNotFound:
                 )
 
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "NoneType" in exc_info.value.detail or "attribute" in exc_info.value.detail
+        # an internal AttributeError never reaches the person
+        assert exc_info.value.detail == "We couldn't save this connector's sign-in details. Please try again; if it keeps failing, contact your admin."
+        assert "NoneType" not in exc_info.value.detail
 
 
 class TestAdminOAuthNoCredentialsHasAppId:
@@ -356,7 +361,7 @@ class TestAdminOAuthNoCredentialsHasAppId:
             "baseUrl": "https://app.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -400,7 +405,7 @@ class TestAdminOAuthNoCredentialsNoAppId:
             "baseUrl": "https://app.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -442,7 +447,7 @@ class TestNonOAuthAuthType:
         }
         instance = _base_instance(authType="API_TOKEN")
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -477,7 +482,7 @@ class TestOAuthMetadataRedirectUriWithBaseUrl:
             "baseUrl": "https://custom.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -519,7 +524,7 @@ class TestOAuthMetadataRedirectUriNoBaseUrl:
             "auth": {"oauthConfigId": "oauth-1"},
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -557,7 +562,7 @@ class TestConnectorScopeMissing:
             "baseUrl": "https://app.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -601,7 +606,6 @@ class TestCleanupExistingConnector:
         }
         instance = _base_instance(authType="API_TOKEN")
         request = _make_request(
-            headers={"X-Is-Admin": "false"},
             body=body,
             container=container,
             connector_registry=registry,
@@ -640,7 +644,6 @@ class TestCleanupErrorIsLoggedNotRaised:
         }
         instance = _base_instance(authType="API_TOKEN")
         request = _make_request(
-            headers={"X-Is-Admin": "false"},
             body=body,
             container=container,
             connector_registry=registry,
@@ -676,7 +679,6 @@ class TestUpdateInstanceReturnsNone:
         }
         instance = _base_instance(authType="API_TOKEN", name="My Connector")
         request = _make_request(
-            headers={"X-Is-Admin": "false"},
             body=body,
             container=container,
             connector_registry=registry,
@@ -709,7 +711,6 @@ class TestGeneralExceptionRaises500:
             "auth": {"apiToken": "tok"},
         }
         request = _make_request(
-            headers={"X-Is-Admin": "false"},
             body=body,
             container=container,
             connector_registry=registry,
@@ -729,7 +730,9 @@ class TestGeneralExceptionRaises500:
                 )
 
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "something broke" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't save this connector's sign-in details. Please try again; if it keeps failing, contact your admin."
+        assert "something broke" not in exc_info.value.detail
 
 
 class TestOAuthCreateFailsRaises500:
@@ -745,7 +748,7 @@ class TestOAuthCreateFailsRaises500:
             "baseUrl": "https://app.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -801,7 +804,7 @@ class TestAdminOAuthUpdateExistingChangeName:
             "baseUrl": "https://app.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -848,7 +851,6 @@ class TestNonAdminOAuthSkipsOAuthOps:
             "baseUrl": "https://app.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "false"},
             body=body,
             container=container,
             connector_registry=registry,
@@ -904,7 +906,7 @@ class TestExistingOAuthConfigsNotAList:
             "baseUrl": "https://app.example.com",
         }
         request = _make_request(
-            headers={"X-Is-Admin": "true"},
+            is_admin=True,
             body=body,
             container=container,
             connector_registry=registry,
@@ -956,7 +958,6 @@ class TestExistingConfigEmpty:
         }
         instance = _base_instance(authType="API_TOKEN")
         request = _make_request(
-            headers={"X-Is-Admin": "false"},
             body=body,
             container=container,
             connector_registry=registry,
@@ -1007,7 +1008,6 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
         }
         # Use non-admin to skip admin OAuth creation path and test only filtering
         request = _make_request(
-            headers={"X-Is-Admin": "false"},
             body=body,
             container=container,
             connector_registry=registry,
@@ -1062,7 +1062,6 @@ class TestMergePreservesExistingAuthFields:
         }
         instance = _base_instance(authType="API_TOKEN")
         request = _make_request(
-            headers={"X-Is-Admin": "false"},
             body=body,
             container=container,
             connector_registry=registry,

@@ -36,6 +36,8 @@ interface ConnectorCatalogLayoutProps {
   onTabChange: (value: string) => void;
   /** Optional right-side element next to segmented control (e.g. "Your Personal Connectors →" link). */
   trailingAction?: React.ReactNode;
+  /** Optional admin actions rendered beside the search field in the header. */
+  headerActions?: React.ReactNode;
   /** Registry connectors to display as cards. */
   registryConnectors: Connector[];
   /** Active connectors to display as cards. */
@@ -44,10 +46,16 @@ interface ConnectorCatalogLayoutProps {
   onSetup?: (connector: Connector) => void;
   /** Called when "+" is used to add another instance (catalog active card). */
   onAddInstance?: (connector: Connector) => void;
+  /** Lock the labelled Setup button when create connector is denied. */
+  setupPermissionDenied?: boolean;
   /** Called when a connector card body is clicked (navigate to type page). */
   onCardClick?: (connector: Connector) => void;
   /** Whether data is loading. */
   isLoading?: boolean;
+  /** Override tab counts for tabs whose content is externally managed. */
+  extraTabCounts?: Record<string, number>;
+  /** Custom content for a tab, replacing the default connector card grid. */
+  tabContent?: React.ReactNode;
 }
 
 // ========================================
@@ -64,12 +72,16 @@ export function ConnectorCatalogLayout({
   activeTab,
   onTabChange,
   trailingAction,
+  headerActions,
   registryConnectors,
   activeConnectors,
   onSetup,
   onAddInstance,
+  setupPermissionDenied = false,
   onCardClick,
   isLoading = false,
+  extraTabCounts,
+  tabContent,
 }: ConnectorCatalogLayoutProps) {
   const { t } = useTranslation();
   const resolvedSearchPlaceholder = searchPlaceholder ?? t('form.searchPlaceholder');
@@ -163,8 +175,13 @@ export function ConnectorCatalogLayout({
     counts['inactive'] = base.filter(
       (c) => (inactiveCountByType[c.type] ?? 0) > 0
     ).length;
+    if (extraTabCounts) {
+      for (const [k, v] of Object.entries(extraTabCounts)) {
+        counts[k] = v;
+      }
+    }
     return counts;
-  }, [allConnectors, searchQuery, activeCountByType, inactiveCountByType]);
+  }, [allConnectors, searchQuery, activeCountByType, inactiveCountByType, extraTabCounts]);
 
   return (
     <Flex
@@ -190,6 +207,8 @@ export function ConnectorCatalogLayout({
             {subtitle}
           </Text>
         </Flex>
+
+        {headerActions}
 
         <TextField.Root
           size="2"
@@ -220,8 +239,8 @@ export function ConnectorCatalogLayout({
         {trailingAction}
       </Flex>
 
-      {/* ── Connector grid ── */}
-      {isLoading ? (
+      {/* ── Connector grid (or custom tab content) ── */}
+      {tabContent ? tabContent : isLoading ? (
         <Flex
           align="center"
           justify="center"
@@ -257,6 +276,7 @@ export function ConnectorCatalogLayout({
               inactiveInstanceCount={inactiveCountByType[connector.type] ?? 0}
               onSetup={onSetup}
               onAddInstance={onAddInstance}
+              setupPermissionDenied={setupPermissionDenied}
               onCardClick={onCardClick}
             />
           ))}

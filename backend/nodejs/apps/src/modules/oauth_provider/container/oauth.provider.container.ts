@@ -11,9 +11,16 @@ import { OAuthAppService } from '../services/oauth.app.service'
 import { OAuthTokenService } from '../services/oauth_token.service'
 import { AuthorizationCodeService } from '../services/authorization_code.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
+import { PatService } from '../services/pat.service'
+import { ServiceTokenService } from '../services/service-token.service'
+import { OAuthDcrService } from '../services/oauth.dcr.service'
+import { OAuthDeviceService } from '../services/oauth.device.service'
+import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
+import { PatController } from '../controller/pat.controller'
+import { ServiceTokenController } from '../controller/service-token.controller'
 import { OAuthAuthMiddleware } from '../middlewares/oauth.auth.middleware'
 
 const loggerConfig = {
@@ -108,19 +115,12 @@ export class OAuthProviderContainer {
         .bind<AuthorizationCodeService>('AuthorizationCodeService')
         .toConstantValue(authorizationCodeService)
 
-      const oauthAppService = new OAuthAppService(
-        logger,
-        encryptionService,
-        scopeValidatorService,
-      )
-      container
-        .bind<OAuthAppService>('OAuthAppService')
-        .toConstantValue(oauthAppService)
-
       // Get JWT configuration from platform config
       const jwtConfig = await getJwtConfig(logger)
       container.bind<JwtConfig>('JwtConfig').toConstantValue(jwtConfig)
 
+      // Built before the app service, which needs it to revoke an app's
+      // outstanding tokens when its identity changes.
       const oauthTokenService = new OAuthTokenService(
         logger,
         jwtConfig,
@@ -129,6 +129,16 @@ export class OAuthProviderContainer {
       container
         .bind<OAuthTokenService>('OAuthTokenService')
         .toConstantValue(oauthTokenService)
+
+      const oauthAppService = new OAuthAppService(
+        logger,
+        encryptionService,
+        scopeValidatorService,
+        oauthTokenService,
+      )
+      container
+        .bind<OAuthAppService>('OAuthAppService')
+        .toConstantValue(oauthAppService)
 
       // Initialize OAuth Auth Middleware
       const oauthAuthMiddleware = new OAuthAuthMiddleware(
@@ -139,6 +149,61 @@ export class OAuthProviderContainer {
       container
         .bind<OAuthAuthMiddleware>('OAuthAuthMiddleware')
         .toConstantValue(oauthAuthMiddleware)
+
+      const configService = container.get<ConfigService>('ConfigService')
+      const patService = new PatService(
+        logger,
+        encryptionService,
+        configService,
+        oauthTokenService,
+        scopeValidatorService,
+      )
+      container.bind<PatService>('PatService').toConstantValue(patService)
+
+      const serviceTokenService = new ServiceTokenService(
+        logger,
+        encryptionService,
+        configService,
+        oauthTokenService,
+        scopeValidatorService,
+      )
+      container
+        .bind<ServiceTokenService>('ServiceTokenService')
+        .toConstantValue(serviceTokenService)
+      container
+        .bind<ServiceTokenController>('ServiceTokenController')
+        .toConstantValue(new ServiceTokenController(serviceTokenService))
+
+      const oauthDcrService = new OAuthDcrService(
+        logger,
+        oauthAppService,
+        scopeValidatorService,
+        appConfig,
+      )
+      container
+        .bind<OAuthDcrService>('OAuthDcrService')
+        .toConstantValue(oauthDcrService)
+
+      const firstPartyDeviceAppService = new FirstPartyDeviceAppService(
+        logger,
+        encryptionService,
+        scopeValidatorService,
+        appConfig,
+      )
+      container
+        .bind<FirstPartyDeviceAppService>('FirstPartyDeviceAppService')
+        .toConstantValue(firstPartyDeviceAppService)
+
+      const oauthDeviceService = new OAuthDeviceService(
+        logger,
+        oauthAppService,
+        oauthTokenService,
+        scopeValidatorService,
+        firstPartyDeviceAppService,
+      )
+      container
+        .bind<OAuthDeviceService>('OAuthDeviceService')
+        .toConstantValue(oauthDeviceService)
 
       // Initialize Controllers
       container
@@ -152,6 +217,10 @@ export class OAuthProviderContainer {
           )
         })
 
+      container.bind<PatController>('PatController').toDynamicValue(() => {
+        return new PatController(logger, patService, scopeValidatorService)
+      })
+
       container
         .bind<OAuthProviderController>('OAuthProviderController')
         .toDynamicValue(() => {
@@ -161,6 +230,8 @@ export class OAuthProviderContainer {
             oauthTokenService,
             authorizationCodeService,
             scopeValidatorService,
+            oauthDcrService,
+            oauthDeviceService,
           )
         })
 
@@ -171,6 +242,7 @@ export class OAuthProviderContainer {
             oauthTokenService,
             scopeValidatorService,
             appConfig,
+            firstPartyDeviceAppService,
           )
         })
 

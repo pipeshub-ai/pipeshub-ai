@@ -90,7 +90,7 @@ export class NotificationConsumer {
             dispatchedUserIds.push(userId);
           }
 
-          this.logger.info('Notification saved and dispatched', {
+          this.logger.debug('Notification saved and dispatched', {
             orgId: event.orgId,
             type: event.type,
             recipientCount: dispatchedUserIds.length,

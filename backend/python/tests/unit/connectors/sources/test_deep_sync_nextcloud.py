@@ -56,6 +56,8 @@ def connector():
         logger = logging.getLogger("test_nc_deep")
         dep = AsyncMock()
         dep.org_id = "org-nc"
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_record_group_by_external_id = AsyncMock(return_value=None)
         dep.on_new_records = AsyncMock()
         dep.on_new_app_users = AsyncMock()
         dep.on_new_record_groups = AsyncMock()
@@ -207,7 +209,7 @@ class TestNextcloudIncrementalSync:
             m_full.assert_called_once()
 
     async def test_no_cursor_falls_back_to_full(self, connector):
-        connector.data_store_provider = _make_mock_data_store_provider(existing_group={"id": "g1"})
+        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value={"id": "g1"})
         connector.activity_sync_point.read_sync_point = AsyncMock(return_value=None)
         with patch.object(connector, "_run_full_sync_internal", new_callable=AsyncMock) as m_full:
             await connector._run_incremental_sync_internal()

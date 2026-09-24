@@ -154,6 +154,7 @@ def connector():
         dep.add_permission_to_record = AsyncMock()
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
         provider = _make_mock_data_store_provider()
 
         config_svc = AsyncMock()
@@ -175,6 +176,9 @@ def connector():
         )
         c.admin_data_source = AsyncMock()
         c.drive_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        c.drive_data_source.execute = AsyncMock(side_effect=execute)
         c.admin_client = MagicMock()
         c.drive_client = MagicMock()
         c.sync_filters = FilterCollection()
@@ -891,8 +895,9 @@ class TestProcessDriveItem:
         existing = _make_record(record_name="test.txt", external_revision_id="rev-1", parent_external_record_id="parent-1")
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
@@ -905,8 +910,9 @@ class TestProcessDriveItem:
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
         existing.parent_external_record_id = "parent-1"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
@@ -919,8 +925,9 @@ class TestProcessDriveItem:
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
         existing.parent_external_record_id = "parent-1"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
@@ -953,8 +960,9 @@ class TestProcessDriveItem:
         existing.parent_external_record_id = "parent-1"
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([
             Permission(email="u@t.com", type=PermissionType.READ, entity_type=EntityType.USER)
@@ -1015,6 +1023,12 @@ class TestProcessDriveItemsGenerator:
 class TestHandleRecordUpdates:
     @pytest.mark.asyncio
     async def test_deleted(self, connector):
+        existing = MagicMock()
+        existing.id = "rec-f1"
+        existing.record_name = "f1"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         update = RecordUpdate(
             record=None, is_new=False, is_updated=False, is_deleted=True,
             metadata_changed=False, content_changed=False, permissions_changed=False,
@@ -1421,15 +1435,15 @@ class TestGetDriveServiceForUser:
             await connector._get_drive_service_for_user()
 
     @pytest.mark.asyncio
-    async def test_fallback_on_impersonation_failure(self, connector):
+    async def test_impersonation_failure_raises(self, connector):
         with patch(
             "app.connectors.sources.google.drive.team.connector.GoogleClient"
         ) as MockGC:
             MockGC.build_from_services = AsyncMock(side_effect=RuntimeError("fail"))
             connector.drive_client = MagicMock()
             connector.drive_client.get_client.return_value = MagicMock()
-            result = await connector._get_drive_service_for_user("u@t.com")
-            assert result is not None
+            with pytest.raises(RuntimeError, match="fail"):
+                await connector._get_drive_service_for_user("u@t.com")
 
 
 class TestGetFileMetadataFromDrive:
@@ -1599,6 +1613,7 @@ class TestRunSyncWithYield:
                     "user": {"permissionId": "p1", "emailAddress": "u@t.com"}
                 })
                 mock_dds.files_get = AsyncMock(return_value={"id": "root-1"})
+                mock_dds.drives_list = AsyncMock(return_value={"drives": []})
                 MockDDS.return_value = mock_dds
 
                 connector.sync_personal_drive = AsyncMock()

@@ -192,6 +192,7 @@ class TestAbstractMethodInventory:
         "batch_upsert_nodes",
         "delete_nodes",
         "update_node",
+        "update_node_if_match",
         # Edge operations
         "batch_create_edges",
         "batch_create_entity_relations",
@@ -225,10 +226,13 @@ class TestAbstractMethodInventory:
         "get_virtual_record_ids_for_record_ids",
         "get_record_key_by_external_id",
         "get_records_by_status",
+        "get_app_needing_vector_membership_backfill",
+        "page_records_for_vector_membership_backfill",
         "get_records",
         "reindex_single_record",
         "reindex_record_group_records",
         "update_indexing_status_for_record_ids",
+        "reset_indexing_status_for_connector",
         "compare_and_set_indexing_status",
         "get_existing_record_keys",
         "get_documents_by_status",
@@ -236,6 +240,7 @@ class TestAbstractMethodInventory:
         "get_record_by_issue_key",
         "get_record_by_weburl",
         "get_records_by_parent",
+        "get_records_by_record_type",
         "get_records_by_record_group",
         "get_records_by_parent_record",
         # Record group operations
@@ -306,6 +311,8 @@ class TestAbstractMethodInventory:
         "create_record_groups_relation",
         "create_inherit_permissions_relation_record_group",
         "get_accessible_virtual_record_ids",
+        "get_accessible_connector_types",
+        "get_records_by_virtual_record_id",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
         "get_file_permissions",
@@ -341,6 +348,7 @@ class TestAbstractMethodInventory:
         "delete_record_by_external_id",
         "remove_user_access_to_record",
         "delete_records_recursive",
+        "delete_single_record",
         "delete_connector_instance",
         "get_key_by_external_file_id",
         "organization_exists",
@@ -406,6 +414,7 @@ class TestAbstractMethodInventory:
         "validate_folder_for_upload",
         # Record location / permission-aware trails
         "filter_nodes_with_permission_role",
+        "filter_accessible_virtual_record_ids",
         "get_record_parent_adjacency",
     ]
 

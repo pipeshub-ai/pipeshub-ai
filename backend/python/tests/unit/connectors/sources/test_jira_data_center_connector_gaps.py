@@ -543,19 +543,20 @@ class TestIssueLinkAndEpicDiscoveryGaps:
         assert len(rows) == 1
 
     @pytest.mark.asyncio
-    async def test_discover_epic_link_field_http_error(self):
+    async def test_discover_hierarchy_link_field_http_error(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
         ds.get_fields_v2 = AsyncMock(return_value=MagicMock(status=500))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
-            await conn._discover_epic_link_field_id()
+            await conn._discover_hierarchy_link_field_ids()
 
         assert conn._epic_link_field_id == ""
+        assert conn._parent_link_field_id == ""
 
     @pytest.mark.asyncio
-    async def test_discover_epic_link_field_from_schema(self):
+    async def test_discover_hierarchy_link_field_from_schema(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
@@ -568,9 +569,10 @@ class TestIssueLinkAndEpicDiscoveryGaps:
         ]))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
-            await conn._discover_epic_link_field_id()
+            await conn._discover_hierarchy_link_field_ids()
 
         assert conn._epic_link_field_id == "customfield_10014"
+        assert conn._parent_link_field_id == ""
 
     @pytest.mark.asyncio
     async def test_sync_project_lead_roles_processing_error_skipped(self):
@@ -592,8 +594,7 @@ class TestBuildIssueRecordsAndCommentsGaps:
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.site_url = "https://jira.example"
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         issue = {
             "id": "100",
@@ -622,7 +623,6 @@ class TestBuildIssueRecordsAndCommentsGaps:
                 [issue],
                 "pid",
                 [],
-                tx,
                 is_new_project=True,
             )
 
@@ -772,8 +772,7 @@ class TestRemainingQuickGaps:
     async def test_fetch_issue_attachments_skips_missing_id(self):
         conn = _make_connector()
         conn.site_url = "https://jira.example"
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         fields = {"attachment": [{"filename": "no-id.png", "mimeType": "image/png"}]}
 
         records = await conn._fetch_issue_attachments(
@@ -783,6 +782,5 @@ class TestRemainingQuickGaps:
             [],
             "proj",
             RecordGroupType.PROJECT,
-            tx,
         )
         assert records == []

@@ -10,7 +10,7 @@ from logging import Logger
 from urllib.parse import urlparse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -57,6 +57,7 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
     .with_description("Sync files and folders from MinIO S3-compatible storage")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.ACCESS_KEY).fields([
             AuthField(
@@ -138,6 +139,7 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             option_source_type=OptionSourceType.MANUAL,
             default_operator=ListOperator.IN.value
         ))
+        .add_filter_field(CommonFields.folder_paths_filter("bucket"))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
@@ -308,6 +310,7 @@ class MinIOConnector(S3CompatibleBaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> "MinIOConnector":
         """Factory method to create and initialize connector."""

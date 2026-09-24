@@ -1,17 +1,22 @@
 """Tests for app.utils.llm module."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.utils.llm import (
+    LLM_MISSING_FOR_FILE,
+    LLMNotConfiguredError,
     get_embedding_model_config,
     get_image_generation_config,
     get_llm,
+    get_llm_for_role,
     get_stt_config,
     get_stt_model_instance,
     get_tts_config,
     get_tts_model_instance,
+    is_local_cpu_embedding_configured,
 )
 
 
@@ -79,7 +84,7 @@ class TestGetLlm:
             "llm": []
         }
 
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_llm(mock_config_service)
 
     @pytest.mark.asyncio
@@ -89,8 +94,28 @@ class TestGetLlm:
             "llm": None
         }
 
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_llm(mock_config_service)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ai_models", [{}, None, {"embedding": [{"provider": "openAI"}]}])
+    async def test_no_llm_key_says_what_to_do_instead_of_keyerror(self, mock_config_service, ai_models) -> None:
+        """A config with no LLM bucket used to raise KeyError('llm'), which records showed as "'llm'"."""
+        mock_config_service.get_config.return_value = ai_models
+
+        with pytest.raises(LLMNotConfiguredError) as exc:
+            await get_llm(mock_config_service)
+        assert str(exc.value) == LLM_MISSING_FOR_FILE
+        assert "AI Models" in str(exc.value) and "reindex" in str(exc.value)
+        assert isinstance(exc.value, ValueError)
+
+    @pytest.mark.asyncio
+    async def test_role_lookup_without_any_llm_raises_the_clear_error(self, mock_config_service) -> None:
+        """Indexing asks for the "indexing" role; with nothing configured it must reach the same error."""
+        mock_config_service.get_config.return_value = {}
+
+        with pytest.raises(LLMNotConfiguredError):
+            await get_llm_for_role(mock_config_service, "indexing", reasoning_effort="low")
 
     @pytest.mark.asyncio
     async def test_uses_provided_llm_configs(self, mock_config_service):
@@ -191,6 +216,56 @@ class TestGetEmbeddingModelConfig:
 
         with pytest.raises(KeyError):
             await get_embedding_model_config(mock_config_service)
+
+
+class TestIsLocalCpuEmbeddingConfigured:
+    """Decides whether the resource governor holds CPU back for the local
+    embedding server (policy.EMBEDDING_CPU_RESERVATION)."""
+
+    @pytest.mark.asyncio
+    async def test_hosted_api_provider_is_not_local(self, mock_config_service):
+        mock_config_service.get_config.return_value = {
+            "embedding": [{"provider": "openAI", "isDefault": True}]
+        }
+
+        assert await is_local_cpu_embedding_configured(mock_config_service, logging.getLogger()) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider", ["default", "huggingFace", "sentenceTransformers"])
+    async def test_cpu_served_providers_are_local(self, mock_config_service, provider):
+        mock_config_service.get_config.return_value = {
+            "embedding": [{"provider": provider, "isDefault": True}]
+        }
+
+        assert await is_local_cpu_embedding_configured(mock_config_service, logging.getLogger()) is True
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_deployment_is_local(self, mock_config_service):
+        """No embedding config falls back to get_default_embedding_model()."""
+        mock_config_service.get_config.return_value = {"embedding": []}
+
+        assert await is_local_cpu_embedding_configured(mock_config_service, logging.getLogger()) is True
+
+    @pytest.mark.asyncio
+    async def test_prefers_the_default_marked_config_over_the_first(self, mock_config_service):
+        """Mirrors VectorStore._get_embedding_model's selection, so the two
+        cannot disagree about which provider will do the embedding."""
+        mock_config_service.get_config.return_value = {
+            "embedding": [
+                {"provider": "sentenceTransformers"},
+                {"provider": "openAI", "isDefault": True},
+            ]
+        }
+
+        assert await is_local_cpu_embedding_configured(mock_config_service, logging.getLogger()) is False
+
+    @pytest.mark.asyncio
+    async def test_unreadable_config_reserves_rather_than_starving_embedding(
+        self, mock_config_service
+    ):
+        mock_config_service.get_config.side_effect = ConnectionError("etcd down")
+
+        assert await is_local_cpu_embedding_configured(mock_config_service, logging.getLogger()) is True
 
 
 class TestGetImageGenerationConfig:

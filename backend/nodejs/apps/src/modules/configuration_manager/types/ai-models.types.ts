@@ -36,8 +36,15 @@ export interface AIModelsConfig {
   imageGeneration?: AIModelConfiguration[];
   tts?: AIModelConfiguration[];
   stt?: AIModelConfiguration[];
+  /**
+   * @deprecated Prompts are now stored at /services/systemPrompts via SystemPromptsConfig.
+   * These fields remain here only so the OSS backward-compat GET fallback can read
+   * pre-upgrade data from the aiModels blob without a TypeScript error.
+   */
   customSystemPrompt?: string;
+  /** @deprecated See customSystemPrompt. */
   customSystemPromptWebSearch?: string;
+  /** @deprecated See customSystemPrompt. */
   customSystemPromptAgent?: string;
   /**
    * Role-to-model assignments. Each key is a named role (e.g. "indexing") and
@@ -46,5 +53,15 @@ export interface AIModelsConfig {
    * default model for that model type.
    */
   modelRoles?: Record<string, ModelRoleAssignment>;
+}
+
+/**
+ * Dedicated blob stored at /services/systemPrompts.
+ * Replaces the customSystemPrompt* fields that were previously embedded inside AIModelsConfig.
+ */
+export interface SystemPromptsConfig {
+  customSystemPrompt?: string;
+  customSystemPromptWebSearch?: string;
+  customSystemPromptAgent?: string;
 }
 

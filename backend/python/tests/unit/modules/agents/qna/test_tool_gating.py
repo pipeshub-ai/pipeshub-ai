@@ -3,15 +3,13 @@ tool_system`) — the deployment-level gate for sandbox tools.
 
 Covers:
 
-1. Defaults to True (fail-open, controlled via Labs UI / feature flag).
+1. Defaults to True (fail-open) when no state/env override applies.
 2. Honours ``state["enable_code_execution"]`` as a per-request override.
 3. Respects explicit truthy/falsy ``PIPESHUB_ENABLE_CODE_EXECUTION`` env var
    values for deployment-level overrides.
 
-`FeatureFlagService` isn't configured in the unit-test environment, so the
-function's ``except`` branch fires and returns the documented default
-(True) whenever no state/env override applies — that's exactly the
-fail-open behaviour we assert here.
+No feature flag is involved — resolution is env-only, so unrecognised/
+absent env values fall straight through to the True default.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ from app.modules.agents.qna.tool_system import code_execution_enabled
 
 class TestCodeExecutionEnabled:
     def test_default_enabled(self, monkeypatch):
-        """No env override + feature flag unreachable ⇒ enabled by default."""
+        """No state/env override ⇒ enabled by default."""
         monkeypatch.delenv("PIPESHUB_ENABLE_CODE_EXECUTION", raising=False)
         assert code_execution_enabled({}) is True
 
@@ -49,6 +47,6 @@ class TestCodeExecutionEnabled:
 
     @pytest.mark.parametrize("raw", ["", "   ", "maybe"])
     def test_env_unrecognised_values_fall_through(self, monkeypatch, raw):
-        """Unrecognised env values fall through to the feature flag / default."""
+        """Unrecognised env values fall through to the True default."""
         monkeypatch.setenv("PIPESHUB_ENABLE_CODE_EXECUTION", raw)
         assert code_execution_enabled({}) is True

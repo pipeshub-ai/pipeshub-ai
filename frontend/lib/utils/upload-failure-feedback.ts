@@ -7,6 +7,7 @@ import {
 import { selectIsAdmin, useUserStore } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
 import type { UploadItem } from '@/lib/store/upload-store';
+import { withCurrentOrgId } from '@/lib/navigation';
 
 const LABS_PATH = '/workspace/labs/';
 
@@ -68,7 +69,7 @@ const PRESENTATIONS: Record<UploadFailureKind, FailureKindPresentation> = {
         ? {
             label: i18n.t('uploadProgress.rejectionToast.openLabs'),
             icon: 'science',
-            href: LABS_PATH,
+            href: withCurrentOrgId(LABS_PATH),
             openInNewTab: true,
           }
         : undefined,

@@ -7,6 +7,8 @@ from typing import List
 
 from azure.storage.blob import BlobServiceClient, ContentSettings  # type: ignore[import-not-found]
 
+from helper.run_folder import require_run_folder
+
 
 def _iter_files(root: Path):
     for path in root.rglob("*"):
@@ -20,16 +22,16 @@ class AzureBlobStorageHelper:
     def __init__(self, connection_string: str) -> None:
         self._service = BlobServiceClient.from_connection_string(connection_string)
 
-    def list_objects(self, container: str) -> List[str]:
+    def list_objects(self, container: str, prefix: str = "") -> List[str]:
         container_client = self._service.get_container_client(container)
-        return [b.name for b in container_client.list_blobs()]
+        return [b.name for b in container_client.list_blobs(name_starts_with=prefix or None)]
 
-    def upload_directory(self, container: str, root: Path) -> int:
+    def upload_directory(self, container: str, root: Path, prefix: str = "") -> int:
         root = root.resolve()
         container_client = self._service.get_container_client(container)
         count = 0
         for file_path in _iter_files(root):
-            key = str(file_path.relative_to(root).as_posix())
+            key = prefix + str(file_path.relative_to(root).as_posix())
             blob_client = container_client.get_blob_client(key)
             with file_path.open("rb") as f:
                 blob_client.upload_blob(f, overwrite=True)
@@ -68,8 +70,10 @@ class AzureBlobStorageHelper:
     def move_object(self, container: str, old_key: str, new_key: str) -> None:
         self.rename_object(container, old_key, new_key)
 
-    def clear_objects(self, container: str) -> None:
+    def clear_objects(self, container: str, prefix: str) -> None:
+        """Delete everything under this run's folder, and nothing else."""
+        prefix = require_run_folder(prefix)
         container_client = self._service.get_container_client(container)
-        blobs = list(container_client.list_blobs())
+        blobs = list(container_client.list_blobs(name_starts_with=prefix))
         if blobs:
             container_client.delete_blobs(*blobs)

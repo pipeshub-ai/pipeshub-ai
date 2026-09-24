@@ -1,5 +1,6 @@
 import { generateUniqueSlug } from '../../../libs/utils/counter';
-import { Document, Schema, Types, model } from 'mongoose';
+import { Document, Schema, Types, Model } from 'mongoose';
+import mongoose from 'mongoose';
 
 export const groupTypes = ['admin', 'standard', 'everyone', 'custom'];
 
@@ -47,8 +48,6 @@ userGroupsSchema.pre<UserGroup>('save', async function (next) {
   }
 });
 
-export const UserGroups = model<UserGroup>(
-  'userGroups',
-  userGroupsSchema,
-  'userGroups',
-);
+export const UserGroups: Model<UserGroup> =
+  (mongoose.models['userGroups'] as Model<UserGroup>) ||
+  mongoose.model<UserGroup>('userGroups', userGroupsSchema, 'userGroups');

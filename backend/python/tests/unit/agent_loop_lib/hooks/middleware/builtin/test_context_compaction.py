@@ -245,6 +245,37 @@ class TestDeterministicCompaction:
             elif isinstance(m1, AssistantMessage):
                 assert m1.text == m2.text
 
+    @pytest.mark.asyncio
+    async def test_multipart_tool_message_compacts_text_and_drops_images(self):
+        """A middle-zone ToolMessage carrying images (search/fetch result)
+        must compact to a plain-text preview like any other tool result —
+        images from old turns are expendable, and `.text` must be used
+        instead of raw `.content` slicing to avoid crashing on a list."""
+        from app.agent_loop_lib.core.messages import ImagePart, ImageSource
+
+        messages = [
+            SystemMessage(content="system"),
+            UserMessage(content="query 1"),
+            AssistantMessage(content="response 1. More text here."),
+            ToolMessage(
+                content=[
+                    TextPart(text="[ref1] (image) " * 20),
+                    ImagePart(source=ImageSource(type="base64", media_type="image/png", data="x" * 5000)),
+                ],
+                tool_call_id="tc_1",
+            ),
+            UserMessage(content="query 2"),
+            AssistantMessage(content="response 2"),
+        ]
+        shaper = shape_deterministic_compact(
+            trigger_ratio=0.0, keep_last_n_messages=2, pin_first_n=1
+        )
+        result = await _run_middleware(shaper, messages, _budget(500))
+
+        tool_msg = next(m for m in result if isinstance(m, ToolMessage))
+        assert isinstance(tool_msg.content, str)
+        assert "[ref1] (image)" in tool_msg.content
+
 
 # ---------- Synthesis guard ----------
 
@@ -285,3 +316,77 @@ class TestSynthesisGuard:
         result = await _run_middleware(shaper, messages, _budget(10_000))
         assert len(result) == 1
         assert result[0].content == "short"
+
+    @pytest.mark.asyncio
+    async def test_truncates_multipart_tool_result_using_text(self):
+        """Last-resort truncation must use `.text` (not raw `.content`
+        slicing) so a multipart ToolMessage with a large image payload
+        doesn't crash `len()`/slicing and still gets truncated."""
+        from app.agent_loop_lib.core.messages import ImagePart, ImageSource
+
+        messages = [
+            SystemMessage(content="sys"),
+            AssistantMessage(content="ok"),
+            ToolMessage(
+                content=[
+                    TextPart(text="result text " * 400),
+                    ImagePart(source=ImageSource(type="base64", media_type="image/png", data="x" * 50_000)),
+                ],
+                tool_call_id="tc_1",
+            ),
+            # Small enough to be skipped by the `len(msg.text) > 200` guard
+            # in `_truncate_tool_results`, so the multipart message above
+            # is the only one actually forced through truncation.
+            ToolMessage(content="small", tool_call_id="tc_2"),
+        ]
+        # keep_last_n_tool_results=2 (== the number of tool results present)
+        # skips the clearing step entirely, forcing the truncation path
+        # (`_truncate_tool_results`) to run instead. ContextBudget floors
+        # effective_max_tokens at 1000, so the budget must exceed that to
+        # actually engage truncation.
+        shaper = shape_synthesis_guard(keep_last_n_tool_results=2)
+        result = await _run_middleware(shaper, messages, _budget(1_000))
+
+        tool_msgs = [m for m in result if isinstance(m, ToolMessage)]
+        assert all(isinstance(m.content, str) for m in tool_msgs)
+        multipart_result = next(m for m in tool_msgs if m.tool_call_id == "tc_1")
+        assert "truncated by synthesis_guard" in multipart_result.content
+
+    @pytest.mark.asyncio
+    async def test_truncates_multipart_tool_result_with_short_text(self):
+        """A multipart ToolMessage with short/no text (e.g. an image-only
+        result) must still be reduced to plain text — `len(msg.text) > 200`
+        alone would let its images slip through untouched, since images
+        don't count toward `count_message_tokens` but still cost real
+        request bytes/tokens.
+
+        `tc_image` sits at the tail so it's visited (and must be handled)
+        before `total` drops under budget via `tc_large`'s own truncation —
+        otherwise the loop's `total <= budget` break could skip it without
+        actually exercising the fix.
+        """
+        from app.agent_loop_lib.core.messages import ImagePart, ImageSource
+
+        messages = [
+            SystemMessage(content="sys"),
+            AssistantMessage(content="ok"),
+            ToolMessage(content="x" * 5_000, tool_call_id="tc_large"),
+            ToolMessage(
+                content=[
+                    TextPart(text="img"),
+                    ImagePart(source=ImageSource(type="base64", media_type="image/png", data="x" * 50_000)),
+                ],
+                tool_call_id="tc_image",
+            ),
+        ]
+        # keep_last_n_tool_results=2 (== the number of tool results present)
+        # skips the clearing step entirely, same as the test above, so both
+        # messages are only ever touched by `_truncate_tool_results`.
+        shaper = shape_synthesis_guard(keep_last_n_tool_results=2)
+        result = await _run_middleware(shaper, messages, _budget(1_000))
+
+        multipart_result = next(
+            m for m in result if isinstance(m, ToolMessage) and m.tool_call_id == "tc_image"
+        )
+        assert isinstance(multipart_result.content, str)
+        assert "truncated by synthesis_guard" in multipart_result.content

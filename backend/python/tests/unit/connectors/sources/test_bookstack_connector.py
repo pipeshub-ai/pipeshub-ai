@@ -48,6 +48,10 @@ def mock_data_entities_processor():
     proc.on_record_content_update = AsyncMock()
     proc.on_updated_record_permissions = AsyncMock()
     proc.on_user_removed = AsyncMock(return_value=True)
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_user_by_user_id = AsyncMock(return_value=MagicMock(email="test@example.com"))
+    proc.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-db-1"))
+    proc.delete_edges_between_collections = AsyncMock()
     return proc
 
 
@@ -94,11 +98,12 @@ def bookstack_connector(mock_logger, mock_data_entities_processor,
     return connector
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -211,6 +216,22 @@ class TestBookStackSignedUrlAndStream:
         await bookstack_connector.stream_record(record)
         mock_stream.assert_called_once()
 
+    async def test_stream_record_yields_one_bytes_chunk(self, bookstack_connector):
+        """Starlette iterates a `str` body one character per ASGI message."""
+        bookstack_connector.data_source = MagicMock()
+        bookstack_connector.data_source.export_page_markdown = AsyncMock(
+            return_value=_make_response(True, {"markdown": "# Hello"}, status_code=200)
+        )
+        record = MagicMock()
+        record.external_record_id = "page/42"
+        record.record_name = "Test Page"
+        record.mime_type = "text/markdown"
+        record.id = "rec-1"
+
+        response = await bookstack_connector.stream_record(record)
+        chunks = [chunk async for chunk in response.body_iterator]
+        assert chunks == [b"# Hello"]
+
     async def test_stream_record_not_initialized(self, bookstack_connector):
         bookstack_connector.data_source = None
         with pytest.raises(Exception):
@@ -220,12 +241,26 @@ class TestBookStackSignedUrlAndStream:
         from fastapi import HTTPException
         bookstack_connector.data_source = MagicMock()
         bookstack_connector.data_source.export_page_markdown = AsyncMock(
-            return_value=_make_response(False, error="Not found")
+            return_value=_make_response(False, error="Not found", status_code=404)
         )
         record = MagicMock()
         record.external_record_id = "page/42"
-        with pytest.raises(HTTPException):
+        with pytest.raises(HTTPException) as ei:
             await bookstack_connector.stream_record(record)
+        assert ei.value.status_code == 404
+
+    async def test_stream_record_expired_token_is_not_reported_as_deleted(
+        self, bookstack_connector
+    ):
+        bookstack_connector.data_source = MagicMock()
+        bookstack_connector.data_source.export_page_markdown = AsyncMock(
+            return_value=_make_response(False, error="HTTP 401", status_code=401)
+        )
+        record = MagicMock()
+        record.external_record_id = "page/42"
+        with pytest.raises(HTTPException) as ei:
+            await bookstack_connector.stream_record(record)
+        assert ei.value.status_code == 409
 
 
 # ===========================================================================
@@ -573,8 +608,7 @@ class TestBookStackRecordsSync:
         existing.record_name = "Old Name"
         existing.external_revision_id = "1"
         existing.version = 2
-        mock_tx = mock_data_store_provider.transaction.return_value
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
+        bookstack_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         page = {
             "id": 42,
             "name": "New Name",
@@ -613,8 +647,22 @@ class TestBookStackHandleRecordUpdates:
             is_deleted=True, metadata_changed=False, content_changed=False,
             permissions_changed=False, external_record_id="page/1",
         )
+        bookstack_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await bookstack_connector._handle_record_updates(update)
-        bookstack_connector.data_entities_processor.on_record_deleted.assert_awaited_once()
+        bookstack_connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(bookstack_connector.connector_id, "page/1")
+        bookstack_connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
+
+    @pytest.mark.asyncio
+    async def test_deleted_record_never_indexed(self, bookstack_connector):
+        update = RecordUpdate(
+            record=None, is_new=False, is_updated=False, is_deleted=True,
+            metadata_changed=False, content_changed=False, permissions_changed=False,
+            external_record_id="page/404",
+        )
+        bookstack_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        bookstack_connector.data_entities_processor.on_record_deleted = AsyncMock()
+        await bookstack_connector._handle_record_updates(update)
+        bookstack_connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
     async def test_handle_updated_metadata_and_content(self, bookstack_connector):
         update = RecordUpdate(
@@ -637,6 +685,7 @@ class TestBookStackHandleRecordUpdates:
         await bookstack_connector._handle_record_updates(update)
 
     async def test_handle_update_exception(self, bookstack_connector):
+        bookstack_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         bookstack_connector.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("fail"))
         update = RecordUpdate(
             record=MagicMock(record_name="R"), is_new=False, is_updated=False,
@@ -645,6 +694,7 @@ class TestBookStackHandleRecordUpdates:
         )
         # Should not raise
         await bookstack_connector._handle_record_updates(update)
+        bookstack_connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ===========================================================================
@@ -709,14 +759,12 @@ class TestBookStackUserEvents:
         bookstack_connector.data_entities_processor.on_user_removed.assert_awaited()
 
     async def test_handle_user_delete_event_user_not_found(self, bookstack_connector, mock_data_store_provider):
-        mock_tx = mock_data_store_provider.transaction.return_value
-        mock_tx.get_user_by_user_id = AsyncMock(return_value=None)
+        bookstack_connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
         events = [{"detail": "(5) Ghost"}]
         await bookstack_connector._handle_user_delete_event(events, [])
 
     async def test_handle_user_delete_event_no_email(self, bookstack_connector, mock_data_store_provider):
-        mock_tx = mock_data_store_provider.transaction.return_value
-        mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": None})
+        bookstack_connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=MagicMock(email=None))
         events = [{"detail": "(5) NoEmail"}]
         await bookstack_connector._handle_user_delete_event(events, [])
 
@@ -834,6 +882,10 @@ def mock_data_entities_processor_fullcov():
     proc.on_updated_record_permissions = AsyncMock()
     proc.on_user_removed = AsyncMock(return_value=True)
     proc.reindex_existing_records = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_user_by_user_id = AsyncMock(return_value=MagicMock(email="test@example.com"))
+    proc.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-db-1"))
+    proc.delete_edges_between_collections = AsyncMock()
     return proc
 
 
@@ -887,11 +939,12 @@ def connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
     return c
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -1146,14 +1199,14 @@ class TestHandleUserDeleteEvent:
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, connector, mock_data_store_provider_fullcov):
-        mock_data_store_provider_fullcov._mock_tx.get_user_by_user_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
         events = [{"detail": "(99) Unknown"}]
         await connector._handle_user_delete_event(events, [])
 
     @pytest.mark.asyncio
     async def test_user_no_email(self, connector, mock_data_store_provider_fullcov):
-        mock_data_store_provider_fullcov._mock_tx.get_user_by_user_id = AsyncMock(
-            return_value={"email": None}
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=MagicMock(email=None)
         )
         events = [{"detail": "(5) NoEmail"}]
         await connector._handle_user_delete_event(events, [])
@@ -1171,7 +1224,7 @@ class TestHandleUserDeleteEvent:
 
     @pytest.mark.asyncio
     async def test_exception_during_delete(self, connector, mock_data_store_provider_fullcov):
-        mock_data_store_provider_fullcov._mock_tx.get_user_by_user_id = AsyncMock(
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(
             side_effect=Exception("db error")
         )
         events = [{"detail": "(5) Error"}]

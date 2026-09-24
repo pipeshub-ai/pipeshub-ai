@@ -29,6 +29,24 @@
     "missingAgentKey": "Missing agent key. Open an agent from the chat sidebar or use a valid link.",
     "loading": "Loading…"
   },
+  "projects": {
+    "pageTitle": "Projects",
+    "searchPlaceholder": "Search projects…",
+    "emptyState": "No projects yet",
+    "emptyStateHint": "Create a project to organize chats, files, and instructions.",
+    "failedToLoad": "Failed to load projects",
+    "chatCount_one": "{{count}} chat",
+    "chatCount_other": "{{count}} chats",
+    "lastActive": "Active {{date}}",
+    "pinnedSection": "Pinned",
+    "allSection": "All projects",
+    "backToAllProjects": "All projects",
+    "loadMore": "Load more",
+    "tabYourProjects": "Your projects",
+    "tabArchived": "Archived",
+    "archivedEmptyState": "No archived projects",
+    "archivedEmptyStateHint": "Projects you archive will show up here."
+  },
   "timeGroup": {
     "today": "Today",
     "yesterday": "Yesterday",
@@ -144,10 +162,12 @@
       "providerTypeLabel": "Provider Type*",
       "providerLocal": "Local (System Default)",
       "providerS3": "Amazon S3",
-      "accessKeyLabel": "Access Key*",
+      "accessKeyLabel": "Access Key (optional)",
       "accessKeyPlaceholder": "Enter Access Key",
-      "secretKeyLabel": "Secret Key*",
+      "secretKeyLabel": "Secret Key (optional)",
       "secretKeyPlaceholder": "Enter Secret Key",
+      "credentialsHint": "Leave both keys blank to authenticate with the EC2/ECS instance IAM role.",
+      "credentialsPartialError": "Enter both the access key and the secret key, or leave both blank to use the instance IAM role.",
       "bucketLabel": "Bucket*",
       "bucketPlaceholder": "Enter Bucket",
       "regionLabel": "Region*",
@@ -210,6 +230,8 @@
     "moreConnectors": "More Connectors",
     "all": "All",
     "agents": "Agents",
+    "projects": "Projects",
+    "beta": "Beta",
     "searchChats": "Search Chats",
     "inbox": "Inbox",
     "notifications": "Notifications"
@@ -294,6 +316,7 @@
     "clearFilter": "Clear Filter"
   },
   "form": {
+    "leaveBlankToKeep": "Leave blank to keep the existing value.",
     "title": "Title",
     "description": "Description",
     "search": "Search",
@@ -319,7 +342,8 @@
     "confirmDeleteMultiple": "Are you sure you want to delete {{count}} items?",
     "cannotUndo": "This action cannot be undone.",
     "areYouSure": "Are you sure?",
-    "typeDeleteToConfirm": "Type DELETE to confirm",
+    "deleteKeyword": "DELETE",
+    "typeDeleteToConfirm": "Type {{keyword}} to confirm",
     "knowledgeBase": "knowledge base",
     "in": "in",
     "willBeDeleted": "will be deleted",
@@ -373,6 +397,7 @@
       "subtitleExisting": "Confirm or update your PipesHub server URL.",
       "label": "Server URL",
       "submit": "Connect",
+      "changeServer": "Change server",
       "errors": {
         "empty": "Please enter a server URL.",
         "invalid": "Please enter a valid URL (e.g. http://localhost:3000).",
@@ -391,6 +416,9 @@
     "continue": "Continue",
     "confirm": "Confirm",
     "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving...",
+    "create": "Create",
     "more": "More",
     "less": "Less",
     "viewAll": "View All",
@@ -400,7 +428,12 @@
     "language": "Language",
     "english": "English",
     "german": "German",
-    "rotateLandscape": "Rotate your device for the best experience"
+    "rotateLandscape": "Rotate your device for the best experience",
+    "errorOccurred": "An error occurred. Please try again.",
+    "beta": {
+      "label": "Beta",
+      "tooltip": "This feature is in beta and may change."
+    }
   },
   "units": {
     "bytes": "Bytes",
@@ -522,6 +555,14 @@
     "record": "record"
   },
   "chat": {
+    "recordActions": {
+      "preview": "Preview",
+      "open": "Open {{source}}",
+      "openIn": "Open in {{source}}",
+      "openInCollections": "Open in Collections",
+      "relevance": "Relevance: {{percent}}%"
+    },
+    "results": "Results",
     "greeting": "What do you want to explore today?",
     "heyUser": "Hey, {{name}} 👋",
     "heyUserDefaultName": "there",
@@ -530,6 +571,10 @@
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
     "voiceError": "Could not access microphone",
+    "noModelsAvailable": "No AI models are configured yet",
+    "failedToLoadModels": "Failed to load AI models",
+    "failedToLoadAgentConfig": "Failed to load this agent's model configuration",
+    "openModels": "Open Models",
     "connectorsCollectionsTitle": "Connectors and Collections",
     "connectorsTooltip": "Connectors and Collections",
     "connectorsDefaultScopeHint": "All connectors and collections are searched by default. Select specific ones below if you want to narrow the scope.",
@@ -551,6 +596,13 @@
       "resetDefaults": "Reset to defaults",
       "knowledgeScopeClearedWarning": "No knowledge sources are included for this run, so the agent will not search your connectors or collections for answers."
     },
+    "projectResources": {
+      "noConnectors": "No connectors enabled for this project.",
+      "noCollections": "No collections enabled for this project.",
+      "noActions": "No actions (toolsets) enabled for this project.",
+      "noMcpServers": "No MCP servers enabled for this project.",
+      "resetDefaults": "Reset to project defaults"
+    },
     "aiModelsTooltip": "AI Models",
     "attachmentTooltip": "Attach files",
     "micTooltip": "Voice input",
@@ -562,6 +614,7 @@
     "loadingConversation": "Loading conversation...",
     "recents": "Recents",
     "sharedChats": "Shared Chats",
+    "sharedBy": "Shared by {{name}}",
     "noSharedChats": "No shared chats",
     "yourChats": "Your Chats",
     "noChatsFound": "No chats found",
@@ -664,9 +717,10 @@
     "diagramRenderFailed": "Could not render diagram",
     "showDiagramSource": "Show source",
     "hideDiagramSource": "Hide source",
+    "stoppedMarker": "Stopped",
     "toasts": {
-      "stopStreamTitle": "Coming Soon",
-      "stopStreamDescription": "Stop Generation is not supported",
+      "stopStreamTitle": "Stopping…",
+      "stopStreamDescription": "The response will stop shortly. Any partial answer will be kept.",
       "editComingSoonTitle": "Coming Soon",
       "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
@@ -759,6 +813,44 @@
         ]
       }
     },
+    "demoBanner": "You're looking at Acme Corp, a small fictional company loaded as demo data. Try one of these, or",
+    "demoConnectYourOwn": "connect your own sources",
+    "demoSuggestions": {
+      "1": {
+        "text": "Why was the payment service architecture changed, and how was the decision made?",
+        "icons": [
+          "github",
+          "jira",
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "Which customers reported export timeouts, and what fixed it?",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      },
+      "3": {
+        "text": "What's our policy on being on-call over a public holiday?",
+        "icons": [
+          "sheets"
+        ]
+      },
+      "4": {
+        "text": "Who reviewed and approved PR #482 in the billing worker, and what did Dana ask for before it merged?",
+        "icons": [
+          "github"
+        ]
+      },
+      "5": {
+        "text": "What is the enterprise pricing strategy for 2026?",
+        "icons": [
+          "sheets",
+          "slack"
+        ]
+      }
+    },
     "askMoreQuestionSets": [
       [
         "What are the key challenges and how are they being addressed",
@@ -796,7 +888,132 @@
         "Are there any dependencies or blockers to be aware of",
         "What lessons have been learned so far"
       ]
-    ]
+    ],
+    "projects": {
+      "title": "Projects",
+      "newProject": "New project",
+      "noProjects": "No projects yet",
+      "failedToLoad": "Failed to load projects",
+      "moreProjects": "More projects",
+      "moveToProject": "Move to project",
+      "removeFromProject": "Remove from project",
+      "pinProject": "Pin",
+      "unpinProject": "Unpin",
+      "archiveProject": "Archive project",
+      "unarchiveProject": "Unarchive project",
+      "restoreSuccess": "Project restored",
+      "deleteProject": "Delete project",
+      "shareProject": "Share project",
+      "backToProjects": "All projects",
+      "backToProject": "Back to project",
+      "newChatInProject": "New chat",
+      "recentChats": "Recent chats",
+      "noChats": "No chats yet in this project",
+      "startChatInProject": "Start a chat in this project",
+      "createDialog": {
+        "title": "New project",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Q3 Marketing Plan",
+        "descriptionLabel": "Description",
+        "descriptionPlaceholder": "What's this project about? (optional)",
+        "instructionsLabel": "Instructions",
+        "instructionsPlaceholder": "Instructions the assistant should always follow in this project (optional)",
+        "create": "Create project",
+        "creating": "Creating…",
+        "nameRequired": "Name is required"
+      },
+      "workspace": {
+        "failedToLoad": "Failed to load this project",
+        "instructionsTitle": "Instructions",
+        "instructionsPlaceholder": "Add instructions the assistant should follow for every chat in this project…",
+        "noInstructions": "No instructions added yet",
+        "save": "Save",
+        "saving": "Saving…",
+        "editInstructions": "Edit instructions",
+        "noDescription": "No description",
+        "filesTitle": "Files",
+        "filesSubtitle": "Files here are searched only within this project.",
+        "uploadFiles": "Upload files",
+        "uploading": "Uploading…",
+        "noFiles": "No files yet",
+        "removeFile": "Remove file",
+        "connectorsTitle": "Connectors",
+        "connectorsSubtitle": "Chats in this project search only these connectors.",
+        "noConnectorsAvailable": "No connectors to add yet.",
+        "failedToLoadConnectors": "Failed to load connectors",
+        "updateConnectorsFailed": "Failed to update connectors",
+        "toolsTitle": "Tools & MCP",
+        "noToolsAvailable": "No authenticated actions or MCP servers to add yet.",
+        "knowledgeBaseUnavailable": "Could not prepare this project’s file storage",
+        "uploadSessionLabel_one": "{{count}} file",
+        "uploadSessionLabel_other": "{{count}} files",
+        "membersTitle": "Members",
+        "memberCount_one": "{{count}} member",
+        "memberCount_other": "{{count}} members",
+        "share": "Share",
+        "saveInstructionsFailed": "Failed to save instructions",
+        "updateToolsFailed": "Failed to update tools",
+        "updatePinFailed": "Failed to update pin status",
+        "updateArchiveFailed": "Failed to update archive status",
+        "shareRefreshFailed": "Failed to refresh sharing details",
+        "removeFileConfirmTitle": "Remove file",
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone.",
+        "heroTitle": "What should we work on?",
+        "heroSubtitle": "Every chat you start here inherits this project's instructions, files and tools.",
+        "addDescription": "Add a description",
+        "descriptionPlaceholder": "What's this project about?",
+        "descriptionSaveFailed": "Failed to save description",
+        "visibilityBadgePrivate": "Private",
+        "visibilityBadgeOrg": "Org",
+        "visibilityLabel": "Visibility",
+        "visibilityPrivate": "Private to you",
+        "visibilityOrg": "Visible to your organization",
+        "ownerLabel": "Owner",
+        "youLabel": "You",
+        "aboutTitle": "About",
+        "chatDefaultsTitle": "Chat defaults",
+        "modelLabel": "Model",
+        "projectSetupTitle": "Project setup",
+        "projectSetupProgress": "{{done}} / {{total}}",
+        "statusSet": "Set",
+        "statusNotSet": "Not set",
+        "filesStatusNone": "No files",
+        "filesStatusCount_one": "{{count}} file",
+        "filesStatusCount_other": "{{count}} files",
+        "filesStatusCountWithSize_one": "{{count}} file · {{size}}",
+        "filesStatusCountWithSize_other": "{{count}} files · {{size}}",
+        "connectorsStatusNone": "None",
+        "connectorsStatusCount_one": "{{count}} connected",
+        "connectorsStatusCount_other": "{{count}} connected",
+        "toolsStatusDefault": "Default",
+        "toolsStatusCount_one": "{{count}} enabled",
+        "toolsStatusCount_other": "{{count}} enabled",
+        "membersStatusOnlyYou": "Only you",
+        "suggestSummariseDocument": "Summarize a document",
+        "suggestPlanWork": "Plan a piece of work",
+        "suggestWriteInstructions": "Write the project instructions",
+        "suggestSummariseDocumentPrompt": "Summarize the most important document in this project's files.",
+        "suggestPlanWorkPrompt": "Help me plan a piece of work for this project. Break it down into concrete next steps."
+      },
+      "moveDialog": {
+        "title": "Move to project",
+        "noProjects": "You don't have any projects yet",
+        "removeOption": "No project",
+        "moving": "Moving…"
+      },
+      "deleteDialog": {
+        "title": "Delete this project?",
+        "description": "This removes the project and unlinks its chats. The chats themselves are not deleted.",
+        "confirm": "Delete project",
+        "deleting": "Deleting…",
+        "failed": "Failed to delete project"
+      },
+      "roles": {
+        "owner": "Owner",
+        "editor": "Editor",
+        "viewer": "Viewer"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -830,7 +1047,17 @@
       "actions": {
         "viewProfile": "View Profile",
         "changeRole": "Change Role",
+        "changeRoleConfirmTitle": "Change role?",
+        "changeRoleConfirmMessage": "Are you sure you want to change {{name}} from {{currentRole}} to {{newRole}}?",
+        "changeRoleConfirmButton": "Change Role",
+        "changeRoleSuccess": "Role updated",
+        "changeRoleSuccessDescription": "{{name}} is now {{role}}",
+        "changeRoleError": "Failed to change role",
+        "maxAdminsReachedTitle": "Cannot add another admin",
+        "maxAdminsReached": "An organization can have at most 5 admins.",
         "removeFromWorkspace": "Remove from Workplace",
+        "demoteAdminBeforeRemoveTitle": "Cannot remove admin",
+        "demoteAdminBeforeRemove": "Demote the admin to member, then remove them.",
         "removeUserTitle": "Remove user?",
         "removeUserMessage": "Are you sure you want to remove {{email}} from {{workspace}} workspace?",
         "removeButton": "Remove",
@@ -920,6 +1147,9 @@
     "groups": {
       "title": "Groups",
       "subtitle": "Create and manage groups to control access and permissions",
+      "enterpriseTitle": "Group permissions are available in the Enterprise Edition",
+      "enterpriseMessage": "Upgrade to the Enterprise Edition to use group permissions.",
+      "enterpriseContact": "Contact",
       "createGroup": "Create Group",
       "searchPlaceholder": "Search...",
       "emptyTitle": "You've not created any groups yet",
@@ -1211,7 +1441,67 @@
         "errorOptionalUrlInvalid": "Optional URLs must be valid http(s) addresses when provided.",
         "grantRequiredTitle": "Grant type required",
         "grantRequiredDescription": "At least one grant type must stay selected.",
-        "clientCredentialsWarning": "Client credentials tokens always access Pipeshub as the user who created this application — not as whoever calls the token endpoint. Users can still authorize this app for themselves using the authorization code flow."
+        "clientCredentialsWarning": "Client credentials tokens always access Pipeshub as the user who created this application — not as whoever calls the token endpoint. Within the scopes you grant it, the token can reach everything that person can reach, and it inherits their role, so an application created by an admin has admin access. It also stops working if that account is deleted. If this application also supports the authorization code flow, users can still authorize it for themselves that way."
+      }
+    },
+    "personalAccessTokens": {
+      "title": "Personal Access Tokens",
+      "subtitle": "Create long-lived tokens for your own scripts and integrations, like the MCP server. Only you see your tokens here.",
+      "newToken": "New token",
+      "emptyTitle": "No personal access tokens",
+      "emptyDescription": "Create a token to connect the PipesHub MCP server or your own scripts.",
+      "errorGeneric": "Failed to load personal access tokens",
+      "retry": "Retry",
+      "columnName": "Name",
+      "columnScopes": "Scopes",
+      "columnCreated": "Created",
+      "columnExpires": "Expires",
+      "columnLastUsed": "Last used",
+      "scopeCount": "{{count}} scopes",
+      "neverUsed": "Never",
+      "neverExpires": "Never",
+      "revokeAria": "Revoke {{name}}",
+      "revoke": {
+        "confirmTitle": "Revoke token?",
+        "confirmMessage": "Are you sure you want to revoke \"{{name}}\"? Anything using this token will stop working immediately. This action cannot be undone.",
+        "confirmButton": "Revoke",
+        "confirmLoading": "Revoking...",
+        "successTitle": "Token revoked",
+        "errorTitle": "Failed to revoke token"
+      },
+      "create": {
+        "panelTitle": "Create Personal Access Token",
+        "successPanelTitle": "Token Created",
+        "createButton": "Create token",
+        "doneButton": "Done",
+        "cancel": "Cancel",
+        "nameLabel": "Token name",
+        "namePlaceholder": "e.g. MCP server",
+        "errorNameRequired": "Enter a name for this token.",
+        "errorCreateTitle": "Failed to create token",
+        "expiryHeading": "Expiry",
+        "expiry30Days": "30 days",
+        "expiry90Days": "90 days",
+        "expiry365Days": "365 days",
+        "expiryNever": "Never",
+        "permissionsHeading": "Scopes",
+        "errorScopeRequired": "Select at least one scope.",
+        "selectAllScopes": "Select All",
+        "clearAllScopes": "Clear all",
+        "scopesLoading": "Loading scopes...",
+        "scopesLoadError": "Failed to load scopes.",
+        "scopesRetry": "Retry",
+        "successScreenTitle": "Token created",
+        "successScreenSubtitle": "Copy your token now — you won't be able to see it again.",
+        "tokenLabel": "Access token",
+        "tokenShownOnceWarning": "This token is shown only once. Store it somewhere safe.",
+        "showTokenAria": "Show token",
+        "hideTokenAria": "Hide token",
+        "copyTokenAria": "Copy token",
+        "pasteBlockLabel": "Ready to paste into your MCP config",
+        "copyPasteBlockAria": "Copy paste block",
+        "copySuccessTitle": "Copied",
+        "copyErrorTitle": "Could not copy"
       }
     },
     "aiModels": {
@@ -1245,6 +1535,8 @@
       "configUpdateModel": "Update Model",
       "configFillRequiredTooltip": "Fill in all required fields",
       "configSaveErrorFallback": "Failed to save model configuration",
+      "configSaveOutboundError": "PipesHub cannot reach this model provider from inside the container. Cloud providers need outbound internet — see deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveTimeoutError": "Request timed out while validating the model. Cloud providers need outbound internet from the PipesHub container — see deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configNoConfigRequired": "No configuration required for this provider.",
       "configDefaultModelNotice": "\"{{modelName}}\" will be used by the system by default.",
       "configSectionModelConfiguration": "Model Configuration",
@@ -1283,7 +1575,7 @@
         "sectionTitle": "Model Role Assignments",
         "sectionDescription": "Assign dedicated models for specific tasks. When not assigned, the default model is used.",
         "onboardingTitle": "How will your models be used?",
-        "onboardingTip": "Assign a small, cost-efficient model (e.g. gpt-5.4-mini, gemini-2.5-flash) for indexing tasks like summarisation and classification. Keep your most capable model (e.g. gpt-5.5 claude-sonnet) for query and agents where reasoning quality matters most.",
+        "onboardingTip": "Assign a small, cost-efficient model (e.g. gpt-5.6-luna, gemini-2.5-flash) for indexing tasks like summarisation and classification. Keep your most capable model (e.g. gpt-5.6-terra claude-sonnet) for query and agents where reasoning quality matters most.",
         "queryRole": "Query & Chat",
         "queryRoleSubtitle": "Search, agents & conversations",
         "queryRoleDescription": "Handles search, question answering, and AI agent responses. Use your most capable model here.",
@@ -1372,6 +1664,7 @@
         "labs": "Labs",
         "authentication": "Authentication",
         "connectors": "Connectors",
+        "mcpServers": "MCP Servers",
         "actions": "Actions",
         "bots": "Bots",
         "services": "Services",
@@ -1380,10 +1673,12 @@
         "prompts": "Prompts",
         "developerSettings": "Developer Settings",
         "oauth2": "OAuth 2.0 Apps",
+        "personalAccessTokens": "Personal Access Tokens",
         "profile": "Profile",
         "yourConnectors": "Your Personal Connectors",
         "yourActions": "Your actions",
         "yourSkills": "Your Skills",
+        "yourMcpServers": "Your MCP Servers",
         "archivedChats": "Archived Chats",
         "users": "Users",
         "groups": "Groups",
@@ -1391,7 +1686,8 @@
         "webSearch": "Web Search",
         "tenants": "Tenants",
         "superOrgs": "Organisations",
-        "oauthApps": "OAuth Apps"
+        "oauthApps": "OAuth Apps",
+        "serviceAccounts": "Service accounts"
       }
     },
     "actions": {
@@ -1696,6 +1992,10 @@
         "body": "You have <bold>Password</bold> and <bold>One-Time Password</bold> disabled. Users will only be able to sign in using:",
         "warningSingle": "Make sure {{method}} is fully configured and working before saving. If single sign-on fails due to misconfiguration, users may be locked out.",
         "warningMultiple": "Make sure all selected methods are fully configured and working before saving. If single sign-on fails due to misconfiguration, users may be locked out."
+      },
+      "userMethods": {
+        "heading": "User Sign-In Methods",
+        "subtitle": "Controls which sign-in methods are available to every user, across every organization."
       }
     },
     "connectors": {
@@ -1717,6 +2017,7 @@
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
       "emailVisibilityDocLink": "Email visibility setup guide →",
+      "personalConnectorLink": "Use {{name}} instead →",
       "toasts": {
         "loadError": "Failed to load connectors",
         "syncStarted": "{{name}} is now syncing",
@@ -1825,6 +2126,7 @@
         "redirectUrlHelperNonOauth": "Register the redirect/callback URL in your identity provider, then complete the fields below.",
         "noAuthRequired": "No authentication required for this connector",
         "emailVisibilityDocLink": "Email visibility setup guide →",
+        "personalConnectorLink": "Use {{name}} instead →",
         "oauthAppNameLabel": "OAuth app name",
         "oauthAppNamePlaceholder": "e.g., {{name}} OAuth",
         "oauthAppNameHelper": "This name is stored with the OAuth registration and appears when users pick a saved app for other instances.",
@@ -1840,6 +2142,8 @@
         "additionalSettingsDescription": "Configure connector-specific sync options",
         "nonEditableUrlFieldTooltip": "The website URL can't be changed after it's set.",
         "nonEditableLockedFieldTooltip": "This value can't be changed after it's set.",
+        "localFsDesktopOnlyBanner": "Local filesystem settings can only be changed in the PipesHub desktop app. This view is read-only.",
+        "localFsDesktopOnlySaveTooltip": "Open the PipesHub desktop app to change these settings.",
         "importDate": "Import start date",
         "importDateDescription": "Choose the date from which messages are imported",
         "importAllTime": "Import All Time Data",
@@ -1921,7 +2225,9 @@
           "needsAuth": "Needs auth",
           "needsAuthTooltip": "Configuration is saved but this instance still needs authentication.",
           "ready": "Complete",
-          "readyTooltip": "Configuration is complete and authenticated. Sync can run when enabled."
+          "readyTooltip": "Configuration is complete and authenticated. Sync can run when enabled.",
+          "desktopOffline": "Desktop offline",
+          "desktopOfflineTooltip": "The desktop app that owns this folder is not connected. Open it on that machine to sync."
         },
         "sync": {
           "kind": "Sync",
@@ -1932,6 +2238,14 @@
           "removing": "Removing",
           "removingTooltip": "This instance is being deleted."
         }
+      },
+      "localFsDesktop": {
+        "offlineToast": "Open the PipesHub desktop app on the machine that owns this folder to sync.",
+        "offlineNamedToast": "{{deviceName}}, the device that owns this folder, is not connected. Open the PipesHub desktop app on that device to sync.",
+        "unclaimedToast": "This connector has not been set up on a desktop yet. Open the PipesHub desktop app on the machine that owns this folder and enable sync there once.",
+        "ownedByOtherDeviceToast": "This connector belongs to {{deviceName}}. Enable sync from the PipesHub desktop app on that device.",
+        "ownedByOtherDeviceUnknownToast": "This connector belongs to another device. Enable sync from the PipesHub desktop app on that device.",
+        "deviceIdentityError": "Could not identify this device: {{error}}"
       },
       "schemaForm": {
         "tagsPlaceholder": "Type and press Enter to add tags",
@@ -2053,6 +2367,151 @@
         "failed": "Sync Failed"
       }
     },
+    "mcpServers": {
+      "searchPlaceholder": "Search MCP servers...",
+      "loading": "Loading MCP servers…",
+      "noResults": "No MCP servers match your search",
+      "addServer": "Add Server",
+      "custom": "Custom",
+      "inherited": "Inherited",
+      "inheritedDeleteTooltip": "Managed by parent organization",
+      "inheritedReadOnly": "This MCP server is inherited from a parent organization and cannot be edited here.",
+      "sharedAuth": "Shared admin auth",
+      "toolsCount_one": "{{count}} tool",
+      "toolsCount_other": "{{count}} tools",
+      "cta": {
+        "manage": "Manage",
+        "delete": "Delete",
+        "reauthenticate": "Reauthenticate",
+        "disconnect": "Disconnect",
+        "connect": "Connect",
+        "addInstance": "Add instance"
+      },
+      "status": {
+        "ready": "Ready",
+        "notConnected": "Not connected",
+        "needsAuth": "Needs auth"
+      },
+      "team": {
+        "title": "MCP Servers",
+        "subtitle": "Connect Model Context Protocol servers to extend what your team's agents can do.",
+        "emptyTitle": "No MCP servers yet",
+        "emptyDescription": "Add a server from the catalog or configure a custom one to get started."
+      },
+      "personal": {
+        "title": "MCP Servers",
+        "subtitle": "Authenticate with the MCP servers your admin has made available.",
+        "emptyTitle": "No MCP servers available",
+        "emptyDescription": "Your admin hasn't added any MCP servers yet."
+      },
+      "details": {
+        "breadcrumbLabel": "MCP Servers",
+        "refreshAll": "Refresh all",
+        "addInstance": "Add Another Instance",
+        "configuration": "CONFIGURATION",
+        "transport": "TRANSPORT",
+        "tools": "TOOLS",
+        "discoverTools": "Discover Tools",
+        "discoveredTools_one": "{{count}} tool available",
+        "discoveredTools_other": "{{count}} tools available",
+        "discovering": "Discovering tools…",
+        "discoveryError": "Tool discovery failed",
+        "discoveryNeedsAuth": "Authenticate to discover tools",
+        "retry": "Retry",
+        "noInstances": "No instances configured",
+        "authBannerTitle": "Authentication required",
+        "authBannerDescription": "Authenticate this MCP server so your team's agents can use it.",
+        "authBannerAuthenticatedTitle": "Connected",
+        "authBannerAuthenticatedDescription": "You can reauthenticate or disconnect this MCP server."
+      },
+      "deleteDialog": {
+        "title": "Delete MCP server?",
+        "body": "The server named \"{{name}}\" will be permanently removed. Any team members using it will lose access."
+      },
+      "toasts": {
+        "loadError": "Failed to load MCP servers",
+        "deleted": "MCP server deleted",
+        "deleteError": "Failed to delete MCP server",
+        "updated": "MCP server updated",
+        "created": "MCP server created",
+        "saveError": "Failed to save MCP server",
+        "authenticated": "Authenticated successfully",
+        "authenticateError": "Failed to authenticate",
+        "disconnected": "Disconnected successfully",
+        "disconnectError": "Failed to disconnect",
+        "credentialsSaveError": "Server saved, but credentials could not be saved. You can add them later from Manage.",
+        "discoveryError": "Failed to discover tools"
+      },
+      "authDialog": {
+        "title": "Authenticate with {{name}}",
+        "description": "Enter your credentials to connect this MCP server."
+      },
+      "form": {
+        "name": "Name",
+        "description": "Description",
+        "transport": "Transport",
+        "command": "Command",
+        "args": "Arguments",
+        "argsPlaceholder": "Add an argument",
+        "requiredEnv": "Required env",
+        "requiredEnvPlaceholder": "Add an env var name (e.g. API_KEY)",
+        "url": "URL",
+        "authMode": "Auth Mode",
+        "headerName": "Header Name",
+        "authorizationUrl": "Authorization URL",
+        "dcrHint": "Leave blank — PipesHub will detect and use dynamic client registration automatically when the server supports it",
+        "tokenUrl": "Token URL",
+        "scopes": "Scopes",
+        "scopesPlaceholder": "Add a scope",
+        "useAdminAuth": "Use shared admin authentication for all users",
+        "headerValue": "{{headerName}}",
+        "apiToken": "API Token",
+        "credentialsHeading": "Credentials (optional)",
+        "credentialsHint": "Add credentials now, or skip and connect later from the Connection & Tools tab.",
+        "multiEnvIncomplete": "Fill in every required environment variable, or leave them all blank to connect later.",
+        "oauthPairRequired": "Enter both the client ID and client secret, or leave both blank.",
+        "connectAfterCreateHint": "Save this server, then reopen Manage to connect it."
+      },
+      "configPanel": {
+        "editTitle": "Edit MCP Server",
+        "createTitle": "Add MCP Server",
+        "tabs": {
+          "configuration": "Configuration",
+          "connection": "Connection & Tools"
+        }
+      },
+      "oauthConfig": {
+        "saved": "OAuth app saved",
+        "saveError": "Failed to save OAuth app",
+        "title": "Configure OAuth App",
+        "description": "PipesHub automatically detects whether this server supports dynamic client registration. Client credentials are only needed when it doesn't.",
+        "alreadyConfigured": "An OAuth app is already configured for this server.",
+        "clientId": "Client ID",
+        "clientIdPlaceholder": "Enter client ID",
+        "clientSecret": "Client Secret",
+        "clientSecretPlaceholder": "Enter client secret",
+        "dcrProbing": "Checking whether this server can register itself automatically…",
+        "dcrSupportedHint": "This server supports automatic registration. PipesHub will register itself and no client credentials are required.",
+        "dcrUnsupportedHint": "This server requires a manually registered OAuth app. Create one with the callback URL below, then enter its client ID and secret.",
+        "dcrUnknownHint": "Couldn't confirm automatic registration support. If it isn't supported, register an OAuth app with the callback URL below and enter its client ID and secret.",
+        "callbackUrlLabel": "Callback URL",
+        "copyCallbackUrl": "Copy callback URL",
+        "callbackUrlCopied": "Callback URL copied",
+        "providerDocsLink": "View provider setup documentation"
+      },
+      "oauth": {
+        "completingTitle": "Completing sign-in…",
+        "processingHint": "Please wait while we finish connecting your account.",
+        "successTitle": "Connected successfully",
+        "successBody": "You can close this window and return to PipesHub.",
+        "failedTitle": "Connection failed",
+        "retryHint": "Something went wrong. Please close this window and try again.",
+        "providerError": "The provider returned an error: {{error}}",
+        "noCode": "No authorization code was returned.",
+        "noState": "No state parameter was returned.",
+        "backendRejected": "The server rejected the authorization request."
+      }
+    },
     "bots": {
       "subtitle": "Configure bot credentials and optionally map each bot to an agent",
       "loading": "Loading bots…",
@@ -2149,7 +2608,13 @@
       "status": {
         "active": "Active",
         "deprecated": "Deprecated",
-        "candidate": "Candidate"
+        "candidate": "Candidate",
+        "disabled": "Disabled"
+      },
+      "availability": {
+        "label": "Available to agents",
+        "description": "When off, this skill stays in your library but agents cannot discover or load it.",
+        "descriptionBuiltin": "When off, this built-in skill stays in the library but agents across the organization cannot discover or load it."
       },
       "cta": {
         "manage": "Manage",
@@ -2167,6 +2632,9 @@
         "createError": "Failed to create skill",
         "deprecated": "Skill \"{{name}}\" deprecated",
         "deprecateError": "Failed to deprecate skill",
+        "disabled": "Skill \"{{name}}\" disabled",
+        "enabled": "Skill \"{{name}}\" enabled",
+        "toggleError": "Failed to update skill availability",
         "deleted": "Skill \"{{name}}\" deleted",
         "deleteError": "Failed to delete skill",
         "imported": "Skill \"{{name}}\" imported",
@@ -2177,7 +2645,10 @@
         "rollbackError": "Failed to roll back",
         "candidateApproved": "Approved \"{{name}}\"",
         "candidateRejected": "Rejected \"{{name}}\"",
-        "candidateActionError": "Failed to update candidate"
+        "candidateActionError": "Failed to update candidate",
+        "conflict": "This skill was changed elsewhere",
+        "conflictDescription": "Reload the latest version, then re-apply your edits.",
+        "conflictReload": "Reload"
       },
       "builtinReadOnly": "This is a built-in skill and cannot be edited.",
       "editorPanel": {
@@ -2255,7 +2726,10 @@
         "confirmImport": "Import Skill",
         "source": "Source: {{source}}",
         "resourceCount": "{{count}} resource(s)",
-        "skippedBinary": "{{count}} binary file(s) were skipped (not supported yet)"
+        "skippedBinary": "{{count}} binary file(s) were skipped (not supported yet)",
+        "nameHint": "Lowercase kebab-case. Change this if the original name is already a built-in skill (for example pptx).",
+        "nameInvalid": "Name must be lowercase letters, numbers, and single hyphens.",
+        "originalName": "Original name: {{name}}"
       },
       "candidates": {
         "title": "Pending Skill Candidates",
@@ -2438,6 +2912,13 @@
         "groupsDescription": "User groups you belong to",
         "noGroups": "No user groups found"
       },
+      "authentication": {
+        "title": "Authentication",
+        "subtitle": "Sign-in methods enabled for your account. Managed by your workspace administrator.",
+        "methodsLabel": "Enabled sign-in methods",
+        "loading": "Loading…",
+        "none": "No sign-in methods enabled"
+      },
       "changeEmail": {
         "title": "Change Email",
         "description": "If you'd like to change the email address for your account, we'll send a verification link to your new company email account. This change will apply across all workspaces that you are a member of.",
@@ -2527,7 +3008,9 @@
         "redis": {
           "label": "Redis",
           "descriptionWithKvStore": "Caching, rate limiting, and configuration",
-          "description": "Caching and rate limiting"
+          "description": "Caching and rate limiting",
+          "modeCluster": "Cluster",
+          "modeMemorydb": "MemoryDB"
         },
         "mongodb": {
           "label": "MongoDB",
@@ -2691,15 +3174,15 @@
       "typeSelector": {
         "connectorLabel": "Connector type",
         "toolsetLabel": "Action type",
-        "loading": "Loading\u2026"
+        "loading": "Loading…"
       },
       "scope": {
         "team": "Team",
         "personal": "Personal"
       },
-      "loading": "Loading\u2026",
+      "loading": "Loading…",
       "search": {
-        "placeholder": "Search apps\u2026"
+        "placeholder": "Search apps…"
       },
       "empty": {
         "title": "No OAuth apps for {{typeLabel}}",
@@ -2729,7 +3212,7 @@
         "cancelButton": "Cancel",
         "createButton": "Create",
         "saveButton": "Save Changes",
-        "savingLabel": "Saving\u2026",
+        "savingLabel": "Saving…",
         "schemaError": "Failed to load schema for this type.",
         "genericError": "An error occurred. Please try again."
       },
@@ -2755,6 +3238,83 @@
         "loadToolsets": "Failed to load action OAuth apps.",
         "deleteGeneric": "Failed to delete OAuth app."
       }
+    },
+    "serviceAccounts": {
+      "title": "Service accounts",
+      "subtitle": "Machine identities, so automation reads with its own permissions instead of borrowing someone's.",
+      "newAccount": "New service account",
+      "errorGeneric": "Could not load service accounts.",
+      "retry": "Try again",
+      "emptyTitle": "No service accounts yet",
+      "emptyDescription": "A service account is how a script reads from PipesHub without signing in as a colleague. It sees only what you grant it, and it keeps working when people leave.",
+      "columnName": "Name",
+      "columnDescription": "What it is for",
+      "columnStatus": "Status",
+      "statusActive": "Active",
+      "statusDisabled": "Disabled",
+      "manageTokens": "Tokens",
+      "enable": "Enable",
+      "disable": "Disable",
+      "delete": "Delete",
+      "enabledTitle": "Service account enabled",
+      "disabledTitle": "Service account disabled",
+      "disabledBody": "Its tokens stopped working immediately, not just at the next sign-in.",
+      "updateErrorTitle": "Could not update the service account",
+      "deleteTitle": "Delete this service account?",
+      "deleteDescription": "{{name}} will stop working straight away, and every token it holds is revoked. Anything still using one of those tokens will start failing.",
+      "deleteSuccessTitle": "Service account deleted",
+      "deleteErrorTitle": "Could not delete the service account",
+      "create": {
+        "title": "New service account",
+        "intro": "Automation authenticates as this account instead of as a person, so what it can read is decided here rather than inherited from whoever set it up.",
+        "slugLabel": "Short name",
+        "slugHelp": "Lowercase letters, digits and single hyphens. This becomes part of the account's address and cannot be changed later.",
+        "slugLengthError": "Use between 3 and 48 characters.",
+        "slugFormatError": "Use lowercase letters, digits and single hyphens, not starting or ending with a hyphen.",
+        "nameLabel": "Display name",
+        "namePlaceholder": "Nightly sync",
+        "descriptionLabel": "What it is for",
+        "descriptionPlaceholder": "Reads the handbook for the release digest",
+        "note": "Nobody can sign in as a service account, and it is always a member, never an administrator. Give it access the same way you would a colleague: through groups and teams.",
+        "submit": "Create",
+        "successTitle": "Service account created",
+        "errorTitle": "Could not create the service account"
+      },
+      "tokens": {
+        "title": "Tokens",
+        "newToken": "New token",
+        "mint": "Create token",
+        "nameLabel": "What is this token for",
+        "namePlaceholder": "Release digest job",
+        "scopesLabel": "Scopes",
+        "scopesHelp": "Choose what this token may do. There is no default: a credential that runs unattended should hold the access someone chose for it.",
+        "expiryLabel": "Expires after",
+        "expiryDays": "{{count}} days",
+        "existing": "Tokens",
+        "none": "This account holds no tokens yet.",
+        "lastUsed": "Last used {{date}}",
+        "neverUsed": "Never used",
+        "expiresOn": "expires {{date}}",
+        "expiresInDays": "{{count}} days left",
+        "expired": "Expired",
+        "expiringSoon": "{{count}} token(s) expire soon. Create the replacement, move the integration across, then revoke the old one.",
+        "revoke": "Revoke",
+        "revokeSuccessTitle": "Token revoked",
+        "revokeErrorTitle": "Could not revoke the token",
+        "mintErrorTitle": "Could not create the token",
+        "loadErrorTitle": "Could not load tokens",
+        "copyNowTitle": "Copy this token now",
+        "copyNowBody": "This is the only time it is shown. Only its hash is stored, so it cannot be retrieved again.",
+        "disabledNote": "This account is disabled, so no new tokens can be created. Existing ones are listed below and can still be revoked.",
+        "rotationHelp": "To rotate: create the new token, move the integration across while both still work, then revoke the old one. Revoking first would break whatever is using it.",
+        "loading": "Loading tokens…",
+        "copy": "Copy token",
+        "revokeTitle": "Revoke this token?",
+        "revokeDescription": "\"{{name}}\" stops working immediately and cannot be brought back. Anything still using it will start failing. If you are rotating, create the replacement and move the integration across first."
+      },
+      "disableTitle": "Disable this service account?",
+      "disableDescription": "{{name}} stops working immediately — including every token it already holds, not just at the next sign-in. Anything using one of those tokens will start failing until you enable it again.",
+      "disableConfirm": "Disable"
     }
   },
   "filePreview": {
@@ -2782,6 +3342,7 @@
     "agentActionsMenuAria": "Agent menu",
     "agentMenuCreateAsServiceAgent": "Create as service agent",
     "agentMenuConvertToServiceAgent": "Convert to service agent",
+    "share": "Share",
     "shareWithOrg": "Share with everyone",
     "shareWithOrgTooltip": "Share this agent with everyone in your organization.",
     "serviceAccountShareTooltip": "Service agents are always shared with the organization.",
@@ -2819,6 +3380,9 @@
     "noCollections": "No collections available",
     "noSkills": "No skills yet — create or import one under Your Skills",
     "skillNodeTemplateDescription": "Custom skill your agent can invoke",
+    "skillDeprecated": "This skill has been deprecated",
+    "skillDeprecatedReplacedBy": "This skill has been deprecated. Use {{name}} instead.",
+    "skillDisabled": "This skill is disabled and won't be available to the agent until re-enabled",
     "collapse": "Collapse",
     "expand": "Expand",
     "serviceAccountCreated": "Service agent created. Configure each toolset with the key icon in the palette.",
@@ -2883,10 +3447,13 @@
     "startMessageLabel": "Start message",
     "modelSection": "Model",
     "toolsetsSection": "Toolsets",
+    "mcpServersSection": "MCP Servers",
     "skillsSection": "Skills",
+    "noSkillsAvailable": "No skills available",
     "inputSection": "Input",
     "responseSection": "Response",
     "connectModel": "Connect a model",
+    "usingOrgDefault": "Using organization default model",
     "optional": "Optional",
     "connectChatInput": "Connect chat input",
     "toChatOutput": "To chat output",
@@ -2898,6 +3465,10 @@
     "lineCount": "{{count}} lines",
     "instructionsLabel": "Instructions",
     "startingMessageLabel": "Starting message",
+    "defaultReasoningEffortLabel": "Default Reasoning Effort",
+    "defaultReasoningEffortHint": "Fallback reasoning effort used when the user doesn't choose one in chat.",
+    "sendUserContextLabel": "Send user & organization context",
+    "sendUserContextHint": "When off, this agent will not receive the user's name, email, or organization in its system prompt. It will rely on tools, actions, and knowledge sources instead.",
     "moreItems": "+{{count}} more",
     "toolsetNodeSubtitle": "Toolset",
     "toolsLabel": "Tools",
@@ -2929,6 +3500,8 @@
     "svcAcctCreateTitle": "Create service agent",
     "svcAcctConvertDesc": "This agent becomes a shared service agent: available across your organization, each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow.",
     "svcAcctCreateDesc": "You are creating a shared service agent: available across your organization, each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow.",
+    "svcAcctConvertDescNoOrg": "This agent becomes a service agent: each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow. Use the Share button to control who can access it.",
+    "svcAcctCreateDescNoOrg": "You are creating a service agent: each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow. Use the Share button to control who can access it.",
     "svcAcctConvertLabel": "Convert to service agent",
     "svcAcctCreateLabel": "Create service agent",
     "svcAcctConvertBusy": "Converting…",
@@ -2956,6 +3529,14 @@
     "toolsetCredentialsTitle": "Agent toolset credentials",
     "toolsetCredentialsBadge": "Service agent",
     "toolsetCredentialsDesc": "Stored for this agent only. Runs use these credentials for everyone.",
+    "mcpCredentialsTitle": "MCP server credentials",
+    "mcpCredentialsDesc": "Authenticate this MCP server so the agent can use its tools.",
+    "mcpServerDefaultName": "MCP Server",
+    "configureMcpTooltip": "Manage credentials",
+    "authenticateMcpTooltip": "Authenticate this MCP server",
+    "mcpAuthUpdatedNotify": "MCP authentication updated.",
+    "mcpAuthSaveError": "Failed to save MCP credentials.",
+    "mcpAuthRemoveError": "Failed to remove MCP credentials.",
     "loadingSchema": "Loading schema…",
     "fillRequiredFields": "Please fill in all required fields.",
     "fieldRequired": "{{field}} is required",
@@ -3126,10 +3707,39 @@
       "folder": "Folder",
       "connectorId": "Connector ID",
       "notAvailable": "N/A",
-      "typeEmail": "Email",
-      "typeTicket": "Ticket",
-      "typeWebpage": "Web page",
-      "typeMessage": "Message",
+      "recordTypes": {
+        "FILE": "File",
+        "DRIVE": "Drive",
+        "WEBPAGE": "Web page",
+        "DATABASE": "Database",
+        "DATASOURCE": "Data source",
+        "MESSAGE": "Message",
+        "MAIL": "Email",
+        "EMAIL": "Email",
+        "GROUP_MAIL": "Group email",
+        "TICKET": "Ticket",
+        "COMMENT": "Comment",
+        "INLINE_COMMENT": "Inline comment",
+        "CONFLUENCE_PAGE": "Confluence page",
+        "CONFLUENCE_BLOGPOST": "Confluence blog post",
+        "SHAREPOINT_PAGE": "SharePoint page",
+        "SHAREPOINT_LIST": "SharePoint list",
+        "SHAREPOINT_LIST_ITEM": "SharePoint list item",
+        "SHAREPOINT_DOCUMENT_LIBRARY": "SharePoint document library",
+        "LINK": "Link",
+        "PROJECT": "Project",
+        "PULL_REQUEST": "Pull request",
+        "MEETING": "Meeting",
+        "PRODUCT": "Product",
+        "DEAL": "Deal",
+        "CASE": "Case",
+        "TASK": "Task",
+        "ARTIFACT": "Artifact",
+        "CODE_FILE": "Code file",
+        "SQL_TABLE": "SQL table",
+        "SQL_VIEW": "SQL view",
+        "OTHERS": "Other"
+      },
       "mailSubject": "Subject",
       "ticketSummary": "Summary",
       "ticketDescription": "Description"
@@ -3143,6 +3753,7 @@
     "errorTitle": "Authorization error",
     "signedInAs": "Signed in as {{display}}",
     "requestHeading": "This application is requesting access to:",
+    "unreviewedApp": "This application registered itself. No administrator reviewed it.",
     "legalNotice": "By clicking “Allow”, you authorize {{appName}} to access your data as described above.",
     "privacyPolicy": "Privacy Policy",
     "deny": "Deny",
@@ -3175,6 +3786,18 @@
       "server_error": "An unexpected error occurred on the server. Please try again later."
     }
   },
+  "oauthDevice": {
+    "title": "Connect a device",
+    "codeLabel": "Enter the code shown in your terminal",
+    "phishingWarning": "Only continue if you started this yourself on a device you control. If someone sent you this code, close this page.",
+    "codePlaceholder": "ABCD-EFGH",
+    "continue": "Continue",
+    "loading": "Looking up this device…",
+    "doneTitle": "Device connected",
+    "doneLine": "You can return to the terminal. This window can be closed.",
+    "deniedTitle": "Request denied",
+    "deniedLine": "The device was not granted access."
+  },
   "auth": {
     "titleSection": {
       "defaultTitle": "Welcome to Pipeshub",
@@ -3185,14 +3808,14 @@
       "subtitle": "Welcome to Pipeshub -- let's get started!",
       "firstNameLabel": "First Name*",
       "lastNameLabel": "Last Name*",
-      "orgNameLabel": "Organization Name*",
+      "orgNameLabel": "Workspace Name*",
       "emailLabel": "Your Email*",
       "passwordLabel": "Password*",
       "confirmPasswordLabel": "Confirm Password*",
       "preferredLanguageLabel": "Preferred Language",
       "firstNamePlaceholder": "Enter your first name",
       "lastNamePlaceholder": "Enter your last name",
-      "orgNamePlaceholder": "Enter your organization name",
+      "orgNamePlaceholder": "Enter your workspace name",
       "emailPlaceholder": "Enter your email",
       "passwordPlaceholder": "Enter your password",
       "confirmPasswordPlaceholder": "Confirm your password",
@@ -3215,7 +3838,7 @@
       "errors": {
         "firstNameRequired": "First name is required.",
         "lastNameRequired": "Last name is required.",
-        "orgNameRequired": "Organization name is required.",
+        "orgNameRequired": "Workspace name is required.",
         "emailRequired": "Email is required.",
         "emailInvalid": "Please enter a valid email address.",
         "passwordRequired": "Password is required.",
@@ -3232,9 +3855,7 @@
         "emailNotePre": "Make sure the email you registered with —",
         "emailNotePost": "— is the same one used in your organization's apps so your permissions are recognized correctly.",
         "cancelButton": "Cancel",
-        "signUpButton": "Sign Up",
-        "verificationNoteTitle": "Verification required",
-        "verificationNoteBody": "A verification link will be sent to the email above. Your organization will only be accessible after you verify it."
+        "signUpButton": "Sign Up"
       }
     },
     "login": {

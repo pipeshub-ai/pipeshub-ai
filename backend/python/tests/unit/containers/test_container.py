@@ -1,6 +1,8 @@
 """Tests for container module: BaseAppContainer initialization and provider registration."""
 
 import asyncio
+import contextlib
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -85,6 +87,58 @@ class TestBaseAppContainer:
         assert hasattr(container, "user_creds_lock")
         assert hasattr(container, "logger")
         assert hasattr(container, "config_service")
+        assert hasattr(container, "redis_provider")
+
+    def test_redis_provider_is_a_resource(self) -> None:
+        """Phase 5 (R11): redis_provider is a container Resource, not a
+        per-injection Factory -- every consumer in this container shares one
+        `IRedisConnectionProvider`, and its connections are closed on
+        container shutdown. Resource (rather than Singleton) because building
+        it requires awaiting `ConfigurationService.get_redis_config()`, the
+        same shape the other stateful providers in `containers/indexing.py`
+        already use."""
+        assert isinstance(BaseAppContainer.redis_provider, providers.Resource)
+
+    @pytest.mark.asyncio
+    async def test_redis_provider_resolves_from_the_stored_config(
+        self, monkeypatch
+    ) -> None:
+        """The provider is built from `get_redis_config()` (the encrypted KV
+        store), not `REDIS_*` env alone -- otherwise it is a *different*
+        fingerprint from every real call site and becomes a second provider,
+        which on cluster means a second connection to every node."""
+        from app.containers.container import _build_redis_provider
+        from app.services.redis.connection_provider_factory import (
+            reset_redis_provider_registry,
+        )
+
+        monkeypatch.delenv("REDIS_MODE", raising=False)
+        reset_redis_provider_registry()
+
+        redis_config = SimpleNamespace(
+            host="stored-host", port=6380, password="stored-pw", db=0, tls=False
+        )
+        config_service = MagicMock()
+        config_service.get_redis_config = AsyncMock(return_value=redis_config)
+
+        agen = _build_redis_provider(config_service)
+        provider = await agen.__anext__()
+        try:
+            assert provider.mode == "standalone"
+            assert provider.connection_url().startswith("redis://:stored-pw@stored-host:6380")
+        finally:
+            with contextlib.suppress(StopAsyncIteration):
+                await agen.__anext__()
+            reset_redis_provider_registry()
+
+    def test_redis_provider_override(self):
+        """redis_provider can be swapped for a fake in tests (DI pattern),
+        the same way config_service already supports `.override()`."""
+        container = BaseAppContainer()
+        fake_provider = MagicMock()
+        container.redis_provider.override(providers.Object(fake_provider))
+        assert container.redis_provider() is fake_provider
+        container.redis_provider.reset_override()
 
     def test_init_class_method(self):
         """Test the init class method creates a container."""

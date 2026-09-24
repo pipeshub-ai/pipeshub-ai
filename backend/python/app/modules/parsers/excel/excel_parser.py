@@ -742,7 +742,7 @@ class ExcelParser:
                         break  # Found empty column, stop expanding left
 
                 column_count = max_col - start_col + 1
-                self.logger.info(f"Table boundaries: rows [{start_row}-{max_row}], cols [{start_col}-{max_col}], column_count={column_count}")
+                self.logger.debug(f"Table boundaries: rows [{start_row}-{max_row}], cols [{start_col}-{max_col}], column_count={column_count}")
 
                 # Step 2: Extract first few rows for header detection
                 first_rows = []
@@ -756,7 +756,7 @@ class ExcelParser:
 
                 # Step 3: Detect headers with LLM
                 detection = await self.detect_excel_headers_with_llm(first_rows, llm)
-                self.logger.info(f"Header detection result: has_headers={detection.has_headers}, num_header_rows={detection.num_header_rows}, confidence={detection.confidence}")
+                self.logger.debug(f"Header detection result: has_headers={detection.has_headers}, num_header_rows={detection.num_header_rows}, confidence={detection.confidence}")
 
                 # Step 4: Determine headers and data start row
                 headers = []
@@ -766,21 +766,21 @@ class ExcelParser:
                     # Single row header - use directly
                     headers = first_rows[0] if first_rows else []
                     data_start_row = start_row + 1
-                    self.logger.info(f"Using single-row headers: {headers}")
+                    self.logger.debug(f"Using single-row headers: {headers}")
                 elif detection.has_headers and detection.num_header_rows > 1:
                     # Multi-row headers: concatenate them into single-row headers
                     multirow_headers = first_rows[:detection.num_header_rows]
                     data_start_row = start_row + detection.num_header_rows
-                    self.logger.info(f"Multi-row headers detected ({detection.num_header_rows} rows), will concatenate into single-row headers")
+                    self.logger.debug(f"Multi-row headers detected ({detection.num_header_rows} rows), will concatenate into single-row headers")
 
                     # Concatenate multi-row headers directly (no LLM)
                     headers = self._concatenate_multirow_headers(multirow_headers, column_count)
-                    self.logger.info(f"Concatenated headers: {headers}")
+                    self.logger.debug(f"Concatenated headers: {headers}")
                 else:
                     # No headers: all rows are data, generate headers from data
                     data_start_row = start_row
                     sample_start = start_row
-                    self.logger.info("No headers detected, will generate headers from data")
+                    self.logger.debug("No headers detected, will generate headers from data")
 
                     # Extract a bounded subset of rows for sampling to avoid scanning massive tables.
                     all_rows = []
@@ -795,11 +795,11 @@ class ExcelParser:
 
                     # Select representative sample rows
                     sample_rows = self._select_representative_sample_rows(all_rows, MAX_HEADER_GENERATION_ROWS)
-                    self.logger.info(f"Selected {len(sample_rows)} representative sample rows for header generation")
+                    self.logger.debug(f"Selected {len(sample_rows)} representative sample rows for header generation")
 
                     # Generate headers with LLM
                     headers = await self.generate_excel_headers_with_llm(sample_rows, column_count, llm)
-                    self.logger.info(f"Generated headers: {headers}")
+                    self.logger.debug(f"Generated headers: {headers}")
 
                 # Normalize headers to match column count
                 if headers:

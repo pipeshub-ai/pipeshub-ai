@@ -10,6 +10,11 @@ import { ConnectorIcon } from '@/app/components/ui';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import {
+  useFeatureFlagsStore,
+  selectActionsEnabled,
+  selectFeatureFlagsLoaded,
+} from '@/lib/store/feature-flags-store';
 import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import {
   ToolsetsApi,
@@ -577,15 +582,21 @@ function TeamActionsAccessGate() {
   const router = useRouter();
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
 
   useEffect(() => {
     if (!isProfileInitialized) return;
     if (isAdmin !== true) {
       router.replace('/workspace/actions/personal/');
+      return;
     }
-  }, [isProfileInitialized, isAdmin, router]);
+    if (flagsLoaded && !actionsEnabled) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, flagsLoaded, actionsEnabled, router]);
 
-  if (!isProfileInitialized || isAdmin !== true) {
+  if (!isProfileInitialized || isAdmin !== true || (flagsLoaded && !actionsEnabled)) {
     return null;
   }
 

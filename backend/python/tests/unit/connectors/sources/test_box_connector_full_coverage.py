@@ -4,9 +4,11 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
@@ -90,6 +92,12 @@ def mock_data_entities_processor():
     proc.get_all_active_users = AsyncMock(return_value=[MagicMock(email="user@test.com")])
     proc.get_all_app_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_group_by_external_id = AsyncMock(return_value=None)
+    proc.get_app_user_by_email = AsyncMock(return_value=None)
+    proc.get_all_user_groups = AsyncMock(return_value=[])
+    proc.get_records_by_parent = AsyncMock(return_value=[])
+    proc.remove_user_access_to_record = AsyncMock()
     return proc
 
 
@@ -299,14 +307,7 @@ class TestBoxProcessEventBatch:
 
         existing_record = MagicMock()
         existing_record.mime_type = "application/pdf"
-        tx = _make_mock_tx_store(existing_record=existing_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         await box_connector._process_event_batch(events)
 
@@ -361,14 +362,7 @@ class TestBoxProcessEventBatch:
 
         folder_record = MagicMock()
         folder_record.mime_type = MimeTypes.FOLDER.value
-        tx = _make_mock_tx_store(existing_record=folder_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=folder_record)
         box_connector._remove_user_access_from_folder_recursively = AsyncMock()
 
         await box_connector._process_event_batch(events)
@@ -617,27 +611,13 @@ class TestBoxSyncFolderContentsRecursively:
 class TestBoxEnsureParentFoldersExist:
     async def test_folder_already_exists(self, box_connector):
         existing = MagicMock()
-        tx = _make_mock_tx_store(existing_record=existing)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         await box_connector._ensure_parent_folders_exist("owner1", ["f1"])
         box_connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     async def test_folder_not_exists_creates(self, box_connector):
-        tx = _make_mock_tx_store(existing_record=None)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        box_connector.data_store_provider = MagicMock()
-        box_connector.data_store_provider.transaction = _transaction
+        box_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         box_connector.data_source.folders_get_folder_by_id = AsyncMock(
             return_value=MagicMock(success=True, data={})
@@ -665,8 +645,10 @@ class TestBoxExecuteDeletions:
 class TestBoxGetSignedUrl:
     async def test_no_data_source(self, box_connector):
         box_connector.data_source = None
-        result = await box_connector.get_signed_url(MagicMock())
-        assert result is None
+        # Not "file missing" - the connector itself is not connected.
+        with pytest.raises(HTTPException) as exc_info:
+            await box_connector.get_signed_url(MagicMock())
+        assert exc_info.value.status_code == 409
 
     async def test_success(self, box_connector):
         record = MagicMock()
@@ -693,8 +675,29 @@ class TestBoxGetSignedUrl:
         box_connector.data_source.downloads_get_download_file_url = AsyncMock(
             return_value=MagicMock(success=False, error="denied")
         )
-        result = await box_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await box_connector.get_signed_url(record)
+        # No status to map, so a generic failure - never an invented 404.
+        assert exc_info.value.status_code == 500
+
+    async def test_expired_token_is_not_reported_as_deleted(self, box_connector):
+        record = MagicMock()
+        record.external_record_id = "f1"
+        record.external_record_group_id = "u1"
+        record.record_name = "doc.pdf"
+        record.id = "r1"
+
+        class _BoxAPIError(Exception):
+            response_info = SimpleNamespace(status_code=401)
+
+        box_connector.data_source.set_as_user_context = AsyncMock()
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+        box_connector.data_source.downloads_get_download_file_url = AsyncMock(
+            side_effect=_BoxAPIError("token expired")
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await box_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     async def test_exception(self, box_connector):
         record = MagicMock()
@@ -705,8 +708,10 @@ class TestBoxGetSignedUrl:
             side_effect=Exception("error")
         )
         box_connector.data_source.clear_as_user_context = AsyncMock()
-        result = await box_connector.get_signed_url(record)
-        assert result is None
+        # The SDK failure must propagate, not collapse into None -> 404.
+        with pytest.raises(HTTPException) as exc_info:
+            await box_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     async def test_no_context_user_id(self, box_connector):
         record = MagicMock()
@@ -1015,10 +1020,6 @@ class TestBoxProcessBoxEntryFileExtensionFilter:
         assert result is None
 
     async def test_shared_with_me_group_link(self, box_connector):
-        shared_group = MagicMock()
-        shared_group.id = "sg1"
-        provider = _make_mock_data_store_provider(record_group=shared_group)
-        box_connector.data_store_provider = provider
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
             return_value=MagicMock(success=False, error="None")
         )

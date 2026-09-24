@@ -966,14 +966,13 @@ class TestRunSyncSitemap:
 class TestCreateConnectorFactory:
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.web.connector.DataSourceEntitiesProcessor") as mock_dep:
-            mock_dep_instance = MagicMock()
-            mock_dep_instance.initialize = AsyncMock()
-            mock_dep.return_value = mock_dep_instance
-            logger = MagicMock()
-            dsp = MagicMock()
-            cs = AsyncMock()
-            conn = await WebConnector.create_connector(
-                logger, dsp, cs, "wc-factory", "team", "test-user-id"
-            )
-            assert isinstance(conn, WebConnector)
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        logger = MagicMock()
+        dsp = MagicMock()
+        cs = AsyncMock()
+        conn = await WebConnector.create_connector(
+            logger, dsp, cs, "wc-factory", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(conn, WebConnector)

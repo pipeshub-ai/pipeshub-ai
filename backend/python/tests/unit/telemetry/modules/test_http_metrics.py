@@ -1,7 +1,12 @@
 """Unit tests for app.telemetry.modules.http_metrics."""
 
 from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.http_metrics import HTTP_REQUEST_DURATION, HTTP_REQUESTS
+from app.telemetry.modules import http_metrics
+from app.telemetry.modules.http_metrics import (
+    HTTP_REQUEST_DURATION,
+    HTTP_REQUESTS,
+    bound_route,
+)
 
 
 class TestHttpMetrics:
@@ -47,3 +52,18 @@ class TestHttpMetrics:
         le_025 = next(line for line in bucket_lines if 'le="0.25"' in line)
         assert le_01.endswith(" 0.0")
         assert le_025.endswith(" 1.0")
+
+
+class TestBoundRoute:
+    def test_passes_routes_through_under_the_cap(self):
+        assert bound_route("/api/v1/br-a") == "/api/v1/br-a"
+        assert bound_route("/api/v1/br-a") == "/api/v1/br-a"
+
+    def test_collapses_new_routes_to_other_once_cap_is_reached(self, monkeypatch):
+        monkeypatch.setattr(
+            http_metrics, "_seen_routes", {f"/r/{i}" for i in range(300)}
+        )
+
+        assert bound_route("/api/v1/br-overflow") == "other"
+        # Routes seen before the cap keep their own label.
+        assert bound_route("/r/0") == "/r/0"

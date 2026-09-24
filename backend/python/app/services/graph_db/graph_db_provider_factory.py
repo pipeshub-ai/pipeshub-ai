@@ -13,11 +13,14 @@ Design Pattern: Factory Method Pattern
 
 import os
 from logging import Logger
+from typing import TYPE_CHECKING
 
 from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+if TYPE_CHECKING:
+    from app.services.cache.interface import IAccessibleRecordsCache
 
 
 class GraphDBProviderFactory:
@@ -40,6 +43,7 @@ class GraphDBProviderFactory:
     async def create_provider(
         logger: Logger,
         config_service: ConfigurationService,
+        accessible_records_cache: "IAccessibleRecordsCache | None" = None,
     ) -> IGraphDBProvider:
         """
         Create and initialize a graph database provider.
@@ -92,6 +96,7 @@ class GraphDBProviderFactory:
                 provider = await GraphDBProviderFactory._create_neo4j_provider(
                     logger=logger,
                     config_service=config_service,
+                    accessible_records_cache=accessible_records_cache,
                 )
                 return provider
 
@@ -144,15 +149,17 @@ class GraphDBProviderFactory:
     async def _create_neo4j_provider(
         logger: Logger,
         config_service: ConfigurationService,
-    ) -> Neo4jProvider:
+        accessible_records_cache: "IAccessibleRecordsCache | None" = None,
+    ) -> IGraphDBProvider:
         """
         Create and connect a Neo4j provider.
 
         Args:
             logger: Logger instance
             config_service: Configuration service
+            accessible_records_cache: Optional accessible-record map cache
         Returns:
-            Neo4jProvider: Connected Neo4j provider
+            IGraphDBProvider: Connected Neo4j provider
 
         Raises:
             ConnectionError: If unable to connect to Neo4j
@@ -160,10 +167,12 @@ class GraphDBProviderFactory:
         try:
             logger.debug("🔧 Creating Neo4j provider...")
 
-            # Create provider instance
+            from app.edition_services import Neo4jProvider
+
             provider = Neo4jProvider(
                 logger=logger,
                 config_service=config_service,
+                accessible_records_cache=accessible_records_cache,
             )
 
             logger.debug("🔌 Connecting Neo4j provider...")

@@ -7,7 +7,7 @@ Supports: sparse + dense named vectors, RRF prefetch/fusion.
 import asyncio
 import threading
 import time
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, NamedTuple, Optional, Union
 
 from qdrant_client import AsyncQdrantClient  # type: ignore
 from qdrant_client.http.models import (  # type: ignore
@@ -30,6 +30,7 @@ from qdrant_client.http.models import (  # type: ignore
     SparseIndexParams,
     SparseVectorParams,
     VectorParams,
+    VectorParamsDiff,
 )
 
 from app.config.configuration_service import ConfigurationService
@@ -58,8 +59,21 @@ from app.services.vector_db.models import (
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.utils import QdrantUtils
 from app.utils.logger import create_logger
+from app.services.resource_governor.feedback import get_default_downstream_feedback
 
 logger = create_logger("qdrant_service")
+
+
+def _report_upsert_failure(error: BaseException) -> None:
+    """The indexing governor narrows its pools when the vector store cannot
+    keep up; a timeout and an outright failure are told apart because one
+    slow batch is not the same signal as a store that is down."""
+    feedback = get_default_downstream_feedback()
+    if isinstance(error, asyncio.TimeoutError) or "timeout" in type(error).__name__.lower():
+        feedback.report_timeout("qdrant")
+    else:
+        feedback.report_unavailable("qdrant")
+
 
 
 def _is_not_found_error(exc: Exception) -> bool:
@@ -86,7 +100,146 @@ _QDRANT_CAPABILITIES = VectorDBCapabilities(
     supports_sparse_vectors=True,
     supports_server_side_text_search=False,
     supported_fusion_methods=[FusionMethod.RRF],
+    supports_multi_collection=True,
+    max_recommended_collections=1000,
 )
+
+
+def _build_quantization_config(config: CollectionConfig) -> Optional[object]:
+    """Translate the provider-agnostic quantization knobs into a Qdrant config.
+
+    NONE means "no quantization" — returns None, letting Qdrant use its own default.
+    """
+    q_type = config.quantization
+    if q_type == QuantizationType.NONE:
+        return None
+    if q_type == QuantizationType.PRODUCT:
+        return ProductQuantization(
+            product=ProductQuantizationConfig(
+                compression=CompressionRatio.X4,
+                always_ram=config.quantization_always_ram,
+            )
+        )
+    if q_type == QuantizationType.BINARY:
+        return BinaryQuantization(
+            binary=BinaryQuantizationConfig(always_ram=config.quantization_always_ram)
+        )
+    return ScalarQuantization(
+        scalar=ScalarQuantizationConfig(
+            type=ScalarType.INT8,
+            quantile=0.95,
+            always_ram=config.quantization_always_ram,
+        )
+    )
+
+
+class StoragePatch(NamedTuple):
+    """One pending storage-layout change and the update_collection kwargs for it."""
+
+    field: str
+    kwargs: dict
+
+
+def _as_text(value: object) -> str:
+    return str(getattr(value, "value", value) or "").lower()
+
+
+def _optimizers_idle(info: object) -> bool:
+    """True only when the collection is fully settled.
+
+    Green only. "yellow" means a rebuild is in flight and "red" means the
+    collection is unhealthy, but "grey" means optimizations are *pending* — and
+    stacking another config change onto queued work is exactly how rebuild waves
+    multiply peak disk and memory. Requiring green also serialises concurrent
+    replicas: the first patch turns the collection yellow, so the others defer.
+    """
+    if _as_text(getattr(info, "optimizer_status", None)) != "ok":
+        return False
+    return _as_text(getattr(info, "status", None)) == "green"
+
+
+def _named(container: object, name: str) -> Optional[object]:
+    """Read one entry from a Qdrant named-vector mapping, tolerating unnamed configs."""
+    if isinstance(container, dict):
+        return container.get(name)
+    return container
+
+
+def _current_always_ram(quantization_config: object) -> Optional[bool]:
+    for attr in ("scalar", "product", "binary"):
+        inner = getattr(quantization_config, attr, None)
+        if inner is not None:
+            return getattr(inner, "always_ram", None)
+    return None
+
+
+def _pending_storage_patches(
+    info: object, config: CollectionConfig
+) -> List[StoragePatch]:
+    """List the storage-layout changes still needed, in the order they must run.
+
+    Ordering is deliberate: bounding optimizer concurrency comes first so every
+    later rebuild costs one segment of transient disk rather than many, and
+    releasing the RAM-pinned quantized copy comes next so the heavier vector
+    rewrite has headroom to work in.
+    """
+    collection_config = getattr(info, "config", None)
+    params = getattr(collection_config, "params", None)
+    pending: List[StoragePatch] = []
+
+    optimizer_config = getattr(collection_config, "optimizer_config", None)
+    if getattr(optimizer_config, "max_optimization_threads", None) != 1:
+        pending.append(
+            StoragePatch(
+                "optimizers.max_optimization_threads",
+                {"optimizers_config": OptimizersConfigDiff(max_optimization_threads=1)},
+            )
+        )
+
+    always_ram = _current_always_ram(getattr(collection_config, "quantization_config", None))
+    if always_ram is not None and always_ram != config.quantization_always_ram:
+        quantization = _build_quantization_config(config)
+        if quantization is not None:
+            pending.append(
+                StoragePatch(
+                    "quantization.always_ram", {"quantization_config": quantization}
+                )
+            )
+
+    dense = _named(getattr(params, "vectors", None), "dense")
+    if dense is not None and bool(getattr(dense, "on_disk", False)) != config.on_disk_vectors:
+        pending.append(
+            StoragePatch(
+                "vectors.dense.on_disk",
+                {"vectors_config": {"dense": VectorParamsDiff(on_disk=config.on_disk_vectors)}},
+            )
+        )
+
+    sparse = _named(getattr(params, "sparse_vectors", None), "sparse")
+    sparse_index = getattr(sparse, "index", None)
+    if sparse_index is not None and bool(getattr(sparse_index, "on_disk", False)) != config.on_disk_sparse:
+        pending.append(
+            StoragePatch(
+                "sparse.index.on_disk",
+                {
+                    "sparse_vectors_config": {
+                        "sparse": SparseVectorParams(
+                            index=SparseIndexParams(on_disk=config.on_disk_sparse)
+                        )
+                    }
+                },
+            )
+        )
+
+    hnsw = getattr(collection_config, "hnsw_config", None)
+    if hnsw is not None and bool(getattr(hnsw, "on_disk", False)) != config.on_disk_hnsw:
+        pending.append(
+            StoragePatch(
+                "hnsw.on_disk", {"hnsw_config": HnswConfigDiff(on_disk=config.on_disk_hnsw)}
+            )
+        )
+
+    return pending
 
 
 class QdrantService(IVectorDBService):
@@ -172,12 +325,12 @@ class QdrantService(IVectorDBService):
 
     async def connect(self) -> None:
         try:
-            if isinstance(self.config_service, ConfigurationService):
+            if isinstance(self.config_service, QdrantConfig):
+                raw = self.config_service.qdrant_config
+            else:
                 raw = await self.config_service.get_config(
                     config_node_constants.QDRANT.value
                 )
-            else:
-                raw = self.config_service.qdrant_config
 
             if not raw:
                 raise ValueError("Qdrant configuration not found")
@@ -308,12 +461,16 @@ class QdrantService(IVectorDBService):
             effective_dim = config.mrl.dimensions
 
         vectors_config = {
-            "dense": VectorParams(size=effective_dim, distance=qdrant_distance)
+            "dense": VectorParams(
+                size=effective_dim,
+                distance=qdrant_distance,
+                on_disk=config.on_disk_vectors,
+            )
         }
         sparse_vectors_config = (
             {
                 "sparse": SparseVectorParams(
-                    index=SparseIndexParams(on_disk=False),
+                    index=SparseIndexParams(on_disk=config.on_disk_sparse),
                     modifier=Modifier.IDF if config.sparse_idf else None,
                 )
             }
@@ -322,60 +479,69 @@ class QdrantService(IVectorDBService):
         )
         optimizers_config = OptimizersConfigDiff(default_segment_number=8)
 
-        # Build HNSW config from knobs (only forward non-None values)
-        hnsw_config: Optional[HnswConfigDiff] = None
+        hnsw_kwargs: dict = {"on_disk": config.on_disk_hnsw}
         if config.hnsw is not None:
-            hnsw_kwargs = {}
             if config.hnsw.m is not None:
                 hnsw_kwargs["m"] = config.hnsw.m
             if config.hnsw.ef_construct is not None:
                 hnsw_kwargs["ef_construct"] = config.hnsw.ef_construct
             if config.hnsw.full_scan_threshold is not None:
                 hnsw_kwargs["full_scan_threshold"] = config.hnsw.full_scan_threshold
-            if hnsw_kwargs:
-                hnsw_config = HnswConfigDiff(**hnsw_kwargs)
+        hnsw_config = HnswConfigDiff(**hnsw_kwargs)
 
-        # Build quantization config from knobs.
-        # NONE means "no quantization" — pass None, letting Qdrant use its own default.
-        # SCALAR (the CollectionConfig default) preserves the original INT8 behaviour.
-        quantization_config: Optional[object]
-        q_type = config.quantization
-        if q_type == QuantizationType.NONE:
-            quantization_config = None
-        elif q_type == QuantizationType.PRODUCT:
-            quantization_config = ProductQuantization(
-                product=ProductQuantizationConfig(
-                    compression=CompressionRatio.X4,
-                    always_ram=True,
-                )
-            )
-        elif q_type == QuantizationType.BINARY:
-            quantization_config = BinaryQuantization(
-                binary=BinaryQuantizationConfig(always_ram=True)
-            )
-        else:
-            # SCALAR (default) — INT8 scalar quantization
-            quantization_config = ScalarQuantization(
-                scalar=ScalarQuantizationConfig(
-                    type=ScalarType.INT8,
-                    quantile=0.95,
-                    always_ram=True,
-                )
-            )
+        quantization_config = _build_quantization_config(config)
 
         create_kwargs: dict = dict(
             collection_name=collection_name,
             vectors_config=vectors_config,
             sparse_vectors_config=sparse_vectors_config,
             optimizers_config=optimizers_config,
+            hnsw_config=hnsw_config,
         )
         if quantization_config is not None:
             create_kwargs["quantization_config"] = quantization_config
-        if hnsw_config is not None:
-            create_kwargs["hnsw_config"] = hnsw_config
 
         await self.client.create_collection(**create_kwargs)  # type: ignore
         logger.info(f"Created Qdrant collection '{collection_name}'")
+
+    async def reconcile_storage_layout(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Apply at most one pending storage-layout change to an existing collection.
+
+        Every change makes Qdrant rewrite segments in the background, so only one is
+        issued per call and the next is left until the optimizer reports idle again.
+        The collection's own config is the progress marker, which keeps this
+        idempotent and a no-op once the layout matches.
+        """
+        self._assert_connected()
+        if config is None:
+            config = CollectionConfig()
+
+        info = await self.client.get_collection(collection_name)  # type: ignore
+        if not _optimizers_idle(info):
+            logger.debug(
+                f"Deferring storage-layout reconcile for '{collection_name}' — "
+                "a rebuild is still in progress"
+            )
+            return None
+
+        pending = _pending_storage_patches(info, config)
+        if not pending:
+            return None
+
+        pending_patch = pending[0]
+        await self.client.update_collection(  # type: ignore
+            collection_name=collection_name, **pending_patch.kwargs
+        )
+        logger.debug(
+            f"Storage-layout reconcile on '{collection_name}': set {pending_patch.field}. "
+            f"Qdrant rewrites segments in the background; {len(pending) - 1} "
+            "change(s) still pending."
+        )
+        return pending_patch.field
 
     async def get_collections(self) -> object:
         self._assert_connected()
@@ -444,7 +610,13 @@ class QdrantService(IVectorDBService):
             schema = KeywordIndexParams(type=KeywordIndexType.KEYWORD)
         else:
             schema = field_schema  # type: ignore
-        await self.client.create_payload_index(collection_name, field_name, schema)  # type: ignore
+        try:
+            await self.client.create_payload_index(collection_name, field_name, schema)  # type: ignore
+        except Exception as e:
+            err = str(e).lower()
+            if "already exists" in err or "already exist" in err or "conflict" in err:
+                return
+            raise
 
     # ------------------------------------------------------------------
     # Filter construction
@@ -457,6 +629,7 @@ class QdrantService(IVectorDBService):
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
+        max_values: Optional[Dict[str, int]] = None,
         **kwargs: FilterValue,
     ) -> FilterExpression:
         from app.services.vector_db.filters import build_filter_expression
@@ -467,6 +640,7 @@ class QdrantService(IVectorDBService):
             should=should,
             must_not=must_not,
             min_should_match=min_should_match,
+            max_values=max_values,
             extra_kwargs=kwargs or None,
             build_conditions=QdrantUtils.build_conditions_generic,
         )
@@ -481,6 +655,7 @@ class QdrantService(IVectorDBService):
         scroll_filter: FilterExpression,
         limit: int,
         offset: Optional[str] = None,
+        with_payload: Optional[List[str]] = None,
     ) -> ScrollResult:
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(scroll_filter)
@@ -488,7 +663,7 @@ class QdrantService(IVectorDBService):
             collection_name=collection_name,
             scroll_filter=qdrant_filter,
             limit=limit,
-            with_payload=True,
+            with_payload=list(with_payload) if with_payload else True,
             offset=offset,
         )
         points = [
@@ -541,13 +716,17 @@ class QdrantService(IVectorDBService):
 
         for i in range(0, len(qdrant_points), batch_size):
             batch = qdrant_points[i : i + batch_size]
-            await self.client.upsert(  # type: ignore
-                collection_name=collection_name,
-                points=batch,
-            )
+            try:
+                await self.client.upsert(  # type: ignore
+                    collection_name=collection_name,
+                    points=batch,
+                )
+            except Exception as e:
+                _report_upsert_failure(e)
+                raise
 
         elapsed = time.perf_counter() - start
-        logger.info(
+        logger.debug(
             f"Upsert complete: {len(qdrant_points)} points in {elapsed:.2f}s "
             f"({len(qdrant_points)/elapsed:.0f} pts/s)"
         )
@@ -556,32 +735,75 @@ class QdrantService(IVectorDBService):
         self,
         collection_name: str,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
                 "delete_points called with an empty filter — this would wipe the entire "
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        if not filter.has_positive_match():
+            raise ValueError(
+                "delete_points called with only array-length conditions — a point "
+                "whose field is absent satisfies those too, so this would delete "
+                "most of the collection. Pair it with a value match "
+                "(e.g. connectorIds)."
+            )
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
+        # wait=True: callers sequence work after a delete (the connector cleanup
+        # re-reads what survived, and mapping rows are dropped next), so an
+        # unacknowledged delete would let them act on points still present.
         await self.client.delete(  # type: ignore
             collection_name=collection_name,
             points_selector=FilterSelector(filter=qdrant_filter),
+            wait=True,
         )
-        logger.info(f"Deleted points from Qdrant collection '{collection_name}'")
+        logger.debug(f"Deleted points from Qdrant collection '{collection_name}'")
 
     async def overwrite_payload(
         self,
         collection_name: str,
         payload: dict,
         points: FilterExpression,
+        refresh: bool = False,
     ) -> None:
+        if points.is_empty():
+            raise ValueError(
+                "overwrite_payload called with an empty filter — on Qdrant this "
+                "replaces the whole payload, so it would strip page_content from "
+                "every point in the collection. Populate at least one filter "
+                "condition (e.g. virtualRecordId)."
+            )
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(points)
         await self.client.overwrite_payload(  # type: ignore
             collection_name=collection_name,
             payload=payload,
             points=FilterSelector(filter=qdrant_filter),
+        )
+
+    async def set_payload(
+        self,
+        collection_name: str,
+        payload: dict,
+        filter: FilterExpression,
+        refresh: bool = False,
+    ) -> None:
+        if filter.is_empty():
+            raise ValueError(
+                "set_payload called with an empty filter — this would update the entire "
+                "collection. Populate at least one filter condition (e.g. virtualRecordId)."
+            )
+        self._assert_connected()
+        qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
+        # wait=True for the same reason as delete_points: the connector cleanup
+        # re-reads the matched set after each write to decide when it is done.
+        await self.client.set_payload(  # type: ignore
+            collection_name=collection_name,
+            payload=payload,
+            points=FilterSelector(filter=qdrant_filter),
+            wait=True,
         )
 
     # ------------------------------------------------------------------

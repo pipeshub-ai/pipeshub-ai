@@ -55,6 +55,35 @@ class TestNotionResponse:
         assert resp.error is None
         assert resp.message is None
 
+    def test_from_http_success(self):
+        import httpx
+        from app.sources.client.http.http_response import HTTPResponse
+
+        raw = httpx.Response(200, json={"ok": True})
+        wrapped = NotionResponse.from_http(HTTPResponse(raw))
+        assert wrapped.success is True
+        assert wrapped.data is not None
+        assert wrapped.error is None
+
+    def test_from_http_not_found(self):
+        import httpx
+        from app.sources.client.http.http_response import HTTPResponse
+
+        raw = httpx.Response(404, json={"object": "error", "status": 404})
+        wrapped = NotionResponse.from_http(HTTPResponse(raw))
+        assert wrapped.success is False
+        assert wrapped.error is not None
+        assert "404" in wrapped.error
+
+    def test_from_http_rate_limited(self):
+        import httpx
+        from app.sources.client.http.http_response import HTTPResponse
+
+        raw = httpx.Response(429, text="Too Many Requests")
+        wrapped = NotionResponse.from_http(HTTPResponse(raw))
+        assert wrapped.success is False
+        assert "429" in (wrapped.error or "")
+
 
 # ---------------------------------------------------------------------------
 # NotionRESTClientViaOAuth
@@ -169,6 +198,47 @@ class TestNotionRESTClientViaOAuth:
         with patch("app.sources.client.notion.notion.HTTPClient", return_value=mock_http):
             result = await client.refresh_token("rt")
             assert result is None
+
+    @pytest.mark.asyncio
+    async def test_introspect_access_token_success(self):
+        client = NotionRESTClientViaOAuth("cid", "csec", "http://redirect")
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.json.return_value = {
+            "active": True,
+            "scope": "read_content read_comments",
+        }
+
+        mock_http = AsyncMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+        mock_http.execute = AsyncMock(return_value=mock_response)
+
+        with patch("app.sources.client.notion.notion.HTTPClient", return_value=mock_http) as mock_cls:
+            payload = await client.introspect_access_token("tok")
+        mock_cls.assert_called_once_with(token="", resilience=client.resilience)
+        assert payload["active"] is True
+        assert "read_comments" in payload["scope"]
+        request = mock_http.execute.await_args.args[0]
+        assert request.url.endswith("/introspect")
+        assert request.body == {"token": "tok"}
+        assert request.headers["Authorization"].startswith("Basic ")
+
+    @pytest.mark.asyncio
+    async def test_introspect_access_token_failure(self):
+        client = NotionRESTClientViaOAuth("cid", "csec", "http://redirect")
+        mock_response = MagicMock()
+        mock_response.status = 401
+        mock_response.text.return_value = "Unauthorized"
+
+        mock_http = AsyncMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+        mock_http.execute = AsyncMock(return_value=mock_response)
+
+        with patch("app.sources.client.notion.notion.HTTPClient", return_value=mock_http):
+            with pytest.raises(Exception, match="Token introspect failed"):
+                await client.introspect_access_token("tok")
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +420,45 @@ class TestBuildFromServices:
         assert isinstance(nc.get_client(), NotionRESTClientViaOAuth)
 
     @pytest.mark.asyncio
+    async def test_oauth_shared_config_uses_inherited_org(self, logger, mock_config_service):
+        """Child-org instances must resolve the admin org's OAuth app."""
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {
+                    "authType": "OAUTH",
+                    "oauthConfigId": "oauth-123",
+                    "inheritedFromOrgId": "admin-org",
+                },
+                "credentials": {"access_token": "at"},
+            }
+        )
+        shared = {
+            "_id": "oauth-123",
+            "config": {
+                "clientId": "admin-cid",
+                "clientSecret": "admin-csec",
+                "redirectUri": "https://app.example/callback",
+            },
+        }
+        with patch(
+            "app.edition_config.fetch_oauth_config_by_id",
+            new_callable=AsyncMock,
+            return_value=shared,
+        ) as fetch:
+            nc = await NotionClient.build_from_services(logger, mock_config_service, "inst-1")
+
+        client = nc.get_client()
+        assert isinstance(client, NotionRESTClientViaOAuth)
+        assert client.client_id == "admin-cid"
+        assert client.client_secret == "admin-csec"
+        assert client.redirect_uri == "https://app.example/callback"
+        fetch.assert_awaited_once()
+        kwargs = fetch.await_args.kwargs
+        assert kwargs["oauth_config_id"] == "oauth-123"
+        assert kwargs["org_id"] == "admin-org"
+        assert kwargs["connector_type"] == "notion"
+
+    @pytest.mark.asyncio
     async def test_oauth_shared_config_not_found(self, logger, mock_config_service):
         """Missing shared OAuth config should still fail with missing credentials."""
 
@@ -396,3 +505,64 @@ class TestBuildFromServices:
         client = nc.get_client()
         assert isinstance(client, NotionRESTClientViaToken)
         assert client.version == "2023-08-01"
+
+
+# ---------------------------------------------------------------------------
+# Resilience wiring
+# ---------------------------------------------------------------------------
+
+
+class TestResilienceWiring:
+    @pytest.fixture
+    def policy(self):
+        from app.sources.client.resilience import ResiliencePolicy
+
+        return ResiliencePolicy(rate_limit=3, max_retries=3, name="Notion")
+
+    @pytest.mark.asyncio
+    async def test_forwarded_to_api_token_client(self, logger, mock_config_service, policy):
+        mock_config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "API_TOKEN", "apiToken": "tok"}}
+        )
+        nc = await NotionClient.build_from_services(
+            logger, mock_config_service, "inst-1", resilience=policy
+        )
+        assert nc.get_client().resilience is policy
+
+    @pytest.mark.asyncio
+    async def test_forwarded_to_oauth_client(self, logger, mock_config_service, policy):
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {
+                    "authType": "OAUTH",
+                    "clientId": "cid",
+                    "clientSecret": "csec",
+                    "redirectUri": "http://redirect",
+                },
+                "credentials": {"access_token": "at"},
+            }
+        )
+        nc = await NotionClient.build_from_services(
+            logger, mock_config_service, "inst-1", resilience=policy
+        )
+        assert nc.get_client().resilience is policy
+
+    @pytest.mark.asyncio
+    async def test_omitted_leaves_client_unthrottled(self, logger, mock_config_service):
+        mock_config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "API_TOKEN", "apiToken": "tok"}}
+        )
+        nc = await NotionClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert nc.get_client().resilience is None
+
+    def test_token_config_forwards_policy(self, policy):
+        client = NotionTokenConfig(token="tok", resilience=policy).create_client()
+        assert client.resilience is policy
+
+    def test_token_config_to_dict_excludes_live_policy(self, policy):
+        """asdict() would deep-copy the policy's lock and raise."""
+        assert NotionTokenConfig(token="tok", resilience=policy).to_dict() == {
+            "token": "tok",
+            "version": "2025-09-03",
+            "ssl": True,
+        }

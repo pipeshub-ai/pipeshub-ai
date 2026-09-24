@@ -26,6 +26,7 @@ def mock_data_entities_processor():
     processor.on_new_record_groups = AsyncMock()
     processor.on_new_records = AsyncMock()
     processor.reindex_existing_records = AsyncMock()
+    processor.delete_record_by_external_id = AsyncMock()
     return processor
 
 
@@ -502,8 +503,7 @@ class TestDeltaAndMessageProcessing:
         connector.email_delta_sync_point.update_sync_point.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_process_single_message_handles_deleted_message(self, connector, mock_data_store_provider):
-        tx = mock_data_store_provider.transaction.return_value
+    async def test_process_single_message_handles_deleted_message(self, connector, mock_data_entities_processor):
         user = MagicMock(source_user_id="u-1", email="user@test.com")
 
         message = MagicMock()
@@ -520,7 +520,7 @@ class TestDeltaAndMessageProcessing:
 
         assert updates == []
         assert success is True
-        tx.delete_record_by_external_id.assert_awaited_once_with(
+        mock_data_entities_processor.delete_record_by_external_id.assert_awaited_once_with(
             "conn-outlook-individual-1", "msg-1", "u-1"
         )
 
@@ -899,7 +899,7 @@ class TestReindexInternalsAndCredentials:
         config = {"auth": {"oauthConfigId": "oauth-1"}}
         mock_config_service.get_config = AsyncMock(return_value=config)
         with patch(
-            "app.connectors.sources.microsoft.outlook_individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new=AsyncMock(
                 return_value={
                     "config": {
@@ -928,7 +928,7 @@ class TestReindexInternalsAndCredentials:
         config = {"auth": {"oauthConfigId": "oauth-1"}}
         mock_config_service.get_config = AsyncMock(return_value=config)
         with patch(
-            "app.connectors.sources.microsoft.outlook_individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new=AsyncMock(return_value={"config": {"tenantId": "tenant"}}),
         ):
             with pytest.raises(ValueError, match="Incomplete Outlook Personal credentials"):
@@ -989,10 +989,10 @@ class TestApiHelpersAndFactory:
         )
 
         found = await connector._get_message_by_id_external("m1")
-        missing = await connector._get_message_by_id_external("m2")
 
         assert found.id == "m1"
-        assert missing is None
+        with pytest.raises(RuntimeError):
+            await connector._get_message_by_id_external("m2")
 
     @pytest.mark.asyncio
     async def test_download_attachment_external_success_and_empty(self, connector):
@@ -1006,10 +1006,10 @@ class TestApiHelpersAndFactory:
         )
 
         downloaded = await connector._download_attachment_external("m1", "a1")
-        missing = await connector._download_attachment_external("m1", "a2")
 
         assert downloaded == b"hello"
-        assert missing == b""
+        with pytest.raises(RuntimeError):
+            await connector._download_attachment_external("m1", "a2")
 
     @pytest.mark.asyncio
     async def test_get_child_folders_recursive_handles_no_children_and_errors(self, connector):
@@ -1027,24 +1027,19 @@ class TestApiHelpersAndFactory:
 
     @pytest.mark.asyncio
     async def test_create_connector_factory_initializes_data_processor(self):
-        with patch(
-            "app.connectors.sources.microsoft.outlook_individual.connector.DataSourceEntitiesProcessor"
-        ) as mock_processor_cls:
-            processor = MagicMock()
-            processor.initialize = AsyncMock()
-            processor.org_id = "org-1"
-            mock_processor_cls.return_value = processor
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            connector = await OutlookIndividualConnector.create_connector(
-                logger=MagicMock(),
-                data_store_provider=MagicMock(),
-                config_service=MagicMock(),
-                connector_id="conn-factory-1",
-                scope="PERSONAL",
-                created_by="test-user-id",
-            )
+        connector = await OutlookIndividualConnector.create_connector(
+            logger=MagicMock(),
+            data_store_provider=MagicMock(),
+            config_service=MagicMock(),
+            connector_id="conn-factory-1",
+            scope="PERSONAL",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
 
-        processor.initialize.assert_awaited_once()
         assert isinstance(connector, OutlookIndividualConnector)
 
 
@@ -1238,7 +1233,7 @@ class TestCoverageBoostBranches:
         config = {"auth": {"oauthConfigId": "x"}}
         mock_config_service.get_config = AsyncMock(return_value=config)
         with patch(
-            "app.connectors.sources.microsoft.outlook_individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new=AsyncMock(return_value=None),
         ):
             with pytest.raises(ValueError, match="not found"):
@@ -1462,7 +1457,7 @@ class TestCoverageBoostBranches:
         connector.external_outlook_client = None
         with pytest.raises(HTTPException) as exc:
             await connector.stream_record(MagicMock(record_type=RecordType.MAIL))
-        assert exc.value.status_code == 500
+        assert exc.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_get_message_by_id_external_conversion_and_error_paths(self, connector):
@@ -1485,7 +1480,8 @@ class TestCoverageBoostBranches:
         assert (await connector._get_message_by_id_external("2")).id == "d"
         assert (await connector._get_message_by_id_external("3")).id == "x"
         assert await connector._get_message_by_id_external("4") is None
-        assert await connector._get_message_by_id_external("5") is None
+        with pytest.raises(RuntimeError):
+            await connector._get_message_by_id_external("5")
 
     @pytest.mark.asyncio
     async def test_download_attachment_external_additional_paths(self, connector):
@@ -1497,7 +1493,10 @@ class TestCoverageBoostBranches:
             ]
         )
         assert await connector._download_attachment_external("m", "a") == b"x"
-        assert await connector._download_attachment_external("m", "b") == b""
+        # itemAttachment: 200 with no contentBytes must not stream a 0-byte 200.
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._download_attachment_external("m", "b")
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_cleanup_additional_branches(self, connector):
@@ -1675,22 +1674,28 @@ class TestCoverageBoostDeltaAndFolders:
     @pytest.mark.asyncio
     async def test_get_message_by_id_external_not_initialized_and_exception(self, connector):
         connector.external_outlook_client = None
-        assert await connector._get_message_by_id_external("m1") is None
+        with pytest.raises(HTTPException) as exc:
+            await connector._get_message_by_id_external("m1")
+        assert exc.value.status_code == 409
 
         connector.external_outlook_client = MagicMock()
         connector.external_outlook_client.me_get_message = AsyncMock(side_effect=Exception("boom"))
-        assert await connector._get_message_by_id_external("m2") is None
+        with pytest.raises(Exception, match="boom"):
+            await connector._get_message_by_id_external("m2")
 
     @pytest.mark.asyncio
     async def test_download_attachment_external_not_initialized_and_exception(self, connector):
         connector.external_outlook_client = None
-        assert await connector._download_attachment_external("m1", "a1") == b""
+        with pytest.raises(HTTPException) as exc:
+            await connector._download_attachment_external("m1", "a1")
+        assert exc.value.status_code == 409
 
         connector.external_outlook_client = MagicMock()
         connector.external_outlook_client.me_messages_get_attachments = AsyncMock(
             side_effect=Exception("boom")
         )
-        assert await connector._download_attachment_external("m1", "a1") == b""
+        with pytest.raises(Exception, match="boom"):
+            await connector._download_attachment_external("m1", "a1")
 
     @pytest.mark.asyncio
     async def test_get_message_attachments_external_not_initialized_and_exception(self, connector):

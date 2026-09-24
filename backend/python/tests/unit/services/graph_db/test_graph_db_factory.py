@@ -192,6 +192,7 @@ class TestGraphDBProviderFactoryCreateProvider:
         mock_create_neo4j.assert_awaited_once_with(
             logger=mock_logger,
             config_service=config,
+            accessible_records_cache=None,
         )
 
     @pytest.mark.asyncio
@@ -271,7 +272,7 @@ class TestGraphDBProviderFactoryCreateNeo4jProvider:
     """Tests for GraphDBProviderFactory._create_neo4j_provider."""
 
     @pytest.mark.asyncio
-    @patch("app.services.graph_db.graph_db_provider_factory.Neo4jProvider")
+    @patch("app.edition_services.Neo4jProvider")
     async def test_success(self, MockProvider):
         mock_instance = MagicMock()
         mock_instance.connect = AsyncMock(return_value=True)
@@ -284,11 +285,13 @@ class TestGraphDBProviderFactoryCreateNeo4jProvider:
             config_service=config,
         )
         assert result is mock_instance
-        MockProvider.assert_called_once_with(logger=mock_logger, config_service=config)
+        MockProvider.assert_called_once_with(
+            logger=mock_logger, config_service=config, accessible_records_cache=None
+        )
         mock_instance.connect.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch("app.services.graph_db.graph_db_provider_factory.Neo4jProvider")
+    @patch("app.edition_services.Neo4jProvider")
     async def test_connect_returns_false_raises_connection_error(self, MockProvider):
         mock_instance = MagicMock()
         mock_instance.connect = AsyncMock(return_value=False)
@@ -303,7 +306,7 @@ class TestGraphDBProviderFactoryCreateNeo4jProvider:
             )
 
     @pytest.mark.asyncio
-    @patch("app.services.graph_db.graph_db_provider_factory.Neo4jProvider")
+    @patch("app.edition_services.Neo4jProvider")
     async def test_connect_raises_exception(self, MockProvider):
         mock_instance = MagicMock()
         mock_instance.connect = AsyncMock(side_effect=Exception("driver error"))

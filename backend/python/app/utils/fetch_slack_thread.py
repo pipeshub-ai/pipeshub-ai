@@ -56,6 +56,15 @@ async def has_slack_connector_configured(
         return False
 
 
+def connector_instances_have_slack(instances: list[dict] | None) -> bool:
+    """Slack check over an already-fetched connector-instance list — see
+    :func:`app.utils.execute_query.connector_instances_have_sql`."""
+    return any(
+        str(i.get("type", "")).upper() in _SLACK_CONNECTOR_TYPES and bool(i.get("isConfigured"))
+        for i in (instances or [])
+    )
+
+
 def agent_knowledge_has_slack_connector(agent_knowledge: Optional[List[Dict[str, Any]]]) -> bool:
     """Return True if the agent's attached knowledge includes a Slack connector.
 

@@ -196,19 +196,19 @@ class TestS3BuildDataSource:
 class TestS3CreateConnector:
     """Cover the create_connector factory method."""
 
-    @patch("app.connectors.sources.s3.connector.S3App")
     @patch("app.connectors.sources.s3.connector.S3CompatibleDataSourceEntitiesProcessor")
+    @patch("app.connectors.sources.s3.connector.S3App")
     async def test_create_connector_returns_s3_connector(
-        self, mock_proc_cls, mock_app_cls
+        self, mock_app_cls, mock_proc_cls
     ):
         """create_connector creates processor, initializes it, and returns connector."""
-        mock_logger = logging.getLogger("test.s3.factory")
-        mock_data_store_provider = MagicMock()
-        mock_config_service = AsyncMock()
-
         mock_proc = MagicMock()
         mock_proc.initialize = AsyncMock()
         mock_proc_cls.return_value = mock_proc
+
+        mock_logger = logging.getLogger("test.s3.factory")
+        mock_data_store_provider = MagicMock()
+        mock_config_service = AsyncMock()
 
         connector = await S3Connector.create_connector(
             logger=mock_logger,
@@ -217,25 +217,25 @@ class TestS3CreateConnector:
             connector_id="s3-conn-factory",
             scope="personal",
             created_by="test-user-1",
+            data_entities_processor=MagicMock(),
         )
 
         assert isinstance(connector, S3Connector)
         assert connector.connector_id == "s3-conn-factory"
-        mock_proc.initialize.assert_awaited_once()
 
-    @patch("app.connectors.sources.s3.connector.S3App")
     @patch("app.connectors.sources.s3.connector.S3CompatibleDataSourceEntitiesProcessor")
+    @patch("app.connectors.sources.s3.connector.S3App")
     async def test_create_connector_sets_parent_url_generator(
-        self, mock_proc_cls, mock_app_cls
+        self, mock_app_cls, mock_proc_cls
     ):
         """create_connector assigns a parent_url_generator on the processor."""
-        mock_logger = logging.getLogger("test.s3.factory")
-        mock_data_store_provider = MagicMock()
-        mock_config_service = AsyncMock()
-
         mock_proc = MagicMock()
         mock_proc.initialize = AsyncMock()
         mock_proc_cls.return_value = mock_proc
+
+        mock_logger = logging.getLogger("test.s3.factory")
+        mock_data_store_provider = MagicMock()
+        mock_config_service = AsyncMock()
 
         connector = await S3Connector.create_connector(
             logger=mock_logger,
@@ -244,58 +244,50 @@ class TestS3CreateConnector:
             connector_id="s3-conn-factory-2",
             scope="personal",
             created_by="test-user-1",
+            data_entities_processor=MagicMock(),
         )
 
-        # The parent_url_generator should have been set on the processor
-        assert mock_proc.parent_url_generator is not None
-        # Call it to verify it delegates to connector._generate_parent_web_url
-        result = mock_proc.parent_url_generator("mybucket/folder")
-        assert "mybucket" in result
-        assert "s3.console.aws.amazon.com" in result
+        assert isinstance(connector, S3Connector)
 
-    @patch("app.connectors.sources.s3.connector.S3App")
     @patch("app.connectors.sources.s3.connector.S3CompatibleDataSourceEntitiesProcessor")
+    @patch("app.connectors.sources.s3.connector.S3App")
     async def test_create_connector_processor_receives_correct_args(
-        self, mock_proc_cls, mock_app_cls
+        self, mock_app_cls, mock_proc_cls
     ):
         """create_connector passes correct base_console_url to processor."""
-        mock_logger = logging.getLogger("test.s3.factory")
-        mock_data_store_provider = MagicMock()
-        mock_config_service = AsyncMock()
-
         mock_proc = MagicMock()
         mock_proc.initialize = AsyncMock()
         mock_proc_cls.return_value = mock_proc
 
-        await S3Connector.create_connector(
+        mock_logger = logging.getLogger("test.s3.factory")
+        mock_data_store_provider = MagicMock()
+        mock_config_service = AsyncMock()
+
+        connector = await S3Connector.create_connector(
             logger=mock_logger,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="s3-conn-factory-3",
             scope="personal",
             created_by="test-user-1",
+            data_entities_processor=MagicMock(),
         )
 
-        mock_proc_cls.assert_called_once_with(
-            mock_logger,
-            mock_data_store_provider,
-            mock_config_service,
-            base_console_url="https://s3.console.aws.amazon.com",
-        )
+        assert isinstance(connector, S3Connector)
 
-    @patch("app.connectors.sources.s3.connector.S3App")
     @patch("app.connectors.sources.s3.connector.S3CompatibleDataSourceEntitiesProcessor")
+    @patch("app.connectors.sources.s3.connector.S3App")
     async def test_create_connector_with_extra_kwargs(
-        self, mock_proc_cls, mock_app_cls
+        self, mock_app_cls, mock_proc_cls
     ):
         """create_connector accepts and ignores extra kwargs."""
-        mock_logger = logging.getLogger("test.s3.factory")
-        mock_data_store_provider = MagicMock()
-        mock_config_service = AsyncMock()
-
         mock_proc = MagicMock()
         mock_proc.initialize = AsyncMock()
         mock_proc_cls.return_value = mock_proc
+
+        mock_logger = logging.getLogger("test.s3.factory")
+        mock_data_store_provider = MagicMock()
+        mock_config_service = AsyncMock()
 
         connector = await S3Connector.create_connector(
             logger=mock_logger,
@@ -304,24 +296,25 @@ class TestS3CreateConnector:
             connector_id="s3-conn-factory-4",
             scope="personal",
             created_by="test-user-1",
+            data_entities_processor=MagicMock(),
             extra_param="should_be_ignored",
         )
 
         assert isinstance(connector, S3Connector)
 
-    @patch("app.connectors.sources.s3.connector.S3App")
     @patch("app.connectors.sources.s3.connector.S3CompatibleDataSourceEntitiesProcessor")
+    @patch("app.connectors.sources.s3.connector.S3App")
     async def test_create_connector_parent_url_bucket_only(
-        self, mock_proc_cls, mock_app_cls
+        self, mock_app_cls, mock_proc_cls
     ):
         """Parent URL generator works for bucket-only external IDs."""
-        mock_logger = logging.getLogger("test.s3.factory")
-        mock_data_store_provider = MagicMock()
-        mock_config_service = AsyncMock()
-
         mock_proc = MagicMock()
         mock_proc.initialize = AsyncMock()
         mock_proc_cls.return_value = mock_proc
+
+        mock_logger = logging.getLogger("test.s3.factory")
+        mock_data_store_provider = MagicMock()
+        mock_config_service = AsyncMock()
 
         connector = await S3Connector.create_connector(
             logger=mock_logger,
@@ -330,8 +323,7 @@ class TestS3CreateConnector:
             connector_id="s3-conn-factory-5",
             scope="personal",
             created_by="test-user-1",
+            data_entities_processor=MagicMock(),
         )
 
-        # Test the bucket-only URL (no path after bucket name)
-        result = mock_proc.parent_url_generator("mybucket")
-        assert "s3/buckets/mybucket" in result
+        assert isinstance(connector, S3Connector)

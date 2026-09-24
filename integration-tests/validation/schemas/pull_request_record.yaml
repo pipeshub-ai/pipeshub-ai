@@ -1,0 +1,36 @@
+name: pull_request_layer
+description: PullRequestRecord fields not on Record
+fields:
+  assignee:
+    required: false
+    type: array
+  assignee_email:
+    required: false
+    type: array
+  creator_email:
+    required: false
+    type: string
+  creator_name:
+    required: false
+    type: string
+  labels:
+    required: false
+    type: array
+  last_commit_sha:
+    required: false
+    type: string
+  mergeable:
+    required: false
+    type: string
+  merged_by:
+    required: false
+    type: string
+  review_email:
+    required: false
+    type: array
+  review_name:
+    required: false
+    type: array
+  status:
+    required: false
+    type: string

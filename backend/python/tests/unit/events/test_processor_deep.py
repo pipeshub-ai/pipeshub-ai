@@ -37,7 +37,8 @@ def _make_processor(**overrides):
     }
     kwargs.update(overrides)
 
-    with patch("app.events.processor.DoclingClient"):
+    with patch("app.events.processor.DoclingClient"), \
+         patch("app.events.processor.DoclingProcessor"):
         proc = Processor(**kwargs)
     return proc
 
@@ -329,9 +330,9 @@ class TestProcessPptxDocument:
         mock_processor.create_blocks = AsyncMock(return_value=mock_blocks)
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.pptx"))
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
 
@@ -354,11 +355,11 @@ class TestProcessPptxDocument:
         mock_processor.create_blocks = AsyncMock(return_value=mock_blocks)
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            events = await _collect_events(
-                proc.process_pptx_document("test.pptx", "r1", "1", "src", "o1", b"data", "vr1")
-            )
+        events = await _collect_events(
+            proc.process_pptx_document("test.pptx", "r1", "1", "src", "o1", b"data", "vr1")
+        )
 
         assert any(e.event == "indexing_complete" for e in events)
 
@@ -369,12 +370,12 @@ class TestProcessPptxDocument:
 
         mock_processor = AsyncMock()
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("corrupt pptx"))
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(DocumentProcessingError, match="corrupt pptx"):
-                await _collect_events(
-                    proc.process_pptx_document("test.pptx", "r1", "1", "s", "o1", b"bad", "vr1")
-                )
+        with pytest.raises(DocumentProcessingError, match="corrupt pptx"):
+            await _collect_events(
+                proc.process_pptx_document("test.pptx", "r1", "1", "s", "o1", b"bad", "vr1")
+            )
 
 
 # ============================================================================
@@ -394,9 +395,9 @@ class TestProcessDocxDocument:
         mock_processor.create_blocks = AsyncMock(return_value=mock_blocks)
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.docx"))
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
 
@@ -419,11 +420,11 @@ class TestProcessDocxDocument:
         mock_processor.create_blocks = AsyncMock(return_value=mock_blocks)
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            events = await _collect_events(
-                proc.process_docx_document("test.docx", "r1", "1", "src", "o1", b"data", "vr1")
-            )
+        events = await _collect_events(
+            proc.process_docx_document("test.docx", "r1", "1", "src", "o1", b"data", "vr1")
+        )
 
         assert any(e.event == "indexing_complete" for e in events)
 
@@ -434,12 +435,12 @@ class TestProcessDocxDocument:
 
         mock_processor = AsyncMock()
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("corrupt"))
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(DocumentProcessingError, match="corrupt"):
-                await _collect_events(
-                    proc.process_docx_document("t.docx", "r1", "1", "s", "o1", b"bad", "vr1")
-                )
+        with pytest.raises(DocumentProcessingError, match="corrupt"):
+            await _collect_events(
+                proc.process_docx_document("t.docx", "r1", "1", "s", "o1", b"bad", "vr1")
+            )
 
 
 # ============================================================================
@@ -711,10 +712,11 @@ class TestProcessPdfWithPymupdf:
 class TestProcessPdfWithDocling:
     @pytest.mark.asyncio
     async def test_success(self):
-        """Docling PDF processing: process_pdf then index."""
+        """Docling PDF processing: parse_pdf_batched then index."""
         proc = _make_processor()
 
-        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
+        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=MagicMock())
+        proc.docling_processor.create_blocks = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.pdf"))
 
         with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
@@ -730,9 +732,9 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_parse_returns_none(self):
-        """When docling process_pdf returns None, yields docling_failed."""
+        """When docling parse_pdf_batched returns None, yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.process_pdf = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdfdata", "vr1")
@@ -742,9 +744,10 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_create_blocks_returns_none_yields_docling_failed(self):
-        """When docling process_pdf returns None, yields docling_failed."""
+        """When create_blocks() returns None (phase 2), yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.process_pdf = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=MagicMock())
+        proc.docling_processor.create_blocks = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
@@ -755,7 +758,8 @@ class TestProcessPdfWithDocling:
     async def test_record_not_found(self):
         """Missing record yields indexing_complete."""
         proc = _make_processor()
-        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
+        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=MagicMock())
+        proc.docling_processor.create_blocks = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
         events = await _collect_events(
@@ -1190,9 +1194,9 @@ class TestProcessPdfDocumentWithOcr:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.pdf")
         )
+        proc.docling_processor = mock_processor
 
         with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
@@ -1233,9 +1237,9 @@ class TestProcessPdfDocumentWithOcr:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.pdf")
         )
+        proc.docling_processor = mock_processor
 
         with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
@@ -1273,9 +1277,9 @@ class TestProcessPdfDocumentWithOcr:
         mock_processor.create_blocks = AsyncMock(return_value=mock_blocks)
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
+        with patch("app.events.processor.OCRHandler", return_value=mock_handler):
             proc.config_service.get_config = AsyncMock(return_value={
                 "ocr": [{"provider": "vlmOCR"}],
                 "llm": [],
@@ -1343,9 +1347,9 @@ class TestProcessPdfDocumentWithOcr:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.pdf")
         )
+        proc.docling_processor = mock_processor
 
         with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"), \
              patch("app.events.processor.is_multimodal_llm", return_value=True):
@@ -1404,7 +1408,8 @@ class TestProcessPdfWithDoclingAdditional:
     async def test_exception_in_pipeline(self):
         """Exception during pipeline processing yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
+        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=MagicMock())
+        proc.docling_processor.create_blocks = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.pdf")
         )
@@ -1425,7 +1430,8 @@ class TestProcessPdfWithDoclingAdditional:
     async def test_appends_pdf_extension(self):
         """If record name doesn't end in .pdf, it gets appended."""
         proc = _make_processor()
-        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
+        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=MagicMock())
+        proc.docling_processor.create_blocks = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="report")
         )
@@ -1438,7 +1444,7 @@ class TestProcessPdfWithDoclingAdditional:
                 proc.process_pdf_with_docling("report", "r1", b"data", "vr1")
             )
 
-        call_args = proc.docling_client.process_pdf.call_args[0]
+        call_args = proc.docling_client.parse_pdf_batched.call_args[0]
         assert call_args[0] == "report.pdf"
 
 
@@ -1763,9 +1769,9 @@ class TestRunIndexingPipelineAdditional:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.docx")
         )
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock(
                 side_effect=RuntimeError("docx pipeline error")
@@ -1792,9 +1798,9 @@ class TestRunIndexingPipelineAdditional:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.pptx")
         )
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock(
                 side_effect=RuntimeError("pptx pipeline error")

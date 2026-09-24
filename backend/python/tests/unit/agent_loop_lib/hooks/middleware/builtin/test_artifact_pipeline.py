@@ -874,3 +874,92 @@ class TestEndToEndArtifactFlow:
         assert "tool: jira__search_issues" in ref
         assert "PIPE" in ref
         assert meta.artifact_id in ref
+
+
+class TestBudgetReductionRespectsItsCap:
+    """`max_result_chars` is the cap on what one tool message contributes, so
+    the shaper's own output has to fit inside it — marker included."""
+
+    MAX = 4_000
+
+    @staticmethod
+    def _parts_msg(*texts: str, with_image: bool = False) -> ToolMessage:
+        from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart
+
+        content = [TextPart(text=t) for t in texts]
+        if with_image:
+            content.append(
+                ImagePart(source=ImageSource(type="base64", media_type="image/png", data="iVBOR"))
+            )
+        return ToolMessage(content=content, tool_call_id="tc_1")
+
+    @staticmethod
+    def _text_len(msg: ToolMessage) -> int:
+        from app.agent_loop_lib.core.messages import TextPart
+
+        return sum(len(p.text) for p in msg.content if isinstance(p, TextPart))
+
+    @pytest.mark.asyncio
+    async def test_a_multipart_result_stays_within_one_allowance(self) -> None:
+        """A part kept in full spends the allowance the next part then has to
+        fit into. Truncating that one against the whole budget instead let a
+        two-part result reach twice the cap."""
+        msg = self._parts_msg("a" * (self.MAX - 1), "b" * 100_000)
+        shaper = shape_budget_reduction(max_result_chars=self.MAX)
+
+        result = await _run_pre_model(shaper, [SystemMessage(content="sys"), msg])
+
+        capped = next(m for m in result if isinstance(m, ToolMessage))
+        assert self._text_len(capped) <= self.MAX
+
+    @pytest.mark.asyncio
+    async def test_a_single_string_result_stays_within_the_allowance(self) -> None:
+        """The marker counts: a cap that emits `max_result_chars` plus a marker
+        is not a cap."""
+        shaper = shape_budget_reduction(max_result_chars=self.MAX)
+
+        result = await _run_pre_model(
+            shaper, [SystemMessage(content="sys"), _tool_msg("x" * 100_000)]
+        )
+
+        capped = next(m for m in result if isinstance(m, ToolMessage))
+        assert len(capped.content) <= self.MAX
+
+    @pytest.mark.asyncio
+    async def test_images_are_left_alone_and_do_not_consume_the_text_budget(self) -> None:
+        from app.agent_loop_lib.core.messages import ImagePart
+
+        msg = self._parts_msg("a" * 100_000, with_image=True)
+        shaper = shape_budget_reduction(max_result_chars=self.MAX)
+
+        result = await _run_pre_model(shaper, [SystemMessage(content="sys"), msg])
+
+        capped = next(m for m in result if isinstance(m, ToolMessage))
+        assert self._text_len(capped) <= self.MAX
+        assert any(isinstance(p, ImagePart) for p in capped.content)
+
+    @pytest.mark.asyncio
+    async def test_the_tail_survives_truncation(self) -> None:
+        """A fetch result carries its citation rule and continuation hint last;
+        a tail cut removes exactly what the model needs to act on."""
+        content = "HEAD" + "x" * 100_000 + "CALL-ME-BACK"
+        shaper = shape_budget_reduction(max_result_chars=self.MAX)
+
+        result = await _run_pre_model(shaper, [SystemMessage(content="sys"), _tool_msg(content)])
+
+        text = next(m for m in result if isinstance(m, ToolMessage)).content
+        assert text.startswith("HEAD")
+        assert text.endswith("CALL-ME-BACK")
+
+    @pytest.mark.asyncio
+    async def test_an_allowance_too_small_for_the_marker_still_bounds_output(self) -> None:
+        """`text[-0:]` returns the whole string, so a tail of zero is the one
+        way a truncator can return more than it was given."""
+        shaper = shape_budget_reduction(max_result_chars=8)
+
+        result = await _run_pre_model(
+            shaper, [SystemMessage(content="sys"), _tool_msg("y" * 50_000)]
+        )
+
+        capped = next(m for m in result if isinstance(m, ToolMessage))
+        assert len(capped.content) <= 8

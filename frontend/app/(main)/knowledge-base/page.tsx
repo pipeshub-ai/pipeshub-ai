@@ -104,12 +104,17 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
-import { ErrorType, isProcessedError } from '@/lib/api/api-error';
+import { ErrorType, getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
+import { useUserPermission } from '@/config';
 
 function KnowledgeBasePageContent() {
   const { t } = useTranslation();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const canCreateCollection = useUserPermission('createCollection');
+  const canEditCollection = useUserPermission('editCollection');
+  const canDeleteCollection = useUserPermission('deleteCollection');
+  const canShareCollection = useUserPermission('shareCollection');
 
   // View mode detection from query params
   const isAllRecordsMode = getIsAllRecordsMode(searchParams);
@@ -1556,6 +1561,7 @@ function KnowledgeBasePageContent() {
 
   // Handle create folder - context-aware
   const handleCreateFolder = useCallback(() => {
+    if (!canCreateCollection) return;
     const currentNode = tableData?.currentNode;
 
     if (currentNode?.nodeType === 'app') {
@@ -1591,7 +1597,7 @@ function KnowledgeBasePageContent() {
       setCreateFolderContext({ type: 'collection' });
       setIsCreateFolderDialogOpen(true);
     }
-  }, [tableData]);
+  }, [tableData, canCreateCollection]);
 
   // Handle create folder submission
   const handleCreateFolderSubmit = useCallback(
@@ -1674,8 +1680,9 @@ function KnowledgeBasePageContent() {
 
   // Handle upload - opens the upload sidebar
   const handleUpload = useCallback(() => {
+    if (!canEditCollection) return;
     setIsUploadSidebarOpen(true);
-  }, []);
+  }, [canEditCollection]);
 
   // Handle upload save - add items to upload store and start uploading
   const handleUploadSave = useCallback(
@@ -1783,7 +1790,7 @@ function KnowledgeBasePageContent() {
       for (const entry of oversized) {
         failUpload(
           entry.storeId,
-          `File exceeds the ${maxFileSizeMB} MB size limit`,
+          `This file is larger than the ${maxFileSizeMB} MB limit. Make it smaller or split it, then upload it again.`,
           [FileRejectionReason.EXCEEDS_SIZE_LIMIT],
         );
       }
@@ -2066,14 +2073,15 @@ function KnowledgeBasePageContent() {
     return createKBShareAdapter(nodeId);
   }, [selectedNode?.nodeId, selectedNode?.nodeType, nodes]);
 
-  // Share controls are owner-only for collections.
+  // Share controls are owner-only for collections, and also require group permission.
   const isSelectedKbOwner = !isAllRecordsMode && (tableData?.permissions?.canManagePermissions ?? false);
-  const canManageSelectedKbSharing = !!shareAdapter && isSelectedKbOwner;
+  const canManageSelectedKbSharing =
+    !!shareAdapter && isSelectedKbOwner && canShareCollection;
 
   const handleShare = useCallback(() => {
-    if (!canManageSelectedKbSharing) return;
+    if (!canShareCollection) return;
     setIsShareSidebarOpen(true);
-  }, [canManageSelectedKbSharing]);
+  }, [canShareCollection]);
 
   useEffect(() => {
     if (!canManageSelectedKbSharing && isShareSidebarOpen) {
@@ -2102,17 +2110,14 @@ function KnowledgeBasePageContent() {
     });
   }, [canManageSelectedKbSharing, handleAccessRevoked, shareAdapter]);
 
-  const getPreviewErrorMessage = useCallback((err: unknown): string => {
-    if (err instanceof Error && err.message) return err.message;
-
-    const maybeMessage = (err as { message?: unknown })?.message;
-    if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage;
-
-    const maybeStatusText = (err as { statusText?: unknown })?.statusText;
-    if (typeof maybeStatusText === 'string' && maybeStatusText.trim()) return maybeStatusText;
-
-    return 'Failed to load file';
-  }, []);
+  const getPreviewErrorMessage = useCallback(
+    (err: unknown): string =>
+      getUserFacingErrorMessage(
+        err,
+        "We couldn't open a preview of this file. Try downloading it instead, or try again in a moment.",
+      ),
+    [],
+  );
 
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
@@ -2139,30 +2144,53 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
-        // 2. Fetch record details and stream file in parallel
+        // 2. Fetch details first so non-previewable records skip the stream.
+        const recordDetails = await KnowledgeBaseApi.getRecordDetails(item.id);
+        const record = recordDetails?.record;
+        if (!record) {
+          throw new Error('Record details unavailable');
+        }
+        if (record.previewRenderable === false) {
+          setPreviewFile({
+            id: item.id,
+            name: item.name,
+            url: '',
+            type: record.mimeType || item.extension || '',
+            size:
+              record.sizeInBytes ??
+              record.fileRecord?.sizeInBytes ??
+              undefined,
+            isLoading: false,
+            recordDetails,
+            webUrl: record.webUrl || undefined,
+            previewRenderable: false,
+          });
+          return;
+        }
+
+        // Prefer fresh record metadata for conversion; list-item fields are fallbacks.
+        const previewMime = record.mimeType || item.mimeType;
+        const previewName = record.recordName || item.name;
         const streamAsPdf =
-          isPresentationFile(item.mimeType, item.name) ||
-          isLegacyWordDocFile(item.mimeType, item.name);
+          isPresentationFile(previewMime, previewName) ||
+          isLegacyWordDocFile(previewMime, previewName);
         const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const [recordDetails, blob] = await Promise.all([
-          KnowledgeBaseApi.getRecordDetails(item.id),
-          KnowledgeBaseApi.streamRecord(item.id, streamOptions),
-        ]);
+        const blob = await KnowledgeBaseApi.streamRecord(item.id, streamOptions);
 
         // 3. For DOCX we hand the Blob straight through to DocxRenderer.
         //    All other renderers still expect a URL.
-        const recordMime = recordDetails.record.mimeType || item.extension || '';
+        const recordMime = record.mimeType || item.extension || '';
         const resolvedType = resolvePreviewMimeAfterStream(
           recordMime,
-          item.name,
+          previewName,
           blob,
           !!streamOptions,
         );
-        const fr = recordDetails.record.fileRecord;
+        const fr = record.fileRecord;
         const isDocx = isDocxFile(
-          recordDetails.record.mimeType,
+          record.mimeType,
           item.name,
-          recordDetails.record.recordName,
+          record.recordName,
           item.extension ?? undefined,
           fr?.extension,
         );
@@ -2176,13 +2204,13 @@ function KnowledgeBasePageContent() {
           blob: isDocx ? blob : undefined,
           type: resolvedType,
           size:
-            recordDetails.record.sizeInBytes ??
-            recordDetails.record.fileRecord?.sizeInBytes ??
+            record.sizeInBytes ??
+            record.fileRecord?.sizeInBytes ??
             undefined,
           isLoading: false,
           recordDetails,
-          webUrl: recordDetails.record.webUrl || undefined,
-          previewRenderable: recordDetails.record.previewRenderable,
+          webUrl: record.webUrl || undefined,
+          previewRenderable: record.previewRenderable,
         });
 
       } catch (error) {
@@ -2212,28 +2240,50 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
+        const recordDetails = await KnowledgeBaseApi.getRecordDetails(item.id);
+        const record = recordDetails?.record;
+        if (!record) {
+          throw new Error('Record details unavailable');
+        }
+        if (record.previewRenderable === false) {
+          setPreviewFile({
+            id: item.id,
+            name: item.name,
+            url: '',
+            type: record.mimeType || item.fileType || '',
+            size:
+              record.sizeInBytes ??
+              record.fileRecord?.sizeInBytes ??
+              undefined,
+            isLoading: false,
+            recordDetails,
+            webUrl: record.webUrl || undefined,
+            previewRenderable: false,
+          });
+          return;
+        }
+
+        const previewMime = record.mimeType || item.fileType;
+        const previewName = record.recordName || item.name;
         const legacyStreamAsPdf =
-          isPresentationFile(item.fileType, item.name) ||
-          isLegacyWordDocFile(item.fileType, item.name);
+          isPresentationFile(previewMime, previewName) ||
+          isLegacyWordDocFile(previewMime, previewName);
         const legacyStreamOptions = legacyStreamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const [recordDetails, blob] = await Promise.all([
-          KnowledgeBaseApi.getRecordDetails(item.id),
-          KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions),
-        ]);
+        const blob = await KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions);
 
         // DOCX uses the Blob directly; other types stay on URLs.
-        const legacyRecordMime = recordDetails.record.mimeType || item.fileType || '';
+        const legacyRecordMime = record.mimeType || item.fileType || '';
         const resolvedType = resolvePreviewMimeAfterStream(
           legacyRecordMime,
-          item.name,
+          previewName,
           blob,
           !!legacyStreamOptions,
         );
-        const frLegacy = recordDetails.record.fileRecord;
+        const frLegacy = record.fileRecord;
         const isDocx = isDocxFile(
-          recordDetails.record.mimeType,
+          record.mimeType,
           item.name,
-          recordDetails.record.recordName,
+          record.recordName,
           undefined,
           frLegacy?.extension,
         );
@@ -2246,13 +2296,13 @@ function KnowledgeBasePageContent() {
           blob: isDocx ? blob : undefined,
           type: resolvedType,
           size:
-            recordDetails.record.sizeInBytes ??
-            recordDetails.record.fileRecord?.sizeInBytes ??
+            record.sizeInBytes ??
+            record.fileRecord?.sizeInBytes ??
             undefined,
           isLoading: false,
           recordDetails,
-          webUrl: recordDetails.record.webUrl || undefined,
-          previewRenderable: recordDetails.record.previewRenderable,
+          webUrl: record.webUrl || undefined,
+          previewRenderable: record.previewRenderable,
         });
 
       } catch (error) {
@@ -2455,11 +2505,10 @@ function KnowledgeBasePageContent() {
 
         await refreshData();
       } catch (error: unknown) {
-        let errorMessage = 'Failed to start reindexing';
-
-        if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
-          errorMessage = error.message;
-        }
+        const errorMessage = getUserFacingErrorMessage(
+          error,
+          "We couldn't start reindexing. Please try again in a moment.",
+        );
 
         toast.update(toastId, {
           variant: 'error',
@@ -3026,12 +3075,17 @@ function KnowledgeBasePageContent() {
               onIndexingStatusClick={handleCollectionIndexingStatusClick}
               isSearchActive={isSearchOpen && !!(isAllRecordsMode ? allRecordsSearchQuery : searchQuery)?.trim()}
               // Collections mode only props
-              onCreateFolder={handleCreateFolder}
-              onUpload={handleUpload}
-              onShare={canManageSelectedKbSharing ? handleShare : undefined}
+              onCreateFolder={isAllRecordsMode ? undefined : handleCreateFolder}
+              onUpload={isAllRecordsMode ? undefined : handleUpload}
+              onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
+              createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
+              sharePermissionDenied={Boolean(shareAdapter && isSelectedKbOwner && !canShareCollection)}
               sharedMembers={sharedMembers}
               onRename={
-                !isAllRecordsMode && nodeId && tableData?.permissions?.canEdit !== false
+                !isAllRecordsMode &&
+                nodeId &&
+                tableData?.permissions?.canEdit !== false &&
+                canEditCollection
                   ? handleBreadcrumbRename
                   : undefined
               }
@@ -3084,18 +3138,18 @@ function KnowledgeBasePageContent() {
           }}
           onItemClick={handleItemClick}
           onPreview={handlePreviewFile}
-          onRename={
-            !isAllRecordsMode
-              ? handleRename
+          onRename={!isAllRecordsMode && canEditCollection ? handleRename : undefined}
+          onReindex={handleReindexClick}
+          onReplace={
+            !isAllRecordsMode && canEditCollection
+              ? (item) => handleReplaceClick(item as KnowledgeHubNode)
               : undefined
           }
-          onReindex={handleReindexClick}
-          onReplace={!isAllRecordsMode ? (item) => handleReplaceClick(item as KnowledgeHubNode) : undefined}
-          onMove={!isAllRecordsMode ? handleMoveClick : undefined}
-          onDelete={!isAllRecordsMode ? handleDelete : undefined}
+          onMove={!isAllRecordsMode && canEditCollection ? handleMoveClick : undefined}
+          onDelete={!isAllRecordsMode && canDeleteCollection ? handleDelete : undefined}
           onDownload={handleDownload}
-          onCreateFolder={isAllRecordsMode ? undefined : handleCreateFolder}
-          onUpload={isAllRecordsMode ? undefined : handleUpload}
+          onCreateFolder={!isAllRecordsMode && canCreateCollection ? handleCreateFolder : undefined}
+          onUpload={!isAllRecordsMode && canEditCollection ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
         />
@@ -3110,7 +3164,8 @@ function KnowledgeBasePageContent() {
             onDeselectAll={handleDeselectAll}
             onChat={handleBulkChat}
             onReindex={handleBulkReindex}
-            onDelete={handleBulkDeleteClick}
+            onDelete={!isAllRecordsMode ? handleBulkDeleteClick : undefined}
+            deletePermissionDenied={!canDeleteCollection}
             pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
           />
         )}

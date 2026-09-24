@@ -22,3 +22,17 @@ export function validatePassword(pw: string): string | null {
   if (!/[^a-zA-Z0-9]/.test(pw)) return 'Password must contain a symbol.';
   return null;
 }
+
+// ─── Destructive-confirmation keyword ─────────────────────────────────────────
+
+/**
+ * Compares typed confirmation input against the expected keyword.
+ *
+ * NFC-normalizes both sides: Hangul keywords such as "삭제" are 2 code points
+ * composed but 5 decomposed, and some IMEs emit the decomposed form — a raw
+ * `===` would then never match and the user could not complete the action.
+ */
+export function matchesConfirmationKeyword(input: string, keyword: string): boolean {
+  const normalize = (v: string) => v.trim().normalize('NFC').toUpperCase();
+  return keyword.trim().length > 0 && normalize(input) === normalize(keyword);
+}

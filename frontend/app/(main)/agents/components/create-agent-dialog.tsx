@@ -17,9 +17,6 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { ChatApi } from '@/app/(main)/chat/api';
-import { selectPreferredModel } from '@/app/(main)/agents/agent-builder/agent-model-utils';
-import type { AvailableLlmModel } from '@/app/(main)/chat/types';
 import { ServiceAccountConfirmDialog } from '@/app/(main)/agents/agent-builder/components/service-account-confirm-dialog';
 
 type AgentType = 'user' | 'service';
@@ -27,18 +24,6 @@ type AgentType = 'user' | 'service';
 export interface CreateAgentDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}
-
-function buildModels(model: AvailableLlmModel | null) {
-  if (!model) return [];
-  return [
-    {
-      provider: model.provider,
-      modelName: model.modelName,
-      modelKey: model.modelKey,
-      isReasoning: model.isReasoning,
-    },
-  ];
 }
 
 function extractApiError(e: unknown, fallback: string): string {
@@ -62,8 +47,6 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
   const [serviceCreating, setServiceCreating] = useState(false);
   const [serviceError, setServiceError] = useState<string | null>(null);
 
-  const [defaultModel, setDefaultModel] = useState<AvailableLlmModel | null>(null);
-
   // Ref guards prevent duplicate submissions when the user double-clicks or
   // hammers Enter before React has re-rendered the button into its disabled state.
   const createRef = useRef(false);
@@ -81,13 +64,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
       setServiceError(null);
       createRef.current = false;
       serviceCreateRef.current = false;
-      return;
     }
-    ChatApi.fetchAvailableLlms()
-      .then((models) => {
-        setDefaultModel(selectPreferredModel(models) ?? null);
-      })
-      .catch(() => setDefaultModel(null));
   }, [open]);
 
   const handleOpenChange = useCallback(
@@ -123,7 +100,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
         description: '',
         startMessage: '',
         systemPrompt: '',
-        models: buildModels(defaultModel),
+        models: [],
         tags: [],
         shareWithOrg: false,
         isServiceAccount: false,
@@ -141,7 +118,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
         setCreating(false);
       }
     }
-  }, [agentName, agentType, defaultModel, router, t]);
+  }, [agentName, agentType, router, t]);
 
   const handleServiceAccountConfirm = useCallback(async () => {
     if (serviceCreateRef.current) return;
@@ -159,7 +136,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
         description: '',
         startMessage: '',
         systemPrompt: '',
-        models: buildModels(defaultModel),
+        models: [],
         tags: [],
         shareWithOrg: true,
         isServiceAccount: true,
@@ -174,7 +151,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
         setServiceCreating(false);
       }
     }
-  }, [agentName, defaultModel, router, t]);
+  }, [agentName, router, t]);
 
   const mainDialogOpen = open && !showServiceConfirm;
 

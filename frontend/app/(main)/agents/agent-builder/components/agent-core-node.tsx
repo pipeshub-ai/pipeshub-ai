@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Handle, Position, useReactFlow, useStore, useNodeConnections } from '@xyflow/react';
-import { Box, Flex, Text, IconButton, Dialog, Button, TextArea, Badge } from '@radix-ui/themes';
+import { Box, Flex, Text, IconButton, Dialog, Button, TextArea, Badge, Switch } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
@@ -81,14 +81,30 @@ function toolsetConnectionChipLabel(n: FlowNodeData): string {
   return normalizeDisplayName(inst || disp || n.label);
 }
 
-type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets' | 'skills';
+/** MCP server instances are named at attach time (no logical "type" grouping to fall back to). */
+function mcpConnectionChipLabel(n: FlowNodeData): string {
+  const c = (n.config || {}) as Record<string, unknown>;
+  const disp = String(c.displayName ?? '').trim();
+  return normalizeDisplayName(disp || n.label);
+}
+
+type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets' | 'skills' | 'mcpServers';
 
 function inboundHandleForEdge(
   targetHandle: string | null | undefined,
   source: FlowNodeData
 ): CoreInboundHandle | null {
   const h = targetHandle as CoreInboundHandle | undefined;
-  if (h === 'input' || h === 'llms' || h === 'knowledge' || h === 'toolsets' || h === 'skills') return h;
+  if (
+    h === 'input' ||
+    h === 'llms' ||
+    h === 'knowledge' ||
+    h === 'toolsets' ||
+    h === 'skills' ||
+    h === 'mcpServers'
+  ) {
+    return h;
+  }
 
   const t = source.type;
   if (t === 'user-input') return 'input';
@@ -104,6 +120,7 @@ function inboundHandleForEdge(
     return 'knowledge';
   }
   if (t.startsWith('skill-')) return 'skills';
+  if (t.startsWith('mcp-')) return 'mcpServers';
   return null;
 }
 
@@ -204,7 +221,7 @@ function ConnectionChip({
   );
 }
 
-const MAX_VISIBLE = { models: 5, knowledge: 5, toolsets: 5, skills: 5, input: 4 } as const;
+const MAX_VISIBLE = { models: 5, knowledge: 5, toolsets: 5, skills: 5, mcpServers: 5, input: 4 } as const;
 
 function ConnectedChips({
   nodes,
@@ -283,6 +300,9 @@ export function AgentCoreNode({
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<ReasoningEffort | null>(
     (data.config?.defaultReasoningEffort as ReasoningEffort | null) ?? null
   );
+  const [sendUserContext, setSendUserContext] = useState(
+    data.config?.sendUserContext !== false
+  );
 
   const connected = useMemo(() => {
     const incoming = storeEdges.filter((e) => e.target === data.id);
@@ -292,6 +312,7 @@ export function AgentCoreNode({
       knowledge: [],
       llms: [],
       skills: [],
+      mcpServers: [],
     };
     incoming.forEach((e) => {
       const source = storeNodes.find((n) => n.id === e.source);
@@ -325,6 +346,7 @@ export function AgentCoreNode({
                   instructions,
                   startMessage,
                   defaultReasoningEffort,
+                  sendUserContext,
                 },
               },
             }
@@ -332,13 +354,14 @@ export function AgentCoreNode({
       )
     );
     setPromptOpen(false);
-  }, [data.id, defaultReasoningEffort, instructions, setNodes, startMessage, systemPrompt]);
+  }, [data.id, defaultReasoningEffort, instructions, sendUserContext, setNodes, startMessage, systemPrompt]);
 
   const openPrompts = () => {
     setSystemPrompt((data.config?.systemPrompt as string) || t('agentBuilder.defaultSystemPrompt'));
     setInstructions((data.config?.instructions as string) || '');
     setStartMessage((data.config?.startMessage as string) || t('agentBuilder.defaultStartMessage'));
     setDefaultReasoningEffort((data.config?.defaultReasoningEffort as ReasoningEffort | null) ?? null);
+    setSendUserContext(data.config?.sendUserContext !== false);
     setPromptOpen(true);
   };
 
@@ -500,7 +523,7 @@ export function AgentCoreNode({
               />
             ) : (
               <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
-                {t('agentBuilder.connectModel')}
+                {t('agentBuilder.usingOrgDefault')}
               </Text>
             )}
           </Section>
@@ -541,6 +564,22 @@ export function AgentCoreNode({
             )}
           </Section>
 
+
+          <Section title={t('agentBuilder.mcpServersSection')} icon="hub">
+            <CoreHandle type="target" position={Position.Left} id="mcpServers" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
+            {connected.mcpServers.length ? (
+              <ConnectedChips
+                nodes={connected.mcpServers}
+                max={MAX_VISIBLE.mcpServers}
+                labelOf={mcpConnectionChipLabel}
+                chipIconKind="toolset"
+              />
+            ) : (
+              <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
+                {t('agentBuilder.optional')}
+              </Text>
+            )}
+          </Section>
 
           <Section title={t('agentBuilder.inputSection')} icon="forum">
             <CoreHandle type="target" position={Position.Left} id="input" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
@@ -628,6 +667,22 @@ export function AgentCoreNode({
                 onSelect={setDefaultReasoningEffort}
               />
             ) : null}
+            <Flex align="start" justify="between" gap="3">
+              <Box style={{ minWidth: 0 }}>
+                <Text size="2" weight="bold">
+                  {t('agentBuilder.sendUserContextLabel')}
+                </Text>
+                <Text size="1" color="gray" as="p" mt="1">
+                  {t('agentBuilder.sendUserContextHint')}
+                </Text>
+              </Box>
+              <Switch
+                checked={sendUserContext}
+                onCheckedChange={setSendUserContext}
+                disabled={readOnly}
+                aria-label={t('agentBuilder.sendUserContextLabel')}
+              />
+            </Flex>
           </Box>
 
           {/* Fixed footer */}

@@ -1,6 +1,7 @@
 """Unit tests for app.docling_main — Docling service FastAPI entrypoint."""
 
 import asyncio
+import json
 import signal
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -238,6 +239,42 @@ class TestLifespan:
             # After shutdown, config should be closed
             mock_config_service.close.assert_awaited_once()
 
+    async def test_lifespan_wires_resource_governor(self):
+        """A ResourceGovernor is constructed, exposed on app.state, wired into
+        the mounted docling_service routes via set_resource_governor, and
+        stopped cleanly on shutdown (Phase 5 of the adaptive-concurrency
+        plan)."""
+        from app.docling_main import lifespan
+
+        mock_container = _make_container()
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+        mock_container.config_service.return_value = mock_config_service
+        mock_logger = MagicMock()
+        mock_container.logger.return_value = mock_logger
+
+        mock_svc = _make_docling_service(healthy=True)
+
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+
+        with (
+            patch("app.docling_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.docling_main.DoclingService", return_value=mock_svc),
+            patch("app.docling_main.set_docling_service"),
+            patch("app.docling_main.set_resource_governor") as mock_set_governor,
+        ):
+            async with lifespan(mock_app):
+                governor = mock_app.state.governor
+                assert governor is not None
+                mock_set_governor.assert_called_once_with(governor)
+                # Health/stats surface — see docling_main's /health endpoint.
+                stats = governor.stats()
+                assert "ceilings" in stats
+
+            # Shutdown must stop the sampling loop rather than leaking the task.
+            assert governor._running is False
+
     async def test_startup_failure_raises(self):
         """If DoclingService initialization fails, the error propagates."""
         from app.docling_main import lifespan
@@ -332,6 +369,26 @@ class TestHealthCheck:
             result = await health_check()
 
         assert result.status_code == 200
+
+    async def test_healthy_service_includes_governor_stats(self):
+        """When a governor is wired on app.state, /health surfaces its stats
+        (ceilings/limits/demand) so operators can see admission pressure
+        without a separate endpoint."""
+        from app.docling_main import health_check, app as docling_main_app
+
+        mock_svc = _make_docling_service(healthy=True)
+        mock_governor = MagicMock()
+        mock_governor.stats.return_value = {"ceilings": {"heavy_parse": 3}}
+
+        with (
+            patch.object(docling_main_app.state, "docling_service", mock_svc, create=True),
+            patch.object(docling_main_app.state, "governor", mock_governor, create=True),
+            patch("app.docling_main.get_epoch_timestamp_in_ms", return_value=111),
+        ):
+            result = await health_check()
+
+        assert result.status_code == 200
+        assert json.loads(result.body)["resource_governor"] == {"ceilings": {"heavy_parse": 3}}
 
     async def test_unhealthy_service(self):
         """DoclingService unhealthy -> 503."""

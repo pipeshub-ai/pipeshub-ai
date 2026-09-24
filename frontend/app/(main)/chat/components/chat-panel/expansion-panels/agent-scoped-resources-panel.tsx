@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
+import { Link } from '@/lib/navigation';
 import Image from 'next/image';
 import {
   Badge,
@@ -18,15 +18,25 @@ import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore } from '@/chat/store';
+import {
+  useFeatureFlagsStore,
+  selectMcpEnabled,
+  selectActionsEnabled,
+} from '@/lib/store/feature-flags-store';
 import { CollectionRow } from './connectors-collections/collection-row';
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
-const TAB_VALUES = ['connectors', 'collections', 'actions'] as const;
+const TAB_VALUES = ['connectors', 'collections', 'actions', 'mcp'] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
-/** Figma segmented control track (`7523:16159` / Settings spec): fixed width, 32px height, 4px radius */
-const FIGMA_TABLIST_WIDTH = 246;
+/**
+ * Figma segmented control track (`7523:16159` / Settings spec): 32px height, 4px radius.
+ * Width was a fixed 246px sized for 3 tabs — scaled per-tab so a 4th ("MCP") entry doesn't
+ * crush the longer "Connectors"/"Collections" labels. Computed from the actually-rendered
+ * tab count (`visibleTabValues`) so hiding the MCP tab shrinks the tablist back down.
+ */
+const FIGMA_TABLIST_WIDTH_PER_TAB = 82;
 const FIGMA_TABLIST_HEIGHT = 32;
 const FIGMA_TABLIST_RADIUS = 4;
 
@@ -41,17 +51,25 @@ function AgentFilterTablist({
   onValueChange,
   labels,
   disabledTabs = [],
+  hiddenTabs = [],
 }: {
   value: TabValue;
   onValueChange: (next: TabValue) => void;
   labels: Record<TabValue, string>;
   disabledTabs?: TabValue[];
+  /** Tabs excluded entirely (not just disabled) — e.g. 'mcp' when ENABLE_MCP is off. */
+  hiddenTabs?: TabValue[];
 }) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
 
+  const visibleTabValues = useMemo(
+    () => TAB_VALUES.filter((v) => !hiddenTabs.includes(v)),
+    [hiddenTabs]
+  );
+
   const trackStyle: React.CSSProperties = {
-    width: FIGMA_TABLIST_WIDTH,
+    width: FIGMA_TABLIST_WIDTH_PER_TAB * visibleTabValues.length,
     maxWidth: '100%',
     height: FIGMA_TABLIST_HEIGHT,
     borderRadius: FIGMA_TABLIST_RADIUS,
@@ -80,14 +98,14 @@ function AgentFilterTablist({
   const selectedBg = isDark ? '#111113' : 'var(--color-panel-solid, #ffffff)';
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    const i = TAB_VALUES.indexOf(value);
+    const i = visibleTabValues.indexOf(value);
     if (e.key === 'ArrowRight') {
       e.preventDefault();
-      const next = TAB_VALUES[(i + 1) % TAB_VALUES.length]!;
+      const next = visibleTabValues[(i + 1) % visibleTabValues.length]!;
       if (!disabledTabs.includes(next)) onValueChange(next);
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      const next = TAB_VALUES[(i - 1 + TAB_VALUES.length) % TAB_VALUES.length]!;
+      const next = visibleTabValues[(i - 1 + visibleTabValues.length) % visibleTabValues.length]!;
       if (!disabledTabs.includes(next)) onValueChange(next);
     }
   };
@@ -99,7 +117,7 @@ function AgentFilterTablist({
       onKeyDown={onKeyDown}
       style={trackStyle}
     >
-      {TAB_VALUES.map((tabValue) => {
+      {visibleTabValues.map((tabValue) => {
         const selected = value === tabValue;
         const isDisabled = disabledTabs.includes(tabValue);
         return (
@@ -171,10 +189,85 @@ function connectorIconHint(row: { connectorKind?: string; label: string }): stri
 
 /** Stable fallback so the Zustand selector always returns the same reference when no scoped caps exist. */
 const DEFAULT_AGENT_CAPS = { internalSearch: true, webSearch: true } as const;
+const EMPTY_STRINGS: string[] = [];
+const EMPTY_ROWS: never[] = [];
+const EMPTY_KNOWLEDGE = { apps: EMPTY_STRINGS, kb: EMPTY_STRINGS };
+
+/** Which store slice the panel renders — a custom agent (`?agentId=`) or a project (`?projectId=`). */
+export type ScopedResourcesSource = 'agent' | 'project';
 
 interface AgentScopedResourcesPanelProps {
   onToggleView?: () => void;
   viewMode?: ExpansionViewMode;
+  scope?: ScopedResourcesSource;
+}
+
+/**
+ * Selects the agent or project slice of the chat store behind one shape so the panel body
+ * doesn't branch on the source. Both slices share semantics: `knowledgeScope === null` and
+ * `selectedTools === null` mean "everything in defaults / catalog".
+ */
+function useScopedResourceSource(scope: ScopedResourcesSource) {
+  const isProject = scope === 'project';
+
+  const agentConnectors = useChatStore((s) => s.agentChatConnectors);
+  const agentCollectionRows = useChatStore((s) => s.agentKnowledgeCollectionRows);
+  const agentToolGroups = useChatStore((s) => s.agentChatToolGroups);
+  const agentMcpGroups = useChatStore((s) => s.agentChatMcpGroups);
+  const agentDefaults = useChatStore((s) => s.agentKnowledgeDefaults);
+  const agentKnowledgeScope = useChatStore((s) => s.agentKnowledgeScope);
+  const agentSelectedTools = useChatStore((s) => s.agentStreamTools);
+  const setAgentKnowledgeScope = useChatStore((s) => s.setAgentKnowledgeScope);
+  const setAgentStreamTools = useChatStore((s) => s.setAgentStreamTools);
+  const agentId = useChatStore((s) => s.agentSidebarAgentId);
+  const agentKbIds = useChatStore((s) => s.agentChatKbIds);
+  const scopedCaps = useChatStore((s) =>
+    agentId ? (s.scopedAgentCapabilities[agentId] ?? DEFAULT_AGENT_CAPS) : DEFAULT_AGENT_CAPS
+  );
+
+  const projectScope = useChatStore((s) => s.projectScope);
+  const projectKnowledgeScope = useChatStore((s) => s.projectKnowledgeScope);
+  const projectSelectedTools = useChatStore((s) => s.projectStreamTools);
+  const setProjectKnowledgeScope = useChatStore((s) => s.setProjectKnowledgeScope);
+  const setProjectStreamTools = useChatStore((s) => s.setProjectStreamTools);
+
+  const getProjectToolCatalog = useCallback(
+    () => useChatStore.getState().projectScope?.toolCatalogFullNames ?? EMPTY_STRINGS,
+    []
+  );
+  const getAgentToolCatalog = useCallback(() => useChatStore.getState().agentToolCatalogFullNames, []);
+
+  if (isProject) {
+    const defaults = projectScope?.knowledgeDefaults ?? EMPTY_KNOWLEDGE;
+    return {
+      connectors: projectScope?.connectors ?? EMPTY_ROWS,
+      collectionRows: projectScope?.knowledgeCollectionRows ?? EMPTY_ROWS,
+      toolGroups: projectScope?.toolGroups ?? EMPTY_ROWS,
+      mcpGroups: projectScope?.mcpGroups ?? EMPTY_ROWS,
+      defaults,
+      knowledgeScope: projectKnowledgeScope,
+      selectedTools: projectSelectedTools,
+      setKnowledgeScope: setProjectKnowledgeScope,
+      setTools: setProjectStreamTools,
+      getToolCatalog: getProjectToolCatalog,
+      internalSearchEnabled: defaults.apps.length > 0 || defaults.kb.length > 0,
+    };
+  }
+
+  const agentHasInternalSearch = agentConnectors.length > 0 || agentKbIds.length > 0;
+  return {
+    connectors: agentConnectors,
+    collectionRows: agentCollectionRows,
+    toolGroups: agentToolGroups,
+    mcpGroups: agentMcpGroups,
+    defaults: agentDefaults,
+    knowledgeScope: agentKnowledgeScope,
+    selectedTools: agentSelectedTools,
+    setKnowledgeScope: setAgentKnowledgeScope,
+    setTools: setAgentStreamTools,
+    getToolCatalog: getAgentToolCatalog,
+    internalSearchEnabled: agentHasInternalSearch ? scopedCaps.internalSearch : false,
+  };
 }
 
 function setsEqualAsSets(a: string[], b: string[]): boolean {
@@ -229,37 +322,86 @@ function AgentToolsetRowIcon({
   return <ConnectorIcon type={resolveConnectorType(toolsetSlug || label)} size={18} />;
 }
 
+/** Row shape shared by `agentChatToolGroups` (Actions tab) and `agentChatMcpGroups` (MCP tab). */
+interface ChatToolGroupRow {
+  label: string;
+  fullNames: string[];
+  toolDescriptions?: Record<string, string>;
+  toolsetSlug: string;
+  instanceId?: string;
+  iconPath?: string;
+}
+
 /**
- * Connectors · Collections · Actions panel for agent-scoped chat (`?agentId=`).
+ * Connectors · Collections · Actions · MCP panel for agent-scoped chat (`?agentId=`).
  * Matches Settings spec (Figma `7523:16157` — segmented tabs, search row, actions summary rows, configure-more links).
  */
 export function AgentScopedResourcesPanel({
   onToggleView,
   viewMode = 'inline',
+  scope: source = 'agent',
 }: AgentScopedResourcesPanelProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabValue>('connectors');
   const [search, setSearch] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
+  const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const isProject = source === 'project';
+  // Project chats run in plain chat mode too; tools only ship in agent mode, so hide those tabs.
+  const projectToolsApplicable = useChatStore((s) => !isProject || s.settings.queryMode === 'agent');
 
-  const connectors = useChatStore((s) => s.agentChatConnectors);
-  const collectionRows = useChatStore((s) => s.agentKnowledgeCollectionRows);
-  const toolGroups = useChatStore((s) => s.agentChatToolGroups);
-  const defaults = useChatStore((s) => s.agentKnowledgeDefaults);
-  const scope = useChatStore((s) => s.agentKnowledgeScope);
-  const selectedTools = useChatStore((s) => s.agentStreamTools);
-  const setScope = useChatStore((s) => s.setAgentKnowledgeScope);
-  const setTools = useChatStore((s) => s.setAgentStreamTools);
+  const {
+    connectors,
+    collectionRows,
+    toolGroups,
+    mcpGroups,
+    defaults,
+    knowledgeScope: scope,
+    selectedTools,
+    setKnowledgeScope: setScope,
+    setTools,
+    getToolCatalog,
+    internalSearchEnabled,
+  } = useScopedResourceSource(source);
 
-  const agentId = useChatStore((s) => s.agentSidebarAgentId);
-  const kbIds = useChatStore((s) => s.agentChatKbIds);
-  const agentHasInternalSearch = connectors.length > 0 || kbIds.length > 0;
-
-  const scopedCaps = useChatStore((s) =>
-    agentId ? (s.scopedAgentCapabilities[agentId] ?? DEFAULT_AGENT_CAPS) : DEFAULT_AGENT_CAPS
+  const copy = useMemo(
+    () =>
+      isProject
+        ? {
+            noConnectors: t('chat.projectResources.noConnectors', {
+              defaultValue: 'No connectors enabled for this project.',
+            }),
+            noCollections: t('chat.projectResources.noCollections', {
+              defaultValue: 'No collections enabled for this project.',
+            }),
+            noActions: t('chat.projectResources.noActions', {
+              defaultValue: 'No actions (toolsets) enabled for this project.',
+            }),
+            noMcpServers: t('chat.projectResources.noMcpServers', {
+              defaultValue: 'No MCP servers enabled for this project.',
+            }),
+            resetDefaults: t('chat.projectResources.resetDefaults', {
+              defaultValue: 'Reset to project defaults',
+            }),
+          }
+        : {
+            noConnectors: t('chat.agentResources.noConnectors', {
+              defaultValue: 'No connectors configured for this agent.',
+            }),
+            noCollections: t('chat.agentResources.noCollections', {
+              defaultValue: 'No collections configured for this agent.',
+            }),
+            noActions: t('chat.agentResources.noActions', {
+              defaultValue: 'No actions (toolsets) configured for this agent.',
+            }),
+            noMcpServers: t('chat.agentResources.noMcpServers', {
+              defaultValue: 'No MCP servers configured for this agent.',
+            }),
+            resetDefaults: t('chat.agentResources.resetDefaults', { defaultValue: 'Reset to defaults' }),
+          },
+    [isProject, t]
   );
-
-  const internalSearchEnabled = agentHasInternalSearch ? scopedCaps.internalSearch : false;
 
   const eff = useMemo(() => effectiveKnowledge(scope, defaults), [scope, defaults]);
 
@@ -316,8 +458,8 @@ export function AgentScopedResourcesPanel({
 
   const toggleTool = useCallback(
     (fullName: string) => {
-      const cat = useChatStore.getState().agentToolCatalogFullNames;
-      const cur = useChatStore.getState().agentStreamTools;
+      const cat = getToolCatalog();
+      const cur = selectedTools;
 
       if (cur === null) {
         const next = cat.filter((x) => x !== fullName);
@@ -347,7 +489,7 @@ export function AgentScopedResourcesPanel({
         setTools(next);
       }
     },
-    [setTools]
+    [selectedTools, getToolCatalog, setTools]
   );
 
   const groupCheckState = useCallback(
@@ -362,8 +504,8 @@ export function AgentScopedResourcesPanel({
 
   const setGroupToolsEnabled = useCallback(
     (fullNames: string[], enabled: boolean) => {
-      const cat = useChatStore.getState().agentToolCatalogFullNames;
-      const explicit = useChatStore.getState().agentStreamTools;
+      const cat = getToolCatalog();
+      const explicit = selectedTools;
 
       if (explicit === null) {
         if (!enabled) {
@@ -396,7 +538,7 @@ export function AgentScopedResourcesPanel({
         setTools(arr);
       }
     },
-    [setTools]
+    [selectedTools, getToolCatalog, setTools]
   );
 
   const resetToAgentDefaults = useCallback(() => {
@@ -408,10 +550,20 @@ export function AgentScopedResourcesPanel({
     () => (!internalSearchEnabled ? ['connectors', 'collections'] : []),
     [internalSearchEnabled]
   );
+  const hiddenTabs = useMemo<TabValue[]>(
+    () => [
+      ...(mcpEnabled && projectToolsApplicable ? [] : (['mcp'] as TabValue[])),
+      ...(actionsEnabled && projectToolsApplicable ? [] : (['actions'] as TabValue[])),
+    ],
+    [mcpEnabled, actionsEnabled, projectToolsApplicable]
+  );
 
   useEffect(() => {
-    if (disabledTabs.includes(tab)) setTab('actions');
-  }, [disabledTabs, tab]);
+    if (disabledTabs.includes(tab) || hiddenTabs.includes(tab)) {
+      const fallback = TAB_VALUES.find((v) => !disabledTabs.includes(v) && !hiddenTabs.includes(v));
+      if (fallback) setTab(fallback);
+    }
+  }, [disabledTabs, hiddenTabs, tab]);
 
   const filteredConnectors = useMemo(() => {
     if (!search.trim()) return connectors;
@@ -425,28 +577,41 @@ export function AgentScopedResourcesPanel({
     return collectionRows.filter((r) => r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q));
   }, [collectionRows, search]);
 
-  const filteredToolGroups = useMemo(() => {
-    return toolGroups
-      .map((g) => ({
-        ...g,
-        fullNames: g.fullNames.filter((fn) => {
-          if (!search.trim()) return true;
-          const q = search.toLowerCase();
-          const desc = (g.toolDescriptions?.[fn] ?? '').toLowerCase();
-          return (
-            fn.toLowerCase().includes(q) ||
-            g.label.toLowerCase().includes(q) ||
-            desc.includes(q)
-          );
-        }),
-      }))
-      .filter((g) => g.fullNames.length > 0);
-  }, [toolGroups, search]);
+  const filterGroupsBySearch = useCallback(
+    (groups: ChatToolGroupRow[]): ChatToolGroupRow[] =>
+      groups
+        .map((g) => ({
+          ...g,
+          fullNames: g.fullNames.filter((fn) => {
+            if (!search.trim()) return true;
+            const q = search.toLowerCase();
+            const desc = (g.toolDescriptions?.[fn] ?? '').toLowerCase();
+            return (
+              fn.toLowerCase().includes(q) ||
+              g.label.toLowerCase().includes(q) ||
+              desc.includes(q)
+            );
+          }),
+        }))
+        .filter((g) => g.fullNames.length > 0),
+    [search]
+  );
+
+  const filteredToolGroups = useMemo(
+    () => filterGroupsBySearch(toolGroups),
+    [filterGroupsBySearch, toolGroups]
+  );
+
+  const filteredMcpGroups = useMemo(
+    () => filterGroupsBySearch(mcpGroups),
+    [filterGroupsBySearch, mcpGroups]
+  );
 
   const tabPlaceholders = [
     t('chat.agentResources.searchConnectors', { defaultValue: 'Search connectors' }),
     t('chat.agentResources.searchCollections', { defaultValue: 'Search collections' }),
     t('chat.agentResources.searchActions', { defaultValue: 'Search actions' }),
+    t('chat.agentResources.searchMcp', { defaultValue: 'Search MCP servers' }),
   ];
 
   const tabIndex = TAB_VALUES.indexOf(tab);
@@ -457,12 +622,209 @@ export function AgentScopedResourcesPanel({
       connectors: t('nav.connectors', { defaultValue: 'Connectors' }),
       collections: t('nav.collections', { defaultValue: 'Collections' }),
       actions: t('chat.agentResources.actionsTab', { defaultValue: 'Actions' }),
+      mcp: t('chat.agentResources.mcpTab', { defaultValue: 'MCP' }),
     }),
     [t]
   );
 
   const toggleGroupExpanded = (key: string) => {
     setExpandedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  /**
+   * Shared row list for the Actions (toolsets) and MCP tabs — identical group-row/checkbox/
+   * expand/footer-link structure, differing only in the empty-state copy, footer link target,
+   * and group icon. `keyPrefix` namespaces `expandedGroups`/React keys so the two tabs never
+   * collide on the same group key (e.g. two instanceIds that happen to match).
+   */
+  const renderToolGroupList = ({
+    groups,
+    keyPrefix,
+    emptyText,
+    footerCaption,
+    footerLinkHref,
+    footerLinkText,
+    footerLinkAriaLabel,
+    renderGroupIcon,
+    renderToolIcon,
+  }: {
+    groups: ChatToolGroupRow[];
+    keyPrefix: string;
+    emptyText: string;
+    /** Small caption above the footer row (e.g. "Configure more actions"). */
+    footerCaption: string;
+    footerLinkHref: string;
+    /** Label inside the footer row itself (e.g. "Browse workspace actions"). */
+    footerLinkText: string;
+    footerLinkAriaLabel: string;
+    renderGroupIcon: (group: ChatToolGroupRow) => React.ReactNode;
+    renderToolIcon: (fullName: string) => React.ReactNode;
+  }) => {
+    if (groups.length === 0) {
+      return (
+        <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+          {emptyText}
+        </Text>
+      );
+    }
+
+    return (
+      <>
+        {groups.map((group) => {
+          const groupKey = group.instanceId
+            ? `${keyPrefix}:${group.instanceId}`
+            : `${keyPrefix}:${group.toolsetSlug || 'toolset'}:${group.label}:${group.fullNames[0] ?? ''}`;
+          const subtitle = toolsetSubtitle(group);
+          const expanded = Boolean(expandedGroups[groupKey]);
+          const checkState = groupCheckState(group.fullNames);
+
+          return (
+            <Flex key={groupKey} direction="column" gap="1">
+              <Flex
+                align="center"
+                justify="between"
+                gap="2"
+                style={{
+                  ...OLIVE_ROW,
+                  padding: 'var(--space-2)',
+                  cursor: 'pointer',
+                }}
+                onClick={() => toggleGroupExpanded(groupKey)}
+              >
+                <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    role="presentation"
+                    style={CHECKBOX_ALIGN}
+                  >
+                    <Checkbox
+                      size="1"
+                      checked={checkState}
+                      onCheckedChange={(v) => {
+                        setGroupToolsEnabled(group.fullNames, v === true);
+                      }}
+                    />
+                  </div>
+                  {renderGroupIcon(group)}
+                  <Flex align="center" gap="1" style={{ flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
+                    <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
+                      {group.label}
+                    </Text>
+                    {subtitle ? (
+                      <>
+                        <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }}>
+                          ·
+                        </Text>
+                        <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }} truncate>
+                          {subtitle}
+                        </Text>
+                      </>
+                    ) : null}
+                  </Flex>
+                </Flex>
+                <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+                  <Badge size="1" variant="soft" color="green" highContrast>
+                    {t('chat.agentResources.actionsCount', {
+                      count: group.fullNames.length,
+                    })}
+                  </Badge>
+                  <IconButton
+                    type="button"
+                    size="1"
+                    variant="ghost"
+                    color="gray"
+                    aria-expanded={expanded}
+                    aria-label={expanded ? t('common.collapse') : t('common.expand')}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleGroupExpanded(groupKey);
+                    }}
+                  >
+                    <MaterialIcon
+                      name="chevron_right"
+                      size={18}
+                      color="var(--slate-11)"
+                      style={{
+                        transform: expanded ? 'rotate(90deg)' : undefined,
+                        transition: 'transform 0.15s ease',
+                      }}
+                    />
+                  </IconButton>
+                </Flex>
+              </Flex>
+
+              {expanded &&
+                group.fullNames.map((fullName) => {
+                  const shortRaw = fullName.includes('.')
+                    ? fullName.slice(fullName.indexOf('.') + 1)
+                    : fullName;
+                  const short = humanizeUnderscores(shortRaw);
+                  return (
+                    <Flex
+                      key={fullName}
+                      align="center"
+                      gap="2"
+                      onClick={() => toggleTool(fullName)}
+                      style={{
+                        ...OLIVE_ROW,
+                        marginLeft: 'var(--space-3)',
+                        padding: 'var(--space-2) var(--space-3)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <span style={CHECKBOX_ALIGN}>
+                        <Checkbox
+                          size="1"
+                          checked={isToolOn(fullName)}
+                          onCheckedChange={() => toggleTool(fullName)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </span>
+                      {renderToolIcon(fullName)}
+                      <Flex direction="column" gap="0" style={{ flex: 1, minWidth: 0 }}>
+                        <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
+                          {short}
+                        </Text>
+                        <Text size="1" style={{ color: 'var(--gray-9)' }} truncate>
+                          {fullName}
+                        </Text>
+                      </Flex>
+                    </Flex>
+                  );
+                })}
+            </Flex>
+          );
+        })}
+
+        <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
+            {footerCaption}
+          </Text>
+          <Flex
+            align="center"
+            justify="between"
+            gap="2"
+            style={{
+              ...OLIVE_ROW,
+              padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
+            }}
+          >
+            <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+              <MaterialIcon name="apps" size={18} color="var(--gray-11)" />
+              <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
+                {footerLinkText}
+              </Text>
+            </Flex>
+            <IconButton asChild size="1" variant="soft" color="gray" style={{ flexShrink: 0 }}>
+              <Link href={footerLinkHref} aria-label={footerLinkAriaLabel}>
+                <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
+              </Link>
+            </IconButton>
+          </Flex>
+        </Flex>
+      </>
+    );
   };
 
   return (
@@ -480,6 +842,7 @@ export function AgentScopedResourcesPanel({
           }}
           labels={tabLabels}
           disabledTabs={disabledTabs}
+          hiddenTabs={hiddenTabs}
         />
         <IconButton
           variant="ghost"
@@ -530,9 +893,7 @@ export function AgentScopedResourcesPanel({
           <>
             {filteredConnectors.length === 0 ? (
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
-                {t('chat.agentResources.noConnectors', {
-                  defaultValue: 'No connectors configured for this agent.',
-                })}
+                {copy.noConnectors}
               </Text>
             ) : (
               filteredConnectors.map((c) => (
@@ -575,9 +936,7 @@ export function AgentScopedResourcesPanel({
           <>
             {collectionRows.length === 0 ? (
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
-                {t('chat.agentResources.noCollections', {
-                  defaultValue: 'No collections configured for this agent.',
-                })}
+                {copy.noCollections}
               </Text>
             ) : filteredCollections.length === 0 ? (
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
@@ -600,194 +959,57 @@ export function AgentScopedResourcesPanel({
           </>
         )}
 
-        {tab === 'actions' && (
-          <>
-            {filteredToolGroups.length === 0 ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
-                {t('chat.agentResources.noActions', {
-                  defaultValue: 'No actions (toolsets) configured for this agent.',
-                })}
-              </Text>
-            ) : (
-              <>
-                {filteredToolGroups.map((group) => {
-                  const groupKey = group.instanceId
-                    ? `toolset:${group.instanceId}`
-                    : `${group.toolsetSlug || 'toolset'}:${group.label}:${group.fullNames[0] ?? ''}`;
-                  const subtitle = toolsetSubtitle(group);
-                  const expanded = Boolean(expandedGroups[groupKey]);
-                  const checkState = groupCheckState(group.fullNames);
+        {tab === 'actions' &&
+          renderToolGroupList({
+            groups: filteredToolGroups,
+            keyPrefix: 'toolset',
+            emptyText: copy.noActions,
+            footerCaption: t('chat.agentResources.configureMoreActions', {
+              defaultValue: 'Configure more actions',
+            }),
+            footerLinkHref: '/workspace/actions',
+            footerLinkText: t('chat.agentResources.browseWorkspaceActions', {
+              defaultValue: 'Browse workspace actions',
+            }),
+            footerLinkAriaLabel: t('chat.agentResources.browseWorkspaceActionsAria', {
+              defaultValue: 'Open workspace actions to add or manage integrations',
+            }),
+            renderGroupIcon: (group) => (
+              <AgentToolsetRowIcon
+                toolsetSlug={group.toolsetSlug}
+                label={group.label}
+                iconPath={group.iconPath}
+              />
+            ),
+            renderToolIcon: (fullName) => {
+              const toolPrefix = fullName.includes('.') ? fullName.slice(0, fullName.indexOf('.')) : fullName;
+              return <ConnectorIcon type={resolveConnectorType(toolPrefix)} size={16} />;
+            },
+          })}
 
-                  return (
-                    <Flex key={groupKey} direction="column" gap="1">
-                      <Flex
-                        align="center"
-                        justify="between"
-                        gap="2"
-                        style={{
-                          ...OLIVE_ROW,
-                          padding: 'var(--space-2)',
-                          cursor: 'pointer',
-                        }}
-                        onClick={() => toggleGroupExpanded(groupKey)}
-                      >
-                        <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
-                          <div
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => e.stopPropagation()}
-                            role="presentation"
-                            style={CHECKBOX_ALIGN}
-                          >
-                            <Checkbox
-                              size="1"
-                              checked={checkState}
-                              onCheckedChange={(v) => {
-                                setGroupToolsEnabled(group.fullNames, v === true);
-                              }}
-                            />
-                          </div>
-                          <AgentToolsetRowIcon
-                            toolsetSlug={group.toolsetSlug}
-                            label={group.label}
-                            iconPath={group.iconPath}
-                          />
-                          <Flex align="center" gap="1" style={{ flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
-                            <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                              {group.label}
-                            </Text>
-                            {subtitle ? (
-                              <>
-                                <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }}>
-                                  ·
-                                </Text>
-                                <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }} truncate>
-                                  {subtitle}
-                                </Text>
-                              </>
-                            ) : null}
-                          </Flex>
-                        </Flex>
-                        <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
-                          <Badge size="1" variant="soft" color="green" highContrast>
-                            {t('chat.agentResources.actionsCount', {
-                              count: group.fullNames.length,
-                            })}
-                          </Badge>
-                          <IconButton
-                            type="button"
-                            size="1"
-                            variant="ghost"
-                            color="gray"
-                            aria-expanded={expanded}
-                            aria-label={expanded ? t('common.collapse') : t('common.expand')}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleGroupExpanded(groupKey);
-                            }}
-                          >
-                            <MaterialIcon
-                              name="chevron_right"
-                              size={18}
-                              color="var(--slate-11)"
-                              style={{
-                                transform: expanded ? 'rotate(90deg)' : undefined,
-                                transition: 'transform 0.15s ease',
-                              }}
-                            />
-                          </IconButton>
-                        </Flex>
-                      </Flex>
-
-                      {expanded &&
-                        group.fullNames.map((fullName) => {
-                          const shortRaw = fullName.includes('.')
-                            ? fullName.slice(fullName.indexOf('.') + 1)
-                            : fullName;
-                          const short = humanizeUnderscores(shortRaw);
-                          const toolPrefix = fullName.includes('.')
-                            ? fullName.slice(0, fullName.indexOf('.'))
-                            : fullName;
-                          return (
-                            <Flex
-                              key={fullName}
-                              align="center"
-                              gap="2"
-                              onClick={() => toggleTool(fullName)}
-                              style={{
-                                ...OLIVE_ROW,
-                                marginLeft: 'var(--space-3)',
-                                padding: 'var(--space-2) var(--space-3)',
-                                cursor: 'pointer',
-                              }}
-                            >
-                              <span style={CHECKBOX_ALIGN}>
-                                <Checkbox
-                                  size="1"
-                                  checked={isToolOn(fullName)}
-                                  onCheckedChange={() => toggleTool(fullName)}
-                                  onClick={(e) => e.stopPropagation()}
-                                />
-                              </span>
-                              <ConnectorIcon type={resolveConnectorType(toolPrefix)} size={16} />
-                              <Flex direction="column" gap="0" style={{ flex: 1, minWidth: 0 }}>
-                                <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                                  {short}
-                                </Text>
-                                <Text size="1" style={{ color: 'var(--gray-9)' }} truncate>
-                                  {fullName}
-                                </Text>
-                              </Flex>
-                            </Flex>
-                          );
-                        })}
-                    </Flex>
-                  );
-                })}
-
-                <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
-                  <Text size="1" style={{ color: 'var(--gray-11)' }}>
-                    {t('chat.agentResources.configureMoreActions', {
-                      defaultValue: 'Configure more actions',
-                    })}
-                  </Text>
-                  <Flex
-                    align="center"
-                    justify="between"
-                    gap="2"
-                    style={{
-                      ...OLIVE_ROW,
-                      padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
-                    }}
-                  >
-                    <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-                      <MaterialIcon name="apps" size={18} color="var(--gray-11)" />
-                      <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                        {t('chat.agentResources.browseWorkspaceActions', {
-                          defaultValue: 'Browse workspace actions',
-                        })}
-                      </Text>
-                    </Flex>
-                    <IconButton asChild size="1" variant="soft" color="gray" style={{ flexShrink: 0 }}>
-                      <Link
-                        href="/workspace/actions"
-                        aria-label={t('chat.agentResources.browseWorkspaceActionsAria', {
-                          defaultValue: 'Open workspace actions to add or manage integrations',
-                        })}
-                      >
-                        <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
-                      </Link>
-                    </IconButton>
-                  </Flex>
-                </Flex>
-              </>
-            )}
-          </>
-        )}
+        {tab === 'mcp' &&
+          renderToolGroupList({
+            groups: filteredMcpGroups,
+            keyPrefix: 'mcp',
+            emptyText: copy.noMcpServers,
+            footerCaption: t('chat.agentResources.configureMoreMcp', {
+              defaultValue: 'Configure more MCP servers',
+            }),
+            footerLinkHref: '/workspace/mcp-servers/personal',
+            footerLinkText: t('chat.agentResources.browseWorkspaceMcp', {
+              defaultValue: 'Browse MCP servers',
+            }),
+            footerLinkAriaLabel: t('chat.agentResources.browseWorkspaceMcpAria', {
+              defaultValue: 'Open MCP servers to add or manage connections',
+            }),
+            renderGroupIcon: () => <MaterialIcon name="hub" size={18} color="var(--gray-11)" />,
+            renderToolIcon: () => <MaterialIcon name="hub" size={16} color="var(--gray-9)" />,
+          })}
       </Flex>
 
       <Flex align="center" justify="between" gap="2" style={{ flexShrink: 0 }}>
         <Button type="button" size="1" variant="outline" color="gray" onClick={resetToAgentDefaults}>
-          {t('chat.agentResources.resetDefaults', { defaultValue: 'Reset to defaults' })}
+          {copy.resetDefaults}
         </Button>
       </Flex>
     </Flex>

@@ -18,11 +18,22 @@ export interface OAuthTokenPayload {
 // Generated Tokens Response
 export interface GeneratedTokens {
   accessToken: string
+  /** OAuthAccessToken document id, e.g. for a PAT list/revoke UI to
+   * reference this token without ever seeing it again. */
+  accessTokenId: string
   refreshToken?: string
   tokenType: string
   expiresIn: number
   scope: string
   idToken?: string
+}
+
+// Per-call overrides for GeneratedTokens.accessToken minting, used by
+// personal access tokens: a fixed lifetime and user-given label rather
+// than the issuing app's own accessTokenLifetime.
+export interface GenerateTokensOptions {
+  accessTokenLifetimeOverrideSeconds?: number
+  name?: string
 }
 
 // Token Response (RFC 6749 compliant)
@@ -49,7 +60,11 @@ export interface AuthorizeRequest {
 
 // Token Request Parameters
 export interface TokenRequest {
-  grant_type: 'authorization_code' | 'client_credentials' | 'refresh_token'
+  grant_type:
+    | 'authorization_code'
+    | 'client_credentials'
+    | 'refresh_token'
+    | 'urn:ietf:params:oauth:grant-type:device_code'
   code?: string
   redirect_uri?: string
   client_id: string
@@ -57,6 +72,7 @@ export interface TokenRequest {
   refresh_token?: string
   scope?: string
   code_verifier?: string
+  device_code?: string
 }
 
 // Revoke Request
@@ -166,6 +182,7 @@ export interface ConsentData {
     logoUrl?: string
     homepageUrl?: string
     privacyPolicyUrl?: string
+    isDynamic?: boolean
   }
   scopes: Array<{
     name: string
@@ -202,6 +219,8 @@ export interface OAuthProtectedResourceMetadata {
   scopes_supported: string[]
   bearer_methods_supported: string[]
   resource_documentation?: string
+  /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
+  pipeshub_device_client_id?: string
 }
 
 // OIDC Discovery Response
@@ -213,6 +232,10 @@ export interface OpenIDConfiguration {
   revocation_endpoint: string
   introspection_endpoint: string
   jwks_uri: string
+  registration_endpoint?: string
+  device_authorization_endpoint?: string
+  /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
+  pipeshub_device_client_id?: string
   scopes_supported: string[]
   response_types_supported: string[]
   grant_types_supported: string[]
@@ -251,6 +274,50 @@ export interface TokenListItem {
   createdAt: Date
   expiresAt: Date
   isRevoked: boolean
+  name?: string
+  lastUsedAt?: Date
+}
+
+// Personal Access Tokens
+export interface CreatePatRequest {
+  name: string
+  scopes?: string[]
+  /** Days until expiry, or 'never' for a non-expiring token (stored as a
+   * far-future expiresAt — the schema's expiresAt is required). */
+  expiryDays?: 30 | 90 | 365 | 'never'
+}
+
+export interface PatWithSecret {
+  id: string
+  name: string
+  scopes: string[]
+  createdAt: Date
+  expiresAt: Date
+  accessToken: string
+}
+
+export interface PatListItem {
+  id: string
+  name: string
+  scopes: string[]
+  createdAt: Date
+  expiresAt: Date
+  lastUsedAt?: Date
+}
+
+/**
+ * A PAT as seen by an org admin — includes who it belongs to, since an
+ * admin is looking across every member's tokens rather than just their
+ * own (see `PatService.listAllTokens` / `GET /personal-access-tokens/admin`).
+ */
+export interface AdminPatListItem extends PatListItem {
+  userId: string
+  ownerEmail?: string
+  ownerFullName?: string
+  /** True if the owning user has been deleted (or no longer resolves at
+   * all) — the token still needs to be visible/revocable for cleanup,
+   * even though there's no live account behind it. */
+  ownerDeleted: boolean
 }
 
 // Request with OAuth user info

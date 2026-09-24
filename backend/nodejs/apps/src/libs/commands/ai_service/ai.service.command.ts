@@ -25,6 +25,8 @@ const logger = Logger.getInstance({
   service: 'AIServiceCommand',
 });
 
+const AI_SERVICE_TIMEOUT_MS = 620_000;
+
 export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   private method: HttpMethod;
   private body?: any;
@@ -44,6 +46,14 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       method: this.method,
       headers: sanitizedHeaders,
       body: this.body,
+      // Above the AI service's own ceiling (600s for a first-time
+      // embedding-model download, `health.py`'s HEALTH_CHECK_TIMEOUT).
+      // Without it, undici's ~300s default cuts the call off first and the
+      // caller sees a transport error instead of the "model is still
+      // downloading, retry shortly" message the health check produced.
+      // Not applied to executeStream(), whose SSE progress stream is meant to
+      // outlive any single request.
+      signal: AbortSignal.timeout(AI_SERVICE_TIMEOUT_MS),
     };
 
     try {
@@ -53,7 +63,7 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
         300,
       );
 
-      logger.info('AI service command success', {
+      logger.debug('AI service command success', {
         url: url,
         statusCode: response.status,
         statusText: response.statusText,
@@ -144,13 +154,17 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   }
 
   // Execute streaming request
-  public async executeStream(): Promise<Readable> {
+  public async executeStream(signal?: AbortSignal): Promise<Readable> {
     const url = this.buildUrl();
     const sanitizedHeaders = this.sanitizeHeaders(this.headers);
     const requestOptions: RequestInit = {
       method: this.method,
       headers: sanitizedHeaders,
       body: this.body,
+      // Propagates a client disconnect to the upstream fetch — without this,
+      // aborting on our end only tore down the Node-side Readable while
+      // Python kept generating against a socket nobody was reading.
+      ...(signal ? { signal } : {}),
     };
 
     try {

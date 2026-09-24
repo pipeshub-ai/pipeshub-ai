@@ -4,15 +4,17 @@ import { useEffect, useLayoutEffect, useCallback, useMemo, useState, Suspense, u
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { isElectron } from '@/lib/electron';
-import { isLocalFsConnectorType } from '../utils/local-fs-helpers';
+import { isLocalFsConnectorType, localFsDesktopToast } from '../utils/local-fs-helpers';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
   isConnectorSyncInProgressError,
   isConnectorSyncLockedError,
   startConnectorSync,
+  toggleConnectorSyncOn,
 } from '../utils/connector-sync-actions';
 import { useSyncConflictGuard } from '../utils/use-sync-conflict-guard';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
@@ -237,9 +239,11 @@ function PersonalConnectorsPageContent() {
             if (config) {
               setInstanceConfig(id, config);
               if (isLocalFs) {
-                const instanceRow = activeConnectors.find(
-                  (c) => c._key === id && c.type === connectorType
-                ) as ConnectorInstance | undefined;
+                const instanceRow = useConnectorsStore
+                  .getState()
+                  .activeConnectors.find(
+                    (c) => c._key === id && c.type === connectorType
+                  ) as ConnectorInstance | undefined;
                 if (instanceRow) {
                   await ensureLocalWatcherForInstance(instanceRow, config);
                 }
@@ -263,7 +267,6 @@ function PersonalConnectorsPageContent() {
     connectorType,
     catalogRefreshToken,
     instanceDetailKeys,
-    activeConnectors,
     setIsLoadingInstances,
     setInstanceConfig,
     ensureLocalWatcherForInstance,
@@ -428,12 +431,15 @@ function PersonalConnectorsPageContent() {
     async (instance: ConnectorInstance) => {
       if (!instance._key || instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) return;
       try {
-        await ConnectorsApi.toggleConnector(instance._key, 'sync');
-        addToast({
-          variant: 'success',
-          title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
-          duration: 2500,
-        });
+        if (!instance.isActive) {
+          const outcome = await toggleConnectorSyncOn(instance._key, instance.type);
+          if (outcome.kind === 'requires-desktop') {
+            addToast(localFsDesktopToast(outcome));
+            return;
+          }
+        } else {
+          await ConnectorsApi.toggleConnector(instance._key, 'sync');
+        }
         if (isLocalFsConnectorType(instance.type)) {
           const fresh = await refreshConnectorRowQuiet(instance._key);
           let config = instanceConfigs[instance._key];
@@ -445,12 +451,23 @@ function PersonalConnectorsPageContent() {
         } else {
           await refreshConnectorRowQuiet(instance._key);
         }
-        await refreshConnectorsListsQuiet();
-      } catch {
         addToast({
-          variant: 'error',
-          title: 'Could not update connector',
+          variant: 'success',
+          title: instance.isActive ? 'Connector sync disabled' : 'Connector sync enabled',
+          duration: 2500,
         });
+        try {
+          await refreshConnectorsListsQuiet();
+        } catch {
+          addToast({
+            variant: 'error',
+            title: t('workspace.connectors.toasts.refreshInstancesError'),
+          });
+        }
+      } catch (err: unknown) {
+        if (!isProcessedError(err)) {
+          addToast({ variant: 'error', title: 'Could not update connector' });
+        }
       }
     },
     [
@@ -460,6 +477,7 @@ function PersonalConnectorsPageContent() {
       ensureLocalWatcherForInstance,
       instanceConfigs,
       setInstanceConfig,
+      t,
     ]
   );
 
@@ -481,10 +499,14 @@ function PersonalConnectorsPageContent() {
 
     const doStartSync = async (force: boolean) => {
       try {
-        await startConnectorSync(
+        const outcome = await startConnectorSync(
           { _key: instanceId, type: connectorTypeInfo?.type },
           { force }
         );
+        if (outcome.kind === 'requires-desktop') {
+          addToast(localFsDesktopToast(outcome));
+          return;
+        }
         if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
           const fresh = await refreshConnectorRowQuiet(instanceId);
           let config = instanceConfigs[instanceId];
@@ -504,13 +526,17 @@ function PersonalConnectorsPageContent() {
           description: t('workspace.connectors.toasts.syncStartedLongDescription'),
           duration: 3000,
         });
-      } catch (err) {
-        if (isConnectorSyncInProgressError(err) || isConnectorSyncLockedError(err)) {
-          throw err;
+      } catch (error) {
+        if (isConnectorSyncInProgressError(error) || isConnectorSyncLockedError(error)) {
+          throw error;
         }
         addToast({
           variant: 'error',
           title: t('workspace.connectors.toasts.syncError'),
+          description:
+            error instanceof Error && error.message.trim()
+              ? error.message.trim()
+              : undefined,
         });
       }
     };

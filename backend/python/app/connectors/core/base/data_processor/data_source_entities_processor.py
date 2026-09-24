@@ -2,7 +2,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -13,6 +13,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
     RecordRelations,
+    EventTypes,
 )
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
@@ -45,8 +46,11 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.services.vector_db.membership import record_group_id_from_edge
+from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -143,6 +147,9 @@ class DataSourceEntitiesProcessor:
         if org_id:
             # Caller-supplied org (per-connector / per-request) is authoritative.
             self.org_id = org_id
+            return
+
+        if self.org_id:
             return
 
         async with self.data_store_provider.transaction() as tx_store:
@@ -471,13 +478,64 @@ class DataSourceEntitiesProcessor:
 
         return None
 
-    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Record | None = None) -> None:
+    async def _publish_membership_sync(
+        self, membership_refreshes: Iterable[tuple[str, str | None]]
+    ) -> None:
+        """Ask indexing to recompute a VRID's membership arrays from the graph.
+
+        **Call this only after the transaction has committed.** The consumer
+        re-reads the graph, so an event published mid-transaction recomputes the
+        *old* membership and writes it back — worse than not publishing, because
+        it looks like a successful refresh.
+
+        Takes ``(virtual_record_id, connector_id)`` pairs. The connector id is
+        what fair scheduling lanes on: without it every refresh lands in the
+        shared default lane, so one connector's re-sync would queue behind, and
+        ahead of, every other connector's records.
+
+        Keyed by VRID so a broker with key affinity keeps one record's refreshes
+        in order.
+        """
+        unique: dict[str, str | None] = {}
+        for vrid, connector_id in membership_refreshes:
+            if vrid and vrid not in unique:
+                unique[vrid] = connector_id
+        if not unique:
+            return
+        await self.messaging_producer.send_messages(
+            "record-events",
+            [
+                (
+                    vrid,
+                    {
+                        "eventType": EventTypes.SYNC_VECTOR_MEMBERSHIP.value,
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                        "payload": {
+                            "virtualRecordId": vrid,
+                            "orgId": self.org_id,
+                            "connectorId": connector_id,
+                        },
+                    },
+                )
+                for vrid, connector_id in unique.items()
+            ],
+        )
+
+    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Record | None = None) -> bool:
         """
         Create edges between record and record group.
         This should be called AFTER saving the record (when record.id is available).
+
+        Returns whether the record's group membership actually moved. The
+        caller republishes the vector membership on that signal, and it is
+        deliberately the *same* predicate that drives the edge rewrite below —
+        anything else would let the graph and the chunks drift apart on a
+        re-sync where nothing changed.
         """
+        moved = False
 
         if existing_record and existing_record.record_group_id and existing_record.record_group_id != record_group_id:
+            moved = True
             await tx_store.delete_edge(existing_record.id, CollectionNames.RECORDS.value, existing_record.record_group_id, CollectionNames.RECORD_GROUPS.value, CollectionNames.BELONGS_TO.value)
             await tx_store.delete_inherit_permissions_relation_record_group(existing_record.id, existing_record.record_group_id)
 
@@ -491,6 +549,22 @@ class DataSourceEntitiesProcessor:
                 await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
         if record.shared_with_me_record_group_ids:
+            # create_record_group_relation is an idempotent upsert and cannot
+            # report insert-vs-noop, so the already-attached groups are read
+            # once and diffed. Reporting every call as a move would republish
+            # for every shared-with-me record on every sync — Drive team and Box
+            # set this list on each one, so that is a permanent event storm, not
+            # the rare over-report it might look like.
+            attached_group_ids = {
+                record_group_id_from_edge(edge)
+                for edge in (
+                    await tx_store.get_edges_from_node(
+                        f"{CollectionNames.RECORDS.value}/{record.id}",
+                        CollectionNames.BELONGS_TO.value,
+                    )
+                    or []
+                )
+            }
             for external_group_id in record.shared_with_me_record_group_ids:
                 shared_with_me_record_group = await tx_store.get_record_group_by_external_id(
                     connector_id=record.connector_id,
@@ -500,8 +574,12 @@ class DataSourceEntitiesProcessor:
                     await tx_store.create_record_group_relation(
                         record.id, shared_with_me_record_group.id
                     )
+                    if shared_with_me_record_group.id not in attached_group_ids:
+                        moved = True
                 else:
                     self.logger.warning(f"Shared with me record group with external ID {external_group_id} not found in database")
+
+        return moved
 
     async def _prepare_ticket_user_edge(
         self,
@@ -771,6 +849,23 @@ class DataSourceEntitiesProcessor:
                 f"Created {len(edges_to_create)} entity relation edges for message {message.id}"
             )
 
+    @staticmethod
+    def _stamp_queued_at(record: Record) -> None:
+        """Mark a record put in line for indexing, before its event is published.
+
+        The stranded-record sweep ages rows on this, not on updated_at, which
+        connectors may fill with source-system time: a Jira issue last edited a
+        year ago otherwise looks stranded the moment it is synced. Stamped before
+        the publish, so a failed one still leaves an ageable marker; never on a
+        write that publishes nothing, which would keep postponing the recovery of
+        a record whose event was lost.
+        """
+        if record.indexing_status in (
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        ):
+            record.queued_at = get_epoch_timestamp_in_ms()
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
@@ -891,6 +986,8 @@ class DataSourceEntitiesProcessor:
     async def on_updated_record_permissions(self, record: Record, permissions: list[Permission]) -> None:
         self.logger.debug(f"Starting permission update for record: {record.record_name} ({record.id})")
 
+        moved_virtual_record_ids: list[tuple[str, str | None]] = []
+        stored_record: Record | None = None
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 # If BELONGS_TO was removed (e.g. full sync deletes sync edges), restore structural
@@ -905,11 +1002,22 @@ class DataSourceEntitiesProcessor:
                         "to restore graph edges",
                         record.record_name,
                     )
-                    await self._process_record(record, [], tx_store)
+                    await self._process_record(
+                        record, [], tx_store, moved_virtual_record_ids,
+                        publishes_event=False,
+                    )
                 elif record.shared_with_me_record_group_ids:
                     # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
                     # the shared-with-me edge for *this* user may still be missing because
                     # _process_record is skipped in the belongs_to_edges branch above.
+                    # create_record_group_relation is an idempotent upsert, so it
+                    # cannot report insert-vs-noop. The edges were fetched just
+                    # above, so diffing against them tells a genuine new share
+                    # from a re-sync for free — which is what keeps a tight
+                    # permission-sync loop from storming the topic.
+                    attached_group_ids = {
+                        record_group_id_from_edge(edge) for edge in belongs_to_edges
+                    }
                     for external_group_id in record.shared_with_me_record_group_ids:
                         self.logger.debug(
                             "Creating shared-with-me record group relation for record %s and record group %s",
@@ -922,6 +1030,26 @@ class DataSourceEntitiesProcessor:
                         )
                         if shared_with_me_rg:
                             await tx_store.create_record_group_relation(record.id, shared_with_me_rg.id)
+                            if shared_with_me_rg.id not in attached_group_ids:
+                                # The VRID has to come from the *stored* record.
+                                # Callers here build a fresh Record from the
+                                # source payload, and a connector never sets a
+                                # VRID — it is minted during indexing — so
+                                # reading it off `record` would silently never
+                                # publish. Hydrated lazily: a genuinely new
+                                # share is rare, permission sync is not.
+                                if stored_record is None:
+                                    stored_record = await tx_store.get_record_by_external_id(
+                                        connector_id=record.connector_id,
+                                        external_id=record.external_record_id,
+                                    )
+                                if stored_record and stored_record.virtual_record_id:
+                                    moved_virtual_record_ids.append(
+                                        (
+                                            stored_record.virtual_record_id,
+                                            record.connector_id,
+                                        )
+                                    )
                         else:
                             self.logger.warning(
                                 "Shared with me record group with external ID %s not found in database",
@@ -968,11 +1096,28 @@ class DataSourceEntitiesProcessor:
             # Relink/permissions-only update: examined this run, no re-indexing.
             await self._track_unchanged(record)
 
+            await self._publish_membership_sync(moved_virtual_record_ids)
         except Exception as e:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
             raise
 
-    async def _process_record(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> Record | None:
+    async def _process_record(
+        self,
+        record: Record,
+        permissions: list[Permission],
+        tx_store: TransactionStore,
+        moved_virtual_record_ids: list[tuple[str, str | None]] | None = None,
+        *,
+        publishes_event: bool = True,
+    ) -> Record | None:
+        """Upsert a record and its edges.
+
+        ``moved_virtual_record_ids`` collects the VRIDs whose record-group
+        membership actually changed. It is an out-parameter rather than a return
+        value because three callers already depend on the ``Record | None``
+        return; they publish the collected ids *after* their transaction
+        commits (see :meth:`_publish_membership_sync`).
+        """
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
@@ -1001,9 +1146,41 @@ class DataSourceEntitiesProcessor:
 
         if existing_record is None:
             self.logger.debug("New record: %s", record)
+            # A brand-new record must be stored NOT_STARTED, not the model's
+            # QUEUED default. `_mark_queued_after_publish` is a CAS from
+            # NOT_STARTED that runs only for records whose event was acked --
+            # that is the whole guard against "marked QUEUED for an event that
+            # never published". Persisting QUEUED here made that CAS a no-op,
+            # so a failed publish left the record QUEUED with no event behind
+            # it and nothing to ever pick it up (observed: 10 connector records
+            # stuck QUEUED for hours after a Redis outage). Only the default is
+            # remapped; a status a connector set deliberately (AUTO_INDEX_OFF,
+            # COMPLETED for KB folders, ...) is kept.
+            if record.indexing_status == ProgressStatus.QUEUED.value:
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
+            if publishes_event:
+                self._stamp_queued_at(record)
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
+            # Connectors that track their own version pass a non-zero value; fill
+            # it in for those that leave it at the default (GitLab, Jira) so the
+            # stored version isn't pinned at 0 forever. Bump only on a real
+            # content change, so a metadata-only refresh doesn't inflate it.
+            # Placeholders are not content versions: stub backfills keep the stored
+            # value, and stub→real is the first genuine record (version 0).
+            if record.version == 0:
+                if record.is_placeholder:
+                    record.version = existing_record.version
+                elif existing_record.is_placeholder:
+                    record.version = 0
+                else:
+                    record.version = existing_record.version + (
+                        1
+                        if record.external_revision_id
+                        != existing_record.external_revision_id
+                        else 0
+                    )
             # Only fall back to the stored weburl when the incoming record
             # doesn't carry one. Overwriting unconditionally would:
             #   (a) revert renames / moves where the connector re-saves
@@ -1016,43 +1193,87 @@ class DataSourceEntitiesProcessor:
             revision_changed = (
                 record.external_revision_id != existing_record.external_revision_id
             )
-            same_revision_terminal = (
-                record.origin != OriginTypes.UPLOAD
-                and not promoting_placeholder
-                and not revision_changed
-                and existing_record.indexing_status in _TERMINAL_INDEXING
-            )
-            if same_revision_terminal:
-                # Keep terminal status; do not force NOT_STARTED / Kafka reindex.
-                record.indexing_status = existing_record.indexing_status
-                skip_auto_index_publish = True
-            elif (
-                record.origin != OriginTypes.UPLOAD
-                and existing_record.indexing_status == ProgressStatus.COMPLETED.value
-            ):
-                # If the existing record is completed, set the indexing status to not started so that it can be reindexed.
-                # KB folders are created COMPLETED and must not be re-queued on metadata updates.
-                record.indexing_status = ProgressStatus.NOT_STARTED.value
-            elif (
-                record.origin == OriginTypes.UPLOAD
-                and not revision_changed
-            ):
+            if record.origin != OriginTypes.UPLOAD:
+                if existing_record.indexing_status == ProgressStatus.COMPLETED.value and (
+                    revision_changed or promoting_placeholder
+                ):
+                    # Real content change on an already-indexed record: re-queue it,
+                    # even when the connector stamped AUTO_INDEX_OFF for a manual-only
+                    # filter. Honouring that stamp here downgraded a COMPLETED record
+                    # to AUTO_INDEX_OFF on every source change, which both lost the
+                    # fact that it had been indexed and left its stale vectors in
+                    # place with no event to correct them. Manual-only still holds for
+                    # records the user never indexed: this branch is reached only when
+                    # the stored status is already COMPLETED. A stub becoming the real
+                    # record is a content change too.
+                    record.indexing_status = ProgressStatus.NOT_STARTED.value
+                elif (
+                    not revision_changed
+                    and not promoting_placeholder
+                    and existing_record.indexing_status in _TERMINAL_INDEXING
+                    # A record stored AUTO_INDEX_OFF whose connector now sends a
+                    # normal status had indexing turned on, and must be published.
+                    and not (
+                        existing_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+                        and record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                    )
+                ):
+                    # Unchanged content keeps its terminal status and is not
+                    # re-published. Resetting it made every full re-sync re-embed the
+                    # entire already-indexed set, and clobbered AUTO_INDEX_OFF on
+                    # manually-indexed records. It counts as unchanged for this run.
+                    record.indexing_status = existing_record.indexing_status
+                    skip_auto_index_publish = True
+            elif not revision_changed:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
                 record.indexing_status = existing_record.indexing_status
             if not record.weburl:
                 record.weburl = existing_record.weburl
+            # Same fall-back rule for source timestamps: connectors whose source
+            # exposes no cheap per-item dates (e.g. git blobs) send None and
+            # backfill them later out-of-band. The Neo4j upsert is `SET n +=`,
+            # where a null-valued key DELETES the stored property — without this
+            # carry-forward every re-sync silently erased the backfilled dates.
+            if record.source_created_at is None:
+                record.source_created_at = existing_record.source_created_at
+            if record.source_updated_at is None:
+                record.source_updated_at = existing_record.source_updated_at
             # A real record replacing a stub promotes it out of placeholder state.
             # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
             if promoting_placeholder:
                 record.is_placeholder = False
             #check if revision Id is same as existing record
             if revision_changed:
+                if publishes_event:
+                    self._stamp_queued_at(record)
                 await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
         if record_group_id or record.shared_with_me_record_group_ids:
-            await self._link_record_to_group(record, record_group_id, tx_store, existing_record)
+            moved = await self._link_record_to_group(
+                record, record_group_id, tx_store, existing_record
+            )
+            # Only an *existing* record has points to refresh, and only its
+            # stored VRID identifies them — a connector-supplied record carries
+            # none, since the VRID is minted during indexing.
+            if (
+                moved
+                and moved_virtual_record_ids is not None
+                and existing_record is not None
+                and existing_record.virtual_record_id
+            ):
+                # Deliberately not gated on the revision being unchanged. That
+                # looked like a way to skip work a reindex would redo, but the
+                # paths which drop the indexing publish (AUTO_INDEX_OFF, and a
+                # metadata-only update) also change the revision — so gating on
+                # it suppressed the refresh precisely where nothing else would
+                # ever recompute membership. A duplicate refresh is idempotent
+                # and cheap; a missing one is invisible until someone notices a
+                # record has stopped coming back.
+                moved_virtual_record_ids.append(
+                    (existing_record.virtual_record_id, record.connector_id)
+                )
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         if record.origin == OriginTypes.UPLOAD:
@@ -1136,10 +1357,19 @@ class DataSourceEntitiesProcessor:
                 return
 
             records_to_publish = []
+            # Deliberately a separate list from records_to_publish: the publish
+            # filters below (AUTO_INDEX_OFF, internal, COMPLETED, KB folders,
+            # placeholders) are about whether there is anything to *index*. A
+            # COMPLETED, unchanged record that merely moved between groups is
+            # exactly the case this exists for, and every one of those filters
+            # would drop it.
+            moved_virtual_record_ids: list[tuple[str, str | None]] = []
 
             async with self.data_store_provider.transaction() as tx_store:
                 for record, permissions in records_with_permissions:
-                    processed_record = await self._process_record(record, permissions, tx_store)
+                    processed_record = await self._process_record(
+                        record, permissions, tx_store, moved_virtual_record_ids
+                    )
 
                     if processed_record:
                         records_to_publish.append(processed_record)
@@ -1156,6 +1386,15 @@ class DataSourceEntitiesProcessor:
 
                 if record.is_internal:
                     self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                    continue
+
+                # Already indexed and unchanged — the COMPLETED status was carried
+                # forward from the stored record precisely so this publish can be
+                # skipped; there is nothing for the indexing consumer to redo.
+                if record.indexing_status == ProgressStatus.COMPLETED.value:
+                    self.logger.debug(
+                        f"Skipping indexing event for already-completed record {record.id}"
+                    )
                     continue
 
                 # KB folders carry no indexable content; they are created COMPLETED
@@ -1203,6 +1442,8 @@ class DataSourceEntitiesProcessor:
                 await self._track_records_queued(
                     [r for r, ok in zip(publishable, acked) if ok]
                 )
+
+            await self._publish_membership_sync(moved_virtual_record_ids)
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
             raise e
@@ -1319,18 +1560,25 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_record_content_update(self, record: Record) -> None:
+        moved_virtual_record_ids: list[tuple[str, str | None]] = []
+        publish_update = True
         async with self.data_store_provider.transaction() as tx_store:
-            processed_record = await self._process_record(record, [], tx_store)
+            processed_record = await self._process_record(
+                record, [], tx_store, moved_virtual_record_ids
+            )
 
             # Skip publishing update events for records with AUTO_INDEX_OFF status
             if processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                 self.logger.debug(
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
-                return
+                publish_update = False
 
         # Publish after the transaction commits. Publishing inside it would put the
         # event on the topic even if the transaction went on to roll back.
+        await self._publish_membership_sync(moved_virtual_record_ids)
+        if not publish_update:
+            return
         await self.messaging_producer.send_message(
             "record-events",
             {
@@ -1343,16 +1591,58 @@ class DataSourceEntitiesProcessor:
         await self._mark_queued_after_publish([record.id])
         await self._track_record_queued(processed_record)
 
+    def _preserve_indexing_state(self, record: Record, existing_record: Record) -> None:
+        """Carry the stored indexing lifecycle onto a metadata-only write.
+
+        These fields belong to the indexing pipeline, not to a metadata refresh.
+        The caller supplies a record it hydrated for its own purpose — GitLab's
+        commit-timestamp backfill reads every record up front and writes them back
+        minutes later — so whatever it carries is a stale snapshot, and
+        to_arango_base_record rewrites the whole document. On top of that,
+        _process_record resets a COMPLETED record to NOT_STARTED to request a
+        re-index, but this path publishes no event and nothing consumes
+        NOT_STARTED, which strands the record permanently.
+        """
+        record.indexing_status = existing_record.indexing_status
+        record.parsing_status = existing_record.parsing_status
+        record.extraction_status = existing_record.extraction_status
+        record.processing_started_at = existing_record.processing_started_at
+        record.reason = existing_record.reason
+        record.is_vlm_ocr_processed = existing_record.is_vlm_ocr_processed
+        # A connector may legitimately report these from the source, so keep its
+        # value when it has one and fall back to what is stored otherwise.
+        # size_in_bytes=0 is valid (empty file) — only fall back when unset.
+        record.md5_hash = record.md5_hash or existing_record.md5_hash
+        if record.size_in_bytes is None:
+            record.size_in_bytes = existing_record.size_in_bytes
+        record.storage_document_id = (
+            record.storage_document_id or existing_record.storage_document_id
+        )
+
     @retry_on_deadlock()
     async def on_record_metadata_update(self, record: Record) -> None:
+        """Persist source-metadata changes (timestamps, name, url) for an existing record.
+
+        Leaves the indexing lifecycle untouched — see ``_preserve_indexing_state``.
+        """
+        moved_virtual_record_ids: list[tuple[str, str | None]] = []
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
-            processed_record = await self._process_record(record, [], tx_store)
+            processed_record = await self._process_record(
+                record, [], tx_store, moved_virtual_record_ids, publishes_event=False
+            )
             if processed_record:
+                if existing_record is not None:
+                    self._preserve_indexing_state(processed_record, existing_record)
                 await self._handle_updated_record(processed_record, existing_record, tx_store)
         # Metadata-only update: examined this run, no content re-indexing needed.
         await self._track_unchanged(record)
+
+        # This path deliberately publishes no indexing event and preserves the
+        # indexing lifecycle, so nothing downstream would ever recompute
+        # membership for a record that changed groups here.
+        await self._publish_membership_sync(moved_virtual_record_ids)
 
     @retry_on_deadlock()
     async def on_records_moved(
@@ -1368,9 +1658,9 @@ class DataSourceEntitiesProcessor:
 
         For each move the existing DB vertex is reused (same ``id``), avoiding a
         delete-and-recreate cycle.  The parent-child edge is re-pointed to the new
-        parent.  A ``updateRecord`` Kafka event (triggering re-indexing) is emitted
-        **only** when the blob SHA changed; a pure rename without content change
-        produces no re-index event, which avoids redundant embedding work.
+        parent.          A ``updateRecord`` event (triggering re-indexing) is emitted only when
+        the blob SHA changed. A move without content change still publishes
+        ``syncVectorMembership`` so vector ``recordGroupIds`` stay current.
 
         Falls back to a plain ``_process_record`` add when the old record is not
         found in the DB (e.g. dotfile that was never stored, or first sync after a
@@ -1381,6 +1671,14 @@ class DataSourceEntitiesProcessor:
 
         records_to_reindex: list[Record] = []
         new_records_to_publish: list[Record] = []
+        membership_vrids: list[tuple[str, str | None]] = []
+        duplicate_delete_payloads: list[dict] = []
+
+        def _is_publishable(record: Record) -> bool:
+            return (
+                record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                and not record.is_internal
+            )
 
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -1394,11 +1692,67 @@ class DataSourceEntitiesProcessor:
                     )
 
                     if old_record is None:
-                        # Old record was never stored (dotfile, skipped, etc.) — treat as add.
+                        # Old record was never stored (skipped) — treat as add.
                         processed = await self._process_record(new_record, permissions, tx_store)
                         if processed:
                             new_records_to_publish.append(processed)
                         continue
+
+                    # A CREATED for the new path can be applied before this move
+                    # (the desktop reports both, and one page concatenates several
+                    # journal batches), minting a second vertex at the id we are
+                    # about to write. Records upsert by vertex id, not external id,
+                    # so both would survive and every lookup would resolve to an
+                    # arbitrary one of the pair.
+                    duplicate = await tx_store.get_record_by_external_id(
+                        connector_id=new_record.connector_id,
+                        external_id=new_record.external_record_id,
+                    )
+                    if duplicate is not None and duplicate.id != old_record.id:
+                        self.logger.warning(
+                            "Retiring duplicate record %s: external id %s is already "
+                            "held by the record being moved (%s)",
+                            duplicate.id,
+                            new_record.external_record_id,
+                            old_record.id,
+                        )
+                        # Capture the cleanup payload before the vertex is gone —
+                        # once deleted it can no longer be looked up by id, and an
+                        # indexed duplicate would otherwise leave an orphaned,
+                        # unreachable vector behind (see _publish_delete_events).
+                        duplicate_vrid = getattr(duplicate, "virtual_record_id", None)
+                        if isinstance(duplicate_vrid, str) and duplicate_vrid:
+                            duplicate_delete_payloads.append({
+                                "orgId": getattr(duplicate, "org_id", self.org_id),
+                                "recordId": duplicate.id,
+                                "version": getattr(duplicate, "version", 1),
+                                "virtualRecordId": duplicate_vrid,
+                                "connectorId": getattr(duplicate, "connector_id", None),
+                            })
+
+                        # The duplicate can have picked up real children within this
+                        # same batch (e.g. an ancestor placeholder minted for a
+                        # not-yet-moved folder, which files landing in it then
+                        # parented themselves under). delete_record_by_key issues a
+                        # DETACH DELETE, so those PARENT_CHILD edges must be
+                        # re-pointed at the surviving vertex (old_record.id, about
+                        # to become new_record.id) before the duplicate is gone, or
+                        # the children are silently orphaned from the tree.
+                        duplicate_children = await tx_store.get_edges_from_node(
+                            f"{CollectionNames.RECORDS.value}/{duplicate.id}",
+                            CollectionNames.RECORD_RELATIONS.value,
+                        )
+                        for edge in duplicate_children:
+                            if edge.get("relationshipType") != RecordRelations.PARENT_CHILD.value:
+                                continue
+                            child_id = str(edge.get("_to", "")).split("/")[-1]
+                            if child_id:
+                                await tx_store.create_record_relation(
+                                    old_record.id, child_id, RecordRelations.PARENT_CHILD.value
+                                )
+
+                        await tx_store.delete_parent_child_edge_to_record(duplicate.id)
+                        await tx_store.delete_record_by_key(duplicate.id)
 
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
@@ -1411,7 +1765,27 @@ class DataSourceEntitiesProcessor:
                     # Reuse the existing DB vertex id so all downstream edges
                     # (permissions, belongs-to, etc.) survive the path change.
                     new_record.id = old_record.id
-                    
+
+                    # Keep stored Git/source timestamps when the connector did not
+                    # supply real ones (e.g. rename path with null timestamps).
+                    if new_record.source_created_at is None:
+                        new_record.source_created_at = old_record.source_created_at
+                    if new_record.source_updated_at is None:
+                        new_record.source_updated_at = old_record.source_updated_at
+
+                    # Same contract as _process_record: connectors that leave version
+                    # at 0 (GitLab) inherit / bump on content change; placeholders are
+                    # not content versions (stub refresh keeps stored; stub→real = 0).
+                    if new_record.version == 0:
+                        if new_record.is_placeholder:
+                            new_record.version = old_record.version
+                        elif old_record.is_placeholder:
+                            new_record.version = 0
+                        else:
+                            new_record.version = old_record.version + (
+                                1 if content_changed else 0
+                            )
+
                     if old_record.indexing_status == ProgressStatus.COMPLETED.value:
                         if not content_changed:
                             # If the old record is completed and content hasn't changed,
@@ -1426,7 +1800,37 @@ class DataSourceEntitiesProcessor:
                     if content_changed:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
                             new_record.indexing_status = ProgressStatus.QUEUED.value
+                        self._stamp_queued_at(new_record)
                         records_to_reindex.append(new_record)
+                        if not _is_publishable(new_record):
+                            # Content changed *and* the group moved, but the
+                            # reindex publish is filtered out below — so nothing
+                            # would ever recompute this record's membership and
+                            # its chunks would keep pointing at the old group.
+                            # Carrying the VRID also keeps the reused vertex from
+                            # being upserted with a null one, which would orphan
+                            # those chunks outright.
+                            vrid = (
+                                new_record.virtual_record_id
+                                or old_record.virtual_record_id
+                            )
+                            if isinstance(vrid, str) and vrid:
+                                if not new_record.virtual_record_id:
+                                    new_record.virtual_record_id = vrid
+                                membership_vrids.append(
+                                    (vrid, new_record.connector_id)
+                                )
+                    else:
+                        # Carry the VRID across explicitly: the upsert below reuses
+                        # the existing vertex, so leaving this unset would null
+                        # virtualRecordId and orphan every vector point keyed by it.
+                        vrid = new_record.virtual_record_id or old_record.virtual_record_id
+                        if isinstance(vrid, str) and vrid:
+                            if not new_record.virtual_record_id:
+                                new_record.virtual_record_id = vrid
+                            membership_vrids.append(
+                                (vrid, new_record.connector_id)
+                            )
 
                     await tx_store.batch_upsert_records([new_record])
 
@@ -1454,16 +1858,14 @@ class DataSourceEntitiesProcessor:
 
             # Publish events outside the transaction.
             def _publishable(candidates: list[Record]) -> list[Record]:
-                return [
-                    r
-                    for r in candidates
-                    if r.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
-                    and not r.is_internal
-                ]
+                return [r for r in candidates if _is_publishable(r)]
 
             new_batch = _publishable(new_records_to_publish)
             if new_batch:
-                await self.messaging_producer.send_messages(
+                # `acked` is used, not discarded (it was): the CAS below is what
+                # turns NOT_STARTED into QUEUED, and only for records whose event
+                # actually landed -- see on_new_records.
+                acked = await self.messaging_producer.send_messages(
                     "record-events",
                     [
                         (
@@ -1476,6 +1878,9 @@ class DataSourceEntitiesProcessor:
                         )
                         for record in new_batch
                     ],
+                )
+                await self._mark_queued_after_publish(
+                    [r.id for r, ok in zip(new_batch, acked) if ok]
                 )
 
             reindex_batch = _publishable(records_to_reindex)
@@ -1517,43 +1922,97 @@ class DataSourceEntitiesProcessor:
                 ]
             )
 
+            await self._publish_membership_sync(membership_vrids)
+
+            if duplicate_delete_payloads:
+                await self._publish_delete_events(
+                    {"payloads": duplicate_delete_payloads}
+                )
+
         except Exception as e:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
             raise
 
-    async def _publish_delete_events(self, event_data: dict | None) -> None:
+    async def _publish_delete_events(self, event_data: dict | None) -> list[str]:
         """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.
 
         Called AFTER the DB transaction commits so the graph vertex is gone before
         the indexing consumer runs its cleanup — a guard there skips vector deletion
         while a graph record still references the virtualRecordId.
+
+        The graph deletion has already committed by the time this runs, so a
+        publish failure here cannot be undone by raising — that would only make
+        the caller misreport an already-completed deletion as failed. Retry
+        transient broker hiccups, then return the record ids whose cleanup event
+        could not be published (embeddings orphaned until a reconciliation pass)
+        instead of raising, so callers can report success accurately and surface
+        what still needs cleanup.
         """
         if not event_data:
-            return
+            return []
+
+        unpublished_record_ids: list[str] = []
         for payload in event_data.get("payloads", []):
-            await self.messaging_producer.send_message(
-                "record-events",
-                {
-                    "eventType": "deleteRecord",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                    "payload": payload,
-                },
-                key=payload.get("recordId"),
-            )
+            record_id = payload.get("recordId") if isinstance(payload, dict) else None
+            if not record_id:
+                # A malformed payload must not turn an already-committed
+                # deletion into an unhandled exception; count it as an
+                # unpublished cleanup instead of crashing the whole batch.
+                self.logger.error(f"Skipping malformed deleteRecord payload: {payload!r}")
+                unpublished_record_ids.append(str(payload))
+                continue
+            try:
+                await retry_async(
+                    lambda payload=payload, record_id=record_id: self.messaging_producer.send_message(
+                        "record-events",
+                        {
+                            "eventType": "deleteRecord",
+                            "timestamp": get_epoch_timestamp_in_ms(),
+                            "payload": payload,
+                        },
+                        key=record_id,
+                    ),
+                    logger=self.logger,
+                    description=f"publish deleteRecord event for record {record_id}",
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Giving up publishing deleteRecord event for record {record_id} "
+                    f"after retries; embeddings for this record are orphaned until "
+                    f"reconciliation: {e}",
+                    exc_info=True,
+                )
+                unpublished_record_ids.append(record_id)
+        return unpublished_record_ids
 
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
         # Connector per-record delete: remove the record vertex and its incoming
         # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
-        # call is a no-op for root records with no parent). Still shallow — KB deletes
-        # use on_records_deleted_cascade (recursive cascade + deleteRecord events).
+        # call is a no-op for root records with no parent). Capture VRID before the
+        # vertex is gone so indexing can strip/delete embeddings.
+        event_payload = None
         async with self.data_store_provider.transaction() as tx_store:
+            existing = await tx_store.get_record_by_key(record_id)
             await tx_store.delete_parent_child_edge_to_record(record_id)
             await tx_store.delete_record_by_key(record_id)
+            vrid = getattr(existing, "virtual_record_id", None) if existing is not None else None
+            if isinstance(vrid, str) and vrid:
+                event_payload = {
+                    "orgId": getattr(existing, "org_id", self.org_id),
+                    "recordId": getattr(existing, "id", None) or record_id,
+                    "version": getattr(existing, "version", 1),
+                    "virtualRecordId": vrid,
+                    "connectorId": getattr(existing, "connector_id", None),
+                }
+        await self._publish_delete_events(
+            {"payloads": [event_payload]} if event_payload else None
+        )
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(
-        self, record_ids: list[str], connector_id: str
+        self, record_ids: list[str], connector_id: str,
+        cascade_children: bool = True,
     ) -> dict:
         """Recursively delete records — the single delete path for files, folders and
         multi-record deletes, generic across KB and connectors.
@@ -1564,6 +2023,9 @@ class DataSourceEntitiesProcessor:
         ``connectorId == connector_id`` (kb_id for a KB). Returns the provider result
         (counts, deleted/failed) for the HTTP response and publishes one deleteRecord event
         per deleted record that has a virtualRecordId (Qdrant cleanup).
+
+        When *cascade_children* is False, only ATTACHMENT edges are traversed —
+        PARENT_CHILD children (e.g. stories under a deleted epic) are left intact.
         """
         if not record_ids:
             return {
@@ -1575,13 +2037,43 @@ class DataSourceEntitiesProcessor:
                 "failed_count": 0,
             }
         async with self.data_store_provider.transaction() as tx_store:
-            result = await tx_store.delete_records_recursive(record_ids, connector_id)
-        await self._publish_delete_events((result or {}).get("eventData"))
+            result = await tx_store.delete_records_recursive(
+                record_ids, connector_id, cascade_children=cascade_children,
+            )
+        if (result or {}).get("successfully_deleted"):
+            # Before publishing: the transaction has committed, so the records are
+            # already gone, and _publish_delete_events can fail. Invalidating
+            # afterwards would leave the cache serving deleted records until the
+            # TTL expired whenever publication threw. A concurrent read that
+            # repopulates between these two lines reads post-delete state, so
+            # moving this earlier cannot cache anything stale.
+            #
+            # No-ops unless connector_id is a KB; connectors invalidate on sync
+            # completion instead, so a mid-sync delete does not thrash the cache.
+            await notify_kb_records_changed(connector_id)
+        unpublished_record_ids = await self._publish_delete_events((result or {}).get("eventData"))
+        if unpublished_record_ids:
+            result = dict(result or {})
+            result["vectorCleanupPending"] = True
+            result["vectorCleanupFailedRecordIds"] = unpublished_record_ids
         return result
 
 
+    @staticmethod
+    def _reindex_event_payload(record: Record, *, vector_db_only: bool) -> dict:
+        # Built on the ordinary payload so a reindex keeps the sync run it was
+        # discovered in, and the run's progress counts it.
+        payload = {**DataSourceEntitiesProcessor._kafka_payload(record), "forceReindex": True}
+        if record.virtual_record_id:
+            payload.setdefault("virtualRecordId", record.virtual_record_id)
+        if vector_db_only:
+            payload["vectorDbOnly"] = True
+        return payload
+
     @retry_on_deadlock()
-    async def reindex_existing_records(self, records: list[Record]) -> None:
+    async def reindex_existing_records(
+        self, records: list[Record], *, vector_db_only: bool = False
+    ) -> None:
         """
         Publish reindex events for existing records without DB operations.
         Used for reindexing functionality where records already exist in DB.
@@ -1589,6 +2081,8 @@ class DataSourceEntitiesProcessor:
 
         Args:
             records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
+            vector_db_only: When True, indexing reloads blob content and re-embeds
+                without re-parsing the source.
         """
         try:
             if not records:
@@ -1631,7 +2125,13 @@ class DataSourceEntitiesProcessor:
                         {
                             "eventType": "reindexRecord",
                             "timestamp": get_epoch_timestamp_in_ms(),
-                            "payload": self._kafka_payload(record),
+                            # An explicit reindex must re-run even when the record is
+                            # already COMPLETED; without this the consumer's
+                            # already-indexed guard skips it and reindex silently
+                            # does nothing for a healthy corpus.
+                            "payload": self._reindex_event_payload(
+                                record, vector_db_only=vector_db_only
+                            ),
                         },
                     )
                     for record in to_publish
@@ -1915,9 +2415,15 @@ class DataSourceEntitiesProcessor:
                     self.logger.debug(f"Processing user group: {user_group.name} with id {user_group.id}")
 
                     # Check if the user group already exists in the DB
+                    # Raising: None below means "create", with the fresh id already
+                    # on the object, so a lookup that failed would write a second
+                    # group for the same external id -- and split its members and
+                    # permission edges across the two. Pseudo-groups for users
+                    # without an email come through here too.
                     existing_user_group = await tx_store.get_user_group_by_external_id(
                         connector_id=user_group.connector_id,
-                        external_id=user_group.source_user_group_id
+                        external_id=user_group.source_user_group_id,
+                        raise_on_error=True,
                     )
 
                     if existing_user_group is None:
@@ -1999,9 +2505,12 @@ class DataSourceEntitiesProcessor:
                     self.logger.debug(f"Processing app role: {role.name}")
 
                     # Check if the app role already exists in the DB
+                    # Raising, for the same reason as user groups above: a failed
+                    # lookup would otherwise create a second role for one external id.
                     existing_app_role = await tx_store.get_app_role_by_external_id(
                         connector_id=role.connector_id,
-                        external_id=role.source_role_id
+                        external_id=role.source_role_id,
+                        raise_on_error=True,
                     )
 
                     if existing_app_role is None:
@@ -2082,9 +2591,114 @@ class DataSourceEntitiesProcessor:
             return None
         return User.from_arango_user(raw) if isinstance(raw, dict) else raw
 
+    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[User]:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_users_with_permission_to_node(node_id, node_collection)
+            
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str
+    ) -> User | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_user_by_source_id(
+                source_user_id, connector_id
+            )
+
+    async def get_user_by_email(self, email: str) -> User | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_user_by_email(email)
+
+    async def get_user_group_by_external_id(
+        self, connector_id: str, external_id: str
+    ) -> AppUserGroup | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_user_group_by_external_id(
+                connector_id, external_id
+            )
+
+    async def get_app_user_by_email(self, email: str, connector_id: str) -> AppUser | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_app_user_by_email(email, connector_id)
+
     async def get_all_app_users(self, connector_id: str) -> list[AppUser]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_users(self.org_id, connector_id)
+
+    async def get_all_user_groups(self, connector_id: str) -> list[AppUserGroup]:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_user_groups(connector_id, self.org_id)
+
+    async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
+        for ug in user_groups:
+            ug.org_id = self.org_id
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.batch_upsert_user_groups(user_groups)
+
+    async def delete_edges_between_collections(
+        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str
+    ) -> None:
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_edges_between_collections(
+                from_id, from_collection, edge_collection, to_collection
+            )
+
+    async def get_record_group_by_external_id(
+        self, connector_id: str, external_id: str
+    ) -> RecordGroup | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_record_group_by_external_id(
+                connector_id=connector_id, external_id=external_id
+            )
+
+    async def upsert_permission_edge(
+        self,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
+        permission: Permission,
+        upgrade_only: bool = False,
+    ) -> dict | None:
+        """Atomically create or replace a permission edge. Returns the old edge if one existed.
+
+        When *upgrade_only* is True the existing permission is kept whenever its
+        hierarchy level is equal to or higher than the requested one (i.e. never
+        downgrade).  When False (default) the edge is replaced on any difference.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            existing_edge = await tx_store.get_edge(
+                from_id=from_id,
+                from_collection=from_collection,
+                to_id=to_id,
+                to_collection=to_collection,
+                collection=CollectionNames.PERMISSION.value,
+            )
+            if existing_edge:
+                existing_role = existing_edge.get("role")
+                new_role = permission.type.value
+                if existing_role == new_role:
+                    return existing_edge
+                if upgrade_only:
+                    existing_level = PERMISSION_HIERARCHY.get(existing_role, 0)
+                    new_level = PERMISSION_HIERARCHY.get(new_role, 0)
+                    if existing_level >= new_level:
+                        return existing_edge
+                await tx_store.delete_edge(
+                    from_id=from_id,
+                    from_collection=from_collection,
+                    to_id=to_id,
+                    to_collection=to_collection,
+                    collection=CollectionNames.PERMISSION.value,
+                )
+            edge_data = permission.to_arango_permission(
+                from_id=from_id,
+                from_collection=from_collection,
+                to_id=to_id,
+                to_collection=to_collection,
+            )
+            await tx_store.batch_create_edges(
+                [edge_data], collection=CollectionNames.PERMISSION.value
+            )
+            return existing_edge
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         async with self.data_store_provider.transaction() as tx_store:
@@ -2109,6 +2723,74 @@ class DataSourceEntitiesProcessor:
                 record_type=record_type,
             )
 
+    async def get_records_by_record_type(
+        self,
+        connector_id: str,
+        record_type: RecordType | str,
+    ) -> list[Record]:
+        """Return this connector's records of ``record_type``."""
+        type_value = (record_type.value if isinstance(record_type, RecordType) else record_type)
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_record_type(
+                connector_id=connector_id,
+                record_type=type_value,
+            )
+
+    async def get_records_in_record_group(
+        self,
+        connector_id: str,
+        external_group_id: str,
+        limit: int,
+        after_key: str | None = None,
+    ) -> list[Record]:
+        """Return up to ``limit`` of this connector's records in one record group, ordered by id.
+
+        For the next page, pass the last returned record's id as ``after_key``.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            group = await tx_store.get_record_group_by_external_id(
+                connector_id=connector_id, external_id=external_group_id
+            )
+            if not group:
+                return []
+            return await tx_store.get_records_by_status(
+                org_id=self.org_id,
+                connector_id=connector_id,
+                status_filters=None,
+                record_group_id=group.id,
+                limit=limit,
+                after_key=after_key,
+            )
+
+    async def get_records_by_status(
+        self,
+        connector_id: str,
+        status_filters: list[str] | None,
+        limit: int | None = None,
+        offset: int = 0,
+        record_group_id: str | None = None,
+        is_placeholder: bool | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
+    ) -> list[Record]:
+        """Get records by indexing status, scoped to the current org.
+
+        Mirrors ``tx_store.get_records_by_status`` — see there for parameter
+        semantics (pagination, placeholder/record-group scoping, etc).
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_status(
+                org_id=self.org_id,
+                connector_id=connector_id,
+                status_filters=status_filters,
+                limit=limit,
+                offset=offset,
+                record_group_id=record_group_id,
+                is_placeholder=is_placeholder,
+                after_key=after_key,
+                exclude_statuses=exclude_statuses,
+            )
+
     async def get_placeholder_records(
         self,
         connector_id: str,
@@ -2120,14 +2802,12 @@ class DataSourceEntitiesProcessor:
         never synced (e.g. filtered out of scope). Pass ``record_group_id`` to
         scope the sweep to a single record group.
         """
-        async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_records_by_status(
-                org_id=self.org_id,
-                connector_id=connector_id,
-                status_filters=None,
-                record_group_id=record_group_id,
-                is_placeholder=True,
-            )
+        return await self.get_records_by_status(
+            connector_id,
+            status_filters=None,
+            record_group_id=record_group_id,
+            is_placeholder=True,
+        )
 
     async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:
         """
@@ -2278,6 +2958,62 @@ class DataSourceEntitiesProcessor:
                 exc_info=True
             )
             return False
+
+    async def create_user_group_membership(
+        self,
+        user_source_id: str,
+        group_external_id: str,
+        connector_id: str,
+    ) -> bool:
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                return await tx_store.create_user_group_membership(
+                    user_source_id, group_external_id, connector_id
+                )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to create user group membership "
+                f"({user_source_id} -> {group_external_id}): {e}",
+                exc_info=True,
+            )
+            return False
+
+    async def update_user_group_name(
+        self,
+        external_group_id: str,
+        new_name: str,
+        connector_id: str,
+    ) -> bool:
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                existing_group = await tx_store.get_user_group_by_external_id(
+                    connector_id=connector_id,
+                    external_id=external_group_id,
+                )
+                if not existing_group:
+                    self.logger.warning(
+                        f"Cannot rename user group: Group with external ID "
+                        f"{external_group_id} not found in database"
+                    )
+                    return False
+
+                existing_group.name = new_name
+                existing_group.org_id = self.org_id
+                existing_group.updated_at = get_epoch_timestamp_in_ms()
+                await tx_store.batch_upsert_user_groups([existing_group])
+
+                self.logger.debug(
+                    f"Successfully renamed user group {external_group_id} to '{new_name}' "
+                    f"(internal_id: {existing_group.id})"
+                )
+                return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to rename user group {external_group_id}: {e}",
+                exc_info=True,
+            )
+            raise
 
     @retry_on_deadlock()
     async def on_user_group_deleted(
@@ -2730,6 +3466,118 @@ class DataSourceEntitiesProcessor:
         """
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_creator_user(connector_id)
+
+    async def ensure_team_app_edge(self, connector_id: str) -> None:
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.ensure_team_app_edge(connector_id, self.org_id)
+
+    async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.delete_parent_child_edge_to_record(record_id)
+
+    async def get_file_record_by_id(self, id: str) -> FileRecord | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_file_record_by_id(id)
+
+    async def get_first_user_with_permission_to_node(
+        self, node_id: str, node_collection: str
+    ) -> User | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_first_user_with_permission_to_node(
+                node_id, node_collection
+            )
+
+    async def get_record_owner_source_user_email(self, record_id: str) -> str | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_record_owner_source_user_email(record_id)
+
+    async def get_record_by_conversation_index(
+        self, connector_id: str, conversation_index: str, thread_id: str, user_id: str
+    ) -> Record | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_record_by_conversation_index(
+                connector_id, conversation_index, thread_id, self.org_id, user_id
+            )
+
+    async def remove_user_access_to_record(
+        self, connector_id: str, external_id: str, user_id: str
+    ) -> None:
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.remove_user_access_to_record(
+                connector_id, external_id, user_id
+            )
+
+    async def get_record_by_issue_key(
+        self, connector_id: str, issue_key: str
+    ) -> Record | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_record_by_issue_key(connector_id, issue_key)
+
+    async def get_record_path(self, record_id: str) -> str | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_record_path(record_id)
+
+    async def get_record_by_weburl(self, weburl: str) -> Record | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_record_by_weburl(weburl, self.org_id)
+
+    async def create_record_relation(
+        self, from_record_id: str, to_record_id: str, relation_type: str
+    ) -> None:
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.create_record_relation(
+                from_record_id, to_record_id, relation_type
+            )
+
+    async def delete_record_by_external_id(
+        self, connector_id: str, external_id: str, user_id: str | None = None
+    ) -> None:
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_record_by_external_id(connector_id, external_id, user_id)
+
+    async def delete_records_and_relations(
+        self, record_key: str, hard_delete: bool = False
+    ) -> None:
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_records_and_relations(
+                record_key, hard_delete=hard_delete
+            )
+
+    async def batch_upsert_records(self, records: list[Record]) -> None:
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.batch_upsert_records(records)
+
+    async def get_records_by_status(
+        self,
+        connector_id: str,
+        status_filters: list[str] | None,
+        limit: int | None = None,
+        offset: int = 0,
+        record_group_id: str | None = None,
+        is_placeholder: bool | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
+    ) -> list[Record]:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_status(
+                org_id=self.org_id,
+                connector_id=connector_id,
+                status_filters=status_filters,
+                limit=limit,
+                offset=offset,
+                record_group_id=record_group_id,
+                is_placeholder=is_placeholder,
+                after_key=after_key,
+                exclude_statuses=exclude_statuses,
+            )
+
+    async def get_record_by_external_revision_id(
+        self, connector_id: str, external_revision_id: str
+    ) -> Record | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_record_by_external_revision_id(
+                connector_id, external_revision_id
+            )
     #IMPORTANT: DO NOT USE THIS METHOD
     #TODO: When an user is delelted from a connetor we need to delete the userAppRelation b/w the app and user
     # async def on_user_removed(

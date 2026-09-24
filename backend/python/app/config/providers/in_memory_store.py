@@ -119,10 +119,12 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         Args:
             key: The key to create
             value: The value to associate with the key
+            overwrite: If True, overwrite existing key. If False, skip if key exists.
             ttl: Optional time-to-live in seconds
 
-        Raises:
-            KeyError: If the key already exists
+        Returns:
+            True if the key was created or updated, False if the key already
+            existed and overwrite was False.
         """
         logger.debug("🔄 Creating key: %s", key)
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
@@ -130,8 +132,8 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         with self.lock:
             self._cleanup_expired_keys()
             if key in self.store and not self.store[key].is_expired() and not overwrite:
-                logger.error("❌ Key already exists: %s", key)
-                raise KeyError(f'Key "{key}" already exists.')
+                logger.debug("⏭️ Skipping existing key: %s", key)
+                return False  # Key was not created (already exists)
 
             logger.debug("🔄 Storing new key-value pair")
             self.store[key] = KeyData(value, ttl)
@@ -167,7 +169,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             self._notify_watchers(key, value)
             logger.debug("✅ Value updated successfully")
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         """
         Retrieve the value associated with a key.
 
@@ -301,7 +303,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         Returns:
             List of keys under the specified directory
         """
-        logger.debug("🔍 Listing keys in directory: %s", directory)
+        logger.debug("Listing keys in directory")
 
         with self.lock:
             self._cleanup_expired_keys()
@@ -310,9 +312,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                 for key, data in self.store.items()
                 if key.startswith(directory) and not data.is_expired()
             ]
-            logger.debug(
-                "📋 Found %d matching keys: %s", len(matching_keys), matching_keys
-            )
+            logger.debug("Found %d matching keys", len(matching_keys))
             return matching_keys
 
     async def close(self) -> None:

@@ -3,7 +3,7 @@
 import asyncio
 import os
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -11,6 +11,7 @@ from app.sandbox.artifact_cleanup import (
     _cleanup_temp_directories,
     _get_interval_seconds,
     _get_ttl_seconds,
+    reconcile_pending_artifacts,
     start_cleanup_task,
     stop_cleanup_task,
 )
@@ -273,3 +274,221 @@ class TestStartStopCleanupTask:
         """Calling stop when no task is running must not raise."""
         stop_cleanup_task()
         stop_cleanup_task()  # idempotent
+
+
+def _make_graph_provider(**overrides):
+    gp = AsyncMock()
+    gp.get_documents_paginated = AsyncMock(return_value=[])
+    gp.get_document = AsyncMock(return_value=None)
+    gp.update_node = AsyncMock()
+    for k, v in overrides.items():
+        setattr(gp, k, v)
+    return gp
+
+
+def _make_blob_store(**overrides):
+    bs = AsyncMock()
+    bs.get_document_version_history = AsyncMock(return_value=None)
+    bs.config_service = AsyncMock()
+    for k, v in overrides.items():
+        setattr(bs, k, v)
+    return bs
+
+
+_PENDING_RECORD = {
+    "_key": "art-1",
+    "externalRecordId": "doc-1",
+    "orgId": "org-1",
+    "version": 2,
+    "updatedAtTimestamp": 1700000000,
+}
+
+_ARTIFACT_DOC = {
+    "_key": "art-1",
+    "versions": "[]",
+}
+
+
+class TestReconcilePendingArtifacts:
+
+    @pytest.mark.asyncio
+    async def test_no_pending_records(self):
+        gp = _make_graph_provider()
+        bs = _make_blob_store()
+        result = await reconcile_pending_artifacts(gp, bs)
+        assert result == 0
+        gp.get_documents_paginated.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_query_exception_returns_zero(self):
+        gp = _make_graph_provider(
+            get_documents_paginated=AsyncMock(side_effect=RuntimeError("db down")),
+        )
+        bs = _make_blob_store()
+        result = await reconcile_pending_artifacts(gp, bs)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_malformed_record_missing_key(self):
+        gp = _make_graph_provider(
+            get_documents_paginated=AsyncMock(return_value=[
+                {"externalRecordId": "doc-1", "orgId": "org-1"},
+            ]),
+        )
+        bs = _make_blob_store()
+        result = await reconcile_pending_artifacts(gp, bs)
+        assert result == 0
+        gp.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_malformed_record_missing_external_id(self):
+        gp = _make_graph_provider(
+            get_documents_paginated=AsyncMock(return_value=[
+                {"_key": "art-1", "orgId": "org-1"},
+            ]),
+        )
+        bs = _make_blob_store()
+        result = await reconcile_pending_artifacts(gp, bs)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_malformed_record_missing_org_id(self):
+        gp = _make_graph_provider(
+            get_documents_paginated=AsyncMock(return_value=[
+                {"_key": "art-1", "externalRecordId": "doc-1"},
+            ]),
+        )
+        bs = _make_blob_store()
+        result = await reconcile_pending_artifacts(gp, bs)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_no_artifact_doc_clears_stale_marker(self):
+        gp = _make_graph_provider(
+            get_documents_paginated=AsyncMock(return_value=[_PENDING_RECORD]),
+            get_document=AsyncMock(return_value=None),
+        )
+        bs = _make_blob_store()
+        result = await reconcile_pending_artifacts(gp, bs)
+        assert result == 0
+        gp.update_node.assert_awaited_once()
+        call_args = gp.update_node.call_args
+        assert call_args[0][0] == "art-1"
+        assert call_args[0][2] == {"reason": None}
+
+    @pytest.mark.asyncio
+    async def test_no_version_history_skips(self):
+        gp = _make_graph_provider(
+            get_documents_paginated=AsyncMock(return_value=[_PENDING_RECORD]),
+            get_document=AsyncMock(return_value=_ARTIFACT_DOC),
+        )
+        bs = _make_blob_store(
+            get_document_version_history=AsyncMock(return_value=None),
+        )
+        result = await reconcile_pending_artifacts(gp, bs)
+        assert result == 0
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.util.blob_staging.fetch_blob_bytes", new_callable=AsyncMock)
+    @patch("app.services.artifact_registry.versioning.compute_content_hash")
+    async def test_happy_path(self, mock_hash, mock_fetch):
+        mock_fetch.return_value = b"file-content"
+        mock_hash.return_value = "abc123hash"
+
+        gp = _make_graph_provider(
+            get_documents_paginated=AsyncMock(return_value=[_PENDING_RECORD]),
+            get_document=AsyncMock(return_value=_ARTIFACT_DOC),
+        )
+        bs = _make_blob_store(
+            get_document_version_history=AsyncMock(return_value=[
+                {"version": 1}, {"version": 2},
+            ]),
+        )
+
+        result = await reconcile_pending_artifacts(gp, bs)
+
+        assert result == 1
+        assert gp.update_node.await_count == 2
+
+        artifacts_call = gp.update_node.call_args_list[0]
+        assert artifacts_call[0][0] == "art-1"
+        assert artifacts_call[0][2]["contentHash"] == "abc123hash"
+        assert artifacts_call[0][2]["sizeInBytes"] == len(b"file-content")
+
+        records_call = gp.update_node.call_args_list[1]
+        assert records_call[0][0] == "art-1"
+        assert records_call[0][2]["version"] == 3
+        assert records_call[0][2]["reason"] is None
+        assert records_call[0][2]["isLatestVersion"] is True
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.util.blob_staging.fetch_blob_bytes", new_callable=AsyncMock)
+    @patch("app.services.artifact_registry.versioning.compute_content_hash")
+    async def test_record_uses_id_fallback_when_no_key(self, mock_hash, mock_fetch):
+        mock_fetch.return_value = b"data"
+        mock_hash.return_value = "h"
+
+        record = {
+            "id": "art-2",
+            "externalRecordId": "doc-2",
+            "orgId": "org-2",
+            "version": 1,
+            "updatedAtTimestamp": 1700000000,
+        }
+        gp = _make_graph_provider(
+            get_documents_paginated=AsyncMock(return_value=[record]),
+            get_document=AsyncMock(return_value={"_key": "art-2", "versions": "[]"}),
+        )
+        bs = _make_blob_store(
+            get_document_version_history=AsyncMock(return_value=[{"version": 1}]),
+        )
+
+        result = await reconcile_pending_artifacts(gp, bs)
+        assert result == 1
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.util.blob_staging.fetch_blob_bytes", new_callable=AsyncMock)
+    @patch("app.services.artifact_registry.versioning.compute_content_hash")
+    async def test_exception_on_one_record_continues_to_next(self, mock_hash, mock_fetch):
+        mock_fetch.side_effect = [RuntimeError("blob fail"), b"ok"]
+        mock_hash.return_value = "h"
+
+        r1 = {**_PENDING_RECORD, "_key": "art-1"}
+        r2 = {**_PENDING_RECORD, "_key": "art-2", "externalRecordId": "doc-2"}
+        gp = _make_graph_provider(
+            get_documents_paginated=AsyncMock(return_value=[r1, r2]),
+            get_document=AsyncMock(return_value=_ARTIFACT_DOC),
+        )
+        bs = _make_blob_store(
+            get_document_version_history=AsyncMock(return_value=[{"version": 1}]),
+        )
+
+        result = await reconcile_pending_artifacts(gp, bs)
+        assert result == 1
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.util.blob_staging.fetch_blob_bytes", new_callable=AsyncMock)
+    @patch("app.services.artifact_registry.versioning.compute_content_hash")
+    async def test_version_defaults_to_one_when_missing(self, mock_hash, mock_fetch):
+        mock_fetch.return_value = b"data"
+        mock_hash.return_value = "h"
+
+        record_no_version = {
+            "_key": "art-1",
+            "externalRecordId": "doc-1",
+            "orgId": "org-1",
+            "updatedAtTimestamp": 1700000000,
+        }
+        gp = _make_graph_provider(
+            get_documents_paginated=AsyncMock(return_value=[record_no_version]),
+            get_document=AsyncMock(return_value=_ARTIFACT_DOC),
+        )
+        bs = _make_blob_store(
+            get_document_version_history=AsyncMock(return_value=[{"version": 1}]),
+        )
+
+        result = await reconcile_pending_artifacts(gp, bs)
+        assert result == 1
+        records_call = gp.update_node.call_args_list[1]
+        assert records_call[0][2]["version"] == 2

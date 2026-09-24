@@ -34,6 +34,9 @@ fields:
   name:
     required: true
     type: string
+  permission_model:
+    required: false
+    type: string
   scope:
     required: true
     type: string
@@ -47,5 +50,20 @@ fields:
     required: true
     type: integer
   updated_by:
+    required: false
+    type: string
+  last_synced_by:
+    required: false
+    type: string
+  owner_device_id:
+    required: false
+    type: string
+  owner_device_name:
+    required: false
+    type: string
+  vector_membership_backfilled:
+    required: false
+    type: boolean
+  vector_membership_backfill_after_key:
     required: false
     type: string

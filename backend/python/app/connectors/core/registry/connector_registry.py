@@ -1,15 +1,22 @@
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from enum import Enum
-from inspect import isclass
+from inspect import isawaitable, isclass
 from typing import Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    PermissionModel,
+    ProgressStatus,
+)
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
+from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -43,7 +50,8 @@ def Connector(
     app_categories: list[str] | None = None,
     config: dict[str, Any] | None = None,
     connector_scopes: list[ConnectorScope] | None = None,
-    connector_info: str | None = None
+    connector_info: str | None = None,
+    resilience_config: dict[str, Any] | None = None
 ) -> Callable[[type], type]:
     """
     Decorator to register a connector with metadata and configuration schema.
@@ -58,6 +66,7 @@ def Connector(
         config: Complete configuration schema for the connector
         connector_scopes: List of scopes the connector supports ("personal", "team")
         connector_info: Optional info text to display on the frontend connector page
+        resilience_config: Rate limit and retry budget, from ConnectorBuilder.with_resilience_config
     Returns:
         Decorator function that marks a class as a connector
 
@@ -94,7 +103,8 @@ def Connector(
             "appCategories": app_categories or [],
             "config": config or {},
             "connectorScopes": connector_scopes or [ConnectorScope.PERSONAL],  # Default to personal only
-            "connectorInfo": connector_info
+            "connectorInfo": connector_info,
+            "resilienceConfig": resilience_config or {}
         }
 
         # Mark class as a connector
@@ -210,6 +220,16 @@ class ConnectorRegistry:
         except Exception as e:
             self.logger.error(f"Error discovering connectors: {e}")
 
+    @staticmethod
+    def _permission_model_for(metadata: dict[str, Any]) -> str:
+        """The connector's declared permission model, defaulting to RECORD_LEVEL.
+
+        RECORD_LEVEL is the safe default: it resolves visibility per user, so a
+        connector that forgets to declare can only under-share.
+        """
+        config = metadata.get('config') or {}
+        return config.get('permissionModel') or PermissionModel.RECORD_LEVEL.value
+
     def _normalize_connector_name(self, name: str) -> str:
         """
         Normalize connector name for matching (case-insensitive, ignore spaces).
@@ -249,10 +269,52 @@ class ConnectorRegistry:
             self.logger.debug(f"Could not get beta connector names: {e}")
             return []
 
+    def _belongs_to_org(self, connector_instance: dict[str, Any], org_id: str) -> bool:
+        """Tenant check, applied before any role logic.
+
+        Instances are fetched by id alone, so without this a TEAM connector's
+        gate reduces to `is_admin` — and an administrator of one organization
+        who learns an id belonging to another would pass it.
+        """
+        instance_org_id = connector_instance.get("orgId")
+        if instance_org_id and instance_org_id != org_id:
+            self.logger.warning(
+                "Connector %s belongs to org %s; caller is in org %s",
+                connector_instance.get("_key") or connector_instance.get("id"),
+                instance_org_id,
+                org_id,
+            )
+            return False
+        return True
+
+    def _can_delete_connector(
+        self,
+        connector_instance: dict[str, Any],
+        user_id: str,
+        org_id: str,
+        *,
+        is_admin: bool,
+    ) -> bool:
+        """Whether this caller may *delete* the connector: an administrator, or
+        its creator, in the same organization.
+
+        Deliberately not `_can_access_connector`. Deletion is uniform across
+        scopes where access is not: reading or altering someone's personal
+        connector exposes their data, while removing one that should no longer
+        exist does not, and an admin who can remove the member entirely was
+        otherwise unable to clean up the connector they left behind.
+        Broadening `_can_access_connector` instead would hand admins read and
+        update rights over personal connectors, which is not the intent.
+        """
+        if not self._belongs_to_org(connector_instance, org_id):
+            return False
+        return is_admin or connector_instance.get("createdBy") == user_id
+
     async def _can_access_connector(
         self,
         connector_instance: dict[str, Any],
         user_id: str,
+        org_id: str,
         *,
         is_admin: bool,
     ) -> bool:
@@ -262,12 +324,16 @@ class ConnectorRegistry:
         Args:
             connector_instance: Connector instance document
             user_id: User ID
+            org_id: Organization the caller belongs to
             is_admin: Whether the user is an admin
 
         Returns:
             True if user can access the connector
         """
         try:
+            if not self._belongs_to_org(connector_instance, org_id):
+                return False
+
             connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value)
             created_by = connector_instance.get("createdBy")
 
@@ -293,14 +359,12 @@ class ConnectorRegistry:
         *,
         is_admin: bool,
     ) -> bool:
-        """Read-only visibility for a connector, mirroring the connector listing.
+        """Gate stats visibility to the connector creator or an org admin.
 
-        Whereas :meth:`_can_access_connector` gates *mutations* to the creator or
-        an admin, a team-scoped connector is *viewable* by anyone who can reach it
-        via a direct or team app edge — the same rule
-        :meth:`get_all_connector_instances` uses. This keeps stats visibility in
-        sync with list visibility: if a user can see a connector, they can see its
-        stats.
+        Only admins and the user who created the connector may view its stats.
+        The connector *listing* has broader visibility (team-scoped connectors
+        are visible to all org members via graph edges), but stats are
+        restricted to prevent leaking usage data to non-privileged users.
         """
         try:
             scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value)
@@ -310,11 +374,7 @@ class ConnectorRegistry:
                 return created_by == user_id
 
             if scope == ConnectorScope.TEAM.value:
-                if is_admin or created_by == user_id:
-                    return True
-                graph_provider = await self._get_graph_provider()
-                accessible = await graph_provider.get_user_accessible_team_app_ids(user_id)
-                return connector_id in accessible
+                return is_admin or created_by == user_id
 
             return False
 
@@ -473,10 +533,20 @@ class ConnectorRegistry:
                 'appGroup': metadata['appGroup'],
                 'authType': auth_type_to_store,  # Store selected auth type (user's choice, not metadata)
                 'scope': scope,
+                'orgId': org_id,
+                # Denormalized off the decorator so the query service can route
+                # permission resolution without importing connector code.
+                'permissionModel': self._permission_model_for(metadata),
                 'isActive': False,
                 'isAgentActive': False,
                 'isConfigured': True,
                 'isAuthenticated': False,
+                'vectorMembershipBackfilled': True,
+                **(
+                    {ConnectorStateKeys.ROOT_MEMBERSHIP_REQUESTED: True}
+                    if str(connector_type).upper() in ROOT_SCOPED_CONNECTOR_TYPES
+                    else {}
+                ),
                 'createdBy': created_by,
                 'updatedBy': created_by,
                 'createdAtTimestamp': current_timestamp,
@@ -593,15 +663,45 @@ class ConnectorRegistry:
 
             # Collect keys of instances that need to be deactivated
             keys_to_deactivate = []
+            stale_permission_models: list[tuple[str, str]] = []
+            needs_root_membership: list[str] = []
             for document in all_documents:
                 connector_type = document.get('type')
                 is_active = document.get('isActive', False)
-                if connector_type == Connectors.KNOWLEDGE_BASE.value:
-                    continue
                 doc_key = document.get('_key') or document.get('id')
+                is_kb = connector_type == Connectors.KNOWLEDGE_BASE.value
 
-                if connector_type not in self._connectors and is_active:
+                # KB instances are registered under their display name, so a
+                # lookup keyed on the doc's own type misses them — which is why
+                # they are exempt from deactivation rather than being treated as
+                # an unknown type. They still need their permissionModel
+                # written: search reads it off the app doc to decide whether a
+                # Collection's records can skip per-record adjudication, and
+                # skipping the whole document here left that permanently unset.
+                if not is_kb and connector_type not in self._connectors and is_active:
                     keys_to_deactivate.append(doc_key)
+
+                registered = self._connectors.get(
+                    _KB_REGISTRY_KEY if is_kb else connector_type
+                )
+                if registered and doc_key:
+                    expected = self._permission_model_for(registered)
+                    if document.get('permissionModel') != expected:
+                        stale_permission_models.append((doc_key, expected))
+
+                    # Instances synced before rootRecordGroupId existed have no
+                    # roots on their vector points, and search scopes these
+                    # connectors by root — so ask the membership backfill to
+                    # rewrite them once. Until it finishes the instance counts as
+                    # un-backfilled and search falls back to record ids.
+                    if (
+                        not is_kb
+                        and str(connector_type).upper() in ROOT_SCOPED_CONNECTOR_TYPES
+                        and not document.get(
+                            ConnectorStateKeys.ROOT_MEMBERSHIP_REQUESTED
+                        )
+                    ):
+                        needs_root_membership.append(doc_key)
 
             # Batch deactivate all instances using graph provider
             if keys_to_deactivate:
@@ -612,6 +712,43 @@ class ConnectorRegistry:
                     is_agent_active=False,
                 )
                 self.logger.info(f"Batch deactivated {updated_count} connector instances")
+
+            # Backfill instances created before the flag existed, and pick up
+            # reclassifications. Best-effort: a failure here only costs the
+            # query service some cache sharing, never correctness.
+            for doc_key, expected in stale_permission_models:
+                try:
+                    await graph_provider.update_node(
+                        doc_key, self._collection_name, {'permissionModel': expected}
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not set permissionModel on connector instance {doc_key}: {e}"
+                    )
+            for doc_key in needs_root_membership:
+                try:
+                    await graph_provider.update_node(
+                        doc_key,
+                        self._collection_name,
+                        {
+                            ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILLED: False,
+                            ConnectorStateKeys.ROOT_MEMBERSHIP_REQUESTED: True,
+                        },
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not request root membership backfill for {doc_key}: {e}"
+                    )
+            if needs_root_membership:
+                self.logger.info(
+                    f"Requested root membership backfill for {len(needs_root_membership)} "
+                    "connector instances"
+                )
+
+            if stale_permission_models:
+                self.logger.info(
+                    f"Backfilled permissionModel on {len(stale_permission_models)} connector instances"
+                )
 
             self.logger.info("Successfully synced registry with database")
             return True
@@ -695,6 +832,8 @@ class ConnectorRegistry:
                 'createdBy': instance_data.get('createdBy'),
                 'updatedBy': instance_data.get('updatedBy'),
                 'isLocked': instance_data.get('isLocked', False),
+                'ownerDeviceId': instance_data.get('ownerDeviceId'),
+                'ownerDeviceName': instance_data.get('ownerDeviceName'),
             })
 
         return connector_info
@@ -1181,6 +1320,46 @@ class ConnectorRegistry:
         Returns:
             Connector instance with full metadata and status or None if not found/no access
         """
+        return await self._load_authorized_instance(
+            connector_id,
+            lambda document: self._can_access_connector(
+                document, user_id, org_id, is_admin=is_admin
+            ),
+            user_id=user_id,
+        )
+
+    async def get_connector_instance_for_deletion(
+        self,
+        connector_id: str,
+        user_id: str,
+        org_id: str,
+        *,
+        is_admin: bool,
+    ) -> dict[str, Any] | None:
+        """Fetch an instance for the delete route, under the deletion gate.
+
+        The read gate would 404 an administrator on another user's personal
+        connector, so routing deletion through it made the admin allowance in
+        `_validate_connector_deletion_permissions` unreachable for exactly the
+        orphaned instances it exists to clean up.
+        """
+        return await self._load_authorized_instance(
+            connector_id,
+            lambda document: self._can_delete_connector(
+                document, user_id, org_id, is_admin=is_admin
+            ),
+            user_id=user_id,
+        )
+
+    async def _load_authorized_instance(
+        self,
+        connector_id: str,
+        authorize: Callable[[dict[str, Any]], Awaitable[bool] | bool],
+        *,
+        user_id: str,
+    ) -> dict[str, Any] | None:
+        """Fetch, authorize, then enrich — shared so a second gate cannot drift
+        from the first on anything but the authorization step."""
         try:
             document = await self._get_connector_instance_from_db(connector_id)
 
@@ -1190,10 +1369,11 @@ class ConnectorRegistry:
                 )
                 return None
 
-            # Check access
-            has_access = await self._can_access_connector(document, user_id, is_admin=is_admin)
+            decision = authorize(document)
+            if isawaitable(decision):
+                decision = await decision
 
-            if not has_access:
+            if not decision:
                 self.logger.warning(
                     f"User {user_id} does not have access to connector {connector_id}"
                 )
@@ -1405,6 +1585,7 @@ class ConnectorRegistry:
             has_access = await self._can_access_connector(
                 existing_document,
                 user_id,
+                org_id,
                 is_admin=is_admin,
             )
 
@@ -1463,7 +1644,7 @@ class ConnectorRegistry:
                 )
                 return None
 
-            self.logger.info(f"Updated connector instance {connector_id}")
+            self.logger.debug(f"Updated connector instance {connector_id}")
             return updated_document
 
         except ValueError:

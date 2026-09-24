@@ -49,8 +49,12 @@ def _make_request(
 ):
     """Build a minimal mock Request object used by most handler tests."""
     req = MagicMock()
-    req.state.user = {"userId": user_id, "orgId": org_id}
-    req.headers = {"X-Is-Admin": "true" if is_admin else "false"}
+    req.state.user = {
+        "userId": user_id,
+        "orgId": org_id,
+        "role": "admin" if is_admin else "member",
+    }
+    req.headers = {}
     if body is not None:
         req.json = AsyncMock(return_value=body)
     else:
@@ -766,7 +770,9 @@ class TestGetFilterFieldOptionsDeep:
                     "c1", "space_keys", req, graph_provider=AsyncMock()
                 )
         assert exc_info.value.status_code == 500
-        assert "Failed to get filter options" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't load the options for this filter. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to get filter options" not in exc_info.value.detail
 
     async def test_connector_found_in_container_fetches_directly(self):
         """Lines 4829, 4851-4861: connector already in container."""
@@ -842,7 +848,9 @@ class TestSaveConnectorInstanceFiltersDeep:
                     "c1", req, graph_provider=AsyncMock()
                 )
         assert exc_info.value.status_code == 500
-        assert "Failed to save filter selections" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't save what this connector syncs. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to save filter selections" not in exc_info.value.detail
 
 
 # ===========================================================================
@@ -876,7 +884,12 @@ class TestEnsureConnectorInitializedDeep:
                 logger=logging.getLogger("test"),
             )
         assert exc_info.value.status_code == 500
-        assert "Failed to initialize connector" in exc_info.value.detail
+        # the person is told what to do; the exception goes to the log
+        assert exc_info.value.detail == (
+            "We couldn't connect to this connector. Please try again; if it keeps failing, "
+            "contact your admin."
+        )
+        assert "Failed to initialize connector" not in exc_info.value.detail
 
 
 # ===========================================================================
@@ -1273,7 +1286,7 @@ class TestDeleteConnectorInstanceDeep:
             scope="team", created_by="u1",
             extra={"isActive": True},
         )
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -1310,7 +1323,7 @@ class TestDeleteConnectorInstanceDeep:
         instance = _make_instance(
             scope="team", created_by="u1",
         )
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -1342,7 +1355,7 @@ class TestDeleteConnectorInstanceDeep:
             scope="team", created_by="u1",
             extra={"isActive": True},
         )
-        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
             return_value=instance
         )
 
@@ -1388,7 +1401,9 @@ class TestGetConnectorSchemaDeep:
             with pytest.raises(HTTPException) as exc_info:
                 await get_connector_schema("GMAIL", req)
         assert exc_info.value.status_code == 500
-        assert "Failed to get connector schema" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't load this connector's setup form. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to get connector schema" not in exc_info.value.detail
 
 
 class TestGetOAuthConfigRegistryByTypeDeep:
@@ -1677,7 +1692,9 @@ class TestCreateOAuthConfigErrorPath:
             with pytest.raises(HTTPException) as exc_info:
                 await create_oauth_config("GMAIL", req, config_service=config_service)
         assert exc_info.value.status_code == 500
-        assert "Failed to create OAuth configuration" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't save this sign-in app. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to create OAuth configuration" not in exc_info.value.detail
 
 
 class TestListOAuthConfigsErrorPath:
@@ -1700,7 +1717,9 @@ class TestListOAuthConfigsErrorPath:
                 config_service=config_service,
             )
         assert exc_info.value.status_code == 500
-        assert "Failed to list OAuth configurations" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't load your sign-in apps. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to list OAuth configurations" not in exc_info.value.detail
 
 
 class TestGetOAuthConfigByIdErrorPath:
@@ -1722,7 +1741,9 @@ class TestGetOAuthConfigByIdErrorPath:
                 "GMAIL", "cfg1", req, config_service=config_service,
             )
         assert exc_info.value.status_code == 500
-        assert "Failed to get OAuth configuration" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't load this sign-in app. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to get OAuth configuration" not in exc_info.value.detail
 
 
 class TestUpdateOAuthConfigErrorPath:
@@ -1744,7 +1765,9 @@ class TestUpdateOAuthConfigErrorPath:
                 "GMAIL", "cfg1", req, config_service=config_service,
             )
         assert exc_info.value.status_code == 500
-        assert "Failed to update OAuth configuration" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't save this sign-in app. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to update OAuth configuration" not in exc_info.value.detail
 
 
 class TestDeleteOAuthConfigErrorPath:
@@ -1766,4 +1789,6 @@ class TestDeleteOAuthConfigErrorPath:
                 "GMAIL", "cfg1", req, config_service=config_service,
             )
         assert exc_info.value.status_code == 500
-        assert "Failed to delete OAuth configuration" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't delete this sign-in app. Please try again; if it keeps failing, contact your admin."
+        assert "Failed to delete OAuth configuration" not in exc_info.value.detail

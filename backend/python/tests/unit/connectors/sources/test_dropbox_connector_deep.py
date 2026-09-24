@@ -73,6 +73,13 @@ def _make_connector():
     dep.on_updated_record_permissions = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.reindex_existing_records = AsyncMock()
+    dep.update_user_group_name = AsyncMock(return_value=True)
+    dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_user_by_email = AsyncMock(return_value=None)
+    dep.get_user_group_by_external_id = AsyncMock(return_value=None)
+    dep.upsert_permission_edge = AsyncMock()
+    dep.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+    dep.get_file_record_by_id = AsyncMock(return_value=None)
 
     tx = _make_mock_tx_store()
 
@@ -623,8 +630,11 @@ class TestGetSignedUrl:
         c, *_ = _make_connector()
         c.data_source = None
         record = MagicMock()
-        result = await c.get_signed_url(record)
-        assert result is None
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
 
 # ===========================================================================
@@ -763,28 +773,27 @@ class TestUpdateGroupName:
     @pytest.mark.asyncio
     async def test_group_found(self):
         c, dep, dsp, tx = _make_connector()
-        existing = MagicMock()
-        existing.id = "internal-1"
-        existing.name = "Old Name"
-        tx.get_user_group_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.update_user_group_name = AsyncMock(return_value=True)
 
         await c._update_group_name("g1", "New Name", "Old Name")
-        tx.batch_upsert_user_groups.assert_called_once()
-        assert existing.name == "New Name"
+        c.data_entities_processor.update_user_group_name.assert_called_once_with(
+            external_group_id="g1",
+            new_name="New Name",
+            connector_id=c.connector_id,
+        )
 
     @pytest.mark.asyncio
     async def test_group_not_found(self):
         c, dep, dsp, tx = _make_connector()
-        tx.get_user_group_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.update_user_group_name = AsyncMock(return_value=False)
 
         # Should not raise
         await c._update_group_name("g1", "New", "Old")
-        tx.batch_upsert_user_groups.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_error_raises(self):
         c, dep, dsp, tx = _make_connector()
-        tx.get_user_group_by_external_id = AsyncMock(side_effect=Exception("DB error"))
+        c.data_entities_processor.update_user_group_name = AsyncMock(side_effect=Exception("DB error"))
 
         with pytest.raises(Exception, match="DB error"):
             await c._update_group_name("g1", "New", "Old")

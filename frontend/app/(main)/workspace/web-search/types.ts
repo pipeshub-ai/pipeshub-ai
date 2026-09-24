@@ -23,6 +23,7 @@ export interface WebSearchSettings {
 export interface WebSearchConfigData {
   providers: ConfiguredWebSearchProvider[];
   settings: WebSearchSettings;
+  inherited?: boolean;
 }
 
 // ── Web search provider usage (agent check) ─────────────────

@@ -18,30 +18,11 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: false,
-    include: [
-      'app/(main)/notifications/__tests__/store.test.ts',
-      'app/(main)/notifications/__tests__/useNotificationSocket.test.tsx',
-      'app/components/ui/__tests__/help-tooltip.test.ts',
-      'app/(main)/workspace/connectors/utils/__tests__/manual-indexing-tooltip.test.ts',
-      'app/(main)/workspace/connectors/utils/__tests__/sync-progress-view.test.ts',
-      'app/(main)/workspace/connectors/utils/__tests__/sync-failure-copy.test.ts',
-      'app/(main)/workspace/connectors/utils/__tests__/indexing-queue-copy.test.ts',
-      'app/(main)/workspace/connectors/utils/__tests__/sync-conflict-copy.test.ts',
-      'app/(main)/workspace/connectors/utils/__tests__/resync-conflict-classify.test.ts',
-      'lib/socket/__tests__/notification-socket.test.ts',
-      'app/(main)/knowledge-base/utils/__tests__/indexing-progress.test.ts',
-      'app/(main)/knowledge-base/utils/__tests__/kb-table-item-actions.test.ts',
-      'app/(main)/chat/__tests__/agui-event-handler.test.ts',
-      'app/(main)/chat/__tests__/agent-capabilities.test.ts',
-      'app/(main)/chat/__tests__/reasoning-effort.test.ts',
-      'app/(main)/chat/__tests__/attachment-types.test.ts',
-      'app/(main)/chat/components/message-area/__tests__/agent-activity.test.tsx',
-      'app/(main)/chat/components/message-area/__tests__/expandable-user-query.test.tsx',
-      'app/(main)/chat/utils/__tests__/parse-download-markers.test.ts',
-      'app/(main)/chat/utils/__tests__/build-chat-artifact.test.ts',
-      'app/(main)/workspace/skills/personal/__tests__/api.test.ts',
-      'lib/store/__tests__/auth-store.test.ts',
-    ],
+    // Every unit test under app/ and lib/. A hand-kept list let new test
+    // files sit unrun: three never ran, and one of them caught a real bug.
+    // Playwright (tests/e2e) and Electron (electron/, run by
+    // test:electron:local-sync) have their own runners.
+    include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
     passWithNoTests: false,
   },
   resolve: {

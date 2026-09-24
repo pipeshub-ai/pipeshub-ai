@@ -17,6 +17,8 @@ import * as cmConfigModule from '../src/modules/configuration_manager/config/con
 import * as messageBrokerModule from '../src/libs/services/message-broker.factory';
 import * as kvMigrationModule from '../src/libs/keyValueStore/migration/kvStoreMigration.service';
 import * as oauthProviderModule from '../src/libs/services/oauth-token-service.provider';
+import { RedisConnectionProviderFactory } from '../src/libs/services/redis/connectionProviderFactory';
+import * as redisConnectionProviderFactoryModule from '../src/libs/services/redis/connectionProviderFactory';
 import { TokenManagerContainer } from '../src/modules/tokens_manager/container/token-manager.container';
 import { ConfigurationManagerContainer } from '../src/modules/configuration_manager/container/cm_container';
 import { StorageContainer } from '../src/modules/storage/container/storage.container';
@@ -51,11 +53,14 @@ import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
 import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth.provider.routes';
 import * as oauthClientsRoutes from '../src/modules/oauth_provider/routes/oauth.clients.routes';
+import * as patRoutes from '../src/modules/oauth_provider/routes/pat.routes';
 import * as mcpRoutes from '../src/modules/mcp/routes/mcp.routes';
 import * as oidcRoutes from '../src/modules/oauth_provider/routes/oid.provider.routes';
 import * as apiDocsRoutes from '../src/modules/api-docs/docs.routes';
 import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes';
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
+import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
+import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -167,11 +172,14 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(crawlingRoutes, 'createCrawlingManagerRouter').returns(dummyRouter);
   sandbox.stub(oauthProviderRoutes, 'createOAuthProviderRouter').returns(dummyRouter);
   sandbox.stub(oauthClientsRoutes, 'createOAuthClientsRouter').returns(dummyRouter);
+  sandbox.stub(patRoutes, 'createPatRouter').returns(dummyRouter);
   sandbox.stub(mcpRoutes, 'createMCPRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createOIDCDiscoveryRouter').returns(dummyRouter);
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
   sandbox.stub(toolsetsRoutes, 'createToolsetsRouter').returns(dummyRouter);
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
+  sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
+  sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
 }
 
 /**
@@ -209,6 +217,30 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     containers[name] = c;
     sandbox.stub(cls, 'initialize').resolves(c);
   }
+
+  // initialize() builds the outbox dispatcher, which takes the message
+  // producer from the user-manager container. Unlike the routers, that is not
+  // behind a factory the harness can stub, so the binding has to resolve here
+  // as it does in production.
+  containers.userManager!.bind('MessageProducer').toConstantValue({
+    isConnected: () => true,
+    connect: sandbox.stub().resolves(),
+    disconnect: sandbox.stub().resolves(),
+    publish: sandbox.stub().resolves(),
+    publishBatch: sandbox.stub().resolves(),
+    healthCheck: sandbox.stub().resolves(true),
+  } as any);
+
+  // configureRoutes joins the service-account and service-token services, which
+  // live in different containers, so both have to resolve here as they do in
+  // production. Unlike the routers, this wiring is not behind a factory the
+  // harness can stub.
+  containers.userManager!.bind('ServiceAccountsService').toConstantValue({
+    setTokenRevoker: sandbox.stub(),
+  } as any);
+  containers.oauth!.bind('ServiceTokenService').toConstantValue({
+    revokeAllForServiceAccount: sandbox.stub().resolves(),
+  } as any);
 
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {
@@ -364,6 +396,45 @@ describe('Application', () => {
 
       const stub = messageBrokerModule.ensureMessageTopicsExist as sinon.SinonStub;
       expect(stub.calledOnce).to.be.true;
+    });
+
+    it('imports REDIS_PROVIDER_MODULE (R10) before any container or Redis client is built', async () => {
+      const app = new Application();
+      stubAllContainers(sandbox);
+      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      const loadStub = sandbox
+        .stub(RedisConnectionProviderFactory, 'ensureProviderModuleLoaded')
+        .resolves();
+
+      await app.initialize();
+
+      expect(loadStub.calledOnce).to.be.true;
+      // Must run before the broker config (and therefore any Redis client
+      // construction) is resolved, or an EE `memorydb` provider that
+      // self-registers on import would never be loaded in time.
+      const ensureTopicsStub =
+        messageBrokerModule.ensureMessageTopicsExist as sinon.SinonStub;
+      expect(loadStub.calledBefore(ensureTopicsStub)).to.be.true;
+    });
+
+    it('prepares the Redis connection provider (F1) before loadConfigurationManagerConfig builds the bootstrap KV client (T5)', async () => {
+      const app = new Application();
+      stubAllContainers(sandbox);
+      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      const prepareStub = sandbox
+        .stub(redisConnectionProviderFactoryModule, 'getPreparedRedisProvider')
+        .resolves({} as any);
+
+      await app.initialize();
+
+      expect(prepareStub.calledOnce).to.be.true;
+      // An EE MemoryDB provider's `prepare()` resolves rotating IAM
+      // credentials (R21); it must run before this call builds the
+      // bootstrap KV store's Redis client, or that client is built with a
+      // stale/absent credential.
+      const loadConfigStub =
+        cmConfigModule.loadConfigurationManagerConfig as sinon.SinonStub;
+      expect(prepareStub.calledBefore(loadConfigStub)).to.be.true;
     });
 
     it('should continue initialization even if Kafka topic creation fails', async () => {

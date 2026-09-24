@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <title>Brave Search</title>
+  <path d="M128 8 L196 34 L214 30 L226 52 L214 78 L222 128 C222 178 190 214 128 248 C66 214 34 178 34 128 L42 78 L30 52 L42 30 L60 34 Z" fill="#FB542B"/>
+  <path d="M128 30 L182 50 L168 76 L188 96 L176 128 L192 150 L172 154 L176 178 C160 200 144 216 128 226 C112 216 96 200 80 178 L84 154 L64 150 L80 128 L68 96 L88 76 L74 50 Z" fill="#FFFFFF"/>
+  <circle cx="98" cy="118" r="16" fill="#FB542B"/>
+  <circle cx="158" cy="118" r="16" fill="#FB542B"/>
+  <path d="M100 168 C112 156 144 156 156 168 C146 190 110 190 100 168 Z" fill="#FB542B"/>
+</svg>

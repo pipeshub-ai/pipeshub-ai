@@ -124,6 +124,13 @@ def _make_connector(existing_record=None):
     dep.on_updated_record_permissions = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.initialize = AsyncMock()
+    dep.get_record_by_external_id = AsyncMock(return_value=existing_record)
+    dep.update_user_group_name = AsyncMock(return_value=True)
+    dep.get_user_by_email = AsyncMock(return_value=None)
+    dep.get_user_group_by_external_id = AsyncMock(return_value=None)
+    dep.upsert_permission_edge = AsyncMock()
+    dep.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+    dep.get_file_record_by_id = AsyncMock(return_value=None)
 
     dsp = _make_mock_data_store_provider(existing_record)
     cs = AsyncMock()
@@ -163,6 +170,19 @@ def mock_data_entities_processor():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_app_creator_user = AsyncMock(return_value=MagicMock(email="user@test.com"))
+    proc.on_record_deleted = AsyncMock()
+    proc.on_record_metadata_update = AsyncMock()
+    proc.on_record_content_update = AsyncMock()
+    proc.on_updated_record_permissions = AsyncMock()
+    proc.reindex_existing_records = AsyncMock()
+    proc.initialize = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.update_user_group_name = AsyncMock(return_value=True)
+    proc.get_user_by_email = AsyncMock(return_value=None)
+    proc.get_user_group_by_external_id = AsyncMock(return_value=None)
+    proc.upsert_permission_edge = AsyncMock()
+    proc.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+    proc.get_file_record_by_id = AsyncMock(return_value=None)
     return proc
 
 
@@ -275,14 +295,14 @@ class TestDropboxIndividualInit:
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_no_oauth_config(self, mock_fetch, dropbox_connector):
         mock_fetch.return_value = None
         result = await dropbox_connector.init()
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox_individual.connector.DropboxClient.build_with_config", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox_individual.connector.DropboxDataSource")
     async def test_init_success(self, mock_ds, mock_build, mock_fetch, dropbox_connector):
@@ -293,7 +313,7 @@ class TestDropboxIndividualInit:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox_individual.connector.DropboxClient.build_with_config", new_callable=AsyncMock)
     async def test_init_client_error(self, mock_build, mock_fetch, dropbox_connector):
         mock_fetch.return_value = {"config": {"clientId": "cid", "clientSecret": "csec"}}
@@ -558,7 +578,7 @@ class TestProcessDropboxEntry:
         )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     @pytest.mark.asyncio
     async def test_shared_link_unexpected_first_error(self):
@@ -570,7 +590,7 @@ class TestProcessDropboxEntry:
         )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
 
     @pytest.mark.asyncio
     async def test_shared_link_regex_miss_logs_error(self):
@@ -584,7 +604,19 @@ class TestProcessDropboxEntry:
         )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
-        assert result.record.weburl is None
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/doc.pdf"
+
+    @pytest.mark.asyncio
+    async def test_fallback_url_encodes_special_characters(self):
+        c, _, _ = _make_connector()
+        entry = _make_file_entry(path="/folder/a#b?c.pdf")
+        _mock_temp_link(c)
+        c.data_source.sharing_create_shared_link_with_settings = AsyncMock(
+            return_value=_make_response(False, error="access_denied")
+        )
+
+        result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
+        assert result.record.weburl == "https://www.dropbox.com/home/folder/a%23b%3Fc.pdf"
 
     @pytest.mark.asyncio
     async def test_parent_metadata_lookup(self):
@@ -625,14 +657,9 @@ class TestProcessDropboxEntry:
     async def test_entry_processing_exception_returns_none(self):
         c, _, dsp = _make_connector()
         entry = _make_file_entry()
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db down"))
-
-        @asynccontextmanager
-        async def _broken_tx():
-            yield tx
-
-        dsp.transaction = _broken_tx
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
         assert result is None
@@ -913,11 +940,11 @@ class TestRunSyncWithCursor:
 
         c._process_dropbox_items_generator = _deleted_gen
 
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await c._run_sync_with_cursor("uid", "u@test.com")
 
-        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(
-            record_id="id:deleted"
-        )
+        c.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(c.connector_id, "id:deleted")
+        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
     @pytest.mark.asyncio
     async def test_api_error_invalid_cursor_stops(self):
@@ -1191,11 +1218,9 @@ class TestCheckAndFetchUpdatedRecord:
 class TestDropboxIndividualMisc:
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch(f"{MODULE}.DataSourceEntitiesProcessor") as MockProc, \
-             patch(f"{MODULE}.DropboxIndividualApp"):
-            proc = AsyncMock()
-            proc.initialize = AsyncMock()
-            MockProc.return_value = proc
+        with patch(f"{MODULE}.DropboxIndividualApp"):
+            processor = MagicMock()
+            processor.org_id = "org-1"
             conn = await DropboxIndividualConnector.create_connector(
                 logging.getLogger("test"),
                 MagicMock(),
@@ -1203,9 +1228,9 @@ class TestDropboxIndividualMisc:
                 "conn-new",
                 "personal",
                 "creator",
+                data_entities_processor=processor,
             )
             assert isinstance(conn, DropboxIndividualConnector)
-            proc.initialize.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_filter_options_not_implemented(self):

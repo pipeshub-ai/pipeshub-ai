@@ -1,15 +1,23 @@
 ---
 name: release-changelog
-description: Generate an enterprise-style changelog file for a PipesHub GitHub release. Takes a release URL or tag (e.g. https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.5.0 or v0.5.0), synthesizes the auto-generated PR list into a curated, developer-friendly changelog, and writes it to changelog/<version>.md.
+description: Generate an enterprise-style changelog for a PipesHub GitHub release. Takes a release URL or tag (e.g. https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.5.0 or v0.5.0), writes the detailed per-release changelog to changelog/<version>.md, and registers it in the repo-root CHANGELOG.md (condensed entry + link) and the changelog/README.md index.
 argument-hint: <release-url-or-tag>
 ---
 
 # Release Changelog Generator
 
 Turn a raw GitHub release (auto-generated "What's Changed" PR list) into a curated,
-enterprise-grade changelog file. The style is a hybrid of Linear (strong narrative
-headline + explained highlights) and Keep a Changelog (categorized, scannable
-sections), tuned for developers and operators who self-host PipesHub.
+enterprise-grade changelog. The style is a hybrid of Linear (strong narrative headline +
+explained highlights) and Keep a Changelog (categorized, scannable sections), tuned for
+developers and operators who self-host PipesHub.
+
+Two artifacts, one source of truth each way:
+
+- `changelog/<version>.md` — the **detailed** per-release changelog (every PR
+  represented, authors credited).
+- `CHANGELOG.md` at the **repo root** — the **registry**: one condensed entry per
+  release, newest first, each linking to its detailed file. (`changelog/README.md`
+  keeps a one-row-per-release index table for folder browsing.)
 
 ## Step 1 — Resolve the release
 
@@ -34,13 +42,15 @@ The body is mostly `* <PR title> by @author in <PR url>` lines, possibly with a
 terse; interpret them using this architecture context:
 
 **PipesHub** is a workplace AI platform (enterprise search + agent workflows).
-Polyglot system: 5 Python FastAPI microservices (Connectors :8088, Indexing :8091,
-Query/RAG :8000, Docling parsing :8081, Embedding :8002), 1 Node.js Express API (:3001 —
-auth/users/knowledge-base/storage), a React/Next.js frontend, and an Electron desktop app.
-Stateful backends: Qdrant (vectors), ArangoDB (graph + docs), MongoDB, Redis, Kafka, etcd.
-30+ enterprise connectors (Google Workspace, Microsoft 365, Slack, Jira, Confluence,
-GitLab, Notion, Salesforce, Zoom, OneDrive, Outlook, SharePoint, S3, local filesystem…).
-AI layer: RAG pipeline, LiteLLM orchestration, agent tools, knowledge graphs.
+Polyglot system: Python FastAPI microservices (Connectors :8088, Indexing :8091,
+Query/RAG :8000, Docling parsing :8081, Embedding :8002, Parsing :8092,
+Extraction :8093), 1 Node.js Express API (auth/users/knowledge-base/storage), a
+React/Next.js frontend, and an Electron desktop app. Stateful backends are pluggable:
+graph (Neo4j/ArangoDB), vector (Qdrant/OpenSearch/Redis), MongoDB, KV (Redis/etcd),
+broker (Kafka/Redis Streams). 30+ enterprise connectors (Google Workspace,
+Microsoft 365, Slack, Jira, Confluence, GitLab, Notion, Salesforce, Zoom, OneDrive,
+Outlook, SharePoint, S3, local filesystem…). AI layer: RAG pipeline, agent loop and
+toolsets, MCP server, LiteLLM orchestration, knowledge graphs.
 
 For the 4–7 PRs that anchor the Highlights section, you may enrich with:
 
@@ -50,7 +60,7 @@ gh pr view <num> --repo pipeshub-ai/pipeshub-ai --json title,body
 
 Limit to ~8 such lookups per release; spend them on the biggest features.
 
-## Step 3 — Write the changelog file
+## Step 3 — Write the detailed changelog file
 
 Output path: `changelog/<version>.md` at the repo root, where `<version>` is the tag
 without any `v` prefix (`0.5.0.md`, `0.4.0-beta.2.md`). Create the directory if needed.
@@ -141,14 +151,82 @@ removals, or migrations. Otherwise omit the section entirely.>
 9. Channel: Stable for plain semver tags; Beta/Alpha per the tag suffix; trust the
    `isPrerelease` field for GitHub's own marking.
 
-## Step 4 — Maintain the index
+## Step 4 — Maintain the folder index
 
 If `changelog/README.md` exists, insert/update this release's row (newest first):
 `| [<version>](<version>.md) | <date> | <channel> | <H1 headline text> |` under the
 columns `Version | Date | Channel | Summary`. If it doesn't exist, create it with a
 short intro ("Curated changelogs for PipesHub releases, newest first.") and that table.
 
-## Step 5 — Report
+## Step 5 — Register the release in the root CHANGELOG.md
 
-Reply with the output file path, the H1 headline chosen, and a one-line theme summary.
+`CHANGELOG.md` at the **repo root** is the registry of all releases, newest first —
+condensed entries only; the `changelog/<version>.md` file stays the detailed record.
+Make two insertions:
+
+1. A new row at the **top of the index table** (just under the header row):
+   `| [<version>](#<anchor>) | <Mon D, YYYY> | <Channel> | <short theme, ≤8 words> |`
+2. The new release entry directly below the `## Unreleased` section (after its `---`
+   separator), ending with its own `---`, so the previous newest release slides down.
+3. Refresh the `## Unreleased` compare link to start from the new tag:
+   `[`<tag>...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/<tag>...HEAD)`.
+
+If the file doesn't exist, create it with this skeleton before inserting:
+
+```markdown
+# PipesHub Changelog
+
+All notable changes to [PipesHub](https://github.com/pipeshub-ai/pipeshub-ai) — the workplace AI platform for enterprise search and agent workflows — documented in one place, newest first.
+
+This file is the release registry: each entry is a condensed summary linking to the detailed per-release changelog in [`changelog/`](changelog/) (full PR-level accounting and author credits) and to the raw GitHub release. Versioning follows semver; **Stable** releases are recommended for production, **Beta/Alpha** channels preview the next stable.
+
+| Version | Date | Channel | Theme |
+|---|---|---|---|
+
+---
+
+## Unreleased
+
+Changes merged to `main` since the last release: [`<tag>...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/<tag>...HEAD).
+
+---
+
+*Maintained with the `release-changelog` skill (`.claude/skills/release-changelog/SKILL.md`). Detailed per-release changelogs live in [`changelog/`](changelog/).*
+```
+
+### Entry format (follow exactly)
+
+```markdown
+## <version> — <YYYY-MM-DD>
+
+**<H1 headline from the detailed file>** · <Channel> · [`<tag>`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/<tag>) · [Full changelog](changelog/<version>.md)
+
+<One- or two-sentence narrative: scale ("~195 PRs since 0.5.0") and theme.>
+
+### Added
+- <condensed bullet, citing only the 1–3 anchor PRs> ([#N](link))
+
+### Changed
+### Fixed
+### Security
+### Breaking changes & upgrade notes
+```
+
+Use only the sections that apply; 3–10 bullets total, distilled from the detailed
+file's Highlights and Breaking sections — do not re-enumerate every PR. Always keep
+the Breaking section when the detailed file has one.
+
+- **Pre-releases:** append `· *Finalized as [<stable>](#<anchor>)*` to the metadata
+  line once the stable ships; when writing the *stable* entry for a cycle that had a
+  pre-release, add that pointer to the existing pre-release entry and open the stable
+  narrative with "Finalizes [<pre>](#<anchor>) …".
+- **Anchors:** GitHub's slug of the H2 — lowercase, dots and the em dash removed,
+  spaces become hyphens (`## 0.4.0-beta.2 — 2026-05-02` → `#040-beta2--2026-05-02`).
+  Verify the new index row's link matches the heading you actually wrote.
+- Never rewrite existing registry entries except the pre-release pointer above.
+
+## Step 6 — Report
+
+Reply with the detailed file path, the H1 headline chosen, a one-line theme summary,
+and confirmation that changelog/README.md and the root CHANGELOG.md were updated.
 Do not paste the whole file into chat.

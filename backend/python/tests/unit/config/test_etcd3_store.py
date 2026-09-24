@@ -96,12 +96,39 @@ class TestEtcd3DistributedKeyValueStore:
     @pytest.mark.asyncio
     async def test_create_key_exists_overwrite_false(self, store, mock_client):
         """Not overwriting when overwrite=False and key exists."""
-        mock_client.get = MagicMock(return_value=(b"existing", MagicMock()))
+        mock_client.put_if_not_exists = MagicMock(return_value=False)
 
         with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
             result = await store.create_key("key4", "new_value", overwrite=False)
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_create_key_overwrite_false_claims_in_one_transaction(self, store, mock_client) -> None:
+        """A read followed by a put lets concurrent claimants all win; the
+        claim must be etcd's compare-and-put alone."""
+        mock_client.put_if_not_exists = MagicMock(return_value=True)
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            result = await store.create_key("key5", "mine", overwrite=False)
+
+        assert result is True
+        mock_client.put_if_not_exists.assert_called_once_with("key5", b"mine", None)
+        mock_client.get.assert_not_called()
+        mock_client.put.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_create_key_lost_claim_revokes_its_lease(self, store, mock_client) -> None:
+        mock_lease = MagicMock()
+        mock_client.lease = MagicMock(return_value=mock_lease)
+        mock_client.put_if_not_exists = MagicMock(return_value=False)
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            result = await store.create_key("key6", "late", overwrite=False, ttl=30)
+
+        assert result is False
+        mock_client.put_if_not_exists.assert_called_once_with("key6", b"late", mock_lease)
+        mock_lease.revoke.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_create_key_exception_raises_connection_error(self, store, mock_client):
@@ -216,6 +243,23 @@ class TestEtcd3DistributedKeyValueStore:
             result = await store.get_key("bad_json")
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_key_deserialization_error_raises_when_asked(self, store, mock_client):
+        """A stored value that cannot be read is not an absent key; a strict
+        reader must not get the None that reads as "nothing stored"."""
+        mock_client.get = MagicMock(return_value=(b"not-json{{{", MagicMock()))
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            with pytest.raises(ConnectionError):
+                await store.get_key("bad_json", raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_get_key_absent_is_none_even_when_asked(self, store, mock_client):
+        mock_client.get = MagicMock(return_value=(None, None))
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            assert await store.get_key("missing", raise_on_error=True) is None
 
     @pytest.mark.asyncio
     async def test_get_key_connection_error(self, store, mock_client):

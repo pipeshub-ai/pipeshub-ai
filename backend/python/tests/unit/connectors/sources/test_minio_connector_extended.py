@@ -191,12 +191,12 @@ class TestParseParentExternalId:
 # ===========================================================================
 
 class TestCreateConnector:
-    @patch("app.connectors.sources.minio.connector.MinIOApp")
     @patch("app.connectors.sources.minio.connector.S3CompatibleDataSourceEntitiesProcessor")
-    async def test_create_connector_default_endpoint(self, mock_proc, mock_app):
-        mock_proc_instance = MagicMock()
-        mock_proc_instance.initialize = AsyncMock()
-        mock_proc.return_value = mock_proc_instance
+    @patch("app.connectors.sources.minio.connector.MinIOApp")
+    async def test_create_connector_default_endpoint(self, mock_app, mock_processor_cls):
+        mock_proc = MagicMock()
+        mock_proc.initialize = AsyncMock()
+        mock_processor_cls.return_value = mock_proc
 
         logger = logging.getLogger("test")
         ds = MagicMock()
@@ -207,15 +207,16 @@ class TestCreateConnector:
             logger=logger, data_store_provider=ds,
             config_service=config_service, connector_id="test-id",
             scope="team", created_by="test-user-id",
+            data_entities_processor=mock_proc,
         )
         assert connector is not None
 
-    @patch("app.connectors.sources.minio.connector.MinIOApp")
     @patch("app.connectors.sources.minio.connector.S3CompatibleDataSourceEntitiesProcessor")
-    async def test_create_connector_with_config(self, mock_proc, mock_app):
-        mock_proc_instance = MagicMock()
-        mock_proc_instance.initialize = AsyncMock()
-        mock_proc.return_value = mock_proc_instance
+    @patch("app.connectors.sources.minio.connector.MinIOApp")
+    async def test_create_connector_with_config(self, mock_app, mock_processor_cls):
+        mock_proc = MagicMock()
+        mock_proc.initialize = AsyncMock()
+        mock_processor_cls.return_value = mock_proc
 
         logger = logging.getLogger("test")
         ds = MagicMock()
@@ -228,6 +229,7 @@ class TestCreateConnector:
             logger=logger, data_store_provider=ds,
             config_service=config_service, connector_id="test-id",
             scope="team", created_by="test-user-id",
+            data_entities_processor=mock_proc,
         )
         assert connector.endpoint_url == "https://minio.prod.com:9000"
 

@@ -20,6 +20,7 @@ import {
 } from '@/lib/store/services-health-store';
 import { toast } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 
 const CRITICAL_APP_SERVICES = new Set(['query', 'connector']);
 const NON_CRITICAL_TOAST_INTERVAL = 60 * 60 * 1000; // 1 hour
@@ -127,6 +128,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
   const startBackgroundPolling = useServicesHealthStore((s) => s.startBackgroundPolling);
   const stopBackgroundPolling = useServicesHealthStore((s) => s.stopBackgroundPolling);
   const retryServerConnection = useServicesHealthStore((s) => s.retryServerConnection);
+  const fetchFeatureFlags = useFeatureFlagsStore((s) => s.fetchFlags);
   const apiServerReachable = useServicesHealthStore(selectApiServerReachable);
   const backgroundCheckFailed = useServicesHealthStore(selectBackgroundCheckFailed);
   const appServices = useServicesHealthStore(selectAppServices);
@@ -141,6 +143,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
   // ── Start background polling on mount ────────────────────────────────────
   useEffect(() => {
     startBackgroundPolling();
+    fetchFeatureFlags();
     return () => {
       stopBackgroundPolling();
       if (criticalToastIdRef.current) {
@@ -148,7 +151,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         criticalToastIdRef.current = null;
       }
     };
-  }, [startBackgroundPolling, stopBackgroundPolling]);
+  }, [startBackgroundPolling, stopBackgroundPolling, fetchFeatureFlags]);
 
   // ── Refresh data on server recovery to clear stale state ────────────────
   useEffect(() => {
@@ -159,8 +162,9 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
     if (wasUnreachableRef.current) {
       wasUnreachableRef.current = false;
       router.refresh();
+      void fetchFeatureFlags();
     }
-  }, [apiServerReachable, router]);
+  }, [apiServerReachable, router, fetchFeatureFlags]);
 
   // ── Fast retry when server is unreachable ────────────────────────────────
   useEffect(() => {
@@ -214,25 +218,37 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
 
     // Critical services → persistent toast
     if (critical.length > 0) {
-      const description = isAdmin === false
-        ? `Affected: ${critical.join(', ')}. Please contact your administrator for assistance.`
-        : `Affected: ${critical.join(', ')}`;
+      // Service names are only useful to someone who can act on them, and the
+      // status page is admin-only. Unknown (profile still loading) counts as a
+      // member.
+      const description =
+        isAdmin === true
+          ? `Affected: ${critical.join(', ')}`
+          : "Some features are temporarily unavailable. We'll reconnect automatically; if it lasts, contact your admin.";
+      // The profile often resolves after the first failed health check, so the
+      // action is set on every pass: an admin who was still "unknown" when the
+      // toast appeared would otherwise never get the button.
+      const adminAction =
+        isAdmin === true
+          ? {
+              label: 'View status',
+              onClick: () => router.push('/workspace/services'),
+            }
+          : undefined;
       if (criticalToastIdRef.current === null) {
         criticalToastIdRef.current = toast.error(
           'Some services are unavailable',
           {
             description,
             duration: null,
-            ...(isAdmin === true && {
-              action: {
-                label: 'View status',
-                onClick: () => router.push('/workspace/services'),
-              },
-            }),
+            ...(adminAction && { action: adminAction }),
           },
         );
       } else {
-        toast.update(criticalToastIdRef.current, { description });
+        toast.update(criticalToastIdRef.current, {
+          description,
+          action: adminAction,
+        });
       }
     } else if (criticalToastIdRef.current !== null) {
       toast.dismiss(criticalToastIdRef.current);
@@ -245,7 +261,9 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
       if (now - lastNonCriticalToastRef.current >= NON_CRITICAL_TOAST_INTERVAL) {
         lastNonCriticalToastRef.current = now;
         toast.warning(
-          `${formatServiceList(nonCritical)} ${nonCritical.length === 1 ? 'is' : 'are'} currently unavailable`,
+          isAdmin === true
+            ? `${formatServiceList(nonCritical)} ${nonCritical.length === 1 ? 'is' : 'are'} currently unavailable`
+            : 'Some features are temporarily unavailable',
           {
             ...(isAdmin === true && {
               action: {

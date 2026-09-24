@@ -27,7 +27,7 @@ class AgentFactory:
         role_registry: "RoleRegistry",
         *,
         default_provider: str = "anthropic",
-        default_model: str = "claude-sonnet-4-6",
+        default_model: str = "claude-sonnet-5",
     ) -> None:
         self._runtime = runtime
         self._role_registry = role_registry

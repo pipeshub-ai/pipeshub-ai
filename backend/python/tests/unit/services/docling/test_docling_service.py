@@ -1,8 +1,5 @@
 """Unit tests for app.services.docling.docling_service."""
 
-import asyncio
-import base64
-import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -55,23 +52,10 @@ _ensure_mock_modules()
 
 from app.services.docling.docling_service import (
     DoclingService,
-    set_docling_service,
-    serialize_blocks_container,
+    ParseResponse,
     serialize_docling_doc,
-    deserialize_docling_doc,
+    set_docling_service,
 )
-
-# Try to import request/response models (they're Pydantic BaseModel subclasses)
-try:
-    from app.services.docling.docling_service import (
-        CreateBlocksRequest,
-        CreateBlocksResponse,
-        ParseResponse,
-        ProcessResponse,
-    )
-    HAS_PYDANTIC_MODELS = True
-except Exception:
-    HAS_PYDANTIC_MODELS = False
 
 
 def _make_upload_file(content: bytes = b"data"):
@@ -153,46 +137,6 @@ class TestDoclingServiceHealthCheck:
         type(svc).processor = None
 
 
-class TestDoclingServiceProcessPdf:
-    @pytest.mark.asyncio
-    async def test_process_pdf_not_initialized(self):
-        svc = DoclingService()
-        with pytest.raises(RuntimeError, match="not initialized"):
-            await svc.process_pdf("test.pdf", b"data")
-
-    @pytest.mark.asyncio
-    async def test_process_pdf_success(self):
-        svc = DoclingService()
-        mock_processor = MagicMock()
-        mock_result = MagicMock()
-        mock_processor.process_in_batches = AsyncMock(return_value=mock_result)
-        svc.processor = mock_processor
-
-        result = await svc.process_pdf("test.pdf", b"data")
-        assert result is mock_result
-        mock_processor.process_in_batches.assert_awaited_once_with("test.pdf", b"data")
-
-    @pytest.mark.asyncio
-    async def test_process_pdf_returns_false(self):
-        svc = DoclingService()
-        mock_processor = MagicMock()
-        mock_processor.process_in_batches = AsyncMock(return_value=False)
-        svc.processor = mock_processor
-
-        with pytest.raises(ValueError, match="returned False"):
-            await svc.process_pdf("test.pdf", b"data")
-
-    @pytest.mark.asyncio
-    async def test_process_pdf_processor_error(self):
-        svc = DoclingService()
-        mock_processor = MagicMock()
-        mock_processor.process_in_batches = AsyncMock(side_effect=RuntimeError("parse fail"))
-        svc.processor = mock_processor
-
-        with pytest.raises(RuntimeError, match="parse fail"):
-            await svc.process_pdf("test.pdf", b"data")
-
-
 class TestDoclingServiceParsePdfOnly:
     @pytest.mark.asyncio
     async def test_parse_pdf_not_initialized(self):
@@ -239,74 +183,9 @@ class TestDoclingServiceParsePdfOnly:
             await svc.parse_pdf_only("test.pdf", b"data")
 
 
-class TestDoclingServiceCreateBlocks:
-    @pytest.mark.asyncio
-    async def test_create_blocks_not_initialized(self):
-        svc = DoclingService()
-        with pytest.raises(RuntimeError, match="not initialized"):
-            await svc.create_blocks_from_parse_result(MagicMock())
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_success(self):
-        svc = DoclingService()
-        mock_processor = MagicMock()
-        mock_blocks = MagicMock()
-        mock_processor.create_blocks = AsyncMock(return_value=mock_blocks)
-        svc.processor = mock_processor
-
-        result = await svc.create_blocks_from_parse_result(MagicMock())
-        assert result is mock_blocks
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_with_page_number(self):
-        svc = DoclingService()
-        mock_processor = MagicMock()
-        mock_blocks = MagicMock()
-        mock_processor.create_blocks = AsyncMock(return_value=mock_blocks)
-        svc.processor = mock_processor
-
-        doc = MagicMock()
-        result = await svc.create_blocks_from_parse_result(doc, page_number=5)
-        mock_processor.create_blocks.assert_awaited_once_with(doc, page_number=5)
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_returns_false(self):
-        svc = DoclingService()
-        mock_processor = MagicMock()
-        mock_processor.create_blocks = AsyncMock(return_value=False)
-        svc.processor = mock_processor
-
-        with pytest.raises(ValueError, match="returned False"):
-            await svc.create_blocks_from_parse_result(MagicMock())
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_processor_error(self):
-        svc = DoclingService()
-        mock_processor = MagicMock()
-        mock_processor.create_blocks = AsyncMock(side_effect=RuntimeError("block fail"))
-        svc.processor = mock_processor
-
-        with pytest.raises(RuntimeError, match="block fail"):
-            await svc.create_blocks_from_parse_result(MagicMock())
-
-
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
-
-class TestSerializeBlocksContainer:
-    def test_success(self):
-        container = MagicMock()
-        container.dict.return_value = {"blocks": []}
-        result = serialize_blocks_container(container)
-        assert result == {"blocks": []}
-
-    def test_failure_raises_typeerror(self):
-        container = MagicMock()
-        container.dict.side_effect = Exception("serialization error")
-        with pytest.raises(TypeError, match="Failed to serialize BlocksContainer"):
-            serialize_blocks_container(container)
-
 
 class TestSerializeDoclingDoc:
     def test_success(self):
@@ -320,21 +199,6 @@ class TestSerializeDoclingDoc:
         doc.model_dump_json.side_effect = Exception("oops")
         with pytest.raises(TypeError, match="Failed to serialize DoclingDocument"):
             serialize_docling_doc(doc)
-
-
-class TestDeserializeDoclingDoc:
-    @patch("app.services.docling.docling_service.DoclingDocument")
-    def test_success(self, mock_doc_cls):
-        mock_doc = MagicMock()
-        mock_doc_cls.model_validate_json.return_value = mock_doc
-        result = deserialize_docling_doc('{"pages": []}')
-        assert result is mock_doc
-
-    @patch("app.services.docling.docling_service.DoclingDocument")
-    def test_failure_raises_typeerror(self, mock_doc_cls):
-        mock_doc_cls.model_validate_json.side_effect = Exception("bad json")
-        with pytest.raises(TypeError, match="Failed to deserialize DoclingDocument"):
-            deserialize_docling_doc("invalid")
 
 
 # ---------------------------------------------------------------------------
@@ -355,33 +219,10 @@ class TestSetDoclingService:
 # Pydantic request/response models
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not HAS_PYDANTIC_MODELS, reason="Pydantic models not available")
 class TestRequestResponseModels:
-    def test_process_response_success(self):
-        resp = ProcessResponse(success=True, block_containers={"blocks": []})
-        assert resp.success is True
-        assert resp.error is None
-
-    def test_process_response_error(self):
-        resp = ProcessResponse(success=False, error="failed")
-        assert resp.success is False
-        assert resp.error == "failed"
-
     def test_parse_response(self):
         resp = ParseResponse(success=True, parse_result='{"doc": true}')
         assert resp.parse_result == '{"doc": true}'
-
-    def test_create_blocks_request(self):
-        req = CreateBlocksRequest(parse_result='{"doc": true}', page_number=3)
-        assert req.page_number == 3
-
-    def test_create_blocks_request_no_page(self):
-        req = CreateBlocksRequest(parse_result='{"doc": true}')
-        assert req.page_number is None
-
-    def test_create_blocks_response(self):
-        resp = CreateBlocksResponse(success=True, block_containers={"blocks": []})
-        assert resp.success is True
 
 
 # ---------------------------------------------------------------------------
@@ -446,63 +287,154 @@ class TestHealthCheckEndpoint:
         assert result == {"status": "healthy", "service": "docling"}
 
 
-class TestProcessPdfEndpoint:
-    """Tests for the /process-pdf endpoint (multipart file upload)."""
+class TestResourceGovernorWiring:
+    """Tests for set_resource_governor / _acquire_docling_gate / _release_docling_gate."""
+
+    def test_set_resource_governor_sets_global(self):
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        governor = MagicMock()
+        try:
+            mod.set_resource_governor(governor)
+            assert mod._resource_governor is governor
+        finally:
+            mod._resource_governor = original
 
     @pytest.mark.asyncio
-    async def test_process_pdf_endpoint_service_not_available(self):
+    async def test_acquire_gate_no_governor_admits_with_zero_cost(self):
+        """Standalone/test runs that never wire a governor must not gate at all."""
         import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        mod.docling_service = None
+        original = mod._resource_governor
+        mod._resource_governor = None
         try:
-            from app.services.docling.docling_service import process_pdf_endpoint
-            from fastapi import HTTPException
-            with pytest.raises(HTTPException):
-                await process_pdf_endpoint(
-                    file=_make_upload_file(b"data"), record_name="test.pdf"
-                )
+            from app.services.docling.docling_service import _acquire_docling_gate
+            admitted, cost = await _acquire_docling_gate(b"pdf-bytes", "msg-1")
+            assert admitted is True
+            assert cost == 0
         finally:
-            mod.docling_service = original
+            mod._resource_governor = original
 
     @pytest.mark.asyncio
-    async def test_process_pdf_endpoint_success(self):
+    async def test_acquire_gate_delegates_to_governor(self):
         import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        svc = DoclingService()
-        mock_result = MagicMock()
-        mock_result.dict.return_value = {"blocks": []}
-        svc.process_pdf = AsyncMock(return_value=mock_result)
-        mod.docling_service = svc
+        original = mod._resource_governor
+        mock_gate = MagicMock()
+        mock_governor = MagicMock()
+        mock_governor.gate.return_value = mock_gate
+        mod._resource_governor = mock_governor
         try:
-            from app.services.docling.docling_service import process_pdf_endpoint
-            resp = await process_pdf_endpoint(
-                file=_make_upload_file(b"data"), record_name="test.pdf"
-            )
-            assert resp.success is True
-            svc.process_pdf.assert_awaited_once_with("test.pdf", b"data")
+            from app.services.docling.docling_service import _acquire_docling_gate
+            with patch(
+                "app.services.docling.docling_service.acquire_gate_with_backpressure",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_acquire:
+                admitted, cost = await _acquire_docling_gate(b"pdf-bytes", "msg-1")
+            assert admitted is True
+            assert cost == 1
+            mock_acquire.assert_awaited_once()
         finally:
-            mod.docling_service = original
+            mod._resource_governor = original
 
     @pytest.mark.asyncio
-    async def test_process_pdf_endpoint_processing_error(self):
+    async def test_acquire_gate_returns_false_on_timeout(self):
         import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        svc = DoclingService()
-        svc.process_pdf = AsyncMock(side_effect=ValueError("processing error"))
-        mod.docling_service = svc
+        original = mod._resource_governor
+        mock_governor = MagicMock()
+        mock_governor.gate.return_value = MagicMock()
+        mod._resource_governor = mock_governor
         try:
-            from app.services.docling.docling_service import process_pdf_endpoint
-            resp = await process_pdf_endpoint(
-                file=_make_upload_file(b"data"), record_name="test.pdf"
-            )
-            assert resp.success is False
-            assert "processing error" in resp.error
+            from app.services.docling.docling_service import _acquire_docling_gate
+            with patch(
+                "app.services.docling.docling_service.acquire_gate_with_backpressure",
+                new_callable=AsyncMock,
+                return_value=False,
+            ):
+                admitted, cost = await _acquire_docling_gate(b"pdf-bytes", "msg-1")
+            assert admitted is False
+            # A denied acquire never incremented the gate's in_use counter,
+            # so the cost returned to the caller must be 0 — otherwise the
+            # caller's unconditional `finally: _release_docling_gate(cost)`
+            # would decrement in_use for a permit that was never taken,
+            # inflating free capacity beyond the configured limit.
+            assert cost == 0
         finally:
-            mod.docling_service = original
+            mod._resource_governor = original
+
+    def test_release_gate_no_governor_is_noop(self):
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        mod._resource_governor = None
+        try:
+            from app.services.docling.docling_service import _release_docling_gate
+            _release_docling_gate(1)  # must not raise
+        finally:
+            mod._resource_governor = original
+
+    def test_release_gate_zero_cost_is_noop(self):
+        """cost=0 means no permit was ever taken (see _acquire_docling_gate's
+        docstring) — releasing it would double-free the gate's accounting."""
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        mock_governor = MagicMock()
+        mod._resource_governor = mock_governor
+        try:
+            from app.services.docling.docling_service import _release_docling_gate
+            _release_docling_gate(0)
+            mock_governor.gate.assert_not_called()
+        finally:
+            mod._resource_governor = original
+
+    def test_release_gate_delegates_to_governor(self):
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        mock_gate = MagicMock()
+        mock_governor = MagicMock()
+        mock_governor.gate.return_value = mock_gate
+        mod._resource_governor = mock_governor
+        try:
+            from app.services.docling.docling_service import _release_docling_gate
+            _release_docling_gate(2)
+            mock_gate.release.assert_called_once_with(2)
+        finally:
+            mod._resource_governor = original
+
+
+class TestBackpressureResponse:
+    def test_returns_429_with_retry_after_header(self):
+        from app.services.docling.docling_service import _backpressure_response
+        resp = _backpressure_response()
+        assert resp.status_code == 429
+        assert "Retry-After" in resp.headers
 
 
 class TestParsePdfEndpoint:
     """Tests for the /parse-pdf endpoint (multipart file upload)."""
+
+    @pytest.mark.asyncio
+    async def test_parse_pdf_endpoint_backpressured_returns_429(self):
+        import app.services.docling.docling_service as mod
+        original_governor = mod._resource_governor
+        original_svc = mod.docling_service
+        svc = DoclingService()
+        mod.docling_service = svc
+        try:
+            with patch(
+                "app.services.docling.docling_service._acquire_docling_gate",
+                new_callable=AsyncMock,
+                return_value=(False, 0),
+            ):
+                from app.services.docling.docling_service import parse_pdf_endpoint
+                resp = await parse_pdf_endpoint(
+                    file=_make_upload_file(b"data"),
+                    record_name="test.pdf",
+                    start_page=None,
+                    end_page=None,
+                )
+            assert resp.status_code == 429
+        finally:
+            mod._resource_governor = original_governor
+            mod.docling_service = original_svc
 
     @pytest.mark.asyncio
     async def test_parse_pdf_endpoint_service_not_available(self):
@@ -590,76 +522,36 @@ class TestParsePdfEndpoint:
         finally:
             mod.docling_service = original
 
-
-class TestCreateBlocksEndpoint:
-    """Tests for the /create-blocks endpoint."""
-
     @pytest.mark.asyncio
-    async def test_create_blocks_endpoint_invalid_parse_result(self):
+    async def test_parse_pdf_endpoint_releases_gate_on_processing_error(self):
+        """The gate must be released even when the handler raises — otherwise
+        a run of failures would permanently shrink the effective pool."""
         import app.services.docling.docling_service as mod
-        original = mod.docling_service
+        original_svc = mod.docling_service
+        original_governor = mod._resource_governor
         svc = DoclingService()
+        svc.parse_pdf_only = AsyncMock(side_effect=ValueError("boom"))
         mod.docling_service = svc
         try:
-            from app.services.docling.docling_service import create_blocks_endpoint
-            # Mock the deserialize to raise
-            with patch("app.services.docling.docling_service.deserialize_docling_doc", side_effect=TypeError("bad")):
-                req = CreateBlocksRequest(parse_result="invalid")
-                from fastapi import HTTPException
-                with pytest.raises(HTTPException):
-                    await create_blocks_endpoint(req)
+            with (
+                patch(
+                    "app.services.docling.docling_service._acquire_docling_gate",
+                    new_callable=AsyncMock,
+                    return_value=(True, 1),
+                ),
+                patch(
+                    "app.services.docling.docling_service._release_docling_gate"
+                ) as mock_release,
+            ):
+                from app.services.docling.docling_service import parse_pdf_endpoint
+                resp = await parse_pdf_endpoint(
+                    file=_make_upload_file(b"data"),
+                    record_name="test.pdf",
+                    start_page=None,
+                    end_page=None,
+                )
+            assert resp.success is False
+            mock_release.assert_called_once_with(1)
         finally:
-            mod.docling_service = original
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_endpoint_service_not_available(self):
-        import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        mod.docling_service = None
-        try:
-            from app.services.docling.docling_service import create_blocks_endpoint
-            mock_doc = MagicMock()
-            with patch("app.services.docling.docling_service.deserialize_docling_doc", return_value=mock_doc):
-                req = CreateBlocksRequest(parse_result='{"valid": true}')
-                from fastapi import HTTPException
-                with pytest.raises(HTTPException):
-                    await create_blocks_endpoint(req)
-        finally:
-            mod.docling_service = original
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_endpoint_success(self):
-        import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        svc = DoclingService()
-        mock_blocks = MagicMock()
-        mock_blocks.dict.return_value = {"blocks": []}
-        svc.create_blocks_from_parse_result = AsyncMock(return_value=mock_blocks)
-        mod.docling_service = svc
-        try:
-            from app.services.docling.docling_service import create_blocks_endpoint
-            mock_doc = MagicMock()
-            with patch("app.services.docling.docling_service.deserialize_docling_doc", return_value=mock_doc):
-                req = CreateBlocksRequest(parse_result='{"valid": true}')
-                resp = await create_blocks_endpoint(req)
-                assert resp.success is True
-        finally:
-            mod.docling_service = original
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_endpoint_error(self):
-        import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        svc = DoclingService()
-        svc.create_blocks_from_parse_result = AsyncMock(side_effect=RuntimeError("fail"))
-        mod.docling_service = svc
-        try:
-            from app.services.docling.docling_service import create_blocks_endpoint
-            mock_doc = MagicMock()
-            with patch("app.services.docling.docling_service.deserialize_docling_doc", return_value=mock_doc):
-                req = CreateBlocksRequest(parse_result='{"valid": true}')
-                resp = await create_blocks_endpoint(req)
-                assert resp.success is False
-                assert "fail" in resp.error
-        finally:
-            mod.docling_service = original
+            mod.docling_service = original_svc
+            mod._resource_governor = original_governor

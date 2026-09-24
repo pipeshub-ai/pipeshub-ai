@@ -87,7 +87,10 @@ class AgentConversationsTestBase:
             if stream_override
             else max(self.timeout, 120)
         )
-        self.primary_agent = agent_session["primary_agent"]
+        # Nothing here asserts on KB content, and a knowledge-free agent cannot register
+        # the retrieval toolset — so every conversation this file seeds costs one LLM
+        # turn instead of two.
+        self.agent_key = agent_session["workhorse_agent"]
         self.secondary_agents = list(agent_session["secondary_agents"])
 
     @pytest.fixture
@@ -250,7 +253,7 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-title-happy-{uuid4().hex}",
             created_conversations=created_conversations,
         )
@@ -263,7 +266,7 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         )
 
         resp = self.conversations.update_title(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             json=payload,
             timeout=self.timeout,
@@ -282,7 +285,7 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         assert_response_matches_openapi_operation(body, "updateAgentConversationTitle", status_code="200")
 
         get_resp = self.conversations.get_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -324,14 +327,14 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-title-query-{label}-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         new_title = f"query-rename-{uuid4().hex}"
 
         resp = self.conversations.update_title(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             title=new_title,
             params=params,
@@ -368,7 +371,7 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         conversation_id: str,
     ) -> None:
         resp = self.conversations.update_title(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             title="x",
             timeout=self.timeout,
@@ -385,7 +388,7 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
 
     def test_patch_agent_conversation_title_nonexistent_conversation_returns_404(self) -> None:
         resp = self.conversations.update_title(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             title="x",
             timeout=self.timeout,
@@ -400,18 +403,15 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
 
     def test_patch_agent_conversation_title_for_other_agent_key_returns_404(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-title-wrong-agent-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
+        # A rejected write leaves the conversation untouched, so the shared read-only
+        # one is enough here.
         other_agent_key = self.secondary_agents[0]
 
         resp = self.conversations.update_title(
             other_agent_key,
-            conversation_id,
+            readonly_agent_conversation["conversation_id"],
             title="wrong-agent-title",
             timeout=self.timeout,
         )
@@ -436,17 +436,11 @@ class TestAgentConversationTitleUpdate(AgentConversationsTestBase):
         self,
         label: str,
         payload: dict[str, Any],
-        created_conversations: list[tuple[str, str]],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-title-invalid-body-{label}-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
-
+        # A placeholder id is fine since validation runs before the lookup.
         resp = self.conversations.update_title(
-            self.primary_agent,
-            conversation_id,
+            self.agent_key,
+            "0" * 24,
             json=payload,
             timeout=self.timeout,
         )
@@ -496,13 +490,13 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-delete-happy-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         resp = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -517,7 +511,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         assert_response_matches_openapi_operation(body, "deleteAgentConversationById", status_code="200")
 
         get_resp = self.conversations.get_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -547,13 +541,13 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-delete-query-{label}-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         resp = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             params=params,
             timeout=self.timeout,
@@ -581,7 +575,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         conversation_id: str,
     ) -> None:
         resp = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -594,7 +588,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         self,
     ) -> None:
         resp = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             timeout=self.timeout,
         )
@@ -605,13 +599,12 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
 
     def test_delete_agent_conversation_for_other_agent_key_is_a_no_op(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-delete-wrong-agent-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
+        """Doubles as the canary for the shared read-only conversation: if this delete
+        ever stops being a no-op, this fails before any other borrower sees it gone.
+        """
+        conversation_id = readonly_agent_conversation["conversation_id"]
         other_agent_key = self.secondary_agents[0]
 
         delete_resp = self.conversations.delete_conversation(
@@ -625,7 +618,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         self._assert_delete_success(delete_body, expect_conversation=False)
 
         get_resp = self.conversations.get_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -636,13 +629,13 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-delete-twice-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         first_delete = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -655,7 +648,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
         )
 
         second_delete = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -667,7 +660,7 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
 
     def test_delete_agent_conversation_without_auth_returns_401(self) -> None:
         resp = self.conversations.delete_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             auth=False,
             timeout=self.timeout,
@@ -701,13 +694,13 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archive-happy-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -741,13 +734,13 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archive-query-{label}-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             params=params,
             timeout=self.timeout,
@@ -771,7 +764,7 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
         conversation_id: str,
     ) -> None:
         resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -784,7 +777,7 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
         self,
     ) -> None:
         resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             timeout=self.timeout,
         )
@@ -792,18 +785,15 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
 
     def test_post_archive_agent_conversation_for_other_agent_key_returns_404(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-archive-wrong-agent-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
+        # The 404 means nothing was archived, so the shared conversation stays clean for
+        # the not-archived test below.
         other_agent_key = self.secondary_agents[0]
 
         resp = self.conversations.archive_conversation(
             other_agent_key,
-            conversation_id,
+            readonly_agent_conversation["conversation_id"],
             timeout=self.timeout,
         )
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
@@ -813,20 +803,20 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-archive-twice-{uuid4().hex}",
             created_conversations=created_conversations,
         )
 
         first_resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
         assert first_resp.status_code == 200, f"{first_resp.status_code}: {first_resp.text}"
 
         second_resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -836,7 +826,7 @@ class TestAgentConversationArchive(AgentConversationsTestBase):
 
     def test_post_archive_agent_conversation_without_auth_returns_401(self) -> None:
         resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             auth=False,
             timeout=self.timeout,
@@ -870,19 +860,19 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-unarchive-happy-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
         assert archive_resp.status_code == 200, f"{archive_resp.status_code}: {archive_resp.text}"
 
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -916,19 +906,19 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-unarchive-query-{label}-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
         assert archive_resp.status_code == 200, f"{archive_resp.status_code}: {archive_resp.text}"
 
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             params=params,
             timeout=self.timeout,
@@ -952,7 +942,7 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
         conversation_id: str,
     ) -> None:
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -965,7 +955,7 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
         self,
     ) -> None:
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             timeout=self.timeout,
         )
@@ -976,12 +966,12 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-unarchive-wrong-agent-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         archive_resp = self.conversations.archive_conversation(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             timeout=self.timeout,
         )
@@ -997,24 +987,19 @@ class TestAgentConversationUnarchive(AgentConversationsTestBase):
 
     def test_post_unarchive_agent_conversation_not_archived_returns_400(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-unarchive-active-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
-
+        # Borrows the shared conversation precisely because nothing ever archives it.
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
-            conversation_id,
+            self.agent_key,
+            readonly_agent_conversation["conversation_id"],
             timeout=self.timeout,
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
     def test_post_unarchive_agent_conversation_without_auth_returns_401(self) -> None:
         resp = self.conversations.unarchive_conversation(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             auth=False,
             timeout=self.timeout,
@@ -1145,12 +1130,12 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-regenerate-happy-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         message_id, _ = self._conversation_last_bot_and_user_message_ids(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
         )
 
@@ -1164,7 +1149,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         )
 
         status_code, content_type, envelopes = self._post_regenerate_stream(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             message_id,
             payload={"chatMode": "quick"},
@@ -1228,12 +1213,12 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
+            self.agent_key,
             query=f"agent-regenerate-body-{label}-{uuid4().hex}",
             created_conversations=created_conversations,
         )
         message_id, _ = self._conversation_last_bot_and_user_message_ids(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
         )
         request_payload = json.loads(json.dumps(payload).replace(
@@ -1251,7 +1236,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             )
 
         status_code, content_type, envelopes = self._post_regenerate_stream(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             message_id,
             payload=request_payload,
@@ -1278,7 +1263,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         conversation_id: str,
     ) -> None:
         resp = self.conversations.regenerate_message(
-            self.primary_agent,
+            self.agent_key,
             conversation_id,
             "0" * 24,
             json={"chatMode": "quick"},
@@ -1304,7 +1289,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         message_id: str,
     ) -> None:
         resp = self.conversations.regenerate_message(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             message_id,
             json={"chatMode": "quick"},
@@ -1377,22 +1362,13 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         self,
         label: str,
         payload: dict[str, Any],
-        created_conversations: list[tuple[str, str]],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-regenerate-invalid-body-{label}-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
-        message_id, _ = self._conversation_last_bot_and_user_message_ids(
-            self.primary_agent,
-            conversation_id,
-        )
-
+        # Placeholder ids are fine since validation runs before the lookup; the test
+        # below pins that ordering against a real conversation.
         resp = self.conversations.regenerate_message(
-            self.primary_agent,
-            conversation_id,
-            message_id,
+            self.agent_key,
+            "0" * 24,
+            "0" * 24,
             json=payload,
             stream=False,
             timeout=self.timeout,
@@ -1402,11 +1378,29 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             f"[{label}] Expected validation details"
         )
 
+    def test_post_agent_conversation_regenerate_validates_body_before_lookup(
+        self,
+        readonly_agent_conversation: dict[str, str],
+    ) -> None:
+        """The 400-body cases above use placeholder ids, so none of them would notice if
+        ValidationMiddleware were wired after the controller. This one would: real
+        conversation, real bot messageId, still a validation error rather than a stream.
+        """
+        resp = self.conversations.regenerate_message(
+            self.agent_key,
+            readonly_agent_conversation["conversation_id"],
+            readonly_agent_conversation["bot_message_id"],
+            json={"chatMode": "auto"},
+            stream=False,
+            timeout=self.timeout,
+        )
+        self._assert_validation_error(resp)
+
     def test_post_agent_conversation_regenerate_nonexistent_conversation_emits_sse_error(
         self,
     ) -> None:
         status_code, content_type, envelopes = self._post_regenerate_stream(
-            self.primary_agent,
+            self.agent_key,
             "0" * 24,
             "0" * 24,
             payload={"chatMode": "quick"},
@@ -1421,23 +1415,16 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
 
     def test_post_agent_conversation_regenerate_for_other_agent_key_emits_sse_error(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-regenerate-wrong-agent-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
-        message_id, _ = self._conversation_last_bot_and_user_message_ids(
-            self.primary_agent,
-            conversation_id,
-        )
+        # Errors on the agentKey filter before any write, so the shared conversation
+        # keeps its [user_query, bot_response] shape.
         other_agent_key = self.secondary_agents[0]
 
         status_code, content_type, envelopes = self._post_regenerate_stream(
             other_agent_key,
-            conversation_id,
-            message_id,
+            readonly_agent_conversation["conversation_id"],
+            readonly_agent_conversation["bot_message_id"],
             payload={"chatMode": "quick"},
         )
 
@@ -1450,22 +1437,14 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
 
     def test_post_agent_conversation_regenerate_non_last_message_id_emits_sse_error(
         self,
-        created_conversations: list[tuple[str, str]],
+        readonly_agent_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_agent_conversation_id(
-            self.primary_agent,
-            query=f"agent-regenerate-non-last-{uuid4().hex}",
-            created_conversations=created_conversations,
-        )
-        _last_bot_id, user_query_id = self._conversation_last_bot_and_user_message_ids(
-            self.primary_agent,
-            conversation_id,
-        )
-
+        # Depends on the shared conversation staying at [user_query, bot_response]: the
+        # user query is only "not the last message" while nothing has appended to it.
         status_code, content_type, envelopes = self._post_regenerate_stream(
-            self.primary_agent,
-            conversation_id,
-            user_query_id,
+            self.agent_key,
+            readonly_agent_conversation["conversation_id"],
+            readonly_agent_conversation["user_message_id"],
             payload={"chatMode": "quick"},
         )
 

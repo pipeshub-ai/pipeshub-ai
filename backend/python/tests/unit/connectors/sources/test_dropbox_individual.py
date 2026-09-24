@@ -203,14 +203,14 @@ class TestDropboxIndividualInit:
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_no_oauth_config(self, mock_fetch, dropbox_connector):
         mock_fetch.return_value = None
         result = await dropbox_connector.init()
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox_individual.connector.DropboxClient.build_with_config", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox_individual.connector.DropboxDataSource")
     async def test_init_success(self, mock_ds, mock_build, mock_fetch, dropbox_connector):
@@ -221,7 +221,7 @@ class TestDropboxIndividualInit:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox_individual.connector.DropboxClient.build_with_config", new_callable=AsyncMock)
     async def test_init_client_error(self, mock_build, mock_fetch, dropbox_connector):
         mock_fetch.return_value = {"config": {"clientId": "cid", "clientSecret": "csec"}}
@@ -600,14 +600,14 @@ class TestDropboxIndividualInitCoverage:
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_no_oauth_config(self, mock_fetch, dropbox_connector):
         mock_fetch.return_value = None
         result = await dropbox_connector.init()
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox_individual.connector.DropboxClient.build_with_config", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox_individual.connector.DropboxDataSource")
     async def test_init_success(self, mock_ds, mock_build, mock_fetch, dropbox_connector):
@@ -618,7 +618,7 @@ class TestDropboxIndividualInitCoverage:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.dropbox_individual.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox_individual.connector.DropboxClient.build_with_config", new_callable=AsyncMock)
     async def test_init_client_error(self, mock_build, mock_fetch, dropbox_connector):
         mock_fetch.return_value = {"config": {"clientId": "cid", "clientSecret": "csec"}}

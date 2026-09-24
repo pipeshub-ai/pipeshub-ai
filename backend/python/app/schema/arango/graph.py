@@ -112,6 +112,16 @@ EDGE_DEFINITIONS = [
         "from_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
         "to_vertex_collections": [CollectionNames.AGENT_KNOWLEDGE.value],
     },
+    {
+        "edge_collection": CollectionNames.AGENT_HAS_MCP_SERVER.value,
+        "from_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
+        "to_vertex_collections": [CollectionNames.AGENT_MCP_SERVERS.value],
+    },
+    {
+        "edge_collection": CollectionNames.MCP_SERVER_HAS_TOOL.value,
+        "from_vertex_collections": [CollectionNames.AGENT_MCP_SERVERS.value],
+        "to_vertex_collections": [CollectionNames.AGENT_TOOLS.value],
+    },
     # Agent Skills Graph Edges
     {
         "edge_collection": CollectionNames.AGENT_SKILL_RELATION.value,

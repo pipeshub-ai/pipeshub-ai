@@ -63,15 +63,10 @@ def _make_mock_deps():
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_updated_record_permissions = AsyncMock()
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_record_by_conversation_index = AsyncMock(return_value=None)
+    data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value=None)
 
     data_store_provider = MagicMock()
-    mock_tx = MagicMock()
-    mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-    mock_tx.get_record_by_conversation_index = AsyncMock(return_value=None)
-    mock_tx.batch_create_edges = AsyncMock()
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-    mock_tx.__aexit__ = AsyncMock(return_value=None)
-    data_store_provider.transaction.return_value = mock_tx
 
     config_service = MagicMock()
     config_service.get_config = AsyncMock()
@@ -931,8 +926,8 @@ class TestDownloadGroupPostAttachment:
         connector.external_outlook_client.groups_threads_posts_get_attachments = AsyncMock(
             return_value=_make_graph_response(success=False)
         )
-        result = await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
-        assert result == b''
+        with pytest.raises(RuntimeError):
+            await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
 
 
 # ===========================================================================
@@ -975,11 +970,7 @@ class TestFindParentByConversationIndex:
         mock_parent = MagicMock()
         mock_parent.id = "parent-record-id"
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_conversation_index = AsyncMock(return_value=mock_parent)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_conversation_index = AsyncMock(return_value=mock_parent)
 
         result = await connector._find_parent_by_conversation_index_from_db(child_index, "thread-1", "org-1", user)
         assert result == "parent-record-id"
@@ -2254,11 +2245,7 @@ class TestGetExistingRecord:
         connector = _make_connector()
         mock_record = MagicMock()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=mock_record)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=mock_record)
 
         result = await connector._get_existing_record("org-1", "ext-1")
         assert result == mock_record
@@ -2267,11 +2254,7 @@ class TestGetExistingRecord:
     async def test_error_returns_none(self):
         connector = _make_connector()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(side_effect=Exception("DB error"))
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("DB error"))
 
         result = await connector._get_existing_record("org-1", "ext-1")
         assert result is None
@@ -2329,19 +2312,13 @@ def _make_mock_deps_fullcov():
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_updated_record_permissions = AsyncMock()
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_record_by_conversation_index = AsyncMock(return_value=None)
+    data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value=None)
+    data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.delete_record_by_external_id = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
 
     data_store_provider = MagicMock()
-    mock_tx = MagicMock()
-    mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-    mock_tx.get_record_by_conversation_index = AsyncMock(return_value=None)
-    mock_tx.batch_create_edges = AsyncMock()
-    mock_tx.get_record_owner_source_user_email = AsyncMock(return_value=None)
-    mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
-    mock_tx.delete_record_by_external_id = AsyncMock()
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-    mock_tx.__aexit__ = AsyncMock(return_value=None)
-    data_store_provider.transaction.return_value = mock_tx
 
     config_service = MagicMock()
     config_service.get_config = AsyncMock()
@@ -2506,7 +2483,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
         assert "Missing group_id" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
@@ -2522,7 +2499,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
         assert "Missing thread_id" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
@@ -2546,6 +2523,27 @@ class TestStreamRecord:
         assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
+    async def test_stream_group_mail_no_post_raises_not_found(self):
+        """Graph answered 200 with no post: must 404, not stream an empty body."""
+        connector = _make_connector()
+        connector.external_outlook_client = MagicMock()
+
+        record = _make_mail_record(
+            record_type=RecordType.GROUP_MAIL,
+            external_record_group_id="group-1",
+            thread_id="thread-1",
+            external_record_id="post-1",
+        )
+
+        connector.external_outlook_client.groups_threads_get_post = AsyncMock(
+            return_value=_make_graph_response(success=True, data=None)
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.stream_record(record)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
     async def test_stream_group_post_attachment(self):
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
@@ -2555,11 +2553,7 @@ class TestStreamRecord:
         parent_record.external_record_group_id = "group-1"
         parent_record.thread_id = "thread-1"
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         record = _make_file_record(
             external_record_group_id="group-1",
@@ -2579,12 +2573,7 @@ class TestStreamRecord:
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
 
         connector._get_user_id_from_email = AsyncMock(return_value="su1")
 
@@ -2605,30 +2594,20 @@ class TestStreamRecord:
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value=None)
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value=None)
 
         record = _make_mail_record()
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_stream_user_attachment(self):
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
 
         connector._get_user_id_from_email = AsyncMock(return_value="su1")
         connector._download_attachment_external = AsyncMock(return_value=b"pdf bytes")
@@ -2645,12 +2624,7 @@ class TestStreamRecord:
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
 
         connector._get_user_id_from_email = AsyncMock(return_value="su1")
 
@@ -2668,19 +2642,14 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_record_type_raises(self):
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
 
         connector._get_user_id_from_email = AsyncMock(return_value="su1")
 
@@ -2828,11 +2797,7 @@ class TestReindexUserMailboxRecords:
     async def test_groups_by_owner_email(self):
         connector = _make_connector()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value="user@test.com")
 
         record = _make_mail_record()
         connector._reindex_single_user_records = AsyncMock(return_value=([], [record]))
@@ -2844,11 +2809,7 @@ class TestReindexUserMailboxRecords:
     async def test_skips_records_without_owner(self):
         connector = _make_connector()
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_owner_source_user_email = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value=None)
 
         record = _make_mail_record()
         updated, non_updated = await connector._reindex_user_mailbox_records([record])
@@ -3389,16 +3350,17 @@ class TestGetMessageByIdExternal:
             return_value=_make_graph_response(success=False, error="Not found")
         )
 
-        result = await connector._get_message_by_id_external("su1", "m1")
-        assert result is None
+        with pytest.raises(RuntimeError):
+            await connector._get_message_by_id_external("su1", "m1")
 
     @pytest.mark.asyncio
     async def test_no_client_returns_empty(self):
         connector = _make_connector()
         connector.external_outlook_client = None
 
-        result = await connector._get_message_by_id_external("su1", "m1")
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._get_message_by_id_external("su1", "m1")
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self):
@@ -3408,8 +3370,8 @@ class TestGetMessageByIdExternal:
             side_effect=Exception("Network error")
         )
 
-        result = await connector._get_message_by_id_external("su1", "m1")
-        assert result is None
+        with pytest.raises(Exception, match="Network error"):
+            await connector._get_message_by_id_external("su1", "m1")
 
 
 # ===========================================================================
@@ -3462,11 +3424,16 @@ class TestDownloadAttachmentExternal:
             return_value=_make_graph_response(success=False)
         )
 
-        result = await connector._download_attachment_external("su1", "m1", "a1")
-        assert result == b''
+        with pytest.raises(RuntimeError):
+            await connector._download_attachment_external("su1", "m1", "a1")
 
     @pytest.mark.asyncio
-    async def test_no_content_returns_empty_bytes(self):
+    async def test_item_attachment_raises_instead_of_streaming_empty(self):
+        """An itemAttachment comes back 200 with no contentBytes.
+
+        Streaming b'' would hand the client a zero-byte file at HTTP 200 it
+        cannot tell apart from a real empty attachment.
+        """
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
@@ -3478,16 +3445,18 @@ class TestDownloadAttachmentExternal:
             return_value=_make_graph_response(success=True, data=mock_data)
         )
 
-        result = await connector._download_attachment_external("su1", "m1", "a1")
-        assert result == b''
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._download_attachment_external("su1", "m1", "a1")
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_no_client(self):
         connector = _make_connector()
         connector.external_outlook_client = None
 
-        result = await connector._download_attachment_external("su1", "m1", "a1")
-        assert result == b''
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._download_attachment_external("su1", "m1", "a1")
+        assert exc_info.value.status_code == 409
 
 
 # ===========================================================================
@@ -4985,11 +4954,12 @@ class TestDownloadGroupPostAttachmentAdditional:
         connector = _make_connector()
         connector.external_outlook_client = None
 
-        result = await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
-        assert result == b''
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_no_content_bytes(self):
+    async def test_no_content_bytes_raises_instead_of_streaming_empty(self):
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
@@ -5001,8 +4971,9 @@ class TestDownloadGroupPostAttachmentAdditional:
             return_value=_make_graph_response(success=True, data=mock_data)
         )
 
-        result = await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
-        assert result == b''
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
+        assert exc_info.value.status_code == 422
 
 
 # ===========================================================================
@@ -5231,21 +5202,18 @@ class TestCreateConnector:
 
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.microsoft.outlook.connector.DataSourceEntitiesProcessor") as mock_dep:
-            instance = MagicMock()
-            instance.initialize = AsyncMock()
-            instance.org_id = "org-1"
-            mock_dep.return_value = instance
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            logger = logging.getLogger("test")
-            dsp = MagicMock()
-            cs = MagicMock()
+        logger = logging.getLogger("test")
+        dsp = MagicMock()
+        cs = MagicMock()
 
-            connector = await OutlookConnector.create_connector(
-                logger, dsp, cs, "conn-1", "team", "test-user-id"
-            )
-            assert isinstance(connector, OutlookConnector)
-            instance.initialize.assert_awaited_once()
+        connector = await OutlookConnector.create_connector(
+            logger, dsp, cs, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, OutlookConnector)
 
 
 # ===========================================================================

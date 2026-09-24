@@ -1,14 +1,11 @@
 """Integration tests for selective retry behavior in Kafka consumer."""
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock
 
 import pytest
-from aiokafka.structs import ConsumerRecord, TopicPartition
 
-from app.config.constants.arangodb import ProgressStatus
 from app.services.messaging.config import messaging_env
-from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
 
 
 @pytest.fixture
@@ -59,7 +56,7 @@ class TestKafkaConsumerRetryConfiguration:
     async def test_batch_size_configuration(self):
         """Test that batch sizes are correctly configured."""
         assert messaging_env.message_batch_size_simple == 10
-        assert messaging_env.message_batch_size_indexing == 1
+        assert messaging_env.message_batch_size_indexing == 10
 
     @pytest.mark.asyncio
     async def test_message_timeout_configuration(self):
@@ -79,7 +76,7 @@ class TestRedisStreamsRetryBehavior:
     async def test_batch_size_configuration(self):
         """Test that batch sizes are correctly configured."""
         assert messaging_env.message_batch_size_simple == 10
-        assert messaging_env.message_batch_size_indexing == 1
+        assert messaging_env.message_batch_size_indexing == 10
 
     @pytest.mark.asyncio
     async def test_message_timeout_configuration(self):

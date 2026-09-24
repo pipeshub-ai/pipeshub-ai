@@ -4,14 +4,21 @@ import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import mongoose from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { getMimeType } from '../mimetypes/mimetypes';
-import { Document, StorageVendor } from '../types/storage.service.types';
+import {
+  Document,
+  FilePayload,
+  StorageServiceResponse,
+  StorageVendor,
+} from '../types/storage.service.types';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ErrorMetadata } from '../../../libs/errors/base.error';
 import { createReadStream } from 'fs';
+import { STORAGE_WRITE_FAILED_MESSAGE } from '../constants/constants';
 import fs from 'fs';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
 import {
@@ -23,10 +30,56 @@ const logger = Logger.getInstance({
   service: 'storage',
 });
 
+/**
+ * Write a file to the storage vendor, or fail with a message the uploader can act on.
+ * The vendor's own error (a path, an OS code, an S3 or Azure response) goes to the log only.
+ */
+export async function writeToStorage(
+  adapter: StorageServiceAdapter,
+  payload: FilePayload,
+  context: Record<string, unknown> = {},
+): Promise<StorageServiceResponse<string>> {
+  let response: StorageServiceResponse<string>;
+  try {
+    response = await adapter.uploadDocumentToStorageService(payload);
+  } catch (error) {
+    logger.error('Writing a file to storage failed', {
+      ...context,
+      error: error instanceof Error ? error.message : String(error),
+      metadata: (error as { metadata?: unknown }).metadata,
+    });
+    throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+  }
+  if (response.statusCode !== HTTP_STATUS.OK || !response.data) {
+    logger.error('Writing a file to storage failed', {
+      ...context,
+      statusCode: response.statusCode,
+      error: response.msg,
+    });
+    throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+  }
+  return response;
+}
+
 // Interface for document storage info response
 export interface DocumentInfoResponse {
   document: mongoose.Document<unknown, {}, DocumentModel> & DocumentModel;
 }
+
+/**
+ * Read-only callers can ask for a plain object instead of a hydrated model.
+ *
+ * Mongoose hydration -- schema defaults, casting, getters, change tracking --
+ * measured ~20% of gateway CPU under load, and the download path reads a
+ * handful of fields and never saves. Opt-in rather than default because other
+ * callers of getDocumentInfo do mutate and save the document.
+ */
+// `Document` here is the plain data interface from storage.service.types.
+// NOT DocumentModel: that is declared `extends IDocument, MongooseDocument`, so
+// it carries save()/markModified()/etc and a lean object typed as it would
+// still compile against the hydrated-only API -- exactly the runtime crash the
+// lean path is meant to make impossible.
+export type LeanDocumentInfoResponse = { document: Document };
 
 export function encodeRFC5987(str: string): string {
   return encodeURIComponent(str)
@@ -39,7 +92,18 @@ export function encodeRFC5987(str: string): string {
 async function getDocumentInfoFromDb(
   documentId: string,
   orgId: mongoose.Types.ObjectId,
-): Promise<DocumentInfoResponse | undefined> {
+  lean: true,
+): Promise<LeanDocumentInfoResponse | undefined>;
+async function getDocumentInfoFromDb(
+  documentId: string,
+  orgId: mongoose.Types.ObjectId,
+  lean?: false,
+): Promise<DocumentInfoResponse | undefined>;
+async function getDocumentInfoFromDb(
+  documentId: string,
+  orgId: mongoose.Types.ObjectId,
+  lean = false,
+): Promise<DocumentInfoResponse | LeanDocumentInfoResponse | undefined> {
   try {
     // Validate documentId is a valid ObjectId
     if (!mongoose.isValidObjectId(documentId)) {
@@ -47,11 +111,12 @@ async function getDocumentInfoFromDb(
     }
 
     // Fetch the document from MongoDB
-    const document = await DocumentModel.findOne({
+    const query = DocumentModel.findOne({
       _id: documentId,
       orgId,
       isDeleted: false,
     });
+    const document = lean ? await query.lean<Document>().exec() : await query;
 
     if (!document) {
       throw new NotFoundError('Document not found');
@@ -79,7 +144,18 @@ async function getDocumentInfoFromDb(
 export async function getDocumentInfo(
   req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
   next: NextFunction,
-): Promise<DocumentInfoResponse | undefined> {
+  lean: true,
+): Promise<LeanDocumentInfoResponse | undefined>;
+export async function getDocumentInfo(
+  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+  next: NextFunction,
+  lean?: false,
+): Promise<DocumentInfoResponse | undefined>;
+export async function getDocumentInfo(
+  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+  next: NextFunction,
+  lean = false,
+): Promise<DocumentInfoResponse | LeanDocumentInfoResponse | undefined> {
   try {
     const orgId = extractOrgId(req);
     const documentId = req.params.documentId;
@@ -88,7 +164,11 @@ export async function getDocumentInfo(
     if (!documentId) {
       throw new NotFoundError('Document ID is required');
     }
-    const documentInfo = await getDocumentInfoFromDb(documentId, orgID);
+    // Branch rather than pass the boolean through: the overloads are what stop
+    // a lean object being handed to a caller expecting a hydrated document.
+    const documentInfo = lean
+      ? await getDocumentInfoFromDb(documentId, orgID, true)
+      : await getDocumentInfoFromDb(documentId, orgID, false);
     if (!documentInfo) {
       throw new NotFoundError('Document not found');
     }
@@ -273,6 +353,7 @@ export async function createPlaceholderDocument(
   size: number,
   extension: string,
   originalname?: string,
+  storageVendor?: StorageVendor,
 ): Promise<DocumentInfoResponse | undefined> {
   try {
     const {
@@ -303,7 +384,7 @@ export async function createPlaceholderDocument(
       initiatorUserId: userId ? new mongoose.Types.ObjectId(userId) : null,
       customMetadata,
       sizeInBytes: size,
-      storageVendor: StorageVendor.S3,
+      storageVendor: storageVendor ?? StorageVendor.S3,
       extension: normalizeExtension(extension),
     };
 

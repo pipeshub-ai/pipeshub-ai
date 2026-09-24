@@ -365,3 +365,123 @@ class TestRefreshAllTokens:
         with patch.object(svc, "_refresh_all_tokens_internal", new_callable=AsyncMock) as mock_internal:
             await svc._refresh_all_tokens()
             mock_internal.assert_awaited_once()
+
+
+from app.connectors.core.base.token_service.token_refresh_service import (  # noqa: E402
+    MAX_REFRESH_TOKEN_INVALID_FAILURES,
+)
+from app.connectors.core.base.token_service.oauth_service import (  # noqa: E402
+    RefreshTokenInvalidError,
+)
+
+
+class TestConcurrentRefreshRace:
+    """Providers that rotate refresh tokens invalidate the old one the moment the
+    first refresh lands, so parallel callers holding it are certain to be
+    rejected. Those rejections used to be counted as consecutive failures and
+    deactivate a healthy connector."""
+
+    @staticmethod
+    def _rotating_config_service(store):
+        """Config service whose stored credentials rotate on every set_config."""
+        cs = MagicMock()
+
+        async def _get(key, **_kwargs):
+            return {
+                "auth": {
+                    "oauthConfigId": "oauth123",
+                    "connectorScope": "team",
+                    "clientId": "cid",
+                    "clientSecret": "csecret",
+                    "authorizeUrl": "https://example.com/auth",
+                    "tokenUrl": "https://example.com/token",
+                    "redirectUri": "http://localhost/callback",
+                    "scopes": ["scope1"],
+                },
+                "credentials": dict(store["credentials"]),
+            }
+
+        async def _set(key, value, **_kwargs):
+            store["credentials"] = dict(value["credentials"])
+            return True
+
+        cs.get_config = AsyncMock(side_effect=_get)
+        cs.set_config = AsyncMock(side_effect=_set)
+        return cs
+
+    @pytest.mark.asyncio
+    async def test_concurrent_refreshes_call_the_provider_once(self):
+        svc, _cs, _ = _make_service()
+        store = {"credentials": {"access_token": "at0", "refresh_token": "rt0"}}
+        svc.configuration_service = self._rotating_config_service(store)
+
+        calls = []
+
+        async def _refresh(used_token):
+            calls.append(used_token)
+            if used_token != store["credentials"]["refresh_token"]:
+                raise RefreshTokenInvalidError("refresh token is invalid")
+            await asyncio.sleep(0)  # force interleaving
+            token = MagicMock()
+            token.to_dict.return_value = {
+                "access_token": f"at{len(calls)}",
+                "refresh_token": f"rt{len(calls)}",
+                "expires_in": 3600,
+            }
+            return token
+
+        provider = AsyncMock()
+        provider.refresh_access_token = AsyncMock(side_effect=_refresh)
+        provider.close = AsyncMock()
+
+        with patch(
+            "app.connectors.core.base.token_service.token_refresh_service.get_oauth_config",
+            return_value=MagicMock(),
+        ), patch(
+            "app.connectors.core.base.token_service.oauth_service.OAuthProvider",
+            return_value=provider,
+        ):
+            results = await asyncio.gather(
+                *(svc.refresh_now("conn-1", "gitlab", "rt0") for _ in range(5)),
+                return_exceptions=True,
+            )
+
+        # One real refresh; the rest reuse the winner's token rather than
+        # presenting a token the provider has already rotated away.
+        assert len(calls) == 1, calls
+        assert not any(isinstance(r, Exception) for r in results), results
+        # Nothing was counted against the connector, so it stays authenticated.
+        assert svc._invalid_refresh_failures.get("conn-1", 0) == 0
+
+    @pytest.mark.asyncio
+    async def test_superseded_rejection_does_not_deactivate(self):
+        svc, cs, _ = _make_service()
+        cs.get_config = AsyncMock(
+            return_value={"credentials": {"refresh_token": "rotated"}}
+        )
+        svc._mark_connector_unauthenticated = AsyncMock()
+
+        # Three rejections for a token that has since been rotated: a lost race,
+        # not a dead credential.
+        for _ in range(MAX_REFRESH_TOKEN_INVALID_FAILURES):
+            await svc._handle_refresh_token_invalid(
+                "conn-1", RefreshTokenInvalidError("invalid"), "stale"
+            )
+
+        svc._mark_connector_unauthenticated.assert_not_awaited()
+        assert svc._invalid_refresh_failures.get("conn-1", 0) == 0
+
+    @pytest.mark.asyncio
+    async def test_genuinely_dead_token_still_deactivates(self):
+        svc, cs, _ = _make_service()
+        cs.get_config = AsyncMock(
+            return_value={"credentials": {"refresh_token": "current"}}
+        )
+        svc._mark_connector_unauthenticated = AsyncMock()
+
+        for _ in range(MAX_REFRESH_TOKEN_INVALID_FAILURES):
+            await svc._handle_refresh_token_invalid(
+                "conn-1", RefreshTokenInvalidError("invalid"), "current"
+            )
+
+        svc._mark_connector_unauthenticated.assert_awaited_once()

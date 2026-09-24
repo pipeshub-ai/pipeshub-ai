@@ -8,6 +8,7 @@ from typing import Any
 
 from app.agent_loop_lib.sandbox.coding.base import CodeRequest
 from app.agent_loop_lib.sandbox.manager import (
+    SandboxLimitExceeded,
     SandboxManager,
     SandboxType,
     UnknownSandboxError,
@@ -75,6 +76,21 @@ _TYPESCRIPT_SIGNALS: tuple[re.Pattern, ...] = (
 _LANGUAGE_MISMATCH_MIN_SIGNALS = 2
 
 
+def _reuse_id(sandbox_id: str | None) -> str | None:
+    """Blank means "no sandbox", not "a sandbox named blank".
+
+    `sandbox_id` is optional, but models routinely fill an optional string
+    parameter with `""` instead of omitting it. Passing that through makes
+    the manager look up an id that can never exist, so a first-ever
+    `run_code` fails with `UnknownSandboxError` and the guidance text tells
+    the model to do what it already did.
+    """
+    if sandbox_id is None:
+        return None
+    stripped = sandbox_id.strip()
+    return stripped or None
+
+
 def unknown_sandbox_guidance(error: Exception) -> str:
     """Turn a bare `UnknownSandboxError` into something the model can act on.
 
@@ -90,6 +106,20 @@ def unknown_sandbox_guidance(error: Exception) -> str:
         "valid. Do not retry with another id: start a fresh sandbox by calling "
         "run_code with no sandbox_id, and re-stage any file you need as an input "
         "artifact rather than reading it out of a previous sandbox."
+    )
+
+
+def sandbox_limit_guidance(error: Exception) -> str:
+    """Turn a capacity denial into a retryable instruction.
+
+    Capacity is transient — another request finishing frees a slot — so the
+    model should reuse a sandbox it already has, or wait, rather than
+    treating this as a permanent failure and abandoning the task.
+    """
+    return (
+        f"{error}. This is a temporary capacity limit, not a problem with your "
+        "code. Reuse an existing sandbox_id from earlier in this turn if you "
+        "have one, or retry this call shortly."
     )
 
 
@@ -405,6 +435,7 @@ class CodingSandboxTool(Tool):
         timeout: float | None = None,
         **kwargs: Any,
     ) -> ToolOutput:
+        sandbox_id = _reuse_id(sandbox_id)
         is_fresh_sandbox = sandbox_id is None
         _logger.info(
             "CodingSandboxTool.execute: language=%s packages=%s sandbox_id=%s "
@@ -417,6 +448,9 @@ class CodingSandboxTool(Tool):
         except UnknownSandboxError as e:
             _logger.error("CodingSandboxTool.execute: unknown sandbox %s: %s", sandbox_id, e)
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
+        except SandboxLimitExceeded as e:
+            _logger.warning("CodingSandboxTool.execute: capacity denied: %s", e)
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e))
 
         _logger.info(
             "CodingSandboxTool.execute: resolved sandbox_id=%s backend=%s "
@@ -537,11 +571,14 @@ class InstallPackagesTool(Tool):
         sandbox_id: str | None = None,
         **kwargs: Any,
     ) -> ToolOutput:
+        sandbox_id = _reuse_id(sandbox_id)
         is_fresh_sandbox = sandbox_id is None
         try:
             resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id)
         except UnknownSandboxError as e:
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
+        except SandboxLimitExceeded as e:
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e))
 
         # Same staged-input upload `run_code` does on a fresh sandbox —
         # a child that pre-warms its environment with install_packages
@@ -634,6 +671,8 @@ class ReadSandboxFileTool(Tool):
             backend = self._manager.get(SandboxType.CODING, sandbox_id)
         except UnknownSandboxError as e:
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
+        except SandboxLimitExceeded as e:
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e))
 
         try:
             content = await backend.download_file(path)

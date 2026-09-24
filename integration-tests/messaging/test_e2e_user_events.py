@@ -96,6 +96,7 @@ class UserClient:
         body: dict[str, Any] = {
             "fullName": full_name,
             "email": email,
+            "role": "member",
         }
         if designation:
             body["designation"] = designation

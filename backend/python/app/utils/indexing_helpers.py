@@ -2,10 +2,10 @@ import base64
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from jinja2 import Template
 from pydantic import BaseModel, Field
 
 from app.modules.parsers.excel.prompt_template import RowDescriptions
+from app.utils.jinja_templates import compiled_template
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
@@ -84,7 +84,7 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
             table_data_str = str(table_data)
 
         # Prepare prompt
-        template = Template(table_summary_prompt_template)
+        template = compiled_template(table_summary_prompt_template)
         rendered_form = template.render(table_data=table_data_str)
         messages = [
             {

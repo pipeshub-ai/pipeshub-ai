@@ -12,33 +12,49 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.middlewares.auth import authMiddleware
+from app.edition_config import (
+    authMiddleware,
+    connector_router,
+    ensure_org_context,
+    knowledge_hub_service_factory,
+    oauth_apps_router,
+    sharing_router,
+)
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
+from app.agents.mcp.registry import get_mcp_registry
 from app.agents.registry.toolset_registry import get_toolset_registry
 from app.api.routes.entity import router as entity_router
+from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.config.constants.service import config_node_constants
-from app.connectors.api.router import router
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.registry.connector_registry import (
-    ConnectorRegistry,
-)
-from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.sources.localKB.api.kb_router import kb_router
-from app.connectors.sources.localKB.api.knowledge_hub_router import knowledge_hub_router
-from app.containers.connector import (
-    ConnectorAppContainer,
-    initialize_container,
+from app.connectors.sources.localKB.api.knowledge_hub_router import (
+    get_knowledge_hub_service,
+    knowledge_hub_router,
+)
+from app.containers.connector import initialize_container
+from app.edition_containers import ConnectorAppContainer
+from app.edition_services import (
+    get_connector_registry_cls,
+    get_data_entities_processor_cls,
+    get_oauth_config_registry,
+    get_startup_extra_kwargs,
+    pre_sync_hook,
+    register_extra_connectors,
+    scope_org_resources,
 )
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
@@ -47,6 +63,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import SOMETHING_WENT_WRONG
 
 container = ConnectorAppContainer.init("connector_service")
 
@@ -116,8 +133,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
         logger.info("Found %d organizations in the system", len(orgs))
 
-        config_service = app_container.config_service()
-
         # Process each organization
         for org in orgs:
             org_id = org.get("_key") or org.get("id")
@@ -139,7 +154,9 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
             logger.info("Found %d users for organization %s", len(users), org_id)
 
-            config_service = app_container.config_service()
+            config_service, org_data_store = await scope_org_resources(
+                app_container, data_store, org_id
+            )
             # Use pre-resolved data_store passed from lifespan to avoid coroutine reuse
             # data_store_provider = data_store if data_store else await app_container.data_store()
 
@@ -155,25 +172,35 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                 scope = app.get("scope", "personal")
                 created_by = app.get("createdBy", "")
                 connector_name = app["type"].lower().replace(" ", "")
-                try:
-                    connector = await ConnectorFactory.create_and_start_sync(
-                        name=connector_name,
-                        logger=logger,
-                        data_store_provider=data_store,
-                        config_service=config_service,
-                        connector_id=connector_id,
-                        scope=scope,
-                        created_by=created_by,
-                        org_id=org_id,
-                        notification_service=app_container.connector_notification_service(),
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"❌ Failed to initialize {connector_name} ({connector_id}) for org {org_id}: {e}",
-                        exc_info=True,
-                    )
-                    return connector_name, connector_id, None
-                return connector_name, connector_id, connector
+                # Same lock the lazy-init paths use, and publish as soon as the
+                # instance exists rather than after the whole gather: startup can
+                # take seconds, and a request arriving in that window used to build
+                # a second instance with its own HTTP client and rate limiter.
+                async with connector_init_lock(connector_id):
+                    if app_container.connectors_map.get(connector_id) is not None:
+                        return connector_name, connector_id, None
+                    try:
+                        connector = await ConnectorFactory.create_and_start_sync(
+                            name=connector_name,
+                            logger=logger,
+                            data_store_provider=org_data_store,
+                            config_service=config_service,
+                            connector_id=connector_id,
+                            scope=scope,
+                            created_by=created_by,
+                            org_id=org_id,
+                            data_entities_processor_cls=get_data_entities_processor_cls(),
+                            notification_service=app_container.connector_notification_service(),
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"❌ Failed to initialize {connector_name} ({connector_id}) for org {org_id}: {e}",
+                            exc_info=True,
+                        )
+                        return connector_name, connector_id, None
+                    if connector:
+                        app_container.connectors_map[connector_id] = connector
+                    return connector_name, connector_id, connector
 
             results = await asyncio.gather(
                 *[_init_app(app) for app in enabled_apps],
@@ -181,8 +208,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             )
             for connector_name, connector_id, connector in results:
                 if connector:
-                    # Store using connector_id as the unique key (not connector_name to avoid conflicts with multiple instances)
-                    app_container.connectors_map[connector_id] = connector
+                    # _init_app already published it under the lock; this loop only reports.
                     logger.info(f"{connector_name} connector (id: {connector_id}) initialized for org %s", org_id)
 
             logger.info("✅ Sync services resumed for org %s", org_id)
@@ -193,14 +219,15 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         logger.error("❌ Detailed error traceback:\n%s", traceback.format_exc())
         return False
 
-async def initialize_connector_registry(app_container: ConnectorAppContainer) -> ConnectorRegistry:
+async def initialize_connector_registry(app_container: ConnectorAppContainer):
     """Initialize and sync connector registry with database"""
     logger = app_container.logger()
     logger.info("🔧 Initializing Connector Registry...")
 
     try:
-        registry = ConnectorRegistry(app_container)
+        registry = get_connector_registry_cls()(app_container)
 
+        register_extra_connectors()
         ConnectorFactory.initialize_beta_connector_registry()
         # Register connectors using generic factory
         available_connectors = ConnectorFactory.list_connectors()
@@ -369,6 +396,15 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.error(f"Error closing configuration service: {e}")
 
+        # Last, and the only place the shared pool is ever shut down — connector
+        # cleanup() only drains its own lease, since other connectors share this.
+        thread_pool = getattr(container, "connector_thread_pool", None)
+        if thread_pool is not None:
+            try:
+                thread_pool.shutdown(wait=False)
+            except Exception as e:
+                logger.warning(f"Error shutting down connector thread pool: {e}")
+
         logger.info("✅ All container resources shut down successfully")
 
     except Exception as e:
@@ -420,6 +456,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.kb_entities_processor = kb_entities_processor
     logger.info("✅ KB entities processor initialized")
 
+    # Sync completion and KB deletes happen here; both drop the query service's
+    # cached accessible-record maps.
+    try:
+        from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+        from app.services.cache.invalidation_hooks import (
+            init_accessible_records_invalidator,
+        )
+        accessible_records_cache = await AccessibleRecordsCache.create(
+            logger, app_container.config_service()
+        )
+        app.state.accessible_records_cache = accessible_records_cache
+        init_accessible_records_invalidator(logger, accessible_records_cache, graph_provider)
+    except Exception as e:
+        logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
+
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -429,9 +480,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
     )
 
+    # Every connector's blocking vendor-SDK calls run here, each through a capped
+    # lease. Created before _post_startup so resume_sync_services and the event
+    # service both find it already on the container.
+    app_container.connector_thread_pool = get_shared_connector_thread_pool()
+    logger.info(
+        "✅ Shared connector thread pool ready (max_workers=%d)",
+        app_container.connector_thread_pool.max_workers,
+    )
+
     # Start token refresh service at app startup (database-agnostic)
     try:
-        await startup_service.initialize(app_container.config_service(), graph_provider)
+        await startup_service.initialize(
+            app_container.config_service(),
+            graph_provider,
+            **get_startup_extra_kwargs(app_container),
+        )
         logger.info("✅ Startup services initialized successfully")
     except Exception as e:
         logger.warning(f"⚠️ Startup token refresh service failed to initialize: {e}")
@@ -447,6 +511,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     toolset_registry.auto_discover_toolsets()
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
+
+    # Initialize MCP server catalog registry (in-memory, mirrors the toolset registry)
+    logger.info("🔄 Initializing in-memory MCP server registry...")
+    mcp_registry = get_mcp_registry()
+    mcp_registry.auto_discover_templates()
+    app.state.mcp_registry = mcp_registry
+    logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
     # Initialize OAuth config registry (completely independent, no connector registry needed)
     # Note: OAuth registry is populated when connectors are registered above
@@ -473,6 +544,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # contract: connectors_map must be populated before the sync consumer
     # begins processing events.
     async def _post_startup() -> None:
+        try:
+            await pre_sync_hook(app_container, logger)
+        except Exception as e:
+            logger.error(f"❌ pre_sync_hook failed: {str(e)}", exc_info=True)
+
         try:
             await resume_sync_services(app_container, data_store)
         except Exception as e:
@@ -510,6 +586,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
+    try:
+        accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
+        if accessible_records_cache is not None:
+            await accessible_records_cache.close()
+            logger.info("✅ Accessible-records cache closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing accessible-records cache: {e}")
     # Shutdown all container resources
     try:
         await shutdown_container_resources(app_container)
@@ -518,12 +601,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 # Create FastAPI app with lifespan
+_app_dependencies = [Depends(get_initialized_container)]
+if ensure_org_context is not None:
+    _app_dependencies.append(Depends(ensure_org_context))
+
 app = FastAPI(
     title="Connectors Sync Service",
     description="Service for syncing content from connectors to GraphDB",
     version="1.0.0",
     lifespan=lifespan,
-    dependencies=[Depends(get_initialized_container)],
+    dependencies=_app_dependencies,
 )
 
 # List of paths to exclude from authentication (public endpoints)
@@ -601,7 +688,7 @@ app.add_middleware(RequestContextMiddleware)
 telemetry = setup_telemetry(app, service_name="connector_service")
 
 
-@router.get("/health")
+@app.get("/health")
 async def health_check() -> JSONResponse:
     """Basic health check endpoint"""
     try:
@@ -623,7 +710,7 @@ async def health_check() -> JSONResponse:
         )
 
 
-@router.get("/health/graph-db")
+@app.get("/health/graph-db")
 async def graph_db_health_check(request: Request) -> JSONResponse:
     """Probe the configured graph database using the same driver the app uses.
 
@@ -721,7 +808,7 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
     )
 
 
-@router.get("/health/vector-db")
+@app.get("/health/vector-db")
 async def vector_db_health_check(request: Request) -> JSONResponse:
     """Probe the configured vector database.
 
@@ -790,9 +877,16 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
 # Include routes - more specific routes first
 app.include_router(entity_router)
 app.include_router(toolsets_router)
+app.include_router(mcp_servers_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
-app.include_router(router)
+app.include_router(connector_router)
+if oauth_apps_router is not None:
+    app.include_router(oauth_apps_router)
+if sharing_router is not None:
+    app.include_router(sharing_router)
+if knowledge_hub_service_factory is not None:
+    app.dependency_overrides[get_knowledge_hub_service] = knowledge_hub_service_factory
 
 
 
@@ -803,12 +897,36 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     logger.error("Global error: %s", str(exc), exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"status": "error", "message": str(exc), "path": request.url.path},
+        content={
+            "status": "error",
+            "message": SOMETHING_WENT_WRONG,
+            "path": request.url.path,
+        },
     )
 
 
-def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True) -> None:
-    """Run the application"""
+def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, reload: bool = True) -> None:
+    """Run the application.
+
+    ``workers`` defaults to ``CONNECTOR_UVICORN_WORKERS`` (default ``1``,
+    matching docling/indexing/parsing's own env-var pattern). Raising this
+    above 1 gives the single-threaded event loop more headroom to serve
+    concurrent ``/stream/record`` requests during a large sync instead of
+    queuing behind it — but every uvicorn worker is a separate OS process,
+    and this service's cross-request dedup (``sync_task_manager`` /
+    ``reindex_task_manager`` in
+    ``app.connectors.core.sync.task_manager``) is an in-memory dict keyed
+    per process, not shared across workers. With >1 worker, a duplicate
+    sync/reindex request landing on a different worker than the in-flight
+    one will not be recognised as a duplicate and can run concurrently.
+    Only raise this if that is an acceptable tradeoff for your deployment,
+    or once that dedup is moved to a shared store (Redis lock/lease).
+    """
+    if workers is None:
+        try:
+            workers = max(1, int(os.getenv("CONNECTOR_UVICORN_WORKERS", "1")))
+        except ValueError:
+            workers = 1
     if reload and workers > 1:
         workers = 1
     uvicorn.run(

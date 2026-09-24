@@ -1,5 +1,4 @@
 <div align="center">
-<!-- dev note: README touch for branch test -->
 
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
@@ -45,26 +44,15 @@
 
 <h2 id="about-pipeshub">PipesHub - Explainable & Extensible</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> is the open-source Context Layer for Enterprise AI. Connect enterprise knowledge across your organization, preserve access permissions, generate trustworthy citations, and build AI agents, enterprise search, RAG applications, MCP servers, and agentic workflows on a single governed context layer.
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
 
-## Features
+Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
 
-- 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
-- 🔒 **Permission-Aware Search:** Enforces source-level access controls so users only see what they're authorized to.
-- 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
-- 🔌 **Enterprise Connectors:** 50+ connectors with real-time and scheduled indexing out of the box.
-- 🔍 **Unified Search, Deep Research, and Agents:** Search, Q&A, deep research, web search, and AI agents on one context layer.
-- 📊 **Artifacts and Code Execution:** Generate reports, charts, and dashboards in a safe execution sandbox.
-- 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
-- 🤖 **No-Code Agents and Actions:** Build agents visually and execute actions across enterprise tools.
-- 🧠 **Bring Your Own Model, Fully Self-Hostable:** Any LLM provider, deployed in your VPC — data never leaves your infrastructure.
-- 🛠️ **Developer-First and Extensible:** APIs, SDKs, MCP tools, custom connectors, and independently scalable services.
-
-## PipesHub Cloud
-
-Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
-
-👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
+> [!TIP]
+> Deploy with a single command:
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install | bash
+> ```
 
 ## PipesHub in Action
 
@@ -80,59 +68,38 @@ Prefer a fully managed PipesHub without running your own infrastructure? PipesHu
 ### Knowledge Search
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
 
+## Features
+
+**Answers you can trust**
+
+- 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
+- 🔒 **Permission-Aware Search:** Enforces source-level access controls so users only see what they're authorized to.
+- 🧠 **Bring Your Own Model, Fully Self-Hostable:** Any LLM provider, deployed in your VPC — data never leaves your infrastructure.
+
+**Connected to your systems**
+
+- 🔌 **Enterprise Connectors:** 50+ connectors with real-time and scheduled indexing out of the box.
+- 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
+- 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
+
+**What you can build**
+
+- 🔍 **Unified Search, Deep Research, and Agents:** Search, Q&A, deep research, web search, and AI agents on one context layer.
+- 🤖 **No-Code Agents and Actions:** Build agents visually and execute actions across enterprise tools.
+- 📊 **Artifacts and Code Execution:** Generate reports, charts, and dashboards in a safe execution sandbox.
+- 🛠️ **Developer-First and Extensible:** APIs, SDKs, MCP tools, custom connectors, and independently scalable services.
+
+## PipesHub Cloud
+
+Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
+
+👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
+
 ## Connectors
 
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## File Formats Supported
-
-| Format | Details |
-|--------|---------|
-| PDF | Including scanned PDFs |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Comma-separated values |
-| Markdown | .md files |
-| HTML | Web pages |
-| Text | Plain text files |
-| Google Docs, Sheets, Slides | Google Workspace formats |
-| Images | PNG, JPG, etc. |
-| Audio | Audio files (Coming Soon) |
-| Video | Video files (Coming Soon) |
-
-## Tech Stack
-
-### Frontend
-
-| Technology | Description |
-|-----------|-------------|
-| Next.js | App Router UI (client-rendered React) |
-| TypeScript | Strongly typed JavaScript superset |
-| Radix UI Themes | Accessible component primitives and styling |
-| Zod | Schema validation and parsing |
-| React Hook Form | Flexible form state management |
-
-### Backend
-
-| Category | Technologies |
-|----------|--------------|
-| GraphDB | Neo4j / ArangoDB |
-| VectorDB | Qdrant / OpenSearch / Redis |
-| Document Store | MongoDB |
-| Blob Storage | Local filesystem / S3 / Azure Blob |
-| Message Broker | Kafka / Redis Streams |
-| Cache | Redis |
-| KV Store | Redis / etcd |
-| Task Queue | Celery |
-| Web Framework | FastAPI |
-| LLM Interface | LangChain (multi-provider model access) |
-| Embeddings | sentence-transformers / fastembed |
-| Document Parsing | pdfplumber, selectolax, markdown-it, openpyxl, csv (default) — or Docling, opt-in via `PARSER_BACKEND` |
-| Document Conversion | LibreOffice, CairoSVG |
-| Data Analysis | pandas |
 
 ## 🚀 Deployment Guide
 
@@ -144,16 +111,23 @@ PipesHub can be run locally or deployed on any server using Docker Compose. The 
 
 ### ⚡ Quickstart (Recommended)
 
-Requires [Docker](https://docs.docker.com/get-docker/) with Compose v2.
+Requires [Docker](https://docs.docker.com/get-docker/) with Compose v2. One command:
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# 2. Run the interactive installer
-./install.sh
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
+
+This downloads the deployment files for the latest release into `./pipeshub` and
+launches the interactive installer. Open **http://localhost:3000** once it
+finishes.
+
+> **Prefer to read before running?** Download and inspect the script first:
+>
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install -o pipeshub-install.sh
+> less pipeshub-install.sh        # review it
+> bash pipeshub-install.sh
+> ```
 
 The installer will:
 - Check Docker, RAM, and disk prerequisites
@@ -161,9 +135,22 @@ The installer will:
 - Let you optionally customise the graph DB, message broker, and KV store
 - Generate randomised secrets and write a `.env` file
 - Pull images and start the stack
-- Wait for PipesHub to pass its health check and print the URL
+- Wait for PipesHub to become healthy, verify it is reachable, and print the URL
 
-Open **http://localhost:3000** once the installer completes.
+### 🛠️ From a cloned repository (developers)
+
+To build from source, contribute, or pin the installer to your checkout:
+
+```bash
+git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+cd pipeshub-ai
+
+# Same installer, run from the repo root
+./install.sh
+```
+
+Building local images from source requires this cloned-repo path (`./install.sh --build`);
+the one-command installer above always uses prebuilt images.
 
 #### Installer options
 
@@ -176,13 +163,44 @@ Open **http://localhost:3000** once the installer completes.
 
 > **Advanced options:** CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
-## MCP Server
+## Build with PipesHub
+
+The built-in search experience is one way to use PipesHub. The same connected,
+permission-filtered context is available to your own agents and applications —
+over MCP for any compatible client, or through the SDKs when you are calling it
+from your own code.
+
+An agent connects as a specific person rather than as the application, so it
+retrieves exactly what that person is allowed to see. Access is resolved when
+the query runs, against the source system's own permissions, instead of being
+approximated at build time.
+
+### MCP Server
 
 Use PipesHub with any MCP-compatible client to bring your enterprise context into AI workflows. Check the README for setup and usage.
 
 **Repository:** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
 
-## SDKs
+#### Connecting an Omnigent agent
+
+First, mint a long-lived credential: **workspace → Developer settings →
+Personal Access Tokens → New token**. Pick an expiry (30/90/365 days, or
+never) — this runs as *you*, so results respect your own per-user
+permissions, unlike an OAuth app's client-credentials flow.
+
+Three ways to connect, from least to most setup:
+
+1. **Attach in the Omnigent web UI (fastest, no clone).** Open a session's
+   info panel → Manage MCP Servers → add PipesHub's URL and an
+   `Authorization: Bearer <token>` header → restart the session.
+2. **Run the packaged example agent.** A ready-made agent bundle (tuned
+   prompt + instructions) ships with Omnigent:
+   `PIPESHUB_MCP_URL=... PIPESHUB_MCP_TOKEN=... omnigent run examples/pipeshub/`.
+3. **Use the connect kit** in [`integrations/omnigent/`](integrations/omnigent/)
+   (`setup.sh` / `run.sh`) for CI, service accounts, or password/OAuth
+   client-credentials auth instead of a personal token.
+
+### SDKs
 
 PipesHub provides developer SDKs for Python, TypeScript, and Go to help you integrate quickly. Check the respective SDK repository README for setup and usage details.
 
@@ -202,7 +220,7 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 <li>✅ 🤖 <strong>Workplace AI agents</strong>: first-class no-code agent builder</li>
 <li>✅ 🔗 <strong>MCP (Model Context Protocol)</strong> support, both server and client</li>
 <li>✅ 🧰 <strong>Developers SDKs</strong></li>
-<li>✅ 🔍 <strong>Code search</strong> across GitHub, GitLab, and Bitbucket</li>
+<li>✅ 🔍 <strong>Code search</strong> across GitHub and GitLab</li>
 <li>⬜ 👤 <strong>Personalized search</strong> based on team, role, and history</li>
 <li>✅ ☸️ <strong>Production Kubernetes</strong> deployment with HA defaults</li>
 <li>⬜ 📈 <strong>PageRank-augmented relevance</strong> across the knowledge graph</li>
@@ -222,6 +240,7 @@ Want to join our community of developers? Please check out our [Contributing Gui
 <tr><td>Report a bug or request a feature</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
 <tr><td>Report a security issue</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">Report Security Issue</a></td></tr>
 <tr><td>Read the docs</td><td><a href="https://docs.pipeshub.com/">Pipeshub Docs</a></td></tr>
+<tr><td>See what changed in each release</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CHANGELOG.md">Changelog</a></td></tr>
 </tbody>
 </table>
 
@@ -229,7 +248,9 @@ Want to join our community of developers? Please check out our [Contributing Gui
 
 ### What is PipesHub?
 
-PipesHub is an open-source, self-hosted AI-native execution layer that connects enterprise knowledge, delivers explainable search with citations, and automates workflows across your systems. It provides a unified context layer for search, Q&A, deep research, web search, and AI agents.
+PipesHub is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
+
+It connects systems such as Slack, Google Drive, GitHub, Microsoft 365 and Notion, then makes what they hold available in two ways: permission-aware search with citations for your team, and trusted context for your AI agents through APIs, SDKs and MCP. Agents get the same governed view of your company's knowledge that a person would, with the same access controls applied, so they can answer from real company data instead of guessing across tools. You can use the built-in search experience, or build your own agents, workflows and applications on top of it.
 
 ### How is PipesHub different from other workplace AI tools?
 
@@ -237,25 +258,37 @@ PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never
 
 ### What connectors does PipesHub support?
 
-PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
+PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. See the [connectors overview](https://docs.pipeshub.com/connectors/overview).
+
+### What file formats can PipesHub index?
+
+PDF (including scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, plain text, and images. Audio and video can be stored but are not indexed yet. Storage accepts a wider set of MIME types — see [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### How do I deploy PipesHub?
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables (refer to env.template)
-# Start production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-Note: Use HTTPS for cloud deployments. HTTP may cause frontend security blocks.
+This writes Compose files into `./pipeshub` and starts the interactive installer. Open **http://localhost:3000** when it finishes. Use HTTPS for cloud deployments — HTTP may cause frontend security blocks.
+
+Developers building from source should clone the repository and run `./install.sh` (or `./install.sh --build`) from the repo root. See the [Deployment Guide](#-deployment-guide).
 
 ### What LLM providers does PipesHub support?
 
-PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain for LLM pipelines and workflows.
+PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models.
+
+### What is the tech stack?
+
+PipesHub has three parts:
+
+- **Web app** (Next.js) — search, chat, and admin in the browser.
+- **API** (Node.js) — accounts, permissions, knowledge bases, and files.
+- **Python services** — connectors sync your sources; indexing parses documents; query answers with citations.
+
+Those services call **AI models you bring**. An **embedding model** turns parsed text into vectors for search. An **LLM** writes the cited answer. Use any provider or a local model (Ollama); a local embedding server is the default.
+
+Data sits in a knowledge graph (Neo4j by default, or ArangoDB), a vector store (Qdrant), and MongoDB. Redis is the cache. Files live on disk or object storage. Services hand work to each other over Redis on a local machine, or Kafka in a larger deployment. See the [system overview](https://docs.pipeshub.com/system-overview).
 
 ### What is the Knowledge Graph Retrieval feature?
 

@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperatorType,
@@ -17,6 +19,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
+    PLACEHOLDER_REVISION_PREFIX,
     LinearConnector,
 )
 from app.models.blocks import (
@@ -66,6 +69,9 @@ def _make_connector():
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
+    data_entities_processor.get_placeholder_records = AsyncMock(return_value=[])
+    data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
     data_store_provider = MagicMock()
     mock_tx_store = AsyncMock()
     mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
@@ -894,13 +900,22 @@ class TestLinearRunSync:
                 c.data_entities_processor.get_all_active_users = AsyncMock(
                     return_value=[MagicMock(email="alice@test.com")]
                 )
-                with patch.object(c, "_sync_issues_for_teams", new_callable=AsyncMock):
+                with patch.object(
+                    c, "_sync_issues_for_teams", new_callable=AsyncMock,
+                    return_value=(set(), [])
+                ):
                     with patch.object(c, "_sync_attachments", new_callable=AsyncMock):
                         with patch.object(c, "_sync_documents", new_callable=AsyncMock):
                             with patch.object(c, "_sync_projects_for_teams", new_callable=AsyncMock):
                                 with patch.object(c, "_sync_deleted_issues", new_callable=AsyncMock):
                                     with patch.object(c, "_sync_deleted_projects", new_callable=AsyncMock):
-                                        await c.run_sync()
+                                        with patch.object(
+                                            c,
+                                            "_sweep_placeholder_records",
+                                            new_callable=AsyncMock,
+                                            return_value=0,
+                                        ):
+                                            await c.run_sync()
 
         c.data_entities_processor.on_new_app_users.assert_called_once()
 
@@ -966,14 +981,14 @@ class TestLinearSyncAttachments:
         att = _make_attachment_data()
         mock_ds.attachments = AsyncMock(return_value=_mock_attachments_response([att], has_next=False))
 
-        # Set up tx_store to return parent record
         parent_record = MagicMock()
         parent_record.id = "parent-node-id"
 
         with patch.object(c, "_get_attachments_sync_checkpoint", new_callable=AsyncMock, return_value=None):
             with patch.object(c, "_update_attachments_sync_checkpoint", new_callable=AsyncMock):
                 with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-                    c._tx_store.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+                    c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+                    c.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
                     await c._sync_attachments([(team_rg, perms)])
 
     @pytest.mark.asyncio
@@ -999,7 +1014,7 @@ class TestLinearSyncDocuments:
         with patch.object(c, "_get_documents_sync_checkpoint", new_callable=AsyncMock, return_value=None):
             with patch.object(c, "_update_documents_sync_checkpoint", new_callable=AsyncMock):
                 with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-                    c._tx_store.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
+                    c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=[parent_record, None])
                     await c._sync_documents([(team_rg, perms)])
 
     @pytest.mark.asyncio
@@ -1298,8 +1313,8 @@ class TestLinearInitOrgData:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             with patch("app.connectors.sources.linear.connector.LinearDataSource") as MockDS:
                 MockDS.return_value = mock_ds
-                result = await c.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await c.init()
 
     @pytest.mark.asyncio
     async def test_init_none_org_data(self):
@@ -1315,8 +1330,8 @@ class TestLinearInitOrgData:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             with patch("app.connectors.sources.linear.connector.LinearDataSource") as MockDS:
                 MockDS.return_value = mock_ds
-                result = await c.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await c.init()
 
 
 # ===================================================================
@@ -1455,8 +1470,9 @@ class TestLinearStreamRecord:
         record.record_type = RecordType.LINK
         record.weburl = None
         record.external_record_id = "att-1"
-        with pytest.raises(ValueError, match="missing weburl"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_webpage_record(self):
@@ -1477,8 +1493,9 @@ class TestLinearStreamRecord:
         record = MagicMock()
         record.record_type = "UNKNOWN"
         record.external_record_id = "x"
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 400
 
 
 # ===================================================================
@@ -1721,7 +1738,7 @@ class TestLinearCheckAndFetchUpdated:
         parent_record.record_type = RecordType.TICKET
         parent_record.id = "parent-id"
 
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=parent_record)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
 
         with patch.object(c, "_check_and_fetch_updated_issue_link", new_callable=AsyncMock, return_value=None):
             result = await c._check_and_fetch_updated_record(record)
@@ -1738,7 +1755,7 @@ class TestLinearExtractFilesFromMarkdown:
     async def test_empty_markdown(self):
         c = _make_connector()
         new_files, existing = await c._extract_files_from_markdown(
-            "", "parent-1", "node-1", RecordType.TICKET, "team-1", c._tx_store
+            "", "parent-1", "node-1", RecordType.TICKET, "team-1"
         )
         assert len(new_files) == 0
         assert len(existing) == 0
@@ -1750,11 +1767,11 @@ class TestLinearExtractFilesFromMarkdown:
         existing_record.record_type = RecordType.FILE
         existing_record.id = "existing-file-id"
         existing_record.record_name = "doc.pdf"
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=existing_record)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         md = "[doc](https://uploads.linear.app/test/doc.pdf)"
         new_files, existing = await c._extract_files_from_markdown(
-            md, "parent-1", "node-1", RecordType.TICKET, "team-1", c._tx_store
+            md, "parent-1", "node-1", RecordType.TICKET, "team-1"
         )
         assert len(new_files) == 0
         assert len(existing) == 1
@@ -1773,10 +1790,10 @@ class TestLinearProcessIssueAttachments:
         existing = MagicMock()
         existing.id = "existing-att-id"
         existing.record_name = "att"
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         att_data = [_make_attachment_data()]
-        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1")
         assert len(result) == 1
         assert result[0].child_id == "existing-att-id"
 
@@ -1784,17 +1801,17 @@ class TestLinearProcessIssueAttachments:
     async def test_new_attachment(self):
         c = _make_connector()
         c.indexing_filters = None
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         att_data = [_make_attachment_data()]
-        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1")
         c.data_entities_processor.on_new_records.assert_called()
 
     @pytest.mark.asyncio
     async def test_empty_attachment_id(self):
         c = _make_connector()
         att_data = [{"id": "", "url": "http://x"}]
-        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_attachments(att_data, "issue-1", "node-1", "team-1")
         assert len(result) == 0
 
 
@@ -1806,10 +1823,10 @@ class TestLinearProcessIssueDocuments:
         existing = MagicMock()
         existing.id = "existing-doc-id"
         existing.record_name = "doc"
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         doc_data = [_make_document_data()]
-        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1")
         assert len(result) == 1
         assert result[0].child_id == "existing-doc-id"
 
@@ -1817,17 +1834,17 @@ class TestLinearProcessIssueDocuments:
     async def test_new_document(self):
         c = _make_connector()
         c.indexing_filters = None
-        c._tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         doc_data = [_make_document_data()]
-        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1")
         c.data_entities_processor.on_new_records.assert_called()
 
     @pytest.mark.asyncio
     async def test_empty_document_id(self):
         c = _make_connector()
         doc_data = [{"id": "", "url": "http://x"}]
-        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1", c._tx_store)
+        result = await c._process_issue_documents(doc_data, "issue-1", "node-1", "team-1")
         assert len(result) == 0
 
 
@@ -1862,7 +1879,7 @@ class TestLinearFetchDocumentContent:
         mock_ds.document = AsyncMock(return_value=resp)
 
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            with pytest.raises(Exception, match="Failed to fetch document"):
+            with pytest.raises(RuntimeError, match="Not found"):
                 await c._fetch_document_content("doc-1")
 
     @pytest.mark.asyncio
@@ -1895,7 +1912,7 @@ class TestLinearPrepareProjectRelatedRecords:
         with patch.object(c, "_process_project_external_links", new_callable=AsyncMock, return_value=([(MagicMock(), [])], [])):
             with patch.object(c, "_process_project_documents", new_callable=AsyncMock, return_value=([(MagicMock(), [])], [])):
                 result = await c._prepare_project_related_records(
-                    project_data, "proj-1", MagicMock(), "team-1", c._tx_store
+                    project_data, "proj-1", MagicMock(), "team-1"
                 )
         assert len(result) == 2
 
@@ -1904,7 +1921,7 @@ class TestLinearPrepareProjectRelatedRecords:
         c = _make_connector()
         project_data = _make_project_data()
         result = await c._prepare_project_related_records(
-            project_data, "proj-1", None, "team-1", c._tx_store
+            project_data, "proj-1", None, "team-1"
         )
         assert len(result) == 0
 
@@ -1993,22 +2010,298 @@ class TestLinearParseIssueToBlocks:
 
 
 # ===================================================================
+# Placeholder ancestor sweep
+# ===================================================================
+
+def _placeholder_ticket(
+    external_id: str = "parent-1",
+    group_id: str = "team-1",
+    revision: str | None = None,
+) -> TicketRecord:
+    return TicketRecord(
+        id=str(uuid4()),
+        org_id="org-1",
+        record_name=external_id,
+        record_type=RecordType.TICKET,
+        external_record_id=external_id,
+        external_revision_id=revision,
+        external_record_group_id=group_id,
+        record_group_type=RecordGroupType.PROJECT,
+        version=0,
+        origin=OriginTypes.CONNECTOR,
+        connector_name=Connectors.LINEAR,
+        connector_id="linear-conn-1",
+        mime_type=MimeTypes.UNKNOWN.value,
+        is_placeholder=True,
+    )
+
+
+class TestLinearPlaceholderSweep:
+    @pytest.mark.asyncio
+    async def test_sweep_backfills_parent_stub(self):
+        c = _make_connector()
+        stub = _placeholder_ticket()
+        c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        issue = _make_issue_data(
+            issue_id="parent-1",
+            identifier="ENG-10",
+            title="Parent issue",
+        )
+        issue["team"] = {"id": "team-1", "key": "ENG", "name": "Eng"}
+        # Relations must not become related_external_records on the stub.
+        issue["relations"] = {
+            "nodes": [{
+                "type": "blocks",
+                "relatedIssue": {"id": "related-99", "identifier": "ENG-99"},
+            }]
+        }
+        resp = MagicMock()
+        resp.success = True
+        resp.data = {"issues": {"nodes": [issue]}}
+        ds = MagicMock()
+        ds.issues = AsyncMock(return_value=resp)
+
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            total = await c._sweep_placeholder_records(
+                synced_team_ids={"team-1"},
+                full_sync_team_ids=set(),
+            )
+
+        assert total == 1
+        c.data_entities_processor.on_new_records.assert_awaited()
+        record, perms = c.data_entities_processor.on_new_records.await_args.args[0][0]
+        assert record.is_placeholder is True
+        assert "[ENG-10]" in (record.record_name or "")
+        assert record.weburl
+        assert record.external_revision_id.startswith(PLACEHOLDER_REVISION_PREFIX)
+        assert not record.related_external_records
+        assert perms == []
+
+    @pytest.mark.asyncio
+    async def test_sweep_skips_already_backfilled_unless_full_sync(self):
+        c = _make_connector()
+        stub = _placeholder_ticket(revision=f"{PLACEHOLDER_REVISION_PREFIX}123")
+        c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+
+        total = await c._sweep_placeholder_records(
+            synced_team_ids={"team-1"},
+            full_sync_team_ids=set(),
+        )
+        assert total == 0
+        c.data_entities_processor.on_new_records.assert_not_awaited()
+
+        with patch.object(c, "_fetch_ancestor_level", new_callable=AsyncMock, return_value=[None]):
+            total = await c._sweep_placeholder_records(
+                synced_team_ids={"team-1"},
+                full_sync_team_ids={"team-1"},
+            )
+        assert total == 0
+        c.data_entities_processor.on_new_records.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sweep_skips_stubs_outside_synced_teams(self):
+        c = _make_connector()
+        stub = _placeholder_ticket(group_id="other-team")
+        c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+
+        total = await c._sweep_placeholder_records(
+            synced_team_ids={"team-1"},
+            full_sync_team_ids=set(),
+        )
+        assert total == 0
+        c.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sweep_bfs_continues_to_grandparent(self):
+        c = _make_connector()
+        parent_stub = _placeholder_ticket(external_id="parent-1")
+        grand_stub = _placeholder_ticket(external_id="grand-1")
+
+        c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[parent_stub])
+
+        parent_issue = _make_issue_data(issue_id="parent-1", identifier="ENG-10", title="Parent")
+        parent_issue["parent"] = {"id": "grand-1", "identifier": "ENG-1"}
+        parent_issue["team"] = {"id": "team-1"}
+        grand_issue = _make_issue_data(issue_id="grand-1", identifier="ENG-1", title="Grandparent")
+        grand_issue["team"] = {"id": "team-1"}
+
+        async def get_by_ext(*, connector_id, external_record_id):
+            if external_record_id == "grand-1":
+                return grand_stub
+            return None
+
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=get_by_ext)
+
+        async def fetch_level(frontier):
+            out = []
+            for stub in frontier:
+                if stub.external_record_id == "parent-1":
+                    out.append(parent_issue)
+                elif stub.external_record_id == "grand-1":
+                    out.append(grand_issue)
+                else:
+                    out.append(None)
+            return out
+
+        with patch.object(c, "_fetch_ancestor_level", side_effect=fetch_level):
+            total = await c._sweep_placeholder_records(
+                synced_team_ids={"team-1"},
+                full_sync_team_ids=set(),
+            )
+
+        assert total == 2
+        assert c.data_entities_processor.on_new_records.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_ancestor_level_falls_back_to_get(self):
+        c = _make_connector()
+        stub = _placeholder_ticket()
+        bad = MagicMock()
+        bad.success = False
+        bad.message = "filter rejected"
+        issue = _make_issue_data(issue_id="parent-1", identifier="ENG-10", title="Parent")
+        ok = MagicMock()
+        ok.success = True
+        ok.data = {"issue": issue}
+        ds = MagicMock()
+        ds.issues = AsyncMock(return_value=bad)
+        ds.issue = AsyncMock(return_value=ok)
+
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            out = await c._fetch_ancestor_level([stub])
+
+        assert out[0] is not None and out[0]["id"] == "parent-1"
+        ds.issue.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fetch_ancestor_level_gets_partial_batch_misses(self):
+        c = _make_connector()
+        stub_a = _placeholder_ticket(external_id="a")
+        stub_b = _placeholder_ticket(external_id="b")
+        issue_a = _make_issue_data(issue_id="a", identifier="ENG-1", title="A")
+        issue_b = _make_issue_data(issue_id="b", identifier="ENG-2", title="B")
+
+        batch_ok = MagicMock()
+        batch_ok.success = True
+        batch_ok.data = {"issues": {"nodes": [issue_a]}}  # b omitted
+        get_ok = MagicMock()
+        get_ok.success = True
+        get_ok.data = {"issue": issue_b}
+        ds = MagicMock()
+        ds.issues = AsyncMock(return_value=batch_ok)
+        ds.issue = AsyncMock(return_value=get_ok)
+
+        with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            out = await c._fetch_ancestor_level([stub_a, stub_b])
+
+        assert out[0]["id"] == "a"
+        assert out[1]["id"] == "b"
+        ds.issue.assert_awaited_once_with(id="b")
+
+    def test_build_ancestor_stub_soft_fails_without_team(self):
+        c = _make_connector()
+        stub = _placeholder_ticket()
+        stub.external_record_group_id = None
+        issue = _make_issue_data(issue_id="parent-1", identifier="ENG-10", title="Parent")
+        issue.pop("team", None)
+
+        assert c._build_ancestor_stub(issue, stub) is None
+
+    @pytest.mark.asyncio
+    async def test_sweep_soft_fails_rebuild_keeps_stub(self):
+        c = _make_connector()
+        stub = _placeholder_ticket()
+        c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        issue = _make_issue_data(issue_id="parent-1", identifier="ENG-10", title="Parent")
+
+        with patch.object(c, "_fetch_ancestor_level", new_callable=AsyncMock, return_value=[issue]):
+            with patch.object(c, "_build_ancestor_stub", return_value=None):
+                total = await c._sweep_placeholder_records(
+                    synced_team_ids={"team-1"},
+                    full_sync_team_ids=set(),
+                )
+
+        assert total == 0
+        record, _ = c.data_entities_processor.on_new_records.await_args.args[0][0]
+        assert record is stub
+        assert record.is_placeholder is True
+
+    @pytest.mark.asyncio
+    async def test_stream_record_rejects_placeholder(self):
+        c = _make_connector()
+        c.data_source = MagicMock()
+        stub = _placeholder_ticket()
+        with pytest.raises(HTTPException) as exc_info:
+            await c.stream_record(stub)
+        assert exc_info.value.status_code == 422
+        assert "placeholder" in str(exc_info.value.detail).lower()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_calls_placeholder_sweep(self):
+        c = _make_connector()
+        c.data_source = MagicMock()
+        team_rg, _ = _make_team_record_group()
+        c.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[MagicMock(email="a@t.com")]
+        )
+        c._fetch_users = AsyncMock(return_value=[])
+        c._fetch_teams = AsyncMock(return_value=([], [(team_rg, [])]))
+        c._sync_issues_for_teams = AsyncMock(return_value=({"team-1"}, []))
+        c._sync_attachments = AsyncMock()
+        c._sync_documents = AsyncMock()
+        c._sync_projects_for_teams = AsyncMock()
+        c._sync_deleted_issues = AsyncMock()
+        c._sync_deleted_projects = AsyncMock()
+        c._sweep_placeholder_records = AsyncMock(return_value=2)
+
+        with patch(
+            "app.connectors.sources.linear.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(FilterCollection(), FilterCollection()),
+        ):
+            await c.run_sync()
+
+        c._sweep_placeholder_records.assert_awaited_once_with(
+            synced_team_ids={"team-1"},
+            full_sync_team_ids={"team-1"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_issues_returns_full_sync_team_ids(self):
+        c = _make_connector()
+        team_rg, perms = _make_team_record_group()
+
+        async def fake_fetch(*args, **kwargs):
+            if False:
+                yield []
+
+        with patch.object(c, "_get_team_sync_checkpoint", new_callable=AsyncMock, return_value=None):
+            with patch.object(c, "_fetch_issues_for_team_batch", side_effect=fake_fetch):
+                result = await c._sync_issues_for_teams([(team_rg, perms)])
+        full_sync_team_ids, failed_team_keys = result
+        assert full_sync_team_ids == {"team-1"}
+        assert failed_team_keys == []
+
+
+# ===================================================================
 # Create connector factory
 # ===================================================================
 
 class TestLinearCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.linear.connector.DataSourceEntitiesProcessor") as MockDSEP:
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockDSEP.return_value = mock_dep
-            connector = await LinearConnector.create_connector(
-                logger=MagicMock(),
-                data_store_provider=MagicMock(),
-                config_service=AsyncMock(),
-                connector_id="test-conn",
-                scope="personal",
-                created_by="test-user-id",
-            )
-            assert isinstance(connector, LinearConnector)
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        connector = await LinearConnector.create_connector(
+            logger=MagicMock(),
+            data_store_provider=MagicMock(),
+            config_service=AsyncMock(),
+            connector_id="test-conn",
+            scope="personal",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, LinearConnector)

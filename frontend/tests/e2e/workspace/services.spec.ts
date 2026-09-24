@@ -21,7 +21,7 @@ test.describe('Workspace Services', () => {
     await expect(sectionHeading).toBeVisible({ timeout: 5_000 });
   });
 
-  test('shows core infrastructure service rows', async ({ page }) => {
+  test('shows core infrastructure service rows @smoke', async ({ page }) => {
     await expect(page.locator('text=Redis').first()).toBeVisible({ timeout: 5_000 });
     await expect(page.locator('text=MongoDB').first()).toBeVisible({ timeout: 5_000 });
     // These show resolved names from the API (e.g. "Kafka" or "Redis Streams" instead of "Message Broker")
@@ -85,5 +85,15 @@ test.describe('Workspace Services', () => {
     const count = await redisRows.count();
     // Should be 1 (combined) or 2 (separate Redis + etcd) but never 2 Redis rows
     expect(count).toBeLessThanOrEqual(2);
+  });
+
+  test('redis row label reflects the configured redis mode', async ({ page }) => {
+    // deployment.redisMode from /api/v1/health (health.routes.ts) is
+    // 'standalone' by default; the row appends '(Cluster)' / '(MemoryDB)'
+    // only when the backend reports one of those modes.
+    const redisRow = page
+      .locator('text=/^Redis( \\((Cluster|MemoryDB)\\))?$/')
+      .first();
+    await expect(redisRow).toBeVisible({ timeout: 5_000 });
   });
 });

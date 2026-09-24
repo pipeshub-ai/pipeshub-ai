@@ -242,6 +242,10 @@ describe('TokenManagerContainer - coverage', () => {
         expect(container.isBound('Logger')).to.be.true
         expect(container.isBound('AppConfig')).to.be.true
         expect(container.isBound('ConfigurationManagerConfig')).to.be.true
+        expect(container.isBound('RedisService')).to.be.true
+        // Phase 5 (R11): the shared connection provider is bound alongside
+        // RedisService, not constructed a second time.
+        expect(container.isBound('RedisConnectionProvider')).to.be.true
 
         ;(TokenManagerContainer as any).instance = null
       } catch (error: any) {

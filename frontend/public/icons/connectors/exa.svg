@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <title>Exa</title>
+  <rect width="256" height="256" rx="48" fill="#1A1A1A"/>
+  <path d="M64 72 H176 V96 H88 V116 H164 V140 H88 V160 H176 V184 H64 Z" fill="#FFFFFF"/>
+  <circle cx="192" cy="72" r="10" fill="#FFFFFF"/>
+</svg>

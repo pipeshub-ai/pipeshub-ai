@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
@@ -51,6 +52,7 @@ from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
     OneDriveCredentials,
     OneDriveSubscriptionManager,
+    OneDriveUserStatus,
 )
 from app.models.entities import (
     AppUser,
@@ -268,8 +270,8 @@ class TestProcessDeltaItemCoverage:
         existing_file_record = MagicMock()
         existing_file_record.quick_xor_hash = "hash123"  # same hash
 
-        mock_tx, _ = _make_tx_store(existing, existing_file_record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing_file_record)
 
         item = _make_drive_item(name="new-name.pdf", e_tag="etag-new")
 
@@ -291,8 +293,8 @@ class TestProcessDeltaItemCoverage:
         existing_file_record = MagicMock()
         existing_file_record.quick_xor_hash = "old-hash"  # different from item
 
-        mock_tx, _ = _make_tx_store(existing, existing_file_record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing_file_record)
 
         now = datetime.now(timezone.utc)
         existing.updated_at = int(now.timestamp() * 1000)
@@ -334,8 +336,8 @@ class TestProcessDeltaItemCoverage:
         existing_file_record = MagicMock()
         existing_file_record.quick_xor_hash = "hash123"
 
-        mock_tx, _ = _make_tx_store(existing, existing_file_record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing_file_record)
 
         item = _make_drive_item(created=now, modified=now)
 
@@ -357,8 +359,8 @@ class TestProcessDeltaItemCoverage:
         existing.record_name = "MyFolder"
         existing.is_shared = False  # was not shared
 
-        mock_tx, _ = _make_tx_store(existing, None)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
         # Shared folder item
         item = _make_drive_item(name="MyFolder", is_folder=True, is_shared=True, created=now, modified=now)
@@ -396,8 +398,8 @@ class TestProcessDeltaItemCoverage:
         connector.msgraph_client.get_signed_url = AsyncMock(return_value="https://url")
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
-        mock_tx, _ = _make_tx_store(None)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
 
         item = _make_drive_item(name="shared.pdf", is_shared=True)
 
@@ -838,8 +840,7 @@ class TestUpdateFolderChildrenPermissions:
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
         existing_record = MagicMock()
-        mock_tx, _ = _make_tx_store(existing_record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         await connector._update_folder_children_permissions("drive-1", "folder-1")
 
@@ -856,8 +857,7 @@ class TestUpdateFolderChildrenPermissions:
         connector.msgraph_client.list_folder_children = AsyncMock(return_value=[child])
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
 
-        mock_tx, _ = _make_tx_store(None)  # no record found
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         # Should not raise
         await connector._update_folder_children_permissions("drive-1", "folder-1")
@@ -889,8 +889,7 @@ class TestUpdateFolderChildrenPermissions:
         connector.msgraph_client.get_file_permission = AsyncMock(side_effect=[Exception("err"), []])
 
         existing_record = MagicMock()
-        mock_tx, _ = _make_tx_store(existing_record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing_record)
 
         await connector._update_folder_children_permissions("drive-1", "folder-1")
         # Second child should still be processed
@@ -925,8 +924,7 @@ class TestHandleRecordUpdatesCoverage:
     async def test_deletion_no_record_in_db(self):
         """Deletion when record not in DB."""
         connector = _make_connector()
-        mock_tx, _ = _make_tx_store(None)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         update = RecordUpdate(
             record=None, external_record_id="missing",
@@ -1657,7 +1655,7 @@ class TestUserHasOneDriveCoverage:
         connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
 
         result = await connector._user_has_onedrive("user-1")
-        assert result is False
+        assert result is OneDriveUserStatus.NOT_PROVISIONED
 
     @pytest.mark.asyncio
     async def test_404_response_status(self):
@@ -1669,7 +1667,7 @@ class TestUserHasOneDriveCoverage:
         connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
 
         result = await connector._user_has_onedrive("user-1")
-        assert result is False
+        assert result is OneDriveUserStatus.NOT_PROVISIONED
 
     @pytest.mark.asyncio
     async def test_unknown_error_raises(self):
@@ -1691,7 +1689,7 @@ class TestUserHasOneDriveCoverage:
         connector.msgraph_client.get_user_drive = AsyncMock(side_effect=error)
 
         result = await connector._user_has_onedrive("user-1")
-        assert result is False
+        assert result is OneDriveUserStatus.NOT_PROVISIONED
 
 
 # ===========================================================================
@@ -1704,8 +1702,7 @@ class TestHandleReindexEvent:
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         connector = _make_connector()
-        mock_tx, _ = _make_tx_store(None)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         await connector._handle_reindex_event("missing-id")
 
@@ -1713,8 +1710,7 @@ class TestHandleReindexEvent:
     async def test_record_found_and_updated(self):
         connector = _make_connector()
         record = _make_existing_record()
-        mock_tx, _ = _make_tx_store(record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=record)
 
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.rate_limiter = MagicMock()
@@ -1744,8 +1740,7 @@ class TestHandleReindexEvent:
     async def test_item_not_found_at_source(self):
         connector = _make_connector()
         record = _make_existing_record()
-        mock_tx, _ = _make_tx_store(record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=record)
 
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.rate_limiter = MagicMock()
@@ -1764,8 +1759,7 @@ class TestHandleReindexEvent:
     async def test_process_delta_item_returns_none(self):
         connector = _make_connector()
         record = _make_existing_record()
-        mock_tx, _ = _make_tx_store(record)
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=record)
 
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.rate_limiter = MagicMock()
@@ -1785,9 +1779,7 @@ class TestHandleReindexEvent:
     @pytest.mark.asyncio
     async def test_error_caught(self):
         connector = _make_connector()
-        mock_tx, _ = _make_tx_store(None)
-        mock_tx.__aenter__ = AsyncMock(side_effect=Exception("db err"))
-        connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("db err"))
 
         await connector._handle_reindex_event("item-err")
 
@@ -2247,8 +2239,48 @@ class TestGetSignedUrl:
         record = MagicMock()
         record.id = "r1"
 
-        with pytest.raises(Exception, match="fail"):
+        # Bare re-raise became a mapped error so the router returns a real
+        # status instead of a blanket 500.
+        with pytest.raises(HTTPException) as exc_info:
             await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "graph_status,expected", [(401, 409), (403, 403), (429, 429), (404, 404)]
+    )
+    async def test_graph_status_reaches_the_caller(self, graph_status, expected):
+        connector = _make_connector()
+        connector._reinitialize_credential_if_needed = AsyncMock()
+        connector.msgraph_client = MagicMock()
+
+        class _ODataError(Exception):
+            response_status_code = graph_status
+
+        connector.msgraph_client.get_signed_url = AsyncMock(side_effect=_ODataError("graph"))
+
+        record = MagicMock()
+        record.id = "r1"
+
+        # The datasource used to swallow ODataError and return None, which made
+        # every one of these render as "this item no longer exists".
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == expected
+
+    @pytest.mark.asyncio
+    async def test_streaming_asks_the_datasource_to_propagate(self):
+        connector = _make_connector()
+        connector._reinitialize_credential_if_needed = AsyncMock()
+        connector.msgraph_client = MagicMock()
+        connector.msgraph_client.get_signed_url = AsyncMock(return_value="https://signed")
+
+        record = MagicMock()
+        record.external_record_group_id = "drive-1"
+        record.external_record_id = "item-1"
+
+        await connector.get_signed_url(record)
+        assert connector.msgraph_client.get_signed_url.await_args.kwargs["raise_on_error"] is True
 
 
 # ===========================================================================
@@ -2442,20 +2474,18 @@ class TestCreateConnector:
 
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.microsoft.onedrive.connector.DataSourceEntitiesProcessor") as mock_proc:
-            mock_instance = MagicMock()
-            mock_instance.initialize = AsyncMock()
-            mock_proc.return_value = mock_instance
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            logger = _make_mock_logger()
-            dsp = MagicMock()
-            cs = MagicMock()
+        logger = _make_mock_logger()
+        dsp = MagicMock()
+        cs = MagicMock()
 
-            result = await OneDriveConnector.create_connector(
-                logger, dsp, cs, "conn-1", "team", "test-user-id"
-            )
-            assert isinstance(result, OneDriveConnector)
-            mock_instance.initialize.assert_awaited_once()
+        result = await OneDriveConnector.create_connector(
+            logger, dsp, cs, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(result, OneDriveConnector)
 
 
 # ===========================================================================

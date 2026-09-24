@@ -11,7 +11,6 @@ import { UserGroups } from '../../../../src/modules/user_management/schema/userG
 describe('Connector Routes', () => {
   let container: Container
   let mockCrawlingContainer: any
-  let mockConnectorContainer: any
   let mockAuthMiddleware: any
   let mockConfig: any
   let mockEventService: any
@@ -50,18 +49,6 @@ describe('Connector Routes', () => {
       get: sinon.stub().returns(mockScheduler),
     }
 
-    mockConnectorContainer = {
-      get: sinon.stub().callsFake((token: string) => {
-        if (token === 'RecordsEventProducer') {
-          return { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() }
-        }
-        if (token === 'SyncEventProducer') {
-          return { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() }
-        }
-        throw new Error(`Unexpected connector token: ${token}`)
-      }),
-    }
-
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<any>('AppConfig').toConstantValue(mockConfig)
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
@@ -89,19 +76,19 @@ describe('Connector Routes', () => {
   })
 
   it('should create a router successfully', () => {
-    const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+    const router = createConnectorRouter(container, mockCrawlingContainer)
     expect(router).to.be.a('function')
   })
 
   it('should have route handlers registered', () => {
-    const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+    const router = createConnectorRouter(container, mockCrawlingContainer)
     const routes = (router as any).stack || []
     expect(routes.length).to.be.greaterThan(0)
   })
 
   describe('registry routes', () => {
     it('should register GET /registry route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const registryRoute = routes.find(
@@ -114,7 +101,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /registry/:connectorType/schema route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const schemaRoute = routes.find(
@@ -129,7 +116,7 @@ describe('Connector Routes', () => {
 
   describe('instance management routes', () => {
     it('should register GET / route for listing instances', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const getRoute = routes.find(
@@ -142,7 +129,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register POST / route for creating instance', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const postRoute = routes.find(
@@ -155,7 +142,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /active route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const activeRoute = routes.find(
@@ -168,7 +155,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /inactive route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const inactiveRoute = routes.find(
@@ -181,7 +168,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /agents/active route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const agentsRoute = routes.find(
@@ -194,7 +181,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /configured route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const configuredRoute = routes.find(
@@ -207,7 +194,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /:connectorId route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const getByIdRoute = routes.find(
@@ -220,7 +207,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register DELETE /:connectorId route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const deleteRoute = routes.find(
@@ -235,7 +222,7 @@ describe('Connector Routes', () => {
 
   describe('configuration routes', () => {
     it('should register GET /:connectorId/config route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const configRoute = routes.find(
@@ -248,7 +235,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register PUT /:connectorId/config route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const updateConfigRoute = routes.find(
@@ -261,7 +248,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register PUT /:connectorId/config/auth route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const authConfigRoute = routes.find(
@@ -274,7 +261,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register PUT /:connectorId/config/filters-sync route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const filtersSyncRoute = routes.find(
@@ -287,7 +274,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register PUT /:connectorId/name route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const nameRoute = routes.find(
@@ -302,7 +289,7 @@ describe('Connector Routes', () => {
 
   describe('OAuth routes', () => {
     it('should register GET /:connectorId/oauth/authorize route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const authorizeRoute = routes.find(
@@ -315,7 +302,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /oauth/callback route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const callbackRoute = routes.find(
@@ -330,7 +317,7 @@ describe('Connector Routes', () => {
 
   describe('filter routes', () => {
     it('should register GET /:connectorId/filters route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const filtersRoute = routes.find(
@@ -343,7 +330,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register POST /:connectorId/filters route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const saveFiltersRoute = routes.find(
@@ -356,7 +343,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /:connectorId/filters/:filterKey/options route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const filterOptionsRoute = routes.find(
@@ -371,7 +358,7 @@ describe('Connector Routes', () => {
 
   describe('toggle route', () => {
     it('should register POST /:connectorId/toggle route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const toggleRoute = routes.find(
@@ -384,37 +371,9 @@ describe('Connector Routes', () => {
     })
   })
 
-  describe('Local FS file-events routes', () => {
-    it('should register POST /:connectorId/file-events route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
-      const routes = (router as any).stack
-
-      const route = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:connectorId/file-events' &&
-          layer.route.methods.post,
-      )
-      expect(route).to.not.be.undefined
-    })
-
-    it('should register POST /:connectorId/file-events/upload route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
-      const routes = (router as any).stack
-
-      const route = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:connectorId/file-events/upload' &&
-          layer.route.methods.post,
-      )
-      expect(route).to.not.be.undefined
-    })
-  })
-
   describe('legacy routes', () => {
     it('should register POST /getTokenFromCode route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const tokenRoute = routes.find(
@@ -427,7 +386,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register POST /internal/refreshIndividualConnectorToken route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const refreshRoute = routes.find(
@@ -440,7 +399,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register POST /updateAppConfig route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
 
       const updateConfigRoute = routes.find(
@@ -455,7 +414,7 @@ describe('Connector Routes', () => {
 
   describe('route count', () => {
     it('should register all expected routes', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       // Verify we have a significant number of routes
@@ -466,7 +425,7 @@ describe('Connector Routes', () => {
 
   describe('middleware chains', () => {
     it('should include multiple middleware handlers on each route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       for (const routeLayer of routes) {
@@ -478,7 +437,7 @@ describe('Connector Routes', () => {
     })
 
     it('should have auth middleware on authenticated routes', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       // All routes should have multiple middleware layers (auth + handler at minimum)
@@ -493,7 +452,7 @@ describe('Connector Routes', () => {
 
   describe('route handler count per endpoint', () => {
     it('POST /getTokenFromCode should have auth + userAdminCheck + handler', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const tokenRoute = routes.find(
@@ -506,7 +465,7 @@ describe('Connector Routes', () => {
     })
 
     it('POST /internal/refreshIndividualConnectorToken should have scoped auth + handler', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const refreshRoute = routes.find(
@@ -520,7 +479,7 @@ describe('Connector Routes', () => {
     })
 
     it('POST /updateAppConfig should have scoped auth + handler', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const updateConfigRoute = routes.find(
@@ -542,7 +501,7 @@ describe('Connector Routes', () => {
     }
 
     async function runThroughChain(req: any, res: any, next: sinon.SinonStub) {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const handlers = findAllHandlers(router, '/', 'get')
       for (const handler of handlers) {
         if (next.called) break
@@ -781,15 +740,15 @@ describe('Connector Routes', () => {
 
   describe('router configuration', () => {
     it('should create different router instances on each call', () => {
-      const router1 = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
-      const router2 = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router1 = createConnectorRouter(container, mockCrawlingContainer)
+      const router2 = createConnectorRouter(container, mockCrawlingContainer)
 
       expect(router1).to.not.equal(router2)
     })
 
     it('should have consistent route count across calls', () => {
-      const router1 = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
-      const router2 = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router1 = createConnectorRouter(container, mockCrawlingContainer)
+      const router2 = createConnectorRouter(container, mockCrawlingContainer)
 
       const routes1 = (router1 as any).stack.filter((layer: any) => layer.route)
       const routes2 = (router2 as any).stack.filter((layer: any) => layer.route)
@@ -800,7 +759,7 @@ describe('Connector Routes', () => {
 
   describe('route methods', () => {
     it('GET routes should only accept GET method', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const registryRoute = routes.find(
@@ -811,7 +770,7 @@ describe('Connector Routes', () => {
     })
 
     it('POST routes should only accept POST method', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const createRoute = routes.find(
@@ -822,7 +781,7 @@ describe('Connector Routes', () => {
     })
 
     it('PUT routes should only accept PUT method', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const configRoute = routes.find(
@@ -833,7 +792,7 @@ describe('Connector Routes', () => {
     })
 
     it('DELETE routes should only accept DELETE method', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const deleteRoute = routes.find(
@@ -846,7 +805,7 @@ describe('Connector Routes', () => {
 
   describe('parameterized routes', () => {
     it('should register routes with connectorId param', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const paramRoutes = routes.filter(
@@ -857,7 +816,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register routes with connectorType param', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const typeRoutes = routes.filter(
@@ -867,7 +826,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register routes with filterKey param', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const filterRoutes = routes.filter(
@@ -912,7 +871,7 @@ describe('Connector Routes', () => {
       const loadAppConfigModule = await import('../../../../src/modules/tokens_manager/config/config')
       const loadStub = sinon.stub(loadAppConfigModule, 'loadAppConfig').resolves(mockConfig as any)
 
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const handler = findRouteHandler(router, '/updateAppConfig', 'post')
       expect(handler).to.not.be.undefined
 
@@ -931,7 +890,7 @@ describe('Connector Routes', () => {
       const loadAppConfigModule = await import('../../../../src/modules/tokens_manager/config/config')
       const loadStub = sinon.stub(loadAppConfigModule, 'loadAppConfig').rejects(new Error('Config load failed'))
 
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const handler = findRouteHandler(router, '/updateAppConfig', 'post')
       expect(handler).to.not.be.undefined
 
@@ -945,7 +904,7 @@ describe('Connector Routes', () => {
     })
 
     it('POST /getTokenFromCode handler should call next when user is missing', async () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const handler = findRouteHandler(router, '/getTokenFromCode', 'post')
       expect(handler).to.not.be.undefined
 
@@ -957,7 +916,7 @@ describe('Connector Routes', () => {
     })
 
     it('POST /internal/refreshIndividualConnectorToken handler should call next on error', async () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const handler = findRouteHandler(router, '/internal/refreshIndividualConnectorToken', 'post')
       expect(handler).to.not.be.undefined
 
@@ -980,7 +939,7 @@ describe('Connector Routes', () => {
     }
 
     it('should register POST /:connectorId/reindex route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const routes = (router as any).stack
       const reindexRoute = routes.find(
         (layer: any) =>
@@ -991,8 +950,38 @@ describe('Connector Routes', () => {
       expect(reindexRoute).to.not.be.undefined
     })
 
+    it('should register vector-store cleanup and reindex as static paths', () => {
+      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const routes = (router as any).stack
+      const cleanupRoute = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/vector-store/cleanup' &&
+          layer.route.methods.post,
+      )
+      const reindexAllRoute = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/vector-store/reindex' &&
+          layer.route.methods.post,
+      )
+      expect(cleanupRoute).to.not.be.undefined
+      expect(reindexAllRoute).to.not.be.undefined
+      const cleanupIdx = routes.findIndex(
+        (layer: any) => layer.route && layer.route.path === '/vector-store/cleanup',
+      )
+      const reindexAllIdx = routes.findIndex(
+        (layer: any) => layer.route && layer.route.path === '/vector-store/reindex',
+      )
+      const paramReindexIdx = routes.findIndex(
+        (layer: any) => layer.route && layer.route.path === '/:connectorId/reindex',
+      )
+      expect(cleanupIdx).to.be.lessThan(paramReindexIdx)
+      expect(reindexAllIdx).to.be.lessThan(paramReindexIdx)
+    })
+
     it('allows a token scoped only "connector:sync" (non-KB reindex, e.g. Google Drive) to pass', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const scopeMiddleware = findRouteScopeMiddleware(router, '/:connectorId/reindex', 'post')
       expect(scopeMiddleware).to.not.be.undefined
 
@@ -1005,7 +994,7 @@ describe('Connector Routes', () => {
     })
 
     it('allows a token scoped only "kb:write" (KB reindex) to pass', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const scopeMiddleware = findRouteScopeMiddleware(router, '/:connectorId/reindex', 'post')
 
       const req: any = { user: { isOAuth: true, oauthScopes: ['kb:write'] } }
@@ -1017,7 +1006,7 @@ describe('Connector Routes', () => {
     })
 
     it('rejects a token with neither "connector:sync" nor "kb:write"', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer)
       const scopeMiddleware = findRouteScopeMiddleware(router, '/:connectorId/reindex', 'post')
 
       const req: any = { user: { isOAuth: true, oauthScopes: ['user:read'] } }
@@ -1069,18 +1058,6 @@ describe('Connector Routes - handler coverage', () => {
       get: sinon.stub().returns(mockScheduler),
     }
 
-    const mockConnectorContainer = {
-      get: sinon.stub().callsFake((token: string) => {
-        if (token === 'RecordsEventProducer') {
-          return { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() }
-        }
-        if (token === 'SyncEventProducer') {
-          return { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() }
-        }
-        throw new Error(`Unexpected connector token: ${token}`)
-      }),
-    }
-
     const mockKeyValueStoreService = {
       get: sinon.stub().resolves(null),
       set: sinon.stub().resolves(),
@@ -1099,7 +1076,7 @@ describe('Connector Routes - handler coverage', () => {
     })
     container.bind<any>('KeyValueStoreService').toConstantValue(mockKeyValueStoreService)
 
-    router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+    router = createConnectorRouter(container, mockCrawlingContainer)
   })
 
   afterEach(() => {
@@ -1545,6 +1522,207 @@ describe('Connector Routes - handler coverage', () => {
 
       const wasZodError = next.called && next.firstCall.args[0]?.issues != null
       expect(wasZodError).to.be.false
+    })
+  })
+
+  describe('knowledge graph routes', () => {
+    function findAllHandlers(path: string, method: string) {
+      const layer = router.stack.find(
+        (l: any) => l.route && l.route.path === path && l.route.methods[method],
+      )
+      if (!layer) return []
+      return layer.route.stack.map((s: any) => s.handle)
+    }
+
+    // Express semantics: `next()` continues the chain, `next(err)` aborts it.
+    // Breaking on any `next` call would stop at authenticate and never reach
+    // the validation middleware these tests are about.
+    async function runChain(path: string, query: any, headers: any = {}) {
+      const req: any = {
+        user: { userId: 'u1', orgId: 'o1' },
+        query,
+        params: {},
+        body: {},
+        headers,
+      }
+      const res = mockRes()
+      const errors: any[] = []
+      const next = sinon.stub().callsFake((err?: any) => {
+        if (err) errors.push(err)
+      })
+      for (const handler of findAllHandlers(path, 'get')) {
+        await Promise.resolve(handler(req, res, next))
+        if (errors.length > 0) break
+      }
+      return { req, res, next, error: errors.length > 0 ? errors[0] : null }
+    }
+
+    function isValidationError(error: any) {
+      return error != null && error.code === 'VALIDATION_ERROR'
+    }
+
+    it('registers GET /navigate before GET /:connectorId, which would otherwise capture it', () => {
+      const routes = router.stack.filter((layer: any) => layer.route)
+      const navigateIdx = routes.findIndex(
+        (l: any) => l.route.path === '/navigate' && l.route.methods.get,
+      )
+      const connectorIdIdx = routes.findIndex(
+        (l: any) => l.route.path === '/:connectorId' && l.route.methods.get,
+      )
+
+      expect(navigateIdx).to.be.greaterThan(-1)
+      expect(connectorIdIdx).to.be.greaterThan(-1)
+      expect(navigateIdx).to.be.lessThan(connectorIdIdx)
+    })
+
+    it('registers GET /record/lookup with a full middleware chain', () => {
+      const lookupRoute = router.stack.find(
+        (l: any) => l.route && l.route.path === '/record/lookup' && l.route.methods.get,
+      )
+      expect(lookupRoute).to.not.be.undefined
+      // authenticate + requireScopes + validate + controller
+      expect(lookupRoute.route.stack.length).to.be.greaterThanOrEqual(4)
+    })
+
+    it('keeps repeated identifiers repeated rather than comma-joining them', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { matches: [] } })
+
+      await runChain('/record/lookup', { identifiers: ['PA-1787', 'PA-1788'] })
+
+      expect(exec.calledOnce).to.be.true
+      const url: string = exec.firstCall.args[0]
+      expect(url).to.include('identifiers=PA-1787')
+      expect(url).to.include('identifiers=PA-1788')
+      expect(url).to.not.include('PA-1787%2CPA-1788')
+    })
+
+    it('encodes a URL identifier as a single parameter', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { matches: [] } })
+
+      const target = 'https://acme.atlassian.net/browse/PA-1?a=1&b=2'
+      await runChain('/record/lookup', { identifiers: [target] })
+
+      const url: string = exec.firstCall.args[0]
+      const identifierParams = url
+        .split('?')[1]
+        .split('&')
+        .filter((p: string) => p.startsWith('identifiers='))
+      expect(identifierParams).to.have.lengthOf(1)
+      expect(decodeURIComponent(identifierParams[0].slice('identifiers='.length))).to.equal(target)
+    })
+
+    it('normalizes a single identifier string to an array', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { matches: [] } })
+
+      const { error } = await runChain('/record/lookup', { identifiers: 'PA-1787' })
+
+      expect(isValidationError(error)).to.be.false
+      expect(exec.firstCall.args[0]).to.include('identifiers=PA-1787')
+    })
+
+    it('rejects more than 10 identifiers without reaching the backend', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: {} })
+
+      const { error } = await runChain('/record/lookup', {
+        identifiers: Array.from({ length: 11 }, (_, i) => `PA-${i}`),
+      })
+
+      expect(isValidationError(error)).to.be.true
+      expect(exec.called).to.be.false
+    })
+
+    it('rejects a missing identifiers param without reaching the backend', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: {} })
+
+      const { error } = await runChain('/record/lookup', {})
+
+      expect(isValidationError(error)).to.be.true
+      expect(exec.called).to.be.false
+    })
+
+    it('maps navigate camelCase params to the snake_case names Python declares', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { rows: [] } })
+
+      await runChain('/navigate', {
+        nodeId: 'n1',
+        page: '2',
+        limit: '50',
+        depth: '2',
+        nodeTypes: ['record', 'folder'],
+        createdAfter: '2026-01-01',
+        modifiedBefore: '2026-02-01',
+      })
+
+      const url: string = exec.firstCall.args[0]
+      expect(url).to.include('/api/v1/knowledge-graph/navigate?')
+      expect(url).to.include('node_id=n1')
+      expect(url).to.include('page=2')
+      expect(url).to.include('depth=2')
+      expect(url).to.include('node_types=record')
+      expect(url).to.include('node_types=folder')
+      expect(url).to.include('created_after=2026-01-01')
+      expect(url).to.include('modified_before=2026-02-01')
+      expect(url).to.not.include('nodeId=')
+      expect(url).to.not.include('createdAfter=')
+    })
+
+    it('proxies navigate with no params to the root listing', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { rows: [] } })
+
+      const { error } = await runChain('/navigate', {})
+
+      expect(isValidationError(error)).to.be.false
+      expect(exec.firstCall.args[0]).to.equal(
+        'http://localhost:8088/api/v1/knowledge-graph/navigate',
+      )
+    })
+
+    it('rejects a navigate limit below the navigator floor of 50', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: {} })
+
+      const { error } = await runChain('/navigate', { limit: '10' })
+
+      expect(isValidationError(error)).to.be.true
+      expect(exec.called).to.be.false
+    })
+
+    it('rejects a navigate depth above 3', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: {} })
+
+      const { error } = await runChain('/navigate', { depth: '4' })
+
+      expect(isValidationError(error)).to.be.true
+      expect(exec.called).to.be.false
+    })
+
+    it('does not forward a client-supplied x-is-admin header to the connector backend', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { rows: [] } })
+
+      await runChain('/navigate', {}, { 'x-is-admin': 'true', cookie: 'session=secret' })
+
+      const headers = exec.firstCall.args[2]
+      expect(headers).to.not.have.property('X-Is-Admin')
+      expect(headers).to.not.have.property('cookie')
     })
   })
 })

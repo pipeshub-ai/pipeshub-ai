@@ -306,3 +306,76 @@ class TestNoFullToolResultsLeak:
         )
 
         assert len(collector.parts[0]["resultPreview"]) <= 500
+
+
+class TestLargeToolArgsStayParseable:
+    """The transcript's `args` are re-parsed with `JSON.parse` on the Node
+    side (`enterprise_search/utils/utils.ts::toolResultsFromParts`) to rebuild
+    a previous turn's tool calls. Truncating the serialized JSON at a byte
+    offset leaves a document that cannot parse, and Node's `catch` then drops
+    `args` ENTIRELY — so `run_code`'s program disappeared from history rather
+    than arriving shortened, and the model rewrote from scratch instead of
+    editing.
+    """
+
+    async def _tool_call_part(self, args: dict[str, Any]) -> dict[str, Any]:
+        collector = TranscriptCollector()
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {
+            "tool_call_id": "call_1", "tool": "run_code", "args": args,
+        }))
+        return next(p for p in collector.parts if p["type"] == "tool_call")
+
+    async def test_oversized_args_still_parse_as_json(self) -> None:
+        # 3322 chars: the exact program size from the production failure.
+        part = await self._tool_call_part({
+            "code": "x" * 3322, "language": "typescript", "packages": ["pptxgenjs"],
+        })
+        parsed = json.loads(part["args"])  # must not raise
+        assert isinstance(parsed, dict)
+
+    async def test_oversized_args_keep_every_key(self) -> None:
+        """Only the oversized VALUE is shortened. Dropping the small keys
+        alongside it would lose the language and package list, which are
+        exactly what a follow-up turn needs to reproduce the setup."""
+        part = await self._tool_call_part({
+            "code": "x" * 5000, "language": "typescript", "packages": ["pptxgenjs"],
+        })
+        parsed = json.loads(part["args"])
+        assert parsed["language"] == "typescript"
+        assert parsed["packages"] == ["pptxgenjs"]
+
+    async def test_truncation_is_visible_not_silent(self) -> None:
+        """A prefix presented as the whole program is worse than no program:
+        the model would treat a half-written script as complete."""
+        part = await self._tool_call_part({"code": "x" * 5000})
+        code = json.loads(part["args"])["code"]
+        assert len(code) < 5000
+        assert "truncated" in code.lower()
+        assert "5000" in code, "the true length should be recoverable"
+
+    async def test_small_args_are_untouched(self) -> None:
+        args = {"code": 'console.log("hi")', "language": "typescript"}
+        part = await self._tool_call_part(args)
+        assert json.loads(part["args"]) == args
+
+    async def test_stays_within_the_size_budget(self) -> None:
+        """The cap exists to bound the persisted Mongo document."""
+        part = await self._tool_call_part({
+            "code": "x" * 50_000, "notes": "y" * 50_000,
+        })
+        assert len(part["args"]) <= 4000
+
+    async def test_non_string_values_survive(self) -> None:
+        part = await self._tool_call_part({
+            "code": "x" * 5000, "timeout": 30, "allow_network": True, "retries": None,
+        })
+        parsed = json.loads(part["args"])
+        assert parsed["timeout"] == 30
+        assert parsed["allow_network"] is True
+        assert parsed["retries"] is None
+
+    async def test_unserializable_args_do_not_explode(self) -> None:
+        """`default=str` handled this before; it still has to."""
+        part = await self._tool_call_part({"when": object(), "code": "x" * 5000})
+        assert json.loads(part["args"])

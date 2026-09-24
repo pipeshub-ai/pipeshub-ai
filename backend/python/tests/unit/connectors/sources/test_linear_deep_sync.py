@@ -50,18 +50,10 @@ def _make_connector():
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_record_deleted = AsyncMock()
+    dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_record_by_weburl = AsyncMock(return_value=None)
 
     dsp = MagicMock()
-    mock_tx_store = AsyncMock()
-    mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
-    class FakeTx:
-        async def __aenter__(self):
-            return mock_tx_store
-        async def __aexit__(self, *args):
-            pass
-
-    dsp.transaction = MagicMock(return_value=FakeTx())
 
     cs = AsyncMock()
     connector = LinearConnector(
@@ -124,28 +116,12 @@ def _make_issue_data(issue_id="iss-1", identifier="ENG-1", updated="2024-06-01T0
 class TestLinearRunSync:
 
     @pytest.mark.asyncio
-    async def test_initializes_if_no_datasource(self):
+    async def test_raises_if_no_datasource(self):
         connector = _make_connector()
         connector.data_source = None
-        connector.init = AsyncMock(return_value=True)
 
-        with patch(
-            "app.connectors.sources.linear.connector.load_connector_filters",
-            new_callable=AsyncMock,
-        ) as mock_filters:
-            from app.connectors.core.registry.filters import FilterCollection
-            mock_filters.return_value = (FilterCollection(), FilterCollection())
-            connector._fetch_users = AsyncMock(return_value=[])
-            connector._fetch_teams = AsyncMock(return_value=([], []))
-            connector._sync_issues_for_teams = AsyncMock()
-            connector._sync_attachments = AsyncMock()
-            connector._sync_documents = AsyncMock()
-            connector._sync_projects_for_teams = AsyncMock()
-            connector._sync_deleted_issues = AsyncMock()
-            connector._sync_deleted_projects = AsyncMock()
-
+        with pytest.raises(RuntimeError, match="not initialized"):
             await connector.run_sync()
-            connector.init.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_no_active_users_returns_early(self):
@@ -184,12 +160,13 @@ class TestLinearRunSync:
                 [(MagicMock(), [])],  # user groups
                 [(rg, [])],  # record groups
             ))
-            connector._sync_issues_for_teams = AsyncMock()
+            connector._sync_issues_for_teams = AsyncMock(return_value=(set(), []))
             connector._sync_attachments = AsyncMock()
             connector._sync_documents = AsyncMock()
             connector._sync_projects_for_teams = AsyncMock()
             connector._sync_deleted_issues = AsyncMock()
             connector._sync_deleted_projects = AsyncMock()
+            connector._sweep_placeholder_records = AsyncMock(return_value=0)
 
             await connector.run_sync()
 
@@ -201,6 +178,7 @@ class TestLinearRunSync:
             connector._sync_projects_for_teams.assert_awaited_once()
             connector._sync_deleted_issues.assert_awaited_once()
             connector._sync_deleted_projects.assert_awaited_once()
+            connector._sweep_placeholder_records.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_propagates_exception(self):
@@ -642,20 +620,12 @@ class TestSyncAttachments:
         connector.sync_filters = None
         connector.indexing_filters = None
 
-        # Setup tx_store to find parent issue
         mock_parent = MagicMock()
         mock_parent.id = "parent-rec-id"
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(side_effect=lambda **kw: mock_parent if kw.get("external_id") == "iss-1" else None)
-        mock_tx_store.get_record_by_weburl = AsyncMock(return_value=None)
-
-        class FakeTx:
-            async def __aenter__(self):
-                return mock_tx_store
-            async def __aexit__(self, *args):
-                pass
-
-        connector.data_store_provider.transaction = MagicMock(return_value=FakeTx())
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_record_id: mock_parent if external_record_id == "iss-1" else None
+        )
+        connector.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
         connector._transform_attachment_to_link_record = MagicMock(return_value=MagicMock(
             spec=LinkRecord, source_updated_at=1700000001000, weburl="https://example.com",
             indexing_status=None,
@@ -685,16 +655,6 @@ class TestSyncAttachments:
             }
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-
-        mock_tx_store = AsyncMock()
-
-        class FakeTx:
-            async def __aenter__(self):
-                return mock_tx_store
-            async def __aexit__(self, *args):
-                pass
-
-        connector.data_store_provider.transaction = MagicMock(return_value=FakeTx())
 
         await connector._sync_attachments([(rg, [])])
         connector.data_entities_processor.on_new_records.assert_not_awaited()
@@ -741,16 +701,9 @@ class TestSyncDocuments:
 
         mock_parent = MagicMock()
         mock_parent.id = "parent-rec-id"
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(side_effect=lambda **kw: mock_parent if kw.get("external_id") == "iss-1" else None)
-
-        class FakeTx:
-            async def __aenter__(self):
-                return mock_tx_store
-            async def __aexit__(self, *args):
-                pass
-
-        connector.data_store_provider.transaction = MagicMock(return_value=FakeTx())
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_record_id: mock_parent if external_record_id == "iss-1" else None
+        )
         connector._transform_document_to_webpage_record = MagicMock(return_value=MagicMock(
             spec=WebpageRecord, source_updated_at=1700000001000, indexing_status=None,
         ))
@@ -780,16 +733,6 @@ class TestSyncDocuments:
             }
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-
-        mock_tx_store = AsyncMock()
-
-        class FakeTx:
-            async def __aenter__(self):
-                return mock_tx_store
-            async def __aexit__(self, *args):
-                pass
-
-        connector.data_store_provider.transaction = MagicMock(return_value=FakeTx())
 
         await connector._sync_documents([(rg, [])])
         connector.data_entities_processor.on_new_records.assert_not_awaited()
@@ -1158,15 +1101,13 @@ class TestProcessIssueAttachments:
             "url": "https://example.com/spec",
         }]
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._transform_attachment_to_link_record = MagicMock(return_value=MagicMock(
             id="link-rec-1", record_name="Spec Doc", indexing_status=None
         ))
 
         children = await connector._process_issue_attachments(
-            attachment_data, "iss-1", "node-1", "t1", mock_tx_store
+            attachment_data, "iss-1", "node-1", "t1"
         )
         assert len(children) == 1
         connector.data_entities_processor.on_new_records.assert_awaited_once()
@@ -1181,21 +1122,19 @@ class TestProcessIssueAttachments:
         existing.id = "existing-rec"
         existing.record_name = "Existing"
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         children = await connector._process_issue_attachments(
-            attachment_data, "iss-1", "node-1", "t1", mock_tx_store
+            attachment_data, "iss-1", "node-1", "t1"
         )
         assert len(children) == 1
-        # Should NOT create new records
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_attachments(self):
         connector = _make_connector()
         children = await connector._process_issue_attachments(
-            [], "iss-1", "node-1", "t1", AsyncMock()
+            [], "iss-1", "node-1", "t1"
         )
         assert children == []
 
@@ -1213,15 +1152,13 @@ class TestProcessIssueDocuments:
         connector.indexing_filters = None
         doc_data = [{"id": "doc-1", "title": "Design", "content": "# Design"}]
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._transform_document_to_webpage_record = MagicMock(return_value=MagicMock(
             id="web-rec-1", record_name="Design", indexing_status=None
         ))
 
         children = await connector._process_issue_documents(
-            doc_data, "iss-1", "node-1", "t1", mock_tx_store
+            doc_data, "iss-1", "node-1", "t1"
         )
         assert len(children) == 1
         connector.data_entities_processor.on_new_records.assert_awaited_once()
@@ -1236,11 +1173,10 @@ class TestProcessIssueDocuments:
         existing.id = "existing-doc"
         existing.record_name = "Existing Doc"
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         children = await connector._process_issue_documents(
-            doc_data, "iss-1", "node-1", "t1", mock_tx_store
+            doc_data, "iss-1", "node-1", "t1"
         )
         assert len(children) == 1
         connector.data_entities_processor.on_new_records.assert_not_awaited()
@@ -1249,7 +1185,7 @@ class TestProcessIssueDocuments:
     async def test_empty_documents(self):
         connector = _make_connector()
         children = await connector._process_issue_documents(
-            [], "iss-1", "node-1", "t1", AsyncMock()
+            [], "iss-1", "node-1", "t1"
         )
         assert children == []
 
@@ -1259,9 +1195,7 @@ class TestProcessIssueDocuments:
         connector.indexing_filters = None
         doc_data = [{"title": "No ID"}]
 
-        mock_tx_store = AsyncMock()
-
         children = await connector._process_issue_documents(
-            doc_data, "iss-1", "node-1", "t1", mock_tx_store
+            doc_data, "iss-1", "node-1", "t1"
         )
         assert children == []

@@ -274,3 +274,57 @@ describe('PlusMenuContent', () => {
     expect(toggle).toHaveBeenCalled();
   });
 });
+
+describe('hasNonDefaultSearchCapabilities', () => {
+  it('is false only when both capabilities are at their default (true)', async () => {
+    const { hasNonDefaultSearchCapabilities } = await import(
+      '../components/chat-panel/plus-menu-button'
+    );
+    expect(hasNonDefaultSearchCapabilities(true, true)).toBe(false);
+    expect(hasNonDefaultSearchCapabilities(false, true)).toBe(true);
+    expect(hasNonDefaultSearchCapabilities(true, false)).toBe(true);
+    expect(hasNonDefaultSearchCapabilities(false, false)).toBe(true);
+  });
+});
+
+describe('PlusMenuButton filter badge', () => {
+  async function importButton() {
+    const mod = await import('../components/chat-panel/plus-menu-button');
+    return mod.PlusMenuButton;
+  }
+
+  type ButtonProps = Parameters<Awaited<ReturnType<typeof importButton>>>[0];
+
+  function renderButton(props: ButtonProps, Button: Awaited<ReturnType<typeof importButton>>) {
+    return render(h(Theme, null, h(Button, props)));
+  }
+
+  const baseProps = {
+    onAttachFiles: vi.fn(),
+    onToggleInternalSearch: vi.fn(),
+    onToggleWebSearch: vi.fn(),
+    activeIconColor: 'var(--slate-12)',
+    open: false,
+    onOpenChange: vi.fn(),
+  };
+
+  it('hides the badge when both capabilities are on', async () => {
+    const Button = await importButton();
+    renderButton({ ...baseProps, internalSearch: true, webSearch: true }, Button);
+    expect(screen.queryByTestId('plus-menu-filter-badge')).toBeNull();
+  });
+
+  it('shows the badge for each non-default capability combination', async () => {
+    const Button = await importButton();
+    const nonDefaults: Array<Pick<ButtonProps, 'internalSearch' | 'webSearch'>> = [
+      { internalSearch: false, webSearch: true },
+      { internalSearch: true, webSearch: false },
+      { internalSearch: false, webSearch: false },
+    ];
+    for (const caps of nonDefaults) {
+      const { unmount } = renderButton({ ...baseProps, ...caps }, Button);
+      expect(screen.getByTestId('plus-menu-filter-badge')).toBeTruthy();
+      unmount();
+    }
+  });
+});

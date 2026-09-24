@@ -1,7 +1,8 @@
 'use client';
 
 import React from 'react';
-import { Flex } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { Callout, Flex } from '@radix-ui/themes';
 import { useConnectorsStore } from '../../store';
 import { InstanceHeader } from './instance-header';
 import { SyncSettingsSection } from './sync-settings-section';
@@ -12,7 +13,8 @@ import { FiltersSection } from './filters-section';
 // Component
 // ========================================
 
-export function ConfigureTab() {
+export function ConfigureTab({ readOnly = false }: { readOnly?: boolean }) {
+  const { t } = useTranslation();
   const {
     connectorSchema,
     connectorConfig,
@@ -35,6 +37,14 @@ export function ConfigureTab() {
 
   return (
     <Flex direction="column" gap="6" style={{ padding: 'var(--space-1) 0' }}>
+      {readOnly && (
+        <Callout.Root color="blue" variant="surface" size="1">
+          <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
+            {t('workspace.connectors.configTab.localFsDesktopOnlyBanner')}
+          </Callout.Text>
+        </Callout.Root>
+      )}
+
       {/* ── A. Instance Header ── */}
       <InstanceHeader connectorName={panelConnector.name} />
 
@@ -47,6 +57,7 @@ export function ConfigureTab() {
           connectorName={panelConnector.name}
           onStrategyChange={setSyncStrategy}
           onIntervalChange={setSyncInterval}
+          disabled={readOnly}
         />
       )}
 
@@ -58,10 +69,11 @@ export function ConfigureTab() {
           errors={formErrors}
           onChange={setSyncFormValue}
           connectorConfig={connectorConfig}
+          readOnly={readOnly}
         />
       )}
 
-      <FiltersSection key={panelConnectorId ?? 'new'} />
+      <FiltersSection key={panelConnectorId ?? 'new'} readOnly={readOnly} />
     </Flex>
   );
 }

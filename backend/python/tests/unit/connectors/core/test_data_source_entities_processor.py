@@ -2653,6 +2653,7 @@ class TestInitialize:
     async def test_initialize_sets_org_id(self):
         """initialize() sets org_id from the first organization in DB."""
         proc = _make_processor()
+        proc.org_id = ""  # Clear so DB lookup path is exercised
         tx_store = _make_tx_store()
         tx_store.get_all_orgs.return_value = [{"_key": "my-org", "id": "my-org"}]
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -2690,6 +2691,7 @@ class TestInitialize:
     async def test_initialize_fallback_to_key(self):
         """initialize() falls back to _key when id not present."""
         proc = _make_processor()
+        proc.org_id = ""  # Clear so DB lookup path is exercised
         tx_store = _make_tx_store()
         tx_store.get_all_orgs.return_value = [{"_key": "org-fallback"}]
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -3602,6 +3604,32 @@ class TestOnRecordContentUpdate:
 
 
 # ===========================================================================
+# _preserve_indexing_state
+# ===========================================================================
+
+
+class TestPreserveIndexingState:
+    def test_keeps_incoming_zero_byte_size(self) -> None:
+        """Empty-file size 0 must not be replaced by a stored nonzero size."""
+        proc = _make_processor()
+        incoming = _make_record()
+        incoming.size_in_bytes = 0
+        existing = _make_record()
+        existing.size_in_bytes = 4096
+        proc._preserve_indexing_state(incoming, existing)
+        assert incoming.size_in_bytes == 0
+
+    def test_falls_back_when_size_unset(self) -> None:
+        proc = _make_processor()
+        incoming = _make_record()
+        incoming.size_in_bytes = None
+        existing = _make_record()
+        existing.size_in_bytes = 4096
+        proc._preserve_indexing_state(incoming, existing)
+        assert incoming.size_in_bytes == 4096
+
+
+# ===========================================================================
 # on_record_metadata_update & on_record_deleted (lines 927-937)
 # ===========================================================================
 
@@ -3629,15 +3657,137 @@ class TestOnRecordMetadataUpdateAndDelete:
         assert tx_store.batch_upsert_records.await_count >= 1
 
     @pytest.mark.asyncio
-    async def test_record_deleted(self):
-        """Deletes record by key."""
+    async def test_metadata_update_preserves_indexing_lifecycle(self):
+        """A metadata-only write must not disturb stored indexing state.
+
+        _process_record resets a COMPLETED record to NOT_STARTED to request a
+        re-index, but this path publishes no event and nothing consumes
+        NOT_STARTED — the record would be stranded. The caller's record is also a
+        stale snapshot, so letting it through clobbers md5/parse/extraction too.
+        """
         proc = _make_processor()
         tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.external_revision_id = "rev-1"
+        existing.record_group_id = None
+        existing.weburl = "https://example.com"
+        existing.is_placeholder = False
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        existing.parsing_status = ProgressStatus.COMPLETED.value
+        existing.extraction_status = ProgressStatus.COMPLETED.value
+        existing.processing_started_at = None
+        existing.reason = None
+        existing.is_vlm_ocr_processed = True
+        existing.md5_hash = "live-md5"
+        existing.storage_document_id = "live-doc"
+        tx_store.get_record_by_external_id.return_value = existing
+
+        # Stale snapshot, exactly what GitLab's timestamp backfill passes in.
+        record = _make_record(external_revision_id="rev-1")
+        record.indexing_status = ProgressStatus.QUEUED.value
+        record.parsing_status = ProgressStatus.NOT_STARTED.value
+        record.extraction_status = ProgressStatus.NOT_STARTED.value
+        record.md5_hash = None
+        record.storage_document_id = None
+
+        await proc.on_record_metadata_update(record)
+
+        written = tx_store.batch_upsert_records.await_args.args[0][0]
+        assert written.indexing_status == ProgressStatus.COMPLETED.value
+        assert written.parsing_status == ProgressStatus.COMPLETED.value
+        assert written.extraction_status == ProgressStatus.COMPLETED.value
+        assert written.is_vlm_ocr_processed is True
+        # Unset on the caller's copy → fall back to what is stored.
+        assert written.md5_hash == "live-md5"
+        assert written.storage_document_id == "live-doc"
+
+    @pytest.mark.asyncio
+    async def test_metadata_update_keeps_caller_supplied_md5(self):
+        """A connector that does report a checksum still wins over the stored one."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.external_revision_id = "rev-1"
+        existing.record_group_id = None
+        existing.weburl = "https://example.com"
+        existing.is_placeholder = False
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        existing.parsing_status = ProgressStatus.COMPLETED.value
+        existing.extraction_status = ProgressStatus.COMPLETED.value
+        existing.processing_started_at = None
+        existing.reason = None
+        existing.is_vlm_ocr_processed = False
+        existing.md5_hash = "live-md5"
+        existing.storage_document_id = None
+        tx_store.get_record_by_external_id.return_value = existing
+
+        record = _make_record(external_revision_id="rev-1")
+        record.md5_hash = "fresh-from-source"
+
+        await proc.on_record_metadata_update(record)
+
+        written = tx_store.batch_upsert_records.await_args.args[0][0]
+        assert written.md5_hash == "fresh-from-source"
+        assert written.indexing_status == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_record_deleted(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = MagicMock()
+        existing.virtual_record_id = "v1"
+        existing.org_id = "org-1"
+        existing.id = "rec-1"
+        existing.version = 1
+        existing.connector_id = "conn-1"
+        tx_store.get_record_by_key = AsyncMock(return_value=existing)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_deleted("rec-1")
+
+        tx_store.delete_parent_child_edge_to_record.assert_awaited_with("rec-1")
+        tx_store.delete_record_by_key.assert_awaited_with("rec-1")
+        proc.messaging_producer.send_message.assert_awaited_once()
+        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
+
+    @pytest.mark.asyncio
+    async def test_record_deleted_no_event_data(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_single_record = AsyncMock(return_value={"success": True})
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         await proc.on_record_deleted("rec-1")
 
         tx_store.delete_record_by_key.assert_awaited_with("rec-1")
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_record_deleted_publishes_delete_event_when_vrid_present(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = MagicMock()
+        existing.virtual_record_id = "vr-1"
+        existing.org_id = "org-1"
+        existing.id = "rec-1"
+        existing.version = 3
+        existing.connector_id = "conn-1"
+        tx_store.get_record_by_key = AsyncMock(return_value=existing)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_deleted("rec-1")
+
+        proc.messaging_producer.send_message.assert_awaited()
+        payload = proc.messaging_producer.send_message.await_args.args[1]
+        assert payload["eventType"] == "deleteRecord"
+        assert payload["payload"]["virtualRecordId"] == "vr-1"
+        assert payload["payload"]["connectorId"] == "conn-1"
 
 
 # ===========================================================================
@@ -3672,6 +3822,75 @@ class TestReindexExistingRecords:
         proc.messaging_producer.send_messages.assert_awaited_once()
         _topic, messages = proc.messaging_producer.send_messages.await_args.args
         assert [m["eventType"] for _key, m in messages] == ["reindexRecord"]
+
+    @pytest.mark.asyncio
+    async def test_reindex_payload_forces_past_the_already_indexed_guard(self):
+        """The consumer skips NEW/REINDEX events for COMPLETED records. An
+        explicit reindex has to opt out or it reports success doing nothing."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        record = _make_record()
+        record.id = "rec-1"
+        record.is_internal = False
+        record.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.reindex_existing_records([record])
+
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        payload = messages[0][1]["payload"]
+        assert payload["forceReindex"] is True
+        # the rest of the record payload must be untouched
+        assert payload["recordName"] == record.to_kafka_record()["recordName"]
+
+    @pytest.mark.asyncio
+    async def test_vector_db_only_flag_on_payload(self):
+        proc = _make_processor()
+        record = _make_record()
+        record.id = "rec-1"
+        record.is_internal = False
+        record.virtual_record_id = "vr-1"
+
+        await proc.reindex_existing_records([record], vector_db_only=True)
+
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        payload = messages[0][1]["payload"]
+        assert payload["vectorDbOnly"] is True
+        assert payload["forceReindex"] is True
+        assert payload["virtualRecordId"] == "vr-1"
+
+    @pytest.mark.asyncio
+    async def test_vector_db_only_defaults_false(self):
+        proc = _make_processor()
+        record = _make_record()
+        record.id = "rec-1"
+        record.is_internal = False
+
+        await proc.reindex_existing_records([record])
+
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        payload = messages[0][1]["payload"]
+        assert "vectorDbOnly" not in payload
+
+    @pytest.mark.asyncio
+    async def test_cas_queues_only_acked_ids(self):
+        proc = _make_processor()
+        rec1 = _make_record()
+        rec1.id = "rec-1"
+        rec1.is_internal = False
+        rec2 = _make_record()
+        rec2.id = "rec-2"
+        rec2.is_internal = False
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[True, False])
+
+        await proc.reindex_existing_records([rec1, rec2], vector_db_only=True)
+
+        proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["rec-1"],
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        )
 
     @pytest.mark.asyncio
     async def test_skips_internal_records(self):
@@ -4120,6 +4339,7 @@ def _make_code_record(
     external_revision_id: str = "sha-new",
     indexing_status: str | None = None,
     is_internal: bool = False,
+    version: int = 0,
 ) -> MagicMock:
     """Build a minimal Record mock suitable for on_records_moved tests.
 
@@ -4135,8 +4355,12 @@ def _make_code_record(
     rec.external_revision_id = external_revision_id
     rec.indexing_status = indexing_status
     rec.is_internal = is_internal
+    rec.is_placeholder = False
+    rec.version = version
     rec.org_id = "org-1"
     rec.record_name = f"file_{record_id}.py"
+    rec.virtual_record_id = None
+    rec.origin = OriginTypes.CONNECTOR.value
     rec.to_kafka_record = MagicMock(return_value={"id": record_id})
     return rec
 
@@ -4146,12 +4370,16 @@ def _make_old_record(
     record_id: str = "old-rec-1",
     external_revision_id: str = "sha-old",
     indexing_status: str = ProgressStatus.NOT_STARTED.value,
+    version: int = 1,
 ) -> MagicMock:
     """Build a minimal existing DB record mock returned by get_record_by_external_id."""
     rec = MagicMock()
     rec.id = record_id
     rec.external_revision_id = external_revision_id
     rec.indexing_status = indexing_status
+    rec.is_placeholder = False
+    rec.version = version
+    rec.virtual_record_id = None
     return rec
 
 
@@ -4234,6 +4462,25 @@ class TestOnRecordsMovedReindex:
         # No Kafka event must be produced at all
         proc.messaging_producer.send_messages.assert_not_called()
 
+    async def test_pure_rename_with_vrid_fires_sync_vector_membership(self) -> None:
+        tx_store = _make_tx_store()
+        shared_sha = "sha-identical"
+        old_record = _make_old_record(record_id="rec-xyz", external_revision_id=shared_sha)
+        old_record.virtual_record_id = "vr-move"
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id=shared_sha,
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        event_calls = proc.messaging_producer.send_messages.call_args_list
+        event_types = [m["eventType"] for c in event_calls for _key, m in c.args[1]]
+        assert event_types == ["syncVectorMembership"]
+        payload = event_calls[0].args[1][0][1]["payload"]
+        assert payload["virtualRecordId"] == "vr-move"
+
     async def test_old_record_not_found_treated_as_add_fires_new_record_event(self) -> None:
         """When the old record doesn't exist in the DB, the move is treated as a fresh
         add and a 'newRecord' event is fired.
@@ -4310,6 +4557,70 @@ class TestOnRecordsMovedReindex:
 
         # After the call, new_record.id must have been set to old_record.id
         assert new_record.id == "original-id"
+
+    async def test_content_change_bumps_version_from_old_record(self) -> None:
+        """version=0 + changed SHA → old.version + 1 (same contract as _process_record)."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(
+            record_id="rec-v",
+            external_revision_id="sha-before",
+            version=7,
+        )
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id="sha-after",
+            version=0,
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        assert new_record.version == 8
+
+    async def test_pure_rename_carries_version_without_bump(self) -> None:
+        """version=0 + same SHA → keep old.version (metadata-only move)."""
+        tx_store = _make_tx_store()
+        shared_sha = "sha-identical"
+        old_record = _make_old_record(
+            record_id="rec-v",
+            external_revision_id=shared_sha,
+            version=7,
+        )
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id=shared_sha,
+            version=0,
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        assert new_record.version == 7
+
+    async def test_pure_rename_preserves_source_timestamps_when_unset(self) -> None:
+        """Null source timestamps on the move payload keep stored Git times."""
+        tx_store = _make_tx_store()
+        shared_sha = "sha-identical"
+        old_record = _make_old_record(
+            record_id="rec-ts",
+            external_revision_id=shared_sha,
+            version=3,
+        )
+        old_record.source_created_at = 1_700_000_000_000
+        old_record.source_updated_at = 1_700_000_100_000
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id=shared_sha,
+            version=0,
+        )
+        new_record.source_created_at = None
+        new_record.source_updated_at = None
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        assert new_record.source_created_at == 1_700_000_000_000
+        assert new_record.source_updated_at == 1_700_000_100_000
 
     async def test_empty_moves_is_noop(self) -> None:
         """Empty moves list → no DB or Kafka calls."""
@@ -4611,6 +4922,9 @@ class TestOnRecordsDeletedCascade:
 
         await proc.on_records_deleted_cascade(["r1"], "kb-123")
 
+        tx_store.delete_records_recursive.assert_awaited_once_with(
+            ["r1"], "kb-123", cascade_children=True,
+        )
         proc.messaging_producer.send_message.assert_awaited_once()
         assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
 
@@ -4636,6 +4950,98 @@ class TestOnRecordsDeletedCascade:
 
         result = await proc.on_records_deleted_cascade(["r1"], "kb-123")
         assert result["success"] is False
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_publish_failure_after_retries_reports_success_with_cleanup_pending(self):
+        """A graph deletion that already committed must not be reported as failed
+        just because the vector-cleanup event could not be published (#3008):
+        success stays True, and the caller learns cleanup is pending instead of
+        the deletion silently vanishing into an orphaned-embeddings + wrong-status
+        response."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(
+            return_value={
+                "success": True,
+                "successfully_deleted": 1,
+                "eventData": {"payloads": [{"recordId": "r1", "virtualRecordId": "v1"}]},
+            }
+        )
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc.messaging_producer.send_message = AsyncMock(side_effect=ConnectionError("broker down"))
+
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            result = await proc.on_records_deleted_cascade(["r1"], "kb-123")
+
+        assert result["success"] is True
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedRecordIds"] == ["r1"]
+
+    @pytest.mark.asyncio
+    async def test_transient_publish_failure_recovers_without_orphaning(self):
+        """A transient broker hiccup (fails once, then succeeds) must not
+        permanently orphan the embedding — the retry should recover it."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(
+            return_value={
+                "success": True,
+                "successfully_deleted": 1,
+                "eventData": {"payloads": [{"recordId": "r1", "virtualRecordId": "v1"}]},
+            }
+        )
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc.messaging_producer.send_message = AsyncMock(
+            side_effect=[ConnectionError("broker hiccup"), True]
+        )
+
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            result = await proc.on_records_deleted_cascade(["r1"], "kb-123")
+
+        assert "vectorCleanupPending" not in result
+        assert proc.messaging_producer.send_message.await_count == 2
+
+
+class TestOnRecordsDeletedCascadeAttachmentOnly:
+    """Tests for on_records_deleted_cascade with cascade_children=False."""
+
+    @pytest.mark.asyncio
+    async def test_empty_list(self):
+        proc = _make_processor()
+        result = await proc.on_records_deleted_cascade([], "conn-123", cascade_children=False)
+        assert result["success"] is True
+        assert result["total_requested"] == 0
+        proc.data_store_provider.transaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_publishes_delete_events_attachment_only(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(
+            return_value={
+                "success": True,
+                "eventData": {"payloads": [{"recordId": "r1", "virtualRecordId": "v1"}]},
+            }
+        )
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_deleted_cascade(["r1"], "conn-123", cascade_children=False)
+
+        tx_store.delete_records_recursive.assert_awaited_once_with(
+            ["r1"], "conn-123", cascade_children=False,
+        )
+        proc.messaging_producer.send_message.assert_awaited_once()
+        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
+
+    @pytest.mark.asyncio
+    async def test_no_event_data(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(return_value={"success": True})
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_deleted_cascade(["r1"], "conn-123", cascade_children=False)
         proc.messaging_producer.send_message.assert_not_awaited()
 
 
@@ -4739,6 +5145,70 @@ class TestOnRecordsMovedKbUpload:
         await proc.on_records_moved([("old-ext", new_record, [])])
         proc.messaging_producer.send_messages.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_auto_index_off_move_with_changed_content_still_refreshes(self):
+        """A record can change content *and* move at once.
+
+        Changed content routes it to the reindex batch, but AUTO_INDEX_OFF is
+        filtered out of the publish — so without this nothing emits
+        ``updateRecord`` and nothing emits ``syncVectorMembership`` either, and
+        the chunks keep pointing at the group the record just left.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(
+            id="r1",
+            external_revision_id="old-rev",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            virtual_record_id="vr-1",
+        )
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        new_record = _make_kb_upload_record()
+        new_record.external_revision_id = "new-rev"
+        new_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        events = _membership_events(proc)
+        assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
+        assert events[0]["payload"]["connectorId"] == new_record.connector_id
+        # The reindex publish really is suppressed — otherwise the refresh
+        # above would be redundant rather than the only thing that runs.
+        published = [
+            message["eventType"]
+            for call in proc.messaging_producer.send_messages.await_args_list
+            for _key, message in (call.args[1] or [])
+        ]
+        assert "updateRecord" not in published
+
+    @pytest.mark.asyncio
+    async def test_a_reindexed_move_does_not_also_refresh_membership(self):
+        """Reindexing recomputes membership on its own; a second event would
+        be pure duplication on the common path."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(
+            id="r1",
+            external_revision_id="old-rev",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            virtual_record_id="vr-1",
+        )
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        new_record = _make_kb_upload_record()
+        new_record.external_revision_id = "new-rev"
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        assert _membership_events(proc) == []
+        published = [
+            message["eventType"]
+            for call in proc.messaging_producer.send_messages.await_args_list
+            for _key, message in (call.args[1] or [])
+        ]
+        assert "updateRecord" in published
+
 
 class TestPublishDeleteEvents:
     @pytest.mark.asyncio
@@ -4746,6 +5216,19 @@ class TestPublishDeleteEvents:
         proc = _make_processor()
         await proc._publish_delete_events({"payloads": [{"recordId": "r1"}, {"recordId": "r2"}]})
         assert proc.messaging_producer.send_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_malformed_payload_does_not_raise(self):
+        """A malformed payload (not a dict, or missing recordId) must not turn
+        an already-committed deletion into an unhandled exception — it should
+        be counted as unpublished and the rest of the batch still processed."""
+        proc = _make_processor()
+        unpublished = await proc._publish_delete_events({
+            "payloads": ["not-a-dict", {"virtualRecordId": "v1"}, {"recordId": "r3"}],
+        })
+        assert len(unpublished) == 2
+        assert "r3" not in unpublished
+        proc.messaging_producer.send_message.assert_awaited_once()
 
 
 class TestProcessRecordOrgId:
@@ -4794,8 +5277,8 @@ class TestOnRecordsMovedOrgId:
 
 
 class TestProcessRecordCompletedReindex:
-    @pytest.mark.asyncio
-    async def test_non_upload_completed_record_requeued(self):
+    @staticmethod
+    def _completed_existing_and_incoming(incoming_revision: str) -> tuple:
         proc = _make_processor()
         tx_store = _make_tx_store()
         existing = MagicMock(
@@ -4811,20 +5294,41 @@ class TestProcessRecordCompletedReindex:
         record.connector_id = "conn-1"
         record.external_record_id = "ext-1"
         record.origin = "CONNECTOR"
-        record.external_revision_id = "rev-1"
+        record.external_revision_id = incoming_revision
+        record.indexing_status = ProgressStatus.NOT_STARTED.value
         record.weburl = ""
         record.id = None
         record.is_shared_with_me = False
         record.record_name = "doc"
         record.is_placeholder = False
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        return proc, tx_store, record
+
+    @pytest.mark.asyncio
+    async def test_completed_record_with_changed_revision_requeued(self):
+        proc, tx_store, record = self._completed_existing_and_incoming("rev-2")
+
+        with patch.object(proc, "_handle_record_group", new_callable=AsyncMock, return_value="rg1"), patch.object(
+            proc, "_link_record_to_group", new_callable=AsyncMock
+        ), patch.object(proc, "_handle_parent_record", new_callable=AsyncMock), patch.object(
+            proc, "_handle_updated_record", new_callable=AsyncMock
+        ):
+            await proc._process_record(record, [], tx_store)
+
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_completed_record_with_same_revision_stays_completed(self):
+        """Unchanged content must NOT be reset for re-indexing — the old
+        unconditional reset re-embedded the whole repo on every full re-sync."""
+        proc, tx_store, record = self._completed_existing_and_incoming("rev-1")
 
         with patch.object(proc, "_handle_record_group", new_callable=AsyncMock, return_value="rg1"), patch.object(
             proc, "_link_record_to_group", new_callable=AsyncMock
         ), patch.object(proc, "_handle_parent_record", new_callable=AsyncMock):
             await proc._process_record(record, [], tx_store)
 
-        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+        assert record.indexing_status == ProgressStatus.COMPLETED.value
 
 
 # ===========================================================================
@@ -4850,10 +5354,12 @@ class TestPlaceholderFlag:
 
     @pytest.mark.asyncio
     async def test_process_record_promotes_stub(self):
-        """A real record replacing a stub clears is_placeholder."""
+        """A real record replacing a stub clears is_placeholder; first genuine version is 0."""
         proc = _make_processor()
         tx_store = _make_tx_store()
-        existing = _make_record(external_revision_id="v0", is_placeholder=True)
+        existing = _make_record(
+            external_revision_id=None, version=0, is_placeholder=True,
+        )
         existing.id = "rec-1"
         existing.indexing_status = ProgressStatus.NOT_STARTED.value
         tx_store.get_record_by_external_id.return_value = existing
@@ -4866,10 +5372,11 @@ class TestPlaceholderFlag:
         proc._handle_parent_record = AsyncMock()
         proc._handle_record_permissions = AsyncMock()
 
-        incoming = _make_record(external_revision_id="v1")  # is_placeholder defaults False
+        incoming = _make_record(external_revision_id="v1", version=0)
         await proc._process_record(incoming, [], tx_store)
 
         assert incoming.is_placeholder is False
+        assert incoming.version == 0
 
     @pytest.mark.asyncio
     async def test_process_record_keeps_stub_for_sweep_backfill(self):
@@ -4877,7 +5384,9 @@ class TestPlaceholderFlag:
         so out-of-scope ancestors are never promoted to indexed records."""
         proc = _make_processor()
         tx_store = _make_tx_store()
-        existing = _make_record(external_revision_id="v0", is_placeholder=True)
+        existing = _make_record(
+            external_revision_id=None, version=0, is_placeholder=True,
+        )
         existing.id = "rec-1"
         existing.indexing_status = ProgressStatus.NOT_STARTED.value
         tx_store.get_record_by_external_id.return_value = existing
@@ -4889,10 +5398,38 @@ class TestPlaceholderFlag:
         proc._handle_parent_record = AsyncMock()
         proc._handle_record_permissions = AsyncMock()
 
-        incoming = _make_record(external_revision_id="v1", is_placeholder=True)
+        incoming = _make_record(
+            external_revision_id="placeholder:123", version=0, is_placeholder=True,
+        )
         await proc._process_record(incoming, [], tx_store)
 
         assert incoming.is_placeholder is True
+        assert incoming.version == 0
+
+    @pytest.mark.asyncio
+    async def test_process_record_bumps_version_on_real_revision_change(self):
+        """Non-placeholder updates still bump version when revision changes."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = _make_record(
+            external_revision_id="v0", version=0, is_placeholder=False,
+        )
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.NOT_STARTED.value
+        tx_store.get_record_by_external_id.return_value = existing
+
+        proc._handle_record_group = AsyncMock(return_value=None)
+        proc._handle_new_record = AsyncMock()
+        proc._handle_updated_record = AsyncMock()
+        proc._link_record_to_group = AsyncMock()
+        proc._handle_parent_record = AsyncMock()
+        proc._handle_record_permissions = AsyncMock()
+
+        incoming = _make_record(external_revision_id="v1", version=0)
+        await proc._process_record(incoming, [], tx_store)
+
+        assert incoming.is_placeholder is False
+        assert incoming.version == 1
 
     @pytest.mark.asyncio
     async def test_get_placeholder_records_queries_by_flag(self):
@@ -4961,9 +5498,10 @@ class TestSameRevisionSkipsReindex:
         ):
             await proc.on_new_records([(incoming, [])])
 
-        proc.messaging_producer.send_message.assert_not_awaited()
+        # Nothing is published, so nothing counts as discovered for the run.
+        proc.messaging_producer.send_messages.assert_not_awaited()
         proc._track_unchanged.assert_awaited()
-        proc._track_discovered.assert_awaited_once_with({})
+        proc._track_discovered.assert_not_awaited()
         assert getattr(incoming, "_skip_auto_index_publish", False) is True
         assert incoming.indexing_status == ProgressStatus.COMPLETED.value
 
@@ -4998,6 +5536,387 @@ class TestSameRevisionSkipsReindex:
         ):
             await proc.on_new_records([(incoming, [])])
 
-        proc.messaging_producer.send_message.assert_awaited()
+        proc.messaging_producer.send_messages.assert_awaited()
         proc._track_unchanged.assert_not_awaited()
         assert incoming.indexing_status == ProgressStatus.NOT_STARTED.value
+
+
+class TestOnRecordsMovedPromotesOnlyAckedRecords:
+    """on_records_moved discarded the publish result, so it could never mark a
+    record QUEUED -- and with new records now stored NOT_STARTED (see
+    TestNewRecordsAreStoredNotStarted in test_data_processor.py) that would
+    leave them NOT_STARTED even after a successful publish. It must mirror
+    on_new_records: CAS to QUEUED exactly the records whose event was acked.
+    """
+
+    pytestmark = pytest.mark.anyio
+
+    async def test_acked_new_records_are_swapped_to_queued(self) -> None:
+        tx_store = _make_tx_store()
+        proc = _setup_proc_for_moved(tx_store, old_record=None)
+        proc.messaging_producer.send_messages = AsyncMock(
+            side_effect=lambda topic, messages: [True, False]
+        )
+        moved = [
+            ("/old/a.py", _make_code_record(record_id="a", external_record_id="/new/a.py"), []),
+            ("/old/b.py", _make_code_record(record_id="b", external_record_id="/new/b.py"), []),
+        ]
+
+        await proc.on_records_moved(moved)
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        # Only "a" was acked; "b" stays NOT_STARTED for the stranded-record
+        # sweep to re-publish rather than being marked QUEUED with no event.
+        proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["a"],
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        )
+
+    async def test_a_wholly_failed_publish_swaps_nothing(self) -> None:
+        tx_store = _make_tx_store()
+        proc = _setup_proc_for_moved(tx_store, old_record=None)
+        proc.messaging_producer.send_messages = AsyncMock(
+            side_effect=lambda topic, messages: [False] * len(messages)
+        )
+
+        await proc.on_records_moved([("/old/a.py", _make_code_record(record_id="a"), [])])
+
+        cas = proc.data_store_provider.compare_and_set_indexing_status
+        assert all(call.args[0] == [] for call in cas.await_args_list)
+
+
+class TestOnRecordsMovedDuplicateGuard:
+    """A move must never leave two vertices holding one external_record_id.
+
+    Records upsert by vertex id, so a CREATED for the destination path applied
+    before the move mints a second vertex that the move then collides with. Both
+    would survive, and every lookup by external id would resolve to an arbitrary
+    one of the pair.
+    """
+
+    pytestmark = pytest.mark.anyio
+
+    @staticmethod
+    def _setup(tx_store, old_record, interloper):
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        async def by_external_id(*, connector_id, external_id):  # noqa: ARG001
+            return old_record if external_id == "/ns/-/blob/HEAD/src/old.py" else interloper
+
+        tx_store.get_record_by_external_id = AsyncMock(side_effect=by_external_id)
+        tx_store.delete_parent_child_edge_to_record = AsyncMock()
+        tx_store.delete_record_by_key = AsyncMock()
+        return proc
+
+    async def test_vertex_already_holding_the_destination_id_is_retired(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        interloper = _make_old_record(record_id="rec-duplicate")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, interloper)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
+        tx_store.delete_parent_child_edge_to_record.assert_any_await("rec-duplicate")
+        # The move still reuses the original vertex, so its edges survive.
+        assert new_record.id == "rec-original"
+
+    async def test_nothing_is_retired_when_the_destination_id_is_free(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, None)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.delete_record_by_key.assert_not_awaited()
+
+    async def test_the_moving_record_is_never_mistaken_for_a_duplicate(self) -> None:
+        """A connector that re-sends a move it already applied resolves both
+        lookups to the same vertex — which must not delete the record."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.delete_record_by_key.assert_not_awaited()
+
+    async def test_duplicate_children_are_reparented_onto_the_surviving_record(self) -> None:
+        """The duplicate can have picked up real children within the same batch
+        (e.g. an ancestor placeholder minted for a not-yet-moved folder, which
+        files landing in it then parented themselves under). Those PARENT_CHILD
+        edges must be re-pointed at the surviving vertex before the duplicate
+        is DETACH DELETEd, or the children are silently dropped from the tree.
+        """
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        interloper = _make_old_record(record_id="rec-duplicate")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, interloper)
+
+        tx_store.get_edges_from_node = AsyncMock(return_value=[
+            {
+                "_from": f"{CollectionNames.RECORDS.value}/rec-duplicate",
+                "_to": f"{CollectionNames.RECORDS.value}/child-1",
+                "relationshipType": RecordRelations.PARENT_CHILD.value,
+            },
+            {
+                "_from": f"{CollectionNames.RECORDS.value}/rec-duplicate",
+                "_to": f"{CollectionNames.RECORDS.value}/child-2",
+                "relationshipType": RecordRelations.PARENT_CHILD.value,
+            },
+        ])
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.get_edges_from_node.assert_awaited_once_with(
+            f"{CollectionNames.RECORDS.value}/rec-duplicate",
+            CollectionNames.RECORD_RELATIONS.value,
+        )
+        tx_store.create_record_relation.assert_any_await(
+            "rec-original", "child-1", RecordRelations.PARENT_CHILD.value
+        )
+        tx_store.create_record_relation.assert_any_await(
+            "rec-original", "child-2", RecordRelations.PARENT_CHILD.value
+        )
+        # The duplicate must still be retired, same as before.
+        tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
+
+    async def test_duplicate_non_parent_child_edges_are_not_reparented(self) -> None:
+        """Only PARENT_CHILD edges are migrated off a retired duplicate — an
+        ATTACHMENT edge (e.g. an email attachment) must not be copied onto the
+        surviving record."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        interloper = _make_old_record(record_id="rec-duplicate")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, interloper)
+
+        tx_store.get_edges_from_node = AsyncMock(return_value=[
+            {
+                "_from": f"{CollectionNames.RECORDS.value}/rec-duplicate",
+                "_to": f"{CollectionNames.RECORDS.value}/attachment-1",
+                "relationshipType": RecordRelations.ATTACHMENT.value,
+            },
+        ])
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.create_record_relation.assert_not_awaited()
+        tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
+
+    async def test_no_reparenting_when_duplicate_has_no_children(self) -> None:
+        """The common case (duplicate is a bare interloper, no children ever
+        attached to it): nothing is migrated, and retirement proceeds exactly
+        as before this fix."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-original")
+        interloper = _make_old_record(record_id="rec-duplicate")
+        new_record = _make_code_record(record_id="fresh-uuid")
+        proc = self._setup(tx_store, old_record, interloper)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
+
+        tx_store.create_record_relation.assert_not_awaited()
+        tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
+# ===========================================================================
+# Record-group moves must reach the vector chunks
+# ===========================================================================
+
+
+def _membership_events(proc):
+    """Every syncVectorMembership message the processor published."""
+    from app.config.constants.arangodb import EventTypes
+
+    events = []
+    for call in proc.messaging_producer.send_messages.await_args_list:
+        topic = call.args[0] if call.args else call.kwargs.get("topic")
+        messages = call.args[1] if len(call.args) > 1 else call.kwargs.get("messages")
+        if topic != "record-events":
+            continue
+        for _key, message in messages or []:
+            if message.get("eventType") == EventTypes.SYNC_VECTOR_MEMBERSHIP.value:
+                events.append(message)
+    return events
+
+
+def _stored(record_group_id, virtual_record_id="vr-1", revision="rev-1"):
+    """A record already in the graph, sitting in ``record_group_id``."""
+    stored = _make_record(record_group_id=record_group_id)
+    stored.id = "rec-1"
+    stored.virtual_record_id = virtual_record_id
+    stored.external_revision_id = revision
+    stored.indexing_status = ProgressStatus.COMPLETED.value
+    return stored
+
+
+class TestRecordGroupMoveRefreshesVectorMembership:
+    """A record that changes record group must have its chunks re-stamped.
+
+    The chunks carry ``recordGroupIds``, and until this hook existed the
+    ordinary re-sync path re-pointed the graph's belongsTo edge and published
+    nothing, so the arrays stayed pointing at the old group indefinitely.
+    """
+
+    def _proc_for_move(self, stored, new_group_id="rg-new"):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
+        group = MagicMock()
+        group.id = new_group_id
+        tx_store.get_record_group_by_external_id = AsyncMock(return_value=group)
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_completed_unchanged_record_that_moved_still_refreshes(self):
+        """The headline case. on_new_records skips the *indexing* publish for a
+        COMPLETED, unchanged record — which is exactly a move with no content
+        change, so the membership refresh must not sit behind that filter."""
+        stored = _stored("rg-old")
+        proc, _ = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-1"
+        incoming.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.on_new_records([(incoming, [])])
+
+        events = _membership_events(proc)
+        assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_the_event_carries_the_connector_id(self):
+        """Fair scheduling lanes on connectorId.
+
+        Without it the producer drops every membership refresh into the shared
+        default lane, so one connector re-syncing a large corpus queues ahead of
+        and behind every other connector's records -- the exact contention the
+        lane split exists to prevent.
+        """
+        stored = _stored("rg-old")
+        proc, _ = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-1"
+        incoming.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.on_new_records([(incoming, [])])
+
+        events = _membership_events(proc)
+        assert len(events) == 1
+        assert events[0]["payload"]["connectorId"] == incoming.connector_id
+        assert events[0]["payload"]["orgId"] == proc.org_id
+
+    @pytest.mark.asyncio
+    async def test_a_resync_that_moved_nothing_publishes_nothing(self):
+        """Storm guard: the publish is driven by the same predicate as the edge
+        rewrite, so a re-sync where the group is unchanged is silent."""
+        stored = _stored("rg-same")
+        proc, _ = self._proc_for_move(stored, new_group_id="rg-same")
+
+        incoming = _make_record(external_record_group_id="ext-rg-same")
+        incoming.external_revision_id = "rev-1"
+        incoming.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.on_new_records([(incoming, [])])
+
+        assert _membership_events(proc) == []
+
+    @pytest.mark.asyncio
+    async def test_a_move_refreshes_even_when_the_content_also_changed(self):
+        """Gating this on "revision unchanged" looked like a way to skip work a
+        reindex would redo, but the paths that drop the indexing publish
+        (AUTO_INDEX_OFF, metadata-only) also change the revision — so the guard
+        removed the refresh exactly where nothing else recomputes membership.
+        A duplicate refresh is idempotent; a missing one is silent."""
+        stored = _stored("rg-old", revision="rev-1")
+        proc, _ = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-2"
+
+        await proc.on_new_records([(incoming, [])])
+
+        assert [e["payload"]["virtualRecordId"] for e in _membership_events(proc)] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_auto_index_off_content_update_still_refreshes_after_commit(self):
+        """This branch returns without publishing updateRecord, so it is the
+        one path where a missed membership refresh is never repaired. The
+        publish must also land *outside* the transaction."""
+        stored = _stored("rg-old", revision="rev-1")
+        stored.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        proc, tx_store = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-2"
+        incoming.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        await proc.on_record_content_update(incoming)
+
+        events = _membership_events(proc)
+        assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
+        # No updateRecord: the AUTO_INDEX_OFF branch still returns early.
+        sent = [c.args[1] for c in proc.messaging_producer.send_message.await_args_list]
+        assert not any(m.get("eventType") == "updateRecord" for m in sent)
+
+    @pytest.mark.asyncio
+    async def test_a_brand_new_record_publishes_nothing(self):
+        """No existing record means no points to refresh."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        group = MagicMock()
+        group.id = "rg-new"
+        tx_store.get_record_group_by_external_id = AsyncMock(return_value=group)
+
+        await proc.on_new_records([(_make_record(external_record_group_id="ext-rg"), [])])
+
+        assert _membership_events(proc) == []
+
+    @pytest.mark.asyncio
+    async def test_a_moved_record_with_no_vrid_publishes_nothing(self):
+        """Membership is written per VRID; without one there is nothing to key."""
+        stored = _stored("rg-old", virtual_record_id=None)
+        proc, _ = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-1"
+        incoming.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.on_new_records([(incoming, [])])
+
+        assert _membership_events(proc) == []
+
+    @pytest.mark.asyncio
+    async def test_metadata_update_that_moved_the_group_refreshes(self):
+        """This path preserves the indexing lifecycle and publishes no indexing
+        event, so nothing downstream would ever recompute membership for it."""
+        stored = _stored("rg-old")
+        proc, _ = self._proc_for_move(stored)
+
+        incoming = _make_record(external_record_group_id="ext-rg-new")
+        incoming.external_revision_id = "rev-1"
+
+        await proc.on_record_metadata_update(incoming)
+
+        events = _membership_events(proc)
+        assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_published_when_the_transaction_fails(self):
+        """An event published for a rolled-back move would recompute the *old*
+        membership and write it back, which looks like a successful refresh."""
+        stored = _stored("rg-old")
+        proc, tx_store = self._proc_for_move(stored)
+        tx_store.batch_upsert_records = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with pytest.raises(RuntimeError):
+            await proc.on_new_records([(_make_record(external_record_group_id="ext-rg-new"), [])])
+
+        assert _membership_events(proc) == []

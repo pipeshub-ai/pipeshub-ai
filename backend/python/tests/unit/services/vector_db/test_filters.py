@@ -66,3 +66,12 @@ class TestBuildFilterExpression:
             build_conditions=QdrantUtils.build_conditions_generic,
         )
         assert expr.min_should_match == 2
+
+    def test_membership_fields_stay_top_level(self):
+        expr = build_filter_expression(
+            FilterMode.MUST,
+            must={"connectorIds": ["c1"], "recordGroupIds": ["g1"], "orgId": "o1"},
+            build_conditions=QdrantUtils.build_conditions_generic,
+        )
+        keys = {c.key for c in expr.must}
+        assert keys == {"connectorIds", "recordGroupIds", "metadata.orgId"}

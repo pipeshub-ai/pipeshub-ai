@@ -87,6 +87,13 @@ def _make_connector():
     cs.get_config = AsyncMock()
 
     c = DropboxConnector(logger, dep, dsp, cs, "conn-dbx-ext", "team", "test-user-id")
+    c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    c.data_entities_processor.update_user_group_name = AsyncMock(return_value=True)
+    c.data_entities_processor.get_user_by_email = AsyncMock(return_value=None)
+    c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+    c.data_entities_processor.upsert_permission_edge = AsyncMock()
+    c.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+    c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
     c.data_source = AsyncMock()
@@ -326,8 +333,10 @@ class TestHandleRecordUpdates:
         update.record.record_name = "deleted"
         update.is_new = False
         update.is_updated = False
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await c._handle_record_updates(update)
-        c.data_entities_processor.on_record_deleted.assert_called_once()
+        c.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(c.connector_id, "ext-1")
+        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
     @pytest.mark.asyncio
     async def test_new_record(self):
@@ -390,6 +399,7 @@ class TestHandleRecordUpdates:
     @pytest.mark.asyncio
     async def test_error_handling(self):
         c = _make_connector()
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         c.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("fail"))
         update = MagicMock()
         update.is_deleted = True
@@ -400,6 +410,7 @@ class TestHandleRecordUpdates:
         update.is_updated = False
         # Should not raise
         await c._handle_record_updates(update)
+        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ===========================================================================
@@ -675,18 +686,13 @@ class TestGetSignedUrl:
     async def test_file_record(self):
         c = _make_connector()
 
-        # Mock the transaction store with required methods
         mock_user = MagicMock()
         mock_user.email = "user@test.com"
         mock_file_record = MagicMock()
         mock_file_record.path = "/test.pdf"
 
-        mock_tx = MagicMock()
-        mock_tx.get_first_user_with_permission_to_node = AsyncMock(return_value=mock_user)
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=mock_file_record)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=mock_user)
+        c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=mock_file_record)
 
         # Mock team_members_get_info_v2
         team_member_info = MagicMock()
@@ -713,6 +719,8 @@ class TestGetSignedUrl:
 
     @pytest.mark.asyncio
     async def test_folder_record(self):
+        from fastapi import HTTPException
+
         c = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.FILE
@@ -720,16 +728,9 @@ class TestGetSignedUrl:
         record.external_record_group_id = "group-1"
         record.external_record_id = "id:d1"
 
-        # Mock the transaction - no user found with permission
-        mock_tx = MagicMock()
-        mock_tx.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=MagicMock())
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
-
-        result = await c.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
 
 # ===========================================================================
@@ -801,12 +802,7 @@ class TestProcessDropboxEntry:
     async def test_entry_error(self):
         c = _make_connector()
         entry = _make_file_metadata(name="err.pdf")
-        # Make the data store raise
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(side_effect=Exception("db error"))
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("db error"))
 
         result = await c._process_dropbox_entry(
             entry, "user-1", "user@test.com", "group-1", False

@@ -27,7 +27,7 @@ the offline-safe subset that IS):
     transport_registry.register("anthropic", ...)  # real transport factory
     report = await run_decomposition_eval(
         transport_registry=transport_registry,
-        model=ModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+        model=ModelSpec(provider="anthropic", model="claude-sonnet-5"),
     )
     print(report.render_text())
 """

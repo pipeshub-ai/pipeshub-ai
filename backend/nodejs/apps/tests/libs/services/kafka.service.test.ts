@@ -108,6 +108,13 @@ describe('Kafka Service', () => {
       const kafkajsPath = require.resolve('kafkajs');
       const originalKafkajs = require.cache[kafkajsPath];
       const modulePath = require.resolve('../../../src/libs/services/kafka.service');
+      // Saved so `finally` can put the *same* module object back. Re-requiring
+      // instead would mint a second set of class identities, and any module
+      // that imported kafka.service earlier in this process keeps the first
+      // set -- which is how `message-broker.factory.test.ts` came to see its
+      // Kafka producer fail `instanceof BaseKafkaProducerConnection`, but only
+      // when mocha's --parallel bucketing put the two files in one worker.
+      const originalModule = require.cache[modulePath];
 
       // Replace kafkajs with one whose Kafka constructor throws
       require.cache[kafkajsPath] = {
@@ -145,13 +152,15 @@ describe('Kafka Service', () => {
           );
         }
       } finally {
-        // Restore kafkajs and re-require kafka.service with the working
-        // Kafka constructor so the cached module has valid coverage.
+        // Restore both modules to the exact objects other files already hold.
         if (originalKafkajs) {
           require.cache[kafkajsPath] = originalKafkajs;
         }
-        delete require.cache[modulePath];
-        require('../../../src/libs/services/kafka.service');
+        if (originalModule) {
+          require.cache[modulePath] = originalModule;
+        } else {
+          delete require.cache[modulePath];
+        }
       }
     });
 

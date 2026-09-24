@@ -13,6 +13,10 @@ export const SUPPORTED_LANGUAGES = {
   'es-ES': { value: 'es-ES', menuName: 'Español (España)' },
   'en-IN': { value: 'en-IN', menuName: 'English (India)' },
   'hi-IN': { value: 'hi-IN', menuName: 'हिन्दी (भारत)' },
+  'ko-KR': { value: 'ko-KR', menuName: '한국어 (대한민국)' },
+  'zh-TW': { value: 'zh-TW', menuName: '中文（台灣）' },
+  'zh-SG': { value: 'zh-SG', menuName: '中文（新加坡）' },
+  'zh-CN': { value: 'zh-CN', menuName: '中文（简体，中国）' },
 } as const;
 
 /** Union type of all supported language codes, e.g. 'en-US' | 'de-DE' */

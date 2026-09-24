@@ -16,9 +16,15 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+    StreamMessage,
+)
 from app.services.messaging.error_classifier import MessageErrorType
-
+from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
+from app.utils import user_errors
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -66,22 +72,46 @@ class TestProcessEventEdgeCases:
     """Tests for missing event type and missing record_id."""
 
     @pytest.mark.asyncio
-    async def test_missing_event_type_yields_nothing(self):
+    async def test_missing_event_type_dead_letters_in_one_attempt(self):
+        """Terminal, not transient.
+
+        Returning bare made the consumer raise "Handler ended without
+        INDEXING_COMPLETE", which classifies as transient — three deliveries of
+        a message no retry can fix. It still dead-letters (a producer bug should
+        be visible), just immediately.
+        """
+        from app.exceptions.indexing_exceptions import ProcessingError
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+
         handler = _make_handler()
-        events = await _collect_events(handler, "", {"recordId": "r1"})
-        assert events == []
+        with pytest.raises(ProcessingError) as exc:
+            await _collect_events(handler, "", {"recordId": "r1"})
+
+        assert (
+            MessageErrorClassifier.classify_by_exception(exc.value)
+            == MessageErrorType.TERMINAL
+        )
 
     @pytest.mark.asyncio
-    async def test_none_event_type_yields_nothing(self):
+    async def test_none_event_type_dead_letters_in_one_attempt(self):
+        from app.exceptions.indexing_exceptions import ProcessingError
+
         handler = _make_handler()
-        events = await _collect_events(handler, None, {"recordId": "r1"})
-        assert events == []
+        with pytest.raises(ProcessingError):
+            await _collect_events(handler, None, {"recordId": "r1"})
 
     @pytest.mark.asyncio
-    async def test_missing_record_id_for_non_bulk_event(self):
+    async def test_missing_record_id_dead_letters_in_one_attempt(self):
+        from app.exceptions.indexing_exceptions import ProcessingError
+
         handler = _make_handler()
-        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, {"mimeType": "text/plain"})
-        assert events == []
+        with pytest.raises(ProcessingError):
+            await _collect_events(
+                handler, EventTypes.NEW_RECORD.value, {"mimeType": "text/plain"}
+            )
 
 
 # ===================================================================
@@ -122,6 +152,712 @@ class TestBulkDeleteEvent:
 
         assert len(events) == 2
         assert events[0].data.count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_refused_purge_is_not_acked(self):
+        """`bulk_delete_embeddings` reports success=False when no managed
+        collection resolved: nothing was deleted, and the mapping rows were
+        kept on purpose because they are the only handle the orphan sweeper
+        has on those points. Completing the message here would ack that as
+        done and strip the handle.
+        """
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_deleted": 0, "success": False}
+        )
+
+        with pytest.raises(IndexingError, match="did not complete"):
+            await _collect_events(
+                handler,
+                EventTypes.BULK_DELETE_RECORDS.value,
+                {"virtualRecordIds": ["vr1"]},
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_refused_purge_through_the_connector_path_is_not_acked(self):
+        """The VRID purge forwards the same flag, so the connector-scoped
+        route must refuse identically."""
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector_by_virtual_record_ids = AsyncMock(
+            return_value={"action": "filtered_delete", "success": False}
+        )
+
+        with pytest.raises(IndexingError, match="did not complete"):
+            await _collect_events(
+                handler,
+                EventTypes.BULK_DELETE_RECORDS.value,
+                {"virtualRecordIds": ["vr1"], "connectorId": "conn-1"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_drop_result_still_completes(self):
+        """The purge's drop and noop results carry no success key at all;
+        `.get("success") is False` must not read that absence as failure."""
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector_by_virtual_record_ids = AsyncMock(
+            return_value={"action": "drop_collection", "collections": ["drive_records"]}
+        )
+
+        events = await _collect_events(
+            handler,
+            EventTypes.BULK_DELETE_RECORDS.value,
+            {"virtualRecordIds": ["vr1"], "connectorId": "conn-1"},
+        )
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_successful_purge_still_completes(self):
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_processed": 1, "success": True}
+        )
+
+        events = await _collect_events(
+            handler,
+            EventTypes.BULK_DELETE_RECORDS.value,
+            {"virtualRecordIds": ["vr1"]},
+        )
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_with_connector_id_routes_through_the_vrid_purge(self):
+        """A connector-scoped payload builds a DeleteContext and goes through
+        the registry-driven VRID purge, not the bare bulk_delete_embeddings call.
+
+        This is the *fallback* event: bulkDeleteRecords still means "delete
+        exactly these VRIDs", and only deleteConnectorEmbeddings purges by
+        membership."""
+        from app.services.vector_db.strategy import DeleteContext
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector_by_virtual_record_ids = AsyncMock(
+            return_value={"action": "filtered_delete", "virtual_record_ids_processed": 2}
+        )
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        payload = {
+            "virtualRecordIds": ["vr1", "vr2"],
+            "connectorId": "conn-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "orgId": "org-1",
+        }
+        events = await _collect_events(handler, EventTypes.BULK_DELETE_RECORDS.value, payload)
+
+        assert len(events) == 2
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+        pipeline.purge_connector_by_virtual_record_ids.assert_awaited_once()
+        call_args = pipeline.purge_connector_by_virtual_record_ids.call_args
+        ctx = call_args.args[0]
+        assert isinstance(ctx, DeleteContext)
+        assert ctx.org_id == "org-1"
+        assert ctx.connector_id == "conn-1"
+        assert ctx.connector_name == "GOOGLE_DRIVE"
+        assert call_args.args[1] == ["vr1", "vr2"]
+
+
+class TestDeleteConnectorEmbeddingsEvent:
+    """Routing for the membership-based connector purge.
+
+    The two cleanup events are told apart by eventType alone. Discriminating on
+    a payload key instead would make an old consumer read the connector-scoped
+    shape as an empty id list and *ack* it, silently leaving a deleted
+    connector's embeddings in place.
+    """
+
+    @pytest.mark.asyncio
+    async def test_routes_to_the_membership_purge_with_dead_group_ids(self):
+        from app.services.vector_db.strategy import DeleteContext
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(
+            return_value={"action": "membership_delete", "success": True}
+        )
+        pipeline.purge_connector_by_virtual_record_ids = AsyncMock()
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        events = await _collect_events(
+            handler,
+            EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value,
+            {
+                "orgId": "org-1",
+                "connectorId": "conn-1",
+                "connectorName": "GOOGLE_DRIVE",
+                "recordGroupIds": ["rg-1", "rg-2"],
+            },
+        )
+
+        assert len(events) == 2
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+        pipeline.purge_connector_by_virtual_record_ids.assert_not_awaited()
+        pipeline.purge_connector.assert_awaited_once()
+        ctx = pipeline.purge_connector.call_args.args[0]
+        assert isinstance(ctx, DeleteContext)
+        assert ctx.org_id == "org-1"
+        assert ctx.connector_id == "conn-1"
+        assert ctx.connector_name == "GOOGLE_DRIVE"
+        # The connector's own groups went with it; without them a surviving
+        # shared point keeps pointing at groups that no longer exist.
+        assert pipeline.purge_connector.call_args.args[1] == ["rg-1", "rg-2"]
+
+    @pytest.mark.asyncio
+    async def test_a_payload_carrying_vrids_still_takes_the_membership_path(self):
+        """eventType decides, not the keys. A stray virtualRecordIds must not
+        silently switch the event back to the id-shipping route."""
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(return_value={"success": True})
+        pipeline.purge_connector_by_virtual_record_ids = AsyncMock()
+
+        await _collect_events(
+            handler,
+            EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value,
+            {"connectorId": "conn-1", "virtualRecordIds": ["vr1"]},
+        )
+
+        pipeline.purge_connector.assert_awaited_once()
+        pipeline.purge_connector_by_virtual_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_connector_id_dead_letters_rather_than_retrying(self):
+        """A producer bug no retry can fix, so it must classify TERMINAL."""
+        from app.exceptions.indexing_exceptions import ProcessingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock()
+
+        with pytest.raises(ProcessingError, match="connectorId"):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value,
+                {"orgId": "org-1"},
+            )
+        pipeline.purge_connector.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_purge_is_not_acked(self):
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.purge_connector = AsyncMock(return_value={"success": False})
+
+        with pytest.raises(IndexingError, match="did not complete"):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value,
+                {"connectorId": "conn-1"},
+            )
+
+
+class TestSyncVectorMembershipEvent:
+    @pytest.mark.asyncio
+    async def test_sync_membership_rewrites_and_never_deletes(self):
+        """A move must not be able to drop embeddings.
+
+        bulk_delete_embeddings deletes points whenever the graph lookup comes
+        back empty, so routing a membership sync through it makes any lookup
+        blip destructive.
+        """
+        handler = _make_handler()
+        processor = handler.event_processor
+        processor.sync_vector_membership = AsyncMock()
+        pipeline = processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock()
+
+        events = await _collect_events(
+            handler,
+            EventTypes.SYNC_VECTOR_MEMBERSHIP.value,
+            {"virtualRecordId": "vr-1", "orgId": "org-1"},
+        )
+
+        assert len(events) == 2
+        processor.sync_vector_membership.assert_awaited_once_with("vr-1")
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+        pipeline.rewrite_or_delete_vector_membership.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_membership_skips_missing_vrid(self):
+        handler = _make_handler()
+        processor = handler.event_processor
+        processor.sync_vector_membership = AsyncMock()
+        pipeline = processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+
+        events = await _collect_events(
+            handler,
+            EventTypes.SYNC_VECTOR_MEMBERSHIP.value,
+            {"orgId": "org-1"},
+        )
+
+        assert len(events) == 2
+        processor.sync_vector_membership.assert_not_awaited()
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+
+
+def _vector_only_graph_doc(**overrides):
+    doc = {
+        "_key": "rec-1",
+        "id": "rec-1",
+        "orgId": "org-1",
+        "recordName": "doc.txt",
+        "recordType": RecordTypes.FILE.value,
+        "externalRecordId": "ext-1",
+        "version": 1,
+        "origin": OriginTypes.CONNECTOR.value,
+        "connectorName": "KB",
+        "connectorId": "conn-1",
+        "virtualRecordId": "vr-1",
+        "mimeType": MimeTypes.PLAIN_TEXT.value,
+        "indexingStatus": ProgressStatus.NOT_STARTED.value,
+        "extractionStatus": ProgressStatus.NOT_STARTED.value,
+        "isFile": True,
+    }
+    doc.update(overrides)
+    return doc
+
+
+def _blob_with_blocks():
+    return {
+        "block_containers": {
+            "blocks": [{"index": 0, "type": "text", "data": "hello"}],
+            "block_groups": [],
+        }
+    }
+
+
+class TestDeleteVectorCollectionEvent:
+    @staticmethod
+    def _handler_with_vector_store(embedding_size=1024):
+        """Handler whose sink exposes a VectorStore-shaped double.
+
+        ``spec=VectorStore`` is the point of the fixture: a bare MagicMock
+        accepts any attribute, so a test written against a method that no
+        longer exists on the real class would keep passing while production
+        raised AttributeError.
+        """
+        from app.modules.transformers.vectorstore import VectorStore
+
+        handler = _make_handler()
+        sink = MagicMock()
+        sink.vector_store = MagicMock(spec=VectorStore)
+        sink.vector_store.get_embedding_model_instance = AsyncMock(return_value=False)
+        sink.vector_store.embedding_size = embedding_size
+        handler.event_processor.sink_orchestrator = sink
+        registry = AsyncMock()
+        registry.recreate_all_collections = AsyncMock(return_value=["records"])
+        handler.event_processor.processor.indexing_pipeline.collection_registry = registry
+        return handler, sink, registry
+
+    @pytest.mark.asyncio
+    async def test_recreates_every_managed_collection_and_marks_ready(self):
+        handler, _sink, registry = self._handler_with_vector_store()
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
+            new_callable=AsyncMock,
+        ) as mark:
+            events = await _collect_events(
+                handler,
+                EventTypes.DELETE_VECTOR_COLLECTION.value,
+                {"requestedByOrgId": "org-1"},
+            )
+
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        assert events[0].data.record_id == "delete_vector_collection"
+        # The dimension comes from the live model, not the manifest: this event
+        # fires precisely because the model (and so the width) changed.
+        registry.recreate_all_collections.assert_awaited_once_with(1024)
+        assert mark.await_args.args[1] == PHASE_READY
+
+    @pytest.mark.asyncio
+    async def test_missing_vector_store_marks_failed(self):
+        """The cleanup job polls for a phase; a silent raise makes it wait out
+        its whole deadline with no explanation."""
+        handler = _make_handler()
+        handler.event_processor.sink_orchestrator = None
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
+            new_callable=AsyncMock,
+        ) as mark, pytest.raises(IndexingError):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_VECTOR_COLLECTION.value,
+                {"requestedByOrgId": "org-1"},
+            )
+
+        assert mark.await_args.args[1] == PHASE_FAILED
+
+    @pytest.mark.asyncio
+    async def test_rebuild_failure_marks_failed(self):
+        handler, _sink, registry = self._handler_with_vector_store()
+        registry.recreate_all_collections = AsyncMock(side_effect=Exception("qdrant down"))
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
+            new_callable=AsyncMock,
+        ) as mark, pytest.raises(Exception, match="qdrant down"):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_VECTOR_COLLECTION.value,
+                {"requestedByOrgId": "org-1"},
+            )
+
+        assert mark.await_args.args[1] == PHASE_FAILED
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_dimension_refuses_to_recreate(self):
+        """Recreating at the wrong width silently breaks every later upsert."""
+        handler, _sink, registry = self._handler_with_vector_store(embedding_size=None)
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
+            new_callable=AsyncMock,
+        ), pytest.raises(IndexingError):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_VECTOR_COLLECTION.value,
+                {"requestedByOrgId": "org-1"},
+            )
+
+        registry.recreate_all_collections.assert_not_awaited()
+
+
+class TestVectorDbOnlyReindex:
+    @pytest.mark.asyncio
+    async def test_unusable_blob_leaves_existing_vectors_alone(self):
+        """A record searchable before the event must not be left with none.
+
+        The blob checks cost nothing and every one of them fails without
+        re-embedding, so deleting ahead of them destroys the only copy of
+        vectors that a retry cannot rebuild when the blob is genuinely gone.
+        """
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value=_vector_only_graph_doc()
+        )
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        sink = MagicMock()
+        sink.blob_storage.get_record_from_storage = AsyncMock(return_value=None)
+        sink.index = AsyncMock()
+        handler.event_processor.sink_orchestrator = sink
+
+        await _collect_events(
+            handler,
+            EventTypes.REINDEX_RECORD.value,
+            {
+                "recordId": "rec-1",
+                "orgId": "org-1",
+                "virtualRecordId": "vr-1",
+                "mimeType": MimeTypes.PLAIN_TEXT.value,
+                "forceReindex": True,
+                "vectorDbOnly": True,
+            },
+        )
+
+        pipeline.delete_points_for_virtual_record.assert_not_awaited()
+        sink.index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_transient_blob_error_is_retried_not_burned(self):
+        """_fail acknowledges the message, so a storage blip is permanent.
+
+        It writes FAILED and yields both completion events, meaning the broker
+        counts the message as handled — one 5xx would burn every record it
+        touched for the whole rebuild with nothing to correct it.
+        """
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value=_vector_only_graph_doc()
+        )
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        sink = MagicMock()
+        sink.blob_storage.get_record_from_storage = AsyncMock(
+            side_effect=TimeoutError("blob storage timed out")
+        )
+        handler.event_processor.sink_orchestrator = sink
+
+        with pytest.raises(TimeoutError):
+            await _collect_events(
+                handler,
+                EventTypes.REINDEX_RECORD.value,
+                {
+                    "recordId": "rec-1",
+                    "orgId": "org-1",
+                    "virtualRecordId": "vr-1",
+                    "mimeType": MimeTypes.PLAIN_TEXT.value,
+                    "forceReindex": True,
+                    "vectorDbOnly": True,
+                },
+            )
+
+        pipeline.delete_points_for_virtual_record.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_malformed_blocks_do_not_destroy_existing_vectors(self):
+        """_blob_has_blocks only checks the container is non-empty.
+
+        A blob that passes it can still fail schema validation, and that
+        classifies TERMINAL — so validating after the delete would acknowledge
+        a record whose vectors are already gone and never come back to it.
+        """
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value=_vector_only_graph_doc()
+        )
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        sink = MagicMock()
+        # Non-empty, so _blob_has_blocks passes, but not a valid BlocksContainer.
+        sink.blob_storage.get_record_from_storage = AsyncMock(
+            return_value={"block_containers": {"blocks": [{"bogus": object()}]}}
+        )
+        sink.index = AsyncMock()
+        handler.event_processor.sink_orchestrator = sink
+
+        await _collect_events(
+            handler,
+            EventTypes.REINDEX_RECORD.value,
+            {
+                "recordId": "rec-1",
+                "orgId": "org-1",
+                "virtualRecordId": "vr-1",
+                "mimeType": MimeTypes.PLAIN_TEXT.value,
+                "forceReindex": True,
+                "vectorDbOnly": True,
+            },
+        )
+
+        pipeline.delete_points_for_virtual_record.assert_not_awaited()
+        sink.index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_index_failure_after_delete_is_never_acknowledged(self):
+        """Past the delete, acknowledging ends the record's only way back.
+
+        The old points are gone, so a searchable record depends on a successful
+        re-run. Even a TERMINAL-classifying error is re-raised so the broker
+        redelivers rather than burning the record on the first attempt.
+        """
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value=_vector_only_graph_doc()
+        )
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        sink = MagicMock()
+        sink.blob_storage.get_record_from_storage = AsyncMock(
+            return_value=_blob_with_blocks()
+        )
+        # ProcessingError classifies TERMINAL; it must still be re-raised here.
+        from app.exceptions.indexing_exceptions import ProcessingError
+
+        sink.index = AsyncMock(side_effect=ProcessingError("terminal-ish"))
+        handler.event_processor.sink_orchestrator = sink
+
+        with pytest.raises(ProcessingError):
+            await _collect_events(
+                handler,
+                EventTypes.REINDEX_RECORD.value,
+                {
+                    "recordId": "rec-1",
+                    "orgId": "org-1",
+                    "virtualRecordId": "vr-1",
+                    "mimeType": MimeTypes.PLAIN_TEXT.value,
+                    "forceReindex": True,
+                    "vectorDbOnly": True,
+                },
+            )
+
+        # Carries the record's own context: the delete is scoped to the
+        # collection this record writes to, not to "the" collection.
+        pipeline.delete_points_for_virtual_record.assert_awaited_once()
+        vrid, ctx = pipeline.delete_points_for_virtual_record.await_args.args
+        assert vrid == "vr-1"
+        assert (ctx.org_id, ctx.connector_id) == ("org-1", "conn-1")
+
+    @pytest.mark.asyncio
+    async def test_fetches_blob_and_skips_source_download(self):
+        handler = _make_handler()
+        handler._download_from_signed_url = AsyncMock()
+        graph_doc = _vector_only_graph_doc()
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=graph_doc)
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        sink = MagicMock()
+        sink.blob_storage.get_record_from_storage = AsyncMock(return_value=_blob_with_blocks())
+        sink.index = AsyncMock()
+        handler.event_processor.sink_orchestrator = sink
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.make_api_call",
+            new_callable=AsyncMock,
+        ) as stream_call:
+            events = await _collect_events(
+                handler,
+                EventTypes.REINDEX_RECORD.value,
+                {
+                    "recordId": "rec-1",
+                    "orgId": "org-1",
+                    "virtualRecordId": "vr-1",
+                    "mimeType": MimeTypes.PLAIN_TEXT.value,
+                    "forceReindex": True,
+                    "vectorDbOnly": True,
+                },
+            )
+
+        assert len(events) == 2
+        # Unconditional delete: bulk_delete_embeddings would keep the points,
+        # because the record still exists in the graph on a re-embed.
+        # Carries the record's own context: the delete is scoped to the
+        # collection this record writes to, not to "the" collection.
+        pipeline.delete_points_for_virtual_record.assert_awaited_once()
+        vrid, ctx = pipeline.delete_points_for_virtual_record.await_args.args
+        assert vrid == "vr-1"
+        assert (ctx.org_id, ctx.connector_id) == ("org-1", "conn-1")
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+        sink.blob_storage.get_record_from_storage.assert_awaited_once_with("vr-1", "org-1")
+        sink.index.assert_awaited_once()
+        assert sink.index.await_args.args[0].settings["skip_blob"] is True
+        handler._download_from_signed_url.assert_not_awaited()
+        stream_call.assert_not_awaited()
+        assert all(e.event != "start_parsing" for e in events)
+        get_document_ids = [
+            call.args[0]
+            for call in handler.event_processor.graph_provider.get_document.await_args_list
+        ]
+        assert "conn-1" not in get_document_ids
+
+    @pytest.mark.asyncio
+    async def test_missing_blob_marks_failed(self):
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value=_vector_only_graph_doc()
+        )
+        handler.event_processor.graph_provider.update_node = AsyncMock(return_value=True)
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        sink = MagicMock()
+        sink.blob_storage.get_record_from_storage = AsyncMock(return_value=None)
+        sink.index = AsyncMock()
+        handler.event_processor.sink_orchestrator = sink
+
+        events = await _collect_events(
+            handler,
+            EventTypes.REINDEX_RECORD.value,
+            {
+                "recordId": "rec-1",
+                "orgId": "org-1",
+                "virtualRecordId": "vr-1",
+                "mimeType": MimeTypes.PLAIN_TEXT.value,
+                "forceReindex": True,
+                "vectorDbOnly": True,
+            },
+        )
+
+        assert len(events) == 2
+        sink.index.assert_not_awaited()
+        updates = handler.event_processor.graph_provider.update_node.await_args.args[2]
+        assert updates["indexingStatus"] == ProgressStatus.FAILED.value
+
+    @pytest.mark.asyncio
+    async def test_missing_virtual_record_id_is_skipped_not_failed(self):
+        """No VRID means the record was never indexed, not that anything broke.
+
+        A vector-only reindex re-embeds what is already indexed and deliberately
+        does not download or parse sources, so such a record is out of scope.
+        Marking it FAILED would misreport a healthy record, never succeed on
+        retry, and overwrite the status it actually had — the full per-record
+        reindex is what handles these, and it does so successfully.
+        """
+        handler = _make_handler()
+        graph_doc = _vector_only_graph_doc()
+        graph_doc.pop("virtualRecordId")
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value=graph_doc
+        )
+        handler.event_processor.graph_provider.update_node = AsyncMock(return_value=True)
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        sink = MagicMock()
+        sink.blob_storage.get_record_from_storage = AsyncMock()
+        sink.index = AsyncMock()
+        handler.event_processor.sink_orchestrator = sink
+
+        events = await _collect_events(
+            handler,
+            EventTypes.REINDEX_RECORD.value,
+            {
+                "recordId": "rec-1",
+                "orgId": "org-1",
+                "mimeType": MimeTypes.PLAIN_TEXT.value,
+                "forceReindex": True,
+                "vectorDbOnly": True,
+            },
+        )
+
+        assert len(events) == 2
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+        sink.blob_storage.get_record_from_storage.assert_not_awaited()
+        sink.index.assert_not_awaited()
+        # Status untouched: the record keeps whatever it legitimately had.
+        handler.event_processor.graph_provider.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_folder_still_short_circuits(self):
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value=_vector_only_graph_doc(
+                mimeType=MimeTypes.FOLDER.value,
+                isFile=False,
+            )
+        )
+        handler.event_processor.graph_provider.update_node = AsyncMock(return_value=True)
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        sink = MagicMock()
+        sink.blob_storage.get_record_from_storage = AsyncMock()
+        handler.event_processor.sink_orchestrator = sink
+
+        events = await _collect_events(
+            handler,
+            EventTypes.REINDEX_RECORD.value,
+            {
+                "recordId": "rec-1",
+                "orgId": "org-1",
+                "virtualRecordId": "vr-1",
+                "mimeType": MimeTypes.FOLDER.value,
+                "forceReindex": True,
+                "vectorDbOnly": True,
+            },
+        )
+
+        assert len(events) == 2
+        sink.blob_storage.get_record_from_storage.assert_not_awaited()
+        updates = handler.event_processor.graph_provider.update_node.await_args.args[2]
+        assert updates["indexingStatus"] == ProgressStatus.COMPLETED.value
 
 
 # ===================================================================
@@ -175,7 +911,13 @@ class TestRecordNotFound:
     """Tests for when record is not found in database."""
 
     @pytest.mark.asyncio
-    async def test_record_not_found_yields_nothing(self):
+    async def test_record_not_found_drains_the_message(self):
+        """A record can be deleted between publish and consume.
+
+        Yielding nothing made the consumer raise "Handler ended without
+        INDEXING_COMPLETE", treat it as transient, and burn all three delivery
+        attempts before dead-lettering something no retry could fix.
+        """
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value=None)
@@ -183,7 +925,66 @@ class TestRecordNotFound:
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
         events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
-        assert events == []
+        assert [e.event for e in events] == [
+            IndexingEvent.PARSING_COMPLETE,
+            IndexingEvent.INDEXING_COMPLETE,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_graph_is_not_drained_as_a_deletion(self):
+        """Draining is permanent: the event is gone and the record keeps its
+        status, so a document discarded here waits for the stranded sweep an
+        hour later. During a graph restart this threw away every record in
+        flight -- the nightly saw them still QUEUED after fifteen minutes,
+        against a log line reading "not found in database" moments before
+        "Failed to connect to Neo4j".
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+
+        async def unreadable_graph(*_args, raise_on_error: bool = False, **_kwargs):
+            # What both providers do: swallow and answer None unless asked not
+            # to. A double that raised either way would pass without the fix.
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return None
+
+        gp.get_document = AsyncMock(side_effect=unreadable_graph)
+
+        payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
+        with pytest.raises(RuntimeError):
+            await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_connector_is_not_drained_as_a_deletion(self):
+        """The same hole one lookup further in. Reading the record can succeed
+        and the connector read fail a moment later, and a missing connector
+        drains the message exactly like a missing record does.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "connectorId": "conn-1",
+            "origin": OriginTypes.CONNECTOR.value,
+            "mimeType": "application/pdf",
+        }
+
+        async def unreadable_connector(_doc_id, collection, raise_on_error: bool = False, **_kwargs):
+            if collection == CollectionNames.RECORDS.value:
+                return record
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return None
+
+        gp.get_document = AsyncMock(side_effect=unreadable_connector)
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
+        with pytest.raises(RuntimeError):
+            await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
 
 # ===================================================================
@@ -523,6 +1324,40 @@ class TestUnsupportedFileType:
             events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) >= 1
+
+    @pytest.mark.asyncio
+    async def test_epub_mime_and_extension_pass_check(self):
+        """application/epub+zip + .epub should not trigger the unsupported path."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/epub+zip",
+        }
+        gp.get_document = AsyncMock(return_value=record)
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "application/epub+zip",
+            "extension": "epub",
+            "signedUrl": "https://example.com/book.epub",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"content"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 1
+        assert events[0].event == "parsing_complete"
 
     @pytest.mark.asyncio
     async def test_json_mime_and_extension_pass_check(self):
@@ -1058,13 +1893,14 @@ class TestProcessEventErrors:
         gp.get_document = AsyncMock(side_effect=[record, record])
         gp.update_node = AsyncMock(return_value=True)
         handler._trigger_next_queued_duplicate = AsyncMock()
-        
+
         # Mock bulk_delete_embeddings for REINDEX_RECORD path
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
 
         ep = handler.event_processor
-        
+
         def _on_event_returns_failing_gen(event_data):
             return _failing_async_gen(
                 DocumentProcessingError(
@@ -1072,7 +1908,7 @@ class TestProcessEventErrors:
                     details={"dependency": "cairosvg"},
                 )
             )
-        
+
         ep.on_event = _on_event_returns_failing_gen
 
         payload = {
@@ -1102,7 +1938,8 @@ class TestProcessEventErrors:
         gp.update_node.assert_awaited()
         updates = gp.update_node.call_args.args[2]
         assert updates["indexingStatus"] == ProgressStatus.FAILED.value
-        assert "cairosvg" in updates["reason"]
+        # The dependency detail stays in the logs; the person sees what to do.
+        assert updates["reason"] == user_errors.UNREADABLE_FILE
 
     @pytest.mark.asyncio
     async def test_terminal_error_record_not_found_skips_trigger_duplicate(self):
@@ -1115,19 +1952,20 @@ class TestProcessEventErrors:
             "indexingStatus": ProgressStatus.NOT_STARTED.value,
             "mimeType": "image/svg+xml",
         }
-        
+
         # First call: get record for processing (returns record)
         # Second call: __update_document_status tries to get record (returns None - record was deleted)
         gp.get_document = AsyncMock(side_effect=[record, None])
         gp.batch_update_nodes = AsyncMock(return_value=False)
         handler._trigger_next_queued_duplicate = AsyncMock()
-        
+
         # Mock bulk_delete_embeddings for REINDEX_RECORD path
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
 
         ep = handler.event_processor
-        
+
         def _on_event_returns_failing_gen(event_data):
             return _failing_async_gen(
                 DocumentProcessingError(
@@ -1135,7 +1973,7 @@ class TestProcessEventErrors:
                     details={"dependency": "cairosvg"},
                 )
             )
-        
+
         ep.on_event = _on_event_returns_failing_gen
 
         payload = {
@@ -1206,51 +2044,6 @@ class TestProcessEventErrors:
             assert doc.get("indexingStatus") != ProgressStatus.FAILED.value
 
     @pytest.mark.asyncio
-    async def test_cancellation_marks_failed_on_final_attempt(self):
-        """A processing-timeout cancellation on the final delivery attempt must
-        mark the record FAILED instead of stranding it in IN_PROGRESS."""
-        handler = _make_handler()
-        gp = handler.event_processor.graph_provider
-        record = {
-            "_key": "r1",
-            "virtualRecordId": "vr1",
-            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
-            "mimeType": "application/pdf",
-        }
-        gp.get_document = AsyncMock(return_value=record)
-        gp.batch_update_nodes = AsyncMock(return_value=True)
-        handler._trigger_next_queued_duplicate = AsyncMock()
-
-        payload = {
-            "recordId": "r1",
-            "virtualRecordId": "vr1",
-            "orgId": "org-1",
-            "mimeType": "application/pdf",
-            "extension": "pdf",
-            "is_final_failure": True,
-        }
-
-        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
-            mock_jwt.return_value = "token"
-            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
-                # asyncio.timeout in the consumer cancels the handler mid-await
-                mock_api.side_effect = asyncio.CancelledError()
-                handler.config_service.get_config = AsyncMock(
-                    return_value={"connectors": {"endpoint": "http://localhost:8088"}}
-                )
-                with pytest.raises(asyncio.CancelledError):
-                    await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
-
-        failed_updates = [
-            call.args[2]
-            for call in gp.update_node.call_args_list
-            if len(call.args) >= 3
-            and call.args[2].get("indexingStatus") == ProgressStatus.FAILED.value
-        ]
-        assert failed_updates, "record should be marked FAILED after final-attempt cancellation"
-        handler._trigger_next_queued_duplicate.assert_awaited_once()
-
-    @pytest.mark.asyncio
     async def test_transient_failure_reverts_in_progress_to_queued(self):
         """Transient failure while the record is still IN_PROGRESS reverts it to
         QUEUED so it stops counting against concurrency limits while it waits
@@ -1294,6 +2087,8 @@ class TestProcessEventErrors:
         updates = gp.update_node.await_args[0][2]
         assert updates.get("indexingStatus") == ProgressStatus.QUEUED.value
         assert updates.get("extractionStatus") == ProgressStatus.NOT_STARTED.value
+        # Back in line for its retry: restart the clock the stranded sweep ages on.
+        assert isinstance(updates.get("queuedAtTimestamp"), int)
 
     @pytest.mark.asyncio
     async def test_transient_parse_failure_reverts_all_in_progress_statuses(self):
@@ -1337,7 +2132,80 @@ class TestProcessEventErrors:
         assert updates.get("indexingStatus") == ProgressStatus.QUEUED.value
 
     @pytest.mark.asyncio
-    async def test_cancellation_reverts_all_in_progress_statuses(self):
+    async def test_cancellation_on_the_final_attempt_still_writes_nothing(self):
+        """Cancellation is checked before is_final, and this is why.
+
+        is_final_failure is set from the retry count before the handler runs,
+        so a record on its last attempt that is then cancelled by a shutdown
+        used to take the FAILED branch -- misreporting a record the broker is
+        about to redeliver, and clearing the processingStartedAt the stale scan
+        needs to recover it.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "virtualRecordId": "vr1",
+                "parsingStatus": ProgressStatus.IN_PROGRESS.value,
+                "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                "mimeType": "application/pdf",
+            }
+        )
+        gp.update_node = AsyncMock(return_value=True)
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+
+        entered_processor = asyncio.Event()
+        never_complete = asyncio.Event()
+
+        async def blocked_events(_event_data):
+            entered_processor.set()
+            await never_complete.wait()
+            if False:
+                yield None
+
+        handler.event_processor.on_event = blocked_events
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+            # the difference from the test below
+            "is_final_failure": True,
+        }
+
+        with patch.object(
+            handler,
+            "_download_from_signed_url",
+            new=AsyncMock(return_value=b"pdf"),
+        ):
+            event_generator = handler.process_event(
+                EventTypes.NEW_RECORD.value,
+                payload,
+            )
+            processing = asyncio.create_task(anext(event_generator))
+            await asyncio.wait_for(entered_processor.wait(), timeout=1)
+            processing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await processing
+            await event_generator.aclose()
+
+        gp.update_node.assert_not_awaited()
+        gp.batch_update_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_leaves_the_record_in_progress(self):
+        """A cancelled record must stay IN_PROGRESS, not fall back to QUEUED.
+
+        The revert-to-QUEUED path exists because the consumer re-queues the
+        message; a cancellation schedules no such retry — the broker entry is
+        simply left unacknowledged and redelivered. Writing QUEUED here put the
+        record in the one state no sweep reconciles, so if the process never
+        came back it was stranded for ever. IN_PROGRESS with its
+        processingStartedAt intact is what the stale-record scan looks for.
+        """
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         record = {
@@ -1387,10 +2255,7 @@ class TestProcessEventErrors:
                 await processing
             await event_generator.aclose()
 
-        updates = gp.update_node.await_args.args[2]
-        assert updates["parsingStatus"] == ProgressStatus.NOT_STARTED.value
-        assert updates["indexingStatus"] == ProgressStatus.QUEUED.value
-        assert updates["processingStartedAt"] is None
+        gp.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_transient_failure_after_completed_does_not_downgrade(self):
@@ -1601,7 +2466,7 @@ class TestProcessEventErrors:
             mock_dl.return_value = b"content"
             await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
-        gp.find_next_queued_duplicate.assert_awaited_once_with("r1")
+        gp.find_next_queued_duplicate.assert_awaited_once_with("r1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_finally_block_record_none_in_db_logs_warning(self):
@@ -1672,14 +2537,14 @@ class TestPropagatePrimaryFailureToQueuedDuplicates:
         gp.update_queued_duplicates_status = AsyncMock(return_value=2)
 
         await handler._propagate_primary_failure_to_queued_duplicates(
-            "r1", "vr1", "Rate limit exceeded"
+            "r1", "vr1", user_errors.FILE_TOO_LARGE
         )
 
         gp.update_queued_duplicates_status.assert_awaited_once_with(
             "r1",
             ProgressStatus.FAILED.value,
             "vr1",
-            reason="Primary duplicate indexing failed: Rate limit exceeded",
+            reason=user_errors.duplicate_failed(user_errors.FILE_TOO_LARGE),
         )
 
     @pytest.mark.asyncio
@@ -1694,7 +2559,7 @@ class TestPropagatePrimaryFailureToQueuedDuplicates:
             "r1",
             ProgressStatus.FAILED.value,
             "vr1",
-            reason="Primary duplicate indexing failed",
+            reason=user_errors.duplicate_failed(None),
         )
 
     @pytest.mark.asyncio
@@ -1744,7 +2609,7 @@ class TestPropagatePrimaryFailureToQueuedDuplicates:
                     await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         handler._propagate_primary_failure_to_queued_duplicates.assert_awaited_once_with(
-            "r1", "vr1", "download failed"
+            "r1", "vr1", user_errors.UNREADABLE_FILE
         )
         handler._trigger_next_queued_duplicate.assert_not_awaited()
 
@@ -1764,7 +2629,34 @@ class TestTriggerNextQueuedDuplicate:
 
         await handler._trigger_next_queued_duplicate("r1", "vr1")
 
-        gp.find_next_queued_duplicate.assert_awaited_once_with("r1")
+        gp.find_next_queued_duplicate.assert_awaited_once_with("r1", raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_graph_does_not_look_like_an_empty_queue(self):
+        """Nothing looks at this chain again. If the lookup answers "nothing
+        is waiting" when it could not read, the duplicates behind this record
+        keep QUEUED with no event left to move them. Failing instead reaches
+        the handler that marks them FAILED, which a reindex can undo.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+
+        async def unreadable_graph(*_args, raise_on_error: bool = False, **_kwargs):
+            # What both providers do: swallow and answer None unless asked not
+            # to. A double that raised either way would pass without the fix.
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return None
+
+        gp.find_next_queued_duplicate = AsyncMock(side_effect=unreadable_graph)
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        await handler._trigger_next_queued_duplicate("r1", "vr1")
+
+        gp.update_queued_duplicates_status.assert_awaited_once_with(
+            "r1", ProgressStatus.FAILED.value, "vr1"
+        )
+        handler.producer.send_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_queued_duplicate_found_non_file(self):
@@ -2027,7 +2919,7 @@ class TestDownloadFromSignedUrl:
 
         async def _iter_chunked_fail(chunk_size):
             raise IOError("Disk full")
-            yield  # make it a generator  # noqa: E115
+            yield  # make it a generator
 
         mock_response.content = MagicMock()
         mock_response.content.iter_chunked = _iter_chunked_fail
@@ -2244,7 +3136,7 @@ class TestFolderRecordSkip:
         gp.update_node.assert_awaited()
         updates = gp.update_node.call_args.args[2]
         assert updates["indexingStatus"] == ProgressStatus.COMPLETED.value
-        assert updates["reason"] == "Folder record — no content to index"
+        assert updates["reason"] == user_errors.FOLDER_NOTHING_TO_INDEX
 
     @pytest.mark.asyncio
     async def test_google_drive_folder_mime_skips_indexing(self):
@@ -2575,6 +3467,7 @@ class TestReconciliationPath:
 
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -2611,6 +3504,7 @@ class TestReconciliationPath:
 
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -2937,3 +3831,286 @@ class _AsyncContextManager:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         return False
+
+
+class TestMembershipEventBrokerAgnostic:
+    """syncVectorMembership must publish identically on Kafka and Redis Streams."""
+
+    @pytest.mark.asyncio
+    async def test_default_send_messages_forwards_partition_key(self):
+        """Redis Streams inherits the default send_messages; it must keep the key.
+
+        The membership publish relies on (key, payload) tuples, so a producer that
+        dropped the key would silently lose per-VRID routing.
+        """
+        from app.services.messaging.interface.producer import IMessagingProducer
+
+        sent = []
+
+        class _Producer(IMessagingProducer):
+            async def initialize(self):
+                return None
+
+            async def send_message(self, topic, message, key=None):
+                sent.append((topic, key, message["eventType"]))
+                return True
+
+            async def send_event(self, topic, event_type, payload, key=None):
+                return True
+
+            async def close(self):
+                return None
+
+            async def health_check(self):
+                return True
+
+            async def start(self):
+                return None
+
+            async def stop(self):
+                return None
+
+            async def cleanup(self):
+                return None
+
+        results = await _Producer().send_messages(
+            "record-events",
+            [
+                ("vr-1", {"eventType": "syncVectorMembership"}),
+                ("vr-2", {"eventType": "syncVectorMembership"}),
+            ],
+        )
+        assert results == [True, True]
+        assert sent == [
+            ("record-events", "vr-1", "syncVectorMembership"),
+            ("record-events", "vr-2", "syncVectorMembership"),
+        ]
+
+
+class TestTerminalConditionsDrain:
+    """A message that can never succeed must not be retried three times.
+
+    Returning without INDEXING_COMPLETE makes the consumer raise "Handler ended
+    without INDEXING_COMPLETE", classify it as a transient failure, and burn
+    every delivery attempt — each holding a Pool.INDEX slot — before
+    dead-lettering something redelivery could never fix.
+    """
+
+    @pytest.mark.asyncio
+    async def test_missing_record_drains_instead_of_retrying(self):
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value=None
+        )
+
+        events = await _collect_events(
+            handler,
+            EventTypes.NEW_RECORD.value,
+            {"recordId": "gone", "orgId": "org-1"},
+        )
+
+        assert [e.event for e in events] == [
+            IndexingEvent.PARSING_COMPLETE,
+            IndexingEvent.INDEXING_COMPLETE,
+        ]
+
+
+
+# ===========================================================================
+# on_message_abandoned — the terminal status a discarded message leaves behind
+# ===========================================================================
+
+
+class TestOnMessageAbandoned:
+    """The handler's AbandonedMessageSink implementation.
+
+    This is what stops a discarded message from stranding its record. Before it
+    existed, a consumer that gave up on a message acknowledged it and wrote
+    nothing, so the record kept the status it was created with — QUEUED — which
+    the stale scan (IN_PROGRESS only) and the connector sweep (inactive
+    connectors only) both ignore. It sat there for ever, and the only log line
+    named the broker's message id, not the record.
+    """
+
+    @staticmethod
+    def _message(record_id="r1", event_type="newRecord"):
+        payload = {"recordId": record_id} if record_id else {"orgId": "org-1"}
+        return StreamMessage(eventType=event_type, payload=payload)
+
+    @pytest.mark.asyncio
+    async def test_marks_the_record_failed_with_a_reason(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "parsingStatus": ProgressStatus.NOT_STARTED.value,
+            }
+        )
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+
+        await handler.on_message_abandoned(
+            self._message(), reason="4 transient failures", attempts=4
+        )
+
+        updates = gp.update_node.await_args.args[2]
+        assert updates["indexingStatus"] == ProgressStatus.FAILED.value
+        assert updates["extractionStatus"] == ProgressStatus.FAILED.value
+        assert updates["processingStartedAt"] is None
+        # The broker's own account ("4 transient failures") is logged, not shown.
+        assert updates["reason"] == user_errors.RETRIES_EXHAUSTED
+
+    @pytest.mark.parametrize(
+        "settled_status",
+        [
+            ProgressStatus.COMPLETED.value,
+            ProgressStatus.EMPTY.value,
+            ProgressStatus.AUTO_INDEX_OFF.value,
+            ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+            ProgressStatus.FAILED.value,
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_never_downgrades_a_settled_record(self, settled_status):
+        """A duplicate delivery of a finished record must not be rewritten.
+
+        AUTO_INDEX_OFF matters most here: the connector parked that record
+        deliberately, and turning it into a failure would misreport it. FAILED
+        is in the list so the specific reason the handler recorded survives —
+        this path only has a generic one to offer.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={"_key": "r1", "indexingStatus": settled_status}
+        )
+        gp.update_node = AsyncMock(return_value=True)
+
+        await handler.on_message_abandoned(
+            self._message(), reason="poison", attempts=3
+        )
+
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_never_fails_a_record_whose_handler_is_still_running(self):
+        """Idle-drain can abandon a sibling PEL entry while the original
+        delivery is still IN_PROGRESS. Rewriting FAILED races the worker."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            }
+        )
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+
+        await handler.on_message_abandoned(
+            self._message(), reason="delivered 10 times", attempts=10
+        )
+
+        gp.compare_and_set_indexing_status.assert_not_awaited()
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_tolerates_a_deleted_record(self):
+        """A record can be deleted between the event and the abandonment."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value=None)
+        gp.update_node = AsyncMock(return_value=True)
+
+        await handler.on_message_abandoned(
+            self._message(), reason="poison", attempts=3
+        )
+
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_op_for_record_less_events(self):
+        """Bulk-delete and membership-sync events carry no recordId."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock()
+
+        await handler.on_message_abandoned(
+            self._message(record_id=None, event_type="bulkDeleteRecords"),
+            reason="poison",
+            attempts=3,
+        )
+
+        gp.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_op_for_an_unparseable_envelope(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock()
+
+        await handler.on_message_abandoned(None, reason="unparseable", attempts=1)
+
+        gp.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_completes_concurrently_is_not_buried(self):
+        """The settled check is a read; the write has to be conditional.
+
+        A concurrent delivery can finish the record between the two, and an
+        unconditional write would bury a COMPLETED record as FAILED. The swap
+        is claimed from the exact status that was read, so a record that moved
+        on is left alone.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={"_key": "r1", "indexingStatus": ProgressStatus.QUEUED.value}
+        )
+        # Nothing swapped: someone else moved the record first.
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=[])
+        gp.update_node = AsyncMock(return_value=True)
+
+        await handler.on_message_abandoned(
+            self._message(), reason="poison", attempts=3
+        )
+
+        gp.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["r1"], ProgressStatus.QUEUED.value, ProgressStatus.FAILED.value
+        )
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_never_raises_when_the_graph_is_down(self):
+        """The caller is mid-acknowledgement and cannot handle an exception."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(side_effect=Exception("graph down"))
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+
+        await handler.on_message_abandoned(
+            self._message(), reason="poison", attempts=3
+        )
+
+    @pytest.mark.asyncio
+    async def test_reports_a_write_that_did_not_land(self):
+        """update_node returns False rather than raising.
+
+        This is the record's last write; a silently dropped one recreates the
+        bug this method exists to fix, so it has to be logged as an error.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={"_key": "r1", "indexingStatus": ProgressStatus.QUEUED.value}
+        )
+        gp.update_node = AsyncMock(return_value=False)
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+
+        await handler.on_message_abandoned(
+            self._message(), reason="poison", attempts=3
+        )
+
+        assert handler.logger.error.called

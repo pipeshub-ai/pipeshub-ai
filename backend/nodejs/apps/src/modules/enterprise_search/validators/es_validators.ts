@@ -132,7 +132,17 @@ const contextFieldsSchema = {
       deepSearch: z.boolean().optional(),
     })
     .optional(),
+  // Client-generated identifier for this run so a later `POST .../cancel
+  // {runId}` (see `cancelRunBodySchema`) can target it. Optional — a caller
+  // that never sends one just can't be cooperatively cancelled.
+  runId: z.string().uuid({ message: 'runId must be a valid UUID' }).optional(),
 };
+
+/** Body of `POST .../cancel` — one schema for both the assistant and agent
+ * cancel routes, matching Python's `CancelRunRequest`. */
+export const cancelRunBodySchema = z.object({
+  runId: z.string().uuid({ message: 'runId must be a valid UUID' }),
+});
 
 /** Title body shared by conversation/agent rename endpoints. */
 const titleBodySchema = z.object({
@@ -146,6 +156,14 @@ const titleBodySchema = z.object({
 const userIdsSchema = z
   .array(objectId('user ID'))
   .min(1, { message: 'At least one user ID is required' });
+
+/** `?projectId=<id>|unassigned` — narrows a conversation list to one project or to unlinked sessions. */
+const projectIdQuerySchema = z
+  .string()
+  .refine((value) => value === 'unassigned' || OBJECT_ID_REGEX.test(value), {
+    message: "projectId must be a valid project ID or 'unassigned'",
+  })
+  .optional();
 
 // ---------------------------------------------------------------------------
 // Reusable param shapes
@@ -179,6 +197,8 @@ const attachmentRefSchema = z.object({
   mimeType: z.string().min(1).optional(),
   extension: z.string().min(1).optional(),
   virtualRecordId: z.string().min(1).optional(),
+  // Origin metadata ('upload' | 'paste-text') — see IChatAttachmentRef.source.
+  source: z.enum(['upload', 'paste-text']).optional(),
 });
 
 const enterpriseSearchCreateBodySchema = z.object({
@@ -193,6 +213,10 @@ const enterpriseSearchCreateBodySchema = z.object({
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
     chatMode: z.nativeEnum(PIPESHUB_CHAT_MODE).optional(),
+    // Only honored when creating a *new* conversation — see resolveProjectLink
+    // (enterprise_search/utils/project-context.ts). Ignored on follow-up turns.
+    projectId: objectId('project ID').optional(),
+    projectVisibility: z.enum(['private', 'project']).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -234,6 +258,42 @@ export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
   body: z.object({ userIds: userIdsSchema }),
 });
 
+/** Schema for POST /:conversationId/cancel — cooperatively stop an in-flight assistant run. */
+export const cancelConversationStreamParamsSchema = conversationIdParamsSchema.extend({
+  body: cancelRunBodySchema,
+});
+
+/** `projectId: null` unlinks — see `setConversationProject`, es_controller.ts. */
+export const conversationProjectLinkSchema = conversationIdParamsSchema.extend({
+  body: z.object({
+    projectId: z
+      .union([objectId('project ID'), z.null()])
+      .refine((v) => v !== undefined, { message: 'projectId is required' }),
+  }),
+});
+
+export const conversationProjectVisibilitySchema = conversationIdParamsSchema.extend({
+  body: z.object({
+    visibility: z.enum(['private', 'project']),
+  }),
+});
+
+export const agentConversationProjectLinkSchema = z.object({
+  params: z.object({ ...agentKeyParam, ...conversationIdParam }),
+  body: z.object({
+    projectId: z
+      .union([objectId('project ID'), z.null()])
+      .refine((v) => v !== undefined, { message: 'projectId is required' }),
+  }),
+});
+
+export const agentConversationProjectVisibilitySchema = z.object({
+  params: z.object({ ...agentKeyParam, ...conversationIdParam }),
+  body: z.object({
+    visibility: z.enum(['private', 'project']),
+  }),
+});
+
 // ---------------------------------------------------------------------------
 // Agent conversation params / title
 // ---------------------------------------------------------------------------
@@ -251,6 +311,12 @@ export const deleteAgentConversationParamsSchema = agentConversationParamsSchema
 export const agentConversationTitleParamsSchema =
   agentConversationParamsSchema.extend({
     body: titleBodySchema,
+  });
+
+/** Schema for POST /:agentKey/conversations/:conversationId/cancel — cooperatively stop an in-flight agent run. */
+export const cancelAgentConversationStreamParamsSchema =
+  agentConversationParamsSchema.extend({
+    body: cancelRunBodySchema,
   });
 
 /** Schema for GET /:agentKey/conversations/:conversationId — fetch one agent conversation with message pagination/filtering. */
@@ -407,6 +473,58 @@ const agentToolsetSchema = z
     tools: z.array(agentToolRefSchema).optional(),
   });
 
+/**
+ * One attached MCP server instance reference (see Python's `_parse_mcp_servers`,
+ * `api/routes/agent.py`) — no secrets, just enough to resolve the instance +
+ * an optional stored tool selection at chat time.
+ */
+const agentMcpServerSchema = z.object({
+  instanceId: z
+    .string()
+    .trim()
+    .min(1, { message: 'MCP server instanceId is required' })
+    .max(256),
+  name: z
+    .string()
+    .trim()
+    .min(1, { message: 'MCP server name is required' })
+    .max(200),
+  displayName: z.string().max(200).optional(),
+  typeId: z.string().max(200).optional(),
+  tools: z.array(agentToolRefSchema).max(200).optional(),
+});
+
+/**
+ * `mcpServers` on create/update agent payloads. Rejects two attached
+ * instances sharing the same `typeId`, mirroring Python's `_parse_mcp_servers`
+ * duplicate-type rejection — instances with no `typeId` (custom/unregistered
+ * servers) are exempt, same as the Python side.
+ */
+const agentMcpServersSchema = z
+  .array(agentMcpServerSchema)
+  .max(50)
+  .optional()
+  .superRefine((servers, ctx) => {
+    if (!servers) {
+      return;
+    }
+    const seenTypeIds = new Set<string>();
+    servers.forEach((server, index) => {
+      if (!server.typeId) {
+        return;
+      }
+      if (seenTypeIds.has(server.typeId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate MCP server type "${server.typeId}" — only one instance per server type is allowed`,
+          path: [index, 'typeId'],
+        });
+        return;
+      }
+      seenTypeIds.add(server.typeId);
+    });
+  });
+
 const agentKnowledgeSchema = z
   .object({
     connectorId: z.string().trim().min(1),
@@ -447,8 +565,6 @@ const agentWebSearchSchema = z.union([
     }),
 ]);
 
-const AGENT_MODEL_REQUIRED_MESSAGE =
-  'At least one AI model is required. Please add a model to your configuration.';
 const AGENT_REASONING_MODEL_REQUIRED_MESSAGE =
   'At least one reasoning model is required. Please add a reasoning model to your configuration.';
 
@@ -463,13 +579,16 @@ const hasReasoningModel = (
       model.isReasoning === true,
   );
 
-const agentModelsSchema = z
+/**
+ * Agent model list is optional: an agent with no models configured falls back
+ * to the organization's default LLM at execution time. When models ARE
+ * provided, at least one must be a reasoning model so reasoning-effort
+ * settings behave predictably.
+ */
+const agentModelsOptionalSchema = z
   .array(agentModelEntrySchema)
-  .min(1, {
-    message: AGENT_MODEL_REQUIRED_MESSAGE,
-  })
   .superRefine((models, ctx) => {
-    if (!hasReasoningModel(models)) {
+    if (models.length > 0 && !hasReasoningModel(models)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: AGENT_REASONING_MODEL_REQUIRED_MESSAGE,
@@ -484,7 +603,11 @@ const createAgentBodySchema = z
       .trim()
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' }),
-    models: agentModelsSchema,
+    /**
+     * Optional: an agent created without models uses the organization's
+     * default LLM at chat time (see get_llm_for_chat fallback chain).
+     */
+    models: agentModelsOptionalSchema.optional().default([]),
     description: agentLongTextSchema.optional(),
     startMessage: agentLongTextSchema.optional(),
     systemPrompt: agentLongTextSchema.optional(),
@@ -493,6 +616,7 @@ const createAgentBodySchema = z
     shareWithOrg: z.boolean().optional(),
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    mcpServers: agentMcpServersSchema,
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
@@ -500,6 +624,7 @@ const createAgentBodySchema = z
     defaultReasoningEffort: z
       .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
       .optional(),
+    sendUserContext: z.boolean().optional(),
   });
 
 export const createAgentSchema = z.object({
@@ -518,7 +643,9 @@ const updateAgentBodySchema = z
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' })
       .optional(),
-    models: agentModelsSchema.optional(),
+    /** Optional; when present, an empty array clears the agent's models
+     * and reverts it to the organization default LLM. */
+    models: agentModelsOptionalSchema.optional(),
     description: agentLongTextSchema.optional(),
     startMessage: agentLongTextSchema.optional(),
     systemPrompt: agentLongTextSchema.optional(),
@@ -527,12 +654,14 @@ const updateAgentBodySchema = z
     shareWithOrg: z.boolean().optional(),
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    mcpServers: agentMcpServersSchema,
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
     defaultReasoningEffort: z
       .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
       .optional(),
+    sendUserContext: z.boolean().optional(),
   });
 
 export const updateAgentSchema = z.object({
@@ -759,6 +888,7 @@ export const getAllConversationsQuerySchema = z.object({
     startDate: z.string().datetime({ offset: true }).optional(),
     endDate: z.string().datetime({ offset: true }).optional(),
     shared: z.enum(['true', 'false', '1', '0']).optional(),
+    projectId: projectIdQuerySchema,
   }),
 });
 
@@ -770,6 +900,7 @@ export const getAllAgentConversationsQuerySchema = z.object({
   query: z.object({
     page: pageSchema.optional().default(1),
     limit: conversationListLimitSchema.optional().default(20),
+    projectId: projectIdQuerySchema,
     sortBy: z
       .string()
       .optional()

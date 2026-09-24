@@ -64,8 +64,16 @@ from app.agent_loop_lib.hooks.middleware.context import (
     ToolCallContext,
     ToolResultContext,
 )
-from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
-from app.agent_loop_lib.sandbox.coding.local import LocalCodingSandbox
+from app.agent_loop_lib.sandbox.coding.base import SandboxContext
+from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
+from app.agent_loop_lib.sandbox.coding.settings import (
+    EnvSandboxSettingsLoader,
+    SharedSandboxConfig,
+)
+from app.agent_loop_lib.sandbox.governor import (
+    GovernorLimits,
+    get_default_governor,
+)
 from app.agent_loop_lib.sandbox.manager import (
     SandboxLimits,
     SandboxManager,
@@ -86,8 +94,7 @@ from app.agents.agent_loop.protocol.formatter import ArtifactSSEPayload
 from app.config.constants.arangodb import Connectors
 from app.models.entities import ArtifactType, ArtifactVisibility
 from app.sandbox.artifact_upload import MIME_TO_ARTIFACT_TYPE
-from app.sandbox.manager import get_sandbox_mode
-from app.sandbox.models import SandboxLanguage, SandboxMode
+from app.sandbox.models import SandboxLanguage
 from app.sandbox.package_policy import (
     PackageNotAllowedError,
     enforce_package_allowlist,
@@ -136,6 +143,10 @@ _DEFAULT_DOCKER_IMAGE = "pipeshub/sandbox:latest"
 _DEFAULT_EGRESS_NETWORK = "pipeshub_sandbox_egress"
 _DEFAULT_PIP_INDEX_URL = "https://pypi.org/simple"
 _DEFAULT_NPM_REGISTRY = "https://registry.npmjs.org"
+
+# Baked into the PipesHub sandbox image; added to NODE_PATH so the
+# common packages need no per-sandbox npm install.
+_IMAGE_NODE_MODULES = "/home/sandbox/node_modules"
 
 _FALSY_ENV_VALUES = {"0", "false", "no", "off"}
 
@@ -192,59 +203,115 @@ def _curated_package_allowlist() -> list[str]:
     return sorted(get_allowlist(SandboxLanguage.PYTHON) | get_allowlist(SandboxLanguage.TYPESCRIPT))
 
 
-def build_coding_sandbox_manager(
-    *, max_concurrent: int = 5, max_lifetime_s: float = 1800.0, allow_network: bool | None = None,
+async def build_coding_sandbox_manager(
+    *,
+    max_concurrent: int | None = None,
+    max_lifetime_s: float | None = None,
+    allow_network: bool | None = None,
+    ctx: "AgentContext | None" = None,
 ) -> SandboxManager:
-    """Create a fresh, per-request `SandboxManager` wired to the local or
-    Docker coding-sandbox backend, chosen the same way the legacy
-    `app/sandbox/manager.py::get_executor()` stack is (`SANDBOX_MODE`).
+    """Create a fresh, per-request ``SandboxManager`` for the configured
+    coding-sandbox backend.
 
-    `allow_network` defaults to `sandbox_network_enabled()` when omitted —
-    callers that already resolved the flag (see `factory.py`) should pass
-    it explicitly so it isn't re-read (and can't drift) mid-request."""
-    manager = SandboxManager()
-    mode = get_sandbox_mode()
+    The manager is per request; the *governor* it is given is not. Per-request
+    limits bound one chat, but nothing stops N concurrent chats from each
+    spinning up their own quota — so the process-wide ceiling comes from
+    ``get_default_governor()``, shared by every request in this process.
+
+    ``max_concurrent``, ``max_lifetime_s`` and ``allow_network`` fall back to
+    the loaded ``SandboxSettings`` when omitted, so the corresponding env vars
+    are the single place an operator tunes them. A caller that already
+    resolved a value (see ``factory.py`` for ``allow_network``) should pass it
+    explicitly so it isn't re-read, and can't drift, mid-request.
+
+    ``ctx`` is the PipesHub ``AgentContext``. Its ids reach the backend as a
+    ``SandboxContext``: the governor needs ``org_id`` for the per-org cap, and
+    remote backends tag the provider-side resource with it so an orphaned
+    sandbox can be traced back to an org after this process is gone.
+    """
+    sandbox_ctx = SandboxContext(
+        org_id=ctx.org_id if ctx else None,
+        user_id=ctx.user_id if ctx else None,
+        conversation_id=ctx.conversation_id if ctx else None,
+    )
+
+    settings = await EnvSandboxSettingsLoader().load(sandbox_ctx)
+
+    # Explicit argument wins; otherwise settings. Reading these off the
+    # function defaults instead would leave the env vars parsed and ignored.
+    if max_concurrent is None:
+        max_concurrent = settings.max_concurrent_per_request
+    if max_lifetime_s is None:
+        max_lifetime_s = settings.max_lifetime_s
+    if allow_network is None:
+        allow_network = settings.allow_network
+
+    manager = SandboxManager(governor=get_default_governor(GovernorLimits(
+        max_total_sandboxes=settings.governor.max_total_sandboxes,
+        max_per_org=settings.governor.max_per_org,
+    )))
+
+    network_enabled = allow_network
     allowlist = _curated_package_allowlist()
-    limits = SandboxLimits(max_concurrent=max_concurrent, max_lifetime_s=max_lifetime_s)
-    network_enabled = sandbox_network_enabled() if allow_network is None else allow_network
 
-    if mode == SandboxMode.DOCKER:
-        image = os.environ.get(_ENV_DOCKER_IMAGE, _DEFAULT_DOCKER_IMAGE)
-        egress_network = os.environ.get(_ENV_EGRESS_NETWORK, _DEFAULT_EGRESS_NETWORK)
-        pip_index_url = os.environ.get(_ENV_PIP_INDEX_URL, _DEFAULT_PIP_INDEX_URL)
-        npm_registry = os.environ.get(_ENV_NPM_REGISTRY, _DEFAULT_NPM_REGISTRY)
-        logger.info(
-            "build_coding_sandbox_manager: mode=DOCKER image=%s egress_network=%s "
-            "pip_index_url=%s npm_registry=%s network_enabled=%s "
-            "allowlist_size=%d",
-            image, egress_network, pip_index_url, npm_registry,
-            network_enabled, len(allowlist),
+    shared = SharedSandboxConfig(
+        package_allowlist=allowlist,
+        max_lifetime_s=max_lifetime_s,
+    )
+
+    # `allow_network` is about the sandboxed CODE's egress, and each backend
+    # spells that differently — Docker as `allow_network`, E2B as
+    # `allow_internet_access`. Left unset, E2B defaults to True and a
+    # deployment that disabled network still handed generated code the
+    # internet. `allow_network_on_install` is deliberately NOT derived from
+    # it: the install phase reaches a configured registry through its own
+    # channel (Docker runs code with `network_mode=none` while the install
+    # container joins the egress bridge), so coupling them would break
+    # `install_packages` for everyone who disables code egress.
+    if settings.backend == "e2b":
+        settings.backend_options.setdefault("e2b", {}).setdefault(
+            "allow_internet_access", network_enabled,
         )
 
-        def _make_docker_sandbox() -> DockerCodingSandbox:
-            return DockerCodingSandbox(
-                image=image,
-                egress_network=egress_network,
-                pip_index_url=pip_index_url,
-                npm_registry=npm_registry,
-                package_allowlist=allowlist,
-                image_node_modules="/home/sandbox/node_modules",
-                allow_network=network_enabled,
-            )
+    # PipesHub's own Docker defaults, applied only where the settings loader
+    # left a gap so an explicitly configured value always wins.
+    if settings.backend == "docker":
+        docker_opts = settings.backend_options.setdefault("docker", {})
+        docker_opts.setdefault("image", os.environ.get(_ENV_DOCKER_IMAGE, _DEFAULT_DOCKER_IMAGE))
+        docker_opts.setdefault("egress_network", os.environ.get(_ENV_EGRESS_NETWORK, _DEFAULT_EGRESS_NETWORK))
+        docker_opts.setdefault("pip_index_url", os.environ.get(_ENV_PIP_INDEX_URL, _DEFAULT_PIP_INDEX_URL))
+        docker_opts.setdefault("npm_registry", os.environ.get(_ENV_NPM_REGISTRY, _DEFAULT_NPM_REGISTRY))
+        docker_opts.setdefault("image_node_modules", _IMAGE_NODE_MODULES)
+        docker_opts.setdefault("allow_network", network_enabled)
 
-        manager.register_backend_factory(SandboxType.CODING, _make_docker_sandbox, limits=limits)
-    else:
-        logger.info(
-            "build_coding_sandbox_manager: mode=LOCAL network_enabled=%s "
-            "allowlist_size=%d",
-            network_enabled, len(allowlist),
-        )
+    registry = build_default_registry(
+        shared_config=shared,
+        backend_options=settings.backend_options,
+    )
+    # No fallback on failure: a misconfigured or uninstalled backend must
+    # surface here, at wiring time, with the registry's reason. Quietly
+    # substituting a different (and ungoverned) manager would turn a clear
+    # startup error into a confusing failure mid-conversation.
+    factory = registry.get(settings.backend)
 
-        def _make_local_sandbox() -> LocalCodingSandbox:
-            return LocalCodingSandbox(package_allowlist=allowlist)
+    manager.register_backend(
+        SandboxType.CODING,
+        factory,
+        limits=SandboxLimits(
+            max_concurrent=max_concurrent,
+            max_lifetime_s=max_lifetime_s,
+            provision_timeout_s=settings.provision_timeout_s,
+        ),
+        ctx=sandbox_ctx,
+    )
 
-        manager.register_backend_factory(SandboxType.CODING, _make_local_sandbox, limits=limits)
-
+    logger.info(
+        "build_coding_sandbox_manager: backend=%s network_enabled=%s "
+        "allowlist_size=%d max_concurrent=%s max_lifetime_s=%s governor=%s",
+        settings.backend, network_enabled, len(allowlist), max_concurrent,
+        max_lifetime_s,
+        manager._governor.snapshot() if manager._governor else None,
+    )
     return manager
 
 

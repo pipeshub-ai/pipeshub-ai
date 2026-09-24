@@ -5,8 +5,8 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.config.constants.arangodb import AppGroups, Connectors, PermissionModel
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -37,6 +37,7 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
 )
 from app.models.entities import AppUser, RecordGroup, RecordGroupType
 from app.models.permission import Permission
+from app.services.notification.types import NotificationSeverity, NotificationType
 
 
 @(
@@ -47,6 +48,7 @@ from app.models.permission import Permission
     )
     .with_categories(["IT Service Management", "Storage"])
     .with_scopes([ConnectorScope.PERSONAL.value])
+    .with_permission_model(PermissionModel.APP_LEVEL)
     .with_auth(
         [
             AuthBuilder.type(AuthType.API_TOKEN).fields(
@@ -347,18 +349,54 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
+            placeholders_backfilled = await self._sweep_placeholder_records(
+                synced_project_ids={p.external_group_id for p, _ in projects},
+                full_sync_project_ids=sync_stats.get("full_sync_project_ids") or set(),
+            )
+
+            failed_keys = sync_stats.get("failed_project_keys") or []
+            if failed_keys:
+                preview = ", ".join(failed_keys[:10])
+                if len(failed_keys) > 10:
+                    preview = f"{preview}, and {len(failed_keys) - 10} more"
+                self.logger.warning(
+                    "⚠️ Jira DC Personal sync: %s/%s project(s) failed to sync issues: %s",
+                    len(failed_keys), len(projects), preview,
+                )
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("couldn't sync some projects"),
+                    message=(
+                        f"Couldn't sync issues for {len(failed_keys)} project(s): {preview}. "
+                        "Retry sync; check Jira access if it keeps failing."
+                    ),
+                )
+
             self.logger.info(
                 "✅ Jira DC Personal connector %s sync completed. Total: %s issues "
-                "(New: %s, Updated: %s) across %s projects",
+                "(New: %s, Updated: %s) across %s projects; placeholders backfilled: %s",
                 self.connector_id,
                 sync_stats["total_synced"],
                 sync_stats["new_count"],
                 sync_stats["updated_count"],
                 len(projects),
+                placeholders_backfilled,
             )
 
         except Exception as e:
             self.logger.error("Error during Jira DC Personal sync: %s", e, exc_info=True)
+            if not isinstance(e, ConnectorInitError):
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("sync failed"),
+                    message=(
+                        f"The sync stopped due to an error: {str(e)[:200]}. Recent Jira changes "
+                        "may not be reflected yet. Run the sync again; if it keeps failing, "
+                        "check the connector's configuration."
+                    ),
+                )
             raise
 
     async def _fetch_projects(
@@ -475,6 +513,8 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         logger.info(
             "Jira DC Personal connector factory: create_connector(connector_id=%s, scope=%s, created_by=%s)",
@@ -482,11 +522,9 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
             scope,
             created_by,
         )
-        dep = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await dep.initialize()
         return cls(
             logger,
-            dep,
+            data_entities_processor,
             data_store_provider,
             config_service,
             connector_id,

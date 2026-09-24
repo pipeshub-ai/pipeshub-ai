@@ -8,9 +8,11 @@
  *
  * Sources:
  *   1. JWT decode    → userId
- *   2. GET /api/v1/users/:userId         → firstName, lastName, fullName, email, hasLoggedIn
- *   3. GET /api/v1/userGroups/users/:id  → isAdmin (group.type === GroupType.ADMIN)
+ *   2. GET /api/v1/users/:userId         → firstName, lastName, fullName, email, hasLoggedIn, role
+ *   3. GET /api/v1/userGroups/users/:id  → legacy isAdmin fallback if role not set
  *   4. GET /api/v1/users/dp              → avatarUrl (data URL from image bytes; silent fail if none)
+ *
+ * isAdmin prefers user.role === 'admin' | 'member'.
  *
  * Idempotent: skips if already initialized unless `force = true`.
  * Called by <UserProfileInitializer> in the (main) layout.
@@ -88,18 +90,25 @@ export function useInitializeUserProfile() {
           console.debug(LOG, 'User API OK:', {
             name: user?.fullName,
             email: user?.email,
+            role: user?.role,
           });
         }
 
-        const groups =
-          groupsResult.status === 'fulfilled'
-            ? (groupsResult.value.data as Array<{ type: string }>)
-            : null;
+        const groupsRaw =
+          groupsResult.status === 'fulfilled' ? groupsResult.value.data : null;
+        const groups = Array.isArray(groupsRaw)
+          ? groupsRaw.filter(
+              (g): g is { type: string } =>
+                g != null &&
+                typeof g === 'object' &&
+                typeof (g as { type?: unknown }).type === 'string',
+            )
+          : null;
 
         if (groupsResult.status === 'rejected') {
           console.warn(LOG, 'Groups API failed:', groupsResult.reason);
         } else {
-          console.debug(LOG, 'Groups API OK, count:', Array.isArray(groups) ? groups.length : 0);
+          console.debug(LOG, 'Groups API OK, count:', groups?.length ?? 0);
         }
 
         const avatarUrl =
@@ -108,9 +117,16 @@ export function useInitializeUserProfile() {
           console.warn(LOG, 'Avatar (GET /users/dp) failed:', avatarResult.reason);
         }
 
-        const isAdmin = Array.isArray(groups)
-          ? groups.some((g) => g.type === GroupType.ADMIN)
-          : null;
+        const roleLower =
+          typeof user?.role === 'string' ? user.role.trim().toLowerCase() : null;
+        let isAdmin: boolean | null = null;
+        if (roleLower === 'admin') {
+          isAdmin = true;
+        } else if (roleLower === 'member') {
+          isAdmin = false;
+        } else if (groups) {
+          isAdmin = groups.some((g) => g.type === GroupType.ADMIN);
+        }
 
         console.debug(LOG, 'isAdmin resolved:', isAdmin);
 

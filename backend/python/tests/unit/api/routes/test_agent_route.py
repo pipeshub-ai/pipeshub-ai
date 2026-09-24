@@ -16,6 +16,20 @@ from fastapi import HTTPException
 # =============================================================================
 
 
+async def _drain(response) -> str:
+    """Consume an SSE StreamingResponse body — `chat_stream` does its config
+    fan-out inside the stream, so those calls only happen once it is iterated."""
+    return "".join([chunk async for chunk in response.body_iterator])
+
+def _stub_agent_loop():
+    """Patch out the agent loop so draining a `chat_stream` response exercises
+    only the setup phase (config/credential fan-out) and not a whole agent run."""
+    async def _empty(*_a, **_kw):
+        return
+        yield  # pragma: no cover - marks this an async generator
+
+    return patch("app.api.routes.agent.run_agent_loop_stream", new=_empty)
+
 class TestExceptionClasses:
     def test_agent_error(self) -> None:
         from app.api.routes.agent import AgentError
@@ -54,9 +68,12 @@ class TestExceptionClasses:
 
     def test_llm_initialization_error(self) -> None:
         from app.api.routes.agent import LLMInitializationError
+        from app.utils.llm import LLM_MISSING_FOR_CHAT
         err = LLMInitializationError()
         assert err.status_code == 500
-        assert "LLM" in err.detail
+        # The person reads this, so it names the page and the next step, not "LLM".
+        assert err.detail == LLM_MISSING_FOR_CHAT
+        assert "AI Models" in err.detail
 
 
 # =============================================================================
@@ -664,44 +681,10 @@ class TestGetServices:
         request.app.container = container
 
         result = await get_services(request)
-        assert "llm" in result
+        assert "llm" not in result
         assert "retrieval_service" in result
 
-    @pytest.mark.asyncio
-    async def test_llm_none_tries_get_instance(self) -> None:
-        from app.api.routes.agent import get_services
-        request = MagicMock()
-        container = MagicMock()
-        retrieval = AsyncMock()
-        retrieval.llm = None
-        retrieval.get_llm_instance = AsyncMock(return_value=MagicMock())
-        container.retrieval_service = AsyncMock(return_value=retrieval)
-        container.graph_provider = AsyncMock(return_value=AsyncMock())
-        container.reranker_service.return_value = MagicMock()
-        container.config_service.return_value = MagicMock()
-        container.logger.return_value = MagicMock()
-        request.app.container = container
 
-        result = await get_services(request)
-        assert result["llm"] is not None
-
-    @pytest.mark.asyncio
-    async def test_llm_none_both_fail(self) -> None:
-        from app.api.routes.agent import LLMInitializationError, get_services
-        request = MagicMock()
-        container = MagicMock()
-        retrieval = AsyncMock()
-        retrieval.llm = None
-        retrieval.get_llm_instance = AsyncMock(return_value=None)
-        container.retrieval_service = AsyncMock(return_value=retrieval)
-        container.graph_provider = AsyncMock(return_value=AsyncMock())
-        container.reranker_service.return_value = MagicMock()
-        container.config_service.return_value = MagicMock()
-        container.logger.return_value = MagicMock()
-        request.app.container = container
-
-        with pytest.raises(LLMInitializationError):
-            await get_services(request)
 class TestChatStreamWithPlaceholder:
     """Tests for chat_stream endpoint when using agentIdPlaceholder."""
 
@@ -733,18 +716,73 @@ class TestChatStreamWithPlaceholder:
              patch("app.api.routes.agent.get_assistant_agent", new_callable=AsyncMock) as mock_get_assistant, \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), {"isReasoning": True}, {})):
 
-            mock_get_assistant.return_value = {
+            # (agent, toolset_auth_by_instance_id) — the second element lets the
+            # handler skip re-reading the credential paths this already read.
+            mock_get_assistant.return_value = ({
                 "name": "assistant",
                 "knowledge": [],
                 "toolsets": [],
                 "models": [],
                 "systemPrompt": "Test"
-            }
+            }, {})
+
+            with _stub_agent_loop():
+                result = await chat_stream(request, "agentIdPlaceholder")
+                assert isinstance(result, StreamingResponse)
+                # The assistant agent is built inside the stream now.
+                await _drain(result)
+
+            mock_get_assistant.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_response_is_returned_before_the_config_fan_out_runs(self) -> None:
+        """The expensive half must not delay the response headers.
+
+        Guards the split in `chat_stream`: authorization runs up front (so a
+        genuine 404/403 still gets an HTTP status), everything else runs inside
+        the stream. Without this, a regression that moved work back above the
+        `return` would still satisfy every other test here — they only assert
+        the returned object is a StreamingResponse.
+        """
+        from fastapi.responses import StreamingResponse
+
+        from app.api.routes.agent import chat_stream
+
+        services = {
+            "graph_provider": AsyncMock(),
+            "retrieval_service": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+            "llm": MagicMock(),
+        }
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"query":"test query"}')
+        request.app.state.toolset_registry = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1"}), \
+             patch("app.api.routes.agent.get_assistant_agent", new_callable=AsyncMock) as mock_get_assistant, \
+             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), {}, {})) as mock_get_llm, \
+             _stub_agent_loop():
+
+            mock_get_assistant.return_value = ({"name": "assistant", "knowledge": [], "toolsets": [], "models": []}, {})
 
             result = await chat_stream(request, "agentIdPlaceholder")
 
-            mock_get_assistant.assert_called_once()
+            # Headers are ready; none of the expensive work has run yet.
             assert isinstance(result, StreamingResponse)
+            mock_get_assistant.assert_not_called()
+            mock_get_llm.assert_not_called()
+
+            await _drain(result)
+
+            # Draining the body is what performs it.
+            mock_get_assistant.assert_called_once()
+            mock_get_llm.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_non_placeholder_uses_get_agent(self) -> None:
@@ -823,7 +861,8 @@ class TestChatStreamWithPlaceholder:
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), {"isReasoning": True}, {})) as mock_get_llm:
 
-            await chat_stream(request, "real-agent-123")
+            with _stub_agent_loop():
+                await _drain(await chat_stream(request, "real-agent-123"))
 
             assert mock_get_llm.call_args.kwargs["reasoning_effort"] == "high"
 
@@ -861,7 +900,8 @@ class TestChatStreamWithPlaceholder:
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), {"isReasoning": True}, {})) as mock_get_llm:
 
-            await chat_stream(request, "real-agent-123")
+            with _stub_agent_loop():
+                await _drain(await chat_stream(request, "real-agent-123"))
 
             assert mock_get_llm.call_args.kwargs["reasoning_effort"] == "low"
 class TestGetAssistantAgentHelper:
@@ -875,7 +915,7 @@ class TestGetAssistantAgentHelper:
         toolset_registry = MagicMock()
         logger = MagicMock()
         with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets:
-            mock_get_toolsets.return_value = []
+            mock_get_toolsets.return_value = ([], {})
             graph_provider.get_user_by_user_id = AsyncMock(
                 return_value={"id": "u1", "_key": "u1"},
             )
@@ -883,7 +923,7 @@ class TestGetAssistantAgentHelper:
             graph_provider.get_user_apps.return_value = []
 
             import app.api.routes.agent as agent_module
-            result = await agent_module.get_assistant_agent("u1", "o1", config_service, graph_provider, toolset_registry, logger)
+            result, _tsauth = await agent_module.get_assistant_agent("u1", "o1", config_service, graph_provider, toolset_registry, logger)
 
             assert result["name"] == "assistant"
             assert result["isActive"] is True
@@ -905,7 +945,7 @@ class TestGetAssistantAgentHelper:
             {"id": "550e8400-e29b-41d4-a716-446655440201", "name": "Beta"},
         ]
         with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets:
-            mock_get_toolsets.return_value = []
+            mock_get_toolsets.return_value = ([], {})
             graph_provider.get_user_by_user_id = AsyncMock(
                 return_value={"id": "u1", "_key": "u1"},
             )
@@ -913,7 +953,7 @@ class TestGetAssistantAgentHelper:
             graph_provider.get_user_apps = AsyncMock(return_value=[])
 
             import app.api.routes.agent as agent_module
-            result = await agent_module.get_assistant_agent("u1", "o1", config_service, graph_provider, toolset_registry, logger)
+            result, _tsauth = await agent_module.get_assistant_agent("u1", "o1", config_service, graph_provider, toolset_registry, logger)
 
         kn = result["knowledge"]
         assert len(kn) == 2
@@ -943,7 +983,7 @@ class TestGetAssistantAgentHelper:
             graph_provider.get_user_apps.side_effect = Exception("Error")
 
             import app.api.routes.agent as agent_module
-            result = await agent_module.get_assistant_agent("u1", "o1", config_service, graph_provider, toolset_registry, logger)
+            result, _tsauth = await agent_module.get_assistant_agent("u1", "o1", config_service, graph_provider, toolset_registry, logger)
 
             assert result["toolsets"] == []
             assert result["knowledge"] == []
@@ -1095,13 +1135,15 @@ class TestKBFilterHandling:
              patch("app.api.routes.agent.get_assistant_agent", new_callable=AsyncMock) as mock_get_assistant, \
              patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), llm_config, {})):
 
-            mock_get_assistant.return_value = {
+            # (agent, toolset_auth_by_instance_id) — the second element lets the
+            # handler skip re-reading the credential paths this already read.
+            mock_get_assistant.return_value = ({
                 "name": "assistant",
                 "knowledge": [],
                 "toolsets": [],
                 "models": [],
                 "systemPrompt": "Test"
-            }
+            }, {})
 
             result = await chat_stream(request, "agentIdPlaceholder")
             assert isinstance(result, StreamingResponse)
@@ -1200,7 +1242,9 @@ class TestGetModelUsage:
                 await get_model_usage(request, "k1")
 
         assert exc_info.value.status_code == 500
-        assert "graph down" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't check where this model is used. Please try again; if it keeps failing, contact your admin."
+        assert "graph down" not in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_http_exception_propagates_unchanged(self) -> None:
@@ -1526,3 +1570,68 @@ class TestAgentCreatedByMongoId:
              ), \
              pytest.raises(InvalidRequestError):
             await create_agent(request)
+
+    @pytest.mark.asyncio
+    async def test_create_agent_persists_send_user_context_false(self) -> None:
+        from app.api.routes.agent import create_agent
+
+        graph_provider = AsyncMock()
+        graph_provider.begin_transaction = AsyncMock(return_value="txn-1")
+        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        graph_provider.commit_transaction = AsyncMock()
+
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+        request = MagicMock()
+        body = (
+            '{"name":"A1","models":[{"modelKey":"mk1","modelName":"mn1","isReasoning":true}],'
+            '"sendUserContext":false}'
+        )
+        request.body = AsyncMock(return_value=body.encode())
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "u1", "orgId": "org-1"},
+             ), \
+             patch(
+                 "app.api.routes.agent._get_user_document",
+                 new_callable=AsyncMock,
+                 return_value={"email": "a@b.com", "_key": "k1"},
+             ):
+            response = await create_agent(request)
+
+        body_json = json.loads(response.body)
+        assert body_json["agent"]["sendUserContext"] is False
+        upserted = graph_provider.batch_upsert_nodes.await_args.args[0][0]
+        assert upserted["sendUserContext"] is False
+
+    @pytest.mark.asyncio
+    async def test_create_agent_defaults_send_user_context_true(self) -> None:
+        from app.api.routes.agent import create_agent
+
+        graph_provider = AsyncMock()
+        graph_provider.begin_transaction = AsyncMock(return_value="txn-1")
+        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        graph_provider.commit_transaction = AsyncMock()
+
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+        request = MagicMock()
+        body = '{"name":"A1","models":[{"modelKey":"mk1","modelName":"mn1","isReasoning":true}]}'
+        request.body = AsyncMock(return_value=body.encode())
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "u1", "orgId": "org-1"},
+             ), \
+             patch(
+                 "app.api.routes.agent._get_user_document",
+                 new_callable=AsyncMock,
+                 return_value={"email": "a@b.com", "_key": "k1"},
+             ):
+            response = await create_agent(request)
+
+        body_json = json.loads(response.body)
+        assert body_json["agent"]["sendUserContext"] is True

@@ -19,6 +19,7 @@ from app.agents.agent_loop.hooks.attachment_resolver import (
     resolve_attachments_for_goal,
     resolve_history_attachments,
     shape_image_injection,
+    shape_retrieved_image_injection,
 )
 from app.agents.agent_loop.hooks.citations import (
     CitationCollector,
@@ -51,6 +52,7 @@ __all__ = [
     "resolve_attachments_for_goal",
     "resolve_history_attachments",
     "shape_image_injection",
+    "shape_retrieved_image_injection",
     "result_accumulation",
     "retry_with_status",
     "stash_tool_call_metadata",

@@ -14,12 +14,12 @@ from logging import Logger
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
 
-import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -79,6 +79,12 @@ from app.sources.client.confluence.confluence import (
 )
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_found_at_source,
+    to_stream_error,
+)
 
 # Time offset (in hours) applied to date filters to handle timezone differences
 # between the application and Confluence server, ensuring no data is missed during sync
@@ -128,6 +134,7 @@ CONTENT_V1_ATTACHMENT_EXPAND = "version,history,metadata,extensions"
     .with_description("Sync pages, spaces visible to your account into your personal workspace")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
             AuthField(
@@ -379,7 +386,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
         This connector supports API token auth only; credentials are fixed at init time.
         """
         if not self.external_client:
-            raise Exception("Confluence client not initialized. Call init() first.")
+            raise connector_not_ready(self.display_name)
 
         return ConfluenceDataSource(self.external_client)
 
@@ -2632,9 +2639,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500, detail=f"Failed to stream record: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
         """
@@ -2672,12 +2677,14 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 label=f"content/{page_id}",
             )
 
-            # Check response
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Content not found: {page_id}"
-                )
+            # call_with_retry returns (rather than raises) on non-retryable
+            # statuses, so the failure has to be mapped here or 401/403 would
+            # reach the user as "this page was deleted".
+            if not response:
+                raise not_found_at_source(self.display_name)
+
+            if response.status != HttpStatusCode.SUCCESS.value:
+                raise map_source_status(response.status, connector=self.display_name)
 
             response_data = response.json()
             body = response_data.get("body", {}) or {}
@@ -2705,12 +2712,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Failed to fetch content: {e}", exc_info=True)
-            # Extract original HTTP status if available
-            status_code = 500
-            if isinstance(e, httpx.HTTPStatusError):
-                status_code = e.response.status_code
-            detail = str(e)
-            raise HTTPException(status_code=status_code, detail=detail) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _fetch_comment_content(self, record: CommentRecord) -> str:
         """
@@ -2746,12 +2748,11 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 label=f"comment/{comment_id}",
             )
 
-            # Check response
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Comment not found: {comment_id}"
-                )
+            if not response:
+                raise not_found_at_source(self.display_name)
+
+            if response.status != HttpStatusCode.SUCCESS.value:
+                raise map_source_status(response.status, connector=self.display_name)
 
             response_data = response.json()
 
@@ -2781,12 +2782,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Failed to fetch comment content: {e}", exc_info=True)
-            # Extract original HTTP status if available
-            status_code = 500
-            if isinstance(e, httpx.HTTPStatusError):
-                status_code = e.response.status_code
-            detail = str(e)
-            raise HTTPException(status_code=status_code, detail=detail) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _fetch_attachment_content(self, record: Record) -> AsyncGenerator[bytes, None]:
         """
@@ -2831,11 +2827,11 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 label=f"attachment_meta/{attachment_id}",
             )
 
-            if not meta_response or meta_response.status != HttpStatusCode.SUCCESS.value:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Attachment {attachment_id} not found at source",
-                )
+            if not meta_response:
+                raise not_found_at_source(self.display_name)
+
+            if meta_response.status != HttpStatusCode.SUCCESS.value:
+                raise map_source_status(meta_response.status, connector=self.display_name)
 
             download_path = (meta_response.json() or {}).get("_links", {}).get("download")
             if not download_path:
@@ -2862,12 +2858,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 f"Failed to download attachment {attachment_id}: {e}",
                 exc_info=True,
             )
-            # Extract original HTTP status if available
-            status_code = 500
-            if isinstance(e, httpx.HTTPStatusError):
-                status_code = e.response.status_code
-            detail = str(e)
-            raise HTTPException(status_code=status_code, detail=detail) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
         chunk_size = 8192
         for offset in range(0, len(data), chunk_size):
@@ -3569,16 +3560,10 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "ConfluenceDataCenterPersonalConnector":
         """Factory method to create a Confluence Data Center Personal connector instance."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-
-        await data_entities_processor.initialize()
-
         return cls(
             logger,
             data_entities_processor,

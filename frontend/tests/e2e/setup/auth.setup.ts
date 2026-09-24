@@ -2,7 +2,8 @@ import { test as setup, expect } from '../fixtures/base.fixture';
 
 const AUTH_FILE = '.auth/user.json';
 
-setup('authenticate', async ({ page }) => {
+// Tagged @smoke so the smoke run (which filters by title) still signs in first.
+setup('authenticate @smoke', async ({ page }) => {
   const email = process.env.TEST_USER_EMAIL;
   const password = process.env.TEST_USER_PASSWORD;
 

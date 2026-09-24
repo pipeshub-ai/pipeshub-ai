@@ -4,8 +4,10 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.sources.google_cloud_storage.connector import (
@@ -29,7 +31,7 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
-from app.models.entities import FileRecord, RecordType, User
+from app.models.entities import FileRecord, RecordGroupType, RecordType, User
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +52,9 @@ def mock_data_entities_processor():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
         connector_id="gcs-conn-1",
         name="GCS Connector",
@@ -112,11 +117,12 @@ def gcs_connector(mock_logger, mock_data_entities_processor,
     return connector
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -464,11 +470,12 @@ class TestGCSAppUsers:
 # Merged from test_gcs_connector_full_coverage.py
 # =============================================================================
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -510,6 +517,9 @@ def mock_data_entities_processor_fullcov():
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     proc.get_user_by_user_id = AsyncMock(
         return_value=User(
             email="user@test.com",
@@ -631,6 +641,39 @@ class TestGCSDataSourceEntitiesProcessor95:
             assert result.is_internal is True
             assert result.hide_weburl is True
             assert "mybucket" in (result.weburl or "")
+
+    def test_forwards_record_group_kwargs_to_base(
+        self, mock_logger_fullcov, mock_data_store_provider_fullcov, mock_config_service_fullcov
+    ):
+        proc = GCSDataSourceEntitiesProcessor(
+            logger=mock_logger_fullcov,
+            data_store_provider=mock_data_store_provider_fullcov,
+            config_service=mock_config_service_fullcov,
+        )
+        proc.org_id = "org-1"
+        child = MagicMock()
+        child.connector_name = "GCS"
+        child.connector_id = "c1"
+        child.org_id = "org-1"
+
+        result = proc._create_placeholder_parent_record(
+            "mybucket/folder",
+            RecordType.FILE,
+            child,
+            record_name="folder",
+            record_group_type=RecordGroupType.BUCKET.value,
+            external_record_group_id="mybucket",
+        )
+        assert isinstance(result, FileRecord)
+        assert result.record_name == "folder"
+        assert result.record_group_type == RecordGroupType.BUCKET.value
+        assert result.external_record_group_id == "mybucket"
+        assert result.is_internal is True
+        assert result.hide_weburl is True
+        parsed = urlparse(result.weburl)
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "console.cloud.google.com"
+        assert result.path == "folder/"
 
     def test_create_placeholder_non_file_type(self, mock_logger_fullcov, mock_data_store_provider_fullcov, mock_config_service_fullcov):
         proc = GCSDataSourceEntitiesProcessor(
@@ -1110,25 +1153,6 @@ class TestSyncBucket95:
         await connector._sync_bucket("bucket")
 
 
-class TestRemoveOldParentRelationship95:
-    @pytest.mark.asyncio
-    async def test_removed_edges(self, connector):
-        tx = AsyncMock()
-        tx.delete_parent_child_edge_to_record = AsyncMock(return_value=2)
-        await connector._remove_old_parent_relationship("rec-1", tx)
-
-    @pytest.mark.asyncio
-    async def test_zero_edges(self, connector):
-        tx = AsyncMock()
-        tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
-        await connector._remove_old_parent_relationship("rec-1", tx)
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connector):
-        tx = AsyncMock()
-        tx.delete_parent_child_edge_to_record = AsyncMock(side_effect=Exception("err"))
-        await connector._remove_old_parent_relationship("rec-1", tx)
-
 
 class TestEnsureParentFoldersExist95:
     @pytest.mark.asyncio
@@ -1199,7 +1223,7 @@ class TestProcessGcsObject95:
         existing.external_record_id = "bucket/file.txt"
         existing.version = 1
         existing.source_created_at = 1700000000000
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -1220,7 +1244,7 @@ class TestProcessGcsObject95:
         existing.external_record_id = "bucket/file.txt"
         existing.version = 1
         existing.source_created_at = 1700000000000
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -1240,9 +1264,8 @@ class TestProcessGcsObject95:
         existing.external_revision_id = "same_md5"
         existing.version = 0
         existing.source_created_at = 1700000000000
-        connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=None, existing_revision_record=existing
-        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -1274,7 +1297,7 @@ class TestProcessGcsObject95:
         existing.external_record_id = "bucket/file.txt"
         existing.version = 0
         existing.source_created_at = 1700000000000
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {"Key": "file.txt", "LastModified": "2025-06-01T00:00:00Z", "Size": 100}
@@ -1314,8 +1337,7 @@ class TestProcessGcsObject95:
 
     @pytest.mark.asyncio
     async def test_exception_in_processing(self, connector):
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = MagicMock(side_effect=Exception("db err"))
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("db err"))
         obj = {"Key": "file.txt", "LastModified": "2025-06-01T00:00:00Z", "Size": 100}
         record, perms = await connector._process_gcs_object(obj, "bucket")
         assert record is None
@@ -1399,7 +1421,9 @@ class TestGetSignedUrl95:
     @pytest.mark.asyncio
     async def test_not_initialized(self, connector):
         connector.data_source = None
-        assert await connector.get_signed_url(MagicMock()) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(MagicMock())
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_bucket(self, connector):
@@ -1428,21 +1452,61 @@ class TestGetSignedUrl95:
     async def test_access_denied(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_signed_url = AsyncMock(
-            return_value=_make_response(False, error="403 Forbidden")
+            return_value=_make_response(False, error="403 Forbidden", status_code=403)
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_not_found(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_signed_url = AsyncMock(
-            return_value=_make_response(False, error="404 NotFound")
+            return_value=_make_response(False, error="404 NotFound", status_code=404)
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_object_key_does_not_pick_the_status(self, connector):
+        """The GCS error text embeds bucket and key, so matching phrases in it
+        let a key like "hr/permissions/2024.xlsx" report a deleted object as 403."""
+        connector.data_source = MagicMock()
+        connector.data_source.generate_signed_url = AsyncMock(
+            return_value=_make_response(
+                False,
+                error="Blob not found: bucket/hr/permissions/2024.xlsx",
+                status_code=404,
+            )
+        )
+        record = MagicMock(id="r1", external_record_group_id="bucket",
+                           external_record_id="bucket/hr/permissions/2024.xlsx",
+                           record_name="2024.xlsx")
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_denial_on_a_key_containing_404_is_still_403(self, connector):
+        connector.data_source = MagicMock()
+        connector.data_source.generate_signed_url = AsyncMock(
+            return_value=_make_response(
+                False,
+                error="GCS API error: reports/404-page-analysis.pdf",
+                status_code=403,
+            )
+        )
+        record = MagicMock(id="r1", external_record_group_id="bucket",
+                           external_record_id="bucket/reports/404-page-analysis.pdf",
+                           record_name="404-page-analysis.pdf")
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_other_failure(self, connector):
@@ -1452,7 +1516,9 @@ class TestGetSignedUrl95:
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_exception(self, connector):
@@ -1460,7 +1526,9 @@ class TestGetSignedUrl95:
         connector.data_source.generate_signed_url = AsyncMock(side_effect=Exception("err"))
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_key_without_bucket_prefix(self, connector):
@@ -1861,21 +1929,21 @@ class TestRunIncrementalSync95:
 class TestCreateConnector95:
     @pytest.mark.asyncio
     async def test_create_connector(self, mock_logger_fullcov, mock_data_store_provider_fullcov, mock_config_service_fullcov):
-        with patch("app.connectors.sources.google_cloud_storage.connector.GCSApp"), \
-             patch("app.connectors.sources.google_cloud_storage.connector.GCSDataSourceEntitiesProcessor") as MockProc:
-            mock_proc = MagicMock()
-            mock_proc.initialize = AsyncMock()
-            MockProc.return_value = mock_proc
-            result = await GCSConnector.create_connector(
-                logger=mock_logger_fullcov,
-                data_store_provider=mock_data_store_provider_fullcov,
-                config_service=mock_config_service_fullcov,
-                connector_id="gcs-new-1",
-                scope="personal",
-                created_by="test-user-id",
-            )
-            assert isinstance(result, GCSConnector)
-            mock_proc.initialize.assert_awaited_once()
+        with patch("app.connectors.sources.google_cloud_storage.connector.GCSApp"):
+            with patch("app.connectors.sources.google_cloud_storage.connector.GCSDataSourceEntitiesProcessor") as mock_proc_cls:
+                mock_proc_instance = MagicMock()
+                mock_proc_instance.initialize = AsyncMock()
+                mock_proc_cls.return_value = mock_proc_instance
+                result = await GCSConnector.create_connector(
+                    logger=mock_logger_fullcov,
+                    data_store_provider=mock_data_store_provider_fullcov,
+                    config_service=mock_config_service_fullcov,
+                    connector_id="gcs-new-1",
+                    scope="personal",
+                    created_by="test-user-id",
+                    data_entities_processor=mock_proc_instance,
+                )
+                assert isinstance(result, GCSConnector)
 
 
 class TestGetGcsRevisionId95:

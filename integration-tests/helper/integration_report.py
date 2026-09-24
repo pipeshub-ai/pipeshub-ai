@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from helper.http.request_id import request_id_prefix
+
 
 @dataclass
 class TestReportEntry:
@@ -366,6 +368,11 @@ def write_html_report(
             lines.append(f'              <h4 class="failure-title">{i}. <code>{html.escape(test_name)}</code></h4>')
             lines.append(
                 f'              <p class="failure-meta"><strong>Full node ID:</strong> <code>{html.escape(e.nodeid)}</code></p>'
+            )
+            lines.append(
+                '              <p class="failure-meta"><strong>Request-id prefix:</strong> '
+                f'<code>{html.escape(request_id_prefix(e.nodeid))}</code> '
+                "&middot; grep the backend service logs for it to see every call this test made</p>"
             )
             lines.append(
                 f'              <p class="failure-meta"><strong>Suite:</strong> {html.escape(suite)}'

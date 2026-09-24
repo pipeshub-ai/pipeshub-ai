@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { CONTENT_PADDING, HEADER_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
+import type { SkillForBuilder } from '../../types';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { NodeTemplate } from '../types';
 import { filterTemplatesBySearch, groupConnectorInstances, prepareDragData } from '../sidebar-utils';
@@ -14,9 +15,20 @@ import type { ToolsetTypeKeyFlowNode } from '../sidebar-toolset-utils';
 import { toggleKeyedBoolean } from '../sidebar-expand-utils';
 import { AGENT_LLM_FALLBACK_ICON, resolveLlmProviderIconPath } from '../display-utils';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
+import {
+  useFeatureFlagsStore,
+  selectMcpEnabled,
+  selectActionsEnabled,
+  selectSkillsEnabled,
+} from '@/lib/store/feature-flags-store';
+import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
+import { AgentBuilderMcpSection } from './sidebar-mcp-section';
+import { AgentBuilderSkillsSection } from './sidebar-skills-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
+import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
+import type { McpInstanceIdFlowNode } from '../sidebar-mcp-utils';
 import type { AgentWebSearchAttachment } from '../types';
 
 const PALETTE_ROW_MIN_HEIGHT = 44;
@@ -101,6 +113,7 @@ export function AgentBuilderSidebar(props: {
   width: number;
   loading: boolean;
   nodeTemplates: NodeTemplate[];
+  availableSkills: SkillForBuilder[];
   configuredConnectors: Connector[];
   toolsets: BuilderSidebarToolset[];
   activeToolsetTypeKeys: Set<string>;
@@ -110,6 +123,9 @@ export function AgentBuilderSidebar(props: {
     isServiceAccount?: boolean,
     search?: string
   ) => Promise<void>;
+  mcpServers: McpMyServerEntry[];
+  mcpMergeCheckNodes: McpInstanceIdFlowNode[];
+  refreshMcpServers: () => Promise<void>;
   onNotify: (message: string) => void;
   agentKey?: string | null;
   isServiceAccount?: boolean;
@@ -128,11 +144,15 @@ export function AgentBuilderSidebar(props: {
     width,
     loading,
     nodeTemplates,
+    availableSkills,
     configuredConnectors,
     toolsets,
     activeToolsetTypeKeys,
     toolsetMergeCheckNodes,
     refreshToolsets,
+    mcpServers,
+    mcpMergeCheckNodes,
+    refreshMcpServers,
     onNotify,
     agentKey = null,
     isServiceAccount = false,
@@ -144,16 +164,20 @@ export function AgentBuilderSidebar(props: {
   } = props;
 
   const { t } = useTranslation();
+  const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
+  const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
   const onPaletteDragBlocked = useCallback(() => {
     if (paletteDragBlockedMessage) onNotify(paletteDragBlockedMessage);
   }, [paletteDragBlockedMessage, onNotify]);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    models: true,
+    models: false,
     knowledge: true,
     'knowledge-apps': true,
     'knowledge-collections': true,
     tools: true,
+    mcpServers: true,
     skills: true,
   });
 
@@ -169,6 +193,11 @@ export function AgentBuilderSidebar(props: {
   const kbIndividuals = filtered.filter(
     (t) => t.category === 'knowledge' && t.type.startsWith('kb-') && t.type !== 'kb-group'
   );
+  const skillTemplates = filtered.filter((t) => t.category === 'skills');
+
+  const SHOW_MORE_LIMIT = 5;
+  const [showAllKbCollections, setShowAllKbCollections] = useState(false);
+  const [showAllConnectors, setShowAllConnectors] = useState(false);
 
   const toggle = useCallback(
     (key: string, defaultWhenUnset: boolean = DEFAULT_KNOWLEDGE_NEST_EXPANDED) => {
@@ -335,7 +364,8 @@ export function AgentBuilderSidebar(props: {
                       {t('agentBuilder.noConnectors')}
                     </Text>
                   ) : (
-                    connectorTypeEntries.map(([connectorTypeLabel, { instances, icon }]) => {
+                    <>
+                    {(showAllConnectors ? connectorTypeEntries : connectorTypeEntries.slice(0, SHOW_MORE_LIMIT)).map(([connectorTypeLabel, { instances, icon }]) => {
                       const expandKey = `knowledge-connector-${connectorTypeLabel}`;
                       const groupConnectorType = instances[0]?.type;
 
@@ -393,7 +423,39 @@ export function AgentBuilderSidebar(props: {
                           {instances.map((inst, instIdx) => renderInstance(inst, instIdx))}
                         </SidebarCategoryRow>
                       );
-                    })
+                    })}
+                    {connectorTypeEntries.length > SHOW_MORE_LIMIT && (
+                      <button
+                        type="button"
+                        aria-expanded={showAllConnectors}
+                        onClick={() => setShowAllConnectors((v) => !v)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          width: '100%',
+                          gap: 4,
+                          padding: '6px 8px',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          borderRadius: 'var(--radius-1)',
+                          border: 'none',
+                          background: 'none',
+                          fontFamily: 'inherit',
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a3)'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
+                      >
+                        <MaterialIcon
+                          name={showAllConnectors ? 'expand_less' : 'expand_more'}
+                          size={16}
+                          color="var(--accent-9)"
+                        />
+                        <Text size="1" weight="medium" style={{ color: 'var(--accent-9)' }}>
+                          {showAllConnectors ? t('agentBuilder.showLess') : `${t('agentBuilder.showMore')} (${connectorTypeEntries.length - SHOW_MORE_LIMIT})`}
+                        </Text>
+                      </button>
+                    )}
+                    </>
                   )}
                 </SidebarCategoryRow>
               ) : null}
@@ -413,7 +475,8 @@ export function AgentBuilderSidebar(props: {
                       {t('agentBuilder.noCollections')}
                     </Text>
                   ) : (
-                    kbIndividuals.map((t) => (
+                    <>
+                    {(showAllKbCollections ? kbIndividuals : kbIndividuals.slice(0, SHOW_MORE_LIMIT)).map((t) => (
                       <DraggableRow
                         key={t.type}
                         comfortable
@@ -429,7 +492,39 @@ export function AgentBuilderSidebar(props: {
                         />
                         <span style={paletteRowLabelStyle}>{t.label}</span>
                       </DraggableRow>
-                    ))
+                    ))}
+                    {kbIndividuals.length > SHOW_MORE_LIMIT && (
+                      <button
+                        type="button"
+                        aria-expanded={showAllKbCollections}
+                        onClick={() => setShowAllKbCollections((v) => !v)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          width: '100%',
+                          gap: 4,
+                          padding: '6px 8px',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          borderRadius: 'var(--radius-1)',
+                          border: 'none',
+                          background: 'none',
+                          fontFamily: 'inherit',
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a3)'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
+                      >
+                        <MaterialIcon
+                          name={showAllKbCollections ? 'expand_less' : 'expand_more'}
+                          size={16}
+                          color="var(--accent-9)"
+                        />
+                        <Text size="1" weight="medium" style={{ color: 'var(--accent-9)' }}>
+                          {showAllKbCollections ? t('agentBuilder.showLess') : `${t('agentBuilder.showMore')} (${kbIndividuals.length - SHOW_MORE_LIMIT})`}
+                        </Text>
+                      </button>
+                    )}
+                    </>
                   )}
                 </SidebarCategoryRow>
               ) : null}
@@ -437,32 +532,82 @@ export function AgentBuilderSidebar(props: {
             )
           ) : null}
 
-          <SectionHeader
-            title={t('agentBuilder.tools')}
-            icon="handyman"
-            open={expanded.tools}
-            onToggle={() => toggle('tools')}
-          />
-          {expanded.tools ? (
-            <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <AgentBuilderToolsetsSection
-                toolsets={toolsets}
-                loading={loading}
-                refreshToolsets={refreshToolsets}
-                activeToolsetTypeKeys={activeToolsetTypeKeys}
-                toolsetMergeCheckNodes={toolsetMergeCheckNodes}
-                isServiceAccount={isServiceAccount}
-                agentKey={agentKey}
-                onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}
-                onNotify={onNotify}
-                structureLocked={paletteStructureLocked}
-                orgCredentialUiLocked={toolsetsOrgCredentialLocked}
-                onPaletteStructureDragBlocked={onPaletteDragBlocked}
-                webSearchAttached={webSearchAttached}
+          {actionsEnabled ? (
+            <>
+              <SectionHeader
+                title={t('agentBuilder.tools')}
+                icon="handyman"
+                open={expanded.tools}
+                onToggle={() => toggle('tools')}
               />
-            </Box>
+              {expanded.tools ? (
+                <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <AgentBuilderToolsetsSection
+                    toolsets={toolsets}
+                    loading={loading}
+                    refreshToolsets={refreshToolsets}
+                    activeToolsetTypeKeys={activeToolsetTypeKeys}
+                    toolsetMergeCheckNodes={toolsetMergeCheckNodes}
+                    isServiceAccount={isServiceAccount}
+                    agentKey={agentKey}
+                    onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}
+                    onNotify={onNotify}
+                    structureLocked={paletteStructureLocked}
+                    orgCredentialUiLocked={toolsetsOrgCredentialLocked}
+                    onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                    webSearchAttached={webSearchAttached}
+                  />
+                </Box>
+              ) : null}
+            </>
           ) : null}
 
+          {mcpEnabled ? (
+            <>
+              <SectionHeader
+                title={t('agentBuilder.mcpServersSection')}
+                icon="hub"
+                open={expanded.mcpServers}
+                onToggle={() => toggle('mcpServers')}
+              />
+              {expanded.mcpServers ? (
+                <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <AgentBuilderMcpSection
+                    mcpServers={mcpServers}
+                    loading={loading}
+                    refreshMcpServers={refreshMcpServers}
+                    mcpMergeCheckNodes={mcpMergeCheckNodes}
+                    isServiceAccount={isServiceAccount}
+                    agentKey={agentKey}
+                    onNotify={onNotify}
+                    structureLocked={paletteStructureLocked}
+                    onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                  />
+                </Box>
+              ) : null}
+            </>
+          ) : null}
+
+          {skillsEnabled ? (
+            <>
+              <SectionHeader
+                title={t('agentBuilder.skillsSection')}
+                icon="psychology"
+                open={expanded.skills}
+                onToggle={() => toggle('skills')}
+                beta
+              />
+              {expanded.skills ? (
+                <AgentBuilderSkillsSection
+                  availableSkills={availableSkills}
+                  skillTemplates={skillTemplates}
+                  loading={loading}
+                  structureLocked={paletteStructureLocked}
+                  onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                />
+              ) : null}
+            </>
+          ) : null}
         </Box>
       </ScrollArea>
     </Box>
@@ -474,11 +619,13 @@ function SectionHeader({
   icon,
   open,
   onToggle,
+  beta = false,
 }: {
   title: string;
   icon?: string;
   open: boolean;
   onToggle: () => void;
+  beta?: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -532,6 +679,7 @@ function SectionHeader({
         >
           {title}
         </span>
+        {beta ? <BetaBadge /> : null}
       </Flex>
       <IconButton
         size="2"

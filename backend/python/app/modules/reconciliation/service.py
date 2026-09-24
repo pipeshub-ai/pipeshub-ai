@@ -83,7 +83,7 @@ class ReconciliationService:
                 block_id_to_index[block.id] = i
 
         total_block_ids = sum(len(ids) for ids in hash_to_block_ids.values())
-        self.logger.info(
+        self.logger.debug(
             f"📊 Built reconciliation metadata: "
             f"{len(hash_to_block_ids)} unique hashes, "
             f"{total_block_ids} total block IDs (across hashes), "

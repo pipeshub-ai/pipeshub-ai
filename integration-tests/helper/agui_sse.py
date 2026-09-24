@@ -39,6 +39,9 @@ class StreamOutcome(NamedTuple):
     answer: str
     finished: bool
     error: str | None
+    # RUN_FINISHED `result`, so callers can assert on the echoed conversation without
+    # re-reading the stream.
+    result: dict[str, Any] | None = None
 
     @property
     def errored(self) -> bool:

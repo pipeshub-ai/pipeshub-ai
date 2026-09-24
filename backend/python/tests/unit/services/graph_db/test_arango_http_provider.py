@@ -440,11 +440,46 @@ class TestGetDocument:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_the_flag_reaches_the_http_client(self, connected_provider):
+        """Where the real decision is made.
+
+        The client answers None for a 404, a 503 and a dead connection alike, so
+        a provider that kept the flag to itself would leave its own `raise`
+        unreachable and this method would still report a restart as a deletion.
+        The client's own tests cover what it then does with each status.
+        """
+        connected_provider.http_client.get_document.return_value = {"_key": "doc1"}
+
+        await connected_provider.get_document("doc1", "collection", raise_on_error=True)
+
+        assert connected_provider.http_client.get_document.await_args.kwargs[
+            "raise_on_error"
+        ] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_propagates_the_original_failure(self, connected_provider):
+        """Not a replacement: the caller classifies on what actually went wrong."""
+        failure = Exception("error")
+        connected_provider.http_client.get_document.side_effect = failure
+        with pytest.raises(Exception) as caught:
+            await connected_provider.get_document("doc1", "collection", raise_on_error=True)
+        assert caught.value is failure
+
+    @pytest.mark.asyncio
+    async def test_a_missing_document_is_still_none_when_raising(self, connected_provider):
+        """Asking for failures to be raised must not turn absence into one."""
+        connected_provider.http_client.get_document.return_value = None
+        result = await connected_provider.get_document(
+            "missing", "collection", raise_on_error=True
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_get_document_with_transaction(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {"_key": "d1"}
         result = await connected_provider.get_document("d1", "col", transaction="txn1")
         connected_provider.http_client.get_document.assert_awaited_once_with(
-            "col", "d1", txn_id="txn1"
+            "col", "d1", txn_id="txn1", raise_on_error=False
         )
 
 
@@ -1006,6 +1041,45 @@ class TestGetAccessibleVirtualRecordIds:
             assert result == {}
 
     @pytest.mark.asyncio
+    async def test_strict_scope_empty_filters_short_circuits(self, connected_provider):
+        """strictScope with no apps/kb must never fall back to the 'search
+        everything the user can access' scenario."""
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1"]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock,
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock,
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", filters={"strictScope": True}
+            )
+            assert result == {}
+            mock_connector.assert_not_awaited()
+            mock_kb.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_strict_scope_with_filters_still_queries(self, connected_provider):
+        """strictScope only short-circuits an *empty* effective scope — an
+        explicit kb selection (e.g. a project's own hidden KB) still runs."""
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["hidden-kb"]
+        ), patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"v1": "r1"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1",
+                filters={"strictScope": True, "kb": ["hidden-kb"]},
+            )
+            assert result == {"v1": "r1"}
+            mock_kb.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_knowledgebase_prefix_skipped(self, connected_provider):
         """KB apps now use UUID format and are processed like regular apps with type=KB"""
         kb_uuid = "550e8400-e29b-41d4-a716-446655440300"
@@ -1022,6 +1096,214 @@ class TestGetAccessibleVirtualRecordIds:
             await connected_provider.get_accessible_virtual_record_ids("u1", "o1")
             # KB apps with UUIDs should be processed (not skipped like old knowledgeBase_ format)
             mock_connector.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_bare_string_scope_is_not_a_substring_match(self, connected_provider):
+        """`cid in "app1app2"` is a substring test; a malformed scope must
+        narrow to nothing rather than match every app whose id it contains."""
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1", "app2"]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={"vid1": "rid1"}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vid2": "rid2"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", filters={"apps": "app1app2"}
+            )
+            assert result == {}
+            mock_connector.assert_not_awaited()
+            mock_kb.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_collection_id_under_apps_is_searched(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=["kb1"])
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1", "kb1"]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vk": "rk"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", filters={"apps": ["kb1"], "kb": []}
+            )
+            assert result == {"vk": "rk"}
+            mock_connector.assert_not_awaited()
+            assert mock_kb.await_args.args[2] == ["kb1"]
+
+    @pytest.mark.asyncio
+    async def test_scope_order_decides_query_order(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1", "app2"]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_kb:
+            await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", filters={"apps": ["app2", "app1"]}
+            )
+            assert [c.args[2] for c in mock_connector.await_args_list] == ["app2", "app1"]
+            mock_kb.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_app_types_offer_every_scoped_id_to_the_kb_query(
+        self, connected_provider
+    ):
+        """Without types a Collection looks like a connector and would only be
+        queried as one, which finds none of its uploads."""
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=RuntimeError("down"))
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1", "kb1"]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ), patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_kb:
+            await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", filters={"apps": ["kb1"]}
+            )
+            assert mock_kb.await_args.args[2] == ["kb1"]
+
+
+class TestKbReclassificationFromAppsFilter:
+    """KB app IDs placed in the `apps` filter must be reclassified to the
+    `kb` filter so they reach the KB query path instead of being silently
+    dropped by the connector-only branch.
+
+    This is the root cause of the MCP intermittent 404 bug.
+    """
+
+    @pytest.mark.asyncio
+    async def test_kb_id_in_apps_reclassified_to_kb_filter(self, connected_provider):
+        """A KB app UUID in `apps` with empty `kb` must be moved to the KB
+        query path, not treated as a connector."""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider.http_client, "execute_aql",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vr-1": "rec-1"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "u1", "o1", filters={"apps": [kb_uuid], "kb": []}
+            )
+            mock_kb.assert_awaited_once()
+            mock_connector.assert_not_awaited()
+            assert result == {"vr-1": "rec-1"}
+
+    @pytest.mark.asyncio
+    async def test_mixed_ids_split_correctly(self, connected_provider):
+        """A mix of connector and KB IDs in `apps` must split correctly."""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        conn_uuid = "660e8400-e29b-41d4-a716-446655440000"
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=[conn_uuid, kb_uuid]
+        ), patch.object(
+            connected_provider.http_client, "execute_aql",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={"vr-c": "rec-c"}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vr-k": "rec-k"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "u1", "o1", filters={"apps": [conn_uuid, kb_uuid], "kb": []}
+            )
+            mock_connector.assert_awaited_once()
+            mock_kb.assert_awaited_once()
+            assert "vr-c" in result
+            assert "vr-k" in result
+
+    @pytest.mark.asyncio
+    async def test_only_kb_collection_no_connectors_via_apps(self, connected_provider):
+        """The exact MCP bug scenario: user has only KB collections, MCP
+        sends the KB ID in `apps` with `kb: []`. Must return KB results."""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider.http_client, "execute_aql",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vr-1": "rec-1"}
+        ):
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "u1", "o1", filters={"apps": [kb_uuid], "kb": []}
+            )
+            mock_connector.assert_not_awaited()
+            assert result == {"vr-1": "rec-1"}
+
+    @pytest.mark.asyncio
+    async def test_inaccessible_kb_id_in_apps_is_dropped(self, connected_provider):
+        """A KB ID the user cannot access must not be reclassified."""
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=[]
+        ), patch.object(
+            connected_provider.http_client, "execute_aql",
+            new_callable=AsyncMock, return_value=[]
+        ), patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={}
+        ):
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "u1", "o1", filters={"apps": ["kb-not-mine"], "kb": []}
+            )
+            assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_empty_apps_filter_not_affected(self, connected_provider):
+        """Empty `apps` with empty `kb` must still hit the no-filter path."""
+        conn_uuid = "660e8400-e29b-41d4-a716-446655440000"
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=[conn_uuid, kb_uuid]
+        ), patch.object(
+            connected_provider.http_client, "execute_aql",
+            new_callable=AsyncMock, return_value=[kb_uuid]
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={"vr-c": "rec-c"}
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={"vr-k": "rec-k"}
+        ) as mock_kb:
+            result = await connected_provider.get_accessible_virtual_record_ids(
+                "u1", "o1", filters={"apps": [], "kb": []}
+            )
+            mock_connector.assert_awaited()
+            mock_kb.assert_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1181,10 +1463,13 @@ class TestGetRecordByExternalId:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_lookup_raises_rather_than_answering_none(self, connected_provider):
+        """None means no such record, and callers create one when told that."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_record_by_external_id("c1", "ext1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_record_by_external_id("c1", "ext1")
 
 
 # ---------------------------------------------------------------------------
@@ -1298,11 +1583,12 @@ class TestGetRecordPath:
 
 class TestGetRecordsByStatus:
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_exception_raises(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_records_by_status("org1", "c1", ["QUEUED"])
-        assert result == []
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_records_by_status("org1", "c1", ["QUEUED"])
 
 
 # ---------------------------------------------------------------------------
@@ -1734,10 +2020,12 @@ class TestGetRecordGroupByExternalId:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_lookup_raises_rather_than_answering_none(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_record_group_by_external_id("c1", "ext1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_record_group_by_external_id("c1", "ext1")
 
 
 # ---------------------------------------------------------------------------
@@ -1831,6 +2119,40 @@ class TestGetOrgApps:
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         result = await connected_provider.get_org_apps("org1")
         assert result == []
+
+
+class TestVectorStoreRebuildGraphQueries:
+    @pytest.mark.asyncio
+    async def test_active_only_false_omits_is_active_filter(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [{"_key": "app1"}]
+        result = await connected_provider.get_org_apps("org1", active_only=False)
+        assert result == [{"_key": "app1"}]
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        assert "isActive" not in query
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_for_connector(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.reset_indexing_status_for_connector(
+            "app-1", "NOT_STARTED", exclude_statuses=["IN_PROGRESS"]
+        )
+        bind = connected_provider.execute_query.await_args.kwargs["bind_vars"]
+        assert bind["connector_id"] == "app-1"
+        assert bind["status"] == "NOT_STARTED"
+        assert bind["exclude_statuses"] == ["IN_PROGRESS"]
+
+    @pytest.mark.asyncio
+    async def test_reset_failure_propagates(self, connected_provider):
+        """The rebuild drops the vector collection immediately after this call.
+
+        Swallowing the error would drop it against records that kept their old
+        statuses, so nothing re-indexes them and search stays silently empty.
+        """
+        connected_provider.execute_query = AsyncMock(side_effect=RuntimeError("aql"))
+        with pytest.raises(RuntimeError):
+            await connected_provider.reset_indexing_status_for_connector(
+                "app-1", "NOT_STARTED"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3676,8 +3998,22 @@ class TestGetRecordsByParent:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_records_by_parent("c1", "ext_parent")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records_by_parent("c1", "ext_parent")
+
+
+class TestGetRecordsByRecordType:
+    @pytest.mark.asyncio
+    async def test_empty(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = []
+        result = await connected_provider.get_records_by_record_type("c1", "DATABASE")
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records_by_record_type("c1", "DATABASE")
 
 
 # ---------------------------------------------------------------------------
@@ -4715,6 +5051,241 @@ class TestDeleteRecordsRecursive:
         assert result["success"] is True
         assert result["eventData"] is None
 
+    @pytest.mark.asyncio
+    async def test_clears_orphan_parent_when_cascade_children_false(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {
+                    "_key": "epic-1",
+                    "recordName": "Epic",
+                    "externalRecordId": "jira-epic-99",
+                    "connectorId": "conn-1",
+                },
+                "type_target": None,
+            }],
+        }
+        queries: list[str] = []
+        bind_vars_list: list[dict] = []
+
+        async def exec_query(query, bind_vars=None, transaction=None):
+            queries.append(query)
+            bind_vars_list.append(bind_vars or {})
+            if "valid_root_keys" in query and "records_with_type" in query:
+                return [inventory]
+            return []
+
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(side_effect=exec_query)), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            result = await connected_provider.delete_records_recursive(
+                ["epic-1"], "conn-1", cascade_children=False
+            )
+
+        assert result["success"] is True
+        clear_indexes = [
+            i for i, q in enumerate(queries)
+            if "externalParentId: null" in q
+        ]
+        assert len(clear_indexes) == 1
+        clear_q = queries[clear_indexes[0]]
+        clear_vars = bind_vars_list[clear_indexes[0]]
+        assert "belongs_to" in clear_q or "@belongs_to" in clear_q
+        assert "recordGroups" in clear_q
+        assert clear_vars["parent_external_ids"] == ["jira-epic-99"]
+        assert clear_vars["connector_id"] == "conn-1"
+        assert clear_vars["deleted_keys"] == ["epic-1"]
+
+    @pytest.mark.asyncio
+    async def test_skips_orphan_clear_when_cascade_children_true(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {
+                    "_key": "epic-1",
+                    "recordName": "Epic",
+                    "externalRecordId": "jira-epic-99",
+                },
+                "type_target": None,
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])) as mock_exec, \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            await connected_provider.delete_records_recursive(
+                ["epic-1"], "conn-1", cascade_children=True
+            )
+
+        assert mock_exec.await_count == 1
+        query = mock_exec.await_args.args[0] if mock_exec.await_args.args else ""
+        assert "externalParentId: null" not in query
+
+    @pytest.mark.asyncio
+    async def test_skips_orphan_clear_when_root_has_no_external_record_id(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["epic-1"],
+            "records_with_type": [{
+                "record": {"_key": "epic-1", "recordName": "Epic"},
+                "type_target": None,
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])) as mock_exec, \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            await connected_provider.delete_records_recursive(
+                ["epic-1"], "conn-1", cascade_children=False
+            )
+
+        assert mock_exec.await_count == 1
+        for call in mock_exec.await_args_list:
+            query = call.args[0] if call.args else ""
+            assert "externalParentId: null" not in query
+
+
+# ---------------------------------------------------------------------------
+# delete_single_record
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteSingleRecord:
+    @pytest.mark.asyncio
+    async def test_empty_id(self, connected_provider):
+        result = await connected_provider.delete_single_record("")
+        assert result["success"] is True
+        assert result["total_requested"] == 0
+        assert result["eventData"] is None
+
+    @pytest.mark.asyncio
+    async def test_found_with_event(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["r1"],
+            "records_with_type": [{
+                "record": {
+                    "_key": "r1",
+                    "recordName": "doc.pdf",
+                    "virtualRecordId": "virt-1",
+                    "connectorName": "GITHUB",
+                    "origin": "CONNECTOR",
+                },
+                "type_target": {"doc": {}, "collection": "files", "key": "r1"},
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()) as mock_edges, \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()) as mock_type, \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()) as mock_nodes, \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()), \
+             patch.object(connected_provider, "_create_deleted_record_event_payload", AsyncMock(return_value={"recordId": "r1"})):
+            result = await connected_provider.delete_single_record("r1")
+
+        mock_edges.assert_awaited_once()
+        mock_type.assert_awaited_once()
+        mock_nodes.assert_awaited_once()
+        assert result["successfully_deleted"] == 1
+        assert result["eventData"]["eventType"] == "deleteRecord"
+        assert result["eventData"]["payloads"][0]["connectorName"] == "GITHUB"
+
+    @pytest.mark.asyncio
+    async def test_missing_is_noop(self, connected_provider):
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[])), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()) as mock_commit, \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()) as mock_nodes:
+            result = await connected_provider.delete_single_record("missing")
+
+        mock_commit.assert_awaited_once()
+        mock_nodes.assert_not_awaited()
+        assert result["success"] is True
+        assert result["successfully_deleted"] == 0
+        assert result["eventData"] is None
+
+    @pytest.mark.asyncio
+    async def test_no_virtual_record_id(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["r1"],
+            "records_with_type": [{
+                "record": {"_key": "r1", "recordName": "draft.txt", "connectorName": "GITHUB", "origin": "CONNECTOR"},
+                "type_target": {"doc": {}, "collection": "files", "key": "r1"},
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()):
+            result = await connected_provider.delete_single_record("r1")
+
+        assert result["successfully_deleted"] == 1
+        assert result["eventData"] is None
+
+    @pytest.mark.asyncio
+    async def test_db_error_rolls_back(self, connected_provider):
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(side_effect=RuntimeError("query failed"))), \
+             patch.object(connected_provider, "rollback_transaction", AsyncMock()) as mock_rb:
+            result = await connected_provider.delete_single_record("r1")
+
+        assert result["success"] is False
+        assert result["code"] == 500
+        mock_rb.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_external_transaction_not_committed(self, connected_provider):
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock()) as mock_begin, \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[])), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()) as mock_commit:
+            await connected_provider.delete_single_record("r1", transaction="ext-txn")
+
+        mock_begin.assert_not_awaited()
+        mock_commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_payload_build_failure_still_deletes(self, connected_provider):
+        inventory = {
+            "valid_root_keys": ["r1"],
+            "records_with_type": [{
+                "record": {
+                    "_key": "r1",
+                    "recordName": "doc.pdf",
+                    "virtualRecordId": "virt-1",
+                    "connectorName": "GITHUB",
+                    "origin": "CONNECTOR",
+                },
+                "type_target": {"doc": {}, "collection": "files", "key": "r1"},
+            }],
+        }
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()), \
+             patch.object(connected_provider, "_create_deleted_record_event_payload", AsyncMock(side_effect=RuntimeError("bad payload"))):
+            result = await connected_provider.delete_single_record("r1")
+
+        assert result["success"] is True
+        assert result["eventData"] is None
+
 
 # ---------------------------------------------------------------------------
 # delete_connector_instance
@@ -5164,7 +5735,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 20
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
 
 
 # ---------------------------------------------------------------------------
@@ -7347,77 +7918,6 @@ class TestGetAgent:
 
 
 # ---------------------------------------------------------------------------
-# share_agent_template
-# ---------------------------------------------------------------------------
-
-
-class TestShareAgentTemplate:
-    @pytest.mark.asyncio
-    async def test_share_with_users(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[{"role": "OWNER"}]
-        ), patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, return_value={"_key": "uk1"}
-        ), patch.object(
-            connected_provider, "batch_create_edges",
-            new_callable=AsyncMock, return_value=True
-        ):
-            result = await connected_provider.share_agent_template(
-                "t1", "owner1", user_ids=["u1", "u2"]
-            )
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_share_with_teams(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[{"role": "OWNER"}]
-        ), patch.object(
-            connected_provider, "batch_create_edges",
-            new_callable=AsyncMock, return_value=True
-        ):
-            result = await connected_provider.share_agent_template(
-                "t1", "owner1", team_ids=["team1"]
-            )
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_no_owner_permission(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[]
-        ):
-            result = await connected_provider.share_agent_template(
-                "t1", "user1", user_ids=["u2"]
-            )
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_no_user_or_team_ids(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[{"role": "OWNER"}]
-        ):
-            result = await connected_provider.share_agent_template(
-                "t1", "owner1", user_ids=None, team_ids=None
-            )
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_false(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, side_effect=Exception("fail")
-        ):
-            result = await connected_provider.share_agent_template(
-                "t1", "owner1", user_ids=["u1"]
-            )
-            assert result is False
-
-
-# ---------------------------------------------------------------------------
 # clone_agent_template
 # ---------------------------------------------------------------------------
 
@@ -7812,7 +8312,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 20
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
 
 
 # ---------------------------------------------------------------------------
@@ -9001,247 +9501,6 @@ class TestDeleteAgent:
 
 
 # ---------------------------------------------------------------------------
-# share_agent
-# ---------------------------------------------------------------------------
-
-
-class TestShareAgent:
-    @pytest.mark.asyncio
-    async def test_share_to_users(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_agent",
-            new_callable=AsyncMock, return_value={"can_share": True}
-        ), patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, return_value={"_key": "target_u1"}
-        ), patch.object(
-            connected_provider, "batch_create_edges",
-            new_callable=AsyncMock, return_value=True
-        ):
-            result = await connected_provider.share_agent(
-                "agent1", "u1", "org1", user_ids=["target_u1"], team_ids=None
-            )
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_share_to_teams(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_agent",
-            new_callable=AsyncMock, return_value={"can_share": True}
-        ), patch.object(
-            connected_provider, "get_document",
-            new_callable=AsyncMock, return_value={"_key": "team1"}
-        ), patch.object(
-            connected_provider, "batch_create_edges",
-            new_callable=AsyncMock, return_value=True
-        ):
-            result = await connected_provider.share_agent(
-                "agent1", "u1", "org1", user_ids=None, team_ids=["team1"]
-            )
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_no_share_permission(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_agent",
-            new_callable=AsyncMock, return_value={"can_share": False}
-        ):
-            result = await connected_provider.share_agent(
-                "agent1", "u1", "org1", user_ids=["u2"], team_ids=None
-            )
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_agent",
-            new_callable=AsyncMock, return_value=None
-        ):
-            result = await connected_provider.share_agent(
-                "agent1", "u1", "org1", user_ids=["u2"], team_ids=None
-            )
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_agent",
-            new_callable=AsyncMock, side_effect=Exception("fail")
-        ):
-            result = await connected_provider.share_agent(
-                "agent1", "u1", "org1", user_ids=["u2"], team_ids=None
-            )
-            assert result is False
-
-
-# ---------------------------------------------------------------------------
-# unshare_agent
-# ---------------------------------------------------------------------------
-
-
-class TestUnshareAgent:
-    @pytest.mark.asyncio
-    async def test_success_with_users(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, return_value={"can_share": True}
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=["perm1"]
-        ):
-            result = await connected_provider.unshare_agent(
-                "agent1", "u1", "org1", user_ids=["u2"], team_ids=None
-            )
-            assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, return_value=None
-        ):
-            result = await connected_provider.unshare_agent(
-                "agent1", "u1", "org1", user_ids=["u2"], team_ids=None
-            )
-            assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_no_users_or_teams(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, return_value={"can_share": True}
-        ):
-            result = await connected_provider.unshare_agent(
-                "agent1", "u1", "org1", user_ids=None, team_ids=None
-            )
-            assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, side_effect=Exception("fail")
-        ):
-            result = await connected_provider.unshare_agent(
-                "agent1", "u1", "org1", user_ids=["u2"], team_ids=None
-            )
-            assert result["success"] is False
-
-
-# ---------------------------------------------------------------------------
-# update_agent_permission
-# ---------------------------------------------------------------------------
-
-
-class TestUpdateAgentPermission:
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_not_owner(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, return_value={"user_role": "READER"}
-        ):
-            result = await connected_provider.update_agent_permission(
-                "agent1", "u1", "org1", user_ids=["u2"], team_ids=None, role="WRITER"
-            )
-            assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, return_value=None
-        ):
-            result = await connected_provider.update_agent_permission(
-                "agent1", "u1", "org1", user_ids=["u2"], team_ids=None, role="WRITER"
-            )
-            assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_no_users_or_teams(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, return_value={"user_role": "OWNER"}
-        ):
-            result = await connected_provider.update_agent_permission(
-                "agent1", "u1", "org1", user_ids=None, team_ids=None, role="WRITER"
-            )
-            assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, side_effect=Exception("fail")
-        ):
-            result = await connected_provider.update_agent_permission(
-                "agent1", "u1", "org1", user_ids=["u2"], team_ids=None, role="WRITER"
-            )
-            assert result["success"] is False
-
-
-# ---------------------------------------------------------------------------
-# get_agent_permissions
-# ---------------------------------------------------------------------------
-
-
-class TestGetAgentPermissions:
-    @pytest.mark.asyncio
-    async def test_owner_gets_permissions(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, return_value={"user_role": "OWNER"}
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[
-                {"id": "u1", "role": "OWNER", "type": "USER"},
-                {"id": "u2", "role": "READER", "type": "USER"},
-            ]
-        ):
-            result = await connected_provider.get_agent_permissions("agent1", "u1", "org1")
-            assert len(result) == 2
-
-    @pytest.mark.asyncio
-    async def test_not_owner_returns_none(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, return_value={"user_role": "READER"}
-        ):
-            result = await connected_provider.get_agent_permissions("agent1", "u1", "org1")
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_no_permission_returns_none(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, return_value=None
-        ):
-            result = await connected_provider.get_agent_permissions("agent1", "u1", "org1")
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_empty_result(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, return_value={"user_role": "OWNER"}
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[]
-        ):
-            result = await connected_provider.get_agent_permissions("agent1", "u1", "org1")
-            assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        with patch.object(
-            connected_provider, "check_agent_permission",
-            new_callable=AsyncMock, side_effect=Exception("fail")
-        ):
-            result = await connected_provider.get_agent_permissions("agent1", "u1", "org1")
-            assert result is None
-
-
-# ---------------------------------------------------------------------------
 # get_all_agent_templates
 # ---------------------------------------------------------------------------
 
@@ -9309,63 +9568,6 @@ class TestGetTemplate:
         ):
             result = await connected_provider.get_template("t1", "u1")
             assert result is None
-
-
-# ---------------------------------------------------------------------------
-# share_agent_template
-# ---------------------------------------------------------------------------
-
-
-class TestShareAgentTemplate:
-    @pytest.mark.asyncio
-    async def test_success_with_users(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[{"role": "OWNER"}]
-        ), patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, return_value={"_key": "target_u1"}
-        ), patch.object(
-            connected_provider, "batch_create_edges",
-            new_callable=AsyncMock, return_value=True
-        ):
-            result = await connected_provider.share_agent_template(
-                "t1", "u1", user_ids=["target_u1"]
-            )
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_no_owner_access(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[]
-        ):
-            result = await connected_provider.share_agent_template(
-                "t1", "u1", user_ids=["target_u1"]
-            )
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_no_users_or_teams(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[{"role": "OWNER"}]
-        ):
-            result = await connected_provider.share_agent_template(
-                "t1", "u1", user_ids=None, team_ids=None
-            )
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, side_effect=Exception("fail")
-        ):
-            result = await connected_provider.share_agent_template(
-                "t1", "u1", user_ids=["target_u1"]
-            )
-            assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -9659,8 +9861,8 @@ class TestGetRecordsByParentProvider:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_records_by_parent("c1", "parent_ext_id")
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records_by_parent("c1", "parent_ext_id")
 
 
 class TestGetRecordGroupByExternalIdProvider:
@@ -9672,10 +9874,12 @@ class TestGetRecordGroupByExternalIdProvider:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_lookup_raises_rather_than_answering_none(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_record_group_by_external_id("c1", "ext1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_record_group_by_external_id("c1", "ext1")
 
 
 class TestGetFileRecordByIdProvider:
@@ -10617,6 +10821,21 @@ class TestListUserKnowledgeBases:
         assert total == 0
 
     @pytest.mark.asyncio
+    async def test_query_excludes_hidden_kbs(self, connected_provider):
+        """Hidden KBs (e.g. a project's linked file collection) must never
+        surface in the Collections listing."""
+        connected_provider.http_client.execute_aql.side_effect = [[], [0], []]
+
+        await connected_provider.list_user_knowledge_bases(
+            "u1", "org1", skip=0, limit=10
+        )
+
+        main_query = connected_provider.http_client.execute_aql.await_args_list[0].args[0]
+        count_query = connected_provider.http_client.execute_aql.await_args_list[1].args[0]
+        assert main_query.count("FILTER kb.isHidden != true") == 2
+        assert count_query.count("FILTER kb.isHidden != true") == 2
+
+    @pytest.mark.asyncio
     async def test_with_search_filter(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
             [
@@ -11481,6 +11700,25 @@ class TestGetKbVirtualIds:
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         result = await connected_provider._get_kb_virtual_ids("u1", "org1")
         assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_excludes_hidden_when_unfiltered(self, connected_provider):
+        """The 'all accessible KBs' scenario (no kb_ids) must never surface a
+        hidden KB (e.g. a project's linked file collection)."""
+        connected_provider.http_client.execute_aql.return_value = []
+        await connected_provider._get_kb_virtual_ids("u1", "org1", kb_ids=None)
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        assert "FILTER kb.isHidden != true" in query
+
+    @pytest.mark.asyncio
+    async def test_explicit_filter_skips_hidden_exclusion(self, connected_provider):
+        """An explicit kb_ids list (a project chat reaching its own hidden
+        KB) is honoured as-is, without the hidden predicate."""
+        connected_provider.http_client.execute_aql.return_value = []
+        await connected_provider._get_kb_virtual_ids("u1", "org1", kb_ids=["hidden-kb"])
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        assert "FILTER kb._key IN @kb_ids" in query
+        assert "FILTER kb.isHidden != true" not in query
 
 
 # ---------------------------------------------------------------------------
@@ -12656,6 +12894,7 @@ class TestCreateDeletedRecordEventPayload:
         assert result["orgId"] == "o1"
         assert result["recordId"] == "r1"
         assert result["extension"] == ".pdf"
+        assert result["connectorId"] is None
 
     @pytest.mark.asyncio
     async def test_no_file_record(self, connected_provider):
@@ -12941,6 +13180,7 @@ class TestCreateKbPermissionsExtended:
             "user_operations": [],
             "team_operations": [],
             "users_to_insert": [{"user_key": "u2", "user_id": "u2"}],
+            "users_to_update": [],
             "teams_to_insert": [],
         }
         connected_provider.execute_query = AsyncMock(return_value=[query_result])
@@ -12991,6 +13231,48 @@ class TestCreateKbPermissionsExtended:
         )
         assert result["success"] is True
         assert result["grantedCount"] == 1
+
+    @pytest.mark.asyncio
+    async def test_role_update_for_existing_user(self, connected_provider):
+        """When a user already has a PERMISSION edge with a different role,
+        create_kb_permissions should UPDATE the existing edge rather than
+        silently skipping it (the 'operation == update' branch)."""
+        query_result = {
+            "is_valid": True,
+            "requester_found": True,
+            "kb_exists": True,
+            "user_operations": [
+                {"user_id": "u2", "user_key": "u2", "operation": "update",
+                 "current_role": "WRITER", "perm_key": "perm_123"},
+            ],
+            "team_operations": [],
+            "users_to_insert": [],
+            "users_to_update": [
+                {"user_id": "u2", "user_key": "u2", "operation": "update",
+                 "current_role": "WRITER", "perm_key": "perm_123"},
+            ],
+            "teams_to_insert": [],
+        }
+        call_count = 0
+        async def fake_execute(query, bind_vars=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [query_result]
+            return []
+
+        connected_provider.execute_query = AsyncMock(side_effect=fake_execute)
+        connected_provider.batch_create_edges = AsyncMock()
+        result = await connected_provider.create_kb_permissions(
+            "kb1", "u1", ["u2"], [], "READER"
+        )
+        assert result["success"] is True
+        assert result["updatedCount"] == 1
+        assert result["updatedUsers"] == ["u2"]
+        assert result["grantedCount"] == 0
+        assert connected_provider.execute_query.call_count == 2
+        update_call = connected_provider.execute_query.call_args_list[1]
+        assert update_call[1].get("bind_vars", update_call[0][1] if len(update_call[0]) > 1 else {}).get("role") == "READER"
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
@@ -13941,20 +14223,20 @@ class TestFindDuplicateRecords:
         connected_provider.http_client.execute_aql = AsyncMock(
             return_value=[{"_key": "r2", "md5Checksum": "abc123"}]
         )
-        result = await connected_provider.find_duplicate_records("r1", "abc123")
+        result = await connected_provider.find_duplicate_records("r1", "abc123", org_id="org-1")
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_no_duplicates(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.find_duplicate_records("r1", "abc123")
+        result = await connected_provider.find_duplicate_records("r1", "abc123", org_id="org-1")
         assert result == []
 
     @pytest.mark.asyncio
     async def test_with_record_type_filter(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         result = await connected_provider.find_duplicate_records(
-            "r1", "abc123", record_type="FILE"
+            "r1", "abc123", org_id="org-1", record_type="FILE"
         )
         assert result == []
 
@@ -13962,15 +14244,26 @@ class TestFindDuplicateRecords:
     async def test_with_size_filter(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         result = await connected_provider.find_duplicate_records(
-            "r1", "abc123", size_in_bytes=1024
+            "r1", "abc123", org_id="org-1", size_in_bytes=1024
         )
         assert result == []
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.find_duplicate_records("r1", "abc123")
+        result = await connected_provider.find_duplicate_records("r1", "abc123", org_id="org-1")
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_org_id_scoping_adds_bind_var(self, connected_provider):
+        """org_id is always passed as an AQL bind var, restricting dedup
+        matches to within-org."""
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+
+        await connected_provider.find_duplicate_records("r1", "abc123", org_id="org-9")
+
+        call_kwargs = connected_provider.http_client.execute_aql.await_args.kwargs
+        assert call_kwargs["bind_vars"]["org_id"] == "org-9"
 
 
 # ---------------------------------------------------------------------------
@@ -14021,6 +14314,22 @@ class TestFindNextQueuedDuplicate:
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.find_next_queued_duplicate("r1")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_scopes_to_reference_records_org(self, connected_provider):
+        """The queued-duplicate search must never cross into another org —
+        scoped internally from the reference record's own orgId, so no
+        caller can omit it."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                [{"_key": "r1", "md5Checksum": "abc", "orgId": "org-9"}],
+                [{"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}],
+            ]
+        )
+        await connected_provider.find_next_queued_duplicate("r1")
+
+        second_call_bind_vars = connected_provider.http_client.execute_aql.await_args_list[1].kwargs["bind_vars"]
+        assert second_call_bind_vars["org_id"] == "org-9"
 
 
 # ---------------------------------------------------------------------------
@@ -14078,6 +14387,14 @@ class TestGetTeamWithUsers:
         result = await connected_provider.get_team_with_users("t1", "uk1")
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_members_exclude_inactive_users(self, connected_provider) -> None:
+        """Removed users (isActive == false) must not be listed as team members."""
+        connected_provider.execute_query = AsyncMock(return_value=[{"id": "t1", "members": []}])
+        await connected_provider.get_team_with_users("t1", "uk1")
+        query = connected_provider.execute_query.call_args.args[0]
+        assert "FILTER user != null AND user.isActive == true" in query
+
 
 # ---------------------------------------------------------------------------
 # get_user_teams
@@ -14110,6 +14427,17 @@ class TestGetUserTeams:
         assert teams == []
         assert total == 0
 
+    @pytest.mark.asyncio
+    async def test_members_exclude_inactive_users(self, connected_provider) -> None:
+        """Member lists inside each team must skip removed users; the team
+        count itself is unaffected (it counts teams, not members)."""
+        connected_provider.execute_query = AsyncMock(side_effect=[[1], [{"id": "t1"}]])
+        await connected_provider.get_user_teams("uk1")
+        count_query = connected_provider.execute_query.call_args_list[0].args[0]
+        teams_query = connected_provider.execute_query.call_args_list[1].args[0]
+        assert "member_user.isActive == true" in teams_query
+        assert "isActive" not in count_query
+
 
 # ---------------------------------------------------------------------------
 # get_team_users
@@ -14137,6 +14465,16 @@ class TestGetTeamUsersExtended:
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.get_team_users("t1", "org1", "uk1")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_members_exclude_inactive_users(self, connected_provider) -> None:
+        """Removed users (isActive == false) must not be listed or counted."""
+        connected_provider.execute_query = AsyncMock(
+            return_value=[{"id": "t1", "members": [], "memberCount": 0}]
+        )
+        await connected_provider.get_team_users("t1", "org1", "uk1")
+        query = connected_provider.execute_query.call_args.args[0]
+        assert "FILTER user != null AND user.isActive == true" in query
 
 
 # ---------------------------------------------------------------------------
@@ -14385,6 +14723,8 @@ class TestHardDeleteAllAgents:
                 [{"_key": "tool1"}],  # tool nodes
                 [{"_key": "tse1"}],  # toolset edges
                 [{"_key": "ts1"}],  # toolset nodes
+                [],  # no mcp server ids
+                [],  # no agent->mcp server edges deleted
                 [{"_key": "pe1"}],  # permission edges
                 [{"_key": "a1"}],  # agent docs
             ]
@@ -14394,6 +14734,7 @@ class TestHardDeleteAllAgents:
         assert result["toolsets_deleted"] == 1
         assert result["tools_deleted"] == 1
         assert result["knowledge_deleted"] == 1
+        assert result["mcp_servers_deleted"] == 0
 
     @pytest.mark.asyncio
     async def test_nothing_to_delete(self, connected_provider):
@@ -14403,12 +14744,15 @@ class TestHardDeleteAllAgents:
                 None,  # no toolset ids
                 None,  # no toolset edges
                 None,  # no toolsets
+                None,  # no mcp server ids
+                None,  # no agent->mcp server edges deleted
                 None,  # no permissions
                 None,  # no agents
             ]
         )
         result = await connected_provider.hard_delete_all_agents()
         assert result["agents_deleted"] == 0
+        assert result["mcp_servers_deleted"] == 0
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
@@ -14839,6 +15183,74 @@ class TestGetKnowledgeHubSearch:
             parent_id="app1", parent_type="app"
         )
         assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_app_scope_omits_unused_parent_doc_id(self, connected_provider):
+        connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
+            return_value=([], {})
+        )
+        connected_provider._build_scope_filters = MagicMock(
+            return_value=("", "", "true", "true")
+        )
+        connected_provider._build_children_intersection_aql = MagicMock(return_value="")
+        connected_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"total": 0, "paginated_refs": []}]
+        )
+        await connected_provider.get_knowledge_hub_search(
+            "org1", "uk1", skip=0, limit=10,
+            sort_field="name", sort_dir="ASC",
+            parent_id="app1", parent_type="app",
+        )
+        bind_vars = connected_provider.http_client.execute_aql.await_args_list[0].kwargs["bind_vars"]
+        assert bind_vars["parent_id"] == "app1"
+        assert "parent_doc_id" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_app_scope_depth_1_omits_parent_doc_id(self, connected_provider):
+        connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
+            return_value=([], {})
+        )
+        connected_provider._build_scope_filters = MagicMock(
+            return_value=("", "", "true", "true")
+        )
+        connected_provider._build_children_intersection_aql = MagicMock(return_value="")
+        connected_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"total": 0, "paginated_refs": []}]
+        )
+        await connected_provider.get_knowledge_hub_search(
+            "org1", "uk1", skip=0, limit=10,
+            sort_field="name", sort_dir="ASC",
+            parent_id="app1", parent_type="app",
+            depth=1,
+        )
+        bind_vars = connected_provider.http_client.execute_aql.await_args_list[0].kwargs["bind_vars"]
+        assert bind_vars["parent_id"] == "app1"
+        assert "parent_doc_id" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_app_scope_depth_2_binds_parent_doc_id(self, connected_provider):
+        connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
+            return_value=([], {})
+        )
+        connected_provider._build_scope_filters = MagicMock(
+            return_value=("", "", "true", "true")
+        )
+        connected_provider._build_children_intersection_aql = MagicMock(return_value="")
+        connected_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"total": 0, "paginated_refs": []}]
+        )
+        await connected_provider.get_knowledge_hub_search(
+            "org1", "uk1", skip=0, limit=10,
+            sort_field="name", sort_dir="ASC",
+            parent_id="app1", parent_type="app",
+            depth=2,
+        )
+        bind_vars = connected_provider.http_client.execute_aql.await_args_list[0].kwargs["bind_vars"]
+        assert bind_vars["parent_id"] == "app1"
+        assert bind_vars["parent_doc_id"] == "app1"
 
     @pytest.mark.asyncio
     async def test_empty_result(self, connected_provider):
@@ -15340,6 +15752,15 @@ class TestBuildChildrenIntersectionAql:
     def test_other(self, connected_provider):
         result = connected_provider._build_children_intersection_aql("x", "app")
         assert "final_accessible_rgs = accessible_rgs" in result
+        assert "@parent_doc_id" not in result
+
+    def test_app_depth_1_omits_parent_doc_id(self, connected_provider):
+        result = connected_provider._build_children_intersection_aql("x", "app", depth=1)
+        assert "@parent_doc_id" not in result
+
+    def test_app_depth_2_uses_parent_doc_id(self, connected_provider):
+        result = connected_provider._build_children_intersection_aql("x", "app", depth=2)
+        assert "@parent_doc_id" in result
 
     def test_none(self, connected_provider):
         result = connected_provider._build_children_intersection_aql(None, None)
@@ -15362,6 +15783,10 @@ class TestGetAppChildrenSubquery:
     def test_contains_aql(self, connected_provider):
         sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
         assert "raw_children" in sub_query
+
+    def test_kb_app_children_projects_reason(self, connected_provider):
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        assert "reason: record.reason" in sub_query
 
 
 # ---------------------------------------------------------------------------
@@ -15610,83 +16035,6 @@ class TestGetKbVirtualIdsExtended:
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         result = await connected_provider._get_kb_virtual_ids("u1", "org1")
         assert result == {}
-
-
-# ---------------------------------------------------------------------------
-# share_agent
-# ---------------------------------------------------------------------------
-
-
-class TestShareAgentExtended:
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value=None)
-        result = await connected_provider.share_agent("a1", "u1", "org1", ["u2"], [])
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_cannot_share(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"can_share": False})
-        result = await connected_provider.share_agent("a1", "u1", "org1", ["u2"], [])
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_success_users(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"can_share": True})
-        connected_provider.get_user_by_user_id = AsyncMock(
-            return_value={"_key": "uk2", "userId": "u2"}
-        )
-        connected_provider.batch_create_edges = AsyncMock(return_value=True)
-        result = await connected_provider.share_agent("a1", "u1", "org1", ["u2"], [])
-        assert result is True
-
-
-# ---------------------------------------------------------------------------
-# unshare_agent
-# ---------------------------------------------------------------------------
-
-
-class TestUnshareAgentExtended:
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        connected_provider.check_agent_permission = AsyncMock(return_value=None)
-        result = await connected_provider.unshare_agent("a1", "u1", "org1", ["u2"], [])
-        assert result is not None
-        assert result.get("success") is False
-
-    @pytest.mark.asyncio
-    async def test_cannot_share(self, connected_provider):
-        connected_provider.check_agent_permission = AsyncMock(return_value={"can_share": False})
-        result = await connected_provider.unshare_agent("a1", "u1", "org1", ["u2"], [])
-        assert result is not None
-        assert result.get("success") is False
-
-
-# ---------------------------------------------------------------------------
-# update_agent_permission
-# ---------------------------------------------------------------------------
-
-
-class TestUpdateAgentPermissionExtended:
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value=None)
-        result = await connected_provider.update_agent_permission("a1", "u1", "org1", ["u2"], [], "WRITER")
-        assert result is not None
-        assert result.get("success") is False
-
-
-# ---------------------------------------------------------------------------
-# get_agent_permissions
-# ---------------------------------------------------------------------------
-
-
-class TestGetAgentPermissionsExtended:
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value=None)
-        result = await connected_provider.get_agent_permissions("a1", "u1", "org1")
-        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -16316,14 +16664,6 @@ class TestExecuteKbRecordDeletion:
 # share_agent_template / clone_agent_template / delete_agent_template / update_agent_template
 # (remaining agent template methods if not already covered)
 # ---------------------------------------------------------------------------
-
-
-class TestShareAgentTemplateExtended:
-    @pytest.mark.asyncio
-    async def test_no_template(self, connected_provider):
-        connected_provider.get_template = AsyncMock(return_value=None)
-        result = await connected_provider.share_agent_template("t1", "u1")
-        assert result is None or result is False
 
 
 class TestCloneAgentTemplateExtended:
@@ -16985,6 +17325,10 @@ class TestHardDeleteAgent:
             [{"_key": "e1"}],
             # deleted_toolsets from step 7
             [{"_key": "ts1"}],
+            # mcp_server_ids (no MCP servers attached)
+            [],
+            # deleted_mcp_server_edges (none)
+            [],
             # deleted_permissions from step 8
             [{"_key": "p1"}, {"_key": "p2"}],
             # deleted_agents from step 9
@@ -16996,6 +17340,7 @@ class TestHardDeleteAgent:
         assert result["knowledge_deleted"] == 1
         assert result["tools_deleted"] == 1
         assert result["toolsets_deleted"] == 1
+        assert result["mcp_servers_deleted"] == 0
         assert result["edges_deleted"] > 0
 
     @pytest.mark.asyncio
@@ -17005,6 +17350,8 @@ class TestHardDeleteAgent:
             [],    # no knowledge_ids
             [],    # no toolset_ids
             [],    # no toolset edges deleted
+            [],    # no mcp_server_ids
+            [],    # no deleted_mcp_server_edges
             [],    # no permissions
             [{"_key": "a1"}],  # agent deleted
         ])
@@ -17014,6 +17361,7 @@ class TestHardDeleteAgent:
         assert result["knowledge_deleted"] == 0
         assert result["tools_deleted"] == 0
         assert result["toolsets_deleted"] == 0
+        assert result["mcp_servers_deleted"] == 0
 
     @pytest.mark.asyncio
     async def test_knowledge_with_no_orphans(self, connected_provider):
@@ -17023,6 +17371,8 @@ class TestHardDeleteAgent:
             [],                       # no deleted_knowledge (still referenced)
             [],                       # no toolsets
             [],                       # no toolset edges
+            [],                       # no mcp_server_ids
+            [],                       # no deleted_mcp_server_edges
             [],                       # no permissions
             [{"_key": "a1"}],         # agent deleted
         ])
@@ -17041,6 +17391,8 @@ class TestHardDeleteAgent:
             [],                      # no deleted_tools (still referenced)
             [{"_key": "e1"}],        # toolset edges deleted
             [],                      # no deleted_toolsets (still referenced)
+            [],                      # no mcp_server_ids
+            [],                      # no deleted_mcp_server_edges
             [],                      # no permissions
             [{"_key": "a1"}],        # agent deleted
         ])
@@ -17049,6 +17401,7 @@ class TestHardDeleteAgent:
         assert result["agents_deleted"] == 1
         assert result["tools_deleted"] == 0
         assert result["toolsets_deleted"] == 0
+        assert result["mcp_servers_deleted"] == 0
 
     @pytest.mark.asyncio
     async def test_exception_returns_zeros(self, connected_provider):
@@ -17059,6 +17412,7 @@ class TestHardDeleteAgent:
         assert result["tools_deleted"] == 0
         assert result["knowledge_deleted"] == 0
         assert result["edges_deleted"] == 0
+        assert result["mcp_servers_deleted"] == 0
 
     @pytest.mark.asyncio
     async def test_permissions_deleted(self, connected_provider):
@@ -17067,6 +17421,8 @@ class TestHardDeleteAgent:
             [],                      # no knowledge
             [],                      # no toolsets
             [{"_key": "te1"}],       # toolset edges deleted
+            [],                      # no mcp_server_ids
+            [],                      # no deleted_mcp_server_edges
             [{"_key": "p1"}, {"_key": "p2"}, {"_key": "p3"}],  # 3 permissions deleted
             [{"_key": "a1"}],        # agent deleted
         ])
@@ -17276,59 +17632,6 @@ class TestExecuteKbRecordDeletionDetailed:
 
 
 # ---------------------------------------------------------------------------
-# share_agent (lines 19056-19093)
-# ---------------------------------------------------------------------------
-
-
-class TestShareAgent:
-    @pytest.mark.asyncio
-    async def test_share_with_users(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"_key": "a1", "can_share": True})
-        connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "u2"})
-        connected_provider.batch_create_edges = AsyncMock(return_value=True)
-
-        result = await connected_provider.share_agent("a1", "u1", "org1", user_ids=["u2"], team_ids=None)
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_share_with_teams(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"_key": "a1", "can_share": True})
-        connected_provider.get_document = AsyncMock(return_value={"_key": "team1"})
-        connected_provider.batch_create_edges = AsyncMock(return_value=True)
-
-        result = await connected_provider.share_agent("a1", "u1", "org1", user_ids=None, team_ids=["team1"])
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_share_user_not_found_skipped(self, connected_provider):
-        """User not found should be skipped (continue), not fail."""
-        connected_provider.get_agent = AsyncMock(return_value={"_key": "a1", "can_share": True})
-        connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        connected_provider.batch_create_edges = AsyncMock(return_value=True)
-
-        result = await connected_provider.share_agent("a1", "u1", "org1", user_ids=["u2"], team_ids=None)
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_share_team_not_found_skipped(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"_key": "a1", "can_share": True})
-        connected_provider.get_document = AsyncMock(return_value=None)
-        connected_provider.batch_create_edges = AsyncMock(return_value=True)
-
-        result = await connected_provider.share_agent("a1", "u1", "org1", user_ids=None, team_ids=["team1"])
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_share_fails_on_edge_creation(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"_key": "a1", "can_share": True})
-        connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "u2"})
-        connected_provider.batch_create_edges = AsyncMock(return_value=False)
-
-        result = await connected_provider.share_agent("a1", "u1", "org1", user_ids=["u2"], team_ids=None)
-        assert result is False
-
-
-# ---------------------------------------------------------------------------
 # update_agent_permission (lines 19180-19208)
 # ---------------------------------------------------------------------------
 
@@ -17385,59 +17688,6 @@ class TestUpdateAgentPermission:
             "a1", "u1", "org1", user_ids=None, team_ids=None, role="WRITER"
         )
         assert result["success"] is False
-
-
-# ---------------------------------------------------------------------------
-# share_agent_template (lines 19466-19491)
-# ---------------------------------------------------------------------------
-
-
-class TestShareAgentTemplateDetailed:
-    @pytest.mark.asyncio
-    async def test_share_with_users(self, connected_provider):
-        # Query returns the template doc; share_agent_template checks role == "OWNER"
-        connected_provider.execute_query = AsyncMock(return_value=[{"_key": "t1", "role": "OWNER"}])
-        connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "u2"})
-        connected_provider.batch_create_edges = AsyncMock(return_value=True)
-
-        result = await connected_provider.share_agent_template("t1", "u1", user_ids=["u2"], team_ids=None)
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_share_with_teams(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[{"_key": "t1", "role": "OWNER"}])
-        connected_provider.batch_create_edges = AsyncMock(return_value=True)
-
-        result = await connected_provider.share_agent_template("t1", "u1", user_ids=None, team_ids=["team1"])
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_user_not_found_returns_false(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[{"_key": "t1", "role": "OWNER"}])
-        connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
-
-        result = await connected_provider.share_agent_template("t1", "u1", user_ids=["u2"], team_ids=None)
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_batch_create_fails(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[{"_key": "t1", "role": "OWNER"}])
-        connected_provider.batch_create_edges = AsyncMock(return_value=False)
-
-        result = await connected_provider.share_agent_template("t1", "u1", user_ids=None, team_ids=["team1"])
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_no_owner_access(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider.share_agent_template("t1", "u1", user_ids=["u2"])
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_no_users_or_teams(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[{"_key": "t1", "role": "OWNER"}])
-        result = await connected_provider.share_agent_template("t1", "u1", user_ids=None, team_ids=None)
-        assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -18489,10 +18739,13 @@ class TestGetRecordByExternalIdFullCoverage:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider_fullcov):
+    async def test_a_failed_lookup_raises_rather_than_answering_none(self, connected_provider_fullcov):
+        """None means no such record, and callers create one when told that."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider_fullcov.http_client.execute_aql = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider_fullcov.get_record_by_external_id("c1", "ext1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider_fullcov.get_record_by_external_id("c1", "ext1")
 
 
 class TestGetRecordPathFullCoverage:
@@ -19889,6 +20142,8 @@ class TestMigrateLegacyKbToApp:
         
         assert result["success"] is True
         connected_provider.delete_edge.assert_not_called()
+        kb_data = connected_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert kb_data["vectorMembershipBackfilled"] is False
 
     @pytest.mark.asyncio
     async def test_successful_edge_retargeting(self, connected_provider):
@@ -22268,7 +22523,11 @@ class TestGetConnectorStatsKB:
     @pytest.mark.asyncio
     async def test_kb_stats_query_filters(self, connected_provider):
         """KB stats query should filter by origin=UPLOAD, orgId, and exclude internal/placeholder/deleted."""
-        from app.config.constants.arangodb import Connectors, CollectionNames, OriginTypes
+        from app.config.constants.arangodb import (
+            CollectionNames,
+            Connectors,
+            OriginTypes,
+        )
         
         connected_provider.get_document = AsyncMock(return_value={
             "type": Connectors.KNOWLEDGE_BASE.value

@@ -552,4 +552,82 @@ describe('NotificationService', () => {
       expect(result).to.be.null
     })
   })
+
+  describe('emitForceLogout', () => {
+    it('should return false when io is not initialized', () => {
+      const result = service.emitForceLogout('user-1')
+      expect(result).to.be.false
+    })
+
+    it('should return false when userId is empty', () => {
+      ;(service as any).io = {
+        sockets: { adapter: { rooms: new Map() } },
+        to: sinon.stub().returns({ emit: sinon.stub() }),
+      }
+      const result = service.emitForceLogout('')
+      expect(result).to.be.false
+    })
+
+    it('should return false when user is not connected', () => {
+      ;(service as any).io = {
+        sockets: { adapter: { rooms: new Map() } },
+        to: sinon.stub().returns({ emit: sinon.stub() }),
+      }
+      const result = service.emitForceLogout('user-1')
+      expect(result).to.be.false
+    })
+
+    it('should emit force_logout and return true when user is connected', () => {
+      const emitStub = sinon.stub()
+      const rooms = new Map()
+      rooms.set('user-1', new Set(['socket-1']))
+      ;(service as any).io = {
+        sockets: { adapter: { rooms } },
+        to: sinon.stub().returns({ emit: emitStub }),
+      }
+
+      const result = service.emitForceLogout('user-1', 'role_changed')
+      expect(result).to.be.true
+      expect(emitStub.calledWith('force_logout', { reason: 'role_changed' })).to.be.true
+    })
+
+    it('should use default reason of role_changed', () => {
+      const emitStub = sinon.stub()
+      const rooms = new Map()
+      rooms.set('user-1', new Set(['socket-1']))
+      ;(service as any).io = {
+        sockets: { adapter: { rooms } },
+        to: sinon.stub().returns({ emit: emitStub }),
+      }
+
+      service.emitForceLogout('user-1')
+      expect(emitStub.calledWith('force_logout', { reason: 'role_changed' })).to.be.true
+    })
+
+    it('should accept missing_role reason', () => {
+      const emitStub = sinon.stub()
+      const rooms = new Map()
+      rooms.set('user-1', new Set(['socket-1']))
+      ;(service as any).io = {
+        sockets: { adapter: { rooms } },
+        to: sinon.stub().returns({ emit: emitStub }),
+      }
+
+      service.emitForceLogout('user-1', 'missing_role')
+      expect(emitStub.calledWith('force_logout', { reason: 'missing_role' })).to.be.true
+    })
+
+    it('should accept invalid_token reason', () => {
+      const emitStub = sinon.stub()
+      const rooms = new Map()
+      rooms.set('user-1', new Set(['socket-1']))
+      ;(service as any).io = {
+        sockets: { adapter: { rooms } },
+        to: sinon.stub().returns({ emit: emitStub }),
+      }
+
+      service.emitForceLogout('user-1', 'invalid_token')
+      expect(emitStub.calledWith('force_logout', { reason: 'invalid_token' })).to.be.true
+    })
+  })
 })

@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
@@ -10,6 +10,10 @@ import {
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import {
   uploadNextVersionToStorage,
   createPlaceholderDocument,
@@ -64,7 +68,7 @@ export const getKnowledgeHubNodes =
         throw new UnauthorizedError('User not authenticated');
       }
 
-      logger.info('Getting knowledge hub nodes', {
+      logger.debug('Getting knowledge hub nodes', {
         userId,
         orgId,
         query: req.query,
@@ -807,7 +811,7 @@ const streamKbUpload = async (opts: {
           : filePath;
         const extension = getFileExtension(fileName);
         const correctMimeType = (extension && getMimeType(extension)) || mimetype;
-        const key: string = uuidv4();
+        const key: string = randomUUID();
         const webUrl = `/record/${key}`;
         const validLastModified =
           lastModified && !isNaN(lastModified) && lastModified > 0
@@ -922,7 +926,7 @@ const assertKbWritePermission = async (
     );
   }
   if (kbCheckResponse.statusCode !== 200) {
-    throw new InternalServerError('Failed to verify knowledge base access');
+    throw handleBackendError(kbCheckResponse, 'verify knowledge base access');
   }
   const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
   if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
@@ -1203,8 +1207,11 @@ export const updateRecord =
             );
           }
 
-          throw new InternalServerError(
-            `File upload failed: ${storageError.message}. Please retry.`,
+          logger.error('Uploading the file to storage failed', {
+            error: storageError,
+          });
+          throw markClientSafe(
+            new InternalServerError(serverFailureMessage('save this file')),
           );
         }
       }
@@ -1304,6 +1311,11 @@ export const getRecordById =
       );
 
       const responseForClient: Record<string, any> = { ...response, data: { ...(response?.data || {}) } };
+
+      if (responseForClient.statusCode === 404) {
+        throw new NotFoundError(`Record ${recordId} not found`);
+      }
+
       if (responseForClient.data?.record) {
         responseForClient.data.record = { ...responseForClient.data.record };
         // TODO: Move this response shaping into a typed mapper once the connector contract drops record._id.
@@ -1327,7 +1339,7 @@ export const getRecordById =
       );
 
       // Log successful retrieval
-      logger.info('Record retrieved successfully');
+      logger.debug('Record retrieved successfully');
     } catch (error: any) {
       logger.error('Error getting record by id', {
         recordId: req.params.recordId,
@@ -1786,8 +1798,10 @@ export const getRecordBuffer =
 
       // Handle any errors in the stream
       response.data.on('error', (error: any) => {
-        console.error('Stream error:', error);
-        // Only send error if headers haven't been sent yet
+        logger.error('Stream error while proxying record buffer', {
+          error: error?.message,
+          recordId,
+        });
         if (!res.headersSent) {
           try {
             res.status(500).end('Error streaming data');
@@ -1796,10 +1810,18 @@ export const getRecordBuffer =
               error: e,
             });
           }
+          return;
         }
+        // Headers are already out, so the status cannot be corrected. Destroy
+        // the socket so the client sees a truncated transfer rather than
+        // silently saving a partial file as if it were complete.
+        res.destroy(error);
       });
     } catch (error: any) {
-      console.error('Error fetching record buffer:', error);
+      logger.error('Error fetching record buffer', {
+        error: error?.message,
+        recordId: req.params.recordId,
+      });
       if (!res.headersSent) {
         if (error.response) {
           let errorMessage = 'Error from AI backend';
@@ -1819,6 +1841,12 @@ export const getRecordBuffer =
             logger.error('Failed to parse error response from AI backend', {
               error: parseError,
             });
+          }
+          // A 429 is only actionable with the source's own backoff hint, which
+          // the connector service put on the response for us to relay.
+          const retryAfter = error.response.headers?.['retry-after'];
+          if (retryAfter) {
+            res.set('Retry-After', String(retryAfter));
           }
           res.status(error.response.status).json({ error: errorMessage });
           return;

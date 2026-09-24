@@ -2,7 +2,17 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { userAdminCheck } from '../../../../src/modules/user_management/middlewares/userAdminCheck';
-import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
+import { Users } from '../../../../src/modules/user_management/schema/users.schema';
+
+function stubUserRole(role: 'admin' | 'member' | null) {
+  // null => existing user with unset role (not admin)
+  const doc = role === null ? {} : { role };
+  return sinon.stub(Users, 'findOne').returns({
+    select: sinon.stub().returns({
+      lean: sinon.stub().resolves(doc),
+    }),
+  } as any);
+}
 
 describe('userAdminCheck Middleware', () => {
   let req: any;
@@ -29,12 +39,7 @@ describe('userAdminCheck Middleware', () => {
   });
 
   it('should call next() without error when user is admin', async () => {
-    const findStub = sinon.stub(UserGroups, 'find').returns({
-      select: sinon.stub().resolves([
-        { type: 'admin' },
-        { type: 'everyone' },
-      ]),
-    } as any);
+    stubUserRole('admin');
 
     await userAdminCheck(req, res, next);
 
@@ -43,12 +48,18 @@ describe('userAdminCheck Middleware', () => {
   });
 
   it('should call next with error when user is not admin', async () => {
-    const findStub = sinon.stub(UserGroups, 'find').returns({
-      select: sinon.stub().resolves([
-        { type: 'standard' },
-        { type: 'everyone' },
-      ]),
-    } as any);
+    stubUserRole('member');
+
+    await userAdminCheck(req, res, next);
+
+    expect(next.calledOnce).to.be.true;
+    const error = next.firstCall.args[0];
+    expect(error).to.be.an('error');
+    expect(error.message).to.equal('Admin access required');
+  });
+
+  it('should deny access when role is unset (no admin-group fallback)', async () => {
+    stubUserRole(null);
 
     await userAdminCheck(req, res, next);
 
@@ -78,61 +89,5 @@ describe('userAdminCheck Middleware', () => {
     const error = next.firstCall.args[0];
     expect(error).to.be.an('error');
     expect(error.message).to.equal('Account not found');
-  });
-
-  it('should call next with NotFoundError when user object is undefined', async () => {
-    req.user = undefined;
-
-    await userAdminCheck(req, res, next);
-
-    expect(next.calledOnce).to.be.true;
-    const error = next.firstCall.args[0];
-    expect(error).to.be.an('error');
-    expect(error.message).to.equal('Account not found');
-  });
-
-  it('should call next with error when user has no groups', async () => {
-    const findStub = sinon.stub(UserGroups, 'find').returns({
-      select: sinon.stub().resolves([]),
-    } as any);
-
-    await userAdminCheck(req, res, next);
-
-    expect(next.calledOnce).to.be.true;
-    const error = next.firstCall.args[0];
-    expect(error).to.be.an('error');
-    expect(error.message).to.equal('Admin access required');
-  });
-
-  it('should query UserGroups with correct parameters', async () => {
-    const selectStub = sinon.stub().resolves([{ type: 'admin' }]);
-    const findStub = sinon.stub(UserGroups, 'find').returns({
-      select: selectStub,
-    } as any);
-
-    await userAdminCheck(req, res, next);
-
-    expect(findStub.calledOnce).to.be.true;
-    const query = findStub.firstCall.args[0];
-    expect(query).to.deep.equal({
-      orgId: '507f1f77bcf86cd799439012',
-      users: { $in: ['507f1f77bcf86cd799439011'] },
-      isDeleted: false,
-    });
-    expect(selectStub.calledWith('type')).to.be.true;
-  });
-
-  it('should handle database errors gracefully', async () => {
-    const dbError = new Error('Database connection failed');
-    sinon.stub(UserGroups, 'find').returns({
-      select: sinon.stub().rejects(dbError),
-    } as any);
-
-    await userAdminCheck(req, res, next);
-
-    expect(next.calledOnce).to.be.true;
-    const error = next.firstCall.args[0];
-    expect(error).to.be.an('error');
-    expect(error.message).to.equal('Database connection failed');
   });
 });

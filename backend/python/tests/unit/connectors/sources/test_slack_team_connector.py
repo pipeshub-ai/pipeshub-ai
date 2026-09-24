@@ -1354,7 +1354,7 @@ class TestSlackConnectorStreamRecord:
         rec.weburl = None
         with pytest.raises(HTTPException) as ei:
             await c.stream_record(rec)
-        assert ei.value.status_code == 500
+        assert ei.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_unsupported_record_type(self):
@@ -1489,19 +1489,13 @@ class TestSlackConnectorCreateConnector:
     async def test_create_connector_calls_initialize(self):
         from app.connectors.sources.slack.team.connector import SlackConnector
 
-        dep = MagicMock()
-        dep.initialize = AsyncMock()
-        with (
-            patch(
-                "app.connectors.sources.slack.team.connector.DataSourceEntitiesProcessor",
-                return_value=dep,
-            ),
-            patch.object(SlackConnector, "__init__", lambda self, *a, **kw: None),
-        ):
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        with patch.object(SlackConnector, "__init__", lambda self, *a, **kw: None):
             obj = await SlackConnector.create_connector(
-                MagicMock(), MagicMock(), MagicMock(), "cid-1", "team", "user-1"
+                MagicMock(), MagicMock(), MagicMock(), "cid-1", "team", "user-1",
+                data_entities_processor=processor,
             )
-        dep.initialize.assert_awaited_once()
         assert isinstance(obj, SlackConnector)
 
 
@@ -1601,12 +1595,7 @@ class TestChannelGroupMap:
         c.channel_groups_cache = {}
         rg = MagicMock()
         rg.id = "rg-from-db"
-        tx = MagicMock()
-        tx.get_record_group_by_external_id = AsyncMock(return_value=rg)
-        cm = MagicMock()
-        cm.__aenter__ = AsyncMock(return_value=tx)
-        cm.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=cm)
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=rg)
 
         m = await c._channel_group_map(["CNEW"])
         assert m["CNEW"] == "rg-from-db"
@@ -1618,7 +1607,7 @@ class TestChannelGroupMap:
 
         c = _make_connector()
         c.channel_groups_cache = {}
-        c.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("db err"))
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(side_effect=RuntimeError("db err"))
 
         m = await c._channel_group_map(["CX"])
         assert "CX" not in m
@@ -1792,6 +1781,9 @@ def _connector_pipeline_ready():
     c.data_entities_processor.on_record_content_update = AsyncMock()
     c.data_entities_processor.on_updated_record_permissions = AsyncMock()
     c.data_entities_processor.reindex_existing_records = AsyncMock()
+    c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    c.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
+    c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
     return c
 
 
@@ -2395,13 +2387,9 @@ class TestProcessBatchEnrichReindex:
             url="https://example.com/x",
             is_public=LinkPublicStatus.UNKNOWN,
         )
-        tx = MagicMock()
         rel = MagicMock()
         rel.id = "linked-id-1"
-        tx.get_record_by_weburl = AsyncMock(return_value=rel)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=rel)
 
         await c._enrich_link_records_linked_id([(lr, [])])
 
@@ -3367,11 +3355,7 @@ class TestHandleEditedAndNewThread:
             content="same",
             is_edited=True,
         )
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         md = {"ts": "1.0", "user": "U1", "text": "same", "edited": {}}
         with patch.object(SlackConnector, "_record_changed", return_value=False):
@@ -3401,11 +3385,7 @@ class TestHandleEditedAndNewThread:
         existing.id = "mid"
         existing.source_created_at = 1000
         existing.weburl = "https://w.slack.com"
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         md = {"ts": "1.0", "user": "U1", "text": "new text", "edited": {"ts": "2.0"}}
         assert await c._handle_edited_message(md, "C1", "1.0") == 1
 
@@ -3433,11 +3413,7 @@ class TestHandleEditedAndNewThread:
             end_ts="3.0",
         )
         burst_rec.id = "bid"
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds = MagicMock()
         ds.conversations_history = AsyncMock(
@@ -3484,11 +3460,7 @@ class TestHandleEditedAndNewThread:
         )
         thread_rg.id = "trg"
 
-        tx = MagicMock()
-        tx.get_record_group_by_external_id = AsyncMock(side_effect=[chan_rg, thread_rg])
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(side_effect=[chan_rg, thread_rg, chan_rg, None])
         c.audit_log_sync_point.read_sync_point = AsyncMock(
             side_effect=[
                 {"last_reply_ts": "8.0"},
@@ -4282,11 +4254,7 @@ class TestSlackConnectorCoverageExtended:
                 },
             )
         )
-        tx = MagicMock()
-        tx.get_record_group_by_external_id = AsyncMock(return_value=None)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
         c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_reply_ts": "9.0"})
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
@@ -4485,18 +4453,10 @@ class TestSlackConnectorCoverageExtended:
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
         assert await c._handle_edited_message({"ts": "1.0"}, "C1", "1.0") == 0
 
-        tx2 = MagicMock()
-        tx2.get_record_by_external_id = AsyncMock(return_value=None)
-        tx2.__aenter__ = AsyncMock(return_value=tx2)
-        tx2.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx2)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         ds = MagicMock()
         ds.conversations_history = AsyncMock(return_value=MagicMock(success=False))
         with (
@@ -4536,13 +4496,9 @@ class TestSlackConnectorCoverageExtended:
             url="https://u.com",
             is_public=LinkPublicStatus.UNKNOWN,
         )
-        c.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("outer"))
+        c.data_entities_processor.get_record_by_weburl = AsyncMock(side_effect=RuntimeError("outer"))
         await c._enrich_link_records_linked_id([(lr, [])])
-        tx = MagicMock()
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        tx.get_record_by_weburl = AsyncMock(side_effect=RuntimeError("inner"))
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_weburl = AsyncMock(side_effect=RuntimeError("inner"))
         await c._enrich_link_records_linked_id([(lr, [])])
 
     @pytest.mark.asyncio
@@ -4798,18 +4754,14 @@ class TestCreateConnector:
         logger = MagicMock()
         dsp = MagicMock()
         cfg = MagicMock()
-        with (
-            patch("app.connectors.sources.slack.team.connector.DataSourceEntitiesProcessor") as D,
-            patch.object(SlackConnector, "__init__", lambda self, *a, **k: None),
-        ):
-            dep = MagicMock()
-            dep.initialize = AsyncMock()
-            D.return_value = dep
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        with patch.object(SlackConnector, "__init__", lambda self, *a, **k: None):
             conn = await SlackConnector.create_connector(
                 logger, dsp, cfg, "cid", "team", "me",
+                data_entities_processor=processor,
             )
         assert isinstance(conn, SlackConnector)
-        dep.initialize.assert_awaited_once()
 
 
 class TestSlackTeamConnectorCoverageBoost:
@@ -5364,13 +5316,9 @@ class TestSlackTeamConnectorCoverageBoost:
                 },
             ),
         )
-        tx = MagicMock()
         existing_rg = MagicMock()
         existing_rg.id = "thread-rg-internal"
-        tx.get_record_group_by_external_id = AsyncMock(return_value=existing_rg)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=existing_rg)
         c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_reply_ts": "9.0"})
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
@@ -5420,17 +5368,9 @@ class TestSlackTeamConnectorCoverageBoost:
             ),
         )
 
-        class _Tx:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                return None
-
-            async def get_record_group_by_external_id(self, **_k):
-                raise RuntimeError("db")
-
-        c.data_store_provider.transaction = MagicMock(return_value=_Tx())
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(
+            side_effect=RuntimeError("db")
+        )
         c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_reply_ts": "1.0"})
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
@@ -6812,11 +6752,7 @@ class TestEnrichLinkRecordsExceptions:
             url="https://example.com/x",
             is_public=LinkPublicStatus.UNKNOWN,
         )
-        tx = MagicMock()
-        tx.get_record_by_weburl = AsyncMock(side_effect=RuntimeError("db"))
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_weburl = AsyncMock(side_effect=RuntimeError("db"))
         await c._enrich_link_records_linked_id([(lr, [])])
         assert lr.linked_record_id is None
 
@@ -6843,7 +6779,7 @@ class TestEnrichLinkRecordsExceptions:
             url="https://example.com/y",
             is_public=LinkPublicStatus.UNKNOWN,
         )
-        c.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("tx open"))
+        c.data_entities_processor.get_record_by_weburl = AsyncMock(side_effect=RuntimeError("tx open"))
         await c._enrich_link_records_linked_id([(lr, [])])
 
 
@@ -7213,17 +7149,13 @@ class TestHandleNewThreadBranches:
         chan_rg.id = "crg"
 
         call_count = {"n": 0}
-        def _make_tx():
+        async def _side_effect(**kwargs):
             call_count["n"] += 1
             if call_count["n"] == 1:
-                tx = MagicMock()
-                tx.get_record_group_by_external_id = AsyncMock(return_value=chan_rg)
-                tx.__aenter__ = AsyncMock(return_value=tx)
-                tx.__aexit__ = AsyncMock(return_value=None)
-                return tx
+                return chan_rg
             raise RuntimeError("db error on thread rg lookup")
 
-        c.data_store_provider.transaction = MagicMock(side_effect=_make_tx)
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(side_effect=_side_effect)
         c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_reply_ts": "5.0"})
         md = {"ts": "1.0", "reply_count": 2, "thread_ts": "1.0", "latest_reply": "2.0"}
         with patch.object(SlackConnector, "_process_thread", new_callable=AsyncMock):
@@ -7237,19 +7169,7 @@ class TestHandleNewThreadBranches:
         chan_rg = MagicMock()
         chan_rg.id = "crg"
 
-        call_count = {"n": 0}
-        def _make_tx():
-            call_count["n"] += 1
-            tx = MagicMock()
-            if call_count["n"] == 1:
-                tx.get_record_group_by_external_id = AsyncMock(return_value=chan_rg)
-            else:
-                tx.get_record_group_by_external_id = AsyncMock(return_value=None)
-            tx.__aenter__ = AsyncMock(return_value=tx)
-            tx.__aexit__ = AsyncMock(return_value=None)
-            return tx
-
-        c.data_store_provider.transaction = MagicMock(side_effect=_make_tx)
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(side_effect=[chan_rg, None])
         c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_reply_ts": "5.0"})
         md = {"ts": "1.0", "reply_count": 2, "thread_ts": "1.0", "latest_reply": "2.0"}
         with patch.object(SlackConnector, "_process_thread", new_callable=AsyncMock):
@@ -7262,7 +7182,7 @@ class TestHandleEditedMessageBranches:
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
-        c.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("db"))
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
         result = await c._handle_edited_message({"ts": "1.0"}, "C1", "1.0")
         assert result == 0
 
@@ -7290,11 +7210,7 @@ class TestHandleEditedMessageBranches:
         existing.id = "mid"
         existing.source_created_at = 1000
         existing.weburl = "https://w"
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         md = {"ts": "1.0", "user": "U1", "text": "new", "edited": {}}
         result = await c._handle_edited_message(md, "C1", "1.0")
         assert result == 1
@@ -7304,11 +7220,7 @@ class TestHandleEditedMessageBranches:
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         with patch.object(SlackConnector, "_find_burst_record_by_message_ts", new_callable=AsyncMock, return_value=None):
             result = await c._handle_edited_message({"ts": "1.0", "edited": {}}, "C1", "1.0")
         assert result == 0
@@ -7336,11 +7248,7 @@ class TestHandleEditedMessageBranches:
             end_ts="3.0",
         )
         burst_rec.id = "bid"
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         ds = MagicMock()
         ds.conversations_history = AsyncMock(side_effect=RuntimeError("api"))
         with (
@@ -7373,11 +7281,7 @@ class TestHandleEditedMessageBranches:
             end_ts="3.0",
         )
         burst_rec.id = "bid"
-        tx = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         ds = MagicMock()
         ds.conversations_history = AsyncMock(return_value=MagicMock(
             success=True,
@@ -7398,11 +7302,7 @@ class TestChannelGroupMapRgNone:
 
         c = _make_connector()
         c.channel_groups_cache = {}
-        tx = MagicMock()
-        tx.get_record_group_by_external_id = AsyncMock(return_value=None)
-        tx.__aenter__ = AsyncMock(return_value=tx)
-        tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
         m = await c._channel_group_map(["CNONE"])
         assert "CNONE" not in m
 
@@ -7881,7 +7781,7 @@ class TestStreamFileBytesEdgeCases:
         ))
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
-            pytest.raises(HTTPException, match="404"),
+            pytest.raises(HTTPException, match="422"),
         ):
             await anext(c._stream_file_bytes(fr))
 
@@ -8076,7 +7976,7 @@ class TestStreamFileBytesEdgeCases:
             patch("app.connectors.sources.slack.team.connector.httpx.AsyncClient", return_value=_Http()),
         ):
             ag = c._stream_file_bytes(fr)
-            with pytest.raises(HTTPException, match="403"):
+            with pytest.raises(HTTPException, match="409"):
                 await anext(ag)
 
 
@@ -8992,14 +8892,16 @@ class TestBuildMessageBlocksStreamingExtraBranches:
             success=True,
             data={"messages": []},
         ))
-        ds.conversations_replies = AsyncMock(return_value=MagicMock(success=False))
+        ds.conversations_replies = AsyncMock(
+            return_value=MagicMock(success=False, error="invalid_auth")
+        )
 
         async def fresh():
             return ds
 
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh),
-            pytest.raises(HTTPException, match="404"),
+            pytest.raises(HTTPException, match="409"),
         ):
             await c._build_message_blocks_for_streaming(rec)
 
@@ -9026,14 +8928,16 @@ class TestBuildMessageBlocksStreamingExtraBranches:
             mime_type=MimeTypes.BLOCKS.value,
         )
         ds = MagicMock()
-        ds.conversations_history = AsyncMock(return_value=MagicMock(success=False))
+        ds.conversations_history = AsyncMock(
+            return_value=MagicMock(success=False, error="not_in_channel")
+        )
 
         async def fresh():
             return ds
 
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh),
-            pytest.raises(HTTPException, match="404"),
+            pytest.raises(HTTPException, match="403"),
         ):
             await c._build_message_blocks_for_streaming(rec)
 
@@ -9269,3 +9173,235 @@ class TestCheckUpdatedMessageFallbackBranches:
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh):
             result = await c._check_updated_message(msg)
         assert result is None
+
+
+from types import SimpleNamespace  # noqa: E402
+
+
+# ===========================================================================
+# _reindex_root_rg_id — root resolution when reindexing an existing record
+# ===========================================================================
+
+
+from app.connectors.sources.slack.team.connector import ProcessingContext  # noqa: E402
+
+
+class TestReindexRootRecordGroup:
+    """A threaded record's ``record_group_id`` is its *thread* group, and the
+    reindex path keys that under the channel id in ``channel_groups_map``. If
+    the root falls back to that map the thread is published as its own root,
+    root-scoped Slack filtering matches the record with nothing, and it drops
+    out of search silently."""
+
+    @pytest.mark.asyncio
+    async def test_legacy_thread_record_roots_at_the_channel(self):
+        c = _make_connector()
+        c.channel_groups_cache = {"C1": "rg-channel"}
+        rec = SimpleNamespace(record_group_id="rg-thread", root_record_group_id=None)
+
+        root = await c._reindex_root_rg_id(rec, "C1")
+
+        assert root == "rg-channel"
+        assert root != rec.record_group_id
+
+    @pytest.mark.asyncio
+    async def test_root_survives_the_ctx_the_reindex_path_builds(self):
+        c = _make_connector()
+        c.channel_groups_cache = {"C1": "rg-channel"}
+        rec = SimpleNamespace(record_group_id="rg-thread", root_record_group_id=None)
+
+        ctx = ProcessingContext(
+            channel_id="C1",
+            channel_groups_map={"C1": rec.record_group_id},
+            root_rg_id=await c._reindex_root_rg_id(rec, "C1"),
+            user_id_to_email={},
+            user_id_to_name={},
+            channel_id_to_name={},
+            rate_limiter=c.rate_limiter,
+        )
+
+        assert c._root_rg_id(ctx) == "rg-channel"
+
+    @pytest.mark.asyncio
+    async def test_unresolved_root_does_not_fall_back_to_the_thread_group(self):
+        """The reindex path keys channel_groups_map on the record's own group,
+        which for a threaded record is the thread. So when root resolution was
+        attempted and came back empty, _root_rg_id must report no root rather
+        than fall through to that map — storing the thread as its own root is
+        unrepairable, because the membership pass only fills a root in when
+        none is present."""
+        c = _make_connector()
+        c.channel_groups_cache = {}
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(
+            return_value=None
+        )
+        rec = SimpleNamespace(record_group_id="rg-thread", root_record_group_id=None)
+
+        ctx = ProcessingContext(
+            channel_id="C1",
+            channel_groups_map={"C1": rec.record_group_id},
+            root_rg_id=await c._reindex_root_rg_id(rec, "C1"),
+            root_resolved=True,
+            user_id_to_email={},
+            user_id_to_name={},
+            channel_id_to_name={},
+            rate_limiter=c.rate_limiter,
+        )
+
+        assert c._root_rg_id(ctx) is None
+
+    @pytest.mark.asyncio
+    async def test_sync_path_still_uses_the_channel_map(self):
+        """root_resolved is only set by the reindex paths; the normal sync path
+        must keep resolving the channel from channel_groups_map."""
+        c = _make_connector()
+        ctx = ProcessingContext(
+            channel_id="C1",
+            channel_groups_map={"C1": "rg-channel"},
+            user_id_to_email={},
+            user_id_to_name={},
+            channel_id_to_name={},
+            rate_limiter=c.rate_limiter,
+        )
+
+        assert c._root_rg_id(ctx) == "rg-channel"
+
+    @pytest.mark.asyncio
+    async def test_stored_root_is_preferred_over_a_lookup(self):
+        c = _make_connector()
+        c.channel_groups_cache = {"C1": "rg-channel"}
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(
+            side_effect=AssertionError("must not hit the DB when a root is stored")
+        )
+        rec = SimpleNamespace(
+            record_group_id="rg-thread", root_record_group_id="rg-stored"
+        )
+
+        assert await c._reindex_root_rg_id(rec, "C1") == "rg-stored"
+
+    @pytest.mark.asyncio
+    async def test_resolves_the_channel_group_from_the_db_on_a_cache_miss(self):
+        c = _make_connector()
+        c.channel_groups_cache = {}
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(
+            return_value=SimpleNamespace(id="rg-channel")
+        )
+        rec = SimpleNamespace(record_group_id="rg-thread", root_record_group_id=None)
+
+        assert await c._reindex_root_rg_id(rec, "C1") == "rg-channel"
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_channel_yields_no_root_rather_than_the_thread(self):
+        """Left unset the vector membership pass can still derive it from the
+        group edges; set to the thread group it cannot, because that pass only
+        fills a root in when none is stored."""
+        c = _make_connector()
+        c.channel_groups_cache = {}
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(
+            return_value=None
+        )
+        rec = SimpleNamespace(record_group_id="rg-thread", root_record_group_id=None)
+
+        assert await c._reindex_root_rg_id(rec, "C1") is None
+
+    @pytest.mark.asyncio
+    async def test_thread_file_group_id_still_resolves_to_the_channel(self):
+        """A threaded FileRecord's ``external_record_group_id`` is the *thread*
+        group ("thread_{channel}_{ts}") — which is exactly what the reindex path
+        passes in, so looking it up directly would hand back the thread again."""
+        c = _make_connector()
+        c.channel_groups_cache = {"C1": "rg-channel"}
+        rec = SimpleNamespace(record_group_id="rg-thread", root_record_group_id=None)
+
+        root = await c._reindex_root_rg_id(rec, "thread_C1_1699887.001200")
+
+        assert root == "rg-channel"
+
+    def test_channel_ext_id_strips_only_the_thread_wrapper(self):
+        c = _make_connector()
+        assert c._channel_ext_id("thread_C1_1699887.001200") == "C1"
+        assert c._channel_ext_id("C1") == "C1"
+
+    @pytest.mark.asyncio
+    async def test_edited_thread_message_roots_at_the_channel(self):
+        """An edited message takes the _make_ctx path, not the ProcessingContext
+        one. Its record_group_id is the *thread* group, so without an explicit
+        root the ctx fallback persists the thread as its own root — and a stored
+        wrong value blocks the membership backfill from ever repairing it."""
+        c = _make_connector()
+        c.rate_limiter = AsyncMock()
+        c.channel_groups_cache = {"C1": "rg-channel"}
+        existing = MagicMock()
+        existing.record_group_id = "rg-thread"
+        existing.root_record_group_id = None
+        existing.id = "rec-1"
+        existing.version = 2
+        existing.weburl = "https://slack.example/archives/C1/p1"
+        existing.thread_id = "1699887.0000"
+        existing.is_reply = True
+        existing.has_replies = False
+        existing.parent_external_record_id = "1699887.0000"
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c._record_changed = MagicMock(return_value=True)
+        from app.models.blocks import BlocksContainer
+        c._build_single_block_containers = MagicMock(return_value=BlocksContainer())
+        c._replace_mentions_in_text = MagicMock(return_value="edited text")
+        saved = {}
+
+        async def _capture(rec):
+            saved["rec"] = rec
+
+        c.data_entities_processor.on_record_content_update = _capture
+
+        rc = await c._handle_edited_message({"text": "hi", "ts": "1699887.0001"}, "C1", "1699887.0001")
+
+        assert rc == 1
+        assert saved["rec"].root_record_group_id == "rg-channel"
+        assert saved["rec"].root_record_group_id != "rg-thread"
+
+    @pytest.mark.asyncio
+    async def test_check_updated_file_roots_a_legacy_thread_file_at_the_channel(self):
+        """The wiring, not just the helper: reindexing a threaded file written
+        before rootRecordGroupId existed must hand _process_file a ctx whose
+        root is the channel group."""
+        from app.models.entities import MessageRecord
+
+        c = _make_connector()
+        c.rate_limiter = AsyncMock()
+        c.channel_groups_cache = {"C1": "rg-channel"}
+        c._fresh_datasource = AsyncMock(
+            return_value=SimpleNamespace(
+                files_info=AsyncMock(
+                    return_value=SimpleNamespace(
+                        success=True, data={"file": {"created": 2_000_000}}
+                    )
+                )
+            )
+        )
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=MagicMock(spec=MessageRecord)
+        )
+
+        captured = {}
+
+        async def _capture(fd, parent, ctx):
+            captured["ctx"] = ctx
+            return MagicMock()
+
+        c._process_file = _capture
+
+        rec = SimpleNamespace(
+            external_record_id="F1",
+            source_updated_at=1_000,
+            source_created_at=1_000,
+            parent_external_record_id="1699887.001200",
+            external_record_group_id="thread_C1_1699887.001200",
+            record_group_id="rg-thread",
+            root_record_group_id=None,
+            id="rec-1",
+            version=3,
+        )
+
+        assert await c._check_updated_file(rec) is not None
+        assert c._root_rg_id(captured["ctx"]) == "rg-channel"
+        assert c._root_rg_id(captured["ctx"]) != "rg-thread"

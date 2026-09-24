@@ -24,11 +24,9 @@ import time
 import uuid
 from typing import Any, Optional
 
-from redis import asyncio as aioredis  # type: ignore
-
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.service import config_node_constants
-from app.utils.redis_util import build_redis_url
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 
 
 class SyncPhase:
@@ -285,18 +283,24 @@ class ConnectorSyncProgressStore:
     async def create(
         cls, logger: logging.Logger, config_service: ConfigurationService
     ) -> "ConnectorSyncProgressStore":
-        redis_config = await config_service.get_config(config_node_constants.REDIS.value)
-        if not redis_config or not isinstance(redis_config, dict):
-            raise ValueError("Redis configuration not found")
-        redis_url = build_redis_url(redis_config)
-        # from_url returns a client synchronously (see app/health/health.py); the
-        # connection is established lazily on first command.
-        redis_client = aioredis.from_url(  # type: ignore[no-untyped-call]
-            redis_url,
-            encoding="utf-8",
-            decode_responses=True,
-            socket_connect_timeout=1,
-            socket_timeout=2,
+        # Through the shared connection layer, like every other Redis user, so
+        # the deployment's mode (standalone or cluster) and TLS settings apply.
+        redis_config = await config_service.get_redis_config()
+        provider = get_redis_provider(
+            RedisConnectionConfig.from_host_port(
+                host=redis_config.host,
+                port=redis_config.port,
+                password=redis_config.password,
+                db=redis_config.db,
+                tls=redis_config.tls,
+            )
+        )
+        redis_client = provider.create_client(
+            ClientOptions(
+                decode_responses=True,
+                socket_timeout_seconds=2,
+                socket_connect_timeout_seconds=1,
+            )
         )
         return cls(logger, redis_client)
 

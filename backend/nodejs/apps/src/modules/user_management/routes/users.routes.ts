@@ -20,8 +20,16 @@ import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/f
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { Users } from '../schema/users.schema';
-import { UserGroups } from '../schema/userGroup.schema';
-import { NotFoundError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  NotFoundError,
+  UnauthorizedError,
+} from '../../../libs/errors/http.errors';
+import {
+  findOrgAdminUserIds,
+  getActiveUserOrgRole,
+  isUserOrgAdmin,
+} from '../services/user-admin.service';
 import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
@@ -62,6 +70,11 @@ const createUserBody = z.object({
       message: 'Invalid mobile number',
     }),
   designation: z.string().optional(),
+  // Absent → member (resolveOptionalUserRole). Present must be admin|member.
+  role: z.enum(['admin', 'member']).optional(),
+  // Starting password for the bundled demo personas only (@acme-demo.example);
+  // the controller refuses it for any other address and checks complexity.
+  password: z.string().optional(),
 });
 
 const updateUserBody = z.object({
@@ -88,10 +101,26 @@ const updateUserBody = z.object({
     .optional(),
   dataCollectionConsent: z.boolean().optional(),
   hasLoggedIn: z.boolean().optional(),
+  role: z.enum(['admin', 'member']).optional(),
 }).strict(); // Use strict mode to reject unknown fields
 
 const createUserValidationSchema = z.object({
   body: createUserBody,
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
+
+const bulkInviteBody = z.object({
+  emails: z
+    .array(z.string())
+    .min(1, 'emails are required'),
+  groupIds: z.array(z.string()).optional(),
+  role: z.enum(['admin', 'member']).optional(),
+});
+
+const bulkInviteValidationSchema = z.object({
+  body: bulkInviteBody,
   query: z.object({}),
   params: z.object({}),
   headers: z.object({}),
@@ -261,6 +290,32 @@ export function createUserRouter(container: Container) {
     },
   );
 
+  // The caller's own live role. No OAuth scope: it discloses only the bearer's role.
+  // Internal services use it to resolve OAuth/PAT roles and to learn that a token was
+  // revoked or its user deleted (authenticate answers 401 in those cases).
+  router.get(
+    '/me/role',
+    authMiddleware.authenticate,
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const role = await getActiveUserOrgRole(
+          String(req.user?.userId ?? ''),
+          String(req.user?.orgId ?? ''),
+        );
+        if (role === null) {
+          throw new UnauthorizedError('User not found, please login again');
+        }
+        res.status(200).json({ role });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.get(
     '/:id/email',
     authMiddleware.authenticate,
@@ -359,24 +414,51 @@ export function createUserRouter(container: Container) {
           return;
         }
 
-        const adminGroups = await UserGroups.find({
-          orgId,
-          type: 'admin',
-          isDeleted: false,
-        }).select('users');
-        type AdminGroupUsers = {
-          users?: Array<{ toString: () => string }>;
-        };
-
-        const adminUserIds = [
-          ...new Set(
-            adminGroups.flatMap((group: AdminGroupUsers) =>
-              (group.users || []).map((id) => id.toString()),
-            ),
-          ),
-        ];
+        const adminUserIds = await findOrgAdminUserIds(orgId);
 
         res.status(200).json({ adminUserIds });
+        return;
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  /**
+   * GET /users/internal/:id/adminCheck
+   * Internal S2S admin check. Uses USER_LOOKUP scoped token (no user-session role).
+   * Token userId must match :id; admin privilege is verified from User.role in DB.
+   */
+  router.get(
+    '/internal/:id/adminCheck',
+    authMiddleware.scopedTokenValidator(TokenScopes.USER_LOOKUP),
+    ValidationMiddleware.validate(UserIdValidationSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const tokenUserId = req.tokenPayload?.userId;
+        const orgId = req.tokenPayload?.orgId;
+        const pathUserId = req.params.id;
+
+        if (!tokenUserId || !orgId) {
+          throw new NotFoundError('Account not found');
+        }
+        if (String(tokenUserId) !== String(pathUserId)) {
+          throw new BadRequestError('Admin access required');
+        }
+
+        const isAdmin = await isUserOrgAdmin(
+          String(tokenUserId),
+          String(orgId),
+        );
+        if (!isAdmin) {
+          throw new BadRequestError('Admin access required');
+        }
+
+        res.status(200).json({ message: 'User has admin access' });
         return;
       } catch (error) {
         next(error);
@@ -685,6 +767,8 @@ export function createUserRouter(container: Container) {
 
   router.get(
     '/:id/adminCheck',
+    // User-session JWT path (e.g. Python toolsets forwarding the browser token).
+    // Auth-service S2S calls use GET /internal/:id/adminCheck with a USER_LOOKUP scoped token.
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
     ValidationMiddleware.validate(UserIdValidationSchema),
@@ -707,9 +791,9 @@ export function createUserRouter(container: Container) {
     '/bulk/invite',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
-    smtpConfigCheck(config.cmBackend),
-    userAdminCheck,
+    smtpConfigCheck(config.cmBackend, config.scopedJwtSecret),
     accountTypeCheck,
+    ValidationMiddleware.validate(bulkInviteValidationSchema),
     // attachContainerMiddleware(container),
     async (
       req: AuthenticatedUserRequest,
@@ -729,8 +813,7 @@ export function createUserRouter(container: Container) {
     '/bulk/invite/upload',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
-    smtpConfigCheck(config.cmBackend),
-    userAdminCheck,
+    smtpConfigCheck(config.cmBackend, config.scopedJwtSecret),
     accountTypeCheck,
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
@@ -766,8 +849,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
     ValidationMiddleware.validate(UserIdValidationSchema),
-    smtpConfigCheck(config.cmBackend),
-    userAdminCheck,
+    smtpConfigCheck(config.cmBackend, config.scopedJwtSecret),
     accountTypeCheck,
     // attachContainerMiddleware(container),
     async (

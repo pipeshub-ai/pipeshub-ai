@@ -13,15 +13,17 @@ import {
 } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { isAxiosError } from 'axios';
 import { useToastStore } from '@/lib/store/toast-store';
-import { extractApiErrorMessage, isProcessedError, processError } from '@/lib/api/api-error';
+import { extractApiErrorMessage, getUserFacingErrorMessage, processError } from '@/lib/api/api-error';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
+import { removeElectronLocalSync } from '../../utils/electron-local-sync';
 import type { ConnectorScope, InstancePanelTab } from '../../types';
 import { OverviewTab } from './overview-tab';
 import { SettingsTab } from './settings-tab';
 import { DisableFirstDialog } from '../disable-first-dialog';
+import { useUserPermission } from '@/config';
 
 // ========================================
 // InstanceManagementPanel
@@ -31,6 +33,7 @@ export function InstanceManagementPanel() {
   const pathname = usePathname();
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
+  const canDeleteConnector = useUserPermission('deleteConnector');
   const {
     isInstancePanelOpen,
     selectedInstance,
@@ -66,6 +69,7 @@ export function InstanceManagementPanel() {
   }, [selectedInstance, closeInstancePanel, openPanel, pathname]);
 
   const openRemoveDialog = useCallback(() => {
+    if (!canDeleteConnector) return;
     if (!selectedInstance?._key) return;
     if (selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING) {
       addToast({
@@ -82,13 +86,12 @@ export function InstanceManagementPanel() {
       return;
     }
     setDeleteOpen(true);
-  }, [selectedInstance, addToast, t]);
+  }, [selectedInstance, addToast, t, canDeleteConnector]);
 
   const removeConnectorDisabled =
     selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING;
 
-    const removeConnectorDisabledTooltip =
-    selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING
+  const removeConnectorDisabledTooltip = selectedInstance?.status === CONNECTOR_INSTANCE_STATUS.DELETING
       ? t('workspace.connectors.removeInstanceDialog.alreadyRemovingDescription')
       : undefined;
 
@@ -107,20 +110,34 @@ export function InstanceManagementPanel() {
         title: t('workspace.connectors.removeInstanceDialog.successTitle'),
         duration: 3000,
       });
+      // Purge the desktop's journal for this connector too. Unmounting alone
+      // leaves its meta on disk, and the next launch remounts a watcher that
+      // holds the sync root against any new connector on the same folder.
+      // Best-effort: the backend delete (and local store update above) already
+      // succeeded, so a failure here must not surface as a deletion error or
+      // undo the removal.
+      void removeElectronLocalSync(id).catch((error) => {
+        console.warn('[local-sync] failed to purge journal for removed connector:', error);
+      });
     } catch (error: unknown) {
-      let description: string | undefined;
+      const fallback = t('workspace.connectors.removeInstanceDialog.errorDescription', {
+        defaultValue:
+          'Please try again; if it keeps happening, contact your workspace admin.',
+      });
+      let description: string;
       if (isAxiosError(error)) {
         const fromBody = extractApiErrorMessage(error.response?.data);
-        description = (fromBody ?? processError(error).message).trim() || undefined;
-      } else if (isProcessedError(error) && error.message.trim()) {
-        description = error.message.trim();
-      } else if (error instanceof Error && error.message.trim()) {
-        description = error.message.trim();
+        description = getUserFacingErrorMessage(
+          fromBody ? { message: fromBody } : processError(error),
+          fallback,
+        );
+      } else {
+        description = getUserFacingErrorMessage(error, fallback);
       }
       addToast({
         variant: 'error',
         title: t('workspace.connectors.removeInstanceDialog.errorTitle'),
-        ...(description ? { description } : {}),
+        description,
       });
     } finally {
       setDeleteBusy(false);
@@ -334,6 +351,7 @@ export function InstanceManagementPanel() {
               }
               removeDisabled={removeConnectorDisabled}
               removeDisabledTooltip={removeConnectorDisabledTooltip}
+              removePermissionLocked={!canDeleteConnector}
             />
           </Tabs.Content>
         </Tabs.Root>

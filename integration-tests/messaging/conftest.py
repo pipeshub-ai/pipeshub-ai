@@ -19,7 +19,6 @@ from typing import Any
 
 import pytest_asyncio
 from aiokafka import AIOKafkaConsumer
-from redis.asyncio import Redis
 
 _BACKEND_PY = Path(__file__).resolve().parent.parent.parent / "backend" / "python"
 if str(_BACKEND_PY) not in sys.path:
@@ -31,6 +30,9 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaProducerConfig,
 )
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.redis.config import RedisConnectionConfig
+from app.services.redis.connection_provider import RedisClient
+from app.services.redis.connection_provider_factory import get_redis_provider
 
 logger = logging.getLogger("messaging-integration")
 
@@ -57,6 +59,19 @@ def _redis_port() -> int:
 
 def _redis_password() -> str | None:
     return os.getenv("REDIS_PASSWORD") or None
+
+
+def _redis_provider_config() -> RedisConnectionConfig:
+    """Shared connection config for every direct Redis client this module
+    builds (T6): goes through ``IRedisConnectionProvider`` rather than a
+    bare ``redis.asyncio.Redis(...)``, so these fixtures keep working
+    against the cluster/MemoryDB compose profile, not just standalone.
+    """
+    return RedisConnectionConfig.from_host_port(
+        host=_redis_host(),
+        port=_redis_port(),
+        password=_redis_password(),
+    )
 
 
 def _get_broker_type() -> MessageBrokerType:
@@ -156,12 +171,8 @@ async def messaging_cleanup():
     if _get_broker_type() != MessageBrokerType.REDIS:
         return
 
-    client = Redis(
-        host=_redis_host(),
-        port=_redis_port(),
-        password=_redis_password(),
-        decode_responses=True,
-    )
+    provider = get_redis_provider(_redis_provider_config())
+    client = provider.create_client()
     try:
         for stream in cleanup_items:
             try:
@@ -169,6 +180,8 @@ async def messaging_cleanup():
             except Exception:
                 pass
     finally:
+        # Caller-owned client (T6): no `release()` on the provider interface,
+        # `close()` on the client itself is enough.
         await client.aclose()
 
 
@@ -209,7 +222,7 @@ class EventConsumer:
     def __init__(self) -> None:
         self._group = f"e2e-test-{uuid.uuid4().hex[:8]}"
         self._consumer_name = "e2e-consumer"
-        self._redis: Redis | None = None
+        self._redis: RedisClient | None = None
         self._kafka_consumer: AIOKafkaConsumer | None = None
         self._buffer: list[dict] = []
 
@@ -219,14 +232,9 @@ class EventConsumer:
                 return self._buffer.pop(i)
         return None
 
-    async def _ensure_redis(self, topic: str) -> Redis:
+    async def _ensure_redis(self, topic: str) -> RedisClient:
         if self._redis is None:
-            self._redis = Redis(
-                host=_redis_host(),
-                port=_redis_port(),
-                password=_redis_password(),
-                decode_responses=True,
-            )
+            self._redis = get_redis_provider(_redis_provider_config()).create_client()
             await self._redis.ping()
         try:
             await self._redis.xgroup_create(topic, self._group, id="$", mkstream=True)

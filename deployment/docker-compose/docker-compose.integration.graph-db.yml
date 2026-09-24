@@ -1,0 +1,35 @@
+# Graph databases for the integration tests that write through
+# IGraphDBProvider against a real server (the stranded-record sweep).
+#
+#   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
+#     -f deployment/docker-compose/docker-compose.integration.messaging.yml \
+#     up -d --wait neo4j-graph-it arango-graph-it redis-messaging-it
+#   cd backend/python && pytest tests/integration/test_stranded_record_sweep_e2e.py -m integration
+#
+# Start one graph service to test one backend; the other's cases skip.
+# Ports and the password are the defaults the tests read.
+services:
+  neo4j-graph-it:
+    image: neo4j:5.26.0
+    ports:
+      - "17687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/ensure-it-pass
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  arango-graph-it:
+    image: arangodb:3.12.4
+    ports:
+      - "18529:8529"
+    environment:
+      - ARANGO_ROOT_PASSWORD=ensure-it-pass
+    healthcheck:
+      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password ensure-it-pass --javascript.execute-string 'db._version()' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30

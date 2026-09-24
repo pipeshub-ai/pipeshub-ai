@@ -14,6 +14,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Optional, Protocol
 
+from app.connectors.core.base.connector.connector_service import ConnectorSyncSkippedError
 from app.connectors.services.sync_failure import classify_sync_failure
 from app.connectors.services.sync_run_context import (
     reset_sync_run_id,
@@ -58,6 +59,8 @@ async def run_sync_with_lifecycle(
     """Run ``connector.run_sync()`` with the full progress lifecycle applied."""
     start = time.monotonic()
     failed = False
+    cancelled = False
+    skipped_code: Optional[str] = None
     failure_exc: Optional[BaseException] = None
     heartbeat_task: Optional[asyncio.Task] = None
     try:
@@ -70,7 +73,14 @@ async def run_sync_with_lifecycle(
             await connector.run_sync()
         finally:
             reset_sync_run_id(token)
+    except ConnectorSyncSkippedError as exc:
+        # Not a crash: the connector declined to run (e.g. Local FS with no
+        # desktop connected). Logged only; the UI reads live presence.
+        skipped_code = exc.code
     except BaseException as exc:
+        # A cancellation that is not a newer run superseding this one (shutdown,
+        # a timeout) still leaves the run unfinished, so it is marked failed.
+        cancelled = isinstance(exc, asyncio.CancelledError)
         failed = True
         failure_exc = exc
         raise
@@ -81,9 +91,16 @@ async def run_sync_with_lifecycle(
         elapsed = time.monotonic() - start
         mins, secs = divmod(elapsed, 60)
         elapsed_str = f"{int(mins)}m {secs:.1f}s" if mins else f"{secs:.1f}s"
-        logger.info(
-            f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
-        )
+        if cancelled:
+            logger.warning(f"⚠️ Sync cancelled for connector {connector_id} after {elapsed_str}")
+        elif failed:
+            logger.error(f"❌ Sync failed for connector {connector_id} after {elapsed_str}")
+        elif skipped_code:
+            logger.info(f"Sync skipped for connector {connector_id} ({skipped_code}, {elapsed_str})")
+        else:
+            logger.info(
+                f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
+            )
         # A concurrent re-trigger cancels this task and starts a fresh run
         # (start_run writes a new runId, then start_sync cancels us). Our
         # finally then runs: if we blindly closed discovery + set IDLE we
@@ -126,6 +143,9 @@ async def run_sync_with_lifecycle(
                     failure_code=classified.code,
                     failure_reason=classified.reason,
                 )
+            elif org_id and store and skipped_code:
+                # Nothing was discovered, so there is no run to show.
+                await store.clear(org_id, connector_id, expected_run_id=run_id)
             elif org_id and store:
                 await store.close_discovery(org_id, connector_id, expected_run_id=run_id)
             try:

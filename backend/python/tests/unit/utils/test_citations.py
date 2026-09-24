@@ -2221,3 +2221,68 @@ class TestEmptyStringifiedContentSkip:
                 answer, [], virtual_record_id_to_result=vrid_map
             )
         assert citations == []
+
+
+class TestCodeBlockAndCodeGroupAreDistinguished:
+    """`GroupType.CODE` and `BlockType.CODE` are both the string "code".
+
+    A group's content is a `(summary, children)` pair; a block's is its source
+    string. Keying off the label alone unpacked that string character by
+    character -- `too many values to unpack (expected 2)` at answer-stream time.
+    """
+
+    def _leaf(self, index: int, text: str) -> dict:
+        return {
+            "block_type": GroupType.CODE.value,
+            "content": text,
+            "block_web_url": _url(REC1, index),
+            "virtual_record_id": "vr1",
+            "metadata": {"recordName": "runner.py", "virtualRecordId": "vr1",
+                         "blockIndex": index},
+        }
+
+    def test_top_level_code_block_does_not_crash_the_normalizer(self):
+        leaf = self._leaf(3, "def main():\n    return 1\n")
+        answer = f"See [x]({_url(REC1, 3)})."
+        # Would raise ValueError before the shape check.
+        normalized, citations = normalize_citations_and_chunks(answer, [leaf], [], [])
+        assert "[1]" in normalized
+        assert len(citations) == 1
+
+    def test_top_level_code_block_still_gets_its_citation(self):
+        # Guarding without a leaf fallthrough would silently drop this instead.
+        leaf = self._leaf(3, "def main():\n    return 1\n")
+        _, citations = normalize_citations_and_chunks(
+            f"See [x]({_url(REC1, 3)}).", [leaf], [], []
+        )
+        assert citations[0]["content"] == "def main():\n    return 1\n"
+
+    def test_code_group_still_expands_to_its_children(self):
+        child = self._leaf(9, "def run(self):\n    pass\n")
+        group = {
+            "block_type": GroupType.CODE.value,
+            "content": ("", [child]),
+            "block_web_url": _url(REC1, 8),
+            "virtual_record_id": "vr1",
+            "metadata": {"recordName": "runner.py", "virtualRecordId": "vr1",
+                         "blockIndex": 8},
+        }
+        _, citations = normalize_citations_and_chunks(
+            f"See [x]({_url(REC1, 9)}).", [group], [], []
+        )
+        assert len(citations) == 1
+        assert citations[0]["content"] == "def run(self):\n    pass\n"
+
+    def test_empty_code_group_contributes_nothing(self):
+        group = {
+            "block_type": GroupType.CODE.value,
+            "content": ("", []),
+            "block_web_url": _url(REC1, 8),
+            "virtual_record_id": "vr1",
+            "metadata": {"recordName": "runner.py", "virtualRecordId": "vr1",
+                         "blockIndex": 8},
+        }
+        _, citations = normalize_citations_and_chunks(
+            f"See [x]({_url(REC1, 8)}).", [group], [], []
+        )
+        assert citations == []

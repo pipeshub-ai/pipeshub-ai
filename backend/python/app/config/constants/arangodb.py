@@ -43,6 +43,7 @@ class Connectors(Enum):
     MICROSOFT_TEAMS = "MICROSOFT TEAMS"
 
     NOTION = "NOTION"
+    NOTION_PERSONAL = "NOTION PERSONAL"
     SLACK = "SLACK"
     SLACK_WORKSPACE = "SLACK WORKSPACE"
 
@@ -53,6 +54,7 @@ class Connectors(Enum):
     CONFLUENCE_DATA_CENTER_PERSONAL = "CONFLUENCE DATA CENTER PERSONAL"
     JIRA = "JIRA"
     JIRA_PERSONAL = "JIRA PERSONAL"
+    JIRA_CLOUD_PERSONAL = "JIRA CLOUD PERSONAL"
     JIRA_DATA_CENTER = "JIRA DATA CENTER"
     JIRA_DATA_CENTER_PERSONAL = "JIRA DATA CENTER PERSONAL"
     BOX = "BOX"
@@ -62,6 +64,7 @@ class Connectors(Enum):
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
     GITHUB = "GITHUB"
+    GITHUB_TEAMS = "GITHUB TEAMS"
     SERVICENOW = "SERVICENOW"
     SALESFORCE = "SALESFORCE"
     S3 = "S3"
@@ -83,11 +86,33 @@ class Connectors(Enum):
 
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
+    DEMO = "DEMO"
 
     CODING_SANDBOX = "CODING_SANDBOX"
     DATABASE_SANDBOX = "DATABASE_SANDBOX"
     IMAGE_GENERATION = "IMAGE_GENERATION"
     ATTACHMENTS = "ATTACHMENTS"
+
+
+class PermissionModel(Enum):
+    """How a record derives its per-user visibility, declared on its container.
+
+    ``APP_LEVEL``: reaching the app implies reaching every record it syncs.
+    ``RECORD_LEVEL``: the source has real per-record ACLs. Both are declared per
+    connector; ``RECORD_LEVEL`` is the default, since assuming per-record ACLs
+    can only under-share.
+
+    ``RECORD_GROUP_LEVEL`` is set on a RecordGroup, not a connector, and lets
+    search skip the per-record check for records in that group. Only safe when
+    every record under the group really inherits from it: ``recordGroupIds`` is
+    built from ``belongsTo`` (always written) while inheritance follows
+    ``INHERIT_PERMISSIONS`` (conditional), so one ``inherit_permissions=False``
+    record in the group makes it over-share. Leave unset to verify each record.
+    """
+
+    APP_LEVEL = "APP_LEVEL"
+    RECORD_LEVEL = "RECORD_LEVEL"
+    RECORD_GROUP_LEVEL = "RECORD_GROUP_LEVEL"
 
 
 class AppGroups(Enum):
@@ -112,6 +137,7 @@ class AppGroups(Enum):
     ZAMMAD = "Zammad"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
+    DEMO = "Demo"
     RSS = "RSS"
     GITLAB = "GitLab"
 
@@ -237,11 +263,14 @@ class CollectionNames(Enum):
     AGENT_KNOWLEDGE = "agentKnowledge"
     AGENT_TOOLSETS = "agentToolsets"
     AGENT_TOOLS = "agentTools"
+    AGENT_MCP_SERVERS = "agentMcpServers"
 
     # Agent Builder Graph edges
     AGENT_HAS_KNOWLEDGE = "agentHasKnowledge"
     AGENT_HAS_TOOLSET = "agentHasToolset"
     TOOLSET_HAS_TOOL = "toolsetHasTool"
+    AGENT_HAS_MCP_SERVER = "agentHasMcpServer"
+    MCP_SERVER_HAS_TOOL = "mcpServerHasTool"
 
     # Agent Skills collections (agent_loop_lib SkillManager — GraphSkillStore)
     AGENT_SKILLS = "agentSkills"
@@ -280,8 +309,11 @@ class ExtensionTypes(Enum):
     SVG = "svg"
     HEIC = "heic"
     HEIF = "heif"
+    EPUB = "epub"
     SQL_TABLE = "sql_table"  
     SQL_VIEW = "sql_view"
+    # Registry key for the tree-sitter code parser; not a file extension.
+    CODE = "code"
     PY = "py"
     JS = "js"
     JSX = "jsx"
@@ -352,6 +384,7 @@ class MimeTypes(Enum):
     HEIF = "image/heif"
     ZIP = "application/zip"
     GIF = "image/gif"
+    EPUB = "application/epub+zip"
     PYTHON = "text/x-python"
     PYTHON_SCRIPT = "text/x-python-script"
     PYTHON_SCRIPT_X = "text/x-script.python"
@@ -456,6 +489,7 @@ FILE_MIME_TYPES = {
     '.htm': MimeTypes.HTML,
     '.md': MimeTypes.MARKDOWN,
     '.mdx': MimeTypes.MDX,
+    '.epub': MimeTypes.EPUB,
 }
 
 
@@ -505,6 +539,33 @@ RECONCILIATION_ENABLED_EXTENSIONS = {
     ExtensionTypes.MD.value,
     ExtensionTypes.MDX.value,
     ExtensionTypes.HTML.value
+}
+
+# Extensions that make a repository blob a CODE_FILE record. Connectors that walk
+# a git tree (GitLab, GitHub) classify each blob against this set; anything outside
+# it is an ordinary FILE record and is gated by the generic mime/extension allowlist
+# instead. Text-based only — a binary listed here would be fed to the code parser.
+SUPPORTED_CODE_FILE_EXTENSIONS = {
+    # C / C++
+    "c", "h", "cpp", "cc", "cxx", "hpp", "hxx",
+    # C#
+    "cs",
+    # Java / JVM
+    "java", "kt", "kts", "scala", "groovy", "gradle",
+    # Python
+    "py", "pyi",
+    # JavaScript / TypeScript
+    "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte",
+    # Go / Rust / Ruby / PHP / Swift / Dart
+    "go", "rs", "rb", "php", "swift", "dart",
+    # Other languages
+    "lua", "pl", "pm", "r", "ex", "exs", "erl", "hs", "clj", "cljs",
+    # Shell
+    "sh", "bash", "zsh", "fish", "ps1",
+    # Markup / stylesheets
+    "html", "htm", "css", "scss", "sass", "less", "md",
+    # Schema / IDL / infra-as-code
+    "sql", "proto", "graphql", "gql", "tf", "tfvars",
 }
 
 
@@ -609,6 +670,9 @@ class EventTypes(Enum):
     REINDEX_RECORD = "reindexRecord"
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
+    DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
+    SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
+    DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
 
 
 class AccountType(Enum):

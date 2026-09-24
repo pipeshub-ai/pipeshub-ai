@@ -17,6 +17,8 @@ import pytest
 from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
+    ImagePart,
+    ImageSource,
     SystemMessage,
     TextPart,
     ToolCall,
@@ -126,6 +128,23 @@ class TestFormatMessage:
         formatted = transport._format_message(msg)
         assert formatted == {"role": "tool", "content": "result [meta]"}
         assert "tool_call_id" not in formatted
+
+    def test_multipart_tool_message_strips_images_keeps_text(self) -> None:
+        """Ollama's /api/chat has no multipart tool-result support — images
+        must be stripped here (delivered instead via the PRE_MODEL fallback
+        hook) while the text parts are preserved."""
+        transport = _transport()
+        msg = ToolMessage(
+            content=[
+                TextPart(text="[ref1] (image)"),
+                ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc123")),
+                TextPart(text=" more text"),
+            ],
+            tool_call_id="tc1",
+            step_footer=" [meta]",
+        )
+        formatted = transport._format_message(msg)
+        assert formatted == {"role": "tool", "content": "[ref1] (image) more text [meta]"}
 
     def test_assistant_message_with_tool_calls(self) -> None:
         transport = _transport()

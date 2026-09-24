@@ -118,7 +118,38 @@ export type SidebarReindexHandler = (
 
 export type NodeOrigin = 'COLLECTION' | 'CONNECTOR';
 export type PermissionRole = 'OWNER' | 'READER' | 'WRITER';
-export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET' | 'ARTIFACT';
+export type RecordType =
+  | 'FILE'
+  | 'DRIVE'
+  | 'WEBPAGE'
+  | 'DATABASE'
+  | 'DATASOURCE'
+  | 'MESSAGE'
+  | 'MAIL'
+  | 'GROUP_MAIL'
+  | 'EMAIL'
+  | 'TICKET'
+  | 'COMMENT'
+  | 'INLINE_COMMENT'
+  | 'CONFLUENCE_PAGE'
+  | 'CONFLUENCE_BLOGPOST'
+  | 'SHAREPOINT_PAGE'
+  | 'SHAREPOINT_LIST'
+  | 'SHAREPOINT_LIST_ITEM'
+  | 'SHAREPOINT_DOCUMENT_LIBRARY'
+  | 'LINK'
+  | 'PROJECT'
+  | 'PULL_REQUEST'
+  | 'MEETING'
+  | 'PRODUCT'
+  | 'DEAL'
+  | 'CASE'
+  | 'TASK'
+  | 'ARTIFACT'
+  | 'CODE_FILE'
+  | 'SQL_TABLE'
+  | 'SQL_VIEW'
+  | 'OTHERS';
 export type IndexingStatus =
   | 'COMPLETED'
   | 'IN_PROGRESS'

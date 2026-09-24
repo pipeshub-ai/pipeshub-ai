@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from gitlab.v4.objects import GroupMember, Project
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import AppUserGroup, RecordGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
@@ -450,6 +450,7 @@ class ProjectsSync:
 
         permission_project_level: list[Permission] = []
         permission_work_items_level: list[Permission] = []
+        permission_confidential_level: list[Permission] = []
         permission_code_repo_level: list[Permission] = []
         permission_merge_requests_level: list[Permission] = []
 
@@ -465,6 +466,7 @@ class ProjectsSync:
                 permission_work_items_level.append(permission)
             elif level >= 15:
                 permission_work_items_level.append(permission)
+                permission_confidential_level.append(permission)
                 permission_merge_requests_level.append(permission)
                 permission_code_repo_level.append(permission)
             else:
@@ -475,6 +477,7 @@ class ProjectsSync:
         (
             project_record_group,
             work_items_record_group,
+            confidential_record_group,
             merge_requests_record_group,
             code_repo_record_group,
         ) = self._build_project_record_groups(project)
@@ -482,6 +485,7 @@ class ProjectsSync:
             [
                 (project_record_group, permission_project_level),
                 (work_items_record_group, permission_work_items_level),
+                (confidential_record_group, permission_confidential_level),
                 (code_repo_record_group, permission_code_repo_level),
                 (merge_requests_record_group, permission_merge_requests_level),
             ]
@@ -489,11 +493,18 @@ class ProjectsSync:
 
     def _build_project_record_groups(
         self, project: Project
-    ) -> tuple[RecordGroup, RecordGroup, RecordGroup, RecordGroup]:
-        """Return ``(project, work_items, merge_requests, code_repo)`` record groups.
+    ) -> tuple[RecordGroup, RecordGroup, RecordGroup, RecordGroup, RecordGroup]:
+        """Return ``(project, work_items, confidential_work_items, merge_requests,
+        code_repo)`` record groups.
 
-        Single source of truth for the four-RG shape to keep the creator-fallback
+        Single source of truth for the five-RG shape to keep the creator-fallback
         path and the normal member-sync path in sync.
+
+        Confidential work items are a separate group rather than a per-record ACL:
+        the platform resolves access as a union with no deny, so a confidential issue
+        left inheriting from the ordinary work-items group would still be reachable
+        by every Guest holding it. A narrower group keeps the restriction while
+        membership changes continue to propagate on their own.
         """
         c = self.c
         parent_for_project_rg: str | None = None
@@ -517,6 +528,7 @@ class ProjectsSync:
                 org_id=c.data_entities_processor.org_id,
                 name="Work items",
                 group_type=RecordGroupType.PROJECT.value,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=f"{project.id}-work-items",
@@ -524,8 +536,18 @@ class ProjectsSync:
             ),
             RecordGroup(
                 org_id=c.data_entities_processor.org_id,
+                name="Confidential work items",
+                group_type=RecordGroupType.PROJECT.value,
+                connector_name=c.connector_name,
+                connector_id=c.connector_id,
+                external_group_id=f"{project.id}-confidential-work-items",
+                parent_external_group_id=str(project.id),
+            ),
+            RecordGroup(
+                org_id=c.data_entities_processor.org_id,
                 name="Merge requests",
                 group_type=RecordGroupType.PROJECT.value,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=f"{project.id}-merge-requests",
@@ -535,6 +557,7 @@ class ProjectsSync:
                 org_id=c.data_entities_processor.org_id,
                 name="Code repository",
                 group_type=RecordGroupType.PROJECT.value,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=f"{project.id}-code-repository",
@@ -543,7 +566,7 @@ class ProjectsSync:
         )
 
     async def _apply_creator_fallback_for_project(self, project: Project) -> None:
-        """Create the four project ``RecordGroup`` nodes with creator-only ACLs.
+        """Create the five project ``RecordGroup`` nodes with creator-only ACLs.
 
         Called when ``list_project_members_all`` fails or returns empty.
         """
@@ -559,6 +582,7 @@ class ProjectsSync:
         (
             project_record_group,
             work_items_record_group,
+            confidential_record_group,
             merge_requests_record_group,
             code_repo_record_group,
         ) = self._build_project_record_groups(project)
@@ -567,6 +591,7 @@ class ProjectsSync:
             [
                 (project_record_group, perms),
                 (work_items_record_group, perms),
+                (confidential_record_group, perms),
                 (code_repo_record_group, perms),
                 (merge_requests_record_group, perms),
             ]
@@ -608,35 +633,34 @@ class ProjectsSync:
         c = self.c
         try:
             if principal_type == EntityType.USER.value:
-                async with c.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_source_id(
-                        source_user_id=principal_id,
-                        connector_id=c.connector_id,
+                user = await c.data_entities_processor.get_user_by_source_id(
+                    source_user_id=principal_id,
+                    connector_id=c.connector_id,
+                )
+                if user:
+                    return Permission(
+                        email=user.email,
+                        type=permission_type,
+                        entity_type=EntityType.USER,
                     )
-                    if user:
+                if create_pseudo_group_if_missing:
+                    pseudo_group = await c.data_entities_processor.get_user_group_by_external_id(
+                        connector_id=c.connector_id,
+                        external_id=principal_id,
+                    )
+                    if not pseudo_group:
+                        pseudo_group = await self._create_pseudo_group(principal_id)
+                    if pseudo_group:
+                        self.logger.debug(
+                            "Using pseudo-group for user %s (no email available)", principal_id
+                        )
                         return Permission(
-                            email=user.email,
+                            external_id=pseudo_group.source_user_group_id,
                             type=permission_type,
-                            entity_type=EntityType.USER,
+                            entity_type=EntityType.GROUP,
                         )
-                    if create_pseudo_group_if_missing:
-                        pseudo_group = await tx_store.get_user_group_by_external_id(
-                            connector_id=c.connector_id,
-                            external_id=principal_id,
-                        )
-                        if not pseudo_group:
-                            pseudo_group = await self._create_pseudo_group(principal_id)
-                        if pseudo_group:
-                            self.logger.debug(
-                                "Using pseudo-group for user %s (no email available)", principal_id
-                            )
-                            return Permission(
-                                external_id=pseudo_group.source_user_group_id,
-                                type=permission_type,
-                                entity_type=EntityType.GROUP,
-                            )
-                    self.logger.debug("User %s not found in DB, skipping permission", principal_id)
-                    return None
+                self.logger.debug("User %s not found in DB, skipping permission", principal_id)
+                return None
         except Exception as e:
             self.logger.error("Failed to create permission from principal: %s", e)
             return None

@@ -3,7 +3,6 @@ import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 
 import {
-  authJwtGenerator,
   iamJwtGenerator,
   iamUserLookupJwtGenerator,
   jwtGeneratorForForgotPasswordLink,
@@ -18,7 +17,10 @@ import {
   AuthMethodType,
   OrgAuthConfig,
 } from '../schema/orgAuthConfiguration.schema';
-import { userActivitiesType } from '../../../libs/utils/userActivities.utils';
+import {
+  SESSION_INVALIDATING_ACTIVITIES,
+  userActivitiesType,
+} from '../../../libs/utils/userActivities.utils';
 import { UserActivities } from '../schema/userActivities.schema';
 import {
   AuthenticatedUserRequest,
@@ -31,7 +33,11 @@ import { AuthSessionRequest } from '../middlewares/types';
 import { SessionService } from '../services/session.service';
 import mongoose from 'mongoose';
 import { OAuth2Client } from 'google-auth-library';
-import { validateAzureAdUser } from '../utils/azureAdTokenValidation';
+import {
+  MicrosoftSignInConfig,
+  microsoftAccountIdentity,
+  validateAzureAdUser,
+} from '../utils/azureAdTokenValidation';
 import { IamService } from '../services/iam.service';
 import { MailService } from '../services/mail.service';
 
@@ -39,6 +45,7 @@ import {
   BadRequestError,
   ForbiddenError,
   GoneError,
+  HttpError,
   InternalServerError,
   NotFoundError,
   UnauthorizedError,
@@ -70,9 +77,26 @@ const {
   WRONG_PASSWORD,
   REFRESH_TOKEN,
   PASSWORD_CHANGED,
+  ACCOUNT_BLOCKED,
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
+const SESSION_INVALIDATE_TOKEN_DELAY_MS = 1000;
+
+export const SIGN_IN_SESSION_EXPIRED =
+  'Your sign-in session expired. Start again from the sign-in page.';
+export const SESSION_NO_LONGER_VALID =
+  'Your session is no longer valid. Please sign in again.';
+export const OTP_SEND_FAILED =
+  "We couldn't send your sign-in code. Wait a minute and try again, or use another sign-in method.";
+export const EMAIL_MISMATCH =
+  "You signed in with a different account than the email you entered. Sign in with the matching account, or go back and enter that account's email.";
+export const PROVIDER_SHARED_NO_EMAIL =
+  "Your sign-in provider didn't share an email address, so we couldn't sign you in. Ask your admin to allow the email permission for PipesHub.";
+export const ADMIN_ONLY_SIGN_IN_SETTINGS =
+  'Only workspace admins can view or change sign-in settings.';
+export const OAUTH_SIGN_IN_FAILED =
+  "Sign-in with your identity provider didn't complete. Try again; if it keeps happening, ask your admin to check the sign-in settings.";
 
 @injectable()
 export class UserAccountController {
@@ -96,9 +120,26 @@ export class UserAccountController {
     decodedToken: Record<string, any>,
     target: Record<string, any>,
     context: string,
+    emailClaimTrusted: boolean,
   ): Promise<void> {
-    const tokenEmail: string | undefined = decodedToken?.email;
-    if (!tokenEmail || tokenEmail.toLowerCase() === target.email?.toLowerCase()) {
+    const tokenEmail =
+      typeof decodedToken.email === 'string' ? decodedToken.email : undefined;
+    const targetEmail =
+      typeof target.email === 'string' ? target.email.toLowerCase() : '';
+    if (
+      !emailClaimTrusted ||
+      tokenEmail === undefined ||
+      tokenEmail === '' ||
+      tokenEmail.toLowerCase() === targetEmail
+    ) {
+      return;
+    }
+    // Only rename an account that this token signs in by its UPN; never move
+    // another account's email.
+    const signInNames = [decodedToken.preferred_username, decodedToken.upn]
+      .filter((name): name is string => typeof name === 'string')
+      .map((name) => name.toLowerCase());
+    if (!signInNames.includes(targetEmail)) {
       return;
     }
     if (target._id) {
@@ -174,7 +215,7 @@ export class UserAccountController {
     return true;
   }
 
-  async verifyOTP(
+   async verifyOTP(
     userId: string,
     orgId: string,
     inputOTP: any,
@@ -227,6 +268,14 @@ export class UserAccountController {
         userCredentials.isBlocked = true;
         userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
         await userCredentials.save();
+        await UserActivities.create({
+          userId: userId,
+          orgId: orgId,
+          email: email,
+          activityType: ACCOUNT_BLOCKED,
+          ipAddress: ipAddress,
+          loginMode: 'OTP',
+        });
 
         const org = await Org.findOne({ _id: orgId, isDeleted: false });
         const user = await Users.findOne({ _id: userId, orgId, isDeleted: false });
@@ -235,6 +284,7 @@ export class UserAccountController {
           emailTemplateType: 'suspiciousLoginAttempt',
           initiator: {
             jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            orgId: orgId?.toString(),
           },
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
@@ -318,7 +368,7 @@ export class UserAccountController {
       const configMethodMap: Record<string, { path: string, key: string }> = {
         'google': { path: GOOGLE_AUTH_CONFIG_PATH, key: 'google' },
         'microsoft': { path: MICROSOFT_AUTH_CONFIG_PATH, key: 'microsoft' },
-        [AuthMethodType.AZURE_AD]: { path: AZURE_AD_AUTH_CONFIG_PATH, key: 'azuread' },
+        [AuthMethodType.AZURE_AD]: { path: AZURE_AD_AUTH_CONFIG_PATH, key: 'azureAd' },
         [AuthMethodType.OAUTH]: { path: OAUTH_AUTH_CONFIG_PATH, key: 'oauth' },
         [AuthMethodType.SAML_SSO]: { path: SSO_AUTH_CONFIG_PATH, key: 'saml' },
       };
@@ -348,17 +398,21 @@ export class UserAccountController {
 
             // Always add to allowed list if config exists
             allowedMethods.push(method);
-            authProviders[mapping.key === 'azuread' ? 'azuread' : mapping.key] = configData;
 
-            // Only add to JIT lists if enableJit is strictly true
+            // This response is served to unauthenticated callers, so the OAuth
+            // config must be stripped of its server-side credentials before it
+            // goes out. That is independent of JIT, which only controls whether
+            // an account is provisioned on first sign-in.
+            if (method === AuthMethodType.OAUTH) {
+              const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configData;
+              authProviders.oauth = publicConfig;
+            } else {
+              authProviders[mapping.key] = configData;
+            }
+
             if (configData?.enableJit === true) {
               jitEnabledMethods.push(method);
               jitConfig[mapping.key] = true;
-
-              if (method === AuthMethodType.OAUTH) {
-                const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configData;
-                authProviders.oauth = publicConfig;
-              }
             }
           } catch (e) {
             this.logger.debug(`${method} config fetch failed, not adding to allowed methods`);
@@ -408,7 +462,7 @@ export class UserAccountController {
       const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
       await this.mailService.sendMail({
         emailTemplateType: 'resetPassword',
-        initiator: { jwtAuthToken: mailAuthToken },
+        initiator: { jwtAuthToken: mailAuthToken, orgId: user.orgId?.toString() },
         usersMails: [user.email],
         subject: 'PipesHub | Reset your password!',
         templateData: {
@@ -449,7 +503,7 @@ export class UserAccountController {
       const isPasswordValid = passwordValidator(newPassword);
       if (!isPasswordValid) {
         throw new BadRequestError(
-          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number, and one special character.',
+          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number, and one special character, and be no longer than 72 bytes.',
         );
       }
       let userCredentialData = await UserCredentials.findOne({
@@ -647,11 +701,15 @@ export class UserAccountController {
 
       const adminCheckResult = await this.iamService.checkAdminUser(
         userId,
-        authJwtGenerator(this.config.jwtSecret, null, userId, orgId),
+        iamUserLookupJwtGenerator(
+          userId,
+          orgId,
+          this.config.scopedJwtSecret,
+        ),
       );
 
       if (adminCheckResult.statusCode !== 200) {
-        throw new NotFoundError(adminCheckResult.data);
+        throw new NotFoundError(ADMIN_ONLY_SIGN_IN_SETTINGS);
       }
 
       if (!orgId) {
@@ -687,11 +745,15 @@ export class UserAccountController {
 
       const adminCheckResult = await this.iamService.checkAdminUser(
         userId,
-        authJwtGenerator(this.config.jwtSecret, null, userId, orgId),
+        iamUserLookupJwtGenerator(
+          userId,
+          orgId,
+          this.config.scopedJwtSecret,
+        ),
       );
 
       if (adminCheckResult.statusCode !== 200) {
-        throw new NotFoundError(adminCheckResult.data);
+        throw new NotFoundError(ADMIN_ONLY_SIGN_IN_SETTINGS);
       }
 
       if (!authMethod) {
@@ -731,7 +793,7 @@ export class UserAccountController {
       );
 
       if (userFindResult.statusCode !== 200) {
-        throw new NotFoundError(userFindResult.data);
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
       }
       await this.updatePassword(userId, orgId, password, req.ip!);
 
@@ -806,7 +868,7 @@ export class UserAccountController {
       );
 
       if (userFindResult.statusCode !== 200) {
-        throw new NotFoundError(userFindResult.data);
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
       }
 
       const user = userFindResult.data;
@@ -879,6 +941,7 @@ export class UserAccountController {
         emailTemplateType: 'loginWithOTP',
         initiator: {
           jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+          orgId: orgId?.toString(),
         },
 
         usersMails: [email],
@@ -890,7 +953,8 @@ export class UserAccountController {
         },
       });
       if (result.statusCode !== 200) {
-        throw new Error(result.data);
+        this.logger.error('Sending the sign-in code failed', { data: result.data });
+        throw new InternalServerError(OTP_SEND_FAILED);
       }
       return { statusCode: 200, data: 'OTP sent' };
     } catch (err) {
@@ -916,8 +980,17 @@ export class UserAccountController {
       });
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       let result = await this.iamService.getUserByEmail(email, authToken);
+      if (result.statusCode === 404) {
+        throw new NotFoundError(
+          "We couldn't send a sign-in code to that email. Check the address and try again, or ask your admin to invite you.",
+        );
+      }
       if (result.statusCode !== 200) {
-        throw new NotFoundError(result.data);
+        this.logger.error('Looking up the account for a sign-in code failed', {
+          statusCode: result.statusCode,
+          data: result.data,
+        });
+        throw new InternalServerError(OTP_SEND_FAILED);
       }
       const user = result.data;
 
@@ -930,7 +1003,7 @@ export class UserAccountController {
       );
 
       if (result.statusCode !== 200) {
-        throw new BadRequestError(result.data);
+        throw new BadRequestError(OTP_SEND_FAILED);
       }
       res.status(200).send(result.data);
     } catch (error) {
@@ -947,6 +1020,44 @@ export class UserAccountController {
       const orgId = req.tokenPayload?.orgId;
       const userId = req.tokenPayload?.userId;
 
+      // Reject refresh if logout / password change / role change happened after
+      // this refresh token was issued (same rule as access-token auth middleware).
+      if (userId && orgId) {
+        try {
+          const invalidatingActivity = await UserActivities.findOne({
+            userId,
+            orgId,
+            isDeleted: false,
+            activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
+          })
+            .sort({ createdAt: -1 })
+            .lean()
+            .exec();
+
+          if (invalidatingActivity) {
+            const tokenIssuedAt = req.tokenPayload?.iat
+              ? req.tokenPayload.iat * 1000
+              : 0;
+            const activityTimestamp =
+              invalidatingActivity.createdAt?.getTime() || 0;
+            if (
+              activityTimestamp >
+              tokenIssuedAt + SESSION_INVALIDATE_TOKEN_DELAY_MS
+            ) {
+              throw new UnauthorizedError('Session expired, please login again');
+            }
+          }
+        } catch (activityError) {
+          if (activityError instanceof UnauthorizedError) {
+            throw activityError;
+          }
+          this.logger.error(
+            'Failed to fetch session-invalidating activity on refresh',
+            activityError,
+          );
+        }
+      }
+
       await UserActivities.create({
         orgId,
         userId,
@@ -959,13 +1070,13 @@ export class UserAccountController {
         iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
       );
       if (result.statusCode !== 200) {
-        throw new NotFoundError(result.data);
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
       }
 
       const user = result.data;
 
       if (!user) {
-        throw new NotFoundError('User not found');
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
       }
 
       const userCredential = await UserCredentials.findOneAndUpdate({
@@ -980,7 +1091,7 @@ export class UserAccountController {
       }, { new: true, upsert: true });
 
       if (!userCredential) {
-        throw new NotFoundError('User credentials not found');
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
       }
 
       if (await this.ensureBlockStatus(userCredential as IUserCredentials)) {
@@ -1071,17 +1182,26 @@ export class UserAccountController {
         email: email,
         activityType: WRONG_PASSWORD,
         ipAddress: ip,
-        loginMode: 'OTP',
+        loginMode: 'PASSWORD',
       });
       if (userCredentials.wrongCredentialCount >= 5) {
         userCredentials.isBlocked = true;
         userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
         await userCredentials.save();
+        await UserActivities.create({
+          userId: userId,
+          orgId: orgId,
+          email: email,
+          activityType: ACCOUNT_BLOCKED,
+          ipAddress: ip,
+          loginMode: 'PASSWORD',
+        });
 
         await this.mailService.sendMail({
           emailTemplateType: 'suspiciousLoginAttempt',
           initiator: {
             jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            orgId: orgId?.toString(),
           },
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
@@ -1125,7 +1245,7 @@ export class UserAccountController {
     );
     this.logger.info('result for otp verification', result);
     if (result.statusCode !== 200) {
-      throw new BadRequestError('Error verifying OTP');
+      throw new BadRequestError("We couldn't verify that code. Request a new code and try again.");
     }
 
     const userId = user._id;
@@ -1163,7 +1283,7 @@ export class UserAccountController {
 
     const payload = ticket.getPayload();
     if (!payload) {
-      throw new UnauthorizedError('Error authorizing user through google');
+      throw new UnauthorizedError("Sign-in with Google didn't complete. Try again, or use another sign-in method.");
     }
 
     this.logger.debug('entered email', user.email);
@@ -1171,7 +1291,7 @@ export class UserAccountController {
     const email = payload?.email;
     if (email?.toLowerCase() !== user.email?.toLowerCase()) {
       throw new BadRequestError(
-        'Email mismatch: Token email does not match session email.',
+        EMAIL_MISMATCH,
       );
     }
     await UserActivities.create({
@@ -1194,10 +1314,23 @@ export class UserAccountController {
         user,
         this.config.scopedJwtSecret,
       );
-    const { tenantId } = configManagerResponse.data;
-
-    const decodedToken = await validateAzureAdUser(credentials, tenantId);
-    await this.correctEmailFromToken(decodedToken, user, 'Microsoft auth');
+    const { clientId, tenantId } = configManagerResponse.data as MicrosoftSignInConfig;
+    const decodedToken = await validateAzureAdUser(credentials, {
+      clientId,
+      tenantId,
+    });
+    const identity = microsoftAccountIdentity(decodedToken, tenantId);
+    await this.correctEmailFromToken(
+      decodedToken,
+      user,
+      'Microsoft auth',
+      identity.emailClaimTrusted,
+    );
+    if (identity.email !== String(user.email ?? '').toLowerCase()) {
+      throw new UnauthorizedError(
+        "This Microsoft account doesn't match the account you're signing in to. Sign in with the Microsoft account linked to your PipesHub email.",
+      );
+    }
 
     await UserActivities.create({
       email: user.email,
@@ -1219,9 +1352,23 @@ export class UserAccountController {
         user,
         this.config.scopedJwtSecret,
       );
-    const { tenantId } = configManagerResponse.data;
-    const decodedToken = await validateAzureAdUser(credentials, tenantId);
-    await this.correctEmailFromToken(decodedToken, user, 'Azure AD auth');
+    const { clientId, tenantId } = configManagerResponse.data as MicrosoftSignInConfig;
+    const decodedToken = await validateAzureAdUser(credentials, {
+      clientId,
+      tenantId,
+    });
+    const identity = microsoftAccountIdentity(decodedToken, tenantId);
+    await this.correctEmailFromToken(
+      decodedToken,
+      user,
+      'Azure AD auth',
+      identity.emailClaimTrusted,
+    );
+    if (identity.email !== String(user.email ?? '').toLowerCase()) {
+      throw new UnauthorizedError(
+        "This Microsoft account doesn't match the account you're signing in to. Sign in with the Microsoft account linked to your PipesHub email.",
+      );
+    }
 
     await UserActivities.create({
       email: user.email,
@@ -1250,11 +1397,11 @@ export class UserAccountController {
     const { accessToken } = credentials;
 
     if (!accessToken) {
-      throw new BadRequestError('Access token is required for OAuth authentication');
+      throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
     }
 
     if (!userInfoEndpoint) {
-      throw new BadRequestError('User info endpoint is required for OAuth authentication');
+      throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
     }
 
     try {
@@ -1275,18 +1422,20 @@ export class UserAccountController {
             status: userInfoResponse.status,
             provider: configManagerResponse.data.providerName
           });
-          throw new UnauthorizedError('Failed to fetch user information from OAuth provider');
+          throw new UnauthorizedError(OAUTH_SIGN_IN_FAILED);
         }
 
         userInfo = await userInfoResponse.json();
       } else {
-        throw new BadRequestError('Cannot verify user information: missing user info endpoint or access token');
+        throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
       }
 
       // Verify email matches
       const providerEmail = userInfo.email || userInfo.preferred_username || userInfo.sub;
       if (!providerEmail) {
-        throw new BadRequestError('No email found in OAuth provider response');
+        throw new BadRequestError(
+          PROVIDER_SHARED_NO_EMAIL,
+        );
       }
 
       this.logger.debug('entered email', user.email);
@@ -1294,7 +1443,7 @@ export class UserAccountController {
 
       if (providerEmail?.toLowerCase() !== user.email?.toLowerCase()) {
         throw new BadRequestError(
-          'Email mismatch: OAuth provider email does not match session email.',
+          EMAIL_MISMATCH,
         );
       }
 
@@ -1309,7 +1458,14 @@ export class UserAccountController {
       if (error instanceof Error && (error.message.includes('BadRequestError') || error.message.includes('UnauthorizedError'))) {
         throw error;
       }
-      throw new UnauthorizedError(`OAuth authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      // Our own errors already carry a message meant for the user; anything else is logged, not shown.
+      if (error instanceof HttpError) {
+        throw new UnauthorizedError(error.message);
+      }
+      this.logger.error('OAuth sign-in failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new UnauthorizedError(OAUTH_SIGN_IN_FAILED);
     }
   }
 
@@ -1327,7 +1483,7 @@ export class UserAccountController {
       let userDetails: { firstName?: string; lastName?: string; fullName: string } | undefined;
 
       if (!method) throw new BadRequestError('method is required');
-      if (!sessionInfo) throw new NotFoundError('SessionInfo not found');
+      if (!sessionInfo) throw new NotFoundError(SIGN_IN_SESSION_EXPIRED);
 
       if (sessionInfo && !sessionInfo.email) {
         sessionInfo.email = req.body.email || "";
@@ -1375,7 +1531,7 @@ export class UserAccountController {
               audience: clientId,
             });
             const payload = ticket.getPayload();
-            if (!payload?.email) throw new UnauthorizedError('Email not found in Google token');
+            if (!payload?.email) throw new UnauthorizedError(PROVIDER_SHARED_NO_EMAIL);
             providerEmail = payload.email;
             userDetails = this.jitProvisioningService.extractGoogleUserDetails(payload, providerEmail);
             break;
@@ -1387,14 +1543,17 @@ export class UserAccountController {
             const configManagerResponse = await this.configurationManagerService.getConfig(
               this.config.cmBackend, configPath, newUserMock, this.config.scopedJwtSecret
             );
-            const { tenantId } = configManagerResponse.data;
-            const decodedToken = await validateAzureAdUser(credentials, tenantId);
-            providerEmail = decodedToken.email || decodedToken.upn || decodedToken.preferred_username;
+            const { clientId, tenantId } = configManagerResponse.data as MicrosoftSignInConfig;
+            const decodedToken = await validateAzureAdUser(credentials, {
+              clientId,
+              tenantId,
+            });
+            const identity = microsoftAccountIdentity(decodedToken, tenantId);
+            providerEmail = identity.email;
             if (!providerEmail) {
-              throw new UnauthorizedError('Email not found in Microsoft / Azure AD token');
+              throw new UnauthorizedError(PROVIDER_SHARED_NO_EMAIL);
             }
             sessionInfo.email = providerEmail;
-            await this.correctEmailFromToken(decodedToken, sessionInfo, 'Azure AD JIT');
             userDetails = this.jitProvisioningService.extractMicrosoftUserDetails(decodedToken, providerEmail);
             break;
           }
@@ -1405,17 +1564,17 @@ export class UserAccountController {
             );
             const { userInfoEndpoint } = configManagerResponse.data;
             const { accessToken } = credentials;
-            if (!accessToken) throw new BadRequestError('Access token is required');
+            if (!accessToken) throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
 
             const userInfoResponse = await fetch(userInfoEndpoint, {
               headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
             });
-            if (!userInfoResponse.ok) throw new UnauthorizedError('Failed to fetch user info');
+            if (!userInfoResponse.ok) throw new UnauthorizedError(OAUTH_SIGN_IN_FAILED);
             const userInfo = await userInfoResponse.json();
             providerEmail = userInfo.email || userInfo.preferred_username || userInfo.sub;
 
             if (!providerEmail) {
-              throw new BadRequestError('Email mismatch: OAuth provider email does not match session email.');
+              throw new BadRequestError(PROVIDER_SHARED_NO_EMAIL);
             }
             userDetails = this.jitProvisioningService.extractOAuthUserDetails(userInfo, providerEmail!);
             break;
@@ -1501,7 +1660,7 @@ export class UserAccountController {
         }
         if (allowedMethods.includes(AuthMethodType.AZURE_AD)) {
           const cfg = await this.configurationManagerService.getConfig(this.config.cmBackend, AZURE_AD_AUTH_CONFIG_PATH, user, this.config.scopedJwtSecret);
-          authProviders.azuread = cfg.data;
+          authProviders.azureAd = cfg.data;
         }
         if (allowedMethods.includes(AuthMethodType.OAUTH)) {
           const cfg = await this.configurationManagerService.getConfig(this.config.cmBackend, OAUTH_AUTH_CONFIG_PATH, user, this.config.scopedJwtSecret);
@@ -1582,7 +1741,7 @@ export class UserAccountController {
       );
 
       if (updateUserResult.statusCode !== 200) {
-        throw new InternalServerError('Error checking admin');
+        throw new InternalServerError("We couldn't save your account details. Please try again.");
       }
       const updatedUser = updateUserResult.data;
 
@@ -1611,7 +1770,7 @@ export class UserAccountController {
       // 1. Initial Validation
       if (!code || !provider || !redirectUri) {
         this.logger.warn('OAuth token exchange failed: missing required parameters');
-        throw new BadRequestError('Missing required OAuth parameters');
+        throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
       }
 
       // 2. Get bootstrap config to perform the exchange
@@ -1627,7 +1786,9 @@ export class UserAccountController {
 
       const oauthConfig = configResponse.data;
       if (!oauthConfig?.tokenEndpoint || !oauthConfig?.clientSecret) {
-        throw new BadRequestError('OAuth is not properly configured');
+        throw new BadRequestError(
+          'Single sign-on isn\'t fully set up yet. Ask your admin to finish the sign-in settings, or use another sign-in method.',
+        );
       }
 
       // 3. Exchange authorization code for tokens (Functionality strictly maintained)
@@ -1651,7 +1812,7 @@ export class UserAccountController {
           status: tokenResponse.status,
           errorBody,
         });
-        throw new BadRequestError(`Failed to exchange authorization code for tokens from Oauth: ${tokenResponse.status}`);
+        throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
       }
 
       const tokens = await tokenResponse.json();
@@ -1665,14 +1826,14 @@ export class UserAccountController {
       });
 
       if (!userInfoResponse.ok) {
-        throw new UnauthorizedError('Failed to fetch user information from OAuth provider');
+        throw new UnauthorizedError(OAUTH_SIGN_IN_FAILED);
       }
 
       const userInfo = await userInfoResponse.json();
       const providerEmail = userInfo.email || userInfo.preferred_username || userInfo.sub;
 
       if (!providerEmail) {
-        throw new BadRequestError('Email not found in OAuth provider response');
+        throw new BadRequestError(PROVIDER_SHARED_NO_EMAIL);
       }
 
       // 5. Apply the "Google Flow" for user check and JIT

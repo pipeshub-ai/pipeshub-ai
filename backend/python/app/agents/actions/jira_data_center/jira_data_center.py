@@ -303,7 +303,7 @@ def _jira_dc_comment_label(comment: dict[str, Any]) -> str:
     return name or "comment"
 
 
-@ToolsetBuilder("JiraDataCenter")\
+@ToolsetBuilder("Jira Data Center")\
     .in_group("Atlassian")\
     .with_description(
         "Jira Data Center / Server integration for issue tracking and project "

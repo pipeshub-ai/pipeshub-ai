@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Dialog, Button, Flex } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { Connector } from '../types';
-import { getPersonalConnectorRedirectType } from '../utils/admin-access-helpers';
+import { getPersonalConnectorRedirectType, personalConnectorHref } from '../utils/admin-access-helpers';
 
 export type AdminAccessDialogPhase = 'question' | 'redirect';
 
@@ -46,13 +46,7 @@ export function AdminAccessRequiredDialog({
 
   const handleGoToPersonal = useCallback(() => {
     handleOpenChange(false);
-    if (personalConnectorType) {
-      router.push(
-        `/workspace/connectors/personal/?connectorType=${encodeURIComponent(personalConnectorType)}`
-      );
-    } else {
-      router.push('/workspace/connectors/personal/');
-    }
+    router.push(personalConnectorHref(personalConnectorType));
   }, [handleOpenChange, personalConnectorType, router]);
 
   if (!connector) {

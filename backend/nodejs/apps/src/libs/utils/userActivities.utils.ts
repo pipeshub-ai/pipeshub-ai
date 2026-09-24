@@ -7,4 +7,13 @@ export const userActivitiesType = {
     WRONG_OTP: "WRONG OTP",
     REFRESH_TOKEN: "REFRESH TOKEN",
     PASSWORD_CHANGED: "PASSWORD CHANGED",
+    ROLE_CHANGED: "ROLE CHANGED",
+    ACCOUNT_BLOCKED: "ACCOUNT BLOCKED",
   };
+
+export const SESSION_INVALIDATING_ACTIVITIES = [
+  userActivitiesType.LOGOUT,
+  userActivitiesType.PASSWORD_CHANGED,
+  userActivitiesType.ROLE_CHANGED,
+  userActivitiesType.ACCOUNT_BLOCKED,
+] as const;

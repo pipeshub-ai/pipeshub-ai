@@ -275,32 +275,32 @@ class TestGetUserKey:
 
 class TestTimeRangeToKhFilters:
     def test_none_input(self) -> None:
-        from app.agents.actions.knowledge_graph.knowledge_graph import _time_range_to_kh_filters
-        assert _time_range_to_kh_filters(None) == (None, None)
+        from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
+        assert time_range_to_kh_filters(None) == (None, None)
 
     def test_empty_dict(self) -> None:
-        from app.agents.actions.knowledge_graph.knowledge_graph import _time_range_to_kh_filters
-        assert _time_range_to_kh_filters({}) == (None, None)
+        from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
+        assert time_range_to_kh_filters({}) == (None, None)
 
     def test_created_range(self) -> None:
-        from app.agents.actions.knowledge_graph.knowledge_graph import _time_range_to_kh_filters
-        result = _time_range_to_kh_filters({
+        from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
+        result = time_range_to_kh_filters({
             "source_created_after_ms": 1000,
             "source_created_before_ms": 2000,
         })
         assert result == ({"gte": 1000, "lte": 2000}, None)
 
     def test_updated_range(self) -> None:
-        from app.agents.actions.knowledge_graph.knowledge_graph import _time_range_to_kh_filters
-        result = _time_range_to_kh_filters({
+        from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
+        result = time_range_to_kh_filters({
             "source_updated_after_ms": 3000,
             "source_updated_before_ms": 4000,
         })
         assert result == (None, {"gte": 3000, "lte": 4000})
 
     def test_both_ranges(self) -> None:
-        from app.agents.actions.knowledge_graph.knowledge_graph import _time_range_to_kh_filters
-        c, u = _time_range_to_kh_filters({
+        from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
+        c, u = time_range_to_kh_filters({
             "source_created_after_ms": 1000,
             "source_updated_before_ms": 4000,
         })

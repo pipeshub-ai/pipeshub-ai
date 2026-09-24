@@ -141,13 +141,15 @@ class TestResolveTinyRefUrl:
 
         assert result == "https://ref99.xyz"
 
-    def test_tiny_ref_with_no_mapper_returns_original(self) -> None:
+    @pytest.mark.asyncio
+    async def test_tiny_ref_with_no_mapper_returns_original(self) -> None:
         with patch("app.utils.fetch_url_tool.extract_tiny_ref", return_value="ref1"):
             result = _resolve_tiny_ref_url("https://ref1.xyz", None)
 
         assert result == "https://ref1.xyz"
 
-    def test_resolved_url_also_has_fragment_stripped(self) -> None:
+    @pytest.mark.asyncio
+    async def test_resolved_url_also_has_fragment_stripped(self) -> None:
         mock_mapper = MagicMock()
         mock_mapper.ref_to_url = {"ref1": "https://real.com/page#:~:text=hello"}
 
@@ -163,40 +165,46 @@ class TestResolveTinyRefUrl:
 
 
 class TestCreateFetchUrlTool:
-    def test_creates_tool_without_mapper(self) -> None:
+    @pytest.mark.asyncio
+    async def test_creates_tool_without_mapper(self) -> None:
         tool = create_fetch_url_tool()
         assert tool.name == "fetch_url"
 
-    def test_creates_tool_with_mapper(self) -> None:
+    @pytest.mark.asyncio
+    async def test_creates_tool_with_mapper(self) -> None:
         mock_mapper = MagicMock()
         tool = create_fetch_url_tool(ref_mapper=mock_mapper)
         assert tool.name == "fetch_url"
 
-    def test_invalid_scheme_returns_error(self) -> None:
+    @pytest.mark.asyncio
+    async def test_invalid_scheme_returns_error(self) -> None:
         tool = create_fetch_url_tool()
-        result = tool.invoke({"url": "ftp://example.com/file"})
+        result = await tool.ainvoke({"url": "ftp://example.com/file"})
         import json
         data = json.loads(result)
         assert data["ok"] is False
         assert "scheme" in data["error"].lower() or "Invalid" in data["error"]
 
-    def test_no_netloc_returns_error(self) -> None:
+    @pytest.mark.asyncio
+    async def test_no_netloc_returns_error(self) -> None:
         tool = create_fetch_url_tool()
-        result = tool.invoke({"url": "https://"})
+        result = await tool.ainvoke({"url": "https://"})
         import json
         data = json.loads(result)
         assert data["ok"] is False
 
-    def test_unresolved_tiny_ref_returns_error(self) -> None:
+    @pytest.mark.asyncio
+    async def test_unresolved_tiny_ref_returns_error(self) -> None:
         tool = create_fetch_url_tool()
         with patch("app.utils.fetch_url_tool.extract_tiny_ref", return_value="ref1"), \
              patch("app.utils.fetch_url_tool._resolve_tiny_ref_url", return_value="https://ref1.xyz"):
-            result = tool.invoke({"url": "https://ref1.xyz"})
+            result = await tool.ainvoke({"url": "https://ref1.xyz"})
         import json
         data = json.loads(result)
         assert data["ok"] is False
 
-    def test_fetch_url_success_with_blocks(self) -> None:
+    @pytest.mark.asyncio
+    async def test_fetch_url_success_with_blocks(self) -> None:
         mock_resp = FetchResult(
             status_code=200,
             text="<html><body><p>Hello world</p></body></html>",
@@ -213,7 +221,7 @@ class TestCreateFetchUrlTool:
              patch("app.utils.fetch_url_tool.html_to_blocks", return_value=[mock_block]), \
              patch("dataclasses.asdict", return_value=mock_block_dict):
             tool = create_fetch_url_tool()
-            result = tool.invoke({"url": "https://example.com"})
+            result = await tool.ainvoke({"url": "https://example.com"})
 
         import json
         data = json.loads(result)
@@ -221,7 +229,8 @@ class TestCreateFetchUrlTool:
         assert data["url"] == "https://example.com"
         assert len(data["blocks"]) == 1
 
-    def test_fetch_url_non_200_response(self) -> None:
+    @pytest.mark.asyncio
+    async def test_fetch_url_non_200_response(self) -> None:
         mock_resp = FetchResult(
             status_code=403,
             text="Forbidden",
@@ -233,14 +242,15 @@ class TestCreateFetchUrlTool:
 
         with patch("app.utils.fetch_url_tool.fetch_url", return_value=mock_resp):
             tool = create_fetch_url_tool()
-            result = tool.invoke({"url": "https://example.com/secret"})
+            result = await tool.ainvoke({"url": "https://example.com/secret"})
 
         import json
         data = json.loads(result)
         assert data["ok"] is False
         assert "403" in data["error"]
 
-    def test_fetch_url_empty_blocks_returns_error(self) -> None:
+    @pytest.mark.asyncio
+    async def test_fetch_url_empty_blocks_returns_error(self) -> None:
         mock_resp = FetchResult(
             status_code=200,
             text="<html></html>",
@@ -253,24 +263,26 @@ class TestCreateFetchUrlTool:
         with patch("app.utils.fetch_url_tool.fetch_url", return_value=mock_resp), \
              patch("app.utils.fetch_url_tool.html_to_blocks", return_value=[]):
             tool = create_fetch_url_tool()
-            result = tool.invoke({"url": "https://example.com"})
+            result = await tool.ainvoke({"url": "https://example.com"})
 
         import json
         data = json.loads(result)
         assert data["ok"] is False
         assert "No readable content" in data["error"]
 
-    def test_fetch_url_exception_returns_error(self) -> None:
+    @pytest.mark.asyncio
+    async def test_fetch_url_exception_returns_error(self) -> None:
         with patch("app.utils.fetch_url_tool.fetch_url", side_effect=RuntimeError("network failure")):
             tool = create_fetch_url_tool()
-            result = tool.invoke({"url": "https://example.com"})
+            result = await tool.ainvoke({"url": "https://example.com"})
 
         import json
         data = json.loads(result)
         assert data["ok"] is False
         assert "network failure" in data["error"]
 
-    def test_fetch_url_with_ref_mapper_resolves_url(self) -> None:
+    @pytest.mark.asyncio
+    async def test_fetch_url_with_ref_mapper_resolves_url(self) -> None:
         mock_mapper = MagicMock()
         mock_mapper.ref_to_url = {}
 
@@ -289,7 +301,7 @@ class TestCreateFetchUrlTool:
              patch("app.utils.fetch_url_tool.html_to_blocks", return_value=[mock_block]), \
              patch("dataclasses.asdict", return_value={"type": "paragraph", "content": "content"}):
             tool = create_fetch_url_tool(ref_mapper=mock_mapper)
-            result = tool.invoke({"url": "https://real.com/page"})
+            result = await tool.ainvoke({"url": "https://real.com/page"})
 
         import json
         data = json.loads(result)

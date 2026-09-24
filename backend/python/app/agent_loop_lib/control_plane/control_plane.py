@@ -24,6 +24,17 @@ _EXECUTE_CODE_BLOCKED_TOOLS = frozenset({
     "run_code", "install_packages",
 })
 
+# Hook names that were renamed but stay accepted in config. Used to decide
+# whether a factory-supplied hook is already configured explicitly.
+_HOOK_ALIASES = {
+    "metered_sandbox_guard": "e2b_sandbox_guard",
+    "e2b_sandbox_guard": "metered_sandbox_guard",
+}
+
+
+def _hook_alias(name: str) -> str:
+    return _HOOK_ALIASES.get(name, name)
+
 
 
 
@@ -53,6 +64,7 @@ class ControlPlane:
         self._db_sandbox = None
         self._browser_sandbox = None
         self._sandbox_manager = None
+        self._sandbox_factory_middleware: list = []
         self._budget_manager = None
         self._approval_store = None
         self._hil_store = None
@@ -381,6 +393,13 @@ class ControlPlane:
             tool_registry.register_tool(BrowserScreenshotTool(browser))
 
         if cfg.coding_sandbox.enabled:
+            from app.agent_loop_lib.sandbox.coding.registry import (
+                build_default_registry,
+            )
+            from app.agent_loop_lib.sandbox.governor import (
+                GovernorLimits,
+                get_default_governor,
+            )
             from app.agent_loop_lib.sandbox.manager import (
                 SandboxLimits,
                 SandboxManager,
@@ -388,99 +407,33 @@ class ControlPlane:
             )
 
             csc = cfg.coding_sandbox
-            self._sandbox_manager = SandboxManager()
 
-            if csc.backend == "local":
-                import os
-                import uuid
+            # Process-wide, not per-ControlPlane: an instance per plane
+            # would cap each one separately, which is no cap at all once
+            # several run in the same process.
+            governor = get_default_governor(GovernorLimits(
+                max_total_sandboxes=csc.governor.max_total_sandboxes,
+                max_per_org=csc.governor.max_per_org,
+            ))
+            self._sandbox_manager = SandboxManager(governor=governor)
 
-                from app.agent_loop_lib.sandbox.coding.executor import ExecutionLimits
-                from app.agent_loop_lib.sandbox.coding.local import LocalCodingSandbox
+            registry = build_default_registry(
+                shared_config=csc,
+                backend_options=csc.effective_backend_options(),
+            )
+            factory = registry.get(csc.backend)
+            self._sandbox_manager.register_backend(
+                SandboxType.CODING,
+                factory,
+                limits=SandboxLimits(
+                    max_concurrent=csc.max_concurrent,
+                    max_lifetime_s=csc.max_lifetime_s,
+                    provision_timeout_s=csc.provision_timeout_s,
+                ),
+            )
 
-                lbc = csc.local
-                root = lbc.working_dir_root
-
-                def _make_local_coding_sandbox() -> LocalCodingSandbox:
-                    working_dir = (
-                        os.path.join(root, f"alcs-{uuid.uuid4().hex[:10]}")
-                        if root is not None else None
-                    )
-                    return LocalCodingSandbox(
-                        working_dir=working_dir,
-                        allow_network_on_install=csc.allow_network_on_install,
-                        typecheck_typescript=lbc.typecheck_typescript,
-                        package_allowlist=csc.package_allowlist,
-                        package_denylist=csc.package_denylist,
-                        limits=ExecutionLimits(
-                            max_memory_bytes=lbc.rlimits.max_memory_bytes,
-                            max_cpu_seconds=lbc.rlimits.max_cpu_seconds,
-                            max_file_size_bytes=lbc.rlimits.max_file_size_bytes,
-                            max_processes=lbc.rlimits.max_processes,
-                        ),
-                    )
-
-                self._sandbox_manager.register_backend_factory(
-                    SandboxType.CODING,
-                    _make_local_coding_sandbox,
-                    limits=SandboxLimits(max_concurrent=csc.max_concurrent, max_lifetime_s=csc.max_lifetime_s),
-                )
-            elif csc.backend == "e2b":
-                from app.agent_loop_lib.sandbox.coding.e2b import E2BCodingSandbox
-
-                ebc = csc.e2b
-
-                def _make_e2b_coding_sandbox() -> E2BCodingSandbox:
-                    return E2BCodingSandbox(
-                        api_key=ebc.api_key,
-                        template=ebc.template,
-                        e2b_timeout=ebc.e2b_timeout,
-                        allow_internet_access=ebc.allow_internet_access,
-                        package_allowlist=csc.package_allowlist,
-                        package_denylist=csc.package_denylist,
-                    )
-
-                self._sandbox_manager.register_backend_factory(
-                    SandboxType.CODING,
-                    _make_e2b_coding_sandbox,
-                    limits=SandboxLimits(max_concurrent=csc.max_concurrent, max_lifetime_s=csc.max_lifetime_s),
-                )
-            elif csc.backend == "docker":
-                import os
-                import uuid
-
-                from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
-
-                dbc = csc.docker
-                root = dbc.working_dir_root
-
-                def _make_docker_coding_sandbox() -> DockerCodingSandbox:
-                    working_dir = (
-                        os.path.join(root, f"alcs-docker-{uuid.uuid4().hex[:10]}")
-                        if root is not None else None
-                    )
-                    return DockerCodingSandbox(
-                        image=dbc.image,
-                        working_dir=working_dir,
-                        memory_limit_mb=dbc.memory_limit_mb,
-                        cpu_limit=dbc.cpu_limit,
-                        egress_network=dbc.egress_network,
-                        network_disabled=dbc.network_disabled,
-                        pip_index_url=dbc.pip_index_url,
-                        npm_registry=dbc.npm_registry,
-                        package_allowlist=csc.package_allowlist,
-                        package_denylist=csc.package_denylist,
-                    )
-
-                self._sandbox_manager.register_backend_factory(
-                    SandboxType.CODING,
-                    _make_docker_coding_sandbox,
-                    limits=SandboxLimits(max_concurrent=csc.max_concurrent, max_lifetime_s=csc.max_lifetime_s),
-                )
-            else:
-                raise ValueError(
-                    f"Unknown coding_sandbox backend: {csc.backend!r}. Supported backends are 'local', "
-                    "'e2b', and 'docker' — other remote backends (daytona/aio) are documented future work."
-                )
+            # Register provider-specific middleware from the factory
+            self._sandbox_factory_middleware = factory.middleware()
 
             tool_registry.register_tool(CodingSandboxTool(
                 self._sandbox_manager,
@@ -544,7 +497,11 @@ class ControlPlane:
                         allow_url_packages=csc.allow_url_packages,
                     ),
                 )
-            elif hook_name == "e2b_sandbox_guard":
+            elif hook_name in ("e2b_sandbox_guard", "metered_sandbox_guard"):
+                # Explicit opt-in. Metered backends get this automatically
+                # from `factory.middleware()`; listing it here is how an
+                # operator caps a NON-metered backend too, or overrides the
+                # cap the capability declares.
                 ebc = cfg.coding_sandbox.e2b
                 kernel.on(HookEvent.PRE_TOOL_USE).use(
                     "/toolsets/coding_sandbox/**",
@@ -683,19 +640,22 @@ class ControlPlane:
                     allow_url_packages=csc.allow_url_packages,
                 ),
             )
-        # Auto-add the E2B billing/timeout guard whenever backend="e2b" but
-        # not already explicitly listed in hooks — local users pay zero
-        # overhead since this middleware is scoped to backend="e2b" only.
-        if (
-            cfg.coding_sandbox.enabled
-            and cfg.coding_sandbox.backend == "e2b"
-            and "e2b_sandbox_guard" not in cfg.hooks
-        ):
-            ebc = cfg.coding_sandbox.e2b
-            kernel.on(HookEvent.PRE_TOOL_USE).use(
-                "/toolsets/coding_sandbox/**",
-                e2b_sandbox_guard(max_timeout=float(ebc.e2b_timeout)),
-            )
+        # Hooks the selected backend needs (e.g. the metered guard for any
+        # `is_metered` backend). Skipped when the operator already listed
+        # an equivalent in `cfg.hooks`: two copies of the metered guard
+        # would run two independent budgets and cap the same timeout twice.
+        for spec in self._sandbox_factory_middleware:
+            if spec.name in cfg.hooks or _hook_alias(spec.name) in cfg.hooks:
+                _logger.debug(
+                    "sandbox: %s already configured in hooks; not auto-adding",
+                    spec.name,
+                )
+                continue
+            layer = kernel.on(HookEvent(spec.event))
+            if spec.path_pattern is not None:
+                layer.use(spec.path_pattern, spec.middleware)
+            else:
+                layer.use(spec.middleware)
         self._kernel = kernel
 
         # 7. RoleRegistry (builtin roles: assistant, planner, researcher, critic, verifier, writer,

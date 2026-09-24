@@ -3,23 +3,21 @@ import json
 import random
 import threading
 import uuid
-from typing import Callable, Dict, Generic, List, Optional, TypeVar
-
-import redis.asyncio as redis  # type: ignore
-from redis.asyncio.retry import Retry  # type: ignore
-from redis.backoff import ExponentialBackoff  # type: ignore
-from redis.exceptions import ConnectionError as RedisConnectionError  # type: ignore
-from redis.exceptions import TimeoutError as RedisTimeoutError  # type: ignore
+from typing import TYPE_CHECKING, Callable, Generic, List, Optional, TypeVar
 
 from app.config.key_value_store import KeyValueStore
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 from app.utils.logger import create_logger
+
+if TYPE_CHECKING:
+    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
 
 logger = create_logger("redis_store")
 
 T = TypeVar("T")
 
 # Retry configuration
-MAX_RETRIES = 5
 RETRY_BASE_DELAY = 0.5  # seconds
 RETRY_MAX_DELAY = 30.0  # seconds
 
@@ -85,16 +83,33 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self._password = password
         self._db = db
         self._connect_timeout = connect_timeout
+        self._client_options = ClientOptions(
+            decode_responses=False,
+            socket_timeout_seconds=connect_timeout,
+            socket_connect_timeout_seconds=connect_timeout,
+        )
+        # Delegates connection construction to IRedisConnectionProvider (both
+        # OSS modes -- standalone, generic cluster -- and any EE provider
+        # registered via REDIS_MODE/REDIS_PROVIDER_MODULE) so this store
+        # never constructs `redis.asyncio.Redis` itself.
+        self._provider: "IRedisConnectionProvider" = get_redis_provider(
+            RedisConnectionConfig.from_host_port(host=host, port=port, password=password, db=db)
+        )
+        # REDIS_KEY_NAMESPACE (R9): applied inside this explicit key builder,
+        # never as a client-level prefix -- that would silently miss `SCAN`
+        # patterns and the pub/sub channel name below.
+        namespace = self._provider.key_namespace
+        self._key_namespace_prefix = f"{namespace}:" if namespace else ""
 
         # Per-thread Redis clients dict: thread_id → (client, event_loop_ref)
         # The event_loop_ref lets us detect stale clients bound to a closed
         # event loop (e.g. after asyncio.run() finishes in a thread pool).
-        self._clients: Dict[int, tuple[redis.Redis, Optional[asyncio.AbstractEventLoop]]] = {}
+        self._clients: dict[int, tuple["RedisClient", Optional[asyncio.AbstractEventLoop]]] = {}
         self._clients_lock = threading.Lock()
 
         logger.debug("Redis store initialized with lazy client creation")
 
-    def _get_client(self) -> redis.Redis:
+    def _get_client(self) -> "RedisClient":
         """Get or create a Redis client for the current thread/event loop.
 
         This ensures each event loop has its own Redis client to avoid
@@ -133,44 +148,25 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             if thread_id not in self._clients:
                 logger.debug("Creating new Redis client for thread %s", thread_id)
-
-                # Configure retry with exponential backoff
-                retry = Retry(
-                    ExponentialBackoff(cap=RETRY_MAX_DELAY, base=RETRY_BASE_DELAY),
-                    retries=MAX_RETRIES,
-                )
-
-                # Create a new Redis client for this thread/event loop
-                client = redis.Redis(
-                    host=self._host,
-                    port=self._port,
-                    password=self._password,
-                    db=self._db,
-                    socket_connect_timeout=self._connect_timeout,
-                    socket_timeout=self._connect_timeout,
-                    decode_responses=False,
-                    retry=retry,
-                    retry_on_error=[RedisConnectionError, RedisTimeoutError, ConnectionError, OSError],
-                    health_check_interval=30,
-                    single_connection_client=True,
-                )
+                client = self._provider.create_client(self._client_options)
                 self._clients[thread_id] = (client, current_loop)
 
             return self._clients[thread_id][0]
 
     @property
-    def client(self) -> Optional[redis.Redis]:
+    def client(self) -> Optional["RedisClient"]:
         """Expose the underlying Redis client for watchers and diagnostics."""
         return self._get_client()
 
     def _build_key(self, key: str) -> str:
-        """Build the full Redis key with prefix."""
-        return f"{self.key_prefix}{key}"
+        """Build the full Redis key: namespace (R9) + configured prefix + key."""
+        return f"{self._key_namespace_prefix}{self.key_prefix}{key}"
 
     def _strip_prefix(self, key: str) -> str:
-        """Strip the prefix from a Redis key."""
-        if key.startswith(self.key_prefix):
-            return key[len(self.key_prefix):]
+        """Strip the namespace + prefix from a Redis key."""
+        full_prefix = f"{self._key_namespace_prefix}{self.key_prefix}"
+        if key.startswith(full_prefix):
+            return key[len(full_prefix):]
         return key
 
     async def health_check(self) -> bool:
@@ -293,7 +289,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("Failed to update key %s: %s", key, str(e))
             raise ConnectionError(f"Failed to update key: {str(e)}")
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         """Get value for key from Redis."""
         full_key = self._build_key(key)
         logger.debug("Getting key from Redis: %s (original: %s)", full_key, key)
@@ -307,9 +303,21 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             try:
                 deserialized = self.deserializer(value_bytes)
+                # Present bytes that deserialize to nothing could not be read:
+                # the factory deserializer answers None for bytes that are not
+                # valid UTF-8 instead of raising, so the decode handler below
+                # never sees them. Empty bytes are how None is stored, and stay
+                # absent.
+                if deserialized is None and value_bytes and raise_on_error:
+                    raise ValueError("Stored value could not be decoded")
                 return deserialized
             except json.JSONDecodeError as e:
                 logger.error("Failed to deserialize value: %s", str(e))
+                # A stored value that cannot be read is not an absent one.
+                # Surfaces as ConnectionError via the handler below, as every
+                # failed read from this store does.
+                if raise_on_error:
+                    raise
                 return None
 
         except Exception as e:
@@ -339,7 +347,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         logger.debug("Getting all keys from Redis")
 
         try:
-            pattern = f"{self.key_prefix}*"
+            pattern = f"{self._key_namespace_prefix}{self.key_prefix}*"
             keys = []
 
             async for key in self._get_client().scan_iter(match=pattern):
@@ -414,8 +422,8 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         """List all keys under a specific directory prefix."""
         # Ensure directory ends with appropriate separator
         prefix = directory if directory.endswith("/") else f"{directory}/"
-        pattern = f"{self.key_prefix}{prefix}*"
-        logger.debug("Listing keys in directory: %s (pattern: %s)", directory, pattern)
+        pattern = f"{self._key_namespace_prefix}{self.key_prefix}{prefix}*"
+        logger.debug("Listing keys in directory")
 
         try:
 
@@ -429,7 +437,9 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return keys
 
         except Exception as e:
-            logger.error("Failed to list keys in directory: %s", str(e))
+            logger.error(
+                "Failed to list keys in directory (%s)", type(e).__name__
+            )
             raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
 
     async def close(self) -> None:
@@ -476,6 +486,11 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
     CACHE_INVALIDATION_CHANNEL = "pipeshub:cache:invalidate"
 
+    def _invalidation_channel(self) -> str:
+        """Namespaced channel name (R9): two deployments sharing one Redis
+        (or MemoryDB) endpoint must not invalidate each other's caches."""
+        return f"{self._key_namespace_prefix}{self.CACHE_INVALIDATION_CHANNEL}"
+
     async def publish_cache_invalidation(self, key: str) -> None:
         """Publish a cache invalidation message for the given key."""
         retry_count = 0
@@ -484,8 +499,10 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         while retry_count < max_retries:
             try:
-                await self._get_client().publish(self.CACHE_INVALIDATION_CHANNEL, key)
-                logger.info("Published cache invalidation for key: %s", key)
+                # Through the provider, not `_get_client().publish()`: async
+                # RedisCluster has no such method (see IRedisConnectionProvider.publish).
+                await self._provider.publish(self._invalidation_channel(), key)
+                logger.debug("Published cache invalidation for key: %s", key)
                 return
             except Exception as e:
                 retry_count += 1
@@ -530,9 +547,19 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             while not self._is_closing:
                 pubsub = None
+                pubsub_client = None
                 try:
-                    pubsub = self._get_client().pubsub()
-                    await pubsub.subscribe(self.CACHE_INVALIDATION_CHANNEL)
+                    # `provider.create_pubsub_client()`, not `self._get_client()`
+                    # (R13): SUBSCRIBE puts a connection into subscriber mode
+                    # where it can serve nothing else, and async
+                    # `RedisCluster.pubsub()` has no usable equivalent. The
+                    # provider hands back a dedicated connection to one node --
+                    # regular (non-sharded) PUBLISH still propagates
+                    # cluster-wide, so a subscriber on any node sees every
+                    # invalidation.
+                    pubsub_client = self._provider.create_pubsub_client()
+                    pubsub = pubsub_client.pubsub()
+                    await pubsub.subscribe(self._invalidation_channel())
                     logger.info("Subscribed to cache invalidation channel")
                     retry_count = 0  # Reset retry count on successful connection
 
@@ -576,13 +603,33 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 finally:
                     if pubsub:
                         try:
-                            await pubsub.unsubscribe(self.CACHE_INVALIDATION_CHANNEL)
+                            await pubsub.unsubscribe(self._invalidation_channel())
                             await pubsub.close()
                         except Exception:
                             pass  # Ignore errors during cleanup
+                    if pubsub_client is not None:
+                        # The pub/sub connection is this loop's alone, so it is
+                        # closed here rather than left for provider shutdown --
+                        # a reconnect would otherwise leak one per attempt.
+                        try:
+                            await pubsub_client.aclose()
+                        except Exception:
+                            pass
 
             logger.debug("Pub/Sub listener loop exited")
 
         task = asyncio.create_task(_listen_with_retry())
         self._pubsub_task = task
         return task
+
+    # -- KeyValueStore cross-process notification interface (R15) -----------
+
+    async def subscribe_changes(self, callback: Callable[[str], None]) -> asyncio.Task:
+        return await self.subscribe_cache_invalidation(callback)
+
+    async def publish_change(self, key: str) -> None:
+        await self.publish_cache_invalidation(key)
+
+    async def unsubscribe_changes(self, handle: object) -> None:
+        if isinstance(handle, asyncio.Task) and not handle.done():
+            handle.cancel()

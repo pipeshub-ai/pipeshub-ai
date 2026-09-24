@@ -19,6 +19,7 @@ from msgraph.generated.models.user import User  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -32,6 +33,13 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_downloadable,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -90,6 +98,7 @@ from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookSyncConfig,
     OutlookSyncPointKeys,
     OutlookThreadDetection,
+    normalize_conversation_index,
 )
 from app.models.entities import (
     AppUser,
@@ -950,6 +959,7 @@ class OutlookConnector(BaseConnector):
                 connector_name=Connectors.OUTLOOK,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.GROUP_MAILBOX,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 web_url=None,
                 source_created_at=created_at,
                 source_updated_at=created_at,
@@ -1448,35 +1458,40 @@ class OutlookConnector(BaseConnector):
     async def _download_group_post_attachment(
         self, group_id: str, thread_id: str, post_id: str, attachment_id: str
     ) -> bytes:
-        """Download attachment content from a group post."""
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        """Download attachment content from a group post.
 
-            response = await self.external_outlook_client.groups_threads_posts_get_attachments(
-                group_id=group_id,
-                conversationThread_id=thread_id,
-                post_id=post_id,
-                attachment_id=attachment_id
+        Raises rather than returning empty bytes: a failed download that returns
+        ``b''`` streams a zero-byte file with a 200 the client cannot detect.
+        """
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
+
+        response = await self.external_outlook_client.groups_threads_posts_get_attachments(
+            group_id=group_id,
+            conversationThread_id=thread_id,
+            post_id=post_id,
+            attachment_id=attachment_id
+        )
+
+        if not response.success:
+            self.logger.error(
+                f"Failed to download group post attachment {attachment_id}: {response.error}"
+            )
+        raise_for_stream_fetch(
+            success=response.success,
+            has_payload=response.data is not None,
+            connector=self.display_name,
+            message=response.error,
+        )
+
+        content_bytes = getattr(response.data, "content_bytes", None)
+        if not content_bytes:
+            raise not_downloadable(
+                OutlookHTTPDetails.ATTACHMENT_NOT_DOWNLOADABLE,
+                connector=self.display_name,
             )
 
-            if not response.success or not response.data:
-                return b''
-
-            # response.data is a Pydantic FileAttachment object
-            attachment_data = response.data
-
-            # Extract content_bytes from Pydantic object
-            content_bytes = attachment_data.content_bytes if attachment_data else None
-
-            if not content_bytes:
-                return b''
-
-            return self._decode_content_bytes(content_bytes)
-
-        except Exception as e:
-            self.logger.error(f"Error downloading group post attachment: {e}")
-            return b''
+        return self._decode_content_bytes(content_bytes)
 
     async def _process_users(self, org_id: str, users: list[AppUser]) -> AsyncGenerator[str, None]:
         """Process users sequentially."""
@@ -1549,20 +1564,14 @@ class OutlookConnector(BaseConnector):
             parent_index = base64.b64encode(parent_bytes).decode('utf-8')
             self.logger.debug(f"Thread {thread_id}: Looking for parent with conversation_index={parent_index}")
 
-            # Search in ArangoDB for parent message
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_record_by_conversation_index(
-                    connector_id=self.connector_id,
-                    conversation_index=parent_index,
-                    thread_id=thread_id,
-                    org_id=org_id,
-                    user_id=user.user_id
-                )
+            parent_record = await self.data_entities_processor.get_record_by_conversation_index(
+                self.connector_id, parent_index, thread_id, user.user_id
+            )
 
-                if parent_record:
-                    return parent_record.id
-                else:
-                    return None
+            if parent_record:
+                return parent_record.id
+            else:
+                return None
 
         except Exception as e:
             self.logger.error(f"Error finding parent by conversation index from DB for thread {thread_id}: {e}")
@@ -1880,6 +1889,7 @@ class OutlookConnector(BaseConnector):
                 connector_name=Connectors.OUTLOOK,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.MAILBOX,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 web_url=None,
                 source_created_at=None,
                 source_updated_at=None,
@@ -2152,8 +2162,7 @@ class OutlookConnector(BaseConnector):
 
             if is_deleted:
                 self.logger.info(f"Deleting message: {message_id} and its attachments from folder {folder_name}")
-                async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.delete_record_by_external_id(self.connector_id, message_id, user.user_id)
+                await self.data_entities_processor.delete_record_by_external_id(self.connector_id, message_id, user.user_id)
                 return updates
 
             # Process email with attachments
@@ -2249,7 +2258,7 @@ class OutlookConnector(BaseConnector):
                 thread_id=message.conversation_id or '',
                 is_parent=False,
                 internet_message_id=message.internet_message_id or '',
-                conversation_index=message.conversation_index or '',
+                conversation_index=normalize_conversation_index(message.conversation_index),
             )
 
             # Apply indexing filter for mail records
@@ -2529,11 +2538,9 @@ class OutlookConnector(BaseConnector):
     async def _get_existing_record(self, org_id: str, external_record_id: str) -> Record | None:
         """Get existing record from data store."""
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                return await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
+            return await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_record_id
+            )
         except Exception as e:
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
@@ -2577,10 +2584,7 @@ class OutlookConnector(BaseConnector):
         """Stream record content (email or attachment)."""
         try:
             if not self.external_outlook_client:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=OutlookHTTPDetails.CLIENT_NOT_INITIALIZED,
-                )
+                raise connector_not_ready(self.display_name)
 
             # Recover from an idle-closed HTTP transport before the first Graph call.
             await self._reinitialize_client_if_needed()
@@ -2610,16 +2614,23 @@ class OutlookConnector(BaseConnector):
                 )
 
                 if not response.success:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"Post not found: {response.error}",
+                    self.logger.warning(
+                        "Failed to fetch group post %s: %s",
+                        post_id,
+                        response.error,
+                    )
+                    # MSGraphResponse has no HTTP status — do not invent a 404.
+                    raise RuntimeError(
+                        response.error or f"Failed to fetch group post {post_id}"
                     )
 
                 # response.data is a Pydantic Post object
                 post = response.data
+                if not post:
+                    raise not_found_at_source(self.display_name)
 
                 # Extract body content from Pydantic Post object
-                post_body = post.body.content or '' if post and post.body else ''
+                post_body = post.body.content or '' if post.body else ''
 
                 # Augment with metadata for indexing
                 if isinstance(record, MailRecord):
@@ -2631,12 +2642,9 @@ class OutlookConnector(BaseConnector):
 
             # Handle FILE records (check if parent is group post)
             if record.record_type == RecordType.FILE and record.parent_external_record_id:
-                # Get parent record to check its type
-                async with self.data_store_provider.transaction() as tx_store:
-                    parent_record = await tx_store.get_record_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=record.parent_external_record_id
-                    )
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record.parent_external_record_id
+                )
 
                 if parent_record and parent_record.record_type == RecordType.GROUP_MAIL:
                     # Group post attachment (don't need user_id)
@@ -2668,10 +2676,9 @@ class OutlookConnector(BaseConnector):
             # User mailbox records (need user_id)
             user_id = None
 
-            async with self.data_store_provider.transaction() as tx_store:
-                user_email = await tx_store.get_record_owner_source_user_email(record.id)
-                if user_email:
-                    user_id = await self._get_user_id_from_email(user_email)
+            user_email = await self.data_entities_processor.get_record_owner_source_user_email(record.id)
+            if user_email:
+                user_id = await self._get_user_id_from_email(user_email)
 
             if not user_id:
                 raise HTTPException(
@@ -2682,9 +2689,11 @@ class OutlookConnector(BaseConnector):
             if record.record_type == RecordType.MAIL:
                 # User email - message is a Pydantic Message object
                 message = await self._get_message_by_id_external(user_id, record.external_record_id)
+                if not message:
+                    raise not_found_at_source(self.display_name)
 
                 # Extract body content from Pydantic Message object
-                if message and message.body:
+                if message.body:
                     email_body = message.body.content or ''
                 else:
                     email_body = ''
@@ -2726,64 +2735,70 @@ class OutlookConnector(BaseConnector):
                     detail=OutlookHTTPDetails.UNSUPPORTED_RECORD_TYPE,
                 )
 
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream record: {str(e)}",
-            ) from e
+            self.logger.error(
+                f"❌ Error streaming record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_message_by_id_external(self, user_id: str, message_id: str) -> Message | None:
         """Get a specific message by ID using external Outlook API.
 
-        Returns:
-            Pydantic Message object or None
+        Returns None only when Graph succeeded but returned no message. Every
+        failure raises: the caller turns None into a 404, and an expired token
+        or a 429 must not be reported to the user as a deleted email.
         """
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_get_messages(
-                user_id=user_id,
-                message_id=message_id
-            )
+        response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_get_messages(
+            user_id=user_id,
+            message_id=message_id
+        )
 
-            if not response.success:
-                self.logger.error(f"Failed to get message {message_id}: {response.error}")
-                return None
+        if not response.success:
+            self.logger.error(f"Failed to get message {message_id}: {response.error}")
+            # MSGraphResponse has no HTTP status — do not invent a 404.
+            raise RuntimeError(response.error or f"Failed to get message {message_id}")
 
-            return response.data
-
-        except Exception as e:
-            self.logger.error(f"Error getting message {message_id}: {e}")
-            return None
+        return response.data
 
     async def _download_attachment_external(self, user_id: str, message_id: str, attachment_id: str) -> bytes:
-        """Download attachment content using external Outlook API."""
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        """Download attachment content using external Outlook API.
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_get_attachments(
-                user_id=user_id,
-                message_id=message_id,
-                attachment_id=attachment_id
+        Raises rather than returning empty bytes: a failed download that returns
+        ``b''`` streams a zero-byte file with a 200 the client cannot detect.
+        """
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
+
+        response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_get_attachments(
+            user_id=user_id,
+            message_id=message_id,
+            attachment_id=attachment_id
+        )
+
+        if not response.success:
+            self.logger.error(
+                f"Failed to download attachment {attachment_id} for message {message_id}: {response.error}"
+            )
+        raise_for_stream_fetch(
+            success=response.success,
+            has_payload=response.data is not None,
+            connector=self.display_name,
+            message=response.error,
+        )
+
+        content_bytes = getattr(response.data, "content_bytes", None)
+        if not content_bytes:
+            raise not_downloadable(
+                OutlookHTTPDetails.ATTACHMENT_NOT_DOWNLOADABLE,
+                connector=self.display_name,
             )
 
-            if not response.success or not response.data:
-                return b''
-
-            # response.data is a Pydantic FileAttachment object
-            attachment_data = response.data
-            content_bytes = attachment_data.content_bytes if attachment_data else None
-
-            if not content_bytes:
-                return b''
-
-            return self._decode_content_bytes(content_bytes)
-
-        except Exception as e:
-            self.logger.error(f"Error downloading attachment {attachment_id} for message {message_id}: {e}")
-            return b''
+        return self._decode_content_bytes(content_bytes)
 
 
     def get_signed_url(self, record: Record) -> str | None:
@@ -2866,12 +2881,9 @@ class OutlookConnector(BaseConnector):
                 if record.record_type == RecordType.GROUP_MAIL:
                     group_mailbox_records.append(record)
                 elif record.record_type == RecordType.FILE and record.parent_external_record_id:
-                    # Check if it's a GROUP_MAIL attachment
-                    async with self.data_store_provider.transaction() as tx_store:
-                        parent_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=record.parent_external_record_id
-                        )
+                    parent_record = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, record.parent_external_record_id
+                    )
                     if parent_record and parent_record.record_type == RecordType.GROUP_MAIL:
                         group_mailbox_records.append(record)
                     else:
@@ -3199,9 +3211,7 @@ class OutlookConnector(BaseConnector):
         records_by_user: dict[str, list[Record]] = {}
         for record in records:
             try:
-                # Get owner email from permissions
-                async with self.data_store_provider.transaction() as tx_store:
-                    user_email = await tx_store.get_record_owner_source_user_email(record.id)
+                user_email = await self.data_entities_processor.get_record_owner_source_user_email(record.id)
 
                 if not user_email:
                     self.logger.warning(f"No owner found for record {record.id}, skipping")
@@ -3384,11 +3394,10 @@ class OutlookConnector(BaseConnector):
                 return None
 
             # Get group info for permissions
-            async with self.data_store_provider.transaction() as tx_store:
-                group_data = await tx_store.get_user_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=group_id
-                )
+            group_data = await self.data_entities_processor.get_user_group_by_external_id(
+                connector_id=self.connector_id,
+                external_id=group_id
+            )
 
             if not group_data:
                 self.logger.warning(f"Group {group_id} not found in database")
@@ -3399,9 +3408,9 @@ class OutlookConnector(BaseConnector):
                 app_name=Connectors.OUTLOOK,
                 connector_id=self.connector_id,
                 source_user_group_id=group_id,
-                name=group_data.get('name', OutlookDefaults.UNKNOWN_GROUP_LABEL),
+                name=group_data.name if group_data.name else OutlookDefaults.UNKNOWN_GROUP_LABEL,
                 org_id=org_id,
-                description=group_data.get('description')
+                description=group_data.description
             )
 
             # Reuse existing processing logic
@@ -3433,12 +3442,9 @@ class OutlookConnector(BaseConnector):
                 self.logger.warning(f"GROUP_MAIL attachment {attachment_id} has no parent post ID")
                 return None
 
-            # Get parent GROUP_MAIL record to get thread_id (same as stream_record)
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=post_id
-                )
+            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, post_id
+            )
 
             if not parent_record or parent_record.record_type != RecordType.GROUP_MAIL:
                 self.logger.warning(f"Parent GROUP_MAIL not found for attachment {attachment_id}")
@@ -3479,11 +3485,10 @@ class OutlookConnector(BaseConnector):
                 return None
 
             # Get group info for permissions
-            async with self.data_store_provider.transaction() as tx_store:
-                group_data = await tx_store.get_user_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=group_id
-                )
+            group_data = await self.data_entities_processor.get_user_group_by_external_id(
+                connector_id=self.connector_id,
+                external_id=group_id
+            )
 
             if not group_data:
                 self.logger.warning(f"Group {group_id} not found in database")
@@ -3766,12 +3771,11 @@ class OutlookConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> 'OutlookConnector':
         """Factory method to create and initialize OutlookConnector."""
-        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await data_entities_processor.initialize()
-
-        return OutlookConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

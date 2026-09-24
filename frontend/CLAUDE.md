@@ -1,8 +1,12 @@
 # CLAUDE.md - PipesHub Dashboard UI
 
+When implementing backend or repo-wide changes, also read the repository-root `AGENTS.md`. This file is the UI conventions for `frontend/`.
+
 ## Project Overview
 
 PipesHub is an AI-powered knowledge management dashboard on **Next.js** (App Router, client-rendered React).
+
+In Docker Compose the built UI is served by Express on port **3000** (same origin as `/api` and `/mcp`). When you run `PORT=3001 npm run dev` from this directory, the dashboard is on 3001 and calls Express on 3000. Do not assume 3001 is where operators open the product.
 
 **Tech Stack:**
 - Next.js 14+ (App Router, CSR-only with `'use client'`)
@@ -12,7 +16,7 @@ PipesHub is an AI-powered knowledge management dashboard on **Next.js** (App Rou
 - Google Fonts (Manrope) + Google Material Icons
 - React Hook Form + Zod (complex forms) / Native (simple forms)
 - SSE (chat streaming) + WebSocket (notifications)
-- i18n: German, English, Spanish, Hindi
+- i18n: German, English, Spanish, Hindi, Korean, Chinese (Taiwan), Chinese (Singapore), Chinese (Mandarin/Simplified, zh-CN)
 
 ## Naming: Collections vs Knowledge Base
 

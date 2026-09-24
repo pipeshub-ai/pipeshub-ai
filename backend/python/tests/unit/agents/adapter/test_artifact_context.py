@@ -162,3 +162,47 @@ class TestArtifactContextReminder:
         # Must not raise — a listing failure should never break the turn.
         await artifact_context_reminder(context)(ctx, _noop_next)
         assert goal.constraints == []
+
+
+class TestReminderPointsAtAMechanismThatExists:
+    """The reminder used to instruct the model to "pass THAT code artifact's
+    name into run_code's input_artifacts, edit it, and re-run" — but
+    input_artifacts only stages the file INSIDE the sandbox, where the model
+    writing the program cannot see it, and no tool returned artifact text.
+    So the instruction could not be followed and the model rewrote from
+    scratch, losing the original styling.
+    """
+
+    async def test_reminder_names_the_content_reader(self, monkeypatch) -> None:
+        context = _make_context(graph_provider=MagicMock(), blob_store=MagicMock())
+        registry = MagicMock()
+        registry.list_for_conversation = AsyncMock(
+            return_value=[_make_metadata(derived_from_code_artifact_id="code-1")]
+        )
+        monkeypatch.setattr(AgentContext, "artifact_registry", property(lambda self: registry))
+        ctx, goal = _make_turn_ctx()
+
+        await artifact_context_reminder(context)(ctx, _noop_next)
+        reminder = goal.constraints[0]
+
+        assert "artifacts__get_artifact_content" in reminder
+        # The id the model is told to feed it must be in the same message.
+        assert "derived_from_code_artifact_id" in reminder
+
+    async def test_reminder_covers_the_phrasings_users_actually_use(
+        self, monkeypatch,
+    ) -> None:
+        context = _make_context(graph_provider=MagicMock(), blob_store=MagicMock())
+        registry = MagicMock()
+        registry.list_for_conversation = AsyncMock(return_value=[_make_metadata()])
+        monkeypatch.setattr(AgentContext, "artifact_registry", property(lambda self: registry))
+        ctx, goal = _make_turn_ctx()
+
+        await artifact_context_reminder(context)(ctx, _noop_next)
+        reminder = goal.constraints[0].lower()
+
+        for phrase in ("update", "extend", "same style"):
+            assert phrase in reminder, phrase
+        # And it must still permit starting fresh — not every follow-up is
+        # a variation on the last deliverable.
+        assert "from scratch" in reminder

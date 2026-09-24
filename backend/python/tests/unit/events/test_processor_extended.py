@@ -50,7 +50,8 @@ def _make_processor(**overrides):
         "sink_orchestrator": MagicMock(),
     }
     kwargs.update(overrides)
-    with patch("app.events.processor.DoclingClient"):
+    with patch("app.events.processor.DoclingClient"), \
+         patch("app.events.processor.DoclingProcessor"):
         proc = Processor(**kwargs)
     return proc
 
@@ -131,8 +132,13 @@ class TestProcessPdfWithOcrVlmPageParseFail:
         })
         proc.config_service = mock_config
 
-        with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.DoclingProcessor") as MockDocling:
+        mock_processor = AsyncMock()
+        mock_processor.parse_document = AsyncMock(
+            side_effect=RuntimeError("parse failed for page")
+        )
+        proc.docling_processor = mock_processor
+
+        with patch("app.events.processor.OCRHandler") as MockOCR:
             mock_ocr = AsyncMock()
             mock_ocr.process_document = AsyncMock(return_value={
                 "pages": [
@@ -140,12 +146,6 @@ class TestProcessPdfWithOcrVlmPageParseFail:
                 ],
             })
             MockOCR.return_value = mock_ocr
-
-            mock_processor = AsyncMock()
-            mock_processor.parse_document = AsyncMock(
-                side_effect=RuntimeError("parse failed for page")
-            )
-            MockDocling.return_value = mock_processor
 
             with pytest.raises(DocumentProcessingError, match="parse failed for page"):
                 await _collect_events(
@@ -173,8 +173,14 @@ class TestProcessPdfWithOcrVlmBlocksFail:
         })
         proc.config_service = mock_config
 
-        with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.DoclingProcessor") as MockDocling:
+        mock_processor = AsyncMock()
+        mock_processor.parse_document = AsyncMock(return_value=MagicMock())
+        mock_processor.create_blocks = AsyncMock(
+            side_effect=RuntimeError("block creation failed")
+        )
+        proc.docling_processor = mock_processor
+
+        with patch("app.events.processor.OCRHandler") as MockOCR:
             mock_ocr = AsyncMock()
             mock_ocr.process_document = AsyncMock(return_value={
                 "pages": [
@@ -182,13 +188,6 @@ class TestProcessPdfWithOcrVlmBlocksFail:
                 ],
             })
             MockOCR.return_value = mock_ocr
-
-            mock_processor = AsyncMock()
-            mock_processor.parse_document = AsyncMock(return_value=MagicMock())
-            mock_processor.create_blocks = AsyncMock(
-                side_effect=RuntimeError("block creation failed")
-            )
-            MockDocling.return_value = mock_processor
 
             with pytest.raises(DocumentProcessingError, match="block creation failed"):
                 await _collect_events(
@@ -262,8 +261,16 @@ class TestProcessPdfWithOcrVlmChunkProcessing:
         ]
         page2_container = BlocksContainer(blocks=page2_blocks, block_groups=page2_groups)
 
+        mock_processor = AsyncMock()
+        # parse_document called for each page
+        mock_processor.parse_document = AsyncMock(side_effect=[MagicMock(), MagicMock()])
+        # create_blocks returns different containers for each page
+        mock_processor.create_blocks = AsyncMock(
+            side_effect=[page1_container, page2_container]
+        )
+        proc.docling_processor = mock_processor
+
         with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.DoclingProcessor") as MockDocling, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline:
             mock_ocr = AsyncMock()
             mock_ocr.process_document = AsyncMock(return_value={
@@ -273,15 +280,6 @@ class TestProcessPdfWithOcrVlmChunkProcessing:
                 ],
             })
             MockOCR.return_value = mock_ocr
-
-            mock_processor = AsyncMock()
-            # parse_document called for each page
-            mock_processor.parse_document = AsyncMock(side_effect=[MagicMock(), MagicMock()])
-            # create_blocks returns different containers for each page
-            mock_processor.create_blocks = AsyncMock(
-                side_effect=[page1_container, page2_container]
-            )
-            MockDocling.return_value = mock_processor
 
             proc.graph_provider.get_document = AsyncMock(
                 return_value=_mock_record_dict()
@@ -1478,9 +1476,9 @@ class TestProcessorCoverageBranchesTo95:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="slides")
         )
+        proc.docling_processor = mock_processor
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline:
             MockPipeline.return_value.apply = AsyncMock()
 
             await _collect_events(
@@ -1668,8 +1666,12 @@ class TestProcessorCoverageBranchesTo95:
             "llm": [],
         })
 
+        mproc = AsyncMock()
+        mproc.parse_document = AsyncMock(return_value=MagicMock())
+        mproc.create_blocks = AsyncMock(return_value=nested_container)
+        proc.docling_processor = mproc
+
         with patch("app.events.processor.OCRHandler") as MockOCR, \
-             patch("app.events.processor.DoclingProcessor") as MockDocling, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline:
             mo = AsyncMock()
             mo.process_document = AsyncMock(return_value={
@@ -1677,10 +1679,6 @@ class TestProcessorCoverageBranchesTo95:
             })
             MockOCR.return_value = mo
 
-            mproc = AsyncMock()
-            mproc.parse_document = AsyncMock(return_value=MagicMock())
-            mproc.create_blocks = AsyncMock(return_value=nested_container)
-            MockDocling.return_value = mproc
             MockPipeline.return_value.apply = AsyncMock()
 
             proc.graph_provider.get_document = AsyncMock(

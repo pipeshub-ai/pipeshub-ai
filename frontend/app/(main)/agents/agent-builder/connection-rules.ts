@@ -42,6 +42,9 @@ export function connectionError(
   if (st.startsWith('skill-') && (tt !== 'agent-core' || connection.targetHandle !== 'skills')) {
     return 'agentBuilder.connectionSkillToSkillsHandle';
   }
+  if (st.startsWith('mcp-') && (tt !== 'agent-core' || connection.targetHandle !== 'mcpServers')) {
+    return 'agentBuilder.connectionMcpToMcpServersHandle';
+  }
   if (
     st.startsWith('tool-') &&
     !st.startsWith('tool-group-') &&
@@ -175,6 +178,13 @@ export function applyAutoConnectToEdges(
       target: agent.id,
       sourceHandle: 'output',
       targetHandle: 'skills',
+    });
+  } else if (st.startsWith('mcp-')) {
+    proposals.push({
+      source: droppedNode.id,
+      target: agent.id,
+      sourceHandle: 'output',
+      targetHandle: 'mcpServers',
     });
   } else if (st.startsWith('connector-group-')) {
     if (outs.includes('context')) {

@@ -265,11 +265,14 @@ class FiltersHelper:
         self, search: str | None, exclude_paths: list[str], per_page: int, page_n: int, limit: int, page: int,
     ) -> FilterOptionsResponse:
         c = self.c
+
+        if not search:
+            return FilterOptionsResponse(
+                success=True, options=[], page=page, limit=limit, has_more=False,
+                message="Type to search for repositories",
+            )
+
         server_search = search
-        if exclude_paths and not search:
-            fetch_per_page = min(_MAX_PER_PAGE, per_page * 2 + 1)
-        else:
-            fetch_per_page = per_page + 1
 
         if c._is_admin or c._is_auditor:
             proj_scope: dict[str, object] = {}
@@ -278,63 +281,34 @@ class FiltersHelper:
 
         proj_kwargs: dict[str, object] = {
             "search": server_search, "get_all": False, "simple": True, **proj_scope,
+            "search_namespaces": True,
         }
-        if server_search:
-            proj_kwargs["search_namespaces"] = True
-        if not server_search:
-            proj_kwargs["order_by"] = "path"
-            proj_kwargs["sort"] = "asc"
 
         from app.connectors.sources.gitlab.projects import _namespace_full_path, _namespace_under_any_prefix
 
-        if search:
-            needle = search.casefold()
+        needle = search.casefold()
+        projects, has_more, error = await self._scan_filter_option_pages(
+            c.data_source.list_projects,
+            list_kwargs=proj_kwargs,
+            matcher=lambda p: _local_match_project(p, needle) and not _namespace_under_any_prefix(_namespace_full_path(p), exclude_paths),
+            page=page_n, per_page=per_page,
+            progress_label="GitLab project filter search",
+        )
+        if error:
+            self.logger.warning("GitLab list_projects failed for filter options (search=%r, page=%s): %s", search, page, error)
+            return FilterOptionsResponse(success=False, options=[], page=page, limit=limit, has_more=False, message=error)
+        if c._is_auditor and not projects:
+            c.scope.warn_auditor_fallback_once("projects")
+            fb_kwargs = c.scope.picker_kwargs_for_auditor_projects_fallback(proj_kwargs)
             projects, has_more, error = await self._scan_filter_option_pages(
                 c.data_source.list_projects,
-                list_kwargs=proj_kwargs,
+                list_kwargs=fb_kwargs,
                 matcher=lambda p: _local_match_project(p, needle) and not _namespace_under_any_prefix(_namespace_full_path(p), exclude_paths),
                 page=page_n, per_page=per_page,
-                progress_label="GitLab project filter search",
+                progress_label="GitLab project filter search [auditor fallback]",
             )
             if error:
-                self.logger.warning("GitLab list_projects failed for filter options (search=%r, page=%s): %s", search, page, error)
-                return FilterOptionsResponse(success=False, options=[], page=page, limit=limit, has_more=False, message=error)
-            if c._is_auditor and not projects:
-                c.scope.warn_auditor_fallback_once("projects")
-                fb_kwargs = c.scope.picker_kwargs_for_auditor_projects_fallback(proj_kwargs)
-                projects, has_more, error = await self._scan_filter_option_pages(
-                    c.data_source.list_projects,
-                    list_kwargs=fb_kwargs,
-                    matcher=lambda p: _local_match_project(p, needle) and not _namespace_under_any_prefix(_namespace_full_path(p), exclude_paths),
-                    page=page_n, per_page=per_page,
-                    progress_label="GitLab project filter search [auditor fallback]",
-                )
-                if error:
-                    self.logger.warning("GitLab list_projects auditor fallback failed (search=%r, page=%s): %s", search, page, error)
-        else:
-            proj_kwargs["page"] = page_n
-            proj_kwargs["per_page"] = fetch_per_page
-            res = await c.runtime.ds_call(c.data_source.list_projects, **proj_kwargs)
-            if not res.success:
-                self.logger.warning("GitLab list_projects failed for filter options (search=%r, page=%s): %s", search, page, res.error)
-                return FilterOptionsResponse(success=False, options=[], page=page, limit=limit, has_more=False, message=res.error)
-            projects = list(res.data or [])
-            raw_count = len(projects)
-            if c._is_auditor and raw_count == 0:
-                c.scope.warn_auditor_fallback_once("projects")
-                fb_kwargs = c.scope.picker_kwargs_for_auditor_projects_fallback(proj_kwargs)
-                fb_res = await c.runtime.ds_call(c.data_source.list_projects, **fb_kwargs)
-                if fb_res.success:
-                    projects = list(fb_res.data or [])
-                    raw_count = len(projects)
-            if exclude_paths:
-                projects = [
-                    p for p in projects
-                    if not _namespace_under_any_prefix(_namespace_full_path(p), exclude_paths)
-                ]
-            has_more = raw_count >= fetch_per_page
-            if len(projects) > per_page:
-                projects = projects[:per_page]
+                self.logger.warning("GitLab list_projects auditor fallback failed (search=%r, page=%s): %s", search, page, error)
 
         opts = [
             FilterOption(id=str(p.path_with_namespace), label=str(getattr(p, "name_with_namespace", None) or p.path_with_namespace))

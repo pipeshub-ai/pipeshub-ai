@@ -1,7 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { createGlobalRateLimiter, createOAuthClientRateLimiter } from '../../../src/libs/middlewares/rate-limit.middleware'
+import { createGlobalRateLimiter, createOAuthClientRateLimiter, createSkillsImportRateLimiter } from '../../../src/libs/middlewares/rate-limit.middleware'
 import { Logger } from '../../../src/libs/services/logger.service'
 
 // ---------------------------------------------------------------------------
@@ -219,6 +219,197 @@ describe('Rate Limit Middleware', () => {
       })
 
       limiter(req, res, next)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Rate limit exceeded (handler callback)
+  // -----------------------------------------------------------------------
+  describe('rate limit exceeded', () => {
+    it('should return 429 when global limit is exceeded', (done) => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 1)
+      const ip = '10.0.5.1'
+
+      const req1 = createMockRequest({ ip, path: '/test1' })
+      const res1 = createMockResponse()
+      const next1 = createMockNext()
+
+      next1.callsFake(() => {
+        const req2 = createMockRequest({ ip, path: '/test2' })
+        const res2 = createMockResponse()
+        const next2 = createMockNext()
+
+        res2.json.callsFake(() => {
+          expect(res2.statusCode).to.equal(429)
+          const body = res2.json.firstCall.args[0]
+          expect(body.error).to.have.property('message')
+          expect(loggerStub.warn.called).to.be.true
+          done()
+          return res2
+        })
+
+        limiter(req2, res2, next2)
+      })
+
+      limiter(req1, res1, next1)
+    })
+
+    it('should return 429 with user key when authenticated user exceeds limit', (done) => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 1)
+      const user = { userId: 'rate-exceed-user-1' }
+
+      const req1 = createMockRequest({ ip: '10.0.5.2', user, path: '/test1' })
+      const res1 = createMockResponse()
+      const next1 = createMockNext()
+
+      next1.callsFake(() => {
+        const req2 = createMockRequest({ ip: '10.0.5.2', user, path: '/test2' })
+        const res2 = createMockResponse()
+        const next2 = createMockNext()
+
+        res2.json.callsFake(() => {
+          expect(res2.statusCode).to.equal(429)
+          done()
+          return res2
+        })
+
+        limiter(req2, res2, next2)
+      })
+
+      limiter(req1, res1, next1)
+    })
+
+    it('should return 429 when OAuth client limit is exceeded', (done) => {
+      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 1)
+      const ip = '10.0.5.3'
+
+      const req1 = createMockRequest({ ip, path: '/oauth/clients' })
+      const res1 = createMockResponse()
+      const next1 = createMockNext()
+
+      next1.callsFake(() => {
+        const req2 = createMockRequest({ ip, path: '/oauth/clients' })
+        const res2 = createMockResponse()
+        const next2 = createMockNext()
+
+        res2.json.callsFake(() => {
+          expect(res2.statusCode).to.equal(429)
+          const body = res2.json.firstCall.args[0]
+          expect(body.error.message).to.include('OAuth client')
+          expect(loggerStub.warn.called).to.be.true
+          done()
+          return res2
+        })
+
+        limiter(req2, res2, next2)
+      })
+
+      limiter(req1, res1, next1)
+    })
+
+    it('should return 429 when skills import limit is exceeded', (done) => {
+      const limiter = createSkillsImportRateLimiter(loggerStub as unknown as Logger, 1)
+      const ip = '10.0.5.5'
+
+      const req1 = createMockRequest({ ip, path: '/skills/import/npm/preview' })
+      const res1 = createMockResponse()
+      const next1 = createMockNext()
+
+      next1.callsFake(() => {
+        const req2 = createMockRequest({ ip, path: '/skills/import/npm/preview' })
+        const res2 = createMockResponse()
+        const next2 = createMockNext()
+
+        res2.json.callsFake(() => {
+          expect(res2.statusCode).to.equal(429)
+          const body = res2.json.firstCall.args[0]
+          expect(body.error.message).to.include('skill import')
+          expect(loggerStub.warn.called).to.be.true
+          done()
+          return res2
+        })
+
+        limiter(req2, res2, next2)
+      })
+
+      limiter(req1, res1, next1)
+    })
+
+    it('should return 429 with user key when authenticated user exceeds skills import limit', (done) => {
+      const limiter = createSkillsImportRateLimiter(loggerStub as unknown as Logger, 1)
+      const user = { userId: 'skills-import-rate-exceed-user' }
+
+      const req1 = createMockRequest({ ip: '10.0.5.6', user, path: '/skills/import/url/preview' })
+      const res1 = createMockResponse()
+      const next1 = createMockNext()
+
+      next1.callsFake(() => {
+        const req2 = createMockRequest({ ip: '10.0.5.6', user, path: '/skills/import/url/preview' })
+        const res2 = createMockResponse()
+        const next2 = createMockNext()
+
+        res2.json.callsFake(() => {
+          expect(res2.statusCode).to.equal(429)
+          done()
+          return res2
+        })
+
+        limiter(req2, res2, next2)
+      })
+
+      limiter(req1, res1, next1)
+    })
+
+    it('should return 429 when authenticated user exceeds the default 10/min skills import limit', (done) => {
+      const limiter = createSkillsImportRateLimiter(loggerStub as unknown as Logger)
+      const user = { userId: 'skills-import-default-limit-user' }
+      const path = '/skills/import/finalize'
+
+      const fire = (remaining: number) => {
+        const req = createMockRequest({ ip: '10.0.5.7', user, path })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        if (remaining === 0) {
+          res.json.callsFake(() => {
+            expect(res.statusCode).to.equal(429)
+            done()
+            return res
+          })
+          limiter(req, res, next)
+          return
+        }
+
+        next.callsFake(() => fire(remaining - 1))
+        limiter(req, res, next)
+      }
+
+      fire(10)
+    })
+
+    it('should return 429 with user key when authenticated user exceeds OAuth limit', (done) => {
+      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 1)
+      const user = { userId: 'oauth-rate-exceed-user' }
+
+      const req1 = createMockRequest({ ip: '10.0.5.4', user, path: '/oauth/clients' })
+      const res1 = createMockResponse()
+      const next1 = createMockNext()
+
+      next1.callsFake(() => {
+        const req2 = createMockRequest({ ip: '10.0.5.4', user, path: '/oauth/clients' })
+        const res2 = createMockResponse()
+        const next2 = createMockNext()
+
+        res2.json.callsFake(() => {
+          expect(res2.statusCode).to.equal(429)
+          done()
+          return res2
+        })
+
+        limiter(req2, res2, next2)
+      })
+
+      limiter(req1, res1, next1)
     })
   })
 

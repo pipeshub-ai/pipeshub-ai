@@ -45,21 +45,21 @@ class TestGetVectorDbServiceExtended:
 
 class TestCreateIndexingPipelineExtended:
     @pytest.mark.asyncio
-    async def test_uses_collection_name_constant(self):
-        """Verifies VECTOR_DB_COLLECTION_NAME is passed."""
+    async def test_forwards_collection_registry(self):
+        """Verifies the shared CollectionRegistry is passed through."""
         cu = ContainerUtils()
-        from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+        registry = MagicMock()
 
         with patch("app.containers.utils.utils.IndexingPipeline") as MockPipeline:
             mock_instance = MagicMock()
             MockPipeline.return_value = mock_instance
 
             await cu.create_indexing_pipeline(
-                MagicMock(), MagicMock(), MagicMock(), MagicMock()
+                MagicMock(), MagicMock(), MagicMock(), MagicMock(), registry
             )
 
             call_kwargs = MockPipeline.call_args[1]
-            assert call_kwargs["collection_name"] == VECTOR_DB_COLLECTION_NAME
+            assert call_kwargs["collection_registry"] is registry
 
 
 # ---------------------------------------------------------------------------
@@ -199,21 +199,21 @@ class TestCreateFeatureFlagServiceExtended:
 
 class TestCreateRetrievalServiceExtended:
     @pytest.mark.asyncio
-    async def test_uses_collection_name_constant(self):
-        """Verifies VECTOR_DB_COLLECTION_NAME is passed."""
+    async def test_forwards_collection_registry(self):
+        """Verifies the collection_registry dependency is passed through."""
         cu = ContainerUtils()
-        from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 
         with patch("app.containers.utils.utils.RetrievalService") as MockRS:
             mock_instance = MagicMock()
             MockRS.return_value = mock_instance
+            registry = MagicMock()
 
             await cu.create_retrieval_service(
-                MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()
+                MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(), registry
             )
 
             call_kwargs = MockRS.call_args[1]
-            assert call_kwargs["collection_name"] == VECTOR_DB_COLLECTION_NAME
+            assert call_kwargs["collection_registry"] is registry
 
 
 # ---------------------------------------------------------------------------
@@ -267,13 +267,14 @@ class TestCreateEventProcessorExtended:
         mock_proc = MagicMock()
         mock_gp = MagicMock()
         mock_config = MagicMock()
+        mock_registry = MagicMock()
 
         with patch("app.containers.utils.utils.EventProcessor") as MockEP:
             mock_instance = MagicMock()
             MockEP.return_value = mock_instance
 
             result = await cu.create_event_processor(
-                mock_logger, mock_proc, mock_gp, mock_config
+                mock_logger, mock_proc, mock_gp, mock_config, mock_registry
             )
             assert result is mock_instance
 
@@ -282,3 +283,7 @@ class TestCreateEventProcessorExtended:
             assert call_kwargs["processor"] is mock_proc
             assert call_kwargs["graph_provider"] is mock_gp
             assert call_kwargs["config_service"] is mock_config
+            # The strategy must be the registry's own instance, not a second
+            # one resolved here — dedup and the write path have to agree on
+            # which collection a record belongs to.
+            assert call_kwargs["collection_strategy"] is mock_registry.strategy

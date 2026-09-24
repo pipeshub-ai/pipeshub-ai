@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
@@ -87,6 +88,9 @@ def mock_data_entities_processor():
             title="Title",
         )
     )
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock()
     return proc
 
 
@@ -539,7 +543,7 @@ class TestProcessAzureBlob:
         existing.external_record_id = "container/file.txt"
         existing.version = 1
         existing.source_created_at = 1700000000000
-        azure_connector.data_store_provider = _make_mock_data_store_provider(existing)
+        azure_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
 
@@ -563,9 +567,9 @@ class TestProcessAzureBlob:
         existing.external_revision_id = "same_md5"
         existing.version = 0
         existing.source_created_at = 1700000000000
-        azure_connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=None, existing_revision_record=existing
-        )
+        azure_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        azure_connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+        azure_connector.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock()
         azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
 
@@ -579,23 +583,6 @@ class TestProcessAzureBlob:
         record, perms = await azure_connector._process_azure_blob(blob, "container")
         assert record is not None
         assert record.id == "moved-id"
-
-
-# ===========================================================================
-# _remove_old_parent_relationship
-# ===========================================================================
-class TestRemoveOldParentRelationship:
-    @pytest.mark.asyncio
-    async def test_successful(self, azure_connector):
-        tx = AsyncMock()
-        tx.delete_parent_child_edge_to_record = AsyncMock(return_value=1)
-        await azure_connector._remove_old_parent_relationship("rec-1", tx)
-
-    @pytest.mark.asyncio
-    async def test_exception(self, azure_connector):
-        tx = AsyncMock()
-        tx.delete_parent_child_edge_to_record = AsyncMock(side_effect=Exception("err"))
-        await azure_connector._remove_old_parent_relationship("rec-1", tx)
 
 
 # ===========================================================================
@@ -696,22 +683,26 @@ class TestGetSignedUrl:
     @pytest.mark.asyncio
     async def test_not_initialized(self, azure_connector):
         azure_connector.data_source = None
-        result = await azure_connector.get_signed_url(MagicMock())
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(MagicMock())
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_container(self, azure_connector):
+        """422, not the 404 "no longer exists" that a None used to become."""
         azure_connector.data_source = MagicMock()
         record = MagicMock(id="r1", external_record_group_id=None)
-        result = await azure_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_no_external_record_id(self, azure_connector):
         azure_connector.data_source = MagicMock()
         record = MagicMock(id="r1", external_record_group_id="container", external_record_id=None)
-        result = await azure_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_success(self, azure_connector):
@@ -736,8 +727,11 @@ class TestGetSignedUrl:
             id="r1", external_record_group_id="container",
             external_record_id="container/blob.txt", record_name="blob.txt"
         )
-        result = await azure_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(record)
+        # SAS generation is local signing, so a failure means the credential cannot
+        # sign, not that the blob is gone.
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_exception(self, azure_connector):
@@ -747,8 +741,9 @@ class TestGetSignedUrl:
             id="r1", external_record_group_id="container",
             external_record_id="container/blob.txt", record_name="blob.txt"
         )
-        result = await azure_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_key_without_container_prefix(self, azure_connector):

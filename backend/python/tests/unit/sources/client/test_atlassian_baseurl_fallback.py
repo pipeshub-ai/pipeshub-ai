@@ -84,7 +84,7 @@ class TestJiraBuildFromServicesOAuthFallback:
             JiraClient, "_get_connector_config",
             new_callable=AsyncMock, return_value=instance_cfg,
         ), patch(
-            "app.sources.client.jira.jira.fetch_oauth_config_by_id",
+            "app.edition_config.fetch_oauth_config_by_id",
             new=AsyncMock(return_value=shared),
         ) as mock_fetch, patch.object(
             JiraClient, "get_jira_base_url",
@@ -141,7 +141,7 @@ class TestJiraBuildFromServicesOAuthFallback:
             JiraClient, "_get_connector_config",
             new_callable=AsyncMock, return_value=instance_cfg,
         ), patch(
-            "app.sources.client.jira.jira.fetch_oauth_config_by_id",
+            "app.edition_config.fetch_oauth_config_by_id",
             new=AsyncMock(return_value=shared),
         ), patch.object(
             JiraClient, "get_accessible_resources",
@@ -159,7 +159,7 @@ class TestJiraBuildFromServicesOAuthFallback:
             JiraClient, "_get_connector_config",
             new_callable=AsyncMock, return_value=instance_cfg,
         ), patch(
-            "app.sources.client.jira.jira.fetch_oauth_config_by_id",
+            "app.edition_config.fetch_oauth_config_by_id",
             new=AsyncMock(return_value=None),
         ), patch.object(
             JiraClient, "get_accessible_resources",
@@ -316,7 +316,7 @@ class TestConfluenceBuildFromServicesOAuthFallback:
             ConfluenceClient, "_get_connector_config",
             new_callable=AsyncMock, return_value=instance_cfg,
         ), patch(
-            "app.sources.client.confluence.confluence.fetch_oauth_config_by_id",
+            "app.edition_config.fetch_oauth_config_by_id",
             new=AsyncMock(return_value=shared),
         ) as mock_fetch, patch.object(
             ConfluenceClient, "get_confluence_base_url",
@@ -354,7 +354,7 @@ class TestConfluenceBuildFromServicesOAuthFallback:
             ConfluenceClient, "_get_connector_config",
             new_callable=AsyncMock, return_value=instance_cfg,
         ), patch(
-            "app.sources.client.confluence.confluence.fetch_oauth_config_by_id",
+            "app.edition_config.fetch_oauth_config_by_id",
             new=AsyncMock(return_value=None),
         ), patch.object(
             ConfluenceClient, "get_accessible_resources",

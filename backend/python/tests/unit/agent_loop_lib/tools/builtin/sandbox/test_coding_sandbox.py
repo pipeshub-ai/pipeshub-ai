@@ -170,6 +170,47 @@ async def test_execute_sets_allow_network_false_by_default() -> None:
     assert backend.last_request.allow_network is False
 
 
+class TestBlankSandboxId:
+    """Regression: models fill an optional string parameter with `""`
+    rather than omitting it. A blank `sandbox_id` has to mean "create a
+    fresh sandbox", not "look up the sandbox named blank" — the latter
+    made a first-ever `run_code` fail with `UnknownSandboxError`."""
+
+    async def test_run_code_treats_blank_sandbox_id_as_fresh(self) -> None:
+        manager = SandboxManager()
+        manager.register_backend_factory(SandboxType.CODING, _UploadCapturingBackend)
+        tool = CodingSandboxTool(manager)
+
+        result = await tool.execute(code="print(1)", language="python", sandbox_id="")
+
+        assert result.success, result.error
+        assert result.data["sandbox_id"]
+
+    async def test_run_code_still_uploads_staged_inputs_for_blank_sandbox_id(self) -> None:
+        """A blank id must take the fresh-creation path, staged upload
+        included — normalizing it only at the manager would resolve the
+        sandbox but leave `is_fresh_sandbox` False."""
+        manager = SandboxManager()
+        manager.register_backend_factory(SandboxType.CODING, _UploadCapturingBackend)
+        tool = InstallPackagesTool(manager)
+
+        with stage_input_files({PARENT_RESULTS_INPUT_PATH: b'{"a": 1}'}):
+            result = await tool.execute(packages=["reportlab"], language="python", sandbox_id="   ")
+
+        assert result.success, result.error
+        assert result.data["input_files"] == [PARENT_RESULTS_INPUT_PATH]
+
+    async def test_unknown_sandbox_id_still_fails(self) -> None:
+        manager = SandboxManager()
+        manager.register_backend_factory(SandboxType.CODING, _UploadCapturingBackend)
+        tool = CodingSandboxTool(manager)
+
+        result = await tool.execute(code="print(1)", language="python", sandbox_id="nope")
+
+        assert not result.success
+        assert "nope" in result.error
+
+
 class TestDetectLanguageMismatch:
     def test_python_code_declared_typescript_is_corrected(self) -> None:
         code = "import reportlab\n\ndef build():\n    print('hi')\n"

@@ -7,6 +7,7 @@ import {
   createSmtpConfig,
   createStorageConfig,
   getAIModelsConfig,
+  getInternalAIModelsConfig,
   getAzureAdAuthConfig,
   getGoogleAuthConfig,
   getGoogleWorkspaceOauthConfig,
@@ -14,6 +15,7 @@ import {
   getMicrosoftAuthConfig,
   getOAuthConfig,
   getSmtpConfig,
+  getSmtpConfigStatus,
   getSsoAuthConfig,
   getStorageConfig,
   setAzureAdAuthConfig,
@@ -51,6 +53,7 @@ import {
   getPlatformSettings,
   setPlatformSettings,
   getAvailablePlatformFeatureFlags,
+  getEffectivePlatformFeatureFlags,
   getCustomSystemPrompt,
   setCustomSystemPrompt,
   getWebSearchProviders,
@@ -349,6 +352,25 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getSmtpConfig(keyValueStoreService),
   );
 
+  router.get(
+    '/internal/smtpConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    getSmtpConfig(keyValueStoreService),
+  );
+
+  /**
+   * GET /smtpConfig/status
+   * Boolean-only SMTP status, no secrets or host/port details — safe for any
+   * authenticated org member. Non-admins can invite users but cannot read
+   * `/smtpConfig` (admin-gated), so the Users page uses this to decide
+   * whether to disable Invite instead of hitting a 403 on the full config.
+   */
+  router.get(
+    '/smtpConfig/status',
+    authMiddleware.authenticate,
+    getSmtpConfigStatus(keyValueStoreService),
+  );
+
   // auth config routes
   router.get(
     '/authConfig/azureAd',
@@ -486,6 +508,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
     getAvailablePlatformFeatureFlags(),
+  );
+
+  // Effective feature flag values — every authenticated user (not just admins)
+  // needs these to decide whether to render flag-gated UI (e.g. MCP).
+  router.get(
+    '/platform/feature-flags/effective',
+    authMiddleware.authenticate,
+    getEffectivePlatformFeatureFlags(keyValueStoreService),
   );
 
   // Slack Bot configuration
@@ -735,8 +765,9 @@ export function createConfigurationManagerRouter(container: Container): Router {
 
   /**
    * GET /aiModelsConfig
-   * Retrieves the current ai models configuration from key-value store
-   * Requires authentication
+   * Retrieves the current ai models configuration from key-value store. Each
+   * entry's configuration includes only model, modelFriendlyName, and
+   * dimensions when stored. Requires authentication.
    * @returns {Object} The stored configuration object or null if not found
    */
   router.get(
@@ -750,7 +781,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/aiModelsConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getAIModelsConfig(keyValueStoreService, false),
+    getInternalAIModelsConfig(keyValueStoreService),
   );
 
   /**

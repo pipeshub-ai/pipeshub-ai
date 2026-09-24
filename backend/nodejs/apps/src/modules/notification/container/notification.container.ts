@@ -45,6 +45,18 @@ export class NotificationContainer {
     return container;
   }
 
+  /** Cross-container access for session force-logout emits (e.g. role change). */
+  static getNotificationService(): NotificationService | null {
+    if (!this.container) {
+      return null;
+    }
+    try {
+      return this.container.get(NotificationService);
+    } catch {
+      return null;
+    }
+  }
+
   static async dispose(): Promise<void> {
     if (!this.container) {
       return;

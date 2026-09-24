@@ -9,6 +9,7 @@ import { useOnboardingStore } from '../store';
 import { getStorageConfig, saveStorageConfig } from '../api';
 import { extractApiErrorMessage } from '@/lib/api/api-error';
 import { extractStorageSaveErrorMessage } from '../utils/storage-save-error';
+import { resolveS3Credentials } from '../utils/s3-credentials';
 import { toast } from '@/lib/store/toast-store';
 import type { StorageFormData, StorageProviderType, OnboardingStepId } from '../types';
 
@@ -124,12 +125,18 @@ export function StepStorage({
   const isAzure = form.providerType === 'azureBlob';
   const isLocal = form.providerType === 'local';
 
+  // S3 keys are an atomic pair: both filled uses those IAM user credentials,
+  // both blank uses the instance IAM role, half a pair is rejected.
+  const s3Credentials = resolveS3Credentials({
+    accessKeyId: form.s3AccessKeyId,
+    secretAccessKey: form.s3SecretAccessKey,
+  });
+
   // Client-side validation: local is always valid; S3/Azure require their key fields
   const isFormValid =
     isLocal ||
     (isS3 &&
-      (form.s3AccessKeyId?.trim() ?? '') !== '' &&
-      (form.s3SecretAccessKey?.trim() ?? '') !== '' &&
+      s3Credentials.kind !== 'partial' &&
       (form.s3Region?.trim() ?? '') !== '' &&
       (form.s3BucketName?.trim() ?? '') !== '') ||
     (isAzure &&
@@ -260,6 +267,17 @@ export function StepStorage({
                 </TextField.Root>
               </Flex>
             </Flex>
+            <Text
+              size="1"
+              style={{
+                color: s3Credentials.kind === 'partial' ? 'var(--red-11)' : 'var(--gray-9)',
+                marginTop: '-16px',
+              }}
+            >
+              {s3Credentials.kind === 'partial'
+                ? t('onboarding.stepStorage.credentialsPartialError')
+                : t('onboarding.stepStorage.credentialsHint')}
+            </Text>
             {/* Bucket full width */}
             <Flex direction="column" gap="1">
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>{t('onboarding.stepStorage.bucketLabel')}</Text>

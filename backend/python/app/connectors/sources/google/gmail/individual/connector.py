@@ -7,7 +7,7 @@ import tempfile
 import uuid
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -17,6 +17,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -27,6 +28,11 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    to_stream_error,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -79,11 +85,22 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.google import GoogleClient, configure_google_http_timeout
+from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.connectors.core.thread_pool import ThreadPoolLease
+
+# Maximum concurrent borrows from the shared connector thread pool.
+_GMAIL_INDIVIDUAL_MAX_CONCURRENCY = 4
+
+# Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
+# 100 MB, which buffers a whole slice in memory before any of it reaches the
+# client and keeps one executor thread busy for that entire transfer.
+_GMAIL_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 
 
 @ConnectorBuilder("Gmail")\
@@ -91,6 +108,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
     .with_description("Sync emails and messages from Gmail")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Gmail",
@@ -210,10 +228,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
         self.gmail_client: Optional[GoogleClient] = None
         self.gmail_data_source: Optional[GoogleGmailDataSource] = None
         self.config: Optional[Dict] = None
+        self._datasource_refresh_lock = asyncio.Lock()
+
+        # Acquired in init(), once the factory has injected the shared pool.
+        self._gmail_executor: ThreadPoolLease | None = None
 
     async def init(self) -> bool:
         """Initialize the Google Gmail connector with credentials and services."""
         try:
+            self._gmail_executor = self._thread_lease(_GMAIL_INDIVIDUAL_MAX_CONCURRENCY)
+
             # Load connector config
             config = await self.config_service.get_config(
                 f"/services/connectors/{self.connector_id}/config"
@@ -232,12 +256,10 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 self.logger.error("Gmail oauthConfigId not found in auth configuration.")
                 return False
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=Connectors.GOOGLE_MAIL.value,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             if not oauth_config:
@@ -281,7 +303,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                 # Create Google Gmail Data Source from the client
                 self.gmail_data_source = GoogleGmailDataSource(
-                    self.gmail_client.get_client()
+                    self.gmail_client.get_client(),
+                    executor=self._gmail_executor,
                 )
 
                 self.logger.info(
@@ -315,24 +338,22 @@ class GoogleGmailIndividualConnector(BaseConnector):
             raise GoogleMailError("Gmail client or Gmail data source not initialized. Call init() first.")
 
 
-        await refresh_google_datasource_credentials(
-            google_client=self.gmail_client,
-            data_source=self.gmail_data_source,
-            config_service=self.config_service,
-            connector_id=self.connector_id,
-            logger=self.logger,
-            service_name="Gmail"
-        )
+        async with self._datasource_refresh_lock:
+            await refresh_google_datasource_credentials(
+                google_client=self.gmail_client,
+                data_source=self.gmail_data_source,
+                config_service=self.config_service,
+                connector_id=self.connector_id,
+                logger=self.logger,
+                service_name="Gmail"
+            )
 
     async def _get_existing_record(self, external_record_id: str) -> Optional[Record]:
         """Get existing record from data store."""
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
-                return existing_record
+            return await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_record_id
+            )
         except Exception as e:
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
@@ -510,7 +531,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
-                weburl=f"https://mail.google.com/mail?authuser={user_email}#all/{message_id}",
+                weburl=f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
                 preview_renderable=False,
                 subject=subject,
                 from_email=from_email,
@@ -803,11 +824,19 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                     drive_service = user_drive_client.get_client()
 
-                    # Fetch file metadata
-                    file_metadata = drive_service.files().get(
+                    # Fetch file metadata. get_media()/execute() is a synchronous HTTP
+                    # call, so run it off the event loop to avoid blocking other work.
+                    metadata_request = drive_service.files().get(
                         fileId=drive_file_id,
                         fields="id,name,mimeType,size"
-                    ).execute()
+                    )
+                    drive_data_source = GoogleDriveDataSource(
+                        drive_service,
+                        executor=self._gmail_executor,
+                    )
+                    file_metadata = await drive_data_source.execute(
+                        metadata_request.execute
+                    )
 
                     if file_metadata:
                         filename = file_metadata.get("name", "unnamed_attachment")
@@ -858,7 +887,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_created_at=get_epoch_timestamp_in_ms(),
                 source_updated_at=get_epoch_timestamp_in_ms(),
                 mime_type=mime_type,
-                weburl=f"https://mail.google.com/mail?authuser={user_email}#all/{message_id}",
+                weburl=f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
                 size_in_bytes=size,
                 extension=extension,
                 is_file=True,
@@ -1176,8 +1205,15 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 credentials = service_account.Credentials.from_service_account_info(
                     credentials_json
                 )
-                drive_service = build("drive", "v3", credentials=credentials)
+                drive_service = configure_google_http_timeout(
+                    build("drive", "v3", credentials=credentials)
+                )
                 self.logger.info("Using service account credentials for Drive access")
+
+            drive_data_source = GoogleDriveDataSource(
+                drive_service,
+                executor=self._gmail_executor,
+            )
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -1188,11 +1224,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         request = drive_service.files().get_media(
                             fileId=drive_file_id
                         )
-                        downloader = MediaIoBaseDownload(f, request)
+                        downloader = MediaIoBaseDownload(f, request, chunksize=_GMAIL_DOWNLOAD_CHUNK_SIZE)
 
                         done = False
                         while not done:
-                            status, done = downloader.next_chunk()
+                            # next_chunk() performs the HTTP range request synchronously, so
+                            # calling it here would freeze the event loop for the whole
+                            # round-trip and stall every other request in the process.
+                            status, done = await drive_data_source.execute(
+                                downloader.next_chunk
+                            )
                             self.logger.info(
                                 f"Download {int(status.progress() * 100)}%."
                             )
@@ -1217,14 +1258,19 @@ class GoogleGmailIndividualConnector(BaseConnector):
                     request = drive_service.files().get_media(
                         fileId=drive_file_id
                     )
-                    downloader = MediaIoBaseDownload(buffer, request)
+                    downloader = MediaIoBaseDownload(buffer, request, chunksize=_GMAIL_DOWNLOAD_CHUNK_SIZE)
                     done = False
 
                     self.logger.info(f"Starting Drive file stream for {drive_file_id}")
 
                     while not done:
                         try:
-                            status, done = downloader.next_chunk()
+                            # next_chunk() performs the HTTP range request synchronously, so
+                            # calling it here would freeze the event loop for the whole
+                            # round-trip and stall every other request in the process.
+                            status, done = await drive_data_source.execute(
+                                downloader.next_chunk
+                            )
                             progress = int(status.progress() * 100)
                             self.logger.info(
                                 f"Download {progress}%."
@@ -1250,27 +1296,26 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                         except HttpError as http_error:
                             self.logger.error(f"HTTP error during Drive download: {str(http_error)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail=f"Error during Drive download: {str(http_error)}",
-                            )
+                            raise map_source_status(
+                                http_error.resp.status, connector=self.display_name
+                            ) from http_error
                         except Exception as chunk_error:
                             self.logger.error(f"Error downloading chunk: {str(chunk_error)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail="Error during Drive download",
-                            )
+                            raise to_stream_error(
+                                chunk_error, connector=self.display_name
+                            ) from chunk_error
 
                     self.logger.info(
                         f"Drive file stream completed: {chunk_count} chunks, {total_bytes} total bytes"
                     )
 
+                except HTTPException:
+                    raise
                 except Exception as stream_error:
                     self.logger.error(f"Error in file stream: {str(stream_error)}", exc_info=True)
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Error streaming file from Drive"
-                    )
+                    raise to_stream_error(
+                        stream_error, connector=self.display_name
+                    ) from stream_error
                 finally:
                     self.logger.debug(f"Closing buffer for Drive file {drive_file_id}")
                     buffer.close()
@@ -1286,10 +1331,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             raise
         except Exception as drive_error:
             self.logger.error(f"Failed to stream Drive file {drive_file_id}: {str(drive_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream file from Drive: {str(drive_error)}"
-            )
+            raise to_stream_error(drive_error, connector=self.display_name) from drive_error
 
     async def _stream_mail_record(
         self,
@@ -1298,13 +1340,14 @@ class GoogleGmailIndividualConnector(BaseConnector):
         record: Record
     ) -> StreamingResponse:
         try:
-            # 1. Fetch message
-            message = (
+            # 1. Fetch message. execute() is a synchronous HTTP call, so run it off
+            # the event loop to avoid blocking other work.
+            request = (
                 gmail_service.users()
                 .messages()
                 .get(userId="me", id=message_id, format="full")
-                .execute()
             )
+            message = await self.gmail_data_source.execute(request.execute)
 
             # 2. Extract payload (HTML)
             mail_content_base64 = self._extract_body_from_payload(message.get("payload", {}))
@@ -1336,24 +1379,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 fallback_filename=f"record_{record.id}"
             )
 
+        except HTTPException:
+            raise
         except HttpError as http_error:
-            if hasattr(http_error, 'resp') and http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                self.logger.error(f"Message not found with ID {message_id}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail="Message not found"
-                )
-            self.logger.error(f"Failed to fetch mail content: {str(http_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Failed to fetch mail content"
-            )
+            self.logger.error(f"Failed to fetch mail content for {message_id}: {str(http_error)}")
+            raise map_source_status(
+                http_error.resp.status, connector=self.display_name
+            ) from http_error
         except Exception as mail_error:
             self.logger.error(f"Failed to fetch mail content: {str(mail_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Failed to fetch mail content"
-            )
+            raise to_stream_error(mail_error, connector=self.display_name) from mail_error
 
     async def _stream_attachment_record(
         self,
@@ -1390,14 +1425,12 @@ class GoogleGmailIndividualConnector(BaseConnector):
         # Get parent message record using parent_external_record_id
         message_id = None
         if record.parent_external_record_id:
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_record_by_external_id(
-                    connector_id=record.connector_id,
-                    external_id=record.parent_external_record_id
-                )
-                if parent_record:
-                    message_id = parent_record.external_record_id
-                    self.logger.info(f"Found parent message ID: {message_id} from parent_external_record_id")
+            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                record.connector_id, record.parent_external_record_id
+            )
+            if parent_record:
+                message_id = parent_record.external_record_id
+                self.logger.info(f"Found parent message ID: {message_id} from parent_external_record_id")
 
         if not message_id:
             self.logger.error(f"Parent message ID not found for attachment record {record.id}")
@@ -1420,20 +1453,17 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                 # Fetch the message to get the actual attachment ID
                 try:
-                    message = (
+                    request = (
                         gmail_service.users()
                         .messages()
                         .get(userId="me", id=message_id, format="full")
-                        .execute()
                     )
+                    message = await self.gmail_data_source.execute(request.execute)
                 except HttpError as access_error:
-                    if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                        self.logger.error(f"Message not found with ID {message_id}")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.NOT_FOUND.value,
-                            detail="Message not found"
-                        )
-                    raise access_error
+                    self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
+                    raise map_source_status(
+                        access_error.resp.status, connector=self.display_name
+                    ) from access_error
 
                 if not message or "payload" not in message:
                     raise Exception(f"Message or payload not found for message ID {message_id}")
@@ -1450,19 +1480,24 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 else:
                     raise Exception("Part ID not found in message")
 
+            except HTTPException:
+                # Gmail already gave a verdict on this message. Falling through to
+                # Drive would re-look-up a `messageId~partId` Drive cannot resolve
+                # and report a deleted message as a server error.
+                raise
             except Exception as e:
                 self.logger.error(f"Error extracting attachment ID: {str(e)}")
                 return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo)
 
         # Try to get the attachment from Gmail
         try:
-            attachment = (
+            request = (
                 gmail_service.users()
                 .messages()
                 .attachments()
                 .get(userId="me", messageId=message_id, id=actual_attachment_id)
-                .execute()
             )
+            attachment = await self.gmail_data_source.execute(request.execute)
 
             # Decode the attachment data
             file_data = base64.urlsafe_b64decode(attachment["data"])
@@ -1493,27 +1528,23 @@ class GoogleGmailIndividualConnector(BaseConnector):
             )
 
         except HttpError as gmail_error:
-            self.logger.info(
-                f"Failed to get attachment from Gmail: {str(gmail_error)}, trying Drive..."
+            # Only `messageId~partId` ids reach here — a Drive id returned above.
+            # Drive cannot resolve one, and its non-PDF path hands back a lazy
+            # StreamingResponse that "succeeds" here and fails only once the
+            # router pulls a chunk, turning Gmail's 401/429 into a Drive 404.
+            self.logger.error(
+                f"Failed to get Gmail attachment {file_id}: {str(gmail_error)}"
             )
-
-            # Try Drive as fallback
-            try:
-                return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo)
-            except Exception as drive_error:
-                self.logger.error(
-                    f"Failed to get file from both Gmail and Drive. Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}"
-                )
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="Failed to download file from both Gmail and Drive",
-                )
+            raise map_source_status(
+                gmail_error.resp.status, connector=self.display_name
+            ) from gmail_error
+        except HTTPException:
+            raise
         except Exception as attachment_error:
             self.logger.error(f"Error streaming attachment: {str(attachment_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming attachment: {str(attachment_error)}"
-            )
+            raise to_stream_error(
+                attachment_error, connector=self.display_name
+            ) from attachment_error
 
     async def stream_record(self, record: Record, convertTo: Optional[str] = None) -> StreamingResponse:
         """
@@ -1541,10 +1572,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Check if gmail_data_source is initialized
             if not self.gmail_data_source:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="Gmail client not initialized"
-                )
+                raise connector_not_ready(self.display_name)
 
             # Get raw Gmail service client
             gmail_service = self.gmail_data_source.client
@@ -1565,10 +1593,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Error streaming record: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming record: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _create_app_user(self, user_profile: Dict) -> None:
         """Create app user from Gmail profile."""
@@ -1751,12 +1776,11 @@ class GoogleGmailIndividualConnector(BaseConnector):
                                     # Create SIBLING relation if there was a previous message
                                     if previous_message_id:
                                         try:
-                                            async with self.data_store_provider.transaction() as tx_store:
-                                                await tx_store.create_record_relation(
-                                                    previous_message_id,
-                                                    mail_record.id,
-                                                    RecordRelations.SIBLING.value
-                                                )
+                                            await self.data_entities_processor.create_record_relation(
+                                                previous_message_id,
+                                                mail_record.id,
+                                                RecordRelations.SIBLING.value
+                                            )
                                         except Exception as relation_error:
                                             self.logger.error(f"Error creating sibling relation: {relation_error}")
 
@@ -2009,21 +2033,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
         """
         try:
             # Find and delete associated attachment records first
-            async with self.data_store_provider.transaction() as tx_store:
-                # Get all attachment records with this message as parent
-                attachment_records = await tx_store.get_records_by_parent(
-                    connector_id=self.connector_id,
-                    parent_external_record_id=message_id,
-                    record_type=RecordTypes.FILE.value
-                )
+            attachment_records = await self.data_entities_processor.get_records_by_parent(
+                self.connector_id, message_id, RecordTypes.FILE.value
+            )
 
-                # Delete each attachment record
-                for attachment_record in attachment_records:
-                    try:
-                        await self.data_entities_processor.on_record_deleted(attachment_record.id)
-                        self.logger.debug(f"Deleted attachment record {attachment_record.id} for message {message_id}")
-                    except Exception as attach_error:
-                        self.logger.error(f"Error deleting attachment {attachment_record.id}: {attach_error}")
+            for attachment_record in attachment_records:
+                try:
+                    await self.data_entities_processor.on_record_deleted(attachment_record.id)
+                    self.logger.debug(f"Deleted attachment record {attachment_record.id} for message {message_id}")
+                except Exception as attach_error:
+                    self.logger.error(f"Error deleting attachment {attachment_record.id}: {attach_error}")
 
             # Delete the main message record
             await self.data_entities_processor.on_record_deleted(record_id)
@@ -2141,12 +2160,11 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         # Create SIBLING relation if there was a previous message
                         if previous_message_record_id:
                             try:
-                                async with self.data_store_provider.transaction() as tx_store:
-                                    await tx_store.create_record_relation(
-                                        previous_message_record_id,
-                                        mail_record.id,
-                                        RecordRelations.SIBLING.value
-                                    )
+                                await self.data_entities_processor.create_record_relation(
+                                    previous_message_record_id,
+                                    mail_record.id,
+                                    RecordRelations.SIBLING.value
+                                )
                             except Exception as relation_error:
                                 self.logger.error(f"Error creating sibling relation: {relation_error}")
 
@@ -2400,6 +2418,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
         """Cleanup resources when shutting down the connector."""
         try:
             self.logger.info("Cleaning up Google Gmail connector resources")
+
+            await self._release_thread_lease()
 
             # Clear client and data source references
             if hasattr(self, 'gmail_data_source') and self.gmail_data_source:
@@ -2800,17 +2820,12 @@ class GoogleGmailIndividualConnector(BaseConnector):
         config_service: ConfigurationService,
         connector_id: str,
         scope: str,
-        created_by: str
+        created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         """Create a new instance of the Google Gmail connector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
-        return GoogleGmailIndividualConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

@@ -36,6 +36,7 @@ NODE_COLLECTION_SCHEMAS: dict[str, dict] = {
     CollectionNames.AGENT_KNOWLEDGE.value: documents.knowledge_schema,
     CollectionNames.AGENT_TOOLSETS.value: documents.toolset_schema,
     CollectionNames.AGENT_TOOLS.value: documents.tool_schema,
+    CollectionNames.AGENT_MCP_SERVERS.value: documents.mcp_server_schema,
     CollectionNames.TICKETS.value: documents.ticket_record_schema,
     CollectionNames.MEETINGS.value: documents.meeting_record_schema,
     CollectionNames.PROJECTS.value: documents.project_record_schema,
@@ -103,6 +104,10 @@ class TestDocumentSchemaInventory:
             "knowledge_schema",
             "toolset_schema",
             "tool_schema",
+            "mcp_server_schema",
+            "agent_skills_schema",
+            "agent_skill_versions_schema",
+            "agent_skill_candidates_schema",
             "code_file_record_schema",
             "agent_skills_schema",
             "agent_skill_versions_schema",
@@ -201,6 +206,115 @@ class TestRequiredFields:
     def test_user_schema_disallows_extra_properties(self):
         rule = documents.user_schema["rule"]
         assert rule.get("additionalProperties") is False
+
+
+def _valid_app_doc(**extra):
+    doc = {
+        "name": "Drive",
+        "type": "GOOGLE_DRIVE",
+        "appGroup": "Google Workspace",
+        "scope": "personal",
+        "isActive": True,
+        "createdAtTimestamp": 1,
+    }
+    doc.update(extra)
+    return doc
+
+
+def _valid_record_group_doc(**extra):
+    doc = {
+        "groupName": "Engineering",
+        "groupType": "SLACK_CHANNEL",
+        "connectorName": "SLACK",
+        "createdAtTimestamp": 1,
+    }
+    doc.update(extra)
+    return doc
+
+
+class TestRecordGroupPermissionModel:
+    """The field container-filtered search reads to decide whether it may trust
+    a group's grant instead of verifying every record under it."""
+
+    def test_accepts_group_level_and_record_level(self):
+        validator = Draft4Validator(adapt_schema(documents.record_group_schema))
+        validator.validate(_valid_record_group_doc(permissionModel="RECORD_GROUP_LEVEL"))
+        validator.validate(_valid_record_group_doc(permissionModel="RECORD_LEVEL"))
+
+    def test_unset_is_valid_and_means_verify(self):
+        """Every group is unset until a connector declares otherwise, so the
+        schema must accept both absent and null."""
+        validator = Draft4Validator(adapt_schema(documents.record_group_schema))
+        validator.validate(_valid_record_group_doc())
+        validator.validate(_valid_record_group_doc(permissionModel=None))
+
+    def test_rejects_app_level(self):
+        """APP_LEVEL describes a connector. Accepting it here would let a group
+        claim something the retrieval path has no way to honour."""
+        validator = Draft4Validator(adapt_schema(documents.record_group_schema))
+        with pytest.raises(Exception):
+            validator.validate(_valid_record_group_doc(permissionModel="APP_LEVEL"))
+
+
+class TestAppSchemaPermissionModel:
+    def test_rejects_group_level(self):
+        """Mirror of the connector-builder guard: RECORD_GROUP_LEVEL on an app doc
+        reads as "not APP_LEVEL" downstream and silently means RECORD_LEVEL."""
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        with pytest.raises(Exception):
+            validator.validate(_valid_app_doc(permissionModel="RECORD_GROUP_LEVEL"))
+
+    def test_still_accepts_the_two_connector_values(self):
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        validator.validate(_valid_app_doc(permissionModel="APP_LEVEL"))
+        validator.validate(_valid_app_doc(permissionModel="RECORD_LEVEL"))
+
+
+class TestAppSchemaVectorMembership:
+    def test_accepts_backfill_fields(self):
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        validator.validate(
+            _valid_app_doc(
+                vectorMembershipBackfilled=False,
+                vectorMembershipBackfillAfterKey="rec-1",
+            )
+        )
+        validator.validate(
+            _valid_app_doc(
+                vectorMembershipBackfilled=True,
+                vectorMembershipBackfillAfterKey=None,
+            )
+        )
+
+    def test_accepts_the_payload_the_backfill_writer_emits(self):
+        """The schema has to accept exactly what the backfill scanner PATCHes."""
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        validator.validate(
+            _valid_app_doc(
+                vectorMembershipBackfilled=True,
+                vectorMembershipBackfillAfterKey=None,
+                vectorMembershipBackfillFailures=0,
+                vectorMembershipBackfillAttempts=0,
+                vectorMembershipBackfillVrids=12,
+                vectorMembershipBackfillExhausted=False,
+            )
+        )
+        validator.validate(
+            _valid_app_doc(
+                vectorMembershipBackfillAfterKey="rec-9",
+                vectorMembershipBackfillVrids=50,
+            )
+        )
+
+    def test_backfill_flag_defaults_false(self):
+        flag = documents.app_schema["rule"]["properties"]["vectorMembershipBackfilled"]
+        assert flag["type"] == "boolean"
+        assert flag["default"] is False
+
+    def test_still_rejects_unknown_properties(self):
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        with pytest.raises(Exception):
+            validator.validate(_valid_app_doc(notARealAppField=True))
 
 
 # ---------------------------------------------------------------------------

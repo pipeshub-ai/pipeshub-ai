@@ -481,35 +481,61 @@ describe('JitProvisioningService - additional coverage', () => {
     })
   })
 
-  describe('provisionUser - event publishing error handling', () => {
-    it('should handle event service start failure gracefully', async () => {
-      const failingEventService = {
-        start: sinon.stub().rejects(new Error('Kafka down')),
-        publishEvent: sinon.stub().resolves(),
-        stop: sinon.stub().resolves(),
-      }
-      const service = new JitProvisioningService(mockLogger, failingEventService as any)
-
+  describe('provisionUser - full flow', () => {
+    it('should create user, add to group, and publish event on success', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
-
-      const mockUser = {
-        _id: 'new-user-id',
-        email: 'test@example.com',
-        fullName: 'Test User',
-        orgId: 'org-1',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({
-          _id: 'new-user-id',
-          email: 'test@example.com',
-        }),
-      }
-
-      sinon.stub(Users.prototype, 'save').resolves(mockUser as any)
+      sinon.stub(Users.prototype, 'save').resolves()
       sinon.stub(UserGroups, 'updateOne').resolves({} as any)
 
-      // Since we can't easily mock the Users constructor,
-      // verify the method's error handling pattern
-      expect(service.provisionUser).to.be.a('function')
+      const result = await jitService.provisionUser(
+        'new@example.com',
+        { fullName: 'New User', firstName: 'New', lastName: 'User' },
+        'org123',
+        'google',
+      )
+
+      expect(result).to.have.property('email', 'new@example.com')
+      expect(result).to.have.property('fullName', 'New User')
+      expect(mockEventService.start.calledOnce).to.be.true
+      expect(mockEventService.publishEvent.calledOnce).to.be.true
+      expect(mockEventService.stop.calledOnce).to.be.true
+      expect(mockLogger.info.calledWith(sinon.match(/Auto-provisioning user/))).to.be.true
+      expect(mockLogger.info.calledWith(sinon.match(/auto-provisioned successfully/))).to.be.true
+    })
+
+    it('should call eventService.stop even when publishEvent fails', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users.prototype, 'save').resolves()
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any)
+      mockEventService.publishEvent.rejects(new Error('Kafka down'))
+
+      const result = await jitService.provisionUser(
+        'new2@example.com',
+        { fullName: 'Another User' },
+        'org456',
+        'microsoft',
+      )
+
+      expect(result).to.have.property('email', 'new2@example.com')
+      expect(mockEventService.stop.calledOnce).to.be.true
+      expect(mockLogger.error.calledWith(sinon.match(/Failed to publish/))).to.be.true
+    })
+
+    it('should call eventService.stop even when start fails', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users.prototype, 'save').resolves()
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any)
+      mockEventService.start.rejects(new Error('Connection refused'))
+
+      const result = await jitService.provisionUser(
+        'new3@example.com',
+        { fullName: 'Third User' },
+        'org789',
+        'saml',
+      )
+
+      expect(result).to.have.property('email', 'new3@example.com')
+      expect(mockEventService.stop.calledOnce).to.be.true
     })
 
     it('should have correct parameter count', () => {

@@ -17,14 +17,8 @@ import {
 } from '../../utils/connector-sync-actions';
 import { useSyncConflictGuard } from '../../utils/use-sync-conflict-guard';
 import { isElectron } from '@/lib/electron';
-import { isLocalFsConnectorType } from '../../utils/local-fs-helpers';
-import {
-  extractLocalFsRootPath,
-  buildLocalSyncScheduleFromConnectorConfig,
-  buildLocalFsWatcherOptionsFromConnectorConfig,
-  startElectronLocalSync,
-  getElectronLocalSyncStatus,
-} from '../../utils/electron-local-sync';
+import { isLocalFsConnectorType, localFsDesktopToast } from '../../utils/local-fs-helpers';
+import { getElectronLocalSyncStatus } from '../../utils/electron-local-sync';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import type {
   ConnectorInstance,
@@ -92,7 +86,6 @@ export function OverviewTab({
   const { t } = useTranslation();
   const router = useRouter();
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
-  const instanceConfigs = useConnectorsStore((s) => s.instanceConfigs);
   const setLocalSyncStatus = useConnectorsStore((s) => s.setLocalSyncStatus);
   const addToast = useToastStore((s) => s.addToast);
   const bumpCatalogRefresh = useConnectorsStore((s) => s.bumpCatalogRefresh);
@@ -139,22 +132,9 @@ export function OverviewTab({
         title: t('workspace.connectors.overview.refreshStatsSuccess'),
       });
       if (isElectron() && isLocalFsConnectorType(instance.type)) {
-        const rootPath = extractLocalFsRootPath(instanceConfigs[connectorId]);
-        if (rootPath) {
-          await startElectronLocalSync({
-            connectorId,
-            connectorName: instance.name,
-            rootPath,
-            ...buildLocalFsWatcherOptionsFromConnectorConfig(instanceConfigs[connectorId]),
-            ...buildLocalSyncScheduleFromConnectorConfig(
-              instanceConfigs[connectorId],
-              instance.type
-            ),
-          });
-          const status = await getElectronLocalSyncStatus(connectorId);
-          if (status) {
-            setLocalSyncStatus(connectorId, status);
-          }
+        const status = await getElectronLocalSyncStatus(connectorId);
+        if (status) {
+          setLocalSyncStatus(connectorId, status);
         }
       }
     } catch {
@@ -168,11 +148,9 @@ export function OverviewTab({
   }, [
     instance._key,
     instance.type,
-    instance.name,
     isRefreshStatsBusy,
     addToast,
     t,
-    instanceConfigs,
     setLocalSyncStatus,
   ]);
 
@@ -190,10 +168,7 @@ export function OverviewTab({
           force,
         });
         if (outcome.kind === 'requires-desktop') {
-          addToast({
-            variant: 'info',
-            title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
-          });
+          addToast(localFsDesktopToast(outcome));
           return;
         }
         addToast({ variant: 'success', title: 'Sync started' });
@@ -206,7 +181,15 @@ export function OverviewTab({
           throw error;
         }
         console.error('Failed to start sync', { connectorId, error });
-        addToast({ variant: 'error', title: 'Failed to start sync' });
+        const message =
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : 'An unexpected error occurred.';
+        addToast({
+          variant: 'error',
+          title: 'Failed to start sync',
+          description: message,
+        });
       } finally {
         setIsHeaderSyncBusy(false);
       }

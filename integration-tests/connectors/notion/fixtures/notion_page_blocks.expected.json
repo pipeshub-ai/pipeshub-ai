@@ -1,0 +1,356 @@
+{
+  "block_groups": [
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 2,
+            "start": 1
+          }
+        ]
+      },
+      "comments": [],
+      "data": "\ud83d\udca1 Callout with children.",
+      "format": "markdown",
+      "index": 0,
+      "requires_processing": false,
+      "sub_type": "callout",
+      "type": "text_section"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 4,
+            "start": 3
+          }
+        ]
+      },
+      "comments": [],
+      "data": "> Quote with children.",
+      "format": "markdown",
+      "index": 1,
+      "requires_processing": false,
+      "sub_type": "quote",
+      "type": "text_section"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 12,
+            "start": 11
+          }
+        ]
+      },
+      "comments": [],
+      "format": "json",
+      "index": 2,
+      "requires_processing": false,
+      "table_metadata": {
+        "captions": [],
+        "footnotes": [],
+        "has_header": true,
+        "num_of_cells": 4,
+        "num_of_cols": 2,
+        "num_of_rows": 2
+      },
+      "type": "table"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 13,
+            "start": 13
+          }
+        ]
+      },
+      "comments": [],
+      "data": {
+        "current_block_id": "UUID-PLACEHOLDER",
+        "is_reference": false,
+        "original_block_id": null
+      },
+      "format": "json",
+      "index": 3,
+      "requires_processing": false,
+      "sub_type": "synced_block",
+      "type": "text_section"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 14,
+            "start": 14
+          }
+        ]
+      },
+      "comments": [],
+      "data": {
+        "current_block_id": "UUID-PLACEHOLDER",
+        "is_reference": true,
+        "original_block_id": "UUID-PLACEHOLDER"
+      },
+      "format": "json",
+      "index": 4,
+      "requires_processing": false,
+      "sub_type": "synced_block",
+      "type": "text_section"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 16,
+            "start": 15
+          }
+        ]
+      },
+      "comments": [],
+      "data": "PHIT-ChildRefTarget",
+      "format": "txt",
+      "index": 5,
+      "requires_processing": false,
+      "sub_type": "nested_block",
+      "type": "text_section"
+    }
+  ],
+  "blocks": [
+    {
+      "comments": [],
+      "data": "Rich page intro paragraph.",
+      "format": "markdown",
+      "index": 0,
+      "sub_type": "paragraph",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "\ud83d\udca1 Callout with children.",
+      "format": "markdown",
+      "index": 1,
+      "parent_index": 0,
+      "sub_type": "paragraph",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "Callout child paragraph.",
+      "format": "markdown",
+      "index": 2,
+      "parent_index": 0,
+      "sub_type": "paragraph",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "> Quote with children.",
+      "format": "markdown",
+      "index": 3,
+      "parent_index": 1,
+      "sub_type": "quote",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "Quote child paragraph.",
+      "format": "markdown",
+      "index": 4,
+      "parent_index": 1,
+      "sub_type": "paragraph",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "employees.csv",
+      "format": "txt",
+      "index": 5,
+      "source_type": "file",
+      "sub_type": "child_record",
+      "table_row_metadata": {
+        "children_records": [
+          {
+            "child_type": "record"
+          }
+        ],
+        "is_header": false
+      },
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "Pdf",
+      "format": "txt",
+      "index": 6,
+      "source_type": "pdf",
+      "sub_type": "child_record",
+      "table_row_metadata": {
+        "children_records": [
+          {
+            "child_type": "record"
+          }
+        ],
+        "is_header": false
+      },
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": {
+        "uri": "data:PLACEHOLDER;base64,PLACEHOLDER"
+      },
+      "format": "base64",
+      "index": 7,
+      "type": "image"
+    },
+    {
+      "comments": [],
+      "data": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "format": "txt",
+      "index": 8,
+      "link_metadata": {
+        "link_text": "Video",
+        "link_type": "external",
+        "link_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+      },
+      "sub_type": "link",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "https://www.pipeshub.com/",
+      "format": "txt",
+      "index": 9,
+      "link_metadata": {
+        "link_text": "https://www.pipeshub.com/",
+        "link_type": "external",
+        "link_url": "https://www.pipeshub.com/"
+      },
+      "sub_type": "link",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "https://example.com/embedded-thing",
+      "format": "txt",
+      "index": 10,
+      "link_metadata": {
+        "link_text": "https://example.com/embedded-thing",
+        "link_type": "external",
+        "link_url": "https://example.com/embedded-thing"
+      },
+      "sub_type": "link",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": {
+        "cells": [
+          "Header A",
+          "Header B"
+        ],
+        "row": "{\"cells\": [\"Header A\", \"Header B\"]}",
+        "row_natural_language_text": "Header A\u200b|\u200bHeader B",
+        "row_number": 1
+      },
+      "format": "json",
+      "index": 11,
+      "parent_index": 2,
+      "table_row_metadata": {
+        "is_header": true,
+        "row_number": 1
+      },
+      "type": "table_row"
+    },
+    {
+      "comments": [],
+      "data": {
+        "cells": [
+          "Cell A1",
+          "Cell B1"
+        ],
+        "row": "{\"cells\": [\"Cell A1\", \"Cell B1\"]}",
+        "row_natural_language_text": "Cell A1\u200b|\u200bCell B1",
+        "row_number": 2
+      },
+      "format": "json",
+      "index": 12,
+      "parent_index": 2,
+      "table_row_metadata": {
+        "is_header": false,
+        "row_number": 2
+      },
+      "type": "table_row"
+    },
+    {
+      "comments": [],
+      "data": "Synced source content.",
+      "format": "markdown",
+      "index": 13,
+      "parent_index": 3,
+      "sub_type": "paragraph",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "Synced source content.",
+      "format": "markdown",
+      "index": 14,
+      "parent_index": 4,
+      "sub_type": "paragraph",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "PHIT-ChildRefTarget",
+      "format": "txt",
+      "index": 15,
+      "parent_index": 5,
+      "source_type": "child_page",
+      "sub_type": "child_record",
+      "table_row_metadata": {
+        "children_records": [
+          {
+            "child_type": "record"
+          }
+        ],
+        "is_header": false
+      },
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "Child reference target.",
+      "format": "markdown",
+      "index": 16,
+      "parent_index": 5,
+      "sub_type": "paragraph",
+      "type": "text"
+    },
+    {
+      "comments": [],
+      "data": "PHIT-ChildRefDB",
+      "format": "txt",
+      "index": 17,
+      "source_type": "child_database",
+      "sub_type": "child_record",
+      "table_row_metadata": {
+        "children_records": [
+          {
+            "child_type": "record"
+          }
+        ],
+        "is_header": false
+      },
+      "type": "text"
+    }
+  ]
+}

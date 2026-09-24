@@ -15,8 +15,8 @@ from app.agent_loop_lib.sandbox.coding.base import (
     CodeRequest,
     CodingSandboxError,
     ErrorCategory,
-    InstallResult,
 )
+from app.agent_loop_lib.sandbox.coding.docker_client import reset_default_provider
 from app.agent_loop_lib.sandbox.coding.docker import (
     DockerCodingSandbox,
     _collect_working_dir_inputs,
@@ -50,6 +50,18 @@ def _fake_docker_module():
         if created:
             sys.modules.pop("docker", None)
             sys.modules.pop("docker.errors", None)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_docker_provider():
+    """`DockerCodingSandbox` draws its client from the process-wide
+    `DockerClientProvider`, which caches it on first use. Without a reset
+    the first test to touch the daemon would pin its fake client for every
+    test after it, and the `patch("docker.from_env")` blocks below would
+    silently have no effect."""
+    reset_default_provider()
+    yield
+    reset_default_provider()
 
 
 def _make_tar(files: dict[str, bytes]) -> bytes:

@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
-import { mailConfigUrl, ORG_CREATED_EVENT } from '../../../../src/modules/user_management/constants/constants';
+import { mailConfigUrl, mailConfigInternalUrl, ORG_CREATED_EVENT } from '../../../../src/modules/user_management/constants/constants';
 
 describe('User Management Constants', () => {
   describe('mailConfigUrl', () => {
@@ -15,6 +15,14 @@ describe('User Management Constants', () => {
 
     it('should start with api/v1', () => {
       expect(mailConfigUrl).to.match(/^api\/v1\//);
+    });
+  });
+
+  describe('mailConfigInternalUrl', () => {
+    it('should point at the service-token SMTP config path', () => {
+      expect(mailConfigInternalUrl).to.equal(
+        'api/v1/configurationManager/internal/smtpConfig',
+      );
     });
   });
 

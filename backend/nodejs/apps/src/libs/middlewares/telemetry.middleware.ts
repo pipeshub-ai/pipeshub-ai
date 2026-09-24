@@ -6,19 +6,9 @@ import {
   normalizeOrgId,
 } from '../services/telemetry/identity';
 
-const ID_SEGMENT = /^([0-9a-fA-F]{24}|[0-9a-fA-F-]{32,36}|\d+)$/;
-
 type MetricsRequest = AuthenticatedUserRequest & {
   __metricsAttached?: boolean;
 };
-
-function normalizePath(path: string): string {
-  const normalized = path
-    .split('/')
-    .map((seg) => (ID_SEGMENT.test(seg) ? ':id' : seg))
-    .join('/');
-  return normalized === '' ? '/' : normalized;
-}
 
 function getRouteTemplate(req: AuthenticatedUserRequest): string {
   const route: unknown = req.route;
@@ -28,7 +18,8 @@ function getRouteTemplate(req: AuthenticatedUserRequest): string {
       return `${req.baseUrl}${routePath}`;
     }
   }
-  return normalizePath(req.path);
+  // Raw paths (assets, 404s, bot scans) are unbounded label values.
+  return 'unmatched';
 }
 
 function getOrgId(req: AuthenticatedUserRequest): string {

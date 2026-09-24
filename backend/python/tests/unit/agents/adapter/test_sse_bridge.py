@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext, ToolCallStatus
+from app.agents.agent_loop.error_classification import _USER_MESSAGES
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
@@ -134,27 +135,25 @@ class TestQueueEventSinkCoalescing:
     async def test_text_message_content_deltas_key_on_message_id(self) -> None:
         """Two different messages' deltas (e.g. main answer vs. a spawned
         sub-agent's) must never merge into each other even though both use
-        the same event name."""
+        the same event name, and each keeps its own pending slot rather than
+        evicting the other."""
         queue: asyncio.Queue = asyncio.Queue(maxsize=1)
         sink = QueueEventSink(queue)
         await self._fill_queue(queue)
 
         await sink.write({"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m1", "delta": "A"}})
-        # Pending now holds m1's delta (queue full, so it wasn't flushed yet).
+        await sink.write({"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m2", "delta": "B"}})
+        # Both held (queue full); neither write blocked on the other's flush.
+        assert queue.qsize() == 1
 
-        write_task = asyncio.ensure_future(
-            sink.write({"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m2", "delta": "B"}})
-        )
-        await asyncio.sleep(0)
-        assert not write_task.done()  # blocked: flushing m1 (different key) needs a freed slot
+        await queue.get()  # drain filler
+        # maxsize=1, so flush() blocks after m1 until the consumer drains it.
+        flush_task = asyncio.ensure_future(sink.flush())
 
-        await queue.get()  # drain filler -> unblocks flushing m1; m2 becomes the new pending
-        await asyncio.wait_for(write_task, timeout=1)
-
+        # Flushed in arrival order, unmerged.
         assert await queue.get() == {"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m1", "delta": "A"}}
-        # m2 never merged into m1 -- different messageId keys them apart.
-        await sink.flush()
         assert await queue.get() == {"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m2", "delta": "B"}}
+        await asyncio.wait_for(flush_task, timeout=1)
 
     async def test_non_coalescable_event_flushes_pending_delta_first_then_blocks(self) -> None:
         """A tool/lifecycle event must never be silently dropped or
@@ -554,7 +553,7 @@ class TestRunAgentLoopStream:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -607,7 +606,7 @@ class TestRunAgentLoopStream:
             )
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             captured_streamed_answer["value"] = streamed_answer
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
@@ -666,7 +665,7 @@ class TestRunAgentLoopStream:
             )
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             captured_streamed_answer["value"] = streamed_answer
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
@@ -820,7 +819,42 @@ class TestRunAgentLoopStream:
         assert len(events) == 1
         payload = json.loads(events[0].split("data: ", 1)[1].strip())
         assert payload["type"] == "rate_limit"
-        assert payload["message"] == "The AI service is currently rate limited. Please try again in a moment."
+        assert payload["message"] == _USER_MESSAGES["rate_limit"]
+
+    async def test_agent_run_failure_surfaces_invalid_request_provider_message(self) -> None:
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
+            raise RuntimeError(
+                "LangChain transport error (stream): Error code: 400 - "
+                "{'error': {'message': 'invalid Qwen3.8 reasoning_effort', "
+                "'type': 'invalid_request_error'}}"
+            )
+
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            patch(
+                "app.utils.execute_query.has_sql_connector_configured",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "app.utils.fetch_slack_thread.has_slack_connector_configured",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create",
+                new=_fake_create,
+            ),
+        ):
+            events = [chunk async for chunk in run_agent_loop_stream(**self._base_kwargs())]
+
+        assert len(events) == 1
+        payload = json.loads(events[0].split("data: ", 1)[1].strip())
+        assert payload["type"] == "invalid_request"
+        assert payload["message"] == (
+            "The AI model rejected this request: invalid Qwen3.8 reasoning_effort"
+        )
 
     async def test_sandbox_manager_destroyed_on_successful_completion(self) -> None:
         """Phase 8's `_produce()` `finally` block must tear down the
@@ -835,7 +869,7 @@ class TestRunAgentLoopStream:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -909,7 +943,7 @@ class TestRunAgentLoopStream:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -988,7 +1022,7 @@ class TestRunAgentLoopStream:
             await pending_started.wait()
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -1040,7 +1074,7 @@ class TestRunAgentLoopStream:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -1097,7 +1131,7 @@ class TestHeartbeat:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -1144,7 +1178,7 @@ class TestHeartbeat:
             agent = _slow_stream_agent(MagicMock(success=True, error=None, output="done"), delay=0.05)
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -1192,7 +1226,7 @@ class TestHeartbeat:
             agent = _stream_agent(MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 

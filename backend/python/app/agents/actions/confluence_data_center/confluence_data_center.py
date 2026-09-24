@@ -164,7 +164,7 @@ class SearchUsersInput(BaseModel):
     max_results: Optional[int] = Field(default=10, description="Max users to return (1-50). Default 10.")
 
 
-@ToolsetBuilder("ConfluenceDataCenter")\
+@ToolsetBuilder("Confluence Data Center")\
     .in_group("Atlassian")\
     .with_description(
         "Confluence Data Center / Server integration for wiki pages, documentation, and knowledge management"

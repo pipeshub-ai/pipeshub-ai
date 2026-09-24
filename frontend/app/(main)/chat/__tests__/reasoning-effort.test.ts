@@ -113,10 +113,12 @@ describe('reasoningEffort store actions', () => {
     expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('high');
   });
 
-  it('setReasoningEffortForCtx persists to localStorage, scoped by ctxKey', () => {
+  it('setReasoningEffortForCtx persists to localStorage only for assistant context', () => {
+    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'medium');
+    expect(localStorage.getItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`)).toBe('medium');
+    // Agent-scoped contexts skip localStorage so admin defaults aren't masked.
     useChatStore.getState().setReasoningEffortForCtx('agent-42', 'medium');
-    expect(localStorage.getItem('pipeshub-reasoning-effort:agent-42')).toBe('medium');
-    expect(localStorage.getItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`)).toBeNull();
+    expect(localStorage.getItem('pipeshub-reasoning-effort:agent-42')).toBeNull();
   });
 
   it('setReasoningEffortForCtx(null) clears the persisted value', () => {
@@ -126,10 +128,16 @@ describe('reasoningEffort store actions', () => {
     expect(localStorage.getItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`)).toBeNull();
   });
 
-  it('hydrateReasoningEffortForCtx loads a previously persisted value', () => {
+  it('hydrateReasoningEffortForCtx loads a previously persisted value for assistant context', () => {
+    localStorage.setItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`, 'max');
+    useChatStore.getState().hydrateReasoningEffortForCtx(ASSISTANT_CTX);
+    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('max');
+  });
+
+  it('hydrateReasoningEffortForCtx skips localStorage for agent contexts', () => {
     localStorage.setItem('pipeshub-reasoning-effort:agent-7', 'max');
     useChatStore.getState().hydrateReasoningEffortForCtx('agent-7');
-    expect(useChatStore.getState().settings.reasoningEffort['agent-7']).toBe('max');
+    expect(useChatStore.getState().settings.reasoningEffort['agent-7']).toBeNull();
   });
 
   it('hydrateReasoningEffortForCtx resolves to null when nothing is persisted', () => {

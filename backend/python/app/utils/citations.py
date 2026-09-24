@@ -6,6 +6,7 @@ from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import (
     generate_text_fragment_url,
     get_enhanced_metadata,
+    group_child_results,
     is_base64_image,
     valid_group_labels,
 )
@@ -662,8 +663,13 @@ def _normalize_markdown_link_citations(
 
     for doc in final_results:
         block_type = doc.get("block_type")
-        if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
-            _, child_results = doc.get("content", ("", []))
+        # "code" labels both BlockType.CODE (leaf) and GroupType.CODE (group).
+        # Only groups have content shaped as a (summary, children) tuple;
+        # leaf blocks carry a plain string that must not be unpacked as a tuple.
+        child_results = group_child_results(doc)
+        if (
+            block_type == GroupType.TABLE.value or block_type in valid_group_labels
+        ) and child_results is not None:
             if child_results:
                 for child in child_results:
                     child_url = child.get("block_web_url")
@@ -886,8 +892,13 @@ def _normalize_markdown_link_citations_for_agent(
     for doc in final_results:
         virtual_record_id = doc.get("virtual_record_id")
         block_type = doc.get("block_type")
-        if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
-            _, child_results = doc.get("content", ("", []))
+        # "code" labels both BlockType.CODE (leaf) and GroupType.CODE (group).
+        # Only groups have content shaped as a (summary, children) tuple;
+        # leaf blocks carry a plain string that must not be unpacked as a tuple.
+        child_results = group_child_results(doc)
+        if (
+            block_type == GroupType.TABLE.value or block_type in valid_group_labels
+        ) and child_results is not None:
             if child_results:
                 for child in child_results:
                     child_url = child.get("block_web_url")

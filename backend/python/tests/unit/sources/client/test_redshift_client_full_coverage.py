@@ -588,7 +588,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_missing_host(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {}, "credentials": {}},
         ):
@@ -601,7 +601,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_missing_user(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "h", "database": "db"}, "credentials": {}},
         ):
@@ -614,7 +614,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_missing_database(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "h"}, "credentials": {}},
         ):
@@ -627,7 +627,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_successful_build(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "h", "database": "db"}, "credentials": {}},
         ), patch("app.sources.client.redshift.redshift.redshift_connector", MagicMock()):
@@ -641,7 +641,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_successful_build_with_port(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "auth": {"host": "h", "database": "db", "port": 5440},
@@ -657,7 +657,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_password_none_defaults_to_empty(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={"auth": {"host": "h", "database": "db"}, "credentials": {}},
         ), patch("app.sources.client.redshift.redshift.redshift_connector", MagicMock()):
@@ -670,7 +670,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_pick_value_from_credentials(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "credentials": {"host": "h", "database": "db"},
@@ -686,7 +686,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_pick_value_hostname_key(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "auth": {"hostname": "h2", "database": "db"},
@@ -702,7 +702,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_pick_value_endpoint_key(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "auth": {"endpoint": "e1", "database": "db"},
@@ -718,7 +718,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_pick_value_db_key(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "auth": {"host": "h", "db": "mydb"},
@@ -734,7 +734,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_pick_value_databaseName_key(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "auth": {"host": "h", "databaseName": "named_db"},
@@ -750,7 +750,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_pick_value_non_dict_container_skipped(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "auth": "not_a_dict",
@@ -768,7 +768,7 @@ class TestBuildFromToolsetFC:
     @pytest.mark.asyncio
     async def test_pick_value_empty_string_skipped(self):
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "auth": {"host": "", "hostname": "h3", "database": "db"},
@@ -786,7 +786,7 @@ class TestBuildFromToolsetFC:
         """When auth and credentials are None, pick_value should still find
         values from the top-level config dict."""
         with patch(
-            "app.sources.client.redshift.redshift.get_toolset_by_id",
+            "app.edition_config.get_toolset_by_id",
             new_callable=AsyncMock,
             return_value={
                 "auth": None,
