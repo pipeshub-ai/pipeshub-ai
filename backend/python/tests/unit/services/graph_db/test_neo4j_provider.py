@@ -2559,6 +2559,133 @@ class TestDuplicateAndSyncOperations:
         assert await neo4j_provider.copy_document_relationships("src-1", "dst-1") is False
 
     @pytest.mark.asyncio
+    async def test_copy_document_relationships_preserves_subcategory_label(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """A BELONGS_TO_CATEGORY edge pointing at a Subcategory1 node must be
+        copied into the subcategories1 collection, not silently promoted to
+        'categories' -- batch_create_edges MATCHes on the label, so getting
+        this wrong makes the MATCH miss the real node and silently drop the
+        edge (the regression this fixes).
+        """
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [],  # department
+                [{"target_id": "sub-1", "target_labels": ["Subcategories1"]}],  # category
+                [],  # language
+                [],  # topic
+            ]
+        )
+        neo4j_provider.batch_create_edges = AsyncMock()  # type: ignore[method-assign]
+
+        ok = await neo4j_provider.copy_document_relationships("src-1", "dst-1")
+
+        assert ok is True
+        neo4j_provider.batch_create_edges.assert_awaited_once()
+        edges = neo4j_provider.batch_create_edges.await_args.args[0]
+        assert edges[0]["to_id"] == "sub-1"
+        assert edges[0]["to_collection"] == "subcategories1"
+
+    @pytest.mark.asyncio
+    async def test_copy_document_relationships_deeper_subcategory_level(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """Same regression, one level deeper: Subcategory3 must resolve to
+        subcategories3, not categories or subcategories1."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [],  # department
+                [{"target_id": "sub-3", "target_labels": ["Subcategories3"]}],  # category
+                [],  # language
+                [],  # topic
+            ]
+        )
+        neo4j_provider.batch_create_edges = AsyncMock()  # type: ignore[method-assign]
+
+        ok = await neo4j_provider.copy_document_relationships("src-1", "dst-1")
+
+        assert ok is True
+        edges = neo4j_provider.batch_create_edges.await_args.args[0]
+        assert edges[0]["to_collection"] == "subcategories3"
+
+    @pytest.mark.asyncio
+    async def test_copy_document_relationships_unrecognised_label_falls_back(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """An unrecognised label must not drop the edge outright -- it falls
+        back to the group's first collection rather than raising."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [],  # department
+                [{"target_id": "c-mystery", "target_labels": ["SomeUnknownLabel"]}],  # category
+                [],  # language
+                [],  # topic
+            ]
+        )
+        neo4j_provider.batch_create_edges = AsyncMock()  # type: ignore[method-assign]
+
+        ok = await neo4j_provider.copy_document_relationships("src-1", "dst-1")
+
+        assert ok is True
+        edges = neo4j_provider.batch_create_edges.await_args.args[0]
+        assert edges[0]["to_collection"] == "categories"
+
+    @pytest.mark.asyncio
+    async def test_get_taxonomy_entities_for_record_empty_key_returns_empty(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock()
+        result = await neo4j_provider.get_taxonomy_entities_for_record("")
+        assert result == []
+        neo4j_provider.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_taxonomy_entities_for_record_resolves_subcategory_level(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """A Subcategory1-labelled node under BELONGS_TO_CATEGORY must resolve
+        to entityType=subcategory, mirroring the edge-copy fix above."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [
+                    {"entityId": "cat-1", "name": "Finance", "nodeLabels": ["Categories"]},
+                    {"entityId": "sub-1", "name": "Budgets", "nodeLabels": ["Subcategories1"]},
+                ],  # category_group
+                [{"entityId": "dept-1", "name": "Engineering", "nodeLabels": ["Departments"]}],
+                [{"entityId": "topic-1", "name": "OKRs", "nodeLabels": ["Topics"]}],
+                [{"entityId": "lang-1", "name": "English", "nodeLabels": ["Languages"]}],
+            ]
+        )
+
+        result = await neo4j_provider.get_taxonomy_entities_for_record("rec-1")
+
+        by_id = {row["entityId"]: row for row in result}
+        assert by_id["cat-1"]["entityType"] == "category"
+        assert by_id["sub-1"]["entityType"] == "subcategory"
+        assert by_id["dept-1"]["entityType"] == "department"
+        assert by_id["topic-1"]["entityType"] == "topic"
+        assert by_id["lang-1"]["entityType"] == "language"
+        assert all("nodeLabels" not in row for row in result)
+
+    @pytest.mark.asyncio
+    async def test_get_taxonomy_entities_for_record_group_failure_is_isolated(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                RuntimeError("category query failed"),
+                [{"entityId": "dept-1", "name": "Engineering", "nodeLabels": ["Departments"]}],
+                [],
+                [],
+            ]
+        )
+
+        result = await neo4j_provider.get_taxonomy_entities_for_record("rec-1")
+
+        assert len(result) == 1
+        assert result[0]["entityId"] == "dept-1"
+
+    @pytest.mark.asyncio
     async def test_get_user_apps_success_and_error(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"app": {"id": "app-1"}}, {"app": None}])
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "app-1"})  # type: ignore[method-assign]

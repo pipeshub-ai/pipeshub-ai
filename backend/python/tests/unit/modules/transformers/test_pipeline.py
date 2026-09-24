@@ -87,6 +87,7 @@ def sink_orchestrator():
     sink.blob_storage.apply = AsyncMock()
     sink.vector_store = MagicMock()
     sink.vector_store.index_record_summary = AsyncMock()
+    sink.resolve_entities = AsyncMock()
     return sink
 
 

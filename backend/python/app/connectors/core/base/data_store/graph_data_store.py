@@ -819,6 +819,32 @@ class GraphTransactionStore(TransactionStore):
             transaction=self.txn
         )
 
+    async def find_taxonomy_nodes(
+        self, collection: str, org_id: str, normalized_names: list[str]
+    ) -> list[dict]:
+        return await self.graph_provider.find_taxonomy_nodes(
+            collection, org_id, normalized_names, transaction=self.txn
+        )
+
+    async def create_taxonomy_node_if_absent(self, collection: str, node: dict) -> None:
+        await self.graph_provider.create_taxonomy_node_if_absent(
+            collection, node, transaction=self.txn
+        )
+
+    async def add_taxonomy_aliases(
+        self,
+        collection: str,
+        key: str,
+        aliases: list[str],
+        normalized_aliases: list[str],
+        *,
+        max_aliases: int = 20,
+    ) -> None:
+        await self.graph_provider.add_taxonomy_aliases(
+            collection, key, aliases, normalized_aliases,
+            max_aliases=max_aliases, transaction=self.txn,
+        )
+
 
 class GraphDataStore(DataStoreProvider):
     """

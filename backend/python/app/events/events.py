@@ -465,9 +465,15 @@ class EventProcessor:
                     block_container=block_container,
                     org_id=org_id,
                     departments=departments or [],
+                    record_name=record.record_name,
+                    record_type=record.record_type.value,
                 )
 
                 record.semantic_metadata = semantic_metadata
+                if semantic_metadata:
+                    # Canonical taxonomy names must be decided before the
+                    # summary, blob and graph writes below all consume them.
+                    await self.sink_orchestrator.resolve_entities(ctx)
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
                     await self.sink_orchestrator.vector_store.index_record_summary(
                         record_id,
@@ -813,6 +819,25 @@ class EventProcessor:
             )
             if attached_vrid and match.same_collection:
                 await self.sync_vector_membership(attached_vrid)
+            if match.same_collection and self.sink_orchestrator is not None:
+                # The copy above only touched the graph — this record still
+                # has no `record`/`record_group` point, and the taxonomy
+                # points it now shares carry only the other record's
+                # connectorId/recordGroupId. Different-collection duplicates
+                # skip this: they continue to full indexing and get entity
+                # sync from SinkOrchestrator.index()/enrich() there instead.
+                # sync_entities_for_duplicate is already best-effort
+                # internally; caught again here so a mock/mis-wired sink in
+                # a caller can never turn dedup's own bookkeeping into a
+                # failed event.
+                try:
+                    await self.sink_orchestrator.sync_entities_for_duplicate(doc)
+                except Exception as exc:
+                    self.logger.warning(
+                        "Entity vector sync failed for duplicate %s (non-fatal): %s",
+                        _record_key(doc),
+                        exc,
+                    )
             self.logger.debug(
                 "✅ Duplicate record %s resolved (same_collection=%s)",
                 _record_key(match.record),

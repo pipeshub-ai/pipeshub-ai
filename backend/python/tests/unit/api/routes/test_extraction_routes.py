@@ -115,6 +115,45 @@ def test_classify_uses_provided_departments() -> None:
     assert call_kwargs["departments"] == ["Engineering", "Finance"]
 
 
+def test_classify_forwards_record_name_and_type() -> None:
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(return_value=None)
+
+    app = _build_app(mock_extraction)
+    client = TestClient(app)
+
+    client.post(
+        "/api/v1/extract/classify",
+        json={
+            "block_container": _empty_bc_dict(),
+            "org_id": "org-123",
+            "record_name": "Q3 Board Deck.pdf",
+            "record_type": "FILE",
+        },
+    )
+
+    call_kwargs = mock_extraction.classify.call_args[1]
+    assert call_kwargs["record_name"] == "Q3 Board Deck.pdf"
+    assert call_kwargs["record_type"] == "FILE"
+
+
+def test_classify_record_name_and_type_default_to_empty() -> None:
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(return_value=None)
+
+    app = _build_app(mock_extraction)
+    client = TestClient(app)
+
+    client.post(
+        "/api/v1/extract/classify",
+        json={"block_container": _empty_bc_dict(), "org_id": "org-123"},
+    )
+
+    call_kwargs = mock_extraction.classify.call_args[1]
+    assert call_kwargs["record_name"] == ""
+    assert call_kwargs["record_type"] == ""
+
+
 # ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------

@@ -288,6 +288,7 @@ class CollectionNames(Enum):
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
+    ENTITIES = "entities"
 
 
 class ExtensionTypes(Enum):

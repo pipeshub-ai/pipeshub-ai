@@ -13,14 +13,11 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
+from app.modules.agents.context.retrieval_routing import build_routing_guidance
 from app.modules.agents.context.source_catalog import (
     SourceCatalog,
     SourceKind,
 )
-from app.modules.agents.context.retrieval_routing import build_routing_guidance
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -297,6 +294,48 @@ class TestCanonicalKnowledgeBlock:
         catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
         rendered = catalog.render()
         assert "Combining them" in rendered
+
+    def test_entities_paragraph_absent_without_search_entities_grant(self) -> None:
+        """The exploration child renders the catalog without tool names and
+        has no entity tools, so it must not be told to call them."""
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        assert "**Entities.**" not in catalog.render()
+        assert "search_entities" not in catalog.render(tool_names=["knowledgegraph__search"])
+
+    def test_entities_paragraph_names_both_tools_when_granted(self) -> None:
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(
+            tool_names=["knowledgegraph__search", "knowledgegraph__search_entities"],
+        )
+        assert "**Entities.**" in rendered
+        assert "knowledgegraph__search_entities(query=...)" in rendered
+        assert "knowledgegraph__find_records_by_entity(entity_id=...)" in rendered
+        assert "`knowledgegraph__search(query=..., entity_ids=[...])`" in rendered
+
+    def test_entities_paragraph_is_stable_when_find_records_unlocks(self) -> None:
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        before = catalog.render(tool_names=["knowledgegraph__search", "knowledgegraph__search_entities"])
+        after = catalog.render(tool_names=[
+            "knowledgegraph__search",
+            "knowledgegraph__search_entities",
+            "knowledgegraph__find_records_by_entity",
+        ])
+        assert before == after
+
+    def test_entities_paragraph_only_names_real_entity_types_and_tools(self) -> None:
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(
+            tool_names=["knowledgegraph__search", "knowledgegraph__search_entities"],
+        )
+        for stale in ("people", "expand_neighbors", "get_relationships", "connectedEntities"):
+            assert stale not in rendered
+
+    def test_composed_top_level_delegates_entity_content_search(self) -> None:
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(
+            tool_names=["knowledgegraph__search_entities", "internal_exploration_agent"],
+        )
+        assert "ask `internal_exploration_agent`" in rendered
 
 
 class TestBuildRoutingGuidance:

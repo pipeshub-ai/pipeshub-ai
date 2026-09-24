@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 read_collections = [
     collection.value for collection in CollectionNames
@@ -101,6 +102,7 @@ class KnowledgeBaseService:
         kafka_service : KafkaService,
         processor: "DataSourceEntitiesProcessor" = None,
         config_service=None,
+        entity_vector_store: "EntityVectorStore | None" = None,
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
@@ -110,6 +112,9 @@ class KnowledgeBaseService:
         self.processor = processor
         # Needed to resolve the storage endpoint for upload signed-url routes.
         self.config_service = config_service
+        # Entities-collection cleanup on KB delete; optional so this class stays
+        # constructible without it (e.g. in tests).
+        self.entity_vector_store = entity_vector_store
 
     def _mutation_failure(self, result: object, action: str) -> dict:
         """Turn a failed graph-provider write into something a person can act on.
@@ -742,6 +747,19 @@ class KnowledgeBaseService:
                     f"Published only {published}/{len(events)} vector-cleanup "
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
+
+            # Entities collection cleanup: KB records/groups carry connectorIds=[kb_id]
+            # (see SinkOrchestrator._sync_record_name_entity/_sync_record_group_entity),
+            # so the connector-scoped shrink-or-delete applies unchanged here. Entities
+            # can exist for a KB with no indexed record behind them (e.g. a synced
+            # RecordGroup), which is why this does not ride bulkDeleteRecords above.
+            if self.entity_vector_store is not None:
+                try:
+                    await self.entity_vector_store.delete_entities_by_connector(
+                        org_id=org_id, connector_id=kb_id,
+                    )
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to clean up entity vectors for KB {kb_id}: {str(e)}")
 
             self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by user_key={user_key}")
             return {
