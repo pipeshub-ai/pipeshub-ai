@@ -97,9 +97,11 @@ async def _record_lookup_factory(
 
     Reads the record node directly rather than going through retrieval: this
     path is a census over the record set, so it must not depend on a document
-    having matched a query. Records that cannot be read are skipped by the
-    caller rather than counted, because a row nobody can cite is the failure
-    this module exists to remove.
+    having matched a query. Records that cannot be read are left out of the
+    listing by the caller, because a row nobody can cite is the failure this
+    module exists to remove -- but they stay in the total, which is the size of
+    the permission-filtered record set, and the answer says how many were left
+    out.
     """
     from app.config.constants.arangodb import CollectionNames
 
@@ -158,7 +160,17 @@ async def try_answer_enumeration(
         log.warning("enumeration: accessible-record lookup failed, deferring: %s", exc)
         return False
 
-    if accessible is None:
+    # The answer is built from the ids in this map and cites the records they
+    # resolve to, so check its shape rather than trust the provider's. Anything
+    # else defers to the agent, the same as a failed lookup.
+    if not isinstance(accessible, dict) or not all(
+        isinstance(vrid, str) and vrid and isinstance(record_id, str) and record_id
+        for vrid, record_id in accessible.items()
+    ):
+        if accessible is not None:
+            log.warning(
+                "enumeration: accessible-record lookup returned an unexpected shape, deferring"
+            )
         return False
 
     from app.agents.agent_loop.hooks.citations import CitationCollector
