@@ -3271,6 +3271,21 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
 
+    async def get_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict,
+        return_fields: list[str] | None = None,
+    ) -> list[dict]:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_nodes_by_filters(
+                collection=collection, filters=filters, return_fields=return_fields,
+            )
+
+    async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.batch_update_nodes(nodes, collection)
+
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.delete_parent_child_edge_to_record(record_id)

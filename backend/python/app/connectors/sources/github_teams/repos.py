@@ -421,34 +421,26 @@ class ReposSync:
         c = self.c
         repo_id = int(external_group_id.split("-")[0])
         by_path: dict[str, str] = {}
-        async with c.data_store_provider.transaction() as tx_store:
-            rg = await tx_store.get_record_group_by_external_id(
-                connector_id=c.connector_id, external_id=external_group_id,
+        page_size = 500
+        after_key: str | None = None
+        while True:
+            page = await c.data_entities_processor.get_records_in_record_group(
+                connector_id=c.connector_id,
+                external_group_id=external_group_id,
+                limit=page_size,
+                after_key=after_key,
             )
-            if not rg:
-                return by_path
-            offset = 0
-            page_size = 500
-            while True:
-                page = await tx_store.get_records_by_status(
-                    org_id=c.data_entities_processor.org_id,
-                    connector_id=c.connector_id,
-                    status_filters=None,
-                    limit=page_size,
-                    offset=offset,
-                    record_group_id=rg.id,
+            if not page:
+                break
+            for rec in page:
+                path = getattr(rec, "file_path", None) or path_from_external_id(
+                    repo_id, getattr(rec, "external_record_id", None) or ""
                 )
-                if not page:
-                    break
-                for rec in page:
-                    path = getattr(rec, "file_path", None) or path_from_external_id(
-                        repo_id, getattr(rec, "external_record_id", None) or ""
-                    )
-                    if path:
-                        by_path[path] = rec.id
-                if len(page) < page_size:
-                    break
-                offset += page_size
+                if path:
+                    by_path[path] = rec.id
+            if len(page) < page_size:
+                break
+            after_key = page[-1].id
         return by_path
 
     # ------------------------------------------------------------------
