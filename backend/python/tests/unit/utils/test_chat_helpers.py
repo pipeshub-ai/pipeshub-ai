@@ -586,13 +586,24 @@ class TestGenerateTextFragmentUrl:
         result = generate_text_fragment_url(url, snippet)
         assert result.startswith(f"https://example.com/page{TEXT_FRAGMENT_DIRECTIVE_PREFIX}")
 
-    def test_url_with_existing_hash_is_stripped(self):
+    def test_url_with_existing_hash_keeps_it(self):
+        """The directive is appended: a conforming browser still hands the page `#section1`."""
         url = "https://example.com/page#section1"
         snippet = "some text to search for and find in the page content here"
         result = generate_text_fragment_url(url, snippet)
-        # The old hash should be removed
-        assert "#section1" not in result
-        assert TEXT_FRAGMENT_DIRECTIVE_PREFIX in result
+        assert result.startswith("https://example.com/page#section1:~:text=")
+
+    def test_gmail_message_anchor_survives(self):
+        """Stripping `#all/<id>` left attachment citations pointing at the inbox."""
+        url = "https://mail.google.com/mail?authuser=a@b.com#all/m1"
+        result = generate_text_fragment_url(url, "Junior Process Engineer with experience")
+        assert result.startswith(f"{url}:~:text=")
+
+    def test_url_with_anchor_and_directive_is_left_alone(self):
+        """A second `:~:` would make the directive unparseable."""
+        url = "https://example.com/page#section1:~:text=already%20set"
+        result = generate_text_fragment_url(url, "chunk text that must not be appended")
+        assert result == url
 
     def test_no_alphanumeric_snippet_returns_base_url(self):
         url = "https://example.com/page"
@@ -4460,13 +4471,12 @@ class TestGenerateTextFragmentUrlHash:
     """Cover hash-stripping branch in generate_text_fragment_url."""
 
     def test_url_with_existing_hash(self):
-        """Line 1652-1653: URL with existing hash is stripped."""
+        """The existing anchor is preserved and the directive appended after it."""
         url = generate_text_fragment_url(
             "https://example.com/page#section",
             "Some important text content here with multiple words"
         )
-        assert "#section" not in url
-        assert "#:~:text=" in url
+        assert url.startswith("https://example.com/page#section:~:text=")
 
     def test_empty_snippet_after_strip(self):
         """Lines 1639-1640: Whitespace-only snippet returns base_url."""
