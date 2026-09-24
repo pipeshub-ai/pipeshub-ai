@@ -66,6 +66,22 @@ class OpenWebUIClient:
         return str(resp.json()["id"])
 
     @http_retry()
+    def knowledge_files(self, knowledge_id: str) -> dict[str, list[str]]:
+        """File name -> ids of the files linked to the knowledge base."""
+        files: dict[str, list[str]] = {}
+        page, limit = 1, 500
+        while True:
+            body = self._request(
+                "GET", f"/api/v1/knowledge/{knowledge_id}/files", params={"page": page, "limit": limit},
+            ).json()
+            items = body.get("items") or []
+            for item in items:
+                files.setdefault(str(item.get("filename", "")), []).append(str(item["id"]))
+            if len(items) < limit:
+                return files
+            page += 1
+
+    @http_retry()
     def file_status(self, file_id: str) -> str:
         resp = self._request("GET", f"/api/v1/files/{file_id}/process/status")
         return str(resp.json().get("status", ""))

@@ -51,6 +51,8 @@ class _FakeClient:
         self._statuses = statuses or {}
         self.chats: list[dict[str, Any]] = []
         self.reply: dict[str, Any] = {}
+        self.linked: dict[str, list[str]] = {}
+        self.status_calls: list[str] = []
 
     def knowledge_id(self, name: str) -> str | None:
         return self.knowledge.get(name)
@@ -62,9 +64,16 @@ class _FakeClient:
     def upload_file(self, filename: str, content: bytes, mime: str, knowledge_id: str) -> str:
         assert mime == "text/html" and content.startswith(b"<html>")
         self.uploads.append((filename, knowledge_id))
-        return f"file-{filename}"
+        file_id = f"file-{filename}"
+        if self._statuses.get(file_id, [FILE_DONE])[-1] == FILE_DONE:
+            self.linked.setdefault(filename, []).append(file_id)
+        return file_id
+
+    def knowledge_files(self, knowledge_id: str) -> dict[str, list[str]]:
+        return {name: list(ids) for name, ids in self.linked.items()}
 
     def file_status(self, file_id: str) -> str:
+        self.status_calls.append(file_id)
         queue = self._statuses.get(file_id)
         return queue.pop(0) if queue and len(queue) > 1 else (queue[0] if queue else FILE_DONE)
 
@@ -108,6 +117,48 @@ class TestIngest:
 
         assert sorted(f for f, _kb in client.uploads) == [docs[2].filename, docs[3].filename]
         assert len(prepared.ingest.records) == 4
+
+    def test_files_already_in_the_knowledge_base_are_not_uploaded_again(self, tmp_path: Path) -> None:
+        """Uploads that landed after the last checkpoint write are found in the
+        knowledge base itself; uploading them again would duplicate chunks."""
+        docs = [_doc(n) for n in range(3)]
+        client = _FakeClient()
+        client.linked = {docs[0].filename: ["file-landed-0"], docs[1].filename: ["file-landed-1"]}
+
+        prepared = _ingestor(client, tmp_path, docs).prepare(_manifest(docs))
+
+        assert [f for f, _kb in client.uploads] == [docs[2].filename]
+        assert {r.record_id for r in prepared.ingest.records} >= {"file-landed-0", "file-landed-1"}
+
+    def test_a_file_that_failed_processing_is_uploaded_again(self, tmp_path: Path) -> None:
+        docs = [_doc(0), _doc(1)]
+        manifest = _manifest(docs)
+        client = _FakeClient({"file-old": [FILE_FAILED]})
+        ingestor = _ingestor(client, tmp_path, docs)
+        knowledge_id = client.create_knowledge(knowledge_name(manifest.corpus_version), "")
+        ingestor._save(knowledge_id, {docs[0].canonical_url: "file-old", docs[1].canonical_url: "file-ok"})
+        client.linked = {docs[1].filename: ["file-ok"]}
+
+        ingestor.prepare(manifest)
+
+        assert [f for f, _kb in client.uploads] == [docs[0].filename]
+
+    def test_each_window_is_processed_before_the_next_is_uploaded(self, tmp_path: Path) -> None:
+        docs = [_doc(n) for n in range(5)]
+        client = _FakeClient()
+        ingestor = OpenWebUIIngestor(
+            client, system_id="openwebui", base_url="http://owui", corpus_dir=_corpus_dir(tmp_path, docs),
+            cache_dir=tmp_path / "cache", upload_workers=1, window=2, poll_interval_s=0,
+        )
+        order: list[str] = []
+        client.upload_file = lambda f, c, m, k, _up=client.upload_file: (order.append(f"up:{f}"), _up(f, c, m, k))[1]  # type: ignore[method-assign]
+        client.file_status = lambda fid, _st=client.file_status: (order.append(f"st:{fid}"), _st(fid))[1]  # type: ignore[method-assign]
+
+        ingestor.prepare(_manifest(docs))
+
+        first_status = next(i for i, e in enumerate(order) if e.startswith("st:"))
+        uploads_before = [e for e in order[:first_status] if e.startswith("up:")]
+        assert len(uploads_before) == 2, order
 
     def test_a_different_corpus_gets_its_own_knowledge_base(self, tmp_path: Path) -> None:
         docs = [_doc(n) for n in range(3)]

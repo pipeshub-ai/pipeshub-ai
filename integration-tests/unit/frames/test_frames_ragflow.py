@@ -56,6 +56,7 @@ class _FakeClient:
         self.parsed.extend(document_ids)
 
     def documents(self, dataset_id: str, page: int, page_size: int) -> tuple[list[dict[str, Any]], int]:
+        assert page_size <= 100, "RAGFlow rejects pages over 100"
         docs = []
         for doc_id in self.parsed:
             queue = self._runs.get(doc_id, ["DONE"])
@@ -127,6 +128,16 @@ class TestIngest:
 
         with pytest.raises(IngestError):
             _ingestor(client, tmp_path, docs).prepare(_manifest(docs))
+
+    def test_statuses_are_read_across_pages(self, tmp_path: Path) -> None:
+        docs = [_doc(n) for n in range(230)]
+        client = _FakeClient()
+        ingestor = _ingestor(client, tmp_path, docs, batch_size=100)
+        manifest = _manifest(docs)
+
+        report = ingestor.wait_ready(ingestor.prepare(manifest), manifest)
+
+        assert report.total == 230 and report.status_counts == {"DONE": 230}
 
     def test_the_report_waits_for_parsing_and_counts_failures(self, tmp_path: Path) -> None:
         docs = [_doc(0), _doc(1), _doc(2, tier="distractor")]

@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _HTML_MIME = "text/html"
+# The largest page RAGFlow's document listing accepts.
+_PAGE_SIZE = 100
 
 
 def dataset_name(corpus_version: str) -> str:
@@ -109,9 +111,9 @@ class RagflowIngestor:
 
     def _statuses(self, dataset_id: str) -> dict[str, str]:
         statuses: dict[str, str] = {}
-        page, page_size = 1, 1000
+        page = 1
         while True:
-            docs, total = self._client.documents(dataset_id, page, page_size)
+            docs, total = self._client.documents(dataset_id, page, _PAGE_SIZE)
             statuses.update({str(d["id"]): str(d.get("run", "")) for d in docs})
             if not docs or len(statuses) >= total:
                 return statuses

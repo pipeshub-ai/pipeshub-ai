@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from benchmarks.harness.corpus.manifest import read_article_html
 from benchmarks.harness.errors import IngestError
-from benchmarks.harness.models import CorpusManifest, IndexReport, IngestedRecord, IngestManifest
+from benchmarks.harness.models import CorpusDocument, CorpusManifest, IndexReport, IngestedRecord, IngestManifest
 from benchmarks.harness.store import atomic_write_text
 from benchmarks.harness.systems.base import PreparedCorpus
 from benchmarks.harness.systems.openwebui.client import FILE_DONE, FILE_FAILED
@@ -45,6 +45,7 @@ class OpenWebUIIngestor:
         corpus_dir: Path,
         cache_dir: Path,
         upload_workers: int = 8,
+        window: int = 64,
         poll_interval_s: float = 30.0,
         timeout_s: float = 172_800.0,
     ) -> None:
@@ -54,8 +55,44 @@ class OpenWebUIIngestor:
         self._corpus_dir = corpus_dir
         self._cache_dir = cache_dir / "openwebui"
         self._upload_workers = upload_workers
+        self._window = window
         self._poll_interval_s = poll_interval_s
         self._timeout_s = timeout_s
+
+    def _reconcile(self, knowledge_id: str, manifest: CorpusManifest) -> dict[str, str]:
+        """What the knowledge base already holds, by file name, merged over
+        the local checkpoint. An upload that landed after the last checkpoint
+        was written is found here instead of being uploaded twice."""
+        uploaded = self._load(knowledge_id)
+        by_filename = {d.filename: d.canonical_url for d in manifest.documents}
+        linked: set[str] = set()
+        for filename, file_ids in self._client.knowledge_files(knowledge_id).items():
+            url = by_filename.get(filename)
+            if url is None:
+                continue
+            if len(file_ids) > 1:
+                logger.warning("%s is in the knowledge base %d times", filename, len(file_ids))
+            uploaded.setdefault(url, file_ids[0])
+            linked.update(file_ids)
+        # A file whose processing failed was never linked; forget it so it is
+        # uploaded again rather than reported unindexed for good.
+        failed = [
+            url for url, file_id in uploaded.items()
+            if file_id not in linked and self._client.file_status(file_id) == FILE_FAILED
+        ]
+        for url in failed:
+            del uploaded[url]
+        if failed:
+            logger.info("%d files failed processing earlier and will be uploaded again", len(failed))
+        return uploaded
+
+    def _await_processed(self, file_ids: list[str]) -> None:
+        pending = set(file_ids)
+        started = time.monotonic()
+        while pending and time.monotonic() - started < self._timeout_s:
+            pending = {f for f in pending if self._client.file_status(f) not in (FILE_DONE, FILE_FAILED)}
+            if pending:
+                time.sleep(min(self._poll_interval_s, 5.0))
 
     def _checkpoint(self, knowledge_id: str) -> Path:
         return self._cache_dir / f"{knowledge_id}.files.json"
@@ -74,22 +111,24 @@ class OpenWebUIIngestor:
         knowledge_id = self._client.knowledge_id(name) or self._client.create_knowledge(
             name, f"FRAMES corpus {manifest.corpus_version}",
         )
-        uploaded = self._load(knowledge_id)  # canonical_url -> file_id
+        uploaded = self._reconcile(knowledge_id, manifest)  # canonical_url -> file_id
         todo = [d for d in manifest.documents if d.canonical_url not in uploaded]
-        logger.info("%s: %d files uploaded, %d to go", name, len(uploaded), len(todo))
+        logger.info("%s: %d files in the knowledge base, %d to go", name, len(uploaded), len(todo))
 
-        def upload(document: object) -> tuple[str, str]:
-            content = read_article_html(self._corpus_dir, document.filename)  # type: ignore[attr-defined]
-            file_id = self._client.upload_file(document.filename, content, _HTML_MIME, knowledge_id)  # type: ignore[attr-defined]
-            return document.canonical_url, file_id  # type: ignore[attr-defined]
+        def upload(document: CorpusDocument) -> tuple[str, str]:
+            content = read_article_html(self._corpus_dir, document.filename)
+            return document.canonical_url, self._client.upload_file(document.filename, content, _HTML_MIME, knowledge_id)
 
+        # Upload a window, then wait for it to be processed before the next:
+        # Open WebUI processes files in the background, and uploads that run
+        # ahead of it pile up until its database pool starves and requests fail.
         with ThreadPoolExecutor(self._upload_workers) as pool:
-            for n, (url, file_id) in enumerate(pool.map(upload, todo), start=1):
-                uploaded[url] = file_id
-                if n % 200 == 0:
-                    self._save(knowledge_id, uploaded)
-                    logger.info("%s: uploaded %d/%d", name, n, len(todo))
-        self._save(knowledge_id, uploaded)
+            for start in range(0, len(todo), self._window):
+                landed = dict(pool.map(upload, todo[start:start + self._window]))
+                uploaded.update(landed)
+                self._save(knowledge_id, uploaded)
+                self._await_processed(list(landed.values()))
+                logger.info("%s: uploaded %d/%d", name, len(uploaded), len(manifest.documents))
 
         by_url = {d.canonical_url: d for d in manifest.documents}
         records = [
