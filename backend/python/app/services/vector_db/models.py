@@ -218,6 +218,11 @@ class HybridSearchRequest:
     limit: int = 10
     fusion_method: FusionMethod = FusionMethod.RRF
     with_payload: bool = True
+    # When True the request is a semantic-cache nearest-neighbour lookup.
+    # Only this flag enables the dense-only (cosine-score-preserving) bypass in
+    # QdrantService; other dense-only callers still go through RRF so their
+    # relative ranking is not silently altered.
+    is_semantic_cache_query: bool = False
 
 
 @dataclass

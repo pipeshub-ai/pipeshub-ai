@@ -182,8 +182,17 @@ class QdrantUtils:
             else None
         )
 
-        # Single-leg dense query: bypass RRF to preserve cosine score
-        if req.dense_query is not None and req.sparse_query is None and getattr(req, 'text_query', None) is None:
+        # Single-leg dense query issued by the semantic cache: bypass RRF to
+        # preserve the raw cosine score that the cache's similarity threshold
+        # checks against.  Other dense-only callers (e.g. retrieval pipelines
+        # that have no sparse model configured) still go through RRF so their
+        # relative ranking is not silently altered.
+        if (
+            req.dense_query is not None
+            and req.sparse_query is None
+            and getattr(req, 'text_query', None) is None
+            and getattr(req, 'is_semantic_cache_query', False)
+        ):
             return QueryRequest(
                 query=req.dense_query,
                 using="dense",

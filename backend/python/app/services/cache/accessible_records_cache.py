@@ -472,11 +472,18 @@ class AccessibleRecordsInvalidator:
             await self.cache.invalidate_kb(org_id, kb_id)
             
             # Coalesce corpus revision increments for the org.
-            # If a bump is already in-flight, mark the org dirty so the
-            # completing task schedules a follow-up instead of dropping the event.
-            if org_id in self._scheduled_bumps:
+            # A task that has already completed is treated as absent — it is
+            # no longer in-flight and its finally-block cleanup has already
+            # run, so marking dirty would leave the org waiting for a
+            # follow-up that will never be triggered.
+            existing_task = self._scheduled_bumps.get(org_id)
+            task_is_running = existing_task is not None and not existing_task.done()
+            if task_is_running:
                 self._pending_dirty.add(org_id)
             else:
+                # Remove stale done-task entry before creating the new one.
+                self._scheduled_bumps.pop(org_id, None)
+
                 async def _trailing_bump(target_org: str) -> None:
                     await asyncio.sleep(2.0)
                     success = False

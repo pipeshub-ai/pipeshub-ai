@@ -1194,7 +1194,7 @@ async def _generate_chat_stream_via_agent_loop(
 
     client_name = request.headers.get("client-name")
 
-    async for event in run_chat_stream(
+    run_stream = run_chat_stream(
         query_dict, user_info, llm, policy, logger_,
         retrieval_service=retrieval_service, graph_provider=graph_provider,
         reranker_service=None, config_service=config_service,
@@ -1205,8 +1205,12 @@ async def _generate_chat_stream_via_agent_loop(
         system_prompts_config=system_prompts_config, protocol=protocol,
         client_name=client_name,
         cancellation_registry=cancellation_registry,
-    ):
-        yield event
+    )
+    try:
+        async for event in run_stream:
+            yield event
+    finally:
+        await run_stream.aclose()
 
 
 @router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
@@ -1309,13 +1313,13 @@ async def askAIStream(
                     # response so two callers with the same query but different
                     # model/mode settings cannot share a cached answer.
                     request_profile = {
-                        "searchMode": query_info.searchMode if hasattr(query_info, "searchMode") else None,
-                        "modelKey": query_info.modelKey if hasattr(query_info, "modelKey") else None,
-                        "modelName": query_info.modelName if hasattr(query_info, "modelName") else None,
-                        "reasoningEffort": query_info.reasoningEffort if hasattr(query_info, "reasoningEffort") else None,
-                        "quickMode": query_info.quickMode if hasattr(query_info, "quickMode") else None,
-                        "limit": query_info.limit if hasattr(query_info, "limit") else None,
-                        "projectInstructions": query_info.projectInstructions if hasattr(query_info, "projectInstructions") else None,
+                        "chatMode": query_info.chatMode,
+                        "modelKey": query_info.modelKey,
+                        "modelName": query_info.modelName,
+                        "reasoningEffort": query_info.reasoningEffort,
+                        "quickMode": query_info.quickMode,
+                        "limit": query_info.limit,
+                        "projectInstructions": query_info.projectInstructions,
                     }
                     cache_scope = SemanticCacheScope(
                         orgId=org_id,
@@ -1332,16 +1336,45 @@ async def askAIStream(
                         query_vector = await retrieval_service.dense_embeddings.aembed_query(query_info.query)
                         if query_vector:
                             await semantic_cache.initialize(len(query_vector))
-                            cached_resp = await semantic_cache.get_cached_response(
+                            cached_entry = await semantic_cache.get_cached_response(
                                 query_info.query, query_vector, filters_hash_val
                             )
-                            if cached_resp:
+                            if cached_entry:
+                                # cached_entry may be a plain str (legacy) or a
+                                # dict with {"text": ..., "citations": [...]}.  
+                                # Entries that lack source-record identity (plain
+                                # str) cannot be permission-validated and must
+                                # bypass the cache so the live path can enforce
+                                # document ACLs correctly.
+                                if isinstance(cached_entry, str):
+                                    # Legacy plain-text entry — no record ids to
+                                    # validate against, skip and let live run handle it.
+                                    cached_entry = None
+                                elif not isinstance(cached_entry, dict) or not cached_entry.get("text"):
+                                    cached_entry = None
+
+                            if cached_entry:
+                                cached_resp = cached_entry["text"]
+                                cached_citations = cached_entry.get("citations") or []
                                 run_id = query_info.runId or new_id("run")
                                 conv_id = query_info.conversationId or new_id("conv")
                                 msg_id = new_id("msg")
 
                                 events = [
                                     frame(AGUIEventType.RUN_STARTED, runId=run_id, conversationId=conv_id),
+                                ]
+                                # Re-emit citations as a STATE_DELTA so the
+                                # client can render source cards even on a cache
+                                # hit, matching the live-stream experience.
+                                if cached_citations:
+                                    events.append(
+                                        frame(
+                                            AGUIEventType.STATE_DELTA,
+                                            runId=run_id,
+                                            delta={"citations": cached_citations},
+                                        )
+                                    )
+                                events += [
                                     frame(AGUIEventType.TEXT_MESSAGE_START, messageId=msg_id, runId=run_id, role="assistant"),
                                     frame(AGUIEventType.TEXT_MESSAGE_CONTENT, messageId=msg_id, delta=cached_resp, runId=run_id),
                                     frame(AGUIEventType.TEXT_MESSAGE_END, messageId=msg_id, runId=run_id),
@@ -1353,8 +1386,9 @@ async def askAIStream(
             except Exception:
                 logger.warning("Semantic cache lookup failed", exc_info=True)
 
-            # If no cache hit, run the live stream and accumulate text
+            # If no cache hit, run the live stream and accumulate text + citations
             full_response_parts = []
+            accumulated_citations: list = []
             run_finished = False
             run_failed = False
             has_complex_state = False
@@ -1366,37 +1400,50 @@ async def askAIStream(
                             event_line, data_line = chunk.split("\ndata: ", 1)
                             event_name = event_line.removeprefix("event: ").strip()
                             data_obj = json.loads(data_line)
-                            
+
                             if event_name == "TEXT_MESSAGE_CONTENT" and "delta" in data_obj:
                                 full_response_parts.append(data_obj["delta"])
                             elif event_name == "RUN_ERROR":
                                 run_failed = True
                             elif event_name == "RUN_FINISHED":
                                 run_finished = True
-                            elif event_name not in ["TEXT_MESSAGE_START", "TEXT_MESSAGE_END", "RUN_STARTED", "STATE_DELTA", "STATE_SNAPSHOT"]:
+                            elif event_name == "STATE_DELTA":
+                                # Accumulate citations so they can be stored in
+                                # the cache entry and replayed on subsequent hits.
+                                delta_citations = (data_obj or {}).get("citations")
+                                if isinstance(delta_citations, list):
+                                    accumulated_citations.extend(delta_citations)
+                            elif event_name not in ["TEXT_MESSAGE_START", "TEXT_MESSAGE_END", "RUN_STARTED", "STATE_SNAPSHOT"]:
                                 has_complex_state = True
                         except Exception:
                             pass
+            finally:
+                await base_stream.aclose()
 
-                # After stream completes, save to cache asynchronously
-                if query_vector and corpus_revision is not None and run_finished and not run_failed and not has_complex_state and full_response_parts:
-                    full_text = "".join(full_response_parts)
-                    try:
-                        current_revision = await graph_provider.get_corpus_revision(org_id)
-                    except Exception:
-                        current_revision = None
-                        
-                    if current_revision is not None and current_revision == corpus_revision:
-                        task = asyncio.create_task(
-                            semantic_cache.set_cached_response(
-                                query_info.query, full_text, query_vector, filters_hash_val, org_id, corpus_revision
-                            )
+            # After stream completes, save to cache asynchronously.
+            if (
+                query_vector
+                and corpus_revision is not None
+                and run_finished
+                and not run_failed
+                and not has_complex_state
+                and full_response_parts
+            ):
+                full_text = "".join(full_response_parts)
+                try:
+                    current_revision = await graph_provider.get_corpus_revision(org_id)
+                except Exception:
+                    current_revision = None
+
+                if current_revision is not None and current_revision == corpus_revision:
+                    task = asyncio.create_task(
+                        semantic_cache.set_cached_response(
+                            query_info.query, full_text, query_vector, filters_hash_val, org_id, corpus_revision,
+                            citations=accumulated_citations or None,
                         )
-                        _background_tasks.add(task)
-                        task.add_done_callback(_background_tasks.discard)
-            except Exception:
-                logger.exception("Error during stream generation")
-                raise
+                    )
+                    _background_tasks.add(task)
+                    task.add_done_callback(_background_tasks.discard)
 
         final_stream = cached_or_live_stream(original_stream)
     else:

@@ -2146,13 +2146,29 @@ async def delete_record(
         )
 
         if result["success"]:
-            # Increment corpus revision to invalidate cache
+            # Increment corpus revision to invalidate cache.
+            # Retry up to 3 times: a single failure here would leave semantic-
+            # cache entries valid for the now-deleted record until their TTL
+            # expires. The warning is still emitted after the final attempt.
             try:
                 org_id = result.get("orgId")
                 if org_id:
-                    await graph_provider.increment_corpus_revision(org_id)
-            except Exception as e:
-                logger.warning(f"Could not increment corpus revision for org: {e}")
+                    import asyncio as _asyncio
+                    _max_attempts = 3
+                    _last_exc: Exception | None = None
+                    for _attempt in range(1, _max_attempts + 1):
+                        try:
+                            await graph_provider.increment_corpus_revision(org_id)
+                            _last_exc = None
+                            break
+                        except Exception as _exc:
+                            _last_exc = _exc
+                            if _attempt < _max_attempts:
+                                await _asyncio.sleep(0.5 * _attempt)
+                    if _last_exc is not None:
+                        logger.warning(
+                            f"Could not increment corpus revision for org after {_max_attempts} attempts: {_last_exc}"
+                        )
 
             # Publish deletion event. The graph deletion above has already
             # committed, so a publish failure here cannot be undone by failing

@@ -105,8 +105,17 @@ class SemanticCacheService:
         self,
         query: str,
         embedding: list[float],
-        filters_hash: str
-    ) -> Optional[str]:
+        filters_hash: str,
+    ) -> "dict | None":
+        """Return ``{"text": str, "citations": list}`` on a cache hit, else ``None``.
+
+        Returning a typed dict (instead of a bare string) lets the caller
+        re-emit citations as a STATE_DELTA even on a cache-hit path, so source
+        cards are not silently dropped for cached responses.
+
+        A missing or empty ``metadata.response_text`` is treated as a miss so
+        we never serve a blank response from cache.
+        """
         try:
             req = HybridSearchRequest(
                 dense_query=embedding,
@@ -116,17 +125,31 @@ class SemanticCacheService:
                     must=[FieldCondition(key="metadata.filters_hash", value=filters_hash)]
                 ),
                 limit=1,
-                with_payload=True
+                with_payload=True,
+                # Must be True so QdrantService uses the dense-only path and
+                # preserves the raw cosine score that the threshold check below
+                # depends on.  Without this flag the score goes through RRF
+                # and is no longer comparable to self.threshold.
+                is_semantic_cache_query=True,
             )
             results = await self.vector_db.query_nearest_points(self.collection_name, [req])
             if results and results[0]:
                 top_match = results[0][0]
                 if top_match.score >= self.threshold:
-                    logger.info(f"Semantic cache hit! Score: {top_match.score}")
                     # response_text lives in metadata.response_text after the
                     # OpenSearch round-trip (hit_to_search_result rebuilds payload
                     # as {"metadata": {...}, "page_content": ...}).
-                    return top_match.payload.get("metadata", {}).get("response_text")
+                    meta = top_match.payload.get("metadata") or {}
+                    text = meta.get("response_text") or ""
+                    if not text:
+                        # Empty text is not a valid cache hit — treat as miss.
+                        return None
+                    citations = meta.get("citations") or []
+                    logger.info(
+                        "Semantic cache hit! Score: %.4f, citations: %d",
+                        top_match.score, len(citations),
+                    )
+                    return {"text": text, "citations": citations}
         except Exception as e:
             logger.error(f"Error reading from semantic cache: {e}", exc_info=True)
         return None
@@ -139,7 +162,22 @@ class SemanticCacheService:
         filters_hash: str,
         org_id: str,
         corpus_revision: str,
+        citations: "list | None" = None,
     ) -> None:
+        """Persist a query→response pair to the semantic cache.
+
+        ``citations`` should be the list of source-record dicts emitted during
+        the live run.  Storing them here lets ``get_cached_response`` re-emit
+        them as a STATE_DELTA on cache-hit replays so source cards are preserved.
+
+        Purging stale entries is **not** triggered here.  The call-site in
+        ``chatbot.py`` already validates the corpus revision matches before
+        writing, so the new entry is already safe.  Bulk purging on every write
+        would add an O(n) delete scan to every cached response and compete with
+        the cache read on the same collection.  Callers that need a purge
+        (e.g. after a corpus revision bump) call ``purge_stale_entries``
+        directly.
+        """
         try:
             # Store all cache-specific fields inside the `metadata` sub-document
             # so they survive the OpenSearch adapter's vector_point_to_document /
@@ -154,6 +192,7 @@ class SemanticCacheService:
                     "metadata": {
                         "query_text": query,
                         "response_text": response_text,
+                        "citations": citations or [],
                         "filters_hash": filters_hash,
                         "orgId": org_id,
                         "corpusRevision": corpus_revision,
@@ -163,17 +202,16 @@ class SemanticCacheService:
             )
             await self.vector_db.upsert_points(self.collection_name, [point])
             logger.info("Saved response to semantic cache.")
-
-            # Purge stale entries in the background.  Keep a reference in
-            # _background_tasks so the GC cannot collect the task before it
-            # finishes — asyncio.create_task alone is not enough.
-            task = asyncio.create_task(self.purge_stale_entries(org_id, corpus_revision))
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.error(f"Error writing to semantic cache: {e}", exc_info=True)
 
     async def purge_stale_entries(self, org_id: str, current_revision: str) -> None:
+        """Delete all cache entries for *org_id* whose ``corpusRevision`` does
+        not match *current_revision*.
+
+        Call this after a corpus revision bump (connector sync, KB mutation,
+        record deletion) rather than automatically on every cache write.
+        """
         try:
             filter_expr = FilterExpression(
                 must=[FieldCondition(key="metadata.orgId", value=org_id)],

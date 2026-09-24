@@ -35,7 +35,9 @@ async def _test_semantic_cache_hit():
         filters_hash="hash123",
     )
 
-    assert response == "This is a cached answer."
+    assert isinstance(response, dict)
+    assert response["text"] == "This is a cached answer."
+    assert response["citations"] == []
     mock_vector_db.query_nearest_points.assert_called_once()
 
 
@@ -91,9 +93,97 @@ async def _test_set_cached_response():
     meta = points[0].payload["metadata"]
     assert meta["query_text"] == "Hello"
     assert meta["response_text"] == "World"
+    assert meta["citations"] == []
     assert meta["filters_hash"] == "hash123"
     assert meta["orgId"] == "org1"
     assert meta["corpusRevision"] == "42"
+    # set_cached_response must NOT trigger a background purge on its own
+    mock_vector_db.delete_points.assert_not_called()
+
+
+def test_set_cached_response_with_citations():
+    asyncio.run(_test_set_cached_response_with_citations())
+
+
+async def _test_set_cached_response_with_citations():
+    """Citations passed to set_cached_response must be stored in metadata."""
+    mock_vector_db = AsyncMock()
+    cache_service = SemanticCacheService(mock_vector_db)
+    sample_citations = [{"recordId": "r1", "title": "Doc A"}]
+
+    await cache_service.set_cached_response(
+        query="Hello",
+        response_text="World",
+        embedding=[0.1, 0.2],
+        filters_hash="hash123",
+        org_id="org1",
+        corpus_revision="42",
+        citations=sample_citations,
+    )
+
+    args, kwargs = mock_vector_db.upsert_points.call_args
+    meta = args[1][0].payload["metadata"]
+    assert meta["citations"] == sample_citations
+
+
+def test_semantic_cache_hit_with_citations():
+    asyncio.run(_test_semantic_cache_hit_with_citations())
+
+
+async def _test_semantic_cache_hit_with_citations():
+    """get_cached_response must return citations stored in metadata."""
+    mock_vector_db = AsyncMock()
+    mock_vector_db.collection_exists.return_value = True
+
+    sample_citations = [{"recordId": "r1", "title": "Doc A"}]
+    mock_result = MagicMock(spec=SearchResult)
+    mock_result.score = 0.97
+    mock_result.payload = {
+        "metadata": {
+            "response_text": "Cached answer with citations.",
+            "citations": sample_citations,
+        },
+        "page_content": "What is the policy?",
+    }
+    mock_vector_db.query_nearest_points.return_value = [[mock_result]]
+
+    cache_service = SemanticCacheService(mock_vector_db)
+    response = await cache_service.get_cached_response(
+        query="What is the policy?",
+        embedding=[0.1, 0.2, 0.3],
+        filters_hash="hash123",
+    )
+
+    assert isinstance(response, dict)
+    assert response["text"] == "Cached answer with citations."
+    assert response["citations"] == sample_citations
+
+
+def test_semantic_cache_hit_empty_text_is_miss():
+    asyncio.run(_test_semantic_cache_hit_empty_text_is_miss())
+
+
+async def _test_semantic_cache_hit_empty_text_is_miss():
+    """A high-score hit with an empty response_text must be treated as a miss."""
+    mock_vector_db = AsyncMock()
+    mock_vector_db.collection_exists.return_value = True
+
+    mock_result = MagicMock(spec=SearchResult)
+    mock_result.score = 0.99
+    mock_result.payload = {
+        "metadata": {"response_text": ""},
+        "page_content": "What is the policy?",
+    }
+    mock_vector_db.query_nearest_points.return_value = [[mock_result]]
+
+    cache_service = SemanticCacheService(mock_vector_db)
+    response = await cache_service.get_cached_response(
+        query="What is the policy?",
+        embedding=[0.1, 0.2, 0.3],
+        filters_hash="hash123",
+    )
+
+    assert response is None, "Empty response_text must be treated as a cache miss"
 
 
 def test_hash_filters():

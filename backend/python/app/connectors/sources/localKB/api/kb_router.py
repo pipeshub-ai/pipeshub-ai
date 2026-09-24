@@ -76,24 +76,41 @@ async def _increment_org_corpus_revision(request: Request, org_id: str | None = 
     Always pass the org that *owns* the KB/record, not request.state.user["orgId"].
     The latter would wrongly bump the requester's revision when a user with
     cross-org access modifies another org's knowledge base.
+
+    Retries up to 3 times with a short backoff so transient graph errors do not
+    leave semantic-cache hits silently enabled after a mutation.
     """
-    try:
-        if not org_id:
-            # Explicit org_id should always be provided; fall back to the
-            # requester's org only as a last resort, and log a warning so it
-            # is easy to find during review.
-            org_id = request.state.user.get("orgId")
-            _log.warning(
-                "_increment_org_corpus_revision: org_id not supplied; "
-                "falling back to requester org '%s'. Ensure callers pass the "
-                "resource-owning org.",
-                org_id,
-            )
-        if org_id:
-            graph_provider = request.app.state.graph_provider
+    import asyncio as _asyncio
+
+    if not org_id:
+        # Explicit org_id should always be provided; fall back to the
+        # requester's org only as a last resort, and log a warning so it
+        # is easy to find during review.
+        org_id = request.state.user.get("orgId")
+        _log.warning(
+            "_increment_org_corpus_revision: org_id not supplied; "
+            "falling back to requester org '%s'. Ensure callers pass the "
+            "resource-owning org.",
+            org_id,
+        )
+    if not org_id:
+        return
+
+    graph_provider = request.app.state.graph_provider
+    max_attempts = 3
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
             await graph_provider.increment_corpus_revision(org_id)
-    except Exception as e:
-        _log.warning(f"Could not increment corpus revision for org: {e}")
+            return  # success
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_attempts:
+                await _asyncio.sleep(0.5 * attempt)
+    _log.warning(
+        "Could not increment corpus revision for org '%s' after %d attempts: %s",
+        org_id, max_attempts, str(last_exc),
+    )
 
 kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
 
@@ -1407,9 +1424,13 @@ async def update_record(
         # The enrichment block below already fetches kb_context, but we need
         # the org_id before that to match the resource — re-fetch here so the
         # bump uses the authoritative value even if enrichment is skipped.
+        # Only call the helper when a non-empty org_id was resolved; passing
+        # None would silently fall back to the requester's org, which is wrong
+        # for cross-org access.
         _kb_ctx_for_bump = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
         _bump_org_id = _kb_ctx_for_bump.get("org_id") if _kb_ctx_for_bump else None
-        await _increment_org_corpus_revision(request, _bump_org_id)
+        if _bump_org_id:
+            await _increment_org_corpus_revision(request, _bump_org_id)
 
         # Publish update event
         event_data = result.get("eventData")
