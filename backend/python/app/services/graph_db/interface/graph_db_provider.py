@@ -406,7 +406,8 @@ class IGraphDBProvider(ABC):
         self,
         document_key: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get a document by its key from a collection.
@@ -415,6 +416,9 @@ class IGraphDBProvider(ABC):
             document_key (str): The document's unique identifier (generic 'id')
             collection (str): Collection/table name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Propagate the failure instead of answering
+                None. Callers that read None as "this was deleted" must pass
+                True, or a graph that cannot be reached reads as a deletion.
 
         Returns:
             Optional[Dict]: Document data with 'id' field if found, None otherwise
@@ -1293,7 +1297,14 @@ class IGraphDBProvider(ABC):
             transaction (Optional[Any]): Optional transaction context
 
         Returns:
-            Optional[Dict]: Record data if found, None otherwise
+            Optional['Record']: Record data if found, None otherwise. None means
+                there is no such record - never that the lookup failed.
+
+        Raises:
+            GraphQueryError: The lookup could not be read. Callers act on None
+                by creating the record or concluding it was deleted, so a
+                failure reported as None becomes a duplicate record or a
+                deletion that never happened.
         """
         pass
 
@@ -2418,7 +2429,9 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         external_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['AppUserGroup']:
         """
         Get a user group by external ID.
@@ -2476,7 +2489,9 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         external_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['AppRole']:
         """
         Get an app role by external ID.
@@ -2720,6 +2735,7 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Find the next QUEUED duplicate record with the same md5 hash.
@@ -2892,6 +2908,7 @@ class IGraphDBProvider(ABC):
         virtual_record_id: str,
         accessible_record_ids: list[str] | None = None,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[str]:
         """Keys of every live record sharing this virtualRecordId.
 
@@ -3190,7 +3207,8 @@ class IGraphDBProvider(ABC):
         self,
         key: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get a sync point by key.
@@ -3199,6 +3217,7 @@ class IGraphDBProvider(ABC):
             key (str): Sync point key
             collection (str): Collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error: Propagate the failure instead of answering None.
 
         Returns:
             Optional[Dict]: Sync point data if found, None otherwise

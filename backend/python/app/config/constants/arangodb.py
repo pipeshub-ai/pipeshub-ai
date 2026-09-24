@@ -86,6 +86,7 @@ class Connectors(Enum):
 
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
+    DEMO = "DEMO"
 
     CODING_SANDBOX = "CODING_SANDBOX"
     DATABASE_SANDBOX = "DATABASE_SANDBOX"
@@ -136,6 +137,7 @@ class AppGroups(Enum):
     ZAMMAD = "Zammad"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
+    DEMO = "Demo"
     RSS = "RSS"
     GITLAB = "GitLab"
 
@@ -652,6 +654,7 @@ class EventTypes(Enum):
     REINDEX_RECORD = "reindexRecord"
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
+    DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
 

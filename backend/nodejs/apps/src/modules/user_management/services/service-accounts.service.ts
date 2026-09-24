@@ -1,9 +1,11 @@
 import { injectable, inject } from 'inversify';
 import mongoose from 'mongoose';
+import { randomUUID } from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   ConflictError,
+  InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { Users, User } from '../schema/users.schema';
@@ -41,6 +43,21 @@ export interface CreateServiceAccountInput {
   slug: string;
   fullName: string;
   description?: string;
+}
+
+/**
+ * The part of the token service this one needs.
+ *
+ * Service accounts and the tokens they hold are owned by different modules,
+ * with their own dependency containers, so the connection is made explicitly
+ * at wiring time rather than by reaching across. Stated as the one operation
+ * that is needed, so what this service can do to tokens is visible here.
+ */
+export interface ServiceAccountTokenRevoker {
+  revokeAllForServiceAccount(
+    orgId: string,
+    serviceAccountId: string,
+  ): Promise<void>;
 }
 
 export interface UpdateServiceAccountInput {
@@ -100,6 +117,17 @@ export class ServiceAccountsService {
     @inject('EntitiesEventProducer')
     private readonly eventService: EntitiesEventProducer,
   ) {}
+
+  private tokenRevoker?: ServiceAccountTokenRevoker;
+
+  /**
+   * Supplied once both containers exist. Until it is, deleting a service
+   * account still stops its tokens, because the auth middleware refuses a
+   * deleted account — revocation is what makes that survive a restore.
+   */
+  setTokenRevoker(revoker: ServiceAccountTokenRevoker): void {
+    this.tokenRevoker = revoker;
+  }
 
   async create(
     orgId: string,
@@ -216,6 +244,20 @@ export class ServiceAccountsService {
     slug: string,
     input: CreateServiceAccountInput,
   ): Promise<ServiceAccountView> {
+    // Checked before anything is written. The application supplies a revoker
+    // at startup, so its absence means something is wrong rather than that
+    // there is nothing to revoke, and restoring an identity whose old
+    // credentials might still work is not a guess worth making.
+    if (!this.tokenRevoker) {
+      throw new InternalServerError(
+        'Cannot restore a service account without the token revoker',
+      );
+    }
+
+    // Identifies this attempt, so the steps that finish or undo it cannot act
+    // on somebody else's.
+    const restoreOpId = randomUUID();
+
     // One conditional update rather than read-then-save, because two
     // administrators can reach here with the same deleted document in hand.
     // Mongoose's version key does not guard scalar assignments, so both saves
@@ -237,8 +279,16 @@ export class ServiceAccountsService {
           fullName: input.fullName.trim(),
           kind: 'service',
           role: SERVICE_ACCOUNT_ROLE,
-          isDisabled: false,
+          // Restored disabled, and enabled only once the old tokens are gone.
+          // Clearing isDeleted is what makes this account's tokens acceptable
+          // again, so doing that before revoking would let a credential from
+          // before the deletion authorise a request — and no amount of
+          // undoing afterwards un-authorises one that already succeeded.
+          // Disabled is refused by both authentication paths, so the account
+          // exists, holds its place, and can do nothing.
+          isDisabled: true,
           isDeleted: false,
+          restoreOpId,
           // A description the caller did give.
           ...(input.description === undefined
             ? {}
@@ -263,16 +313,57 @@ export class ServiceAccountsService {
       );
     }
 
+    // Only the request that won the update above revokes. Revoking before it
+    // would mean the loser of a race — a request that restores nothing and
+    // returns a conflict — destroying tokens the winner's client had already
+    // minted from its own success.
+    try {
+      await this.tokenRevoker.revokeAllForServiceAccount(orgId, idOf(restored));
+    } catch (error) {
+      // Put it back, but only if this attempt is still the one in progress.
+      // Matching on the marker as well as the id means a restore that failed
+      // slowly cannot delete an account that has since been deleted,
+      // recreated and restored by somebody else.
+      await Users.updateOne(
+        { _id: restored._id, restoreOpId },
+        { $set: { isDeleted: true }, $unset: { restoreOpId: '' } },
+      ).exec();
+      throw error;
+    }
+
+    // The old credentials are gone, so the account can now be used.
+    //
+    // `isDeleted: false` is part of the match, not just the marker. `remove`
+    // does not clear the marker, so a delete landing between the revoke above
+    // and this update would otherwise still match — re-enabling a deleted
+    // account, adding it back to every group, announcing it to the permission
+    // graph and returning 201 for a row that no longer exists.
+    const finished = await Users.findOneAndUpdate(
+      { _id: restored._id, restoreOpId, isDeleted: false },
+      { $set: { isDisabled: false }, $unset: { restoreOpId: '' } },
+      { new: true },
+    ).exec();
+
+    // Nothing matched, so something else has moved this account on while the
+    // restore was in flight. Carrying on with the document read earlier would
+    // mean describing a state that is no longer true — and doing the group
+    // and event work for it. Stop instead.
+    if (!finished) {
+      throw new ConflictError(
+        `The service account "${slug}" changed while it was being restored`,
+      );
+    }
+
     await UserGroups.updateOne(
-      { orgId: restored.orgId, type: 'everyone' },
-      { $addToSet: { users: restored._id } },
+      { orgId: finished.orgId, type: 'everyone' },
+      { $addToSet: { users: finished._id } },
     );
 
     const addedPayload: UserAddedEvent = {
       orgId,
-      userId: idOf(restored),
-      fullName: restored.fullName,
-      email: restored.email,
+      userId: idOf(finished),
+      fullName: finished.fullName,
+      email: finished.email,
       syncAction: SyncAction.Immediate,
     };
     await this.publish({
@@ -283,11 +374,11 @@ export class ServiceAccountsService {
 
     this.logger.info('Service account restored', {
       orgId,
-      serviceAccountId: idOf(restored),
+      serviceAccountId: idOf(finished),
       slug,
     });
 
-    return toView(restored, orgId);
+    return toView(finished, orgId);
   }
 
   async list(orgId: string): Promise<ServiceAccountView[]> {
@@ -312,13 +403,58 @@ export class ServiceAccountsService {
   ): Promise<ServiceAccountView> {
     const account = await this.findOrThrow(orgId, id);
 
-    if (input.fullName !== undefined) account.fullName = input.fullName.trim();
+    // Enabling is a conditional write, not an assignment to the document read
+    // a moment ago. While a restore is in flight the account is deliberately
+    // disabled, because that is the only thing standing between a credential
+    // issued before its deletion and the auth middleware, which refuses a
+    // disabled account and checks nothing else. This endpoint is admin plus
+    // user:write, so without the condition a second request arriving during
+    // revocation would switch the account on with those tokens still live —
+    // and the version key does not guard a scalar, so a save would simply
+    // overwrite the guard.
+    if (input.isDisabled === false) {
+      const enabled = await Users.findOneAndUpdate(
+        {
+          _id: account._id,
+          orgId,
+          kind: 'service',
+          isDeleted: false,
+          restoreOpId: { $exists: false },
+        },
+        { $set: { isDisabled: false } },
+        { new: true },
+      ).exec();
+
+      if (!enabled) {
+        throw new ConflictError(
+          'This service account is being restored. Try again once that has finished.',
+        );
+      }
+      account.isDisabled = false;
+    }
+
+    // Everything else is safe to write unconditionally. Disabling is among
+    // them: it only ever removes access, so no race makes it dangerous.
+    const changes: Record<string, unknown> = {};
+    if (input.fullName !== undefined) {
+      account.fullName = input.fullName.trim();
+      changes.fullName = account.fullName;
+    }
     if (input.description !== undefined) {
       account.description = input.description.trim();
+      changes.description = account.description;
     }
-    if (input.isDisabled !== undefined) account.isDisabled = input.isDisabled;
+    if (input.isDisabled === true) {
+      account.isDisabled = true;
+      changes.isDisabled = true;
+    }
 
-    await account.save();
+    if (Object.keys(changes).length > 0) {
+      await Users.updateOne(
+        { _id: account._id, orgId, kind: 'service', isDeleted: false },
+        { $set: changes },
+      ).exec();
+    }
 
     // The graph keeps its own copy of the display name, so a rename has to
     // reach it too or search results will go on showing the old one.
@@ -350,6 +486,8 @@ export class ServiceAccountsService {
 
     account.isDeleted = true;
     await account.save();
+
+    await this.tokenRevoker?.revokeAllForServiceAccount(orgId, idOf(account));
 
     await UserGroups.updateMany(
       { orgId: account.orgId },

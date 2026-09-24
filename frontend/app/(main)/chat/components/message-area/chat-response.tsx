@@ -123,6 +123,12 @@ interface ChatResponseProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Set when this response was cut short by a user-initiated Stop (see `IMessage.status`, Node). */
   status?: 'stopped';
+  /**
+   * No assistant row exists for this question (see `buildMessagePairs`). The
+   * question is drawn on its own: an answer area, tabs and message actions
+   * would all be empty controls over a reply that was never produced.
+   */
+  unanswered?: boolean;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -150,6 +156,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   persistedAskUserQuestion,
   feedbackInfo,
   status,
+  unanswered = false,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
@@ -856,18 +863,20 @@ export const ChatResponse = React.memo(function ChatResponse({
       {/* Tabs — hide Sources/Citations counts when the ask_user_question card
           (streaming or persisted) owns this row; those tabs reflect answer
           chunks that are suppressed. */}
-      <ResponseTabs
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
-        citationCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : citationCount}
-      />
+      {!unanswered && (
+        <ResponseTabs
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
+          citationCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : citationCount}
+        />
+      )}
 
       {/* Tab Content */}
-      {renderTabContent()}
+      {!unanswered && renderTabContent()}
 
       {/* Message Actions (feedback, copy, regenerate, model info) */}
-      {activeTab === 'answer' && (
+      {!unanswered && activeTab === 'answer' && (
         <MessageActions
           content={speakContent}
           citationMaps={effectiveCitationMaps}

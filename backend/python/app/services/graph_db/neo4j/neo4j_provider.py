@@ -107,6 +107,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
     build_page_records_for_vector_membership_backfill_cypher,
+    can_use_membership_cleanup,
 )
 from app.utils.env_config import env_int
 from app.utils.env_utils import env_bool
@@ -776,7 +777,8 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         document_key: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get a document by its key from a collection.
@@ -785,6 +787,7 @@ class Neo4jProvider(IGraphDBProvider):
             document_key: Document key (id)
             collection: Collection name
             transaction: Optional transaction ID
+            raise_on_error: Propagate the failure instead of answering None.
 
         Returns:
             Optional[Dict]: Document data if found, None otherwise
@@ -812,6 +815,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get document failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_all_documents(
@@ -2104,30 +2109,44 @@ class Neo4jProvider(IGraphDBProvider):
         external_id: str,
         transaction: str | None = None
     ) -> Record | None:
-        """Get record by external ID"""
-        try:
-            query = """
-            MATCH (r:Record {externalRecordId: $external_id, connectorId: $connector_id})
-            RETURN r
-            LIMIT 1
-            """
+        """Get a record by its external ID.
 
+        None means there is no such record. It never means the lookup failed,
+        because callers act on None by creating the record or concluding it was
+        deleted -- so a swallowed failure becomes a duplicate record, or a
+        deletion that never happened. A lookup that could not be read raises
+        GraphQueryError instead.
+        """
+        query = """
+        MATCH (r:Record {externalRecordId: $external_id, connectorId: $connector_id})
+        RETURN r
+        LIMIT 1
+        """
+
+        try:
             results = await self.client.execute_query(
                 query,
                 parameters={"external_id": external_id, "connector_id": connector_id},
                 txn_id=transaction
             )
 
+            # Inside the boundary, and matching the ArangoDB provider: a stored
+            # record that will not rebuild into a Record leaves the caller just
+            # as unable to answer "does this exist?" as an unreachable database
+            # does. Letting the KeyError out instead would break the one promise
+            # this method makes -- that a lookup either answers or raises
+            # GraphQueryError -- and only on one of the two backends.
             if results:
                 record_dict = dict(results[0]["r"])
                 record_dict = self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value)
                 return Record.from_arango_base_record(record_dict)
 
             return None
-
         except Exception as e:
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
-            return None
+            raise GraphQueryError(
+                f"Could not look up record {external_id}: {e}"
+            ) from e
 
     async def find_slack_burst_record_by_ts(
         self,
@@ -2205,7 +2224,8 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         virtual_record_id: str,
         accessible_record_ids: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[str]:
         """
         Get all record keys that have the given virtualRecordId.
@@ -2273,6 +2293,8 @@ class Neo4jProvider(IGraphDBProvider):
                 virtual_record_id,
                 str(e)
             )
+            if raise_on_error:
+                raise
             return []
 
     async def get_record_by_path(
@@ -3483,7 +3505,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> AppUserGroup | None:
         """Get user group by external ID"""
         try:
@@ -3508,6 +3532,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get user group by external ID failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_user_groups(
@@ -3545,7 +3571,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> AppRole | None:
         """Get app role by external ID"""
         try:
@@ -3570,6 +3598,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get app role by external ID failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     # ==================== Organization Operations ====================
@@ -4124,6 +4154,7 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         record_id: str,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Find the next QUEUED duplicate record with the same md5 hash.
@@ -4224,6 +4255,8 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(
                 f"❌ Failed to find next queued duplicate: {str(e)}"
             )
+            if raise_on_error:
+                raise
             return None
 
     async def update_queued_duplicates_status(
@@ -6181,7 +6214,8 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         key: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """Get sync point by syncPointKey"""
         try:
@@ -6207,6 +6241,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get sync point failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def upsert_sync_point(
@@ -6220,8 +6256,13 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             label = collection_to_label(collection)
 
-            # Check if exists
-            existing = await self.get_sync_point(sync_point_key, collection, transaction)
+            # Raising: a read that failed must not answer "no row here". The
+            # CREATE below is unconstrained -- nothing makes syncPointKey
+            # unique -- so a second sync point would land for the same key and
+            # the two would race to be the one LIMIT 1 returns.
+            existing = await self.get_sync_point(
+                sync_point_key, collection, transaction, raise_on_error=True
+            )
 
             sync_point_data["syncPointKey"] = sync_point_key
             sync_point_data["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
@@ -7170,29 +7211,59 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Connector Deletion Helper Methods ====================
 
-    async def _collect_connector_entities(self, connector_id: str, transaction: str | None = None) -> dict:
-        """Collect all entity IDs for a connector."""
+    async def _collect_connector_entities(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+        *,
+        include_virtual_record_ids: bool = False,
+    ) -> dict:
+        """Collect all entity IDs for a connector.
+
+        ``include_virtual_record_ids`` is off by default: the VRID list is only
+        consumed by the legacy id-shipping cleanup path, and materialising one
+        entry per distinct VRID is wasted memory and payload on a connector with
+        millions of records when nothing will read it.
+        """
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
 
+        # The first WITH must contain *only* aggregates. Any non-aggregate
+        # expression there — a bare `[]` included — becomes a grouping key, and a
+        # grouped aggregation over zero matched records yields zero rows instead
+        # of one row of empty collections. That would make a connector with
+        # record groups but no records look entirely empty, and its groups,
+        # roles and edges would survive the delete. So the projection is either
+        # bound as an aggregate or left out of the pipeline altogether.
+        if include_virtual_record_ids:
+            vrid_bind = (
+                ",\n             [vid IN collect(DISTINCT r.virtualRecordId) "
+                "WHERE vid IS NOT NULL] AS virtual_record_ids"
+            )
+            vrid_carry = "virtual_record_ids, "
+            vrid_result = "virtual_record_ids"
+        else:
+            vrid_bind = ""
+            vrid_carry = ""
+            vrid_result = "[]"
+
         query = """
         MATCH (r:Record {connectorId: $connector_id})
-        WITH collect(r.id) AS record_ids,
-             [vid IN collect(r.virtualRecordId) WHERE vid IS NOT NULL] AS virtual_record_ids
+        WITH collect(r.id) AS record_ids__VRID_BIND__
 
         OPTIONAL MATCH (rg:RecordGroup {connectorId: $connector_id})
-        WITH record_ids, virtual_record_ids, collect(rg.id) AS record_group_ids
+        WITH record_ids, __VRID_CARRY__collect(rg.id) AS record_group_ids
 
         OPTIONAL MATCH (role:Role {connectorId: $connector_id})
-        WITH record_ids, virtual_record_ids, record_group_ids, collect(role.id) AS role_ids
+        WITH record_ids, __VRID_CARRY__record_group_ids, collect(role.id) AS role_ids
 
         OPTIONAL MATCH (grp:Group {connectorId: $connector_id})
-        WITH record_ids, virtual_record_ids, record_group_ids, role_ids, collect(grp.id) AS group_ids
+        WITH record_ids, __VRID_CARRY__record_group_ids, role_ids, collect(grp.id) AS group_ids
 
         RETURN {
           record_keys: record_ids,
           record_ids: record_ids,
-          virtual_record_ids: virtual_record_ids,
+          virtual_record_ids: __VRID_RESULT__,
           record_group_keys: record_group_ids,
           role_keys: role_ids,
           group_keys: group_ids,
@@ -7204,6 +7275,11 @@ class Neo4jProvider(IGraphDBProvider):
             ['apps/' + $connector_id]
         } AS result
         """
+        query = (
+            query.replace("__VRID_BIND__", vrid_bind)
+            .replace("__VRID_CARRY__", vrid_carry)
+            .replace("__VRID_RESULT__", vrid_result)
+        )
 
         results = await self.client.execute_query(
             query,
@@ -7556,8 +7632,18 @@ class Neo4jProvider(IGraphDBProvider):
                     "error": f"Connector instance {connector_id} not found"
                 }
 
+            # Whether the vector cleanup will need an explicit VRID list at all.
+            # Membership-based cleanup finds the points itself, so on that path
+            # the list is never read and collecting it is pure cost — which is
+            # the whole point on a connector with millions of records.
+            needs_virtual_record_ids = not can_use_membership_cleanup(connector)
+
             # Phase 1: Collect data needed for return values (outside transaction)
-            collected = await self._collect_connector_entities(connector_id, transaction)
+            collected = await self._collect_connector_entities(
+                connector_id,
+                transaction,
+                include_virtual_record_ids=needs_virtual_record_ids,
+            )
             edge_collections = await self._get_all_edge_collections()
 
             # Collect isOfType targets before opening write transaction
@@ -7676,6 +7762,16 @@ class Neo4jProvider(IGraphDBProvider):
                     "deleted_roles_count": deleted_roles,
                     "deleted_groups_count": deleted_groups,
                     "virtual_record_ids": collected["virtual_record_ids"],
+                    # The connector's own record groups went with it. A point
+                    # shared with a live connector survives the purge, so the
+                    # cleanup needs these to strip them from recordGroupIds.
+                    "record_group_ids": collected["record_group_keys"],
+                    "vector_membership_backfilled": bool(
+                        connector.get("vectorMembershipBackfilled", False)
+                    ),
+                    "vector_membership_backfill_exhausted": bool(
+                        connector.get("vectorMembershipBackfillExhausted", False)
+                    ),
                     "connector_id": connector_id,
                     "connector_name": connector.get("type"),
                 }

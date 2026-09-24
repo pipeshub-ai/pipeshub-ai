@@ -3,7 +3,8 @@
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
-import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { useDemoDataActive } from '@/chat/hooks/use-demo-data-active';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -44,7 +45,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github-stars';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useUserStore } from '@/lib/store/user-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
@@ -1017,6 +1018,8 @@ function ChatContent() {
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
   const profile = useUserStore((s) => s.profile);
+  const isAdmin = useUserStore(selectIsAdmin);
+  const demoDataActive = useDemoDataActive();
   const greetingName = useMemo(() => {
     if (!profile) return '';
     const full = profile.fullName?.trim();
@@ -1030,13 +1033,6 @@ function ChatContent() {
     }
     return '';
   }, [profile]);
-
-  const defaultSuggestionsMap = t('chat.defaultSuggestions', { returnObjects: true }) as Record<string, { text: string; icons: ChatSuggestion['icons'] }>;
-  const defaultSuggestions: ChatSuggestion[] = Object.entries(defaultSuggestionsMap).map(([id, item]) => ({
-    id,
-    text: item.text,
-    icons: item.icons,
-  }));
 
   // Share state
   const [isShareSidebarOpen, setIsShareSidebarOpen] = useState(false);
@@ -1412,6 +1408,9 @@ function ChatContent() {
                   <Box style={{ width: '100%' }}>
                     <ChatInputWrapper />
                   </Box>
+                )}
+                {demoDataActive && showChatInput && (
+                  <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />
                 )}
               </Flex>
             </Box>

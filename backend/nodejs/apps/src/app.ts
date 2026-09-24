@@ -20,6 +20,8 @@ import {
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
+import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
+import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
@@ -85,6 +87,9 @@ import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
+import { createServiceTokenRouter } from './modules/oauth_provider/routes/service-token.routes';
+import { ServiceAccountsService } from './modules/user_management/services/service-accounts.service';
+import { ServiceTokenService } from './modules/oauth_provider/services/service-token.service';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import {
@@ -129,6 +134,7 @@ export class Application {
   private mailServiceContainer!: Container;
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
+  private outboxDispatcher: OutboxDispatcher | null = null;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
@@ -286,6 +292,16 @@ export class Application {
         KeyValueStoreService.getInstance(configurationManagerConfig),
       );
       startOrgMetricsRefresh(this.logger);
+
+      // Domain events are written to the outbox by whoever makes the change;
+      // this is what actually delivers them. Without it running, events queue
+      // durably and nothing reaches the permission graph, so it starts with
+      // the application rather than on first use.
+      this.outboxDispatcher = new OutboxDispatcher(
+        this.entityManagerContainer.get<IMessageProducer>('MessageProducer'),
+        this.logger,
+      );
+      this.outboxDispatcher.start();
 
       this.notificationContainer
         .get<NotificationService>(NotificationService)
@@ -661,10 +677,28 @@ export class Application {
       createOAuthClientsRouter(this.oauthProviderContainer),
     );
 
+    // Service accounts own the identity; service tokens own the credential,
+    // and they live in different containers. Joined here, where both exist,
+    // so deleting an account revokes its tokens and restoring one under the
+    // same name does not bring old tokens back with it.
+    this.entityManagerContainer
+      .get<ServiceAccountsService>('ServiceAccountsService')
+      .setTokenRevoker(
+        this.oauthProviderContainer.get<ServiceTokenService>(
+          'ServiceTokenService',
+        ),
+      );
+
     // Service accounts (machine identities, admin-managed)
     this.app.use(
       '/api/v1/service-accounts',
       createServiceAccountsRouter(this.entityManagerContainer),
+    );
+
+    // Service tokens (the credential a service account authenticates with)
+    this.app.use(
+      '/api/v1/service-tokens',
+      createServiceTokenRouter(this.oauthProviderContainer),
     );
 
     this.app.use(
@@ -758,6 +792,13 @@ export class Application {
         this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
       }
+      // Stopped before the containers go, because it holds the message
+      // producer one of them owns.
+      // Awaited: a pass in flight is publishing through a producer the
+      // containers below are about to disconnect.
+      await this.outboxDispatcher?.stop();
+      this.outboxDispatcher = null;
+
       await NotificationContainer.dispose();
       await StorageContainer.dispose();
       await UserManagerContainer.dispose();

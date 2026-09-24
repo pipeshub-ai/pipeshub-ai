@@ -12,6 +12,7 @@ import {
   tokenIdParamsSchema,
 } from '../validators/pat.validators'
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
+import { refuseServiceAccountCaller } from '../../user_management/middlewares/refuseServiceAccountCaller'
 
 export function createPatRouter(container: Container): Router {
   const router = Router()
@@ -30,6 +31,11 @@ export function createPatRouter(container: Container): Router {
   // All routes require authentication — non-admins mint their own tokens.
   router.use(authMiddleware.authenticate.bind(authMiddleware))
   router.use(patRateLimiter)
+  // Personal access tokens belong to people. A service account holds the
+  // credential it was given and does not mint more — otherwise a read-only,
+  // expiring service token could mint itself a write-capable one that never
+  // expires, since omitting scopes here grants everything the instance allows.
+  router.use(refuseServiceAccountCaller)
 
   router.get('/', (req, res, next) => controller.listTokens(req, res, next))
 

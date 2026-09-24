@@ -651,18 +651,42 @@ export class OAuthProviderController {
     let fullName: string | undefined
     let accountType: string | undefined
 
-    if (app.createdBy) {
-      const user = await Users.findOne({
-        _id: app.createdBy,
+    // The identity these tokens will act as: the application's chosen service
+    // account where one is set, its creator otherwise. Checked here rather
+    // than only at mint time, because this grant hands out a bearer that
+    // authenticates as that identity for as long as it lives.
+    const identityId = app.tokenIdentityUserId ?? app.createdBy
+    if (identityId) {
+      const identity = await Users.findOne({
+        _id: identityId,
         orgId: app.orgId,
         isDeleted: false,
       })
-        .select('fullName')
+        .select('fullName isDisabled restoreOpId')
         .lean()
         .exec()
-      if (user) {
-        fullName = user.fullName
+
+      // Refused rather than issued against an identity that cannot be used.
+      // A client_credentials token is stored without a userId, so it is not
+      // reached by the revocation that runs when a service account is
+      // deleted, disabled or restored — which means one issued now would
+      // outlive those decisions instead of being cleaned up by them.
+      if (!identity) {
+        throw new BadRequestError(
+          'The identity this application acts as no longer exists',
+        )
       }
+      if (identity.isDisabled === true) {
+        throw new BadRequestError(
+          'The identity this application acts as is disabled',
+        )
+      }
+      if (identity.restoreOpId !== undefined && identity.restoreOpId !== null) {
+        throw new BadRequestError(
+          'The identity this application acts as is being restored. Try again once that has finished.',
+        )
+      }
+      fullName = identity.fullName
     }
 
     const org = await Org.findOne({

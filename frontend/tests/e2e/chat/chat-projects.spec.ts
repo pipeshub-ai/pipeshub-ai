@@ -224,10 +224,14 @@ async function mockSharingApis(page: import('@playwright/test').Page) {
   await page.route('**/api/v1/users/by-ids', (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     const { userIds } = route.request().postDataJSON() as { userIds: string[] };
-    const byId: Record<string, { userId: string; name: string; email: string }> = {
-      [OWNER_USER_ID]: { userId: OWNER_USER_ID, name: 'Project Owner', email: 'owner@example.com' },
+    // `_id`, not `userId`: the route returns lean Mongo documents, and the
+    // client reads `u._id ?? u.id` (app/components/share/api.ts). Keyed on
+    // anything else every name resolves to "Unknown", which is how this mock
+    // made the share drawer look broken when it was not.
+    const byId: Record<string, { _id: string; name: string; email: string }> = {
+      [OWNER_USER_ID]: { _id: OWNER_USER_ID, name: 'Project Owner', email: 'owner@example.com' },
       [SUGGESTED_USER_ID]: {
-        userId: SUGGESTED_USER_ID,
+        _id: SUGGESTED_USER_ID,
         name: SUGGESTED_USER_NAME,
         email: SUGGESTED_USER_EMAIL,
       },
@@ -266,7 +270,12 @@ test.describe('Projects — nav + list + workspace (mocked backend)', () => {
     await page.goto(`/projects/?projectId=${PROJECT_ID}`);
     await page.waitForSelector('textarea', { timeout: 15_000 });
     await expect(page.getByText(PROJECT_NAME).first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText('Coordinate the Q3 product launch').first()).toBeVisible();
+    // The description is deliberately not asserted here: #3426 removed it from
+    // the workspace. It added `chat.projects.workspace.addDescription`,
+    // `descriptionPlaceholder` and `descriptionSaveFailed`, translated into all
+    // nine locales, for an inline editor that no component references yet — so
+    // a project's description is currently visible only in the list. Put the
+    // assertion back, against that editor, when it lands.
     // The settings cards start collapsed (settings-panel.tsx, defaultExpanded=false).
     await page.getByText('Instructions', { exact: true }).first().click();
     await expect(

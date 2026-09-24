@@ -10,8 +10,12 @@ export type AddedModel = { type: ModelType; modelKey: string };
 
 /**
  * Where a real model comes from, mirroring the integration tests'
- * `helper/ai_models_setup.py`: OpenAI with TEST_OPENAI_API_KEY (the CI secret),
- * or, for local runs, any OpenAI-compatible server at E2E_AI_ENDPOINT.
+ * `helper/ai_models_setup.py`: Azure OpenAI when its credentials are set — which
+ * is what CI runs on — then OpenAI, or, for local runs, any OpenAI-compatible
+ * server at E2E_AI_ENDPOINT.
+ *
+ * Azure is tried first for the same reason the Python helper tries it first:
+ * whichever key the org is given here is the one every answering test spends.
  */
 function modelConfig(type: ModelType): { provider: string; configuration: Record<string, string> } | null {
   const endpoint = process.env.E2E_AI_ENDPOINT;
@@ -25,6 +29,10 @@ function modelConfig(type: ModelType): { provider: string; configuration: Record
       },
     };
   }
+
+  const azure = azureConfig(type);
+  if (azure) return azure;
+
   const apiKey = process.env.TEST_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
   const model =
@@ -32,6 +40,35 @@ function modelConfig(type: ModelType): { provider: string; configuration: Record
       ? process.env.TEST_OPENAI_LLM_MODEL || 'gpt-5.4-nano'
       : process.env.TEST_OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
   return { provider: 'openAI', configuration: { model, apiKey } };
+}
+
+/**
+ * Azure needs an endpoint and a deployment as well as a key, so a half-set
+ * environment falls through to the next provider rather than being configured
+ * with blanks.
+ *
+ * The embedding deployment is required rather than falling back to the chat
+ * one: a chat deployment fails an embedding health check, and failing there is
+ * worse than never claiming Azure at all, because falling through would have
+ * found a working provider.
+ */
+function azureConfig(type: ModelType): { provider: string; configuration: Record<string, string> } | null {
+  const apiKey = process.env.TEST_AZURE_OPENAI_API_KEY;
+  const endpoint = process.env.TEST_AZURE_OPENAI_ENDPOINT;
+  if (!apiKey || !endpoint) return null;
+
+  const llmDeployment = process.env.TEST_AZURE_OPENAI_DEPLOYMENT_NAME;
+  const deploymentName =
+    type === 'llm'
+      ? llmDeployment
+      : process.env.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME;
+  if (!deploymentName) return null;
+
+  const model =
+    type === 'llm'
+      ? process.env.TEST_AZURE_OPENAI_MODEL || deploymentName
+      : process.env.TEST_AZURE_OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
+  return { provider: 'azureOpenAI', configuration: { endpoint, apiKey, deploymentName, model } };
 }
 
 async function listModels(api: APIRequestContext, type: ModelType): Promise<unknown[]> {

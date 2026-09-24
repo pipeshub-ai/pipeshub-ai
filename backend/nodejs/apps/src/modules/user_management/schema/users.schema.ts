@@ -41,6 +41,14 @@ export interface User extends Document, Address {
    * permission-graph node all survive so it can be switched back on.
    */
   isDisabled?: boolean;
+  /**
+   * Set while a deleted service account is being brought back, and cleared
+   * when that finishes either way. It exists so the step that undoes a failed
+   * restore can tell its own attempt from a later one: without it, a restore
+   * that failed slowly could mark an account deleted that somebody had since
+   * deleted, recreated and restored again.
+   */
+  restoreOpId?: string;
   /** Org privilege: admin | member (replaces membership in type=admin UserGroup) */
   role?: UserRole;
   address?: Address;
@@ -73,6 +81,7 @@ const userSchema = new Schema<User>(
     },
     description: { type: String, trim: true },
     isDisabled: { type: Boolean, default: false },
+    restoreOpId: { type: String },
     role: {
       type: String,
       enum: userRoles,

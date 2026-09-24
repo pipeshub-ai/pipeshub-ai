@@ -377,7 +377,11 @@ class EventProcessor:
         )
 
         record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
+            record_id,
+            CollectionNames.RECORDS.value,
+            # Otherwise a graph that cannot be read raises "not found after
+            # parsing", which sends whoever reads it looking for a deletion.
+            raise_on_error=True,
         )
         if record_doc is None:
             raise RuntimeError(f"Record {record_id} not found after parsing")
@@ -891,7 +895,14 @@ class EventProcessor:
                 )
 
             record = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id,
+                CollectionNames.RECORDS.value,
+                # None below drains the message, so it has to mean "deleted" and
+                # nothing else. Without this a graph that is restarting answers
+                # None for every record in flight, each one is drained as though
+                # it had been deleted, and they sit at QUEUED until the stranded
+                # sweep notices an hour later.
+                raise_on_error=True,
             )
 
             if record is None:

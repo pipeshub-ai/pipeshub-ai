@@ -128,6 +128,26 @@ case "$method $path" in
     printf '{"status":"configured"}' >"$body_out"
     printf '200'
     ;;
+  "POST /api/v1/connectors/")
+    write_hdr 200
+    printf '{"success":true,"connector":{"connectorId":"demo-conn-1","connectorType":"Demo"}}' >"$body_out"
+    printf '200'
+    ;;
+  "PUT /api/v1/connectors/demo-conn-1/config")
+    write_hdr 200
+    printf '{"success":true}' >"$body_out"
+    printf '200'
+    ;;
+  "POST /api/v1/connectors/demo-conn-1/toggle")
+    write_hdr 200
+    printf '{"success":true}' >"$body_out"
+    printf '200'
+    ;;
+  "POST /api/v1/users/")
+    write_hdr 201
+    printf '{"_id":"u1","email":"persona@example.com"}' >"$body_out"
+    printf '201'
+    ;;
   *)
     write_hdr 500
     printf '{"error":"unexpected %s %s"}' "$method" "$path" >"$body_out"
@@ -292,6 +312,118 @@ if grep -q '"provider":"ollama"' "$CURL_LOG"; then
   pass "LLM provider ollama"
 else
   fail "LLM provider ollama"
+fi
+
+echo "== demo data is opt-in =="
+if grep -q "PATH=/api/v1/connectors" "$CURL_LOG"; then
+  fail "no connector calls without PIPESHUB_DEMO_DATA"
+else
+  pass "no connector calls without PIPESHUB_DEMO_DATA"
+fi
+
+echo "== PIPESHUB_DEMO_DATA=1 creates and syncs the Demo connector =="
+bindir="$TMP_ROOT/bin-demo"
+CURL_LOG="$TMP_ROOT/demo.log"; export CURL_LOG
+: >"$CURL_LOG"
+make_fake_curl "$bindir"
+envf="$TMP_ROOT/demo.env"; make_env "$envf"
+printf '\nPIPESHUB_DEMO_DATA=1\n' >>"$envf"
+out="$TMP_ROOT/demo.out"
+if PATH="$bindir:$PATH" \
+  "$BOOTSTRAP" --env-file "$envf" --token-file "$TMP_ROOT/token-demo" >"$out" 2>&1; then
+  pass "demo path exit 0"
+else
+  fail "demo path exit 0"
+  cat "$out"
+fi
+for needle in \
+  "METHOD=POST PATH=/api/v1/connectors/" \
+  "METHOD=PUT PATH=/api/v1/connectors/demo-conn-1/config" \
+  "METHOD=POST PATH=/api/v1/connectors/demo-conn-1/toggle"
+ do
+  if grep -q "$needle" "$CURL_LOG"; then
+    pass "called $needle"
+  else
+    fail "called $needle"
+  fi
+done
+if grep -q '"connectorType":"Demo"' "$CURL_LOG" && grep -q '"scope":"team"' "$CURL_LOG"; then
+  pass "Demo connector created as a team connector"
+else
+  fail "Demo connector created as a team connector"
+fi
+if grep -q '"type":"sync"' "$CURL_LOG"; then
+  pass "sync toggled on"
+else
+  fail "sync toggled on"
+fi
+if grep -q 'Demo data' "$out"; then
+  pass "success copy mentions the demo data"
+else
+  fail "success copy mentions the demo data"
+fi
+
+echo "== personas need a business account =="
+bindir="$TMP_ROOT/bin-persona-indiv"
+CURL_LOG="$TMP_ROOT/persona-indiv.log"; export CURL_LOG
+make_fake_curl "$bindir"
+envf="$TMP_ROOT/persona-indiv.env"; make_env "$envf"
+printf '\nPIPESHUB_DEMO_DATA=1\nPIPESHUB_DEMO_PERSONAS=1\nPIPESHUB_DEMO_PASSWORD=Persona1!\n' >>"$envf"
+out="$TMP_ROOT/persona-indiv.out"
+if PATH="$bindir:$PATH" \
+  "$BOOTSTRAP" --env-file "$envf" --token-file "$TMP_ROOT/token-persona-indiv" >"$out" 2>&1; then
+  fail "personas on an individual account should be refused"
+else
+  if grep -q "needs PIPESHUB_ACCOUNT_TYPE=business" "$out" && ! grep -q "METHOD=" "$CURL_LOG" 2>/dev/null; then
+    pass "personas refused on individual account before any request"
+  else
+    fail "personas refused on individual account before any request"
+    cat "$out"
+  fi
+fi
+
+echo "== PIPESHUB_DEMO_PERSONAS=1 creates Alice and Bob before the connector =="
+bindir="$TMP_ROOT/bin-persona"
+CURL_LOG="$TMP_ROOT/persona.log"; export CURL_LOG
+: >"$CURL_LOG"
+make_fake_curl "$bindir"
+envf="$TMP_ROOT/persona.env"; make_env "$envf"
+printf '\nPIPESHUB_ACCOUNT_TYPE=business\nPIPESHUB_REGISTERED_NAME=Acme\nPIPESHUB_DEMO_DATA=1\nPIPESHUB_DEMO_PERSONAS=1\nPIPESHUB_DEMO_PASSWORD=Persona1!\n' >>"$envf"
+out="$TMP_ROOT/persona.out"
+if PATH="$bindir:$PATH" \
+  "$BOOTSTRAP" --env-file "$envf" --token-file "$TMP_ROOT/token-persona" >"$out" 2>&1; then
+  pass "persona path exit 0"
+else
+  fail "persona path exit 0"
+  cat "$out"
+fi
+if [[ "$(grep -c 'METHOD=POST PATH=/api/v1/users/' "$CURL_LOG")" == "2" ]]; then
+  pass "two persona users created"
+else
+  fail "two persona users created"
+fi
+if grep -q '"email":"alice@acme-demo.example"' "$CURL_LOG" && grep -q '"email":"bob@acme-demo.example"' "$CURL_LOG" \
+   && grep -q '"fullName":"Alice Chen"' "$CURL_LOG" && grep -q '"password":"Persona1!"' "$CURL_LOG"; then
+  pass "personas carry fixture emails, full names and the starting password"
+else
+  fail "personas carry fixture emails, full names and the starting password"
+fi
+users_line="$(grep -n 'METHOD=POST PATH=/api/v1/users/' "$CURL_LOG" | head -1 | cut -d: -f1)"
+conn_line="$(grep -n 'METHOD=POST PATH=/api/v1/connectors/' "$CURL_LOG" | head -1 | cut -d: -f1)"
+if [[ -n "$users_line" && -n "$conn_line" && "$users_line" -lt "$conn_line" ]]; then
+  pass "personas created before the connector sync"
+else
+  fail "personas created before the connector sync"
+fi
+if grep -q 'Persona1!' "$out"; then
+  fail "persona password must not appear on stdout/stderr"
+else
+  pass "persona password absent from stdout/stderr"
+fi
+if grep -q 'ARGS=.*Persona1!' "$CURL_LOG"; then
+  fail "persona password must stay off curl argv"
+else
+  pass "persona password off curl argv"
 fi
 
 echo "== secrets stay off curl argv =="

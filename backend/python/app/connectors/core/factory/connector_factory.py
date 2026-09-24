@@ -50,6 +50,7 @@ from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
 from app.connectors.sources.local_fs.connector import LocalFsConnector
+from app.connectors.sources.demo.connector import DemoConnector
 from app.connectors.sources.github.connector import GithubConnector
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
@@ -121,6 +122,7 @@ class ConnectorFactory:
         "web": WebConnector,
         "rss": RSSConnector,
         "localfs": LocalFsConnector,
+        "demo": DemoConnector,
         "bookstack": BookStackConnector,
         "github": GithubConnector,
         "s3": S3Connector,

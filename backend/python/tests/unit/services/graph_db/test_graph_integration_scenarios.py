@@ -695,6 +695,7 @@ class FakeGraphProvider:
         key: str,
         collection: str,
         transaction: str | None = None,
+        raise_on_error: bool = False,  # noqa: ARG002 - this store cannot fail; named so signature drift shows up here
     ) -> dict[str, object] | None:
         col = self._ensure_collection(collection)
         return col.get(key)

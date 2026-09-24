@@ -317,10 +317,14 @@ async def test_a_metadata_refresh_does_not_postpone_recovering_a_lost_event(env:
 
 
 async def test_a_record_on_default_timestamps_is_not_aged_to_process_start(env: _Env) -> None:
+    # Read before the record is built, not after: dropping the explicit clocks
+    # makes the model stamp its own `created_at` at construction, so a reference
+    # point taken afterwards is already later than the record and the comparison
+    # below fails whenever the two land in different milliseconds.
+    before = get_epoch_timestamp_in_ms()
     issue = _jira_issue(env.connector_id)
     # Rebuilt without explicit clocks, as most connectors build their records.
     issue = TicketRecord(**issue.model_dump(exclude={"created_at", "updated_at"}))
-    before = get_epoch_timestamp_in_ms()
 
     await env.processor.on_new_records([(issue, [])])
 

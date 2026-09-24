@@ -480,7 +480,7 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     if org_id and team_id == f"all_{org_id}":
         raise HTTPException(status_code=403, detail="The default All team cannot be deleted")
 
-    # Check if user has permission to delete the team (OWNER only)
+    team = await graph_provider.get_document(team_id, CollectionNames.TEAMS.value)
     permission = await graph_provider.get_edge(
         user['_key'],
         CollectionNames.USERS.value,
@@ -488,9 +488,17 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         CollectionNames.TEAMS.value,
         CollectionNames.PERMISSION.value
     )
-    if not permission:
-        raise HTTPException(status_code=403, detail="User does not have permission to delete this team")
 
+    # A team that is not there and a team this caller has nothing to do with get
+    # the same answer, so the status code cannot be used to discover which team
+    # ids exist. It also makes deleting twice a plain "not found" rather than an
+    # apparent permissions failure: deleting a team removes its permission edges
+    # with it, so afterwards both of these are empty.
+    if not team or not permission:
+        raise HTTPException(status_code=404, detail=not_found("This team"))
+
+    # Someone with a role on the team already knows it exists, so telling them
+    # they are not the owner gives nothing away and is the honest answer.
     if permission.get("role") != "OWNER":
         raise HTTPException(status_code=403, detail="User does not have permission to delete this team")
 

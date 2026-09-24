@@ -246,8 +246,24 @@ jobs:
       GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
       AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
-      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
       TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+      # Azure OpenAI is where the credits are, and TEST_AI_MODEL_PROVIDER names
+      # it outright: the helper falls back to the next provider on a health
+      # check failure, so without this an Azure problem retries against the
+      # OpenAI key and reports that instead.
+      TEST_AI_MODEL_PROVIDER: azureOpenAI
+      # _LLM_PROVIDER_ORDER tries Azure before OpenAI, but _azure_credentials_complete
+      # needs key, endpoint and deployment together — miss one and Azure is dropped
+      # from the candidates silently, leaving OpenAI as the only provider tried.
+      # secrets || vars so the non-secret names work from either store.
+      TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+      TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+      TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+      # Optional. Unset falls back to the LLM deployment above, which is what a
+      # local .env run does today.
+      TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
       CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
       CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
       CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
@@ -257,8 +273,12 @@ jobs:
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
       SHAREPOINT_TEST_CLIENT_ID: ${{ secrets.SHAREPOINT_TEST_CLIENT_ID }}
       SHAREPOINT_TEST_SHAREPOINT_DOMAIN: ${{ secrets.SHAREPOINT_TEST_SHAREPOINT_DOMAIN }}
-      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE_CONTENT }}
-      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE_CONTENT }}
+      # No _CONTENT suffix: the secrets are stored under these names, and a
+      # reference to a secret that does not exist resolves to empty, which the
+      # suite reports as "the SharePoint tenant is not configured" -- the same
+      # message as having no credentials at all.
+      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE }}
+      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE }}
       JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
       JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
       JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}

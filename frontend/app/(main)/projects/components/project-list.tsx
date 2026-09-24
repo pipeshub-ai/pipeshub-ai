@@ -268,7 +268,7 @@ export function ProjectList() {
   };
 
   const openProject = (projectId: string) => {
-    router.push(`/chat/?projectId=${encodeURIComponent(projectId)}`);
+    router.push(`/projects/?projectId=${encodeURIComponent(projectId)}`);
   };
 
   const handleUnarchive = async (projectId: string) => {

@@ -17,6 +17,15 @@ on:
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
+      # The graph-entity schema guard compares the models here against the YAML
+      # the connector checks validate against, so a change to either side has
+      # to run it.
+      - 'integration-tests/unit/**'
+      - 'integration-tests/validation/**'
+      # The connector-type guard checks the types these suites ask for against
+      # the names the connectors register under backend/python/app, so a
+      # misspelling on the suite side has to run it too.
+      - 'integration-tests/connectors/**'
 
   workflow_call:
     inputs:
@@ -144,6 +153,29 @@ jobs:
           cd backend/python
           coverage run -m pytest tests/unit -v
           coverage report --fail-under=${{ inputs.python-coverage-threshold || 88.4 }}
+
+      # Lives under integration-tests because it guards that suite's schemas,
+      # but it is pure and needs no stack -- and the job that normally runs it
+      # sits behind a reviewer gate, so on a pull request it would not run until
+      # someone approved it, and in practice not until the nightly. That is the
+      # delay the guard exists to remove, so it runs here too.
+      # Two offline guards over integration-tests: the graph-entity schemas, and
+      # the connector types the suites ask for, which must match a registered
+      # @ConnectorBuilder name exactly. The second exists because the SharePoint
+      # suite asked for "SharePointOnline" against "SharePoint Online" and only
+      # a nightly with a real tenant could find out.
+      - name: Run the integration-suite guards
+        run: |
+          uv pip install --system pyyaml
+          # `-c` and `--noconftest` because the file sits inside integration-tests,
+          # whose pytest.ini asks for pytest-order and whose conftest expects a
+          # running stack. Neither is here, and without these the step dies on
+          # `unrecognized arguments: --order-scope=module` before the guard runs
+          # -- leaving it exactly as unenforced on a pull request as it was.
+          PYTHONPATH=backend/python:integration-tests \
+            pytest integration-tests/unit/test_graph_entity_schemas.py \
+              integration-tests/unit/test_connector_types_are_registered.py \
+              --noconftest -c backend/python/pytest.ini -v
 
       # The only automated check on agent behaviour: six golden properties the
       # prompt and loop must hold (tool choice, no placeholder write params, a

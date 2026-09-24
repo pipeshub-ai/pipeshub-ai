@@ -1509,6 +1509,38 @@ class TestOnEventEarlyReturns:
         ]
 
     @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_not_drained_as_a_deletion(self):
+        """The graph being unreachable must not read as "this record is gone".
+
+        Draining is permanent: the message is acknowledged and the record sits
+        at QUEUED until the stranded sweep republishes it an hour later. During
+        a graph restart every record in flight took that path.
+        """
+        ep, _logger, _, gp = _make_event_processor()
+
+        async def unreachable_graph(*_args, raise_on_error: bool = False, **_kwargs):
+            # What both providers do: swallow and answer None unless asked not to.
+            # A double that raised either way would pass without the fix.
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return None
+
+        gp.get_document.side_effect = unreachable_graph
+
+        with pytest.raises(RuntimeError):
+            await _drain(ep.on_event(_make_event_payload()))
+
+    @pytest.mark.asyncio
+    async def test_the_record_lookup_asks_for_failures_to_be_raised(self):
+        """`raise_on_error` is what makes the None above mean "deleted"."""
+        ep, _logger, _, gp = _make_event_processor()
+        gp.get_document.return_value = None
+
+        await _drain(ep.on_event(_make_event_payload()))
+
+        assert gp.get_document.await_args.kwargs.get("raise_on_error") is True
+
+    @pytest.mark.asyncio
     async def test_no_buffer_proceeds_with_none_content(self):
         """None buffer proceeds (no early return), duplicate check runs with None content."""
         ep, logger, processor, gp = _make_event_processor()

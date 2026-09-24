@@ -150,6 +150,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_aql,
     build_page_records_for_vector_membership_backfill_aql,
+    can_use_membership_cleanup,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -884,7 +885,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         document_key: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get a document by key - FULLY ASYNC.
@@ -893,13 +895,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
             document_key: Document key (generic 'id')
             collection: Collection name
             transaction: Optional transaction ID
+            raise_on_error: Propagate the failure instead of answering None.
 
         Returns:
             Optional[Dict]: Document data in generic format (with 'id' field) or None
         """
         try:
             doc = await self.http_client.get_document(
-                collection, document_key, txn_id=transaction
+                collection,
+                document_key,
+                txn_id=transaction,
+                # The client answers None for a 404, a 503 and a dead connection
+                # alike, so the flag has to reach it; stopping at this method
+                # leaves the `raise` below unreachable on ArangoDB.
+                raise_on_error=raise_on_error,
             )
             if doc:
                 # Translate from ArangoDB format to generic format
@@ -907,6 +916,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return None
         except Exception as e:
             self.logger.error(f"❌ Failed to get document: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_record_by_id(
@@ -3287,7 +3298,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return None
         except Exception as e:
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
-            return None
+            raise GraphQueryError(
+                f"Could not look up record {external_id}: {e}"
+            ) from e
 
     async def find_slack_burst_record_by_ts(
         self,
@@ -5177,7 +5190,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> AppUserGroup | None:
         """
         Get user group by external ID.
@@ -5211,6 +5226,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get user group by external ID failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_user_groups(
@@ -5287,7 +5304,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> AppRole | None:
         """
         Get app role by external ID.
@@ -5321,6 +5340,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get app role by external ID failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_all_orgs(
@@ -6595,7 +6616,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         key: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get sync point by syncPointKey field.
@@ -6617,6 +6639,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get sync point failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def upsert_sync_point(
@@ -6631,7 +6655,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         try:
             # First check if document exists
-            existing = await self.get_sync_point(sync_point_key, collection, transaction)
+            # Raising: a read that failed must not answer "no row here", which
+            # would insert a second sync point for this key and leave the two
+            # of them racing to be the one LIMIT 1 returns.
+            existing = await self.get_sync_point(
+                sync_point_key, collection, transaction, raise_on_error=True
+            )
 
             if existing:
                 # Update existing document
@@ -7909,10 +7938,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
             raise
 
-    async def _collect_connector_entities(self, connector_id: str, transaction: str | None = None) -> dict:
+    async def _collect_connector_entities(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+        *,
+        include_virtual_record_ids: bool = False,
+    ) -> dict:
         """
         Collect all entity IDs for a connector in a single pass.
         Returns record keys, virtual record IDs, and full node IDs for edge deletion.
+
+        ``include_virtual_record_ids`` is off by default: the VRID list is only
+        consumed by the legacy id-shipping cleanup path, and materialising one
+        entry per distinct VRID is wasted memory and payload on a connector with
+        millions of records when nothing will read it.
         """
         result = {
             "record_keys": [],
@@ -7937,11 +7977,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             },
             txn_id=transaction
         )
+        # VRIDs are deduplicated: records sharing content share one, and the
+        # consumer only ever needs the distinct set.
+        seen_virtual_record_ids: set[str] = set()
         for doc in (records_result or []):
             result["record_keys"].append(doc["_key"])
             result["record_ids"].append(f"records/{doc['_key']}")
-            if doc.get("virtualRecordId"):
-                result["virtual_record_ids"].append(doc["virtualRecordId"])
+            if not include_virtual_record_ids:
+                continue
+            virtual_record_id = doc.get("virtualRecordId")
+            if virtual_record_id and virtual_record_id not in seen_virtual_record_ids:
+                seen_virtual_record_ids.add(virtual_record_id)
+                result["virtual_record_ids"].append(virtual_record_id)
 
         # Collect record groups
         query = "FOR rg IN @@collection FILTER rg.connectorId == @connector_id RETURN rg._key"
@@ -8473,8 +8520,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "error": f"Connector instance {connector_id} not found"
                 }
 
+            # Whether the vector cleanup will need an explicit VRID list at all.
+            # Membership-based cleanup finds the points itself, so on that path
+            # the list is never read and collecting it is pure cost — which is
+            # the whole point on a connector with millions of records.
+            needs_virtual_record_ids = not can_use_membership_cleanup(connector)
+
             # Step 2: Collect all entities for this connector
-            collected = await self._collect_connector_entities(connector_id, transaction)
+            collected = await self._collect_connector_entities(
+                connector_id,
+                transaction,
+                include_virtual_record_ids=needs_virtual_record_ids,
+            )
 
             # Step 3: Get all edge collections from graph definition
             edge_collections = await self._get_all_edge_collections()
@@ -8693,6 +8750,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "deleted_edges_count": deleted_edges,
                     "deleted_isoftype_targets_count": deleted_isoftype,
                     "virtual_record_ids": collected["virtual_record_ids"],
+                    # The connector's own record groups went with it. A point
+                    # shared with a live connector survives the purge, so the
+                    # cleanup needs these to strip them from recordGroupIds.
+                    "record_group_ids": collected["record_group_keys"],
+                    "vector_membership_backfilled": bool(
+                        connector.get("vectorMembershipBackfilled", False)
+                    ),
+                    "vector_membership_backfill_exhausted": bool(
+                        connector.get("vectorMembershipBackfillExhausted", False)
+                    ),
                     "connector_id": connector_id,
                     "connector_name": connector.get("type"),
                 }
@@ -18788,6 +18855,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Find the next QUEUED duplicate record with the same md5 hash.
@@ -18896,6 +18964,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(
                 f"❌ Failed to find next queued duplicate: {str(e)}"
             )
+            if raise_on_error:
+                raise
             return None
 
     async def copy_document_relationships(
@@ -19991,7 +20061,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         virtual_record_id: str,
         accessible_record_ids: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[str]:
         """
         Get all record keys that have the given virtualRecordId.
@@ -20052,6 +20123,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 virtual_record_id,
                 str(e)
             )
+            if raise_on_error:
+                raise
             return []
 
     # ==================== Team Operations ====================

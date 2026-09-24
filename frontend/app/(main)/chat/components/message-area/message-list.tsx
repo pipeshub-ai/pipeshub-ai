@@ -9,8 +9,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, ChatArtifact, MessagePart } from '../../types';
-import type { ConfidenceLevel, ModelInfo } from '../../types';
+import type { ChatArtifact, MessagePart } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
@@ -18,6 +17,8 @@ import { InlineCitationPopoverHost } from './response-tabs/citations/inline-cita
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { loadOlderMessagesForSlot } from '../../streaming';
 import { parseArtifactMarkers } from '../../utils/parse-download-markers';
+import { buildMessagePairs, extractTextContent } from './message-pairs';
+import type { MessagePair } from './message-pairs';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
 // `?? []` or `?? null` in a selector body creates a new ref every call,
@@ -49,43 +50,6 @@ function isStreamingFlushWithBottom(el: HTMLElement): boolean {
 
 const EMPTY_STRING = '';
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
-
-/**
- * Extract text content from assistant-ui message content array
- */
-function extractTextContent(content: readonly { type: string; text?: string }[]): string {
-  return content
-    .filter((part) => part.type === 'text' && part.text)
-    .map((part) => part.text)
-    .join('');
-}
-
-
-interface MessagePair {
-  key: string;
-  /** Backend _id of the bot_response message (used for regenerate) */
-  messageId?: string;
-  question: string;
-  answer: string;
-  citationMaps: CitationMaps;
-  confidence?: ConfidenceLevel;
-  isStreaming: boolean;
-  modelInfo?: ModelInfo;
-  feedbackInfo?: { value?: 'like' | 'dislike' };
-  /** Collections attached to this message (from user message metadata) */
-  collections?: Array<{ id: string; name: string }>;
-  appliedFilters?: AppliedFilters;
-  /** ISO timestamp of when the user sent this query */
-  createdAt?: string;
-  /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
-  attachments?: AttachmentRef[];
-  /** Persisted ask_user_question payload from a historical tool_call (read-only display) */
-  persistedAskUserQuestion?: AskUserQuestionPayload;
-  /** Persisted agent-activity transcript (absent for older / legacy-protocol messages) */
-  persistedParts?: MessagePart[];
-  /** Set when this response was cut short by a user-initiated Stop. */
-  status?: 'stopped';
-}
 
 export function MessageList() {
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
@@ -238,101 +202,17 @@ export function MessageList() {
   }, []);
 
   // Build message pairs (user question + assistant answer) in chronological order
-  const messagePairs = useMemo<MessagePair[]>(() => {
-    const pairs: MessagePair[] = [];
-    const messages = thread.messages;
-    // Only the *last* assistant in the thread can be the live SSE target for a
-    // new send. (Never use `!content` alone: agent threads can retain empty
-    // `content` on older rows after a bad load or edge case, which would paint
-    // the current stream + citations onto every such row.)
-    let lastAssistantIndex = -1;
-    for (let j = 0; j < messages.length; j += 1) {
-      if (messages[j].role === 'assistant') {
-        lastAssistantIndex = j;
-      }
-    }
-
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      if (msg.role === 'assistant') {
-        const content = extractTextContent(msg.content as { type: string; text?: string }[]);
-
-        const metadata = (msg as { metadata?: { custom?: {
-          messageId?: string;
-          citationMaps?: CitationMaps;
-          confidence?: ConfidenceLevel;
-          modelInfo?: ModelInfo;
-          feedbackInfo?: { value?: 'like' | 'dislike' };
-          persistedAskUserQuestion?: AskUserQuestionPayload;
-          persistedParts?: MessagePart[];
-          status?: 'stopped';
-        } } }).metadata?.custom as {
-          messageId?: string;
-          citationMaps?: CitationMaps;
-          confidence?: ConfidenceLevel;
-          modelInfo?: ModelInfo;
-          feedbackInfo?: { value?: 'like' | 'dislike' };
-          persistedAskUserQuestion?: AskUserQuestionPayload;
-          persistedParts?: MessagePart[];
-          status?: 'stopped';
-        } | undefined;
-
-        // Find preceding user message
-        const prevMsg = i > 0 ? messages[i - 1] : null;
-        const question = prevMsg?.role === 'user'
-          ? extractTextContent(prevMsg.content as { type: string; text?: string }[])
-          : 'Question';
-
-        // Check if this message is being regenerated
-        const isBeingRegenerated = !!regenerateMessageId && metadata?.messageId === regenerateMessageId;
-
-        // Live stream attaches only to the last assistant in the thread when
-        // its user message matches the query we sent (see placeholder assistant
-        // in `streamMessageForSlot`).
-        const isLastAssistant = i === lastAssistantIndex;
-        const isCurrentlyStreaming =
-          isStreaming && isLastAssistant && question === streamingQuestion;
-
-        // appliedFilters from the preceding user message metadata
-        const userMsgCustom = prevMsg?.metadata?.custom as {
-          collections?: Array<{ id: string; name: string }>;
-          appliedFilters?: AppliedFilters;
-          createdAt?: string;
-          attachments?: AttachmentRef[];
-        } | undefined;
-        const userMessageCollections = userMsgCustom?.collections as Array<{ id: string; name: string }> | undefined;
-        const userMessageAppliedFilters = userMsgCustom?.appliedFilters as AppliedFilters | undefined;
-        const userCreatedAt = userMsgCustom?.createdAt;
-        const userMessageAttachments = userMsgCustom?.attachments as AttachmentRef[] | undefined;
-
-
-        pairs.push({
-          key: msg.id ?? `asst-${i}`,
-          messageId: metadata?.messageId,
-          question,
-          answer: isBeingRegenerated ? '' : content,
-          citationMaps: (isCurrentlyStreaming || isBeingRegenerated)
-            ? EMPTY_CITATION_MAPS
-            : (metadata?.citationMaps || EMPTY_CITATION_MAPS),
-          confidence: metadata?.confidence,
-          isStreaming: isCurrentlyStreaming || isBeingRegenerated,
-          modelInfo: metadata?.modelInfo,
-          feedbackInfo: metadata?.feedbackInfo,
-          collections: isCurrentlyStreaming
-            ? (pendingCollections.length > 0 ? pendingCollections : userMessageCollections)
-            : userMessageCollections,
-          appliedFilters: userMessageAppliedFilters,
-          createdAt: userCreatedAt,
-          attachments: userMessageAttachments,
-          persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
-          persistedParts: metadata?.persistedParts,
-          status: metadata?.status,
-        });
-      }
-    }
-
-    return pairs;
-  }, [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]);
+  const messagePairs = useMemo<MessagePair[]>(
+    () =>
+      buildMessagePairs(thread.messages, {
+        isStreaming,
+        streamingQuestion,
+        pendingCollections,
+        regenerateMessageId,
+        emptyCitationMaps: EMPTY_CITATION_MAPS,
+      }),
+    [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
+  );
 
   // The highest version any message in this conversation has shown for a
   // given artifact `recordId`. Every version bump re-registers the SAME
@@ -361,6 +241,8 @@ export function MessageList() {
     }
     return versions;
   }, [thread.messages, isStreaming, streamingArtifacts]);
+
+  const lastPairKey = messagePairs[messagePairs.length - 1]?.key ?? null;
 
   // Ref-mirror of messagePairs — lets scroll effects read the latest pairs
   // without having the full array in their dependency list (which would cause
@@ -908,6 +790,13 @@ export function MessageList() {
   // this effect would re-run on every render, its cleanup would cancel the
   // pending rAF each time, and the ResizeObserver would never be connected.
   // We read the latest pairs via `messagePairsRef.current` inside the effect.
+  //
+  // The last pair's key IS a dep, and by value, so it costs nothing during
+  // streaming (the placeholder assistant's key does not change while it
+  // streams). It is needed because the last row can be replaced without the
+  // count moving: Stop before the first token swaps the placeholder row for
+  // the unanswered-question row, and without this the observer would stay on
+  // the element that just left the DOM.
   useEffect(() => {
     // Clean up previous observer
     if (lastMessageObserverRef.current) {
@@ -962,7 +851,7 @@ export function MessageList() {
         lastMessageObserverRef.current = null;
       }
     };
-  }, [messagePairs.length, recalcSpacerHeight, throttledResize]);
+  }, [messagePairs.length, lastPairKey, recalcSpacerHeight, throttledResize]);
 
   // ── 3. ResizeObserver on scroll container (window resize) ─────────
   useEffect(() => {
@@ -1190,6 +1079,7 @@ export function MessageList() {
                   persistedAskUserQuestion={pair.persistedAskUserQuestion}
                   feedbackInfo={pair.feedbackInfo}
                   status={pair.status}
+                  unanswered={pair.unanswered}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

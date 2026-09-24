@@ -72,6 +72,7 @@ _load_env()
 
 from local_auth import obtain_local_oauth_credentials
 from pipeshub_client import PipeshubClient
+from storage_backends import available_backends, parked_notice
 from storage_client import StorageClient
 
 # ---------------------------------------------------------------------------
@@ -108,12 +109,9 @@ def _set_storage_backend(client: PipeshubClient, backend: str) -> None:
     logger.info("Switched storage backend to '%s'", backend)
 
 
-def _available_backends() -> list[str]:
-    """Return the list of storage backends to test based on available credentials."""
-    backends = ["local"]
-    if os.getenv("S3_ACCESS_KEY") and os.getenv("S3_SECRET_KEY") and os.getenv("S3_REGION") and os.getenv("S3_BUCKET"):
-        backends.append("s3")
-    return backends
+def pytest_report_header() -> str | None:
+    """Say so when a backend is parked, on every run."""
+    return parked_notice()
 
 
 def _extract_s3_key_from_url(url: str, bucket: str) -> str | None:
@@ -266,7 +264,7 @@ def s3_cleanup_tracker(
     logger.info("Centralized S3 cleanup deleted %d object(s)", len(keys_to_delete))
 
 
-@pytest.fixture(scope="session", params=_available_backends())
+@pytest.fixture(scope="session", params=available_backends())
 def storage_backend(
     request: pytest.FixtureRequest,
     pipeshub_client: PipeshubClient,

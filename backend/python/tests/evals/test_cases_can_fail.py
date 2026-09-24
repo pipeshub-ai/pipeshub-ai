@@ -388,6 +388,49 @@ class TestProviderAndKeyMatch:
         assert provider == "anthropic"
         assert key == "sk-anthropic"
 
+    def test_azure_gets_the_azure_key_not_openais(self, monkeypatch) -> None:
+        """The evals run on Azure, and both keys are in the environment.
+
+        Handing OpenAI's key to Azure's endpoint would fail to authenticate and
+        send a secret to a party that should never see it.
+        """
+        from tests.evals.live_runner import resolve_model
+
+        monkeypatch.setenv("EVAL_PROVIDER", "azure_openai")
+        monkeypatch.setenv("TEST_OPENAI_API_KEY", "sk-openai")
+        monkeypatch.setenv("TEST_AZURE_OPENAI_API_KEY", "sk-azure")
+        monkeypatch.setenv("TEST_AZURE_OPENAI_MODEL", "gpt-5.6-luna")
+
+        provider, model, key = resolve_model(None, None)
+
+        assert provider == "azure_openai"
+        assert key == "sk-azure"
+        assert model == "gpt-5.6-luna"
+
+    def test_azure_falls_back_to_the_deployment_for_a_model_name(self, monkeypatch) -> None:
+        from tests.evals.live_runner import resolve_model
+
+        monkeypatch.setenv("EVAL_PROVIDER", "azure_openai")
+        monkeypatch.setenv("TEST_AZURE_OPENAI_API_KEY", "sk-azure")
+        monkeypatch.delenv("TEST_AZURE_OPENAI_MODEL", raising=False)
+        monkeypatch.setenv("TEST_AZURE_OPENAI_DEPLOYMENT_NAME", "my-deployment")
+
+        _provider, model, _key = resolve_model(None, None)
+
+        assert model == "my-deployment"
+
+    def test_azure_without_an_endpoint_says_which_one_is_missing(self, monkeypatch) -> None:
+        """A key alone is not enough for Azure, unlike every other provider."""
+        from tests.evals.live_runner import MissingModelError, build_chat_model
+
+        monkeypatch.delenv("TEST_AZURE_OPENAI_ENDPOINT", raising=False)
+        monkeypatch.setenv("TEST_AZURE_OPENAI_DEPLOYMENT_NAME", "my-deployment")
+
+        with pytest.raises(MissingModelError) as caught:
+            build_chat_model("azure_openai", "gpt-5.6-luna", "sk-azure")
+
+        assert "TEST_AZURE_OPENAI_ENDPOINT" in str(caught.value)
+
     def test_an_unknown_provider_gets_no_key_at_all(self, monkeypatch) -> None:
         from tests.evals.live_runner import resolve_model
 

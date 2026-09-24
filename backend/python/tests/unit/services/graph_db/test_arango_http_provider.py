@@ -370,11 +370,46 @@ class TestGetDocument:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_the_flag_reaches_the_http_client(self, connected_provider):
+        """Where the real decision is made.
+
+        The client answers None for a 404, a 503 and a dead connection alike, so
+        a provider that kept the flag to itself would leave its own `raise`
+        unreachable and this method would still report a restart as a deletion.
+        The client's own tests cover what it then does with each status.
+        """
+        connected_provider.http_client.get_document.return_value = {"_key": "doc1"}
+
+        await connected_provider.get_document("doc1", "collection", raise_on_error=True)
+
+        assert connected_provider.http_client.get_document.await_args.kwargs[
+            "raise_on_error"
+        ] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_propagates_the_original_failure(self, connected_provider):
+        """Not a replacement: the caller classifies on what actually went wrong."""
+        failure = Exception("error")
+        connected_provider.http_client.get_document.side_effect = failure
+        with pytest.raises(Exception) as caught:
+            await connected_provider.get_document("doc1", "collection", raise_on_error=True)
+        assert caught.value is failure
+
+    @pytest.mark.asyncio
+    async def test_a_missing_document_is_still_none_when_raising(self, connected_provider):
+        """Asking for failures to be raised must not turn absence into one."""
+        connected_provider.http_client.get_document.return_value = None
+        result = await connected_provider.get_document(
+            "missing", "collection", raise_on_error=True
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_get_document_with_transaction(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {"_key": "d1"}
         result = await connected_provider.get_document("d1", "col", transaction="txn1")
         connected_provider.http_client.get_document.assert_awaited_once_with(
-            "col", "d1", txn_id="txn1"
+            "col", "d1", txn_id="txn1", raise_on_error=False
         )
 
 
@@ -1358,10 +1393,13 @@ class TestGetRecordByExternalId:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_lookup_raises_rather_than_answering_none(self, connected_provider):
+        """None means no such record, and callers create one when told that."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_record_by_external_id("c1", "ext1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_record_by_external_id("c1", "ext1")
 
 
 # ---------------------------------------------------------------------------
@@ -18631,10 +18669,13 @@ class TestGetRecordByExternalIdFullCoverage:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider_fullcov):
+    async def test_a_failed_lookup_raises_rather_than_answering_none(self, connected_provider_fullcov):
+        """None means no such record, and callers create one when told that."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider_fullcov.http_client.execute_aql = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider_fullcov.get_record_by_external_id("c1", "ext1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider_fullcov.get_record_by_external_id("c1", "ext1")
 
 
 class TestGetRecordPathFullCoverage:

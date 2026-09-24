@@ -219,12 +219,30 @@ def _resolve_live_spec(spec: LiveProviderSpec) -> Optional[tuple[str, str, Dict[
     return api_key, model, configuration
 
 
-# Only OpenAI's key reaches the integration workflow today, so only OpenAI is a
-# run the nightly can be held to. The other three have never run in CI: their
-# keys are not passed to the job at all, so they skip everywhere and a red
-# nightly would say nothing about them. Add a provider here once its key is in
-# the repository's integration-test environment.
-_PROVIDERS_CI_MUST_COVER = frozenset({_PROVIDER_OPENAI})
+# The providers whose credentials the integration workflow passes, and so the
+# only ones a red nightly would say anything true about. Add one here when its
+# key is in the repository's integration-test environment - and take one out
+# when the workflow stops passing it, or the nightly starts demanding a key
+# nobody is paying for.
+_PROVIDERS_CI_MUST_COVER = frozenset({_PROVIDER_AZURE_OPENAI})
+
+
+def _spec_for_a_live_provider() -> LiveProviderSpec:
+    """Whichever provider this run actually has credentials for.
+
+    Some tests need *a* live provider to reach a backend path - an unknown model
+    key, a model type that does not match the route. Which provider is
+    incidental, so pinning them to OpenAI tied them to a key the run may no
+    longer carry. The run's own provider is preferred; failing that, the first
+    one that resolves; failing that, the provider the run was meant to cover, so
+    the usual skip-or-fail decision is what reports it.
+    """
+    specs = _live_provider_specs()
+    preferred = [s for s in specs if s.provider_id in _PROVIDERS_CI_MUST_COVER]
+    for spec in [*preferred, *specs]:
+        if _resolve_live_spec(spec) is not None:
+            return spec
+    return preferred[0] if preferred else specs[0]
 
 
 def _skip_if_no_live_credentials(spec: LiveProviderSpec) -> tuple[str, str, Dict[str, Any]]:
@@ -750,12 +768,10 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
         # include non-array top-level keys (for example modelRoles), which can
         # cause updateAIModelProvider to 500 before it reaches the not-found
         # response for an unknown modelKey.
-        openai_spec = next(
-            s for s in _live_provider_specs() if s.provider_id == _PROVIDER_OPENAI
-        )
-        _, _, configuration = _skip_if_no_live_credentials(openai_spec)
+        live_spec = _spec_for_a_live_provider()
+        _, _, configuration = _skip_if_no_live_credentials(live_spec)
         unknown_key = str(uuid.uuid4())
-        payload = _minimal_update_body(_PROVIDER_OPENAI, configuration)
+        payload = _minimal_update_body(live_spec.provider_id, configuration)
         resp = self.ai.update_provider(_MODEL_TYPE_LLM, unknown_key, **payload)
         assert resp.status_code == 500, (
             f"Expected 500 for unknown modelKey on PUT, got {resp.status_code}: {resp.text}"
@@ -867,14 +883,12 @@ class TestUpdateAIModelProviderLive(AIModelsTestBase):
 
     def test_model_type_mismatch_returns_400(self) -> None:
         """Model exists under llm but path uses embedding → 400 before health-check."""
-        openai_spec = next(
-            s for s in _live_provider_specs() if s.provider_id == _PROVIDER_OPENAI
-        )
+        live_spec = _spec_for_a_live_provider()
         created: Optional[CreatedProvider] = None
         try:
-            created = _create_live_provider(self.ai, openai_spec)
-            _, _, configuration = _skip_if_no_live_credentials(openai_spec)
-            update_body = _minimal_update_body(_PROVIDER_OPENAI, configuration)
+            created = _create_live_provider(self.ai, live_spec)
+            _, _, configuration = _skip_if_no_live_credentials(live_spec)
+            update_body = _minimal_update_body(live_spec.provider_id, configuration)
             resp = self.ai.update_provider(
                 "embedding",
                 created.model_key,
@@ -1052,12 +1066,10 @@ class TestDeleteAIModelProviderLive(AIModelsTestBase):
 
     def test_model_type_mismatch_returns_400(self) -> None:
         """Model exists under llm but path uses embedding → 400."""
-        openai_spec = next(
-            s for s in _live_provider_specs() if s.provider_id == _PROVIDER_OPENAI
-        )
+        live_spec = _spec_for_a_live_provider()
         created: Optional[CreatedProvider] = None
         try:
-            created = _create_live_provider(self.ai, openai_spec)
+            created = _create_live_provider(self.ai, live_spec)
             resp = self.ai.delete_provider("embedding", created.model_key)
             assert resp.status_code == 400, (
                 f"Expected 400 model type mismatch, got {resp.status_code}: {resp.text}"

@@ -936,3 +936,218 @@ class TestCreateKeyVerificationNullRead:
         # When verification read returns None, it goes past the if block
         # and returns True (line 229)
         assert result is True
+
+
+# ===================================================================
+# A failed read through the real stack: ConfigurationService -> this wrapper
+# ===================================================================
+
+class TestFailedReadThroughTheRealStack:
+    """This wrapper is what production injects as ConfigurationService.store,
+    and it caught every backend failure and answered None -- which get_config
+    reads as a missing key, so its own raise_on_error never ran. A test that
+    stubs store.get_key to raise skips exactly this layer, so these drive the
+    real wrapper in front of a backend that fails the way the real ones do.
+    """
+
+    @staticmethod
+    def _service_over(backend, encryption=None):
+        from tests.unit.config.test_configuration_service import _build_service
+
+        eks, _, _ = _make_encrypted_store(store_mock=backend, encryption_mock=encryption)
+        return _build_service(store=eks)
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_backend_raises_when_asked(self):
+        backend = AsyncMock()
+        # What RedisDistributedKeyValueStore.get_key raises on an outage.
+        backend.get_key = AsyncMock(side_effect=ConnectionError("Failed to get key: refused"))
+        svc = self._service_over(backend)
+
+        with pytest.raises(ConnectionError):
+            await svc.get_config("/services/any", default={}, raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_backend_still_answers_default_when_not_asked(self):
+        backend = AsyncMock()
+        backend.get_key = AsyncMock(side_effect=ConnectionError("refused"))
+        svc = self._service_over(backend)
+
+        assert await svc.get_config("/services/any", default={}) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_missing_key_is_the_default_even_when_asked(self):
+        """Only a failed read raises. Absence is a real answer."""
+        backend = AsyncMock()
+        backend.get_key = AsyncMock(return_value=None)
+        svc = self._service_over(backend)
+
+        with patch.object(svc, "_get_env_fallback", return_value=None):
+            assert await svc.get_config("/services/any", default={}, raise_on_error=True) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_backend_holding_an_unreadable_value_raises_when_asked(self):
+        """The backend's own swallow: a stored value that will not deserialize
+        comes back as None unless the flag reaches it. This wrapper has to
+        forward it -- a backend that never hears it answers None, and that reads
+        as a missing key."""
+        class _BackendHoldingAnUnreadableValue:
+            # What RedisDistributedKeyValueStore / Etcd3DistributedKeyValueStore
+            # do with a value that fails JSON decoding.
+            async def get_key(self, key, *, raise_on_error=False):
+                if raise_on_error:
+                    raise ConnectionError("Failed to get key: Expecting value")
+                return None
+
+        svc = self._service_over(_BackendHoldingAnUnreadableValue())
+
+        with pytest.raises(ConnectionError):
+            await svc.get_config("/services/any", default={}, raise_on_error=True)
+        assert await svc.get_config("/services/any", default={}) == {}
+
+    @staticmethod
+    def _service_over_real_redis(stored_bytes):
+        """Everything real except the network: the deserializer this wrapper's
+        factory installs, a RedisDistributedKeyValueStore around it, the
+        wrapper, and ConfigurationService. Only the Redis client is mocked.
+
+        The deserializer is the point. It turns bytes that are not valid UTF-8
+        into None rather than raising, so a test that installs plain json.loads
+        exercises a decode path production never takes.
+        """
+        from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
+        from tests.unit.config.test_configuration_service import _build_service
+
+        eks, _, _ = _make_encrypted_store(kv_store_type="redis")
+        captured = {}
+        with patch.object(
+            eks, "_create_redis_store",
+            side_effect=lambda ser, de: captured.update(ser=ser, de=de) or MagicMock(),
+        ):
+            eks._create_store("redis")
+
+        backend = RedisDistributedKeyValueStore(
+            serializer=captured["ser"],
+            deserializer=captured["de"],
+            host="localhost", port=6379, password=None, db=0, key_prefix="t:",
+        )
+        client = MagicMock()
+        client.get = AsyncMock(return_value=stored_bytes)
+        backend._get_client = MagicMock(return_value=client)
+        eks.store = backend
+        return _build_service(store=eks)
+
+    @pytest.mark.asyncio
+    async def test_undecodable_bytes_raise_through_the_real_deserializer(self):
+        """Bytes that are present and not valid UTF-8. The factory deserializer
+        answers None, which read as a missing key -- default={}, an empty
+        manifest -- and the delete dropped mappings it never deleted points for.
+        """
+        svc = self._service_over_real_redis(b"\xff\xfe\xfd not utf-8")
+
+        with pytest.raises(ConnectionError):
+            await svc.get_config("/services/any", default={}, raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_undecodable_bytes_still_answer_default_when_not_asked(self):
+        svc = self._service_over_real_redis(b"\xff\xfe\xfd not utf-8")
+
+        assert await svc.get_config("/services/any", default={}) == {}
+
+    @pytest.mark.asyncio
+    async def test_an_absent_key_through_the_real_deserializer_is_the_default(self):
+        svc = self._service_over_real_redis(None)
+
+        with patch.object(svc, "_get_env_fallback", return_value=None):
+            assert await svc.get_config("/services/any", default={}, raise_on_error=True) == {}
+
+    @pytest.mark.asyncio
+    async def test_undecodable_bytes_raise_through_the_real_etcd_backend(self):
+        """The same check on the etcd backend, driven by the same real factory
+        deserializer rather than a stand-in."""
+        from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
+
+        eks, _, _ = _make_encrypted_store(kv_store_type="etcd")
+        captured = {}
+        with patch.object(
+            eks, "_create_etcd_store",
+            side_effect=lambda ser, de: captured.update(ser=ser, de=de) or MagicMock(),
+        ):
+            eks._create_store("etcd")
+
+        with patch("app.config.providers.etcd.etcd3_store.Etcd3ConnectionManager"):
+            backend = Etcd3DistributedKeyValueStore(
+                serializer=captured["ser"], deserializer=captured["de"],
+                host="localhost", port=2379, timeout=5.0,
+            )
+        client = MagicMock()
+        client.get = MagicMock(return_value=(b"\xff\xfe\xfd not utf-8", MagicMock()))
+        backend._get_client = AsyncMock(return_value=client)
+
+        async def _inline(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_inline):
+            with pytest.raises(ConnectionError):
+                await backend.get_key("/services/any", raise_on_error=True)
+            assert await backend.get_key("/services/any") is None
+
+    @pytest.mark.asyncio
+    async def test_a_value_that_cannot_be_decrypted_raises_when_asked(self):
+        """A value came back and could not be read -- not the same as no value."""
+        backend = AsyncMock()
+        backend.get_key = AsyncMock(return_value="ciphertext")
+        encryption = MagicMock()
+        encryption.decrypt = MagicMock(side_effect=ValueError("bad tag"))
+        svc = self._service_over(backend, encryption)
+
+        with pytest.raises(ValueError):
+            await svc.get_config("/services/any", default={}, raise_on_error=True)
+
+
+class TestManifestWriteThroughTheRealStack:
+    """The collection manifest's read-modify-write over the real stack: the
+    factory deserializer, a RedisDistributedKeyValueStore, the wrapper and
+    ConfigurationService. Only the Redis client is mocked. A read that fails
+    must stop record() before it writes the whole manifest back from nothing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_record_does_not_write_when_the_manifest_read_fails(self):
+        from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
+        from app.services.vector_db.collection_manifest import (
+            CollectionManifestStore,
+            ManagedCollection,
+        )
+        from tests.unit.config.test_configuration_service import _build_service
+
+        eks, _, _ = _make_encrypted_store(kv_store_type="redis")
+        captured = {}
+        with patch.object(
+            eks, "_create_redis_store",
+            side_effect=lambda ser, de: captured.update(ser=ser, de=de) or MagicMock(),
+        ):
+            eks._create_store("redis")
+
+        backend = RedisDistributedKeyValueStore(
+            serializer=captured["ser"], deserializer=captured["de"],
+            host="localhost", port=6379, password=None, db=0, key_prefix="t:",
+        )
+        client = MagicMock()
+        # The read fails; the write that would clobber the manifest would not.
+        client.get = AsyncMock(side_effect=OSError("connection reset"))
+        client.set = AsyncMock(return_value=True)
+        client.publish = AsyncMock(return_value=1)
+        backend._get_client = MagicMock(return_value=client)
+        eks.store = backend
+
+        store = CollectionManifestStore(_build_service(store=eks), MagicMock())
+        entry = ManagedCollection(
+            name="records", collection_type="records",
+            embedding_dimension=1024, strategy_name="single",
+        )
+
+        with pytest.raises(ConnectionError):
+            await store.record(entry)
+
+        client.set.assert_not_awaited()

@@ -217,6 +217,56 @@ describe('OAuthProviderController', () => {
       expect(mockRes.setHeader.calledWith('Cache-Control', 'no-store')).to.be.true
     })
 
+    it('refuses a client_credentials grant when the identity is disabled', async () => {
+      // These tokens are stored with no userId, so they are invisible to the
+      // revocation that runs when a service account is disabled or restored.
+      // Issuing one now would outlive that decision instead of being cleaned
+      // up by it, so the grant declines rather than minting it.
+      const req = {
+        body: { grant_type: 'client_credentials', client_id: 'cid', client_secret: 'secret' },
+        headers: {},
+      } as any
+      mockOAuthAppService.verifyClientCredentials.resolves({
+        clientId: 'cid',
+        orgId: { toString: () => 'org-1' },
+        allowedScopes: ['org:read'],
+        isConfidential: true,
+        createdBy: { toString: () => 'owner-1' },
+      })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      const identity = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves({ fullName: 'Nightly sync', isDisabled: true }) }
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(identity as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token(req, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.generateTokens.called).to.be.false
+    })
+
+    it('refuses a client_credentials grant while the identity is being restored', async () => {
+      const req = {
+        body: { grant_type: 'client_credentials', client_id: 'cid', client_secret: 'secret' },
+        headers: {},
+      } as any
+      mockOAuthAppService.verifyClientCredentials.resolves({
+        clientId: 'cid',
+        orgId: { toString: () => 'org-1' },
+        allowedScopes: ['org:read'],
+        isConfidential: true,
+        createdBy: { toString: () => 'owner-1' },
+      })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      const identity = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves({ fullName: 'Nightly sync', restoreOpId: 'op-1' }) }
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(identity as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token(req, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.generateTokens.called).to.be.false
+    })
+
     it('should set cache control headers on success', async () => {
       const req = {
         body: {
@@ -240,9 +290,13 @@ describe('OAuthProviderController', () => {
         accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read',
       })
 
-      // Stub mongoose models to prevent DB access
+      // Stub mongoose models to prevent DB access. The identity the grant
+      // would act as has to resolve: it now refuses rather than issuing a
+      // bearer for an account that is missing, deleted, disabled or being
+      // restored.
+      const identity = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves({ fullName: 'Owner' }) }
       const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
-      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Users, 'findOne').returns(identity as any)
       sinon.stub(Org, 'findOne').returns(chainable as any)
 
       await controller.token(req, mockRes, mockNext)
@@ -650,8 +704,10 @@ describe('OAuthProviderController', () => {
         accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read',
       })
 
+      // The identity the grant acts as has to resolve; it is refused otherwise.
+      const identity = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves({ fullName: 'Owner' }) }
       const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
-      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Users, 'findOne').returns(identity as any)
       sinon.stub(Org, 'findOne').returns(chainable as any)
 
       const req = {

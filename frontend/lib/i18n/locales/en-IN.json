@@ -745,6 +745,44 @@
         ]
       }
     },
+    "demoBanner": "You're looking at Acme Corp, a small fictional company loaded as demo data. Try one of these, or",
+    "demoConnectYourOwn": "connect your own sources",
+    "demoSuggestions": {
+      "1": {
+        "text": "Why was the payment service architecture changed, and how was the decision made?",
+        "icons": [
+          "github",
+          "jira",
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "Which customers reported export timeouts, and what fixed it?",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      },
+      "3": {
+        "text": "What's our policy on being on-call over a public holiday?",
+        "icons": [
+          "sheets"
+        ]
+      },
+      "4": {
+        "text": "Who reviewed and approved PR #482 in the billing worker, and what did Dana ask for before it merged?",
+        "icons": [
+          "github"
+        ]
+      },
+      "5": {
+        "text": "What is the enterprise pricing strategy for 2026?",
+        "icons": [
+          "sheets",
+          "slack"
+        ]
+      }
+    },
     "askMoreQuestionSets": [
       [
         "What are the key challenges and how are they being addressed",

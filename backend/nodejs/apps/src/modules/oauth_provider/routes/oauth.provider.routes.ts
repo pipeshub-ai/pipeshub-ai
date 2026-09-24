@@ -9,6 +9,7 @@ import { Logger } from '../../../libs/services/logger.service'
 import { AuthTokenService } from '../../../libs/services/authtoken.service'
 import { createOAuthRedirectMiddleware } from '../middlewares/oauth.redirect.middleware'
 import { OAuthAuthMiddleware } from '../middlewares/oauth.auth.middleware'
+import { refuseServiceAccountCaller } from '../../user_management/middlewares/refuseServiceAccountCaller'
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
   authorizeQuerySchema,
@@ -66,10 +67,20 @@ export function createOAuthProviderRouter(container: Container): Router {
   /**
    * POST /authorize
    * User consent submission
+   *
+   * Consent is a person's act, and it is refused for a service account for
+   * the same reason minting a personal access token is. Approving an
+   * application hands it a credential issued as the approver, with whatever
+   * scopes the application asked for — and an application asking for
+   * `agent:execute` needs no administrator, since that scope is not
+   * admin-only. A read-only service account consenting to such an
+   * application would end up holding a write-capable token, by a different
+   * door to the same room.
    */
   router.post(
     '/authorize',
     authMiddleware.authenticate.bind(authMiddleware),
+    refuseServiceAccountCaller,
     ValidationMiddleware.validate(authorizeConsentSchema),
     (req: Request, res: Response, next: NextFunction) =>
       controller.authorizeConsent(req as Parameters<typeof controller.authorizeConsent>[0], res, next),
@@ -162,6 +173,7 @@ export function createOAuthProviderRouter(container: Container): Router {
     '/device/verify',
     oauthTokenRateLimiter,
     authMiddleware.authenticate.bind(authMiddleware),
+    refuseServiceAccountCaller,
     ValidationMiddleware.validate(deviceUserCodeSchema),
     (req: Request, res: Response, next: NextFunction) =>
       controller.deviceVerify(
@@ -178,6 +190,7 @@ export function createOAuthProviderRouter(container: Container): Router {
     '/device/consent',
     oauthTokenRateLimiter,
     authMiddleware.authenticate.bind(authMiddleware),
+    refuseServiceAccountCaller,
     ValidationMiddleware.validate(deviceConsentSchema),
     (req: Request, res: Response, next: NextFunction) =>
       controller.deviceConsent(

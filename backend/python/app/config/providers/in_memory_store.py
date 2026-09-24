@@ -169,7 +169,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             self._notify_watchers(key, value)
             logger.debug("✅ Value updated successfully")
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         """
         Retrieve the value associated with a key.
 

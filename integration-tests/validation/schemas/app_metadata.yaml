@@ -55,6 +55,12 @@ fields:
   last_synced_by:
     required: false
     type: string
+  owner_device_id:
+    required: false
+    type: string
+  owner_device_name:
+    required: false
+    type: string
   vector_membership_backfilled:
     required: false
     type: boolean

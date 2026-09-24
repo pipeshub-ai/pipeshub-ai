@@ -26,7 +26,11 @@ def make_config_service() -> MagicMock:
     """An in-memory ConfigurationService: get/set/create-if-absent over a dict."""
     store: dict = {}
 
-    async def get_config(key, default=None):
+    # raise_on_error is accepted and ignored: this store never fails, and the
+
+    # manifest passes it on delete paths, where the real get_config honours it.
+
+    async def get_config(key, default=None, raise_on_error=False):
         return store.get(key, default)
 
     async def set_config(key, value):

@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import bcrypt from 'bcryptjs';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
@@ -840,6 +841,7 @@ describe('UserController', () => {
         save: mockSave,
       };
 
+      sinon.stub(Users, 'findOne').resolves(null);
       sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
 
@@ -857,9 +859,82 @@ describe('UserController', () => {
         expect(mockEventService.stop.calledOnce).to.be.true;
       }
     });
+
+    // The live-account check passes, but the unique index covers every row:
+    // a concurrent create, or an address held by a soft-deleted account,
+    // still collides at save(). That is a refused duplicate, not a 500.
+    it('answers an email duplicate-key error at save as a refused duplicate', async () => {
+      req.body = { fullName: 'New User', email: 'dup@test.com', role: 'member' };
+      sinon.stub(Users, 'findOne').resolves(null);
+      const duplicate = Object.assign(new Error('E11000 duplicate key error'), {
+        code: 11000,
+        keyPattern: { email: 1 },
+        keyValue: { email: 'dup@test.com' },
+      });
+      const save = sinon.stub(Users.prototype, 'save').rejects(duplicate);
+
+      await controller.createUser(req, res, next);
+
+      // Asserted so this cannot pass by failing earlier, before save().
+      expect(save.calledOnce, 'save() was never reached').to.be.true;
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error).to.be.an('error');
+      expect(error.message).to.equal('A user with this email already exists');
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('passes a duplicate on another unique key through unchanged', async () => {
+      // slug is unique too; a collision there is not a duplicate address.
+      req.body = { fullName: 'New User', email: 'new@test.com', role: 'member' };
+      sinon.stub(Users, 'findOne').resolves(null);
+      const slugDuplicate = Object.assign(new Error('E11000 duplicate key error'), {
+        code: 11000,
+        keyPattern: { slug: 1 },
+        keyValue: { slug: 'new-user' },
+      });
+      const save = sinon.stub(Users.prototype, 'save').rejects(slugDuplicate);
+
+      await controller.createUser(req, res, next);
+
+      expect(save.calledOnce, 'save() was never reached').to.be.true;
+      expect(next.firstCall.args[0]).to.equal(slugDuplicate);
+    });
   });
 
   describe('updateUser', () => {
+    it('removes the saved user again when the everyone-group update fails', async () => {
+      // Two collections and no transaction. Without the undo the address is
+      // taken, every retry is refused as a duplicate, and the account sits
+      // with no group and no way to repair it from the API.
+      req.body = { fullName: 'New User', email: 'new@test.com', role: 'member' };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      const deleteOne = sinon.stub(Users, 'deleteOne').resolves({} as any);
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(deleteOne.calledOnce).to.be.true;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.status.called).to.be.false;
+    });
+
+    it('still reports the original failure when the undo itself fails', async () => {
+      req.body = { fullName: 'New User', email: 'new@test.com', role: 'member' };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      sinon.stub(Users, 'deleteOne').rejects(new Error('undo failed'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+    });
+
     it('should call next with UnauthorizedError when req.user is missing', async () => {
       req.user = undefined;
 
@@ -3335,6 +3410,7 @@ describe('UserController', () => {
         role: 'member',
       };
 
+      sinon.stub(Users, 'findOne').resolves(null);
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
       sinon.stub(Users.prototype, 'save').resolves();
 
@@ -3343,6 +3419,288 @@ describe('UserController', () => {
       expect(res.status.calledWith(201)).to.be.true;
       expect(mockEventService.start.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
+    });
+
+    it('saves the user before publishing the created event', async () => {
+      req.body = { email: 'newuser@test.com', fullName: 'New User' };
+      const order: string[] = [];
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(UserGroups, 'updateOne').callsFake(async () => { order.push('group'); return {} as any; });
+      sinon.stub(Users.prototype, 'save').callsFake(async () => { order.push('save'); });
+      mockEventService.publishEvent.callsFake(async () => { order.push('publish'); });
+
+      await controller.createUser(req, res, next);
+
+      expect(order).to.deep.equal(['save', 'group', 'publish']);
+    });
+
+    it('refuses a duplicate email before any side effect', async () => {
+      // The graph upserts users by email, so an event for an unsaved
+      // duplicate would overwrite the existing account's id.
+      req.body = { email: 'taken@test.com', fullName: 'Someone' };
+      sinon.stub(Users, 'findOne').resolves({ _id: 'existing' } as any);
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      const save = sinon.stub(Users.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('already exists');
+      expect(save.called).to.be.false;
+      expect(groupUpdate.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('publishes nothing when the save itself fails', async () => {
+      req.body = { email: 'newuser@test.com', fullName: 'New User' };
+      sinon.stub(Users, 'findOne').resolves(null);
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(Users.prototype, 'save').rejects(new Error('E11000 duplicate key'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(groupUpdate.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('should store a hashed credential when a starting password is given', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      const userSave = sinon.stub(Users.prototype, 'save').resolves();
+      const credentialSave = sinon.stub(UserCredentials.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(userSave.calledOnce).to.be.true;
+      expect(credentialSave.calledOnce).to.be.true;
+      const credential = credentialSave.firstCall.thisValue;
+      expect(credential.hashedPassword).to.be.a('string');
+      expect(credential.hashedPassword).to.not.equal('Str0ng-pass!');
+      // The plaintext must not land on the user document.
+      const responseBody = res.json.firstCall.args[0];
+      expect(responseBody.password).to.be.undefined;
+    });
+
+    it('hashes the starting password before anything is written', async () => {
+      // A hash that fails must cost nothing. If it ran after the user was
+      // saved, the account would exist with no way to sign in and no way to
+      // create it again.
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
+      const userSave = sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(bcrypt, 'hash').rejects(new Error('hash failed'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('hash failed');
+      expect(groupUpdate.called).to.be.false;
+      expect(userSave.called).to.be.false;
+    });
+
+    it('removes the saved user when the credential save fails, before any group write or event', async () => {
+      // The credential is saved right after the user and before the group
+      // membership and the creation event, so a failure has one thing to
+      // undo and nothing downstream has been told about the account.
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
+      sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('credential save failed');
+      expect(userDelete.calledOnce).to.be.true;
+      expect(groupUpdate.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.status.called).to.be.false;
+    });
+
+    it('reports the credential error even when removing the half-created user fails', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(UserGroups, 'updateOne').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
+      sinon.stub(UserCredentials, 'deleteOne').resolves();
+      sinon.stub(Users, 'deleteOne').rejects(new Error('db down'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('credential save failed');
+      expect(mockLogger.error.calledOnce).to.be.true;
+      expect(mockLogger.error.firstCall.args[0]).to.include('removing it failed');
+    });
+
+    it('removes the user and its credential when the everyone-group write fails', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(credentialDelete.calledOnce).to.be.true;
+      expect(userDelete.calledOnce).to.be.true;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.status.called).to.be.false;
+    });
+
+    it('undoes the whole account when the creation event cannot be published', async () => {
+      // Publishing writes an outbox row and can fail on its own. Left alone,
+      // the address would stay taken by an account the graph side has never
+      // heard of, a password account could sign in, and a retry would hit the
+      // unique email index.
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
+      const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+      mockEventService.publishEvent.rejects(new Error('outbox insert failed'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('outbox insert failed');
+      expect(credentialDelete.calledOnce).to.be.true;
+      expect(userDelete.calledOnce).to.be.true;
+      const pull = groupUpdate.getCalls().find((call) => '$pull' in call.args[1]);
+      expect(pull, 'the user is taken back out of the everyone group').to.exist;
+      expect(String(pull!.args[1].$pull.users)).to.equal(String(userDelete.firstCall.args[0]._id));
+      expect(mockEventService.stop.calledOnce).to.be.true;
+      expect(res.status.called).to.be.false;
+    });
+
+    it('still removes the account when taking it out of the everyone group fails', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(credentialDelete.calledOnce).to.be.true;
+      expect(userDelete.calledOnce).to.be.true;
+      expect(mockLogger.warn.called).to.be.true;
+    });
+
+    it('publishes the creation event only after the user and credential are saved', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      const order: string[] = [];
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').callsFake(async () => { order.push('user'); });
+      sinon.stub(UserCredentials.prototype, 'save').callsFake(async () => { order.push('credential'); });
+      sinon.stub(UserGroups, 'updateOne').callsFake(async () => { order.push('group'); });
+      mockEventService.publishEvent.callsFake(async () => { order.push('event'); });
+
+      await controller.createUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(order).to.deep.equal(['user', 'credential', 'group', 'event']);
+    });
+
+    it('should reject a weak starting password before creating anything', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'weak',
+      };
+
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
+      const userSave = sinon.stub(Users.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('Password must be');
+      expect(groupUpdate.called).to.be.false;
+      expect(userSave.called).to.be.false;
+    });
+
+    it('should refuse a starting password for any address outside the demo domain', async () => {
+      // Connector permissions attach to the email, so a password on a real
+      // colleague's address would let the admin see everything they can see.
+      for (const email of ['alice@example.com', 'ceo@acme-demo.example.com', 'bob@acme-demo.example.evil.io']) {
+        req.body = { email, fullName: 'Someone Real', password: 'Str0ng-pass!' };
+        const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+        const userSave = sinon.stub(Users.prototype, 'save').resolves();
+        const credentialSave = sinon.stub(UserCredentials.prototype, 'save').resolves();
+
+        await controller.createUser(req, res, next);
+
+        expect(next.calledOnce, email).to.be.true;
+        expect(next.firstCall.args[0].message).to.include('demo accounts');
+        expect(groupUpdate.called, email).to.be.false;
+        expect(userSave.called, email).to.be.false;
+        expect(credentialSave.called, email).to.be.false;
+        sinon.restore();
+        next.resetHistory();
+      }
+    });
+
+    it('should not create a credential when no password is given', async () => {
+      req.body = { email: 'nopass@test.com', fullName: 'No Pass' };
+
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(Users.prototype, 'save').resolves();
+      const credentialSave = sinon.stub(UserCredentials.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(credentialSave.called).to.be.false;
     });
   });
 

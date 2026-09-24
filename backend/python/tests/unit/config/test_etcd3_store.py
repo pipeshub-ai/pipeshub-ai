@@ -245,6 +245,23 @@ class TestEtcd3DistributedKeyValueStore:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_get_key_deserialization_error_raises_when_asked(self, store, mock_client):
+        """A stored value that cannot be read is not an absent key; a strict
+        reader must not get the None that reads as "nothing stored"."""
+        mock_client.get = MagicMock(return_value=(b"not-json{{{", MagicMock()))
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            with pytest.raises(ConnectionError):
+                await store.get_key("bad_json", raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_get_key_absent_is_none_even_when_asked(self, store, mock_client):
+        mock_client.get = MagicMock(return_value=(None, None))
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            assert await store.get_key("missing", raise_on_error=True) is None
+
+    @pytest.mark.asyncio
     async def test_get_key_connection_error(self, store, mock_client):
         """Connection errors during get are propagated."""
         mock_client.get = MagicMock(side_effect=RuntimeError("conn failed"))

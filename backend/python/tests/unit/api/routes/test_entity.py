@@ -868,8 +868,64 @@ class TestDeleteTeam:
         req = _make_request()
         gp = _graph_provider(req)
         gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.get_document.return_value = {"_key": "team-1"}
         gp.get_edge.return_value = {"role": "OWNER"}
         return req, gp
+
+    @pytest.mark.asyncio
+    async def test_a_team_that_is_not_there_is_not_a_permissions_problem(self):
+        """Deleting a team removes its permission edges along with it.
+
+        So a team that is already gone has no edge either, and checking the
+        edge first reported that as "you are not allowed" - which tells the
+        reader the wrong thing, and makes deleting twice look like a
+        permissions failure rather than a no-op.
+        """
+        req, gp = self._setup()
+        gp.get_document.return_value = None
+
+        with pytest.raises(HTTPException) as exc:
+            await delete_team(req, "team-1")
+
+        assert exc.value.status_code == 404
+        assert "permission" not in exc.value.detail.lower()
+        gp.delete_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_team_you_have_no_part_in_looks_the_same_as_one_that_is_gone(self):
+        """Otherwise the status code says which team ids exist.
+
+        A caller with no edge to the team is told the same thing as a caller
+        naming a team that was never there, so neither answer can be used to
+        find out which is which.
+        """
+        req, gp = self._setup()
+        gp.get_edge.return_value = None
+
+        with pytest.raises(HTTPException) as absent_exc:
+            gp.get_document.return_value = None
+            await delete_team(req, "team-1")
+
+        req, gp = self._setup()
+        gp.get_edge.return_value = None
+        with pytest.raises(HTTPException) as no_access_exc:
+            await delete_team(req, "team-1")
+
+        assert no_access_exc.value.status_code == absent_exc.value.status_code == 404
+        assert no_access_exc.value.detail == absent_exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_a_member_who_is_not_the_owner_is_told_why(self):
+        """They can already see the team, so naming the real reason gives
+        nothing away and saves them hunting for a team that is right there."""
+        req, gp = self._setup()
+        gp.get_edge.return_value = {"role": "MEMBER"}
+
+        with pytest.raises(HTTPException) as exc:
+            await delete_team(req, "team-1")
+
+        assert exc.value.status_code == 403
+        assert "permission" in exc.value.detail.lower()
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -894,12 +950,14 @@ class TestDeleteTeam:
 
     @pytest.mark.asyncio
     async def test_no_permission(self):
+        """No edge at all now answers 404, so it cannot be told apart from a
+        team that does not exist."""
         req, gp = self._setup()
         gp.get_edge.return_value = None
 
         with pytest.raises(HTTPException) as exc:
             await delete_team(req, "team-1")
-        assert exc.value.status_code == 403
+        assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_non_owner_role(self):
