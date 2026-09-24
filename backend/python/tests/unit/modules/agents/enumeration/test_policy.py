@@ -58,6 +58,21 @@ MUST_NOT_MATCH = [
     ("How many records are in our project space?", "container"),
 ]
 
+# No exclusion applies, but what is counted is not "records": another noun, or
+# a record noun narrowed by a modifier. Scope words ("all", "do we have", "are
+# there") are not enough, and an unfiltered census would answer every one of
+# these with every accessible record.
+NOT_A_RECORD_CENSUS = [
+    "How many contracts do we have?",
+    "How many emails do we have?",
+    "How many people are there?",
+    "List all the risks",
+    "How many licenses are available?",
+    "Count the whole team",
+    "How many PDF files do we have?",
+    "How many Slack documents are there?",
+]
+
 # Existence questions. "Do we have X" asks whether one thing is present, which
 # retrieval answers; a census of everything does not.
 EXISTENCE_QUESTIONS = [
@@ -85,6 +100,10 @@ class TestIsEnumerationQuery:
 
     @pytest.mark.parametrize("query,_reason", MUST_NOT_MATCH)
     def test_constrained_questions_do_not_match(self, query: str, _reason: str) -> None:
+        assert is_enumeration_query(None, query) is False
+
+    @pytest.mark.parametrize("query", NOT_A_RECORD_CENSUS)
+    def test_counting_something_other_than_records_does_not_match(self, query: str) -> None:
         assert is_enumeration_query(None, query) is False
 
     @pytest.mark.parametrize("query", UNRELATED)

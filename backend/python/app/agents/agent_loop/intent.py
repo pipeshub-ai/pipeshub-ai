@@ -199,6 +199,10 @@ def _build_intent_prompt(include_routing: bool, capability_block: str, sql_verif
         "unimportant.\n"
         "- `no` if a single locatable fact settles it: a date, a name, a number, a "
         "status, one clause, whether one specific thing is true.\n"
+        "For WHOLE_DOCUMENT, judge the shape of the request, not its wording: those "
+        "are illustrations of the question above, not an exhaustive list. When "
+        "genuinely torn, answer `yes`: over-reading a document is recoverable, "
+        "answering a whole-document question from fragments is not.\n"
         "\nOn ANOTHER new line, write ONLY `CORPUS_CENSUS: yes` or "
         "`CORPUS_CENSUS: no`, answering this question about the request:\n"
         "Is it asking which records exist across the whole knowledge base, with no "
@@ -211,12 +215,9 @@ def _build_intent_prompt(include_routing: bool, capability_block: str, sql_verif
         "time window (\"updated last week\"), or a specific thing (\"do we have "
         "the Acme NDA\"). Also `no` when the count is of something inside one "
         "document, such as pages or clauses or how many times a word appears.\n"
-        "When unsure, answer `no`: a census that ignores a condition returns a "
-        "confident answer about the wrong records.\n"
-        "Judge the shape of the request, not its wording — those are illustrations of "
-        "the question above, not an exhaustive list. When genuinely torn, answer `yes`: "
-        "over-reading a document is recoverable, answering a whole-document question "
-        "from fragments is not.\n"
+        "For CORPUS_CENSUS, the examples are illustrations too, but the tie-break is "
+        "the opposite: when unsure, answer `no`. A census that ignores a condition "
+        "returns a confident answer about the wrong records.\n"
         + _CLARIFY_INSTRUCTIONS
     )
 

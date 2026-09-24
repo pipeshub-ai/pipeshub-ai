@@ -21,17 +21,25 @@ from __future__ import annotations
 
 import re
 
-# Asking for a census.
+# Asking for a census. What is being counted has to follow directly; see
+# _CENSUS_RE.
 _ENUMERATION_OPERATION = r"""
       how \s+ many | how \s+ much
-    | count | counts | tally | total \s+ number | number \s+ of
+    | count | counts | tally | total \s+ number \s+ of | number \s+ of
     | list | lists | enumerate | inventory | catalogue | catalog
-    | what (?: \s+ all )? \s+ (?: files | documents | records | docs )
+    | what (?: \s+ all )?
+"""
+
+# Words that may sit between the operation and the record noun without
+# narrowing the set: "how many of our documents", "list all the files".
+_SET_WORDS = r"""
+      the | all | every | each | any | of | our | my | your
+    | distinct | unique | individual | separate | different
 """
 
 # "Do we have any NDAs?" and "do we have the Tetra document?" ask whether one
 # thing exists. Retrieval answers that; a census of everything does not. So
-# "do we have" is scope, never an operation on its own.
+# "do we have" is never an operation on its own.
 
 # The unit being counted must be a RECORD. "Pages", "chapters" and "sections"
 # are units inside one document, so "how many pages are in this PDF" is not a
@@ -39,12 +47,6 @@ _ENUMERATION_OPERATION = r"""
 _RECORD_NOUN = r"""
       documents? | docs? | files? | records? | items?
     | sources? | knowledge \s+ base | corpus | uploads?
-"""
-
-_CORPUS_SCOPE = r"""
-      all | every | entire | whole
-    | in \s+ (?: the \s+ )? (?: knowledge \s+ base | corpus | workspace )
-    | do \s+ we \s+ have | are \s+ there | available
 """
 
 # Anything below means the question is NOT "everything I can see". A census
@@ -93,9 +95,15 @@ def _alt(pattern: str) -> re.Pattern[str]:
     return re.compile(rf"\b(?:{pattern})\b", re.IGNORECASE | re.VERBOSE)
 
 
-_OPERATION_RE = _alt(_ENUMERATION_OPERATION)
-_RECORD_NOUN_RE = _alt(_RECORD_NOUN)
-_CORPUS_SCOPE_RE = _alt(_CORPUS_SCOPE)
+# The thing counted is a record, and nothing but set words stands between it
+# and the operation. "How many contracts", "how many people are there" and
+# "count the whole team" count something else, and "how many PDF files" or
+# "how many Slack documents" count a subset, which an unfiltered census would
+# answer with every record.
+_CENSUS_RE = re.compile(
+    rf"\b(?:{_ENUMERATION_OPERATION}) \s+ (?: (?:{_SET_WORDS}) \s+ )* (?:{_RECORD_NOUN}) \b",
+    re.IGNORECASE | re.VERBOSE,
+)
 
 # "about" has two senses and only one narrows the set. "documents about
 # onboarding" is a filter; "what is each one about" asks for summaries of the
@@ -156,6 +164,4 @@ def is_enumeration_query(marker: str | None, *texts: str) -> bool:
     if marker is not None:
         return marker.lower().strip() == "yes"
 
-    if not _OPERATION_RE.search(combined):
-        return False
-    return bool(_RECORD_NOUN_RE.search(combined) or _CORPUS_SCOPE_RE.search(combined))
+    return bool(_CENSUS_RE.search(combined))

@@ -236,3 +236,36 @@ async def try_answer_enumeration(
         ) from exc
 
     return True
+
+
+async def answer_census_if_asked(
+    *,
+    query: str,
+    context: Any,
+    retrieval_service: Any,
+    graph_provider: Any,
+    filters: dict[str, Any] | None,
+    event_sink: Any,
+    log: Any = logger,
+) -> bool:
+    """`try_answer_enumeration` for a chat bridge, which must not break on it.
+
+    Call it after `PipesHubAgentFactory.create()`: that is where the intent call
+    stores the CORPUS_CENSUS marker, and before it the pattern fallback is the
+    only gate, so a model's "no" could not decline a pattern match.
+
+    A failure before finalisation falls back to the agent, since nothing has
+    been sent yet. One after it is re-raised, because an answer may already
+    have reached the client and the agent would send a second.
+    """
+    try:
+        return await try_answer_enumeration(
+            query=query, context=context, retrieval_service=retrieval_service,
+            graph_provider=graph_provider, filters=filters, event_sink=event_sink, log=log,
+        )
+    except EnumerationFinalizationError:
+        raise
+    except Exception as exc:
+        # Never let this path break chat.
+        log.warning("enumeration path failed, falling back to agent: %s", exc, exc_info=True)
+        return False

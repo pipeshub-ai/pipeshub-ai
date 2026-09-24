@@ -1231,3 +1231,41 @@ class TestHeartbeat:
         # running by the time the comprehension above finishes.
         leaked_tasks = tasks_after - tasks_before
         assert all(task.done() for task in leaked_tasks)
+
+
+class TestCensusRunsAfterTheIntentCall:
+    async def test_the_census_sees_the_marker_the_intent_call_stored(self) -> None:
+        """Same ordering as the chat bridge: the census runs after
+        `factory.create()`, whose intent call stores CORPUS_CENSUS."""
+        seen: list[Any] = []
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
+            context.tool_state["corpus_census_marker"] = "no"
+            return _stream_agent(MagicMock(success=True, error=None)), MagicMock(), MagicMock(), []
+
+        async def _fake_census(*, context, **kwargs):
+            seen.append(context.tool_state.get("corpus_census_marker"))
+            return False
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None):
+            await event_sink.write({"event": "complete", "data": {"answer": "42"}})
+            return {"answer": "42"}
+
+        kwargs = TestRunAgentLoopStream._base_kwargs()
+        kwargs["query_info"]["query"] = "How many documents do we have?"
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "q", "has_knowledge": True},
+            ),
+            patch("app.utils.execute_query.has_sql_connector_configured", new=AsyncMock(return_value=False)),
+            patch("app.utils.fetch_slack_thread.has_slack_connector_configured", new=AsyncMock(return_value=False)),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.modules.agents.enumeration.run.try_answer_enumeration", new=_fake_census),
+        ):
+            events = [chunk async for chunk in run_agent_loop_stream(**kwargs)]
+
+        assert seen == ["no"]
+        assert events[-1].startswith("event: complete\n")
+
