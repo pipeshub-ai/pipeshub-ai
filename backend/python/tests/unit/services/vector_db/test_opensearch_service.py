@@ -447,11 +447,27 @@ class TestCreateIndex:
         assert call_kwargs["body"]["properties"]["field1"]["type"] == "text"
 
     @pytest.mark.asyncio
-    async def test_create_non_keyword_index_defaults_to_text(self, connected_service):
+    async def test_create_non_keyword_index_passes_type_through(self, connected_service):
+        """Unknown/non-text types are forwarded verbatim so callers can use
+        any OpenSearch type (integer, date, etc.) without lossy coercion."""
         connected_service.client.indices.put_mapping = AsyncMock(return_value={"acknowledged": True})
         await connected_service.create_index("my-idx", "field1", {"type": "integer"})
         call_kwargs = connected_service.client.indices.put_mapping.call_args[1]
-        assert call_kwargs["body"]["properties"]["field1"]["type"] == "text"
+        assert call_kwargs["body"]["properties"]["field1"]["type"] == "integer"
+
+    @pytest.mark.asyncio
+    async def test_create_index_forwards_index_false(self, connected_service):
+        """index:False must survive the call so query_text/response_text are
+        stored without building a keyword inverted index (avoids the 32,766-byte
+        Lucene term-length limit for large cached answers)."""
+        connected_service.client.indices.put_mapping = AsyncMock(return_value={"acknowledged": True})
+        await connected_service.create_index(
+            "semantic_cache", "metadata.response_text", {"type": "text", "index": False}
+        )
+        call_kwargs = connected_service.client.indices.put_mapping.call_args[1]
+        leaf = call_kwargs["body"]["properties"]["metadata"]["properties"]["response_text"]
+        assert leaf["type"] == "text"
+        assert leaf["index"] is False
 
     @pytest.mark.asyncio
     async def test_create_index_not_connected(self, service):

@@ -381,6 +381,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error closing blob storage session: {e}")
 
+    # Flush any pending corpus-revision bumps before the graph provider goes
+    # away.  The invalidator coalesces KB-record events into a 2-second trailing
+    # bump; close() cancels the pending task and immediately calls
+    # increment_corpus_revision so the next startup sees a fresh revision.
+    try:
+        from app.services.cache.invalidation_hooks import get_accessible_records_invalidator
+        inv = get_accessible_records_invalidator()
+        if inv is not None:
+            await inv.close()
+            logger.info("✅ Accessible-records invalidator flushed")
+    except Exception as e:
+        logger.error(f"❌ Error flushing accessible-records invalidator: {e}")
+
     try:
         accessible_records_cache = await app_container.accessible_records_cache()
         await accessible_records_cache.close()

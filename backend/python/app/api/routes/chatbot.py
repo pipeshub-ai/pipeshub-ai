@@ -1291,15 +1291,29 @@ async def askAIStream(
                     if query_info.strictScope:
                         effective_filters["strictScope"] = True
 
+                    permissions_revision = _chat_user.get("permissionsRevision", "0")
+
+                    # Guard: only use the cache when permissionsRevision is a
+                    # real, application-issued revision.  The default "0" means
+                    # the auth token was issued without one, so document-level
+                    # ACL changes cannot be detected through the scope hash —
+                    # the same hash would be produced before and after a
+                    # revocation, letting a cache hit return text the user no
+                    # longer has access to.  Bypassing here is the safe choice
+                    # until the permissions layer reliably populates this field.
+                    if permissions_revision == "0":
+                        corpus_revision = None  # disable cache for this request
+
+                if corpus_revision is not None:
                     cache_scope = SemanticCacheScope(
                         orgId=org_id,
                         userId=_chat_user.get("userId"),
-                        permissionsRevision=_chat_user.get("permissionsRevision", "0"),
+                        permissionsRevision=permissions_revision,
                         corpusRevision=corpus_revision,
                         filters=effective_filters,
                     )
                     filters_hash_val = hash_filters(cache_scope)
-                    
+
                     await retrieval_service.get_embedding_model_instance()
                     if retrieval_service.dense_embeddings:
                         query_vector = await retrieval_service.dense_embeddings.aembed_query(query_info.query)

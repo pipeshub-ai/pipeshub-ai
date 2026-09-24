@@ -54,6 +54,29 @@ class SemanticCacheService:
         await self.vector_db.create_index(
             self.collection_name, "metadata.filters_hash", {"type": "keyword"}
         )
+
+        # Migration: apply non-indexed mapping for large stored-text fields on
+        # existing collections.  create_collection only runs when the index is
+        # first created, so collections that pre-date this change would still
+        # have query_text/response_text mapped as keyword by the dynamic
+        # template and risk failing on answers > 32,766 bytes.
+        #
+        # put_mapping is additive and idempotent in OpenSearch: adding index:false
+        # to an existing text field does not require a reindex — only newly
+        # indexed documents are affected; existing _source values stay retrievable.
+        #
+        # If the collection was just created above, this call is a harmless no-op
+        # because the explicit static properties already set index:false.
+        await self.vector_db.create_index(
+            self.collection_name,
+            "metadata.query_text",
+            {"type": "text", "index": False},
+        )
+        await self.vector_db.create_index(
+            self.collection_name,
+            "metadata.response_text",
+            {"type": "text", "index": False},
+        )
         self._initialized = True
 
     async def get_cached_response(

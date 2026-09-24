@@ -422,14 +422,23 @@ class OpenSearchService(IVectorDBService):
                         "connectorIds": {"type": "keyword"},
                         "recordGroupIds": {"type": "keyword"},
                         "rootRecordGroupIds": {"type": "keyword"},
-                        # Keep explicit keyword declarations for the two most-used
+                        # Keep explicit keyword declarations for the most-used
                         # filter fields so the mapping is readable without introspection.
+                        # query_text / response_text are stored-but-not-indexed so that
+                        # Lucene's 32,766-byte keyword term limit cannot fail an upsert
+                        # when a cached answer or query is large.  filters_hash stays
+                        # keyword so term-filter cache lookups work correctly.
                         "metadata": {
                             "type": "object",
                             "properties": {
                                 "orgId": {"type": "keyword"},
                                 "virtualRecordId": {"type": "keyword"},
                                 "blockId": {"type": "keyword"},
+                                # Non-indexed storage fields — must NOT be keyword.
+                                # Setting index:false keeps them retrievable via
+                                # _source without building any inverted index term.
+                                "query_text": {"type": "text", "index": False},
+                                "response_text": {"type": "text", "index": False},
                             },
                         },
                     },
@@ -557,25 +566,27 @@ class OpenSearchService(IVectorDBService):
         field_schema: dict,
     ) -> None:
         await self._assert_connected()
-        # field_name e.g. "metadata.virtualRecordId"
+        # Build the leaf mapping dict.  Start with the caller's full schema so
+        # that params like ``index: False`` are forwarded to OpenSearch verbatim.
+        # Fall back to ``keyword`` when no ``type`` is supplied.
+        leaf_mapping = {"type": field_schema.get("type", "keyword"), **{
+            k: v for k, v in field_schema.items() if k != "type"
+        }}
+
         # Build nested mapping path
         parts = field_name.split(".")
         if len(parts) == 2:
             parent, child = parts
-            os_type = "keyword" if field_schema.get("type") == "keyword" else "text"
             mapping_body = {
                 "properties": {
                     parent: {
                         "type": "object",
-                        "properties": {
-                            child: {"type": os_type}
-                        },
+                        "properties": {child: leaf_mapping},
                     }
                 }
             }
         else:
-            os_type = "keyword" if field_schema.get("type") == "keyword" else "text"
-            mapping_body = {"properties": {field_name: {"type": os_type}}}
+            mapping_body = {"properties": {field_name: leaf_mapping}}
 
         await self.client.indices.put_mapping(index=collection_name, body=mapping_body)  # type: ignore
 
