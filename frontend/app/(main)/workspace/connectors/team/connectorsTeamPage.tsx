@@ -33,6 +33,7 @@ import {
   ConfigSuccessDialog,
 } from '../components';
 import { AdminAccessRequiredDialog } from '../components/admin-access-required-dialog';
+import { DemoDataRemovalNotice } from '../demo-data/components';
 import type { AdminAccessDialogPhase } from '../components/admin-access-required-dialog';
 import { shouldPromptAdminAccess } from '../utils/admin-access-helpers';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
@@ -66,6 +67,7 @@ function TeamConnectorsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const addToast = useToastStore((s) => s.addToast);
+  const isAdmin = useUserStore(selectIsAdmin);
   const { t } = useTranslation();
 
   const teamTabs = [
@@ -576,6 +578,7 @@ function TeamConnectorsPageContent() {
             onClick={handleNavigateToPersonal}
           />
         }
+        banner={<DemoDataRemovalNotice isAdmin={isAdmin} />}
         registryConnectors={registryConnectors}
         activeConnectors={activeConnectors}
         onSetup={handleSetup}

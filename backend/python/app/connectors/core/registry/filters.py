@@ -225,6 +225,7 @@ class SyncFilterKey(str, Enum):
 
     # Container/scope filters
     SPACE_KEYS = "space_keys"
+    SPACE_IDS = "space_ids"
     FOLDER_IDS = "folder_ids"
     FOLDERS = "folders"
     CUSTOM_FOLDERS = "custom_folders"

@@ -142,6 +142,15 @@ ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE = (
     "and/or connect a data source under Connectors so content can be indexed."
 )
 
+# When the graph could not say what this user may read. Nothing is shown, and
+# the reader is told why, so "no results" is not mistaken for "no documents".
+# The Node gateway passes a 503's message through only when it is on its list
+# (libs/errors/reader-friendly.ts), so a change here must be made there too.
+PERMISSION_CHECK_UNAVAILABLE_MESSAGE = (
+    "We couldn't check which documents you have access to just now, so no results "
+    "are shown. Please try again in a minute."
+)
+
 
 valid_group_labels = [
         GroupType.LIST.value,
@@ -460,9 +469,17 @@ class RetrievalService:
                     metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
                     filters[metadata_key] = values
 
-            containers, accessible_virtual_id_to_record_id, user = (
-                await self._resolve_search_scope(user_id, org_id, filters, time_range)
-            )
+            try:
+                containers, accessible_virtual_id_to_record_id, user = (
+                    await self._resolve_search_scope(user_id, org_id, filters, time_range)
+                )
+            except PermissionVerificationUnavailableError as exc:
+                self.logger.warning(
+                    "Could not read what user %s may access in org %s: %s", user_id, org_id, exc
+                )
+                return self._create_empty_response(
+                    PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
+                )
             use_containers = containers is not None
 
             # Under container scoping the accessible map is not built up front —
@@ -516,8 +533,7 @@ class RetrievalService:
                     # The graph could not answer. Telling this user to upload
                     # documents would be wrong and unactionable.
                     return self._create_empty_response(
-                        "Could not verify document permissions right now. "
-                        "Please retry shortly.",
+                        PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
                         Status.PERMISSION_CHECK_UNAVAILABLE,
                     )
             else:
@@ -1255,10 +1271,20 @@ class RetrievalService:
 
         Returns a dict mapping each accessible virtualRecordId to the specific recordId that the
         user has permission to access, preventing cross-connector leakage.
+
+        Raises PermissionVerificationUnavailableError when that could not be read.
+        Without the strict read a failure returns {}, which search would report
+        as "no documents are available", the wrong thing to tell this user.
         """
-        return await graph_provider.get_accessible_virtual_record_ids(
-            user_id=user_id, org_id=org_id, filters=filters, time_range=time_range
-        )
+        try:
+            return await graph_provider.get_accessible_virtual_record_ids(
+                user_id=user_id, org_id=org_id, filters=filters, time_range=time_range,
+                raise_on_error=True,
+            )
+        except PermissionVerificationUnavailableError:
+            raise
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
 
     async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
         """

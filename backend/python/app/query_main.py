@@ -255,6 +255,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
 
+        # Collections created before keyword scoring was fixed (Qdrant IDF,
+        # OpenSearch stemming) are updated in place. A deployment that only
+        # serves search never reaches the indexing write path that would
+        # otherwise do it, so it has to happen here too.
+        async def _reconcile_lexical_scoring() -> None:
+            try:
+                changed = await retrieval_service.collection_registry.reconcile_lexical_scoring()
+                if changed:
+                    logger.info(f"Updated keyword scoring on collection(s) {changed}")
+            except Exception as reconcile_error:
+                logger.warning(f"Keyword-scoring reconcile failed (non-fatal): {reconcile_error}")
+
+        app.state.lexical_reconcile_task = asyncio.create_task(_reconcile_lexical_scoring())
+
     # Prepare the coding sandbox backend before a user needs it. On Docker
     # that means pulling the sandbox image and creating the egress network —
     # otherwise the first `run_code` of a deployment pays for both inside a
@@ -340,6 +354,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
+        "lexical_reconcile_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():

@@ -99,7 +99,7 @@ def _registry(vdb):
     return CollectionRegistry(
         vector_db_service=vdb,
         strategy=PerConnectorTypeStrategy(),
-        collection_config_factory=lambda s, sp=False: CollectionConfig(embedding_size=s),
+        collection_config_factory=lambda s: CollectionConfig(embedding_size=s),
         manifest_store=CollectionManifestStore(make_config_service(), MagicMock()),
         logger=MagicMock(),
     )

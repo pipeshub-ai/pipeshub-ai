@@ -618,7 +618,7 @@ class GraphTransactionStore(TransactionStore):
         await self.graph_provider.batch_create_edges(
             [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
         )
-    async def get_sync_point(self, sync_point_key: str, raise_on_error: bool = False) -> Optional[dict]:
+    async def get_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(
             sync_point_key,
             CollectionNames.SYNC_POINTS.value,
@@ -667,7 +667,7 @@ class GraphTransactionStore(TransactionStore):
     async def delete_sync_point(self, sync_point_key: str) -> None:
         return await self.graph_provider.remove_sync_point([sync_point_key],
                     collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
-    async def read_sync_point(self, sync_point_key: str, raise_on_error: bool = False) -> Optional[dict]:
+    async def read_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(
             sync_point_key,
             collection=CollectionNames.SYNC_POINTS.value,

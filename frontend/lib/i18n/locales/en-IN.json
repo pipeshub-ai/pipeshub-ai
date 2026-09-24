@@ -3538,5 +3538,31 @@
     "skip": "Skip",
     "next": "Next",
     "submit": "Submit"
+  },
+  "demoData": {
+    "badge": {
+      "label": "Demo",
+      "tooltip": "Sample data from the Acme Corp demo, not one of your company's records"
+    },
+    "removalNotice": {
+      "title": "Your answers still include the Acme Corp demo data",
+      "description": "Your company's own data is now in PipesHub. Remove the demo so answers only draw on your real sources.",
+      "remove": "Remove demo data",
+      "keep": "Keep for now"
+    },
+    "removeDialog": {
+      "title": "Remove the Acme Corp demo data?",
+      "description": "This deletes the Demo connector with all of its records, groups and permissions, so answers stop citing Acme Corp. You can add it again later from the Connectors page.",
+      "deleteAccounts": "Also delete the sample accounts: {{names}}",
+      "deleteAccountsHint": "They were created with a starting password, so anyone who knows it can sign in as them.",
+      "cancel": "Cancel",
+      "confirm": "Remove demo data",
+      "successTitle": "Demo data removed",
+      "successAccounts": "The sample accounts were deleted too.",
+      "partialTitle": "Demo data removed, but some sample accounts remain",
+      "partialDescription": "Delete {{emails}} under Workspace → Users.",
+      "errorTitle": "Couldn't remove the demo data",
+      "errorDescription": "Please try again. If it keeps happening, remove the Demo connector from the Connectors page."
+    }
   }
 }

@@ -130,7 +130,7 @@ def _registry(vdb: FakeVectorDB) -> CollectionRegistry:
     return CollectionRegistry(
         vector_db_service=vdb,
         strategy=PerOrgStrategy(),
-        collection_config_factory=lambda size, sparse=False: CollectionConfig(
+        collection_config_factory=lambda size: CollectionConfig(
             embedding_size=size
         ),
         manifest_store=CollectionManifestStore(make_config_service(), MagicMock()),

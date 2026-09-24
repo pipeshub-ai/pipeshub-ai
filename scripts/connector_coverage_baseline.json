@@ -1,11 +1,12 @@
 {
   "_comment": "Connectors knowingly shipping without integration coverage. --check fails when a connector appears that is not listed here, so this list may shrink freely but should only grow deliberately.",
-  "covered": 29,
-  "total": 43,
+  "covered": 31,
+  "total": 45,
   "uncovered_connectors": [
     "box",
     "dropbox",
     "dropboxpersonal",
+    "drupalwiki",
     "gmail",
     "gmailworkspace",
     "onedrive",
@@ -15,7 +16,6 @@
     "servicenow",
     "slack",
     "slackworkspace",
-    "zammad",
     "zoom"
   ]
 }

@@ -38,7 +38,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MINIO_IMAGE: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+  # quay.io/minio/* stopped serving anonymous pulls on 2026-09-24; see the
+  # integration compose files for why this image.
+  MINIO_IMAGE: cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
   AZURITE_IMAGE: mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
   MONGO_IMAGE: mongo:8.0.17
 

@@ -4,7 +4,8 @@ import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useSta
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
-import { useDemoDataActive } from '@/chat/hooks/use-demo-data-active';
+import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
+import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -1408,6 +1409,11 @@ function ChatContent() {
                   <Box style={{ width: '100%' }}>
                     <ChatInputWrapper />
                   </Box>
+                )}
+                {showChatInput && (
+                  // Shows itself only when it applies, including for a disabled demo
+                  // whose records are still searchable.
+                  <DemoDataRemovalNotice isAdmin={isAdmin} style={{ marginTop: 'var(--space-5)' }} />
                 )}
                 {demoDataActive && showChatInput && (
                   <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />

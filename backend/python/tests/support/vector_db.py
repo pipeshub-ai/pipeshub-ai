@@ -111,7 +111,7 @@ def make_collection_registry(collection_name: str = "records") -> MagicMock:
         ]
     )
     registry.build_collection_config = MagicMock(
-        side_effect=lambda size, sparse_idf=False: CollectionConfig(embedding_size=size)
+        side_effect=lambda size: CollectionConfig(embedding_size=size)
     )
     registry.invalidate = MagicMock()
     return registry

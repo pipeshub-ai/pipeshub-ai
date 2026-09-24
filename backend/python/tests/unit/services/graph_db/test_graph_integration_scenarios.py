@@ -381,6 +381,8 @@ class FakeGraphProvider:
         org_id: str,
         filters: dict[str, list[str]] | None = None,
         time_range: dict[str, int] | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, str]:
         """
         Reproduce the permission model by walking the 8 connector access paths

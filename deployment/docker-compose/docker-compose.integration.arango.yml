@@ -366,12 +366,12 @@ services:
   # is created by minio-init rather than by the tests, which never create or
   # delete buckets.
   minio:
-    # MinIO no longer publishes these images on Docker Hub (the minio/minio and
-    # minio/mc repositories now return "repository does not exist"), so pull the
-    # identical release tags from quay.io, MinIO's own registry, pinned by
-    # manifest digest because quay is a historical archive rather than a
-    # maintained channel, so a re-pushed tag would not change what CI pulls.
-    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+    # MinIO has withdrawn its public images: Docker Hub's minio/minio and
+    # minio/mc are gone, and quay.io/minio/* now answers 401 to anonymous pulls
+    # (since 2026-09-24). Chainguard's MinIO build is public; the -dev variant
+    # carries a shell and mc, which the healthcheck and minio-init need, so one
+    # image serves both. Pinned by digest so a rebuild cannot change what CI runs.
+    image: cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
     restart: always
     command: server /data --console-address ":9001"
     environment:
@@ -387,7 +387,8 @@ services:
       retries: 20
 
   minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z@sha256:aead63c77f9db9107f1696fb08ecb0faeda23729cde94b0f663edf4fe09728e3
+    # The same image: it has mc and a shell for the bucket setup below.
+    image: cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
     depends_on:
       minio:
         condition: service_healthy

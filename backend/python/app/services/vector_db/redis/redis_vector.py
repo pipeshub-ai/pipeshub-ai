@@ -72,7 +72,6 @@ from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.utils import (
     coerce_payload_hash_value,
     decode_hash_doc,
-    escape_redisearch_text,
     escape_tag_value,
     field_conditions_to_redis_query,
     filter_expression_to_redis_query,
@@ -81,6 +80,7 @@ from app.services.vector_db.redis.utils import (
     parse_ft_hybrid_reply,
     parse_ft_search_reply,
     parse_search_rows,
+    redisearch_any_term_query,
     vector_point_to_hash_fields,
     vector_to_bytes,
     within_values_count,
@@ -995,10 +995,7 @@ class RedisVectorService(IVectorDBService):
         if req.filter is not None and not req.filter.is_empty():
             filter_query = filter_expression_to_redis_query(req.filter)
 
-        # Escape the free-text query for RediSearch syntax before embedding it
-        # in the combined query string.  Unescaped characters like { } @ : - can
-        # break the query parser.
-        text_query = escape_redisearch_text(req.text_query or "")
+        text_query = redisearch_any_term_query(req.text_query or "")
         search_query = _combine_text_and_filter(text_query, filter_query)
 
         if req.dense_query is None:

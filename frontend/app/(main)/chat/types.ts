@@ -625,6 +625,8 @@ export interface CitationApiResponse {
       recordName: string;
       recordId: string;
       connector: string;
+      /** Connector instance the record came from; absent on older saved answers */
+      connectorId?: string;
       recordType: string;
       webUrl?: string;
       mimeType: string;

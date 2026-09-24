@@ -407,6 +407,7 @@ class IGraphDBProvider(ABC):
         document_key: str,
         collection: str,
         transaction: str | None = None,
+        *,
         raise_on_error: bool = False,
     ) -> dict | None:
         """
@@ -507,6 +508,7 @@ class IGraphDBProvider(ABC):
         filters: dict[str, Any] | None = None,
         sort_field: str | None = None,
         transaction: str | None = None,
+        *,
         raise_on_error: bool = False,
     ) -> list[dict]:
         """
@@ -1948,13 +1950,17 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_user_by_user_id(
         self,
-        user_id: str
+        user_id: str,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get a user by their internal user ID.
 
         Args:
             user_id (str): Internal user ID
+            raise_on_error: raise when the lookup fails. Without it a failed
+                lookup returns None, the same as a user that does not exist.
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
@@ -2757,6 +2763,7 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         transaction: str | None = None,
+        *,
         raise_on_error: bool = False,
     ) -> dict | None:
         """
@@ -2930,6 +2937,7 @@ class IGraphDBProvider(ABC):
         virtual_record_id: str,
         accessible_record_ids: list[str] | None = None,
         transaction: str | None = None,
+        *,
         raise_on_error: bool = False,
     ) -> list[str]:
         """Keys of every live record sharing this virtualRecordId.
@@ -2997,6 +3005,8 @@ class IGraphDBProvider(ABC):
         org_id: str,
         filters: dict[str, list[str]] | None = None,
         time_range: dict[str, int] | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -3023,6 +3033,9 @@ class IGraphDBProvider(ABC):
             time_range (Optional[Dict[str, int]]): Optional source-creation time bounds in epoch ms.
                 Keys: 'source_created_after_ms' (inclusive lower), 'source_created_before_ms' (inclusive upper).
                 Filters on record.sourceCreatedAtTimestamp.
+            raise_on_error: raise when any part of the permission read fails,
+                instead of leaving that part out. Without it, a failed read and a
+                user who can reach nothing both return {}.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
@@ -3230,6 +3243,7 @@ class IGraphDBProvider(ABC):
         key: str,
         collection: str,
         transaction: str | None = None,
+        *,
         raise_on_error: bool = False,
     ) -> dict | None:
         """

@@ -4056,6 +4056,7 @@ components:
         - "DROPBOX PERSONAL"
         - "WEB"
         - "BOOKSTACK"
+        - "DRUPAL WIKI"
         - "GITHUB"
         - "GITHUB TEAMS"
         - "SERVICENOW"
@@ -8716,6 +8717,13 @@ components:
         connector:
           type: string
           nullable: true
+        connectorId:
+          type: string
+          nullable: true
+          description: |
+            The connector instance the record came from. `connector` names only
+            the kind of source (for example `SLACK`), which several instances can
+            share. Absent on citations saved before this field was stored.
         recordType:
           type: string
           nullable: true
