@@ -1,0 +1,189 @@
+{{#prod}}
+replicas: 3
+ingress:
+  enabled: true
+  className: nginx
+  host: {{domain}}
+  tls: true
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: 50m
+{{/prod}}
+{{^prod}}
+replicas: 1
+ingress:
+  enabled: true
+  className: nginx
+  host: staging.{{domain}}
+  tls: false
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+{{/prod}}
+
+{{#services}}
+services:
+  frontend:
+    image: {{frontend_image}}
+    port: {{frontend_port}}
+    replicas: {{frontend_replicas}}
+    env:
+      - name: VITE_API_BASE
+        value: https://{{domain}}/api
+      - name: VITE_MCP_URL
+        value: https://{{domain}}/mcp
+  api:
+    image: {{api_image}}
+    port: {{api_port}}
+    replicas: {{api_replicas}}
+    env:
+      - name: NODE_ENV
+        value: {{node_env}}
+      - name: PORT
+        value: {{api_port}}
+      - name: LOG_LEVEL
+        value: {{log_level}}
+  query:
+    image: {{query_image}}
+    port: {{query_port}}
+    replicas: {{query_replicas}}
+  connectors:
+    image: {{connector_image}}
+    port: {{connector_port}}
+    replicas: {{connector_replicas}}
+  indexing:
+    image: {{indexing_image}}
+    port: {{indexing_port}}
+    replicas: {{indexing_replicas}}
+{{/services}}
+
+{{#workers}}
+workers:
+  default:
+    image: {{worker_image}}
+    concurrency: {{worker_concurrency}}
+    queues:
+      - default
+      - mail
+  indexing:
+    image: {{worker_image}}
+    concurrency: {{index_worker_concurrency}}
+    queues:
+      - index
+      - extract
+  {{#heavy}}
+  heavy:
+    image: {{worker_image}}
+    concurrency: 1
+    queues:
+      - parse
+      - ocr
+  {{/heavy}}
+{{/workers}}
+
+application:
+  name: {{app_name}}
+  environment: {{environment}}
+  {{#prod}}
+  debug: false
+  log_level: info
+  {{/prod}}
+  {{^prod}}
+  debug: true
+  log_level: debug
+  {{/prod}}
+  env:
+    - name: APP_NAME
+      value: {{app_name}}
+    - name: APP_ENV
+      value: {{environment}}
+    - name: LOG_LEVEL
+      value: {{log_level}}
+    - name: PORT
+      value: {{api_port}}
+    - name: NODEJS_PORT
+      value: {{api_port}}
+    - name: QUERY_PORT
+      value: {{query_port}}
+    - name: CONNECTOR_PORT
+      value: {{connector_port}}
+    - name: INDEXING_PORT
+      value: {{indexing_port}}
+    - name: REDIS_URL
+      value: {{redis_url}}
+    - name: REDIS_CACHE_TTL
+      value: {{redis_cache_ttl}}
+    - name: DATABASE_URL
+      value: {{database_url}}
+    - name: DATABASE_POOL
+      value: {{database_pool}}
+    - name: DATABASE_TIMEOUT
+      value: {{database_timeout}}
+    - name: SMTP_HOST
+      value: {{smtp_host}}
+    - name: SMTP_PORT
+      value: {{smtp_port}}
+    - name: SMTP_USER
+      value: {{smtp_user}}
+    - name: SMTP_FROM
+      value: {{smtp_from}}
+    - name: S3_BUCKET
+      value: {{s3_bucket}}
+    - name: S3_REGION
+      value: {{s3_region}}
+    - name: S3_PREFIX
+      value: {{s3_prefix}}
+    - name: JWT_ISSUER
+      value: {{jwt_issuer}}
+    - name: JWT_AUDIENCE
+      value: {{jwt_audience}}
+    - name: JWT_EXPIRY
+      value: {{jwt_expiry}}
+    - name: SESSION_SECRET
+      value: {{session_secret}}
+    - name: ENCRYPTION_KEY
+      value: {{encryption_key}}
+    - name: FEATURE_SEARCH
+      value: {{feature_search}}
+    - name: FEATURE_AGENTS
+      value: {{feature_agents}}
+    - name: FEATURE_MCP
+      value: {{feature_mcp}}
+    - name: FEATURE_SANDBOX
+      value: {{feature_sandbox}}
+    - name: WORKER_CONCURRENCY
+      value: {{worker_concurrency}}
+    - name: INDEX_WORKER_CONCURRENCY
+      value: {{index_worker_concurrency}}
+    - name: METRICS_ENABLED
+      value: {{metrics_enabled}}
+    - name: METRICS_PORT
+      value: {{metrics_port}}
+    - name: TRACING_ENABLED
+      value: {{tracing_enabled}}
+    - name: TRACING_ENDPOINT
+      value: {{tracing_endpoint}}
+    - name: HEALTHCHECK_PATH
+      value: {{healthcheck_path}}
+    - name: READINESS_PATH
+      value: {{readiness_path}}
+    - name: FRONTEND_PUBLIC_URL
+      value: https://{{domain}}
+    - name: ALLOWED_ORIGIN
+      value: https://{{domain}}
+
+{{#observability}}
+observability:
+  metrics:
+    enabled: {{metrics_enabled}}
+    port: {{metrics_port}}
+    path: /metrics
+    scrape_interval: 30s
+  logging:
+    driver: json-file
+    max_size: 50m
+    max_file: 5
+  tracing:
+    enabled: {{tracing_enabled}}
+    exporter: otlp
+    endpoint: {{tracing_endpoint}}
+{{/observability}}

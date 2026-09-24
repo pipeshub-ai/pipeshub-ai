@@ -1,0 +1,259 @@
+{% if deploy_web %}
+---
+- name: Deploy {{ app_name }} web stack
+  hosts: {{ web_hosts | default('web') }}
+  become: true
+  vars:
+    app_user: {{ app_user | default('www-data') }}
+    app_root: /opt/{{ app_name }}
+    log_dir: /var/log/{{ app_name }}
+  handlers:
+    - name: restart {{ app_name }}
+      service:
+        name: {{ app_name }}
+        state: restarted
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
+  tasks:
+    - name: Install runtime packages
+      apt:
+        name:
+          - nginx
+          - python3
+          - python3-venv
+          - redis-server
+        state: present
+        update_cache: true
+
+    - name: Create application directories
+      file:
+        path: {{ item }}
+        state: directory
+        owner: {{ app_user }}
+        mode: "0755"
+      loop:
+        - {{ app_root }}
+        - {{ app_root }}/releases
+        - {{ app_root }}/shared
+        - {{ log_dir }}
+
+    - name: Write application environment
+      copy:
+        dest: {{ app_root }}/shared/.env
+        owner: {{ app_user }}
+        mode: "0600"
+        content: |
+          APP_NAME={{ app_name }}
+          APP_ENV={{ app_env }}
+          LOG_LEVEL={{ log_level | default('info') }}
+          REDIS_URL={{ redis_url }}
+          DATABASE_URL={{ database_url }}
+      notify: restart {{ app_name }}
+
+    {% if enable_ssl %}
+    - name: Install TLS certificate
+      copy:
+        dest: /etc/ssl/{{ app_name }}/fullchain.pem
+        src: {{ ssl_cert }}
+        owner: root
+        mode: "0644"
+      notify: reload nginx
+
+    - name: Install TLS private key
+      copy:
+        dest: /etc/ssl/{{ app_name }}/privkey.pem
+        src: {{ ssl_key }}
+        owner: root
+        mode: "0600"
+      notify: reload nginx
+    {% endif %}
+
+    - name: Render nginx site
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/sites-available/{{ app_name }}
+      notify: reload nginx
+
+    - name: Enable nginx site
+      file:
+        src: /etc/nginx/sites-available/{{ app_name }}
+        dest: /etc/nginx/sites-enabled/{{ app_name }}
+        state: link
+      notify: reload nginx
+{% else %}
+- name: Skip {{ app_name }} web deploy
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "deploy_web is false for {{ app_name }}"
+{% endif %}
+
+{% if deploy_workers %}
+- name: Deploy {{ app_name }} workers
+  hosts: {{ worker_hosts | default('workers') }}
+  become: true
+  vars:
+    worker_user: {{ app_user | default('www-data') }}
+    worker_root: /opt/{{ app_name }}-worker
+  tasks:
+    - name: Install worker packages
+      apt:
+        name:
+          - python3
+          - python3-venv
+          - redis-tools
+        state: present
+
+    - name: Create worker directories
+      file:
+        path: {{ item }}
+        state: directory
+        owner: {{ worker_user }}
+        mode: "0755"
+      loop:
+        - {{ worker_root }}
+        - {{ worker_root }}/shared
+        - /var/log/{{ app_name }}-worker
+
+    - name: Write worker environment
+      copy:
+        dest: {{ worker_root }}/shared/.env
+        owner: {{ worker_user }}
+        mode: "0600"
+        content: |
+          APP_NAME={{ app_name }}
+          APP_ROLE=worker
+          REDIS_URL={{ redis_url }}
+          DATABASE_URL={{ database_url }}
+          WORKER_CONCURRENCY={{ worker_concurrency | default(4) }}
+          WORKER_QUEUES={{ worker_queues | default('default,mail,index') }}
+      notify: restart {{ app_name }}-worker
+
+    {% for queue in worker_queues | default(['default', 'mail', 'index']) %}
+    - name: Enable {{ queue }} worker unit
+      systemd:
+        name: {{ app_name }}-{{ queue }}
+        enabled: true
+        state: started
+        daemon_reload: true
+    {% endfor %}
+{% endif %}
+
+{% if deploy_observability %}
+observability:
+  metrics:
+    enabled: {{ metrics_enabled | default(true) }}
+    scrape_interval: {{ scrape_interval | default('30s') }}
+    endpoint: /metrics
+    port: {{ metrics_port | default(9090) }}
+  logging:
+    driver: {{ log_driver | default('json-file') }}
+    max_size: {{ log_max_size | default('50m') }}
+    max_file: {{ log_max_file | default(5) }}
+  tracing:
+    enabled: {{ tracing_enabled | default(false) }}
+    exporter: {{ tracing_exporter | default('otlp') }}
+    endpoint: {{ tracing_endpoint }}
+{% endif %}
+
+server:
+  name: {{ app_name }}
+  {% if enable_ssl %}
+  listen: 443
+  ssl:
+    certificate: {{ ssl_cert }}
+    key: {{ ssl_key }}
+    protocols:
+      - TLSv1.2
+      - TLSv1.3
+  {% else %}
+  listen: 80
+  {% endif %}
+  upstreams:
+    app:
+      host: 127.0.0.1
+      port: {{ app_port | default(8000) }}
+    query:
+      host: 127.0.0.1
+      port: {{ query_port | default(8000) }}
+    connectors:
+      host: 127.0.0.1
+      port: {{ connector_port | default(8088) }}
+
+application:
+  name: {{ app_name }}
+  environment: {{ app_env }}
+  env:
+    - name: APP_NAME
+      value: {{ app_name }}
+    - name: APP_ENV
+      value: {{ app_env }}
+    - name: LOG_LEVEL
+      value: {{ log_level | default('info') }}
+    - name: PORT
+      value: {{ app_port | default(8000) }}
+    - name: NODEJS_PORT
+      value: {{ backend_port | default(3000) }}
+    - name: QUERY_PORT
+      value: {{ query_port | default(8000) }}
+    - name: CONNECTOR_PORT
+      value: {{ connector_port | default(8088) }}
+    - name: INDEXING_PORT
+      value: {{ indexing_port | default(8091) }}
+    - name: REDIS_URL
+      value: {{ redis_url }}
+    - name: REDIS_CACHE_TTL
+      value: {{ redis_cache_ttl | default(300) }}
+    - name: DATABASE_URL
+      value: {{ database_url }}
+    - name: DATABASE_POOL
+      value: {{ database_pool | default(10) }}
+    - name: DATABASE_TIMEOUT
+      value: {{ database_timeout | default(30) }}
+    - name: SMTP_HOST
+      value: {{ smtp_host }}
+    - name: SMTP_PORT
+      value: {{ smtp_port | default(587) }}
+    - name: SMTP_USER
+      value: {{ smtp_user }}
+    - name: SMTP_FROM
+      value: {{ smtp_from }}
+    - name: S3_BUCKET
+      value: {{ s3_bucket }}
+    - name: S3_REGION
+      value: {{ s3_region | default('us-east-1') }}
+    - name: S3_PREFIX
+      value: {{ s3_prefix | default(app_name) }}
+    - name: JWT_ISSUER
+      value: {{ jwt_issuer }}
+    - name: JWT_AUDIENCE
+      value: {{ jwt_audience }}
+    - name: SESSION_SECRET
+      value: {{ session_secret }}
+    - name: ENCRYPTION_KEY
+      value: {{ encryption_key }}
+    - name: FEATURE_SEARCH
+      value: {{ feature_search | default(true) }}
+    - name: FEATURE_AGENTS
+      value: {{ feature_agents | default(true) }}
+    - name: FEATURE_MCP
+      value: {{ feature_mcp | default(true) }}
+    - name: WORKER_CONCURRENCY
+      value: {{ worker_concurrency | default(4) }}
+    - name: WORKER_QUEUES
+      value: {{ worker_queues | default('default,mail,index') }}
+    - name: METRICS_ENABLED
+      value: {{ metrics_enabled | default(true) }}
+    - name: METRICS_PORT
+      value: {{ metrics_port | default(9090) }}
+    - name: TRACING_ENABLED
+      value: {{ tracing_enabled | default(false) }}
+    - name: TRACING_ENDPOINT
+      value: {{ tracing_endpoint }}
+    - name: HEALTHCHECK_PATH
+      value: {{ healthcheck_path | default('/health') }}
+    - name: READINESS_PATH
+      value: {{ readiness_path | default('/ready') }}

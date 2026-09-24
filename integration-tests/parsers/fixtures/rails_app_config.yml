@@ -1,0 +1,200 @@
+<% if ENV['RAILS_ENV'] == 'production' %>
+production:
+  adapter: postgresql
+  encoding: unicode
+  host: <%= ENV['DB_HOST'] %>
+  port: <%= ENV.fetch('DB_PORT') { 5432 } %>
+  database: <%= ENV['DB_NAME'] %>
+  username: <%= ENV['DB_USER'] %>
+  password: <%= ENV['DB_PASSWORD'] %>
+  pool: <%= ENV.fetch('RAILS_MAX_THREADS') { 5 } %>
+  checkout_timeout: <%= ENV.fetch('DB_CHECKOUT_TIMEOUT') { 5 } %>
+  idle_timeout: <%= ENV.fetch('DB_IDLE_TIMEOUT') { 300 } %>
+  reaping_frequency: <%= ENV.fetch('DB_REAPING_FREQUENCY') { 10 } %>
+  variables:
+    statement_timeout: <%= ENV.fetch('DB_STATEMENT_TIMEOUT') { 15000 } %>
+    lock_timeout: <%= ENV.fetch('DB_LOCK_TIMEOUT') { 5000 } %>
+  replica:
+    adapter: postgresql
+    encoding: unicode
+    host: <%= ENV['DB_REPLICA_HOST'] %>
+    database: <%= ENV['DB_NAME'] %>
+    username: <%= ENV['DB_REPLICA_USER'] %>
+    password: <%= ENV['DB_REPLICA_PASSWORD'] %>
+    replica: true
+<% elsif ENV['RAILS_ENV'] == 'staging' %>
+staging:
+  adapter: postgresql
+  encoding: unicode
+  host: <%= ENV.fetch('DB_HOST') { 'staging-db.internal' } %>
+  database: <%= ENV.fetch('DB_NAME') { 'pipeshub_staging' } %>
+  username: <%= ENV.fetch('DB_USER') { 'pipeshub' } %>
+  password: <%= ENV['DB_PASSWORD'] %>
+  pool: <%= ENV.fetch('RAILS_MAX_THREADS') { 5 } %>
+<% else %>
+development:
+  adapter: sqlite3
+  database: db/development.sqlite3
+  pool: 5
+  timeout: 5000
+test:
+  adapter: sqlite3
+  database: db/test.sqlite3
+  pool: 5
+  timeout: 5000
+<% end %>
+
+<% if ENV['REDIS_URL'] %>
+cache_store:
+  adapter: redis
+  url: <%= ENV['REDIS_URL'] %>
+  namespace: <%= ENV.fetch('REDIS_NAMESPACE') { 'pipeshub-cache' } %>
+  expires_in: <%= ENV.fetch('CACHE_TTL') { 300 } %>
+  pool_size: <%= ENV.fetch('REDIS_POOL') { 10 } %>
+  reconnect_attempts: 3
+  ssl_params:
+    verify_mode: <%= ENV.fetch('REDIS_SSL_VERIFY') { 'none' } %>
+<% else %>
+cache_store:
+  adapter: memory_store
+  size: 64
+<% end %>
+
+<% unless ENV['RAILS_ENV'] == 'test' %>
+cable:
+  adapter: redis
+  url: <%= ENV.fetch('CABLE_REDIS_URL') { ENV['REDIS_URL'] } %>
+  channel_prefix: <%= ENV.fetch('CABLE_PREFIX') { 'pipeshub_cable' } %>
+  allowed_request_origins:
+    - <%= ENV.fetch('FRONTEND_PUBLIC_URL') { 'http://localhost:3001' } %>
+    - <%= ENV.fetch('ALLOWED_ORIGIN') { 'http://localhost:3000' } %>
+<% end %>
+
+active_storage:
+  <% if ENV['S3_BUCKET'] %>
+  service: s3
+  bucket: <%= ENV['S3_BUCKET'] %>
+  region: <%= ENV.fetch('S3_REGION') { 'us-east-1' } %>
+  prefix: <%= ENV.fetch('S3_PREFIX') { 'uploads' } %>
+  upload:
+    server_side_encryption: AES256
+    cache_control: "public, max-age=31536000"
+  <% else %>
+  service: disk
+  root: <%= Rails.root.join('storage') %>
+  <% end %>
+
+smtp:
+  <% if ENV['SMTP_HOST'] %>
+  delivery_method: smtp
+  address: <%= ENV['SMTP_HOST'] %>
+  port: <%= ENV.fetch('SMTP_PORT') { 587 } %>
+  domain: <%= ENV.fetch('SMTP_DOMAIN') { 'pipeshub.com' } %>
+  user_name: <%= ENV['SMTP_USER'] %>
+  password: <%= ENV['SMTP_PASSWORD'] %>
+  authentication: <%= ENV.fetch('SMTP_AUTH') { 'plain' } %>
+  enable_starttls_auto: true
+  default_from: <%= ENV.fetch('SMTP_FROM') { 'noreply@pipeshub.com' } %>
+  <% else %>
+  delivery_method: <%= ENV.fetch('MAIL_DELIVERY') { 'letter_opener' } %>
+  default_from: developer@localhost
+  <% end %>
+
+sidekiq:
+  concurrency: <%= ENV.fetch('SIDEKIQ_CONCURRENCY') { 10 } %>
+  timeout: <%= ENV.fetch('SIDEKIQ_TIMEOUT') { 25 } %>
+  queues:
+    - [critical, 5]
+    - [default, 3]
+    - [mailers, 2]
+    - [indexing, 2]
+    - [low, 1]
+  redis:
+    url: <%= ENV.fetch('SIDEKIQ_REDIS_URL') { ENV['REDIS_URL'] } %>
+    network_timeout: 5
+    pool_timeout: 5
+
+application:
+  name: pipeshub
+  secret_key_base: <%= ENV['SECRET_KEY_BASE'] %>
+  encryption_key: <%= ENV['ENCRYPTION_KEY'] %>
+  jwt:
+    issuer: <%= ENV.fetch('JWT_ISSUER') { 'pipeshub' } %>
+    audience: <%= ENV.fetch('JWT_AUDIENCE') { 'pipeshub-api' } %>
+    expiry_seconds: <%= ENV.fetch('JWT_EXPIRY') { 3600 } %>
+  features:
+    search: <%= ENV.fetch('FEATURE_SEARCH') { 'true' } %>
+    agents: <%= ENV.fetch('FEATURE_AGENTS') { 'true' } %>
+    mcp: <%= ENV.fetch('FEATURE_MCP') { 'true' } %>
+    sandbox: <%= ENV.fetch('FEATURE_SANDBOX') { 'false' } %>
+  env:
+    - name: RAILS_ENV
+      value: <%= ENV.fetch('RAILS_ENV') { 'development' } %>
+    - name: RAILS_MAX_THREADS
+      value: <%= ENV.fetch('RAILS_MAX_THREADS') { 5 } %>
+    - name: RAILS_LOG_LEVEL
+      value: <%= ENV.fetch('RAILS_LOG_LEVEL') { 'info' } %>
+    - name: RAILS_SERVE_STATIC_FILES
+      value: <%= ENV.fetch('RAILS_SERVE_STATIC_FILES') { 'true' } %>
+    - name: PORT
+      value: <%= ENV.fetch('PORT') { 3000 } %>
+    - name: DATABASE_URL
+      value: <%= ENV['DATABASE_URL'] %>
+    - name: DATABASE_POOL
+      value: <%= ENV.fetch('DATABASE_POOL') { 10 } %>
+    - name: REDIS_URL
+      value: <%= ENV['REDIS_URL'] %>
+    - name: REDIS_NAMESPACE
+      value: <%= ENV.fetch('REDIS_NAMESPACE') { 'pipeshub-cache' } %>
+    - name: CACHE_TTL
+      value: <%= ENV.fetch('CACHE_TTL') { 300 } %>
+    - name: CABLE_REDIS_URL
+      value: <%= ENV.fetch('CABLE_REDIS_URL') { ENV['REDIS_URL'] } %>
+    - name: SIDEKIQ_REDIS_URL
+      value: <%= ENV.fetch('SIDEKIQ_REDIS_URL') { ENV['REDIS_URL'] } %>
+    - name: SIDEKIQ_CONCURRENCY
+      value: <%= ENV.fetch('SIDEKIQ_CONCURRENCY') { 10 } %>
+    - name: S3_BUCKET
+      value: <%= ENV['S3_BUCKET'] %>
+    - name: S3_REGION
+      value: <%= ENV.fetch('S3_REGION') { 'us-east-1' } %>
+    - name: S3_PREFIX
+      value: <%= ENV.fetch('S3_PREFIX') { 'uploads' } %>
+    - name: SMTP_HOST
+      value: <%= ENV['SMTP_HOST'] %>
+    - name: SMTP_PORT
+      value: <%= ENV.fetch('SMTP_PORT') { 587 } %>
+    - name: SMTP_USER
+      value: <%= ENV['SMTP_USER'] %>
+    - name: SMTP_FROM
+      value: <%= ENV.fetch('SMTP_FROM') { 'noreply@pipeshub.com' } %>
+    - name: FRONTEND_PUBLIC_URL
+      value: <%= ENV.fetch('FRONTEND_PUBLIC_URL') { 'http://localhost:3001' } %>
+    - name: ALLOWED_ORIGIN
+      value: <%= ENV.fetch('ALLOWED_ORIGIN') { 'http://localhost:3000' } %>
+    - name: JWT_ISSUER
+      value: <%= ENV.fetch('JWT_ISSUER') { 'pipeshub' } %>
+    - name: JWT_AUDIENCE
+      value: <%= ENV.fetch('JWT_AUDIENCE') { 'pipeshub-api' } %>
+    - name: JWT_EXPIRY
+      value: <%= ENV.fetch('JWT_EXPIRY') { 3600 } %>
+    - name: FEATURE_SEARCH
+      value: <%= ENV.fetch('FEATURE_SEARCH') { 'true' } %>
+    - name: FEATURE_AGENTS
+      value: <%= ENV.fetch('FEATURE_AGENTS') { 'true' } %>
+    - name: FEATURE_MCP
+      value: <%= ENV.fetch('FEATURE_MCP') { 'true' } %>
+    - name: FEATURE_SANDBOX
+      value: <%= ENV.fetch('FEATURE_SANDBOX') { 'false' } %>
+    - name: HEALTHCHECK_PATH
+      value: <%= ENV.fetch('HEALTHCHECK_PATH') { '/health' } %>
+    - name: READINESS_PATH
+      value: <%= ENV.fetch('READINESS_PATH') { '/ready' } %>
+    - name: METRICS_ENABLED
+      value: <%= ENV.fetch('METRICS_ENABLED') { 'true' } %>
+    - name: METRICS_PORT
+      value: <%= ENV.fetch('METRICS_PORT') { 9090 } %>
+    - name: SECRET_KEY_BASE
+      value: <%= ENV['SECRET_KEY_BASE'] %>
+    - name: ENCRYPTION_KEY
+      value: <%= ENV['ENCRYPTION_KEY'] %>

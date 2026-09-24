@@ -1,0 +1,501 @@
+{{- /* Validate required secrets before deployment */ -}}
+{{- include "pipeshub-ai.validateRequiredSecrets" . }}
+{{- include "pipeshub-ai.validateSandbox" . }}
+{{- include "pipeshub-ai.validateStores" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: main
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pipeshub-ai.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default .Values.global.imagePullPolicy }}
+          ports:
+            - name: main
+              containerPort: 8091
+              protocol: TCP
+            - name: connector
+              containerPort: 8088
+              protocol: TCP
+            - name: backend
+              containerPort: 3001
+              protocol: TCP
+            - name: query
+              containerPort: 8000
+              protocol: TCP
+            - name: indexing
+              containerPort: 8081
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          env:
+            # Core environment settings
+            - name: PORT
+              value: {{ .Values.config.backendPort | quote }}
+            - name: NODEJS_PORT
+              value: {{ .Values.config.backendPort | quote }}
+            - name: NODE_ENV
+              value: {{ .Values.config.nodeEnv | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: MAX_CONCURRENT_PARSING
+              value: {{ .Values.config.maxConcurrentParsing | quote }}
+            - name: MAX_CONCURRENT_INDEXING
+              value: {{ .Values.config.maxConcurrentIndexing | quote }}
+            - name: MAX_PENDING_INDEXING_TASKS
+              value: {{ .Values.config.maxPendingIndexingTasks | quote }}
+            - name: QUERY_UVICORN_WORKERS
+              value: {{ .Values.config.queryUvicornWorkers | quote }}
+            - name: PIPESHUB_AGENT_TRANSPORT
+              value: {{ .Values.config.agentTransport | quote }}
+            - name: PIPESHUB_ACCESSIBLE_RECORDS_CACHE
+              value: {{ .Values.config.accessibleRecordsCache | quote }}
+            - name: PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL
+              value: {{ .Values.config.accessibleRecordsCacheTtl | quote }}
+            - name: PIPESHUB_SIGNED_URL_CACHE_SECONDS
+              value: {{ .Values.config.signedUrlCacheSeconds | quote }}
+            - name: DISTRIBUTED_INDEXING_CONCURRENCY
+              value: {{ .Values.config.distributedIndexingConcurrency | quote }}
+            # Coding sandbox. Set explicitly: the service's own fallback is
+            # "local", which executes generated code on this pod.
+            - name: SANDBOX_MODE
+              value: {{ include "pipeshub-ai.sandboxMode" . | quote }}
+            - name: SANDBOX_DOCKER_IMAGE
+              value: {{ .Values.config.sandboxDockerImage | quote }}
+            {{- with (include "pipeshub-ai.dockerHost" .) }}
+            - name: DOCKER_HOST
+              value: {{ . | quote }}
+            {{- end }}
+            # Resource-governor tuning. Every one defaults to "" so the
+            # governor derives it from the pod's CPU/memory limits; set one
+            # only to pin it. Mirrors the same list in docker-compose.yml.
+            - name: GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU
+              value: {{ .Values.config.governorHeavyParseSlotsPerCpu | quote }}
+            - name: GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU
+              value: {{ .Values.config.governorLightParseSlotsPerCpu | quote }}
+            - name: GOVERNOR_LIGHT_PARSE_MAX
+              value: {{ .Values.config.governorLightParseMax | quote }}
+            - name: GOVERNOR_INDEX_HEADROOM
+              value: {{ .Values.config.governorIndexHeadroom | quote }}
+            - name: GOVERNOR_INDEX_MAX
+              value: {{ .Values.config.governorIndexMax | quote }}
+            - name: GOVERNOR_INDEX_HEAVY_WORKING_SET_GB
+              value: {{ .Values.config.governorIndexHeavyWorkingSetGb | quote }}
+            - name: GOVERNOR_INDEX_LIGHT_WORKING_SET_GB
+              value: {{ .Values.config.governorIndexLightWorkingSetGb | quote }}
+            - name: GOVERNOR_HEAVY_PARSE_WORKING_SET_GB
+              value: {{ .Values.config.governorHeavyParseWorkingSetGb | quote }}
+            - name: GOVERNOR_BASELINE_MEMORY_MB
+              value: {{ .Values.config.governorBaselineMemoryMb | quote }}
+            - name: INDEXING_SPLIT_LEASE_POOLS
+              value: {{ .Values.config.indexingSplitLeasePools | quote }}
+            - name: INDEXING_CONCURRENCY_KEY_PREFIX
+              value: {{ printf "%s:indexing:concurrency" (include "pipeshub-ai.fullname" .) | quote }}
+            - name: INDEXING_CONCURRENCY_LEASE_SECONDS
+              value: {{ .Values.config.indexingConcurrencyLeaseSeconds | quote }}
+            - name: INDEXING_CONCURRENCY_REDIS_TIMEOUT_SECONDS
+              value: {{ .Values.config.indexingConcurrencyRedisTimeoutSeconds | quote }}
+            - name: INDEXING_CONCURRENCY_REDIS_MAX_CONNECTIONS
+              value: {{ .Values.config.indexingConcurrencyRedisMaxConnections | quote }}
+            - name: SHUTDOWN_TASK_TIMEOUT
+              value: {{ .Values.config.shutdownTaskTimeout | quote }}
+            - name: STALE_INDEXING_RECOVERY_STARTUP_GRACE_SECONDS
+              value: {{ .Values.config.staleIndexingRecoveryStartupGraceSeconds | quote }}
+            - name: STALE_INDEXING_RECOVERY_INTERVAL_SECONDS
+              value: {{ .Values.config.staleIndexingRecoveryIntervalSeconds | quote }}
+            - name: KV_STORE_TYPE
+              value: {{ .Values.config.kvStoreType | quote }}
+            - name: ALLOWED_ORIGINS
+              value: {{ .Values.config.allowedOrigins | quote }}
+            - name: SAML_SP_ENTITY_ID
+              value: {{ .Values.config.samlSpEntityId | default .Values.config.frontendPublicUrl | default "pipeshub" | quote }}
+            
+            # Security settings
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.secretName" . }}
+                  key: secret-key
+            
+            # Public endpoints
+            - name: CONNECTOR_PUBLIC_BACKEND
+              value: {{ .Values.config.connectorPublicBackend | quote }}
+            - name: FRONTEND_PUBLIC_URL
+              value: {{ .Values.config.frontendPublicUrl | quote }}
+            
+            # Internal service URLs
+            - name: QUERY_BACKEND
+              value: "http://localhost:8000"
+            - name: CONNECTOR_BACKEND
+              value: "http://localhost:8088"
+            - name: INDEXING_BACKEND
+              value: "http://localhost:8091"
+            - name: EMBEDDING_SERVER_URL
+              value: "http://localhost:8002"
+            
+            {{- if .Values.etcd.enabled }}
+            # ETCD config
+            - name: ETCD_URL
+              value: "http://{{ include "pipeshub-ai.fullname" . }}-etcd:2379"
+            - name: ETCD_HOST
+              value: "{{ include "pipeshub-ai.fullname" . }}-etcd"
+            {{- end }}
+            
+            {{- if .Values.arango.enabled }}
+            # ArangoDB config
+            - name: ARANGO_URL
+              value: "http://{{ include "pipeshub-ai.fullname" . }}-arango:8529"
+            - name: ARANGO_DB_NAME
+              value: "es"
+            - name: ARANGO_USERNAME
+              value: "root"
+            - name: ARANGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.arangoSecretName" . }}
+                  key: arango-password
+            {{- end }}
+            {{- if and .Values.arango.enabled (not .Values.neo4j.enabled) }}
+            - name: DATA_STORE
+              value: "arangodb"
+            {{- end }}
+            {{- if .Values.neo4j.enabled }}
+            # Neo4j config (app uses Neo4j as graph DB when DATA_STORE=neo4j)
+            - name: DATA_STORE
+              value: "neo4j"
+            - name: NEO4J_URI
+              value: "bolt://{{ include "pipeshub-ai.fullname" . }}-neo4j:7687"
+            - name: NEO4J_USERNAME
+              value: {{ .Values.neo4j.auth.username | quote }}
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.neo4jSecretName" . }}
+                  key: neo4j-password
+            - name: NEO4J_DATABASE
+              value: {{ .Values.neo4j.auth.database | quote }}
+            {{- end }}
+            
+            # Message broker config
+            - name: MESSAGE_BROKER
+              value: {{ .Values.messageBroker.type | default "redis" | quote }}
+            - name: REDIS_STREAMS_MAXLEN
+              value: {{ .Values.messageBroker.redisStreamsMaxLen | default "500000" | quote }}
+
+            {{- if eq .Values.messageBroker.type "kafka" }}
+            # Kafka config
+            - name: KAFKA_BROKERS
+              value: "{{ include "pipeshub-ai.fullname" . }}-kafka:9092"
+            {{- end }}
+            
+            # Redis config
+            {{- /*
+              Connection target:
+                - standalone or replication (no sentinel), redis.external.enabled=false (default):
+                  use the Bitnami "<release>-redis-master" Service. This is a stable Service that the
+                  chart updates to follow the current master pod, so the app does not need Sentinel
+                  awareness.
+                - sentinel enabled: the app MUST use a Sentinel-aware client. The chart still exposes the
+                  master Service for compatibility, but failover updates may lag and stale connections are
+                  possible. Enable Sentinel only if the app is migrated to a Sentinel client.
+                - redis.external.enabled=true: point at redis.external.clusterEndpoints (a self-hosted
+                  Redis Cluster or AWS MemoryDB, R21/R22) instead of the bundled subchart -- pair with
+                  redis.mode=cluster and --set redis.enabled=false to skip deploying the subchart
+                  entirely (wired via the `condition: redis.enabled` dependency in Chart.yaml).
+            */}}
+            {{- include "pipeshub-ai.validateRedis" . }}
+            {{- if .Values.redis.external.enabled }}
+            - name: REDIS_HOST
+              value: ""
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_CLUSTER_ENDPOINTS
+              value: {{ .Values.redis.external.clusterEndpoints | quote }}
+            - name: REDIS_CLUSTER_NAT_MAP
+              value: {{ .Values.redis.external.natMap | default "" | quote }}
+            {{- else }}
+            - name: REDIS_HOST
+              value: "{{ .Release.Name }}-redis-master"
+            - name: REDIS_PORT
+              value: "6379"
+            {{- end }}
+            {{- if .Values.redis.auth.enabled }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.redisSecretName" . }}
+                  key: redis-password
+            - name: REDIS_URL
+              value: "redis://:$(REDIS_PASSWORD)@{{ .Release.Name }}-redis-master:6379"
+            {{- else }}
+            - name: REDIS_PASSWORD
+              value: ""
+            - name: REDIS_URL
+              value: "redis://{{ .Release.Name }}-redis-master:6379"
+            {{- end }}
+            - name: REDIS_MODE
+              value: {{ .Values.redis.mode | default "standalone" | quote }}
+            - name: REDIS_KEY_NAMESPACE
+              value: {{ .Values.redis.keyNamespace | default "" | quote }}
+            - name: REDIS_CLUSTER_SCALE_READS
+              value: {{ .Values.redis.clusterScaleReads | default "master" | quote }}
+            - name: REDIS_PROVIDER_MODULE
+              value: {{ .Values.redis.providerModule | default "" | quote }}
+            - name: REDIS_TLS_ENABLED
+              value: {{ .Values.redis.clientTls.enabled | default false | quote }}
+            - name: REDIS_TLS_REJECT_UNAUTHORIZED
+              value: {{ .Values.redis.clientTls.rejectUnauthorized | default true | quote }}
+            - name: REDIS_TLS_CA_PATH
+              value: {{ .Values.redis.clientTls.caPath | default "" | quote }}
+            # Celery has no Redis Cluster transport; required when redis.mode
+            # is not "standalone" (fails fast at startup otherwise).
+            - name: CELERY_BROKER_URL
+              value: {{ .Values.celery.brokerUrl | default "" | quote }}
+            - name: CELERY_RESULT_BACKEND
+              value: {{ .Values.celery.resultBackend | default "" | quote }}
+            
+            # MongoDB config
+            {{- $isReplicaSet := eq (.Values.mongodb.architecture | default "standalone") "replicaset" }}
+            {{- $mongoHost := ternary (printf "%s-mongodb-headless" .Release.Name) (printf "%s-mongodb" .Release.Name) $isReplicaSet }}
+            {{- $mongoRsParam := ternary (printf "&replicaSet=%s" (.Values.mongodb.replicaSetName | default "rs0")) "" $isReplicaSet }}
+            {{- if .Values.mongodb.auth.enabled }}
+            - name: MONGO_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.mongodbSecretName" . }}
+                  key: mongodb-username
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.mongodbSecretName" . }}
+                  key: mongodb-password
+            - name: MONGO_URI
+              value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ $mongoHost }}:27017/?authSource=admin{{ $mongoRsParam }}"
+            {{- else }}
+            - name: MONGO_URI
+              value: "mongodb://{{ $mongoHost }}:27017/{{ if $mongoRsParam }}?{{ trimPrefix "&" $mongoRsParam }}{{ end }}"
+            {{- end }}
+            - name: MONGO_DB_NAME
+              value: "es"
+            # Single source of truth: tied to mongodb.architecture so this env var
+            # cannot drift from the rendered MONGO_URI. Overriding architecture
+            # alone (e.g. --set mongodb.architecture=standalone) used to leave
+            # REPLICA_SET_AVAILABLE=true and crash the API at first transaction.
+            - name: REPLICA_SET_AVAILABLE
+              value: {{ ternary "true" "false" $isReplicaSet | quote }}
+            
+            # Qdrant config
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.qdrantSecretName" . }}
+                  key: qdrant-api-key
+            - name: QDRANT_HOST
+              value: "{{ include "pipeshub-ai.fullname" . }}-qdrant"
+            - name: QDRANT_GRPC_PORT
+              value: "6334"
+            - name: QDRANT_PORT
+              value: "6333"
+
+            # Vector DB collection layout. Only read on the first startup that
+            # finds nothing persisted; from then on the stored value wins, and a
+            # value here that contradicts it fails startup — points already sit
+            # in collections a different strategy would not resolve.
+            - name: VECTOR_COLLECTION_STRATEGY
+              value: {{ .Values.vectorDb.collectionStrategy | default "single" | quote }}
+
+            - name: HOME
+              value: /home/user
+            
+            {{- if .Values.telemetry.enabled }}
+            # OpenTelemetry configuration
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ required "telemetry.otlp.endpoint is required when telemetry.enabled is true" .Values.telemetry.otlp.endpoint | quote }}
+            {{- if .Values.telemetry.otlp.tls.insecure }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: "true"
+            {{- end }}
+            {{- end }}
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # Per-pod ephemera (logs, caches, $HOME) — always emptyDir to avoid
+            # ReadWriteOnce contention between replicas. Logs should be shipped via
+            # the platform log collector (CloudWatch, Loki, etc.) for retention.
+            - name: app-logs
+              mountPath: /app/python/logs
+            - name: app-home
+              mountPath: /home/user
+            - name: app-rootlocal
+              mountPath: /root/.local
+            {{- if .Values.persistence.enabled }}
+            # Shared persistent data (uploads, local KV state, etc.). With multiple
+            # replicas this PVC MUST be ReadWriteMany — validation in _helpers.tpl
+            # blocks the install otherwise.
+            - name: pipeshub-storage
+              mountPath: /data/pipeshub
+              subPath: data
+            {{- end }}
+            {{- with .Values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.healthCheck.startupProbe.enabled }}
+          startupProbe:
+            httpGet:
+              path: /api/v1/health
+              port: backend
+            initialDelaySeconds: {{ .Values.healthCheck.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.startupProbe.failureThreshold }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: backend
+            initialDelaySeconds: {{ .Values.healthCheck.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.readinessProbe.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: backend
+            initialDelaySeconds: {{ .Values.healthCheck.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
+        {{- if .Values.sandbox.dind.enabled }}
+        # Docker-in-Docker: gives SANDBOX_MODE=docker a daemon, so
+        # model-generated code runs in a throwaway container instead of as a
+        # subprocess of the application. See `sandbox.dind` in values.yaml for
+        # the privilege trade this makes.
+        - name: dind
+          image: {{ .Values.sandbox.dind.image | quote }}
+          imagePullPolicy: {{ .Values.sandbox.dind.pullPolicy | quote }}
+          securityContext:
+            # The daemon needs to create namespaces, mount filesystems and
+            # manage cgroups, which no unprivileged container can do. This
+            # deliberately overrides the pod-level runAsNonRoot.
+            privileged: true
+            runAsNonRoot: false
+            runAsUser: 0
+          env:
+            # TLS off because the listener is bound to loopback below and
+            # never leaves the pod's network namespace. That binding is what
+            # makes it safe: 0.0.0.0 would also bind the pod IP, publishing
+            # an unauthenticated root-equivalent API to anything on the
+            # cluster network that can route to this pod.
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          args:
+            - "--host=tcp://127.0.0.1:{{ .Values.sandbox.dind.port }}"
+            - "--host=unix:///var/run/docker.sock"
+          resources:
+            {{- toYaml .Values.sandbox.dind.resources | nindent 12 }}
+          volumeMounts:
+            - name: dind-storage
+              mountPath: /var/lib/docker
+          livenessProbe:
+            exec:
+              command: ["docker", "info"]
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            # Pulling the sandbox image on a cold cache can take a while;
+            # this is what stops a slow first start being read as a crash.
+            exec:
+              command: ["docker", "info"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 30
+        {{- end }}
+          {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        {{- if .Values.sandbox.dind.enabled }}
+        - name: dind-storage
+          {{- if .Values.sandbox.dind.storage.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.sandbox.dind.storage.existingClaim | quote }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.sandbox.dind.storage.sizeLimit | quote }}
+          {{- end }}
+        {{- end }}
+        - name: cache
+          emptyDir: {}
+        - name: app-logs
+          emptyDir: {}
+        - name: app-home
+          emptyDir: {}
+        - name: app-rootlocal
+          emptyDir: {}
+        {{- if .Values.persistence.enabled }}
+        - name: pipeshub-storage
+          persistentVolumeClaim:
+            claimName: {{ include "pipeshub-ai.fullname" . }}
+        {{- end }}
+        {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
