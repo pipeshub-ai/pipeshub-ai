@@ -233,7 +233,12 @@ jobs:
               security finding anywhere except inside `sweep-findings.json`. This
               repository is public and so are its logs.
             - Your only output artifact is `sweep-findings.json`.
-          claude_args: '--model claude-opus-5 --allowedTools "Read,Write,Glob,Grep,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(head:*),Bash(find:*)"'
+          # Read-only commands only. No `find`: `find -exec` runs any child
+          # command, so prompt-injected repository content could run code in
+          # this step, which holds ANTHROPIC_API_KEY and can mint an OIDC token.
+          # A prefix allowlist cannot constrain find's arguments. Glob and Grep
+          # cover finding files.
+          claude_args: '--model claude-opus-5 --allowedTools "Read,Write,Glob,Grep,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(head:*)"'
 
       - name: Check the report exists
         id: report
