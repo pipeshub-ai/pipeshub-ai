@@ -8,6 +8,7 @@ ArangoDB REST API Documentation: https://www.arangodb.com/docs/stable/http/
 """
 
 import asyncio
+import threading
 from logging import Logger
 from typing import Any, Dict, List, Optional, Union
 
@@ -63,6 +64,9 @@ class ArangoHTTPClient:
         # from the consumer's worker loop and the main loop at the same time,
         # and a session may only be used and closed on its own loop.
         self._sessions: Dict[asyncio.AbstractEventLoop, aiohttp.ClientSession] = {}
+        # Those loops run on different threads, so changes to the table are
+        # serialised. Nothing awaits while it is held.
+        self._sessions_lock = threading.Lock()
         self.pool_limit = pool_limit
         self.logger = logger
 
@@ -78,19 +82,20 @@ class ArangoHTTPClient:
             aiohttp.ClientSession: Session for the current event loop
         """
         current_loop = asyncio.get_running_loop()
-        session = self._sessions.get(current_loop)
+        with self._sessions_lock:
+            session = self._sessions.get(current_loop)
 
-        if session is None or session.closed:
-            # Forget sessions whose loop has been closed; they can no longer be used.
-            for loop in [loop for loop in self._sessions if loop.is_closed()]:
-                del self._sessions[loop]
+            if session is None or session.closed:
+                # Forget sessions whose loop has been closed; they can no longer be used.
+                for loop in [loop for loop in self._sessions if loop.is_closed()]:
+                    self._sessions.pop(loop, None)
 
-            session = aiohttp.ClientSession(
-                auth=self.auth,
-                connector=aiohttp.TCPConnector(limit=self.pool_limit),
-            )
-            self._sessions[current_loop] = session
-            self.logger.debug("🔄 Created new HTTP session for current event loop")
+                session = aiohttp.ClientSession(
+                    auth=self.auth,
+                    connector=aiohttp.TCPConnector(limit=self.pool_limit),
+                )
+                self._sessions[current_loop] = session
+                self.logger.debug("🔄 Created new HTTP session for current event loop")
 
         return session
 
@@ -120,9 +125,10 @@ class ArangoHTTPClient:
 
     async def disconnect(self) -> None:
         """Close HTTP sessions"""
-        if self._sessions:
-            current_loop = asyncio.get_running_loop()
+        with self._sessions_lock:
             sessions, self._sessions = self._sessions, {}
+        if sessions:
+            current_loop = asyncio.get_running_loop()
             for loop, session in sessions.items():
                 try:
                     if loop is current_loop:
