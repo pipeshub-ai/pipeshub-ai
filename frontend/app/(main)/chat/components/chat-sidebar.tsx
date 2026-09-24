@@ -243,6 +243,7 @@ export function ChatSidebar() {
         <MenuButton icon="search" label={t('nav.searchChats')} onClick={() => handleNavigation('/search')} />
         <MenuButton icon="folder" label={t('nav.collections')} onClick={() => handleNavigation('/knowledge-base')} />
         <MenuButton icon="description" label={t('nav.allRecords')} onClick={() => handleNavigation('/knowledge-base?view=all-records')} />
+        <MenuButton icon="attachment" label={t('nav.allArtifacts')} onClick={() => handleNavigation('/artifacts/')} />
         <MenuButton icon="memory" label={t('nav.agents')} onClick={() => handleNavigation('/agents')} />
       </Flex>
 

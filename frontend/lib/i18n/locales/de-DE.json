@@ -209,6 +209,7 @@
   "nav": {
     "collections": "Sammlungen",
     "allRecords": "Alle Datensätze",
+    "allArtifacts": "Alle Artefakte",
     "workspace": "Arbeitsbereich",
     "shared": "Mit mir geteilt",
     "private": "Meine Sammlungen",

@@ -735,6 +735,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["md5Checksum"],
         )
 
+        # COMPOSITE: orgId + recordType — gallery listing filters ARTIFACT
+        # records after the permission-edge walk.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["orgId", "recordType"],
+        )
+
+        # COMPOSITE: orgId + visibility — user-facing artifact display policy.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.ARTIFACTS.value,
+            ["orgId", "visibility"],
+        )
+
+        # COMPOSITE: orgId + conversationId — conversation-scoped artifact lookup
+        # (registry list_for_conversation and gallery conversation filter).
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.ARTIFACTS.value,
+            ["orgId", "conversationId"],
+        )
+
         # ==================== USER INDEXES (High Priority) ====================
 
         # SINGLE: email (authentication, lookups)
@@ -13154,7 +13174,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN {{ kb_id: kb._key, kb_doc: kb, role: user_team_perm }}
             )
             LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_id == t.kb_id RETURN 1) == 0 RETURN t))
-            LET kbRecords = {'(FOR access IN directKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" ' + ('FILTER record.isFile != false ' if include_kb else '') + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
+            LET kbRecords = {'(FOR access IN directKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" FILTER record.recordType != "ARTIFACT" ' + ('FILTER record.isFile != false ' if include_kb else '') + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
             LET connectorRecords = {'(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" ' + perm_filter + ' LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" ' + record_filter + ' RETURN { record: record, permission: { role: permissionEdge.role, type: permissionEdge.type } })' if include_connector else '[]'}
             LET allRecords = APPEND(kbRecords, connectorRecords)
             FOR item IN allRecords
@@ -13184,7 +13204,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET directKbAccess = (FOR kbEdge IN @@permission FILTER kbEdge._from == user_from FILTER kbEdge.type == "USER" FILTER kbEdge.role IN @kb_permissions LET kb = DOCUMENT(kbEdge._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true RETURN { kb_doc: kb })
             LET teamKbAccess = (FOR teamKbPerm IN @@permission FILTER teamKbPerm.type == "TEAM" FILTER STARTS_WITH(teamKbPerm._to, "apps/") LET kb = DOCUMENT(teamKbPerm._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true LET team_id = SPLIT(teamKbPerm._from, '/')[1] LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN 1) FILTER user_team_perm != null RETURN { kb_doc: kb })
             LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_doc._key == t.kb_doc._key RETURN 1) == 0 RETURN t))
-            LET kbCount = LENGTH(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" RETURN 1)
+            LET kbCount = LENGTH(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" FILTER record.recordType != "ARTIFACT" RETURN 1)
             LET connectorCount = LENGTH(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" RETURN 1)
             RETURN kbCount + connectorCount
             """
@@ -13246,6 +13266,172 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error("❌ Failed to get records: %s", str(e))
             return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
+
+    def _artifact_gallery_sort_expr(self, sort_by: str) -> str:
+        return {
+            "name": "artifactDoc.name",
+            "createdAtTimestamp": "record.createdAtTimestamp",
+            "updatedAtTimestamp": "record.updatedAtTimestamp",
+            "artifactType": "artifactDoc.artifactType",
+        }.get(sort_by, "record.createdAtTimestamp")
+
+    def _artifact_gallery_filters(
+        self,
+        search: str | None,
+        artifact_types: list[str] | None,
+        conversation_id: str | None,
+        date_from: int | None,
+        date_to: int | None,
+    ) -> tuple[str, dict[str, Any]]:
+        conditions: list[str] = []
+        bind: dict[str, Any] = {}
+        if search:
+            conditions.append(
+                "(LIKE(LOWER(artifactDoc.name), @search) OR LIKE(LOWER(artifactDoc.logicalName), @search))"
+            )
+            bind["search"] = f"%{search.lower()}%"
+        if artifact_types is not None:
+            conditions.append("artifactDoc.artifactType IN @artifact_types")
+            bind["artifact_types"] = artifact_types
+        if conversation_id:
+            conditions.append("artifactDoc.conversationId == @conversation_id")
+            bind["conversation_id"] = conversation_id
+        if date_from:
+            conditions.append("record.createdAtTimestamp >= @date_from")
+            bind["date_from"] = date_from
+        if date_to:
+            conditions.append("record.createdAtTimestamp <= @date_to")
+            bind["date_to"] = date_to
+        extra = ("\n                FILTER " + " AND ".join(conditions)) if conditions else ""
+        return extra, bind
+
+    def _artifact_gallery_walk_aql(self, extra_filter: str, artifact_id: str | None = None) -> str:
+        id_filter = "FILTER record._key == @artifact_id\n                " if artifact_id else ""
+        return f"""
+            FOR permissionEdge IN @@permission
+                FILTER permissionEdge._from == @user_from
+                FILTER permissionEdge.type == "USER"
+                LET record = DOCUMENT(permissionEdge._to)
+                FILTER record != null
+                FILTER record.isDeleted != true
+                FILTER record.orgId == @org_id
+                FILTER record.recordType == "ARTIFACT"
+                {id_filter}LET artifactDoc = FIRST(
+                    FOR edge IN @@is_of_type
+                        FILTER edge._from == record._id
+                        LET art = DOCUMENT(edge._to)
+                        FILTER art != null
+                        RETURN art
+                )
+                FILTER artifactDoc != null
+                FILTER artifactDoc.artifactType != "TOOL_RESULT"
+                FILTER artifactDoc.isTemporary != true
+                FILTER (artifactDoc.visibility == null OR artifactDoc.visibility == "VISIBLE")
+                {extra_filter}
+        """
+
+    @staticmethod
+    def _artifact_gallery_return_aql() -> str:
+        return """{
+                    id: record._key,
+                    recordName: record.recordName,
+                    recordType: record.recordType,
+                    mimeType: record.mimeType,
+                    sizeInBytes: record.sizeInBytes,
+                    version: record.version,
+                    createdAtTimestamp: record.createdAtTimestamp,
+                    updatedAtTimestamp: record.updatedAtTimestamp,
+                    artifactDoc: {
+                        name: artifactDoc.name,
+                        artifactType: artifactDoc.artifactType,
+                        conversationId: artifactDoc.conversationId,
+                        visibility: artifactDoc.visibility,
+                        mimeType: artifactDoc.mimeType,
+                        sizeInBytes: artifactDoc.sizeInBytes,
+                        logicalName: artifactDoc.logicalName,
+                        contentHash: artifactDoc.contentHash,
+                        versions: artifactDoc.versions,
+                        description: artifactDoc.description,
+                        sourceTool: artifactDoc.sourceTool,
+                        isTemporary: artifactDoc.isTemporary
+                    },
+                    permission: { role: permissionEdge.role, type: permissionEdge.type }
+                }"""
+
+    async def list_accessible_artifacts(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None,
+        artifact_types: list[str] | None,
+        conversation_id: str | None,
+        date_from: int | None,
+        date_to: int | None,
+        sort_by: str,
+        sort_order: str,
+    ) -> tuple[list[dict], int]:
+        """Permission-first gallery listing. ``user_id`` is the graph user key."""
+        try:
+            extra_filter, filter_bind = self._artifact_gallery_filters(
+                search, artifact_types, conversation_id, date_from, date_to,
+            )
+            sort_expr = self._artifact_gallery_sort_expr(sort_by)
+            sort_dir = "ASC" if (sort_order or "").lower() == "asc" else "DESC"
+            walk = self._artifact_gallery_walk_aql(extra_filter)
+            bind = {
+                "user_from": f"users/{user_id}",
+                "org_id": org_id,
+                "@permission": CollectionNames.PERMISSION.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                **filter_bind,
+            }
+            main_query = (
+                walk
+                + f"""
+                SORT {sort_expr} {sort_dir}, record._key
+                LIMIT @skip, @limit
+                RETURN {self._artifact_gallery_return_aql()}
+                """
+            )
+            count_query = "RETURN LENGTH(" + walk + " RETURN 1)"
+            records = await self.execute_query(
+                main_query, bind_vars={**bind, "skip": skip, "limit": limit}
+            )
+            count_results = await self.execute_query(count_query, bind_vars=bind)
+            total = count_results[0] if count_results else 0
+            if isinstance(total, dict):
+                total = next(iter(total.values()), 0)
+            return records or [], int(total or 0)
+        except Exception as e:
+            self.logger.error("❌ Failed to list accessible artifacts: %s", str(e))
+            return [], 0
+
+    async def get_artifact_detail(
+        self,
+        user_id: str,
+        org_id: str,
+        artifact_id: str,
+    ) -> dict | None:
+        """Permission-first single-artifact fetch. ``user_id`` is the graph user key."""
+        try:
+            walk = self._artifact_gallery_walk_aql("", artifact_id=artifact_id)
+            query = walk + f"\n                RETURN {self._artifact_gallery_return_aql()}\n            "
+            bind = {
+                "user_from": f"users/{user_id}",
+                "org_id": org_id,
+                "artifact_id": artifact_id,
+                "@permission": CollectionNames.PERMISSION.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            }
+            results = await self.execute_query(query, bind_vars=bind)
+            if not results:
+                return None
+            return results[0]
+        except Exception as e:
+            self.logger.error("❌ Failed to get artifact detail: %s", str(e))
+            return None
 
     async def list_kb_records(
         self,

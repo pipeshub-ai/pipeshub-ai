@@ -40,6 +40,7 @@ from app.connectors.core.base.token_service.startup_service import startup_servi
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
+from app.connectors.api.artifacts_router import artifacts_router
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
     get_knowledge_hub_service,
@@ -881,6 +882,7 @@ app.include_router(mcp_servers_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
 app.include_router(connector_router)
+app.include_router(artifacts_router)
 if oauth_apps_router is not None:
     app.include_router(oauth_apps_router)
 if sharing_router is not None:

@@ -2428,6 +2428,52 @@ class IGraphDBProvider(ABC):
         """List records in a KB. Returns (records, total_count, available_filters)."""
         pass
 
+    @abstractmethod
+    async def list_accessible_artifacts(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None,
+        artifact_types: list[str] | None,
+        conversation_id: str | None,
+        date_from: int | None,
+        date_to: int | None,
+        sort_by: str,
+        sort_order: str,
+    ) -> tuple[list[dict], int]:
+        """Permission-first listing of user-visible artifacts.
+
+        ``user_id`` is the graph user key (``_key`` / ``id``), not the
+        external auth ``userId``. The caller resolves that key first,
+        matching ``list_all_records``.
+
+        Display-policy filters must run in the query (not post-fetch) so
+        pagination totals stay correct:
+
+        - ``recordType == ARTIFACT``
+        - ``orgId`` match, ``isDeleted != true``
+        - ``visibility`` is ``VISIBLE`` or missing
+        - ``isTemporary != true``
+        - ``artifactType != TOOL_RESULT``
+        """
+        pass
+
+    @abstractmethod
+    async def get_artifact_detail(
+        self,
+        user_id: str,
+        org_id: str,
+        artifact_id: str,
+    ) -> dict | None:
+        """Return one artifact the user can access, or None to hide existence.
+
+        Same identity and display-policy contract as
+        ``list_accessible_artifacts``.
+        """
+        pass
+
     # ==================== Group Operations ====================
 
     @abstractmethod

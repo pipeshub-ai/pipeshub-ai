@@ -117,7 +117,7 @@ from app.connectors.services.vector_store_rebuild import (
 )
 from app.edition_containers import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
-from app.models.entities import Record, RecordType
+from app.models.entities import ArtifactRecord, Record, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import read_platform_feature_flag
@@ -1402,6 +1402,13 @@ async def stream_record(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record"
             )
+        if isinstance(record, ArtifactRecord):
+            from app.services.artifact_registry.gallery import ArtifactDisplayPolicy
+            if not ArtifactDisplayPolicy.is_user_visible_record(record):
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail="Record not found",
+                )
         is_admin = is_request_admin(request)
         return await _resolve_record_content_response(
             record=record,

@@ -50,10 +50,7 @@ import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
-import {
-  SIDEBAR_CONVERSATIONS_PAGE_SIZE,
-  chatContentColumnStyle,
-} from './constants';
+import { chatContentColumnStyle } from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { ProjectApi } from '@/chat/project-api';
@@ -180,12 +177,6 @@ function ChatContent() {
   // prevents this component from re-rendering on background slot updates.
   const previewFile = useChatStore((s) => s.previewFile);
   const previewMode = useChatStore((s) => s.previewMode);
-  const setConversations = useChatStore((s) => s.setConversations);
-  const setSharedConversations = useChatStore((s) => s.setSharedConversations);
-  const setIsConversationsLoading = useChatStore((s) => s.setIsConversationsLoading);
-  const setConversationsError = useChatStore((s) => s.setConversationsError);
-  const setPagination = useChatStore((s) => s.setPagination);
-  const setSharedPagination = useChatStore((s) => s.setSharedPagination);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
   const clearPreview = useChatStore((s) => s.clearPreview);
 
@@ -330,43 +321,6 @@ function ChatContent() {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [router]);
-
-  // Fetch conversations from API
-  const loadConversations = useCallback(async () => {
-    setIsConversationsLoading(true);
-    setConversationsError(null);
-
-    try {
-      const [owned, shared] = await Promise.all([
-        ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source: 'owned' }),
-        ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source: 'shared' }),
-      ]);
-      setConversations(owned.conversations);
-      setSharedConversations(shared.conversations);
-      setPagination(owned.pagination);
-      setSharedPagination(shared.pagination);
-    } catch (error) {
-      if (useServicesHealthStore.getState().apiServerReachable) {
-        console.error('Failed to fetch conversations:', error);
-        setConversationsError(error instanceof Error ? error.message : 'Failed to fetch conversations');
-      }
-    } finally {
-      setIsConversationsLoading(false);
-    }
-  }, [setConversations, setSharedConversations, setIsConversationsLoading, setConversationsError, setPagination, setSharedPagination]);
-
-  // Fetch conversations on mount
-  useEffect(() => {
-    loadConversations();
-  }, [loadConversations]);
-
-  // Re-fetch conversations when a mutation bumps the version counter
-  const conversationsVersion = useChatStore((s) => s.conversationsVersion);
-  useEffect(() => {
-    if (conversationsVersion > 0) {
-      loadConversations();
-    }
-  }, [conversationsVersion, loadConversations]);
 
   // Populate agent side-effects (tools, display name) and kick off the model
   // fetch for the current context. The shared `fetchModelsForContext` handles

@@ -1,6 +1,7 @@
 import {
   ConnectorServiceCommand,
   ConnectorServiceCommandOptions,
+  ConnectorServiceResponse,
 } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { Response } from 'express';
@@ -43,12 +44,12 @@ export const handleBackendError = (error: unknown, operation: string): Error =>
   mapBackendError(error, operation);
 
 // Helper function to execute connector service commands
-export const executeConnectorCommand = async (
+export const executeConnectorCommand = async <T = unknown>(
   uri: string,
   method: HttpMethod,
   headers: Record<string, string>,
   body?: any,
-) => {
+): Promise<ConnectorServiceResponse<T>> => {
   const connectorCommandOptions: ConnectorServiceCommandOptions = {
     uri,
     method,
@@ -60,7 +61,9 @@ export const executeConnectorCommand = async (
     },
     ...(body && { body }),
   };
-  const connectorCommand = new ConnectorServiceCommand(connectorCommandOptions);
+  const connectorCommand = new ConnectorServiceCommand<T>(
+    connectorCommandOptions,
+  );
   return await connectorCommand.execute();
 };
 

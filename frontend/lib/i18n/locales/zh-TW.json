@@ -222,6 +222,7 @@
   "nav": {
     "collections": "集合",
     "allRecords": "所有記錄",
+    "allArtifacts": "所有產物",
     "workspace": "工作區",
     "shared": "與我共用",
     "private": "我的集合",

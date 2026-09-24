@@ -105,6 +105,7 @@ import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
+import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
@@ -611,6 +612,11 @@ export class Application {
     this.app.use(
       '/api/v1/knowledgeBase',
       createKnowledgeBaseRouter(this.knowledgeBaseContainer),
+    );
+
+    this.app.use(
+      '/api/v1/artifacts',
+      createArtifactsRouter(this.knowledgeBaseContainer),
     );
 
     this.app.use(

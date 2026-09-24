@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, selectPendingForSidebar } from '@/chat/store';
@@ -34,6 +34,7 @@ export const ChatSections = React.memo(function ChatSections({
 }: {
   onOpenMoreChats: (sectionType: 'shared' | 'your') => void;
 }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const currentConversationId = searchParams?.get('conversationId') ?? null;
   const { t } = useTranslation();
@@ -71,7 +72,9 @@ export const ChatSections = React.memo(function ChatSections({
 
   const [recentsCollapsed, setRecentsCollapsed] = useState(true);
 
-  const handleNewChat = () => dispatch('newChat');
+  const handleNewChat = () => {
+    if (!dispatch('newChat')) router.push('/chat/');
+  };
   const handleSelectConversation = () => {
     if (isMobile) closeMobileSidebar();
   };

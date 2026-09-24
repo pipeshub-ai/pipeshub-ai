@@ -208,6 +208,7 @@
   "nav": {
     "collections": "Colecciones",
     "allRecords": "Todos los registros",
+    "allArtifacts": "Todos los artefactos",
     "workspace": "Espacio de trabajo",
     "shared": "Compartido conmigo",
     "private": "Mis colecciones",
