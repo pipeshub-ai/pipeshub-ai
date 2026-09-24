@@ -44,9 +44,13 @@ def _make_calc_tool() -> PipesHubStructuredToolAdapter:
     return PipesHubStructuredToolAdapter(structured_tool, "calc", "add")
 
 
-def _build_agent(context, transport: ScriptedTransport, *, max_turns: int = 15) -> Agent:
+def _build_agent(
+    context, transport: ScriptedTransport, *, max_turns: int = 15, extra_tools: tuple = (),
+) -> Agent:
     registry = ToolRegistry()
     registry.register_tool(_make_calc_tool())
+    for extra in extra_tools:
+        registry.register_tool(extra)
 
     transport_registry = TransportRegistry()
     transport_registry.register("scripted", lambda: transport)
@@ -166,3 +170,35 @@ class TestWrapUpNote:
         ), "no injected user message"
         earlier = transport.calls[3]["messages"]
         assert "last tool round" not in earlier[-1].step_footer
+
+
+class TestAskingNothingDoesNotEndTheRun:
+    """`ask_user_question` ends the run so the user can answer. Called with
+    no question, it used to end it anyway, and the narration the model wrote
+    beside the call ("I'll verify ...") became the final answer."""
+
+    async def test_the_run_continues_to_a_real_answer(self) -> None:
+        from app.agent_loop_lib.core.types import Goal
+        from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR, BoundMethodTool
+        from app.agents.actions.internal_tools.intrim_tools import InternalTools
+
+        tools = InternalTools()
+        ask = BoundMethodTool(
+            tools.ask_user_question, getattr(InternalTools.ask_user_question, TOOL_META_ATTR),
+        )
+        context = make_context()
+        transport = ScriptedTransport()
+        transport.add_text_and_tool_call(
+            "I'll verify the details first.",
+            ToolCall(id="ask-1", name=ask.name, arguments={
+                "user_intent": "The question is clear.", "questions": [],
+            }),
+        )
+        transport.add_text("The answer is Jill Quertier.")
+
+        agent = _build_agent(context, transport, extra_tools=(ask,))
+        result = await agent.run(Goal(description="Which set director won?"))
+
+        assert result.success is True
+        assert result.output == "The answer is Jill Quertier."
+        assert len(transport.calls) == 2

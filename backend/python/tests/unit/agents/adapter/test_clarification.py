@@ -119,3 +119,17 @@ class TestEmitPreRunClarification:
 
         tool_data = [e for e in sink.events if e["event"] == "ask_user_question"][0]["data"]["toolData"]
         assert len(tool_data["questions"]) == 2
+
+
+class TestNoQuestionEmitsNoCard:
+    """A question event makes the client drop the text that follows, so a
+    clarification with no question must not send one."""
+
+    async def test_the_fallback_text_is_not_hidden_behind_an_empty_card(self) -> None:
+        context = make_context(has_ui_client=True)
+        sink = _FakeEventSink()
+
+        result = await emit_pre_run_clarification(context, "fallback text", [], event_sink=sink)
+
+        assert result["answer"] == "fallback text"
+        assert not any("ask_user_question" in str(evt) for evt in sink.events)

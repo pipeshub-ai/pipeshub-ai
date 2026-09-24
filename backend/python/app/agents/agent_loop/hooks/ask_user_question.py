@@ -44,7 +44,13 @@ def ask_user_question_sse(context: AgentContext) -> "Middleware[ToolResultContex
             return
 
         output = ctx.tool_response
-        raw_result = output.data if output.success else output.error
+        # A failed call asked the user nothing and does not end the run (the
+        # model gets the error and carries on); an event here would make the
+        # client drop the answer that follows in favour of a question card
+        # it has nothing to render.
+        if not output.success:
+            return
+        raw_result = output.data
         payload: Any = raw_result
         if isinstance(raw_result, str):
             try:
@@ -53,7 +59,7 @@ def ask_user_question_sse(context: AgentContext) -> "Middleware[ToolResultContex
                 payload = raw_result
 
         for evt in context.formatter.ask_user_question(
-            context, status="success" if output.success else "error", tool_data=payload,
+            context, status="success", tool_data=payload,
         ):
             await context.event_sink.write(evt)
         context.tool_state["ask_user_question_emitted"] = True

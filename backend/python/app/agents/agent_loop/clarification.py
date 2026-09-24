@@ -37,7 +37,6 @@ building a second one.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -67,11 +66,12 @@ async def emit_pre_run_clarification(
     Returns the `completion_data` dict, matching `RespondPipeline.run()`'s
     return contract so `stream_bridge.py` can treat both paths uniformly.
     """
-    from app.agents.actions.internal_tools.intrim_tools import InternalTools
+    from app.agents.actions.internal_tools.intrim_tools import question_payload
 
-    tool_data = json.loads(await InternalTools().ask_user_question(user_intent=user_intent, questions=questions))
-
-    if context.has_ui_client:
+    # With no question there is no card to show, and the event would make
+    # the client drop the clarifying text that follows.
+    if context.has_ui_client and questions:
+        tool_data = question_payload(user_intent, questions)
         for evt in context.formatter.ask_user_question(context, status="success", tool_data=tool_data):
             await event_sink.write(evt)
 
