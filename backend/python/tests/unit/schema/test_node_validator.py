@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from app.schema import node_validator
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
 
 
@@ -376,3 +377,78 @@ class TestValidateNodeUpdate:
             "app.schema.node_validator.get_node_schema", return_value=schema
         ):
             validator.validate_node_update("testCol", {})
+
+
+# ---------------------------------------------------------------------------
+# Validator compilation cache
+# ---------------------------------------------------------------------------
+class TestValidatorCache:
+    """Validators are compiled once per schema instead of per record.
+
+    Batch upserts validate every node individually, so rebuilding the validator
+    and its reference registry per call dominated the connector's CPU. These
+    pin both halves of the fix: that it caches, and that the cache cannot serve
+    a validator built from a schema that has since been replaced.
+    """
+
+    def _make_validator(self):
+        return NodeSchemaValidator()
+
+    def test_validator_is_compiled_once_per_schema(self):
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "additionalProperties": True,
+        }
+        validator = self._make_validator()
+        with patch(
+            "app.schema.node_validator.get_node_schema", return_value=schema
+        ), patch(
+            "app.schema.node_validator._compile", wraps=node_validator._compile
+        ) as compile_spy:
+            for _ in range(5):
+                validator.validate_node("cacheCol", {"name": "x"})
+                validator.validate_node_update("cacheCol", {"name": "x"})
+
+        # One full validator + one partial validator, not one pair per call.
+        assert compile_spy.call_count == 2
+
+    def test_replacing_the_schema_invalidates_the_cache(self):
+        strict = {
+            "type": "object",
+            "properties": {"status": {"type": "string", "enum": ["active"]}},
+            "additionalProperties": True,
+        }
+        relaxed = {
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+            "additionalProperties": True,
+        }
+        validator = self._make_validator()
+
+        with patch("app.schema.node_validator.get_node_schema", return_value=strict):
+            with pytest.raises(SchemaValidationError):
+                validator.validate_node("swapCol", {"status": "gone"})
+
+        # Same collection name, different schema object: the cached validator
+        # must not be reused.
+        with patch("app.schema.node_validator.get_node_schema", return_value=relaxed):
+            validator.validate_node("swapCol", {"status": "gone"})
+
+    def test_instance_is_not_mutated(self):
+        """The per-record path no longer deep-copies, so validation must leave
+        the caller's dict alone — including when _id has to be stripped."""
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        node = {"name": "x", "_id": "people/123"}
+        validator = self._make_validator()
+        with patch(
+            "app.schema.node_validator.get_node_schema", return_value=schema
+        ):
+            validator.validate_node("noMutateCol", node)
+            validator.validate_node_update("noMutateCol", node)
+
+        assert node == {"name": "x", "_id": "people/123"}

@@ -16,6 +16,8 @@ export const CONNECTOR_INSTANCE_STATUS = {
   DELETING: 'DELETING',
   SYNCING: 'SYNCING',
   FULL_SYNCING: 'FULL_SYNCING',
+  /** Accepted but not started: the sync concurrency limit was reached. */
+  QUEUED: 'QUEUED',
   IDLE: 'IDLE',
 } as const;
 

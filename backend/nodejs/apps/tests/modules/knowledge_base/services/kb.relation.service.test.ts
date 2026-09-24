@@ -791,4 +791,32 @@ describe('RecordRelationService - additional coverage', () => {
       expect(event.eventType).to.include('.resync')
     })
   })
+
+  describe('resync event type derivation', () => {
+    /**
+     * Node and Python must agree on this string or the event is published to a
+     * type nobody consumes. Python uses str.replace, which strips EVERY space;
+     * JavaScript's replace with a string pattern strips only the first, so a
+     * three-word type produced "confluencedata center.resync" and resync was
+     * silently dead for Confluence Data Center and Jira Data Center.
+     */
+    const eventTypeFor = (connector: string) =>
+      connector.replace(/ /g, '').toLowerCase() + '.resync'
+
+    it('strips every space, not just the first', () => {
+      expect(eventTypeFor('Confluence Data Center')).to.equal('confluencedatacenter.resync')
+      expect(eventTypeFor('Jira Data Center')).to.equal('jiradatacenter.resync')
+    })
+
+    it('leaves one- and two-word types unchanged', () => {
+      expect(eventTypeFor('Google Drive')).to.equal('googledrive.resync')
+      expect(eventTypeFor('MinIO')).to.equal('minio.resync')
+    })
+
+    it('never yields an event type containing a space', () => {
+      const types = ['Confluence Data Center', 'Jira Data Center', 'Google Drive',
+                     'Local FS', 'MinIO', 'Azure Blob Storage']
+      types.forEach((t) => expect(eventTypeFor(t)).to.not.contain(' '))
+    })
+  })
 })

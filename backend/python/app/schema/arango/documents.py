@@ -156,6 +156,7 @@ app_schema = {
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
             "pendingFullSync": {"type": "boolean", "default": False},
+            "pendingResync": {"type": ["boolean", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
