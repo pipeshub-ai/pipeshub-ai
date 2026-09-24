@@ -3,6 +3,7 @@ import json
 import logging
 import time
 import uuid
+import asyncio
 from typing import Optional
 
 from pydantic import BaseModel
@@ -38,6 +39,7 @@ class SemanticCacheService:
         self.collection_name = CollectionType.SEMANTIC_CACHE.value
         self.threshold = 0.95
         self._initialized = False
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def initialize(self, embedding_dimension: int) -> None:
         if self._initialized:
@@ -55,28 +57,43 @@ class SemanticCacheService:
             self.collection_name, "metadata.filters_hash", {"type": "keyword"}
         )
 
-        # Migration: apply non-indexed mapping for large stored-text fields on
-        # existing collections.  create_collection only runs when the index is
-        # first created, so collections that pre-date this change would still
-        # have query_text/response_text mapped as keyword by the dynamic
-        # template and risk failing on answers > 32,766 bytes.
+        # Migration: apply non-indexed mapping for large stored-text fields.
+        # This is an OpenSearch-only operation: put_mapping adds index:false to
+        # prevent the 32 766-byte keyword limit from breaking large responses.
+        # Qdrant uses payload indices (keyword/float only, no text type) and
+        # Redis Vector ignores index:false entirely, so we only call this when
+        # the provider is OpenSearch.
         #
-        # put_mapping is additive and idempotent in OpenSearch: adding index:false
-        # to an existing text field does not require a reindex — only newly
-        # indexed documents are affected; existing _source values stay retrievable.
-        #
-        # If the collection was just created above, this call is a harmless no-op
-        # because the explicit static properties already set index:false.
-        await self.vector_db.create_index(
-            self.collection_name,
-            "metadata.query_text",
-            {"type": "text", "index": False},
-        )
-        await self.vector_db.create_index(
-            self.collection_name,
-            "metadata.response_text",
-            {"type": "text", "index": False},
-        )
+        # For OpenSearch, if the field was already mapped as keyword by the
+        # dynamic template, put_mapping cannot change the type. In that case we
+        # log a warning and continue instead of leaving _initialized=False and
+        # retrying on every subsequent request.
+        _provider_class = type(self.vector_db).__name__.lower()
+        if "opensearch" in _provider_class:
+            for field in ("metadata.query_text", "metadata.response_text"):
+                try:
+                    await self.vector_db.create_index(
+                        self.collection_name,
+                        field,
+                        {"type": "text", "index": False},
+                    )
+                except Exception as _map_exc:
+                    _msg = str(_map_exc).lower()
+                    # OpenSearch raises 400 mapper_parsing_exception when the
+                    # field is already a keyword and cannot be changed in-place.
+                    # Treat this as a no-op: existing docs are still retrievable
+                    # and the cache degrades gracefully for large payloads on
+                    # pre-migration collections.
+                    if "mapper_parsing" in _msg or "illegal_argument" in _msg or "cannot" in _msg:
+                        logger.warning(
+                            "Semantic cache: cannot update mapping for %s on existing "
+                            "OpenSearch index (field already mapped as keyword). "
+                            "Large cached responses may be truncated on this collection.",
+                            field,
+                        )
+                    else:
+                        raise
+
         self._initialized = True
 
     async def get_cached_response(
@@ -142,9 +159,12 @@ class SemanticCacheService:
             await self.vector_db.upsert_points(self.collection_name, [point])
             logger.info("Saved response to semantic cache.")
 
-            # Fire-and-forget stale entry purge
-            import asyncio
-            asyncio.create_task(self.purge_stale_entries(org_id, corpus_revision))
+            # Purge stale entries in the background.  Keep a reference in
+            # _background_tasks so the GC cannot collect the task before it
+            # finishes — asyncio.create_task alone is not enough.
+            task = asyncio.create_task(self.purge_stale_entries(org_id, corpus_revision))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.error(f"Error writing to semantic cache: {e}", exc_info=True)
 

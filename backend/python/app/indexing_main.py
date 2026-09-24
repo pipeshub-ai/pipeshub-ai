@@ -1412,6 +1412,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error during resource governor shutdown: {str(e)}")
     governor.close()
 
+    # Flush any pending corpus-revision bumps before the graph provider is torn
+    # down.  The invalidator coalesces KB-record events into a 2-second trailing
+    # bump; close() cancels the timer and immediately calls
+    # increment_corpus_revision so the next startup sees a fresh revision.
+    try:
+        from app.services.cache.invalidation_hooks import get_accessible_records_invalidator
+        inv = get_accessible_records_invalidator()
+        if inv is not None:
+            await inv.close()
+            logger.info("✅ Accessible-records invalidator flushed")
+    except Exception as e:
+        logger.error(f"❌ Error flushing accessible-records invalidator: {e}")
+
     try:
         accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
         if accessible_records_cache is not None:
@@ -1419,6 +1432,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Accessible-records cache closed")
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
+
 
     # Close configuration service (stops Redis Pub/Sub subscription)
     try:

@@ -361,6 +361,10 @@ class AccessibleRecordsInvalidator:
         self.cache = cache
         self.graph_provider = graph_provider
         self._scheduled_bumps: dict[str, asyncio.Task] = {}
+        # Orgs that received a new indexing event while a bump was already
+        # in-flight.  The in-flight task checks this flag on completion and
+        # schedules a follow-up bump when set.
+        self._pending_dirty: set[str] = {}
 
     async def close(self) -> None:
         """Flush all pending corpus-revision increments and cancel their timers.
@@ -467,15 +471,39 @@ class AccessibleRecordsInvalidator:
                 return
             await self.cache.invalidate_kb(org_id, kb_id)
             
-            # Coalesce corpus revision increments for the org
-            if org_id not in self._scheduled_bumps:
+            # Coalesce corpus revision increments for the org.
+            # If a bump is already in-flight, mark the org dirty so the
+            # completing task schedules a follow-up instead of dropping the event.
+            if org_id in self._scheduled_bumps:
+                self._pending_dirty.add(org_id)
+            else:
                 async def _trailing_bump(target_org: str) -> None:
+                    await asyncio.sleep(2.0)
+                    success = False
                     try:
-                        await asyncio.sleep(2.0)
                         await self.graph_provider.increment_corpus_revision(target_org)
+                        success = True
+                    except Exception as bump_exc:
+                        self.logger.warning(
+                            "Failed to increment corpus revision for org %s: %s",
+                            target_org, str(bump_exc),
+                        )
                     finally:
-                        self._scheduled_bumps.pop(target_org, None)
-                
+                        # Only clear the entry on success so close() can still
+                        # flush a failed bump.  On success, check whether another
+                        # event arrived during the await and, if so, schedule a
+                        # follow-up immediately.
+                        if success:
+                            self._scheduled_bumps.pop(target_org, None)
+                            if target_org in self._pending_dirty:
+                                self._pending_dirty.discard(target_org)
+                                try:
+                                    self._scheduled_bumps[target_org] = asyncio.create_task(
+                                        _trailing_bump(target_org)
+                                    )
+                                except Exception:
+                                    pass
+
                 self._scheduled_bumps[org_id] = asyncio.create_task(_trailing_bump(org_id))
         except Exception as e:
             self.logger.warning(

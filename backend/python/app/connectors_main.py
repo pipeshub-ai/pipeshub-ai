@@ -586,6 +586,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
+    # Flush any pending corpus-revision bumps before the graph provider is torn
+    # down.  The invalidator coalesces events into a 2-second trailing bump;
+    # close() cancels the timer and immediately applies the increment so the
+    # next startup sees a fresh corpus revision.
+    try:
+        from app.services.cache.invalidation_hooks import get_accessible_records_invalidator
+        inv = get_accessible_records_invalidator()
+        if inv is not None:
+            await inv.close()
+            logger.info("✅ Accessible-records invalidator flushed")
+    except Exception as e:
+        logger.error(f"❌ Error flushing accessible-records invalidator: {e}")
+
     try:
         accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
         if accessible_records_cache is not None:
@@ -593,6 +606,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Accessible-records cache closed")
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
+
     # Shutdown all container resources
     try:
         await shutdown_container_resources(app_container)
