@@ -1,45 +1,58 @@
-"""Knowledge graph search operation.
-
-Extracted from Retrieval.search_internal_knowledge so it can be called by
-knowledgegraph__search while the old retrieval__search_internal_knowledge
-shim (kept during transition) delegates here too.
-
-The parameter rename from ``connector_ids`` → ``source_ids`` is the only
-LLM-visible change; the resolution logic is identical.
+"""Knowledge search: the one implementation behind ``knowledgegraph__search``
+and the legacy ``retrieval__search_internal_knowledge`` tool.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import re
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
+    DEFAULT_MAX_RESULT_CHARS,
+)
+from app.agents.actions.knowledge_graph.ops.results import (
+    compose_result_tail,
+    dedupe_append_final_results,
+    tool_output,
+)
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.renderer import render_knowledge
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
     CitationRefMapper,
-    build_message_content_array,
-    enrich_records_with_graph_context,
-    get_flattened_results,
+    ImageBudget,
     get_record_id_shortener_if_enabled,
 )
+from app.utils.image_admission import admission_from_state
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.core.messages import Part
     from app.modules.agents.qna.chat_state import ChatState
 
 logger = logging.getLogger(__name__)
 
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
+# Room left under the tool-result cap for the header and candidate table,
+# so records are dropped whole, lowest-ranked first, before the generic cap
+# would cut the result in the middle.
+_MAX_RECORDS_CHARS = DEFAULT_MAX_RESULT_CHARS - 12_000
 _RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 500, 503})
 
-_RECORD_NAME_RE = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
-_RETRIEVED_COUNT_RE = re.compile(
-    r"^Top (\d+) blocks? from (\d+) records?", re.IGNORECASE | re.MULTILINE
-)
-_RETRIEVED_COUNT_RE_LEGACY = re.compile(
-    r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", re.IGNORECASE | re.MULTILINE
-)
+
+def _ranked_header(blocks: int, records: int, omitted: int) -> str:
+    header = (
+        f"Top {blocks} block{'s' if blocks != 1 else ''} from {records} "
+        f"record{'s' if records != 1 else ''}, most relevant record first "
+        "(a ranked sample — other records may match)."
+    )
+    if omitted:
+        header += (
+            f" {omitted} lower-ranked record{'s' if omitted != 1 else ''} "
+            "left out to fit the result size."
+        )
+    return header
 
 
 def normalize_source_ids(value: Any) -> list[str] | None:
@@ -64,7 +77,7 @@ async def execute_search(
     created_before: str | None = None,
     modified_after: str | None = None,
     modified_before: str | None = None,
-) -> str:
+) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope.
 
     ``source_ids`` accepts both app-connector IDs and KB-collection IDs;
@@ -241,51 +254,59 @@ async def execute_search(
             config_service=config_service,
             graph_provider=graph_provider,
         )
-        is_multimodal_llm = False
-        try:
-            llm_config = state.get("llm")
-            if hasattr(llm_config, "model_name"):
-                model_name = str(llm_config.model_name).lower()
-                is_multimodal_llm = any(m in model_name for m in [
-                    "gpt-4-vision", "gpt-4o", "claude-3", "gemini-pro-vision",
-                ])
-        except Exception:
-            pass
+        is_multimodal_llm = bool(state.get("is_multimodal_llm", False))
 
-        virtual_record_id_to_result: dict[str, Any] = {}
-        flattened_results = await get_flattened_results(
-            search_results,
-            blob_store,
-            org_id,
-            is_multimodal_llm,
-            virtual_record_id_to_result,
-            virtual_to_record_map,
+        knowledge = await KnowledgeContextBuilder(
+            blob_store=blob_store,
             graph_provider=graph_provider,
+            org_id=org_id,
+            config_service=config_service,
+        ).build(
+            search_results,
+            virtual_to_record_map,
+            is_multimodal_llm=is_multimodal_llm,
+            # A fan-out already gave each source its own limit.
+            max_units=None if per_source_fan_out else adjusted_limit,
         )
+        virtual_record_id_to_result = knowledge.virtual_record_id_to_result
 
-        if flattened_results and graph_provider:
-            await enrich_records_with_graph_context(
-                virtual_record_id_to_result,
-                graph_provider,
-                flattened_results,
-                virtual_to_record_map,
-                blob_store=blob_store,
-                org_id=org_id,
-                config_service=config_service,
-            )
-
-        final_results = search_results if not flattened_results else flattened_results
-        if not per_source_fan_out:
-            final_results = final_results[:adjusted_limit]
+        # TEMPORARY token-savings experiment (opt-in, disabled by default —
+        # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
+        # in `utils/chat_helpers.py`. Same shared shortener as
+        # navigate/lookup_record/list_files, keyed off tool_state so whichever
+        # tool the model calls first mints it.
+        record_id_shortener = get_record_id_shortener_if_enabled(state)
+        ref_mapper = state.get("citation_ref_mapper") or CitationRefMapper()
+        rendered = render_knowledge(
+            knowledge.units,
+            virtual_record_id_to_result,
+            ref_mapper=ref_mapper,
+            is_multimodal_llm=is_multimodal_llm,
+            record_id_shortener=record_id_shortener,
+            image_budget=state.setdefault("image_budget", ImageBudget()),
+            image_admission=admission_from_state(state),
+            max_chars=_MAX_RECORDS_CHARS,
+        )
+        state["citation_ref_mapper"] = ref_mapper
+        final_results = rendered.units
+        # Records the budget left out must not become citable or earn a tail tip.
+        shown_vrids = {unit.get("virtual_record_id") for unit in final_results}
+        virtual_record_id_to_result = {
+            vrid: record for vrid, record in virtual_record_id_to_result.items()
+            if vrid in shown_vrids
+        }
 
         # Accumulate into state for citation pipeline
-        from app.agents.actions.retrieval.retrieval import _dedupe_append_final_results
-        state["final_results"] = _dedupe_append_final_results(
+        state["final_results"] = dedupe_append_final_results(
             state.get("final_results", []), final_results,
         )
-        existing_virtual_map = state.get("virtual_record_id_to_result") or {}
+        existing_virtual_map = state.get("virtual_record_id_to_result")
+        if not isinstance(existing_virtual_map, dict):
+            existing_virtual_map = {}
         state["virtual_record_id_to_result"] = {**existing_virtual_map, **virtual_record_id_to_result}
-        existing_tool_records = state.get("tool_records") or []
+        existing_tool_records = state.get("tool_records")
+        if not isinstance(existing_tool_records, list):
+            existing_tool_records = []
         new_tool_records = list(virtual_record_id_to_result.values())
         existing_ids = {r.get("_id") for r in existing_tool_records if isinstance(r, dict)}
         state["tool_records"] = existing_tool_records + [
@@ -334,52 +355,17 @@ async def execute_search(
             # tokens away on a long result, where the model may already be
             # composing an answer from the blocks by the time it reaches it.
             coverage_note = render_coverage_note(plan, needs_whole_document=needs_whole_doc)
-
-        # TEMPORARY token-savings experiment (opt-in, disabled by default —
-        # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
-        # in `utils/chat_helpers.py`. Same shared shortener as
-        # search_internal_knowledge/navigate/lookup_record/list_files, keyed
-        # off tool_state so whichever tool the model calls first mints it.
-        record_id_shortener = get_record_id_shortener_if_enabled(state)
         if candidate_suffix and record_id_shortener is not None:
             candidate_suffix = record_id_shortener.shorten_record_ids_in_text(candidate_suffix)
 
-        sorted_results = sorted(
-            final_results,
-            key=lambda x: (
-                x.get("virtual_record_id") or "",
-                -1 if x.get("block_index") is None else x.get("block_index"),
-            ),
-        )
-        ref_mapper = state.get("citation_ref_mapper") or CitationRefMapper()
-        message_content_array, ref_mapper = build_message_content_array(
-            sorted_results,
-            virtual_record_id_to_result,
-            is_multimodal_llm=is_multimodal_llm,
-            ref_mapper=ref_mapper,
-            from_tool=True,
-            record_id_shortener=record_id_shortener,
-        )
-        state["citation_ref_mapper"] = ref_mapper
-
-        formatted_records = []
-        for content in message_content_array:
-            content_string = ""
-            for item in content:
-                if item["type"] == "text":
-                    content_string += item["text"]
-            formatted_records.append(content_string)
-
         summary = (
-            f"Top {len(final_results)} block{'s' if len(final_results) != 1 else ''} "
-            f"from {len(virtual_record_id_to_result)} record{'s' if len(virtual_record_id_to_result) != 1 else ''} "
-            "(ranked sample — other records may match).\n\n"
+            f"{_ranked_header(len(final_results), len(rendered.records), rendered.omitted_records)}\n\n"
             f"{coverage_note}"
         )
-        from app.agents.actions.retrieval.retrieval import compose_result_tail
-        return summary + "\n".join(formatted_records) + compose_result_tail(
+        text = summary + rendered.text + compose_result_tail(
             virtual_record_id_to_result, candidate_suffix,
         )
+        return tool_output(text, rendered.images, state)
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger

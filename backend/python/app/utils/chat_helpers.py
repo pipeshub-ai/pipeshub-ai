@@ -196,15 +196,6 @@ def build_record_page_web_url(frontend_url: str, record_id: str) -> str:
     return f"{base}/record/{record_id}"
 
 
-def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
-    """Sort flattened search results; None block_index (e.g. record summaries) sorts before block 0."""
-    block_index = result.get("block_index")
-    return (
-        result.get("virtual_record_id") or "",
-        -1 if block_index is None else block_index,
-    )
-
-
 
 
 def is_base64_image(s: str) -> bool:
@@ -2013,11 +2004,15 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_count,
         )
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
+    """Resolve search hits into renderable units: blocks, list/section groups, tables.
+
+    Neighbouring context blocks are not added here; they are attached after
+    ranking so they never compete with real hits (``modules/retrieval/context``).
+    """
     flattened_results = []
     image_index = 0
     seen_chunks = set()
-    adjacent_chunks = {}
     new_type_results = []
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
@@ -2139,9 +2134,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             })
             continue
 
-        if virtual_record_id not in adjacent_chunks:
-            adjacent_chunks[virtual_record_id] = []
-
         index = meta.get("blockIndex")
         is_block_group = meta.get("isBlockGroup")
 
@@ -2260,15 +2252,11 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         if block_type == BlockType.TEXT.value and block.get("parent_index") is None:
             result["content"] = block.get("data","")
-            adjacent_chunks[virtual_record_id].append(index-1)
-            adjacent_chunks[virtual_record_id].append(index+1)
         elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
             # Without this a top-level code hit is dropped here and never reaches
             # build_message_content_array, however well it scored.
             result["content"] = _safe_stringify_content(block.get("data", ""))
             result["qualified_name"] = block_qualified_name(block)
-            adjacent_chunks[virtual_record_id].append(index-1)
-            adjacent_chunks[virtual_record_id].append(index+1)
         elif block_type == BlockType.IMAGE.value:
             data = block.get("data")
             if data:
@@ -2301,9 +2289,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     else:
                         if result.get("content") and is_base64_image(result.get("content")):
                             continue
-
-                    adjacent_chunks[virtual_record_id].append(index-1)
-                    adjacent_chunks[virtual_record_id].append(index+1)
             else:
                 continue
         elif block_type == BlockType.TABLE_ROW.value:
@@ -2321,7 +2306,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     # New range-based format
                     block_ranges = children.get('block_ranges', [])
                     first_block_index = block_ranges[0].get('start') if block_ranges else None
-                    last_block_index = block_ranges[-1].get('end') if block_ranges else None
                     # Get all block indices from ranges
                     all_block_indices = []
                     for range_obj in block_ranges:
@@ -2332,18 +2316,13 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 else:
                     # Old format (list of BlockContainerIndex)
                     first_block_index = children[0].get("block_index") if len(children) > 0 else None
-                    last_block_index = children[-1].get("block_index") if len(children) > 0 else None
                     all_block_indices = [child.get("block_index") for child in children if child.get("block_index") is not None]
             else:
                 first_block_index = None
-                last_block_index = None
                 all_block_indices = []
 
             result["block_index"] = first_block_index
             if first_block_index is not None:
-                adjacent_chunks[virtual_record_id].append(first_block_index-1)
-                adjacent_chunks[virtual_record_id].append(last_block_index+1)
-
                 num_of_cells = table_metadata.get("num_of_cells", None) if isinstance(table_metadata, dict) else None
                 if num_of_cells is None:
                     is_large_table = True
@@ -2570,16 +2549,10 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     "citationType": "vectordb",
                     "score": row_score,
                 })
-        if sorted_rows_tuple:
-            first_child_block_index = sorted_rows_tuple[0][0]
-            adjacent_chunks[virtual_record_id].append(first_child_block_index-1)
-            if len(sorted_rows_tuple) > 1:
-                last_child_block_index = sorted_rows_tuple[-1][0]
-                adjacent_chunks[virtual_record_id].append(last_child_block_index+1)
-
         # Skip creating table_result if no rows were found
         if not sorted_rows_tuple:
             continue
+        first_child_block_index = sorted_rows_tuple[0][0]
 
         table_result = {
             "content":(table_summary,child_results),
@@ -2592,32 +2565,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         flattened_results.append(table_result)
 
 
-
-    if not from_tool and not from_retrieval_service:
-        for virtual_record_id,adjacent_chunks_list in adjacent_chunks.items():
-            for index in adjacent_chunks_list:
-                chunk_id = f"{virtual_record_id}-{index}"
-                if chunk_id in seen_chunks:
-                    continue
-                seen_chunks.add(chunk_id)
-                record = virtual_record_id_to_result[virtual_record_id]
-                if record is None:
-                    continue
-                blocks  = record.get("block_containers",{}).get("blocks",[])
-                if index < len(blocks) and index >= 0:
-                    block = blocks[index]
-                    block_type = block.get("type")
-                    if block_type == BlockType.TEXT.value:
-                        block_text = block.get("data","")
-                        enhanced_metadata = get_enhanced_metadata(record,block,{})
-                        flattened_results.append({
-                            "content": block_text,
-                            "block_type": block_type,
-                            "metadata": enhanced_metadata,
-                            "virtual_record_id": virtual_record_id,
-                            "block_index": index,
-                            "citationType": "vectordb|document",
-                        })
 
     # Store point_id_to_blockIndex mappings separately for old type results
     # This mapping is used to convert point_id from search results to block index

@@ -33,7 +33,6 @@ from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
     count_tokens,
-    flattened_result_sort_key,
     get_flattened_results,
     record_to_message_content,
 )

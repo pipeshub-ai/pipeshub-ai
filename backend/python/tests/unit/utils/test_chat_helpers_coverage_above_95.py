@@ -474,7 +474,7 @@ class TestCountTokensInMessagesBranches:
 
 @pytest.mark.asyncio
 async def test_get_flattened_results_prefetch_recon_resolves_block_id():
-    """blockIndex=None + blockId uses reconciliation prefetch + adjacent chunk sweep."""
+    """blockIndex=None + blockId uses reconciliation prefetch."""
     vrid = "vr_pref"
     blob = MagicMock()
     blob.config_service.get_config = AsyncMock(return_value={"frontend": {"publicEndpoint": None}})
@@ -515,7 +515,6 @@ async def test_get_flattened_results_prefetch_recon_resolves_block_id():
         "org-1",
         is_multimodal_llm=False,
         virtual_record_id_to_result={},
-        from_tool=False,
         from_retrieval_service=False,
         graph_provider=None,
     )
@@ -603,7 +602,6 @@ async def test_get_flattened_results_image_from_retrieval_service():
         "org",
         is_multimodal_llm=False,
         virtual_record_id_to_result={},
-        from_tool=False,
         from_retrieval_service=True,
     )
     imgs = [x for x in out if x.get("block_type") == BlockType.IMAGE.value]

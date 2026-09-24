@@ -6,6 +6,10 @@ from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 _MARKER = "\n[…truncated"
 _OWN_SUFFIX = "by budget_reduction]"
 
+# Tools that can size their own output under this cap should, so what gets
+# dropped is their least useful part rather than a character range.
+DEFAULT_MAX_RESULT_CHARS = 64_000
+
 
 def _marker(dropped: int) -> str:
     return f"{_MARKER} {dropped} chars {_OWN_SUFFIX}\n"
@@ -44,7 +48,7 @@ def _cap_parts(msg, max_result_chars: int, truncate):
     return msg.model_copy(update={"content": capped})
 
 
-def shape_budget_reduction(max_result_chars: int = 64_000):
+def shape_budget_reduction(max_result_chars: int = DEFAULT_MAX_RESULT_CHARS):
     """Layer 1 (cheapest) context shaper: caps every individual TOOL message's
     content at `max_result_chars`.
 

@@ -5,16 +5,10 @@ profile) instead of paying a full ReAct round-trip (model call -> tool
 call -> model call) just to fetch the same context the model could have
 been handed immediately.
 
-Mirrors the "Standard path: upfront retrieval" branch `chatbot.py`'s
-`_generate_internal_search_stream()` ran today (`search_with_filters` ->
-`get_flattened_results` -> `enrich_virtual_record_id_to_result_with_fk_
-children` -> `enrich_records_with_graph_context` -> sort), and formats
-results with the exact same `build_message_content_array(..., from_tool=True)`
-call the shared `search_internal_knowledge` tool
-(`app/agents/actions/retrieval/retrieval.py`) uses for ITS OWN return text
--- so a prefetched context block and a follow-up tool-call result look
-identical to the model, and citation ref numbering stays on one
-`CitationRefMapper` across both.
+Builds and renders its context through the same `KnowledgeContextBuilder`
+and `render_knowledge` the search tool uses, so a prefetched context block and
+a follow-up tool-call result look identical to the model, and citation ref
+numbering stays on one `CitationRefMapper` across both.
 """
 
 from __future__ import annotations
@@ -22,15 +16,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.utils.chat_helpers import (
-    CitationRefMapper,
-    ImageBudget,
-    build_message_content_array,
-    enrich_records_with_graph_context,
-    enrich_virtual_record_id_to_result_with_fk_children,
-    flattened_result_sort_key,
-    get_flattened_results,
-)
+from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.renderer import render_knowledge
+from app.utils.chat_helpers import CitationRefMapper, ImageBudget
 
 if TYPE_CHECKING:
     import logging
@@ -151,28 +139,19 @@ async def prefetch_retrieval(
     search_results = result.get("searchResults", [])
     virtual_to_record_map = result.get("virtual_to_record_map", {})
 
-    virtual_record_id_to_result: dict[str, Any] = {}
-    flattened_results = await get_flattened_results(
-        search_results, blob_store, org_id, is_multimodal_llm,
-        virtual_record_id_to_result, virtual_to_record_map,
+    knowledge = await KnowledgeContextBuilder(
+        blob_store=blob_store,
         graph_provider=graph_provider,
+        org_id=org_id,
+        config_service=getattr(blob_store, "config_service", None),
+    ).build(
+        search_results,
+        virtual_to_record_map,
+        is_multimodal_llm=is_multimodal_llm,
+        include_fk_children=True,
     )
-    await enrich_virtual_record_id_to_result_with_fk_children(
-        virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results,
-    )
-    if flattened_results and graph_provider:
-        await enrich_records_with_graph_context(
-            virtual_record_id_to_result,
-            graph_provider,
-            flattened_results,
-            virtual_to_record_map,
-            blob_store=blob_store,
-            org_id=org_id,
-            config_service=getattr(blob_store, "config_service", None),
-        )
-
-    final_results = sorted(flattened_results, key=flattened_result_sort_key)
-    if not final_results:
+    virtual_record_id_to_result = knowledge.virtual_record_id_to_result
+    if not knowledge.units:
         return PrefetchResult(
             formatted_context="",
             final_results=[],
@@ -182,17 +161,16 @@ async def prefetch_retrieval(
             is_empty=True,
         )
 
-    collected_images: list[dict[str, Any]] = []
-    message_content_array, ref_mapper = build_message_content_array(
-        final_results, virtual_record_id_to_result,
-        is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper, from_tool=True,
-        collected_images=collected_images,
+    rendered = render_knowledge(
+        knowledge.units,
+        virtual_record_id_to_result,
+        ref_mapper=ref_mapper,
+        is_multimodal_llm=is_multimodal_llm,
         image_budget=image_budget if image_budget is not None else ImageBudget(),
     )
-    flat_parts = [item for sublist in message_content_array for item in sublist]
-    formatted_context = "\n".join(
-        part["text"] for part in flat_parts if part.get("type") == "text" and part.get("text")
-    )
+    formatted_context = rendered.text
+    final_results = rendered.units
+    collected_images = rendered.images
 
     return PrefetchResult(
         formatted_context=formatted_context,
