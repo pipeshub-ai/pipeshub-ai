@@ -2438,6 +2438,11 @@ async def get_connector_sync_progress_endpoint(
         org_id = request.state.user.get("orgId")
         if not org_id:
             raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Organization is required")
+        # The same check /stats makes: connector_id comes from the query string,
+        # and these counters include failure reasons and indexing breakdowns.
+        await authorize_connector_stats(
+            request, graph_provider, request.app.state.connector_registry, connector_id, org_id
+        )
         run = None
         store = None
         try:
@@ -2485,6 +2490,8 @@ async def get_connector_sync_progress_endpoint(
                 "indexingQueue": indexing_queue,
             },
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting connector sync progress: {str(e)}", exc_info=True)
         raise HTTPException(
