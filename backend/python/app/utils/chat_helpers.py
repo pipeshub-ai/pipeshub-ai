@@ -760,6 +760,7 @@ def get_record_id_shortener_if_enabled(state: dict[str, Any]) -> "RecordIdShorte
 logger = create_logger("chat_helpers")
 
 TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
+FRAGMENT_DIRECTIVE_DELIMITER = ":~:"
 
 GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.JIRA,
@@ -4867,8 +4868,9 @@ def _build_text_fragment_url(base_url: str, text_snippet: str) -> str:
     if not base_url or not text_snippet:
         return base_url
 
-    # Preserve URLs that already have a text fragment
-    if TEXT_FRAGMENT_DIRECTIVE_PREFIX in base_url:
+    # Everything after the first `:~:` is the fragment directive, so a URL that
+    # already carries one cannot take a second.
+    if FRAGMENT_DIRECTIVE_DELIMITER in base_url:
         return base_url
 
     try:
@@ -4892,10 +4894,16 @@ def _build_text_fragment_url(base_url: str, text_snippet: str) -> str:
         if end_text:
             encoded_end = quote(end_text, safe="';:[]")
 
-        if '#' in base_url:
-            base_url = base_url.split('#')[0]
+        # Append rather than replace: a conforming browser hands the page the
+        # fragment up to `:~:` and keeps the directive to itself, so an anchor
+        # the connector set (a Gmail message id, a heading) still resolves.
+        delimiter = (
+            FRAGMENT_DIRECTIVE_DELIMITER
+            if '#' in base_url
+            else f"#{FRAGMENT_DIRECTIVE_DELIMITER}"
+        )
 
-        return f"{base_url}#:~:text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
+        return f"{base_url}{delimiter}text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
 
     except Exception:
         return base_url
