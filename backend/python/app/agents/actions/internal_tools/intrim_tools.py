@@ -4,7 +4,7 @@ import uuid
 from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
-from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL, TAG_UI_ONLY
 from app.connectors.core.registry.auth_builder import AuthBuilder
@@ -146,6 +146,65 @@ class AskUserQuestionInput(BaseModel):
         return data
 
 
+_NO_QUESTIONS_ERROR = (
+    "ask_user_question was called without a question, so nothing was asked. "
+    "If you need no clarification, continue the task with your other tools "
+    "or give your answer."
+)
+
+
+def _question_text(item: AskUserQuestionItemInput | dict[str, Any] | str) -> str:
+    if isinstance(item, AskUserQuestionItemInput):
+        return item.question
+    if isinstance(item, dict):
+        return str(item.get("question", ""))
+    return str(item)
+
+
+def question_payload(
+    user_intent: str, questions: list[AskUserQuestionItemInput] | list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The structured payload a client renders as question cards."""
+    normalized_questions: list[dict[str, Any]] = []
+    for item in questions:
+        if isinstance(item, AskUserQuestionItemInput):
+            question_text = item.question
+            options = item.options
+            multi_select = item.multiSelect
+        else:
+            question_text = str(item.get("question", ""))
+            options = item.get("options", [])
+            multi_select = bool(item.get("multiSelect", False))
+
+        normalized_options: list[dict[str, Any]] = []
+        for option in options:
+            if isinstance(option, AskUserQuestionOptionInput):
+                label = option.label
+                is_user_input = option.isUserInput
+            else:
+                label = str(option.get("label", ""))
+                is_user_input = bool(option.get("isUserInput", False))
+            option_id = "opt_" + label.lower().replace(" ", "_")
+            normalized_options.append({
+                "id": option_id,
+                "label": label,
+                "isUserInput": is_user_input,
+            })
+
+        normalized_questions.append({
+            "uuid": str(uuid.uuid4()),
+            "question": question_text,
+            "options": normalized_options,
+            "multiSelect": multi_select,
+        })
+
+    return {
+        "name": "ask_user_question",
+        "userIntent": user_intent,
+        "questions": normalized_questions,
+    }
+
+
 @ToolsetBuilder("InternalTools")\
     .in_group("Internal Tools")\
     .with_description("Interim interactive question tool - always available, no authentication required")\
@@ -274,44 +333,15 @@ class InternalTools:
             TAG_LIFECYCLE_TERMINAL,
         ],
     )
-    async def ask_user_question(self, user_intent: str, questions: list[AskUserQuestionItemInput]) -> str:
-        """Return structured interactive questions with a wrapper message."""
-        normalized_questions: list[dict[str, Any]] = []
-        for item in questions:
-            if isinstance(item, AskUserQuestionItemInput):
-                question_text = item.question
-                options = item.options
-                multi_select = item.multiSelect
-            else:
-                question_text = str(item.get("question", ""))
-                options = item.get("options", [])
-                multi_select = bool(item.get("multiSelect", False))
+    async def ask_user_question(
+        self, user_intent: str, questions: list[AskUserQuestionItemInput],
+    ) -> str | ToolOutput:
+        """Return structured interactive questions with a wrapper message.
 
-            normalized_options: list[dict[str, Any]] = []
-            for option in options:
-                if isinstance(option, AskUserQuestionOptionInput):
-                    label = option.label
-                    is_user_input = option.isUserInput
-                else:
-                    label = str(option.get("label", ""))
-                    is_user_input = bool(option.get("isUserInput", False))
-                option_id = "opt_" + label.lower().replace(" ", "_")
-                normalized_options.append({
-                    "id": option_id,
-                    "label": label,
-                    "isUserInput": is_user_input,
-                })
-
-            normalized_questions.append({
-                "uuid": str(uuid.uuid4()),
-                "question": question_text,
-                "options": normalized_options,
-                "multiSelect": multi_select,
-            })
-
-        response_payload = {
-            "name": "ask_user_question",
-            "userIntent": user_intent,
-            "questions": normalized_questions,
-        }
-        return json.dumps(response_payload, ensure_ascii=False)
+        A call with no question is refused rather than ending the run: this
+        tool is terminal, and with nothing to ask it would hand whatever the
+        model wrote alongside it ("I'll verify ...") back as the final answer.
+        """
+        if not any(_question_text(item).strip() for item in questions or []):
+            return ToolOutput(success=False, error=_NO_QUESTIONS_ERROR)
+        return json.dumps(question_payload(user_intent, questions), ensure_ascii=False)

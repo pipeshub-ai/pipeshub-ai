@@ -113,3 +113,19 @@ async def test_ask_user_question_returns_structured_json_for_ui() -> None:
     assert options[0]["isUserInput"] is False
     assert options[0]["id"] == "opt_#general"
     assert options[2]["isUserInput"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("questions", [[], [{"question": "  ", "options": []}]])
+async def test_asking_nothing_is_refused_not_answered(questions: list) -> None:
+    """With no question to show, the call fails so the run goes on; a
+    success here would end the run with nothing asked."""
+    from app.agent_loop_lib.tools.base import ToolOutput
+
+    result = await InternalTools().ask_user_question(
+        user_intent="The question is clear.", questions=questions,
+    )
+
+    assert isinstance(result, ToolOutput)
+    assert result.success is False
+    assert "without a question" in result.error
