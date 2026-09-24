@@ -223,7 +223,9 @@ describe('SyncEventProducer - coverage', () => {
       expect(mockProducer.publish.calledOnce).to.be.true
       const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('sync-events')
-      expect(message.key).to.equal('connectorSync')
+      // Keyed by connectorId, not eventType: keying by type puts every
+      // connector of one kind on a single partition.
+      expect(message.key).to.equal('conn-1')
       expect(JSON.parse(message.value)).to.deep.include({ eventType: 'connectorSync' })
       expect(message.headers.eventType).to.equal('connectorSync')
       expect(instance.logger.info.calledOnce).to.be.true
@@ -281,6 +283,74 @@ describe('SyncEventProducer - coverage', () => {
 
       const message = mockProducer.publish.firstCall.args[1]
       expect(message.headers.timestamp).to.equal('9876543210')
+    })
+  })
+
+  describe('partitioning', () => {
+    /**
+     * Kafka hashes the message key to choose a partition and hands each
+     * partition to exactly one consumer in the group. Keying by eventType put
+     * every connector of a given kind on one partition, and therefore on one
+     * sync executor — so adding workers bought nothing. Redis Streams is a
+     * shared queue and hides this entirely, which is why it went unnoticed.
+     */
+    const publish = async (event: any) => {
+      const producer: any = {
+        publish: sinon.stub().resolves(),
+        isConnected: sinon.stub().returns(true),
+      }
+      const logger: any = { info: sinon.stub(), error: sinon.stub() }
+      const svc = new SyncEventProducer(producer, logger)
+      await svc.publishEvent(event)
+      return producer.publish.firstCall?.args ?? []
+    }
+
+    it('keys by connector so connectors spread across partitions', async () => {
+      const [topic, message] = await publish({
+        eventType: 'confluence.resync',
+        timestamp: 1,
+        payload: { connectorId: 'conn-abc', orgId: 'o1' },
+      })
+      expect(topic).to.equal('sync-events')
+      expect(message.key).to.equal('conn-abc')
+    })
+
+    it('gives two connectors of the same kind different keys', async () => {
+      const [, a] = await publish({
+        eventType: 'confluence.resync',
+        timestamp: 1,
+        payload: { connectorId: 'conn-1' },
+      })
+      const [, b] = await publish({
+        eventType: 'confluence.resync',
+        timestamp: 1,
+        payload: { connectorId: 'conn-2' },
+      })
+      expect(a.key).to.not.equal(b.key)
+    })
+
+    it('falls back to the event type when there is no connector', async () => {
+      const [, message] = await publish({
+        eventType: 'sync.all',
+        timestamp: 1,
+        payload: {},
+      })
+      expect(message.key).to.equal('sync.all')
+    })
+
+    it('does not let a publish failure escape', async () => {
+      const producer: any = {
+        publish: sinon.stub().rejects(new Error('broker down')),
+        isConnected: sinon.stub().returns(true),
+      }
+      const logger: any = { info: sinon.stub(), error: sinon.stub() }
+      const svc = new SyncEventProducer(producer, logger)
+      await svc.publishEvent({
+        eventType: 'confluence.resync',
+        timestamp: 1,
+        payload: { connectorId: 'c1' },
+      } as any)
+      expect(logger.error.called).to.be.true
     })
   })
 })

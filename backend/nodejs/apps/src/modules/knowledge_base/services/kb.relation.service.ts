@@ -286,7 +286,13 @@ export class RecordRelationService {
     try {
       const resyncPayload =
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
-      const eventType = resyncPayload.connector.replace(' ', '').toLowerCase() + '.resync';
+      // Global replace, matching Python's str.replace, which is already global.
+      // The single-space version happened to route correctly because this value
+      // is normalized twice (normalizeAppName, then here) and the consumer
+      // normalizes again -- but it left an embedded space in the published
+      // payload.connector for three-word types. Same result, one pass.
+      const eventType =
+        resyncPayload.connector.replace(/ /g, '').toLowerCase() + '.resync';
       const event: SyncEvent = {
         eventType: eventType,
         timestamp: Date.now(),
