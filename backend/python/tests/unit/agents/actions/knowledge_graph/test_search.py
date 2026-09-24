@@ -12,7 +12,10 @@ from app.agents.actions.knowledge_graph.ops.search import (
     execute_search,
     normalize_source_ids,
 )
+from app.modules.retrieval.context.builder import KnowledgeContext
+from app.modules.retrieval.context.renderer import RenderedKnowledge
 
+_SEARCH = "app.agents.actions.knowledge_graph.ops.search"
 
 # ---------------------------------------------------------------------------
 # normalize_source_ids
@@ -338,150 +341,152 @@ class TestExecuteSearchFanOut:
         assert parsed["status_code"] == 202
 
 
+def _full_path_state(retrieval, **extra):
+    state = {
+        "logger": MagicMock(),
+        "retrieval_service": retrieval,
+        "graph_provider": AsyncMock(),
+        "config_service": MagicMock(),
+        "org_id": "o1",
+        "user_id": "u1",
+        "filters": {"apps": ["app-1"], "kb": []},
+        "final_results": [],
+    }
+    state.update(extra)
+    return state
+
+
+def _one_hit_retrieval():
+    retrieval = AsyncMock()
+    retrieval.search_with_filters.return_value = {
+        "status_code": 200,
+        "searchResults": [{"virtual_record_id": "vr1", "block_index": 0}],
+        "virtual_to_record_map": {"vr1": {"id": "r1"}},
+    }
+    return retrieval
+
+
+def _pipeline(*, text="Block content", units=None, omitted=0, images=None, records=None):
+    """Patch the shared context pipeline at its two seams: what it builds and renders."""
+    units = units if units is not None else [{"virtual_record_id": "vr1", "block_index": 0}]
+    builder = MagicMock()
+    builder.return_value.build = AsyncMock(return_value=KnowledgeContext(
+        units=units, virtual_record_id_to_result=records or {"vr1": {"id": "r1"}},
+    ))
+    rendered = RenderedKnowledge(
+        records=[text], units=units, images=images or [], omitted_records=omitted,
+    )
+    return (
+        patch(f"{_SEARCH}.KnowledgeContextBuilder", builder),
+        patch(f"{_SEARCH}.render_knowledge", return_value=rendered),
+        patch(f"{_SEARCH}.BlobStorage"),
+    )
+
+
 class TestExecuteSearchFullPath:
     @pytest.mark.asyncio
-    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="\n---\n")
-    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
-    @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
-    @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="")
-    @patch("app.modules.agents.record_escalation.build_candidates")
-    @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={})
-    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
-    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
-    async def test_with_results(self, mock_parse, mock_shortener, mock_blob,
-                                 mock_flatten, mock_enrich, mock_build_content,
-                                 mock_analyze, mock_build_cands, mock_render_cand,
-                                 mock_render_note, mock_dedupe, mock_compose) -> None:
-        search_result = {"virtual_record_id": "vr1", "block_index": 0}
-        retrieval = AsyncMock()
-        retrieval.search_with_filters.return_value = {
-            "status_code": 200,
-            "searchResults": [search_result],
-            "virtual_to_record_map": {"vr1": {"id": "r1"}},
-        }
-        mock_flatten.return_value = [search_result]
-        mock_build_content.return_value = (
-            [[{"type": "text", "text": "Block content"}]],
-            MagicMock(),
-        )
-        plan = MagicMock()
-        plan.has_candidates = False
-        mock_build_cands.return_value = plan
+    async def test_header_states_the_ranked_order(self, mock_parse) -> None:
+        state = _full_path_state(_one_hit_retrieval())
+        builder_patch, render_patch, blob_patch = _pipeline()
+        with builder_patch, render_patch, blob_patch:
+            result = await execute_search(state, "test query")
 
-        state = {
-            "logger": MagicMock(),
-            "retrieval_service": retrieval,
-            "graph_provider": AsyncMock(),
-            "config_service": MagicMock(),
-            "org_id": "o1",
-            "user_id": "u1",
-            "filters": {"apps": ["app-1"], "kb": []},
-            "final_results": [],
-        }
-        result = await execute_search(state, "test query")
-        assert "Top 1 block" in result
+        assert result.startswith("Top 1 block from 1 record, most relevant record first")
         assert "Block content" in result
-        mock_flatten.assert_called_once()
-        assert "final_results" in state
+        assert state["final_results"] == [{"virtual_record_id": "vr1", "block_index": 0}]
 
     @pytest.mark.asyncio
-    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="\n---\n")
-    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_header_says_when_lower_ranked_records_were_left_out(self, mock_parse) -> None:
+        state = _full_path_state(_one_hit_retrieval())
+        builder_patch, render_patch, blob_patch = _pipeline(omitted=3)
+        with builder_patch, render_patch, blob_patch:
+            result = await execute_search(state, "test query")
+
+        assert "3 lower-ranked records left out to fit the result size." in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_only_what_was_shown_becomes_citable(self, mock_parse) -> None:
+        state = _full_path_state(_one_hit_retrieval())
+        shown = [{"virtual_record_id": "vr1", "block_index": 4}]
+        builder_patch, render_patch, blob_patch = _pipeline(units=shown)
+        with builder_patch, render_patch as mock_render, blob_patch:
+            await execute_search(state, "test query")
+
+        assert state["final_results"] == shown
+        assert mock_render.call_args.kwargs["max_chars"] > 0
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_records_left_out_by_the_budget_are_not_stored(self, mock_parse) -> None:
+        state = _full_path_state(_one_hit_retrieval())
+        records = {"vr1": {"_id": "r1", "id": "r1"}, "vr2": {"_id": "r2", "id": "r2"}}
+        builder_patch, render_patch, blob_patch = _pipeline(records=records, omitted=1)
+        with builder_patch, render_patch, blob_patch:
+            await execute_search(state, "test query")
+
+        assert set(state["virtual_record_id_to_result"]) == {"vr1"}
+        assert [r["_id"] for r in state["tool_records"]] == ["r1"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_trims_to_the_source_limit_unless_fanned_out(self, mock_parse) -> None:
+        state = _full_path_state(_one_hit_retrieval())
+        builder_patch, render_patch, blob_patch = _pipeline()
+        with builder_patch as mock_builder, render_patch, blob_patch:
+            await execute_search(state, "test query")
+
+        assert mock_builder.return_value.build.call_args.kwargs["max_units"] == 50
+
+    @pytest.mark.asyncio
     @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
-    @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="table")
+    @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="\nCANDIDATES")
     @patch("app.modules.agents.record_escalation.build_candidates")
     @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={"r1": (1, 3)})
-    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
-    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
-    async def test_with_candidates(self, mock_parse, mock_shortener, mock_blob,
-                                    mock_flatten, mock_enrich, mock_build_content,
-                                    mock_analyze, mock_build_cands, mock_render_cand,
-                                    mock_render_note, mock_dedupe, mock_compose) -> None:
-        search_result = {"virtual_record_id": "vr1", "block_index": 0}
-        retrieval = AsyncMock()
-        retrieval.search_with_filters.return_value = {
-            "status_code": 200,
-            "searchResults": [search_result],
-            "virtual_to_record_map": {"vr1": {"id": "r1"}},
-        }
-        mock_flatten.return_value = [search_result]
-        mock_build_content.return_value = (
-            [[{"type": "text", "text": "Content"}]],
-            MagicMock(),
-        )
+    async def test_with_candidates(
+        self, mock_parse, mock_analyze, mock_build_cands, mock_render_cand, mock_note,
+    ) -> None:
         plan = MagicMock()
         plan.has_candidates = True
         mock_build_cands.return_value = plan
+        state = _full_path_state(_one_hit_retrieval())
+        builder_patch, render_patch, blob_patch = _pipeline()
+        with builder_patch, render_patch, blob_patch:
+            result = await execute_search(state, "test query")
 
-        state = {
-            "logger": MagicMock(),
-            "retrieval_service": retrieval,
-            "graph_provider": AsyncMock(),
-            "config_service": MagicMock(),
-            "org_id": "o1",
-            "user_id": "u1",
-            "filters": {"apps": ["app-1"], "kb": []},
-            "final_results": [],
-        }
-        result = await execute_search(state, "test query")
-        assert "Top 1 block" in result
+        assert "CANDIDATES" in result
         mock_render_cand.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="")
-    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
-    @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
-    @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="")
-    @patch("app.modules.agents.record_escalation.build_candidates")
-    @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={})
-    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
-    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
-    async def test_multimodal_detection(self, mock_parse, mock_shortener, mock_blob,
-                                         mock_flatten, mock_enrich, mock_build_content,
-                                         mock_analyze, mock_build_cands, mock_render_cand,
-                                         mock_render_note, mock_dedupe, mock_compose) -> None:
-        search_result = {"virtual_record_id": "vr1", "block_index": 0}
-        retrieval = AsyncMock()
-        retrieval.search_with_filters.return_value = {
-            "status_code": 200,
-            "searchResults": [search_result],
-            "virtual_to_record_map": {"vr1": {"id": "r1"}},
-        }
-        mock_flatten.return_value = [search_result]
-        mock_build_content.return_value = (
-            [[{"type": "text", "text": "V"}]],
-            MagicMock(),
+    async def test_multimodal_flag_comes_from_state_not_model_name(self, mock_parse) -> None:
+        state = _full_path_state(
+            _one_hit_retrieval(),
+            is_multimodal_llm=True,
+            llm=SimpleNamespace(model_name="some-model-without-a-known-name"),
         )
-        plan = MagicMock()
-        plan.has_candidates = False
-        mock_build_cands.return_value = plan
+        builder_patch, render_patch, blob_patch = _pipeline()
+        with builder_patch as mock_builder, render_patch as mock_render, blob_patch:
+            await execute_search(state, "test query")
 
-        llm_config = SimpleNamespace(model_name="gpt-4o-mini")
-        state = {
-            "logger": MagicMock(),
-            "retrieval_service": retrieval,
-            "graph_provider": AsyncMock(),
-            "config_service": MagicMock(),
-            "org_id": "o1",
-            "user_id": "u1",
-            "filters": {"apps": ["app-1"], "kb": []},
-            "final_results": [],
-            "llm": llm_config,
-        }
-        result = await execute_search(state, "test query")
-        assert "Top 1 block" in result
+        assert mock_builder.return_value.build.call_args.kwargs["is_multimodal_llm"] is True
+        assert mock_render.call_args.kwargs["is_multimodal_llm"] is True
+
+    @pytest.mark.asyncio
+    @patch(f"{_SEARCH}.tool_output", side_effect=lambda text, images, state: ["multipart", text, images])
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_images_are_returned_with_the_text(self, mock_parse, mock_output) -> None:
+        state = _full_path_state(_one_hit_retrieval(), is_multimodal_llm=True)
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+        builder_patch, render_patch, blob_patch = _pipeline(images=[image])
+        with builder_patch, render_patch, blob_patch:
+            result = await execute_search(state, "test query")
+
+        assert result[0] == "multipart"
+        assert result[2] == [image]
 
 
 class TestExecuteSearchException:

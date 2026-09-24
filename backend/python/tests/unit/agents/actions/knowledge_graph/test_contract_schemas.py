@@ -12,7 +12,7 @@ What is pinned:
      `search_internal_knowledge`.
   D. Scope-narrowing logic: `_get_scoping` never widens when the caller
      supplies a `connector_ids` subset.
-  E. Dedup logic: `_dedupe_append_final_results` is idempotent.
+  E. Dedup logic: `dedupe_append_final_results` is idempotent.
 """
 from __future__ import annotations
 
@@ -37,8 +37,9 @@ class TestKnowledgeGraphMetadata:
 
 class TestNavigateSchema:
     def _tool_meta(self):
-        from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
         import inspect
+
+        from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
         for name, method in inspect.getmembers(KnowledgeGraph, predicate=inspect.isfunction):
             if name == "navigate":
                 return getattr(method, "_agent_tool_meta", None)
@@ -74,8 +75,9 @@ class TestNavigateSchema:
 
 class TestLookupRecordSchema:
     def _tool_meta(self):
-        from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
         import inspect
+
+        from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
         for name, method in inspect.getmembers(KnowledgeGraph, predicate=inspect.isfunction):
             if name == "lookup_record":
                 return getattr(method, "_agent_tool_meta", None)
@@ -120,8 +122,9 @@ class TestKnowledgeHubMetadata:
 
 class TestListFilesSchema:
     def _tool_meta(self):
-        from app.agents.actions.knowledge_hub.knowledge_hub import KnowledgeHub
         import inspect
+
+        from app.agents.actions.knowledge_hub.knowledge_hub import KnowledgeHub
         for name, method in inspect.getmembers(KnowledgeHub, predicate=inspect.isfunction):
             if name == "list_files":
                 return getattr(method, "_agent_tool_meta", None)
@@ -176,8 +179,9 @@ class TestRetrievalMetadata:
 
 class TestSearchInternalKnowledgeSchema:
     def _tool_meta(self):
-        from app.agents.actions.retrieval.retrieval import Retrieval
         import inspect
+
+        from app.agents.actions.retrieval.retrieval import Retrieval
         for name, method in inspect.getmembers(Retrieval, predicate=inspect.isfunction):
             if name == "search_internal_knowledge":
                 return getattr(method, "_agent_tool_meta", None)
@@ -255,8 +259,10 @@ class TestGetScopingNarrowing:
 
 class TestDedupeAppendFinalResults:
     def _dedupe(self, existing, new):
-        from app.agents.actions.retrieval.retrieval import _dedupe_append_final_results
-        return _dedupe_append_final_results(existing, new)
+        from app.agents.actions.knowledge_graph.ops.results import (
+            dedupe_append_final_results,
+        )
+        return dedupe_append_final_results(existing, new)
 
     def _block(self, vrid, idx):
         return {"virtual_record_id": vrid, "block_index": idx, "content": "x"}

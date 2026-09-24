@@ -1,12 +1,14 @@
 """Unit tests for `app.agents.chat_modes.prefetch.prefetch_retrieval`."""
 
 import logging
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.agents.chat_modes.prefetch import PrefetchResult, prefetch_retrieval
-from app.utils.chat_helpers import ImageBudget
+from app.modules.retrieval.context.builder import KnowledgeContext
+from app.modules.retrieval.context.renderer import RenderedKnowledge
+from app.utils.chat_helpers import CitationRefMapper, ImageBudget
 
 LOGGER = logging.getLogger("test")
 
@@ -95,12 +97,8 @@ class TestRetrievalFailureModes:
             "virtual_to_record_map": {},
         }
 
-        with patch(
-            "app.agents.chat_modes.prefetch.get_flattened_results", new=AsyncMock(return_value=[]),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
-            new=AsyncMock(),
-        ):
+        builder, render = _pipeline(units=[])
+        with builder, render:
             result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
 
         assert result.is_empty is True
@@ -108,125 +106,83 @@ class TestRetrievalFailureModes:
         assert result.final_results == []
 
 
+def _one_hit_retrieval() -> AsyncMock:
+    retrieval_service = AsyncMock()
+    retrieval_service.search_with_filters.return_value = {
+        "status_code": 200,
+        "searchResults": [{"metadata": {"recordId": "r1"}}],
+        "virtual_to_record_map": {},
+    }
+    return retrieval_service
+
+
+_UNITS = [{"virtual_record_id": "vr1", "block_index": 0}]
+
+
+def _pipeline(*, units=_UNITS, text="Relevant excerpt from r1", images=None):
+    """Replace the shared context pipeline at its two seams."""
+    builder = MagicMock()
+    builder.return_value.build = AsyncMock(return_value=KnowledgeContext(
+        units=units, virtual_record_id_to_result={"vr1": {"id": "r1"}} if units else {},
+    ))
+    rendered = RenderedKnowledge(
+        records=[text] if units else [], units=units, images=images or [],
+    )
+    return (
+        patch("app.agents.chat_modes.prefetch.KnowledgeContextBuilder", builder),
+        patch("app.agents.chat_modes.prefetch.render_knowledge", return_value=rendered),
+    )
+
+
 class TestSuccessfulPrefetch:
-    async def test_builds_formatted_context_and_shares_ref_mapper(self) -> None:
-        retrieval_service = AsyncMock()
-        retrieval_service.search_with_filters.return_value = {
-            "status_code": 200,
-            "searchResults": [{"metadata": {"recordId": "r1"}}],
-            "virtual_to_record_map": {},
-        }
-        flattened = [{"virtual_record_id": "vr1", "recordId": "r1"}]
-        captured_ref_mapper = {}
-
-        def _fake_build_message_content_array(final_results, vr_map, **kwargs):
-            mapper = kwargs["ref_mapper"]
-            captured_ref_mapper["mapper"] = mapper
-            return [[{"type": "text", "text": "Relevant excerpt from r1"}]], mapper
-
-        graph_enrich = AsyncMock()
-        with patch(
-            "app.agents.chat_modes.prefetch.get_flattened_results",
-            new=AsyncMock(return_value=flattened),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context",
-            new=graph_enrich,
-        ), patch(
-            "app.agents.chat_modes.prefetch.build_message_content_array",
-            side_effect=_fake_build_message_content_array,
-        ):
-            result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+    async def test_renders_the_ranked_context_with_the_shared_ref_mapper(self) -> None:
+        ref_mapper = CitationRefMapper()
+        builder, render = _pipeline()
+        with builder as mock_builder, render as mock_render:
+            result = await prefetch_retrieval(
+                **_make_kwargs(retrieval_service=_one_hit_retrieval(), ref_mapper=ref_mapper)
+            )
 
         assert result.is_empty is False
-        assert "Relevant excerpt from r1" in result.formatted_context
-        assert result.final_results == flattened
-        assert result.citation_ref_mapper is captured_ref_mapper["mapper"]
-        graph_enrich.assert_awaited_once()
+        assert result.formatted_context == "Relevant excerpt from r1"
+        assert result.final_results == _UNITS
+        assert result.citation_ref_mapper is ref_mapper
+        assert mock_render.call_args.kwargs["ref_mapper"] is ref_mapper
+        build_kwargs = mock_builder.return_value.build.call_args.kwargs
+        assert build_kwargs["include_fk_children"] is True
+        # The system prompt is not subject to the tool-result cap: nothing is cut.
+        assert build_kwargs.get("max_units") is None
+        assert mock_render.call_args.kwargs.get("max_chars") is None
 
 
 class TestPrefetchImageCollection:
     """`bridge.py` merges `PrefetchResult.collected_images` into
     `context.attachment_image_blocks` so `shape_image_injection` can
-    deliver them -- prefetch itself only needs to plumb `collected_images`/
-    `image_budget` through to `build_message_content_array` correctly."""
+    deliver them."""
 
-    async def test_collected_images_populated_from_formatter(self) -> None:
-        retrieval_service = AsyncMock()
-        retrieval_service.search_with_filters.return_value = {
-            "status_code": 200,
-            "searchResults": [{"metadata": {"recordId": "r1"}}],
-            "virtual_to_record_map": {},
-        }
-        flattened = [{"virtual_record_id": "vr1", "recordId": "r1"}]
-
-        def _fake_build_message_content_array(final_results, vr_map, **kwargs):
-            kwargs["collected_images"].append({
-                "ref": "ref1", "block_index": 0,
-                "image_url": {"url": "data:image/png;base64,xx"},
-                "virtual_record_id": "vr1",
-            })
-            return [[{"type": "text", "text": "[ref1] (image)"}]], kwargs["ref_mapper"]
-
-        with patch(
-            "app.agents.chat_modes.prefetch.get_flattened_results",
-            new=AsyncMock(return_value=flattened),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.build_message_content_array",
-            side_effect=_fake_build_message_content_array,
-        ):
-            result = await prefetch_retrieval(
-                **_make_kwargs(retrieval_service=retrieval_service, is_multimodal_llm=True)
-            )
-
-        assert result.collected_images == [{
+    async def test_collected_images_come_from_the_renderer(self) -> None:
+        image = {
             "ref": "ref1", "block_index": 0,
             "image_url": {"url": "data:image/png;base64,xx"},
             "virtual_record_id": "vr1",
-        }]
-
-    async def test_shared_image_budget_is_forwarded_to_formatter(self) -> None:
-        """A shared `ImageBudget` passed in by the caller (`bridge.py`'s
-        per-request budget) must reach `build_message_content_array`
-        unchanged -- not a fresh per-call budget -- so the 50-image cap is
-        enforced across search/fetch/prefetch/attachments together."""
-        retrieval_service = AsyncMock()
-        retrieval_service.search_with_filters.return_value = {
-            "status_code": 200,
-            "searchResults": [{"metadata": {"recordId": "r1"}}],
-            "virtual_to_record_map": {},
         }
-        flattened = [{"virtual_record_id": "vr1", "recordId": "r1"}]
-        shared_budget = ImageBudget(max_images=7)
-        captured = {}
-
-        def _fake_build_message_content_array(final_results, vr_map, **kwargs):
-            captured["image_budget"] = kwargs["image_budget"]
-            return [[{"type": "text", "text": "x"}]], kwargs["ref_mapper"]
-
-        with patch(
-            "app.agents.chat_modes.prefetch.get_flattened_results",
-            new=AsyncMock(return_value=flattened),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.build_message_content_array",
-            side_effect=_fake_build_message_content_array,
-        ):
-            await prefetch_retrieval(
-                **_make_kwargs(retrieval_service=retrieval_service, image_budget=shared_budget)
+        builder, render = _pipeline(images=[image])
+        with builder, render:
+            result = await prefetch_retrieval(
+                **_make_kwargs(retrieval_service=_one_hit_retrieval(), is_multimodal_llm=True)
             )
 
-        assert captured["image_budget"] is shared_budget
+        assert result.collected_images == [image]
+
+    async def test_shared_image_budget_is_forwarded_to_the_renderer(self) -> None:
+        """The per-request budget from `bridge.py` must reach rendering
+        unchanged, so the 50-image cap holds across search, fetch, prefetch
+        and attachments together."""
+        shared_budget = ImageBudget(max_images=7)
+        builder, render = _pipeline()
+        with builder, render as mock_render:
+            await prefetch_retrieval(
+                **_make_kwargs(retrieval_service=_one_hit_retrieval(), image_budget=shared_budget)
+            )
+
+        assert mock_render.call_args.kwargs["image_budget"] is shared_budget

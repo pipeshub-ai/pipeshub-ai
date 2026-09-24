@@ -35,12 +35,14 @@ from app.utils.chat_helpers import resolve_frontend_url
 from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
+from .ops.results import QUERY_PARAM_DESCRIPTION, search_result_summary
 from .ops.scope import resolve_scope
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
 from .views import render_lookup_result, render_navigation_view
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.core.messages import Part
     from app.agent_loop_lib.core.types import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -675,7 +677,7 @@ class KnowledgeGraph:
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
-                description="The search query — what you are looking for.",
+                description=QUERY_PARAM_DESCRIPTION,
                 required=True,
             ),
             ToolParameter(
@@ -748,7 +750,7 @@ class KnowledgeGraph:
             if args.get("query") else None
         ),
         result_summary=lambda args, result: (
-            _search_result_summary(args, result)
+            search_result_summary(args, result)
         ),
         display_name="Searched the knowledge base",
     )
@@ -760,7 +762,7 @@ class KnowledgeGraph:
         created_before: str | None = None,
         modified_after: str | None = None,
         modified_before: str | None = None,
-    ) -> str:
+    ) -> str | list[Part]:
         """Semantic search — calls ops/search.py execute_search."""
         from .ops.search import execute_search
         return await execute_search(
@@ -910,34 +912,6 @@ async def _get_user_key(graph_provider: Any, user_id: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Summary helpers for the new knowledgegraph tools
 # ---------------------------------------------------------------------------
-
-def _search_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
-    import re
-    from app.agents.actions.util.tool_summaries import as_text, parse_json_maybe, bullet_list
-
-    text = as_text(result.content)
-    if not text:
-        return None
-    parsed = parse_json_maybe(text)
-    if isinstance(parsed, dict) and parsed.get("status") == "error":
-        return f"Search failed: {parsed.get('message') or 'Unknown error'}"
-    if isinstance(parsed, dict) and (
-        parsed.get("result_count") == 0 or (isinstance(parsed.get("results"), list) and not parsed["results"])
-    ):
-        return str(parsed.get("message") or "No results found")
-
-    match = re.search(r"^Top (\d+) blocks? from (\d+) records?", text, re.IGNORECASE | re.MULTILINE)
-    if not match:
-        match = re.search(r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", text, re.IGNORECASE | re.MULTILINE)
-    if not match:
-        return None
-    blocks, docs = match.group(1), match.group(2)
-    header = f"Retrieved {blocks} block{'s' if blocks != '1' else ''} from {docs} record{'s' if docs != '1' else ''}"
-    name_re = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
-    names = [n.strip() for n in name_re.findall(text) if n.strip()]
-    if not names:
-        return header
-    return header + "\n" + bullet_list(names)
 
 
 def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
