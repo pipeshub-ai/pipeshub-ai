@@ -88,6 +88,14 @@ function mcpConnectionChipLabel(n: FlowNodeData): string {
   return normalizeDisplayName(disp || n.label);
 }
 
+/** `config.skillName` is the catalog identity; `label` is only its display form,
+ *  kept as the fallback for flows persisted before skillName was stored. */
+function skillConnectionChipLabel(n: FlowNodeData): string {
+  const c = (n.config || {}) as Record<string, unknown>;
+  const name = String(c.skillName ?? '').trim();
+  return normalizeDisplayName(name || n.label);
+}
+
 type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets' | 'skills' | 'mcpServers';
 
 function inboundHandleForEdge(
@@ -564,6 +572,20 @@ export function AgentCoreNode({
             )}
           </Section>
 
+          <Section title={t('agentBuilder.skillsSection')} icon="psychology">
+            <CoreHandle type="target" position={Position.Left} id="skills" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
+            {connected.skills.length ? (
+              <ConnectedChips
+                nodes={connected.skills}
+                max={MAX_VISIBLE.skills}
+                labelOf={skillConnectionChipLabel}
+              />
+            ) : (
+              <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
+                {t('agentBuilder.optional')}
+              </Text>
+            )}
+          </Section>
 
           <Section title={t('agentBuilder.mcpServersSection')} icon="hub">
             <CoreHandle type="target" position={Position.Left} id="mcpServers" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
