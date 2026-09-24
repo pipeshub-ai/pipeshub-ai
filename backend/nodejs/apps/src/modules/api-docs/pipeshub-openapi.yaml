@@ -4056,6 +4056,7 @@ components:
         - "DROPBOX PERSONAL"
         - "WEB"
         - "BOOKSTACK"
+        - "DRUPAL WIKI"
         - "GITHUB"
         - "GITHUB TEAMS"
         - "SERVICENOW"
