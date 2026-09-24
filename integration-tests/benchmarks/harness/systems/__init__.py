@@ -21,12 +21,18 @@ from benchmarks.harness.systems.base import AdapterCapabilities, CorpusIngestor,
 from benchmarks.harness.systems.baselines.bm25 import DEFAULT_N_DOCS, Bm25Answerer
 from benchmarks.harness.systems.baselines.closed_book import ClosedBookAnswerer
 from benchmarks.harness.systems.baselines.oracle import OracleAnswerer
+from benchmarks.harness.systems.openwebui.adapter import OpenWebUIAdapter
+from benchmarks.harness.systems.openwebui.client import OpenWebUIClient
+from benchmarks.harness.systems.openwebui.ingest import OpenWebUIIngestor
 from benchmarks.harness.systems.pipeshub.adapter import PipesHubAdapter
 from benchmarks.harness.systems.pipeshub.indexing import IndexWaiter
 from benchmarks.harness.systems.pipeshub.ingest import PipesHubIngestor
 from benchmarks.harness.systems.pipeshub.kb_api import KnowledgeBaseApi
 from benchmarks.harness.systems.pipeshub.session import ConnectorApi
 from benchmarks.harness.systems.rag.answerer import RagAnswerer, RagOptions
+from benchmarks.harness.systems.ragflow.adapter import RagflowAdapter
+from benchmarks.harness.systems.ragflow.client import RagflowClient
+from benchmarks.harness.systems.ragflow.ingest import RagflowIngestor
 
 if TYPE_CHECKING:
     from benchmarks.harness.services import Services
@@ -180,6 +186,69 @@ def _advanced_rag(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
     return _rag(options, system, deps)
 
 
+_OPENWEBUI_OPTIONS = frozenset({"base_url", "api_key_env", "upload_workers", "request_timeout_s"})
+
+
+def _openwebui(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
+    """Open WebUI's own pipeline. Its retrieval settings live in the
+    instance's environment (see the run config's header); this reads only
+    where to reach it."""
+    import os
+
+    unknown = set(system.options) - _OPENWEBUI_OPTIONS
+    if unknown:
+        raise ConfigError(f"{system.id}: unknown openwebui options {sorted(unknown)}")
+    base_url = str(system.options.get("base_url", "http://localhost:8080"))
+    key_env = str(system.options.get("api_key_env", "OPENWEBUI_API_KEY"))
+    api_key = os.environ.get(key_env)
+    if not api_key:
+        raise ConfigError(f"{system.id}: set {key_env} to an Open WebUI API key")
+    client = OpenWebUIClient(base_url, api_key, timeout_s=float(system.options.get("request_timeout_s", 900)))
+    ingestor = OpenWebUIIngestor(
+        client, system_id=system.id, base_url=base_url, corpus_dir=deps.corpus.corpus_dir,
+        cache_dir=deps.services.cache_dir, upload_workers=int(system.options.get("upload_workers", 8)),
+    )
+    model = deps.services.model(deps.config.answerer)
+    return OpenWebUIAdapter(
+        system.id, client, ingestor, model,
+        reasoning_effort=model.reasoning_effort, current_time=deps.config.corpus.snapshot,
+        price=_answerer_kwargs(deps)["price"],
+    )
+
+
+_RAGFLOW_OPTIONS = frozenset({
+    "base_url", "api_key_env", "dataset", "chat", "batch_size", "upload_workers", "request_timeout_s",
+})
+
+
+def _ragflow(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
+    """RAGFlow's own pipeline. `dataset` settings apply when the corpus
+    dataset is first created, `chat` settings when its chat is."""
+    import os
+
+    unknown = set(system.options) - _RAGFLOW_OPTIONS
+    if unknown:
+        raise ConfigError(f"{system.id}: unknown ragflow options {sorted(unknown)}")
+    base_url = str(system.options.get("base_url", "http://localhost:9380"))
+    key_env = str(system.options.get("api_key_env", "RAGFLOW_API_KEY"))
+    api_key = os.environ.get(key_env)
+    if not api_key:
+        raise ConfigError(f"{system.id}: set {key_env} to a RAGFlow API key")
+    dataset, chat = system.options.get("dataset"), system.options.get("chat")
+    if not isinstance(dataset, dict) or not isinstance(chat, dict):
+        raise ConfigError(f"{system.id}: `dataset` and `chat` settings are required")
+    client = RagflowClient(base_url, api_key, timeout_s=float(system.options.get("request_timeout_s", 900)))
+    ingestor = RagflowIngestor(
+        client, system_id=system.id, base_url=base_url, corpus_dir=deps.corpus.corpus_dir,
+        cache_dir=deps.services.cache_dir, dataset_config=dataset,
+        batch_size=int(system.options.get("batch_size", 50)),
+        upload_workers=int(system.options.get("upload_workers", 4)),
+    )
+    return RagflowAdapter(
+        system.id, client, ingestor, chat_config=chat, current_time=deps.config.corpus.snapshot,
+    )
+
+
 def _rag_index(system: SystemConfig) -> str:
     return str(system.options.get("index", "pipeshub"))
 
@@ -191,6 +260,8 @@ ADAPTER_REGISTRY: dict[str, AdapterSpec] = {
     "pipeshub": AdapterSpec(_pipeshub, PipesHubAdapter.capabilities, lambda _s: "pipeshub"),
     "naive_rag": AdapterSpec(_naive_rag, RagAnswerer.capabilities, _rag_index),
     "advanced_rag": AdapterSpec(_advanced_rag, RagAnswerer.capabilities, _rag_index),
+    "openwebui": AdapterSpec(_openwebui, OpenWebUIAdapter.capabilities, lambda _s: "openwebui"),
+    "ragflow": AdapterSpec(_ragflow, RagflowAdapter.capabilities, lambda _s: "ragflow"),
 }
 
 

@@ -1,0 +1,75 @@
+# Open WebUI v0.11.4 for the FRAMES comparison. Settings follow the parity
+# contract in the "FRAMES: other RAG systems" plan: Azure gpt-5.6-luna for
+# answers, Azure text-embedding-3-small for embeddings, native hybrid search,
+# top-k 50, no reranker, and no extra LLM tasks. Secrets and the derived
+# Azure URLs come from the environment (see up.sh); nothing secret is here.
+name: frames-openwebui
+
+services:
+  pgvector:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: openwebui
+      POSTGRES_PASSWORD: openwebui
+      POSTGRES_DB: openwebui
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openwebui"]
+      interval: 5s
+      retries: 30
+
+  open-webui:
+    # Slim: the full image's HTML loader decodes files as unicode_escape and
+    # mangles or fails ~190 corpus articles.
+    image: ghcr.io/open-webui/open-webui:v0.11.4-slim
+    depends_on:
+      pgvector:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - data:/app/backend/data
+    environment:
+      WEBUI_SECRET_KEY: frames-benchmark-openwebui
+      WEBUI_AUTH: "true"
+      ENABLE_SIGNUP: "true"
+      ENABLE_API_KEYS: "true"
+      # Settings come from this file on every boot, never from a stale DB copy.
+      ENABLE_PERSISTENT_CONFIG: "false"
+      DATABASE_URL: postgresql://openwebui:openwebui@pgvector:5432/openwebui
+      VECTOR_DB: pgvector
+      PGVECTOR_DB_URL: postgresql://openwebui:openwebui@pgvector:5432/openwebui
+      PGVECTOR_INDEX_METHOD: hnsw
+      ENABLE_OLLAMA_API: "false"
+      # Answer model: Azure Responses API.
+      OPENAI_API_BASE_URLS: ${OWUI_AZURE_V1_BASE_URL:?run up.sh}
+      OPENAI_API_KEYS: ${AZURE_OPENAI_API_KEY:?run up.sh}
+      OPENAI_API_CONFIGS: '{"0":{"azure":true,"api_type":"responses","model_ids":["${OWUI_CHAT_DEPLOYMENT:-gpt-5.6-luna}"]}}'
+      # Embedding model.
+      RAG_EMBEDDING_ENGINE: azure_openai
+      RAG_EMBEDDING_MODEL: ${OWUI_EMBEDDING_DEPLOYMENT:-text-embedding-3-small}
+      RAG_AZURE_OPENAI_BASE_URL: ${OWUI_AZURE_BASE_URL:?run up.sh}
+      RAG_AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:?run up.sh}
+      RAG_AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2025-04-01-preview}
+      RAG_EMBEDDING_BATCH_SIZE: "256"
+      RAG_EMBEDDING_CONCURRENT_REQUESTS: "4"
+      # Retrieval: native hybrid, 50 chunks to the model, no reranker.
+      ENABLE_RAG_HYBRID_SEARCH: "true"
+      RAG_HYBRID_BM25_WEIGHT: "0.5"
+      RAG_TOP_K: "50"
+      RAG_TOP_K_RERANKER: "50"
+      RAG_RELEVANCE_THRESHOLD: "0"
+      RAG_RERANKING_MODEL: ""
+      CHUNK_SIZE: "1000"
+      CHUNK_OVERLAP: "100"
+      # No LLM work outside the one answer call.
+      ENABLE_RETRIEVAL_QUERY_GENERATION: "false"
+      ENABLE_TITLE_GENERATION: "false"
+      ENABLE_TAGS_GENERATION: "false"
+      ENABLE_FOLLOW_UP_GENERATION: "false"
+      ENABLE_AUTOCOMPLETE_GENERATION: "false"
+
+volumes:
+  pgdata:
+  data:

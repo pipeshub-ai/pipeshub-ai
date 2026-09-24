@@ -127,22 +127,42 @@ class Services:
     def cost(self) -> CostTracker:
         return CostTracker(self.config.limits.max_cost_usd)
 
+    @cached_property
+    def _reads_pipeshub(self) -> bool:
+        """Whether any system in the run talks to PipesHub. Without one, the
+        run must not need a PipesHub instance up just to name its models."""
+        return any(
+            s.kind == "pipeshub"
+            or (s.kind in ("naive_rag", "advanced_rag") and str(s.options.get("index", "pipeshub")) == "pipeshub")
+            for s in self.config.systems
+        )
+
+    @staticmethod
+    def _direct(selector: ModelSelector) -> ResolvedModel:
+        return ResolvedModel(
+            model_key="", provider=selector.call_provider or str(selector.provider), model_name=selector.model,
+            is_reasoning=selector.is_reasoning, reasoning_effort=selector.reasoning_effort,
+            deployment=selector.deployment,
+        )
+
     def model(self, selector: ModelSelector) -> ResolvedModel:
         if selector not in self._models:
-            self._models[selector] = self.resolver.resolve(selector)
+            if not self._reads_pipeshub and selector.provider:
+                self._models[selector] = self._direct(selector)
+            else:
+                self._models[selector] = self.resolver.resolve(selector)
         return self._models[selector]
 
     def judge_model(self, selector: ModelSelector) -> ResolvedModel:
         """Judges need not be registered in PipesHub (no keys stored there):
         an unregistered judge with a provider is called directly."""
         if selector not in self._models:
+            if not self._reads_pipeshub and selector.provider:
+                self._models[selector] = self._direct(selector)
+                return self._models[selector]
             found = self.resolver.find(selector)
             if found is None and selector.provider:
-                found = ResolvedModel(
-                    model_key="", provider=selector.call_provider or selector.provider, model_name=selector.model,
-                    is_reasoning=selector.is_reasoning, reasoning_effort=selector.reasoning_effort,
-                    deployment=selector.deployment,
-                )
+                found = self._direct(selector)
             self._models[selector] = found or self.resolver.resolve(selector)
         return self._models[selector]
 

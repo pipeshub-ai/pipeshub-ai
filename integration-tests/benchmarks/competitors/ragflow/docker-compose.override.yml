@@ -1,0 +1,12 @@
+# Overrides for RAGFlow v0.27.2's own docker/docker-compose.yml, for the FRAMES
+# comparison. Used by up.sh; the parity settings for datasets and chats live
+# in the run config (benchmarks/datasets/frames/configs/blog-dev-ragflow.yaml).
+services:
+  ragflow-cpu:
+    # The published image is amd64-only; on Apple silicon it runs emulated.
+    platform: linux/amd64
+    command:
+      - --enable-adminserver
+      - --init-model-provider-tables
+      # Four task executors instead of one, for a 12,441-document ingest.
+      - --workers=4
