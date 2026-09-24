@@ -20,6 +20,11 @@ from app.exceptions.graph_db_exceptions import GraphQueryError
 ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
 ARANGO_ERROR_SCHEMA_DUPLICATE = 1207
 
+# Maximum open connections for each event loop's session (aiohttp's default).
+# The client holds one session per loop, so its total is this times the
+# number of loops that use it.
+DEFAULT_POOL_LIMIT = 100
+
 
 class ArangoHTTPClient:
     """Fully async HTTP client for ArangoDB REST API
@@ -35,7 +40,8 @@ class ArangoHTTPClient:
         username: str,
         password: str,
         database: str,
-        logger: Logger
+        logger: Logger,
+        pool_limit: int = DEFAULT_POOL_LIMIT
     ) -> None:
         """
         Initialize ArangoDB HTTP client.
@@ -46,6 +52,7 @@ class ArangoHTTPClient:
             password: Database password
             database: Database name
             logger: Logger instance
+            pool_limit: Maximum open connections per event loop's session
         """
         self.base_url = base_url.rstrip('/')
         self.database = database
@@ -56,6 +63,7 @@ class ArangoHTTPClient:
         # from the consumer's worker loop and the main loop at the same time,
         # and a session may only be used and closed on its own loop.
         self._sessions: Dict[asyncio.AbstractEventLoop, aiohttp.ClientSession] = {}
+        self.pool_limit = pool_limit
         self.logger = logger
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -77,7 +85,10 @@ class ArangoHTTPClient:
             for loop in [loop for loop in self._sessions if loop.is_closed()]:
                 del self._sessions[loop]
 
-            session = aiohttp.ClientSession(auth=self.auth)
+            session = aiohttp.ClientSession(
+                auth=self.auth,
+                connector=aiohttp.TCPConnector(limit=self.pool_limit),
+            )
             self._sessions[current_loop] = session
             self.logger.debug("🔄 Created new HTTP session for current event loop")
 

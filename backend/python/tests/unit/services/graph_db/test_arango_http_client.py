@@ -34,6 +34,7 @@ import pytest
 from app.services.graph_db.arango.arango_http_client import (
     ARANGO_ERROR_DOCUMENT_NOT_FOUND,
     ARANGO_ERROR_SCHEMA_DUPLICATE,
+    DEFAULT_POOL_LIMIT,
     ArangoHTTPClient,
 )
 
@@ -156,6 +157,30 @@ class TestGetSession:
             assert session is mock_new_session
             mock_other_session.close.assert_not_awaited()
             assert client._sessions[other_loop] is mock_other_session
+
+    @pytest.mark.asyncio
+    async def test_session_pool_capped_at_default(self, client):
+        session = await client._get_session()
+        try:
+            assert session.connector.limit == DEFAULT_POOL_LIMIT == 100
+        finally:
+            await client.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_session_pool_capped_at_custom_limit(self, mock_logger):
+        c = ArangoHTTPClient(
+            base_url="http://localhost:8529",
+            username="root",
+            password="secret",
+            database="test_db",
+            logger=mock_logger,
+            pool_limit=7,
+        )
+        session = await c._get_session()
+        try:
+            assert session.connector.limit == 7
+        finally:
+            await c.disconnect()
 
     @pytest.mark.asyncio
     async def test_forgets_sessions_of_closed_loops(self, client):
