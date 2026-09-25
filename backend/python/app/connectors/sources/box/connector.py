@@ -1384,12 +1384,14 @@ class BoxConnector(BaseConnector):
         # Set before the user and group refresh: a batch applied without those groups loses their edges.
         self._read_complete = True
         our_org_box_user_ids: Set[str] = set()
+        users_complete = False
         try:
             self.logger.info("👥 [Incremental] Refreshing User list...")
             users = await self._sync_users()
 
             # Update the in-memory or DB map of users so we can link files to them later
             await self.data_entities_processor.on_new_app_users(users)
+            users_complete = self._read_complete
 
             # Box user IDs that belong to our org (for distinguishing external vs internal shares)
             our_org_box_user_ids = {
@@ -1406,7 +1408,14 @@ class BoxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"⚠️ [Incremental] Failed to refresh users/groups: {e}")
             self._read_complete = False
-        # Pages applied with a stale user or group list lose grants, so a failed refresh stops at one page.
+        if not users_complete:
+            # Without the user list no share or removal in a batch can be applied, so nothing is passed over.
+            self.logger.error(
+                "❌ [Incremental] The Box user list could not be read, so no changes are applied this run and "
+                "the event-stream position is kept until it can be read."
+            )
+            return
+        # Pages applied with a stale group list lose grants, so a failed refresh stops at one page.
         refresh_complete = self._read_complete
 
         key = "event_stream_cursor"

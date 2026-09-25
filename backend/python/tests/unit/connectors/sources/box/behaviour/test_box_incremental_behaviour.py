@@ -138,6 +138,33 @@ class TestCursor:
         assert db.records["file-1"].shared_with_me_record_group_ids == [f"0S:{BOB_EMAIL}"]
         assert checkpoints.cursor()["cursor"] == box_api.stream_head
 
+    async def test_a_refused_user_list_holds_the_cursor_until_it_can_be_read(self, box_api, db, checkpoints, caplog) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        collab_id = box_api.collaborate("file-1", BOB)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.collaborations["file-1"].clear()
+        box_api.add_event(
+            "COLLABORATION_REMOVE",
+            {"type": "collaboration", "id": collab_id, "item": {"type": "file", "id": "file-1"}, "accessible_by": {"type": "user", "id": BOB}},
+        )
+        before = dict(checkpoints.cursor())
+        box_api.fail("GET", "/2.0/users", 403, times=6)
+
+        for _ in range(6):
+            caplog.clear()
+            with caplog.at_level(logging.ERROR, logger="test.box"):
+                await connector.run_sync()
+            assert "'Manage users' scope" in caplog.text
+
+        assert checkpoints.cursor() == before
+        assert BOB_EMAIL in db.access("file-1")
+
+        await connector.run_sync()
+
+        assert BOB_EMAIL not in db.access("file-1")
+        assert checkpoints.cursor()["cursor"] == box_api.stream_head
+
     async def test_after_giving_up_on_a_failed_refresh_the_run_stops_at_that_page(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
         connector = await synced_connector(box_api, db, checkpoints)
