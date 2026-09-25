@@ -110,6 +110,19 @@ class TestFullSyncWalk:
         assert alice_pages == ["0", "2", "4"]
         assert {f"file-{n}" for n in range(5)} <= set(db.records)
 
+    async def test_a_page_after_a_subfolder_is_still_listed_as_the_owner(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.max_page = 2
+        box_api.add_folder("fold-a", "Plans", ALICE)
+        box_api.add_file("file-1", "one.txt", ALICE)
+        box_api.add_file("file-2", "two.txt", ALICE)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert {r.as_user for r in listings(box_api, ROOT_ID) if r.query["offset"] == "2"} == {ALICE}
+        assert "file-2" in db.records
+
 
     async def test_an_inactive_user_is_not_walked(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

@@ -993,6 +993,12 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing for user {user.email}: {e}", exc_info=True)
+        finally:
+            # Once per user: clearing inside the recursion left the parent folder's later pages listed without As-User.
+            try:
+                await self.data_source.clear_as_user_context()
+            except Exception as e:
+                self.logger.warning(f"Failed to clear As-User context at the end of recursive sync: {e}")
 
     async def _sync_folder_recursively(self, user: AppUser, folder_id: str, batch_records: List) -> None:
         """
@@ -1083,10 +1089,6 @@ class BoxConnector(BaseConnector):
             offset += len(items)
             if offset >= total_count:
                 break
-        try:
-            await self.data_source.clear_as_user_context()
-        except Exception as e:
-            self.logger.warning(f"Failed to clear As-User context at the end of recursive sync: {e}")
 
     async def _process_users_in_batches(self, users: List[AppUser]) -> None:
         """
