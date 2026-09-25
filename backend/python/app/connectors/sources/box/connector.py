@@ -756,6 +756,7 @@ class BoxConnector(BaseConnector):
                     )
                 except Exception as e:
                     self.logger.warning(f"⚠️ Failed to remove access from {current_external_id}: {e}")
+                    self._mark_full_sync_incomplete(e)
 
                 # Get children of this item
                 try:
@@ -771,11 +772,13 @@ class BoxConnector(BaseConnector):
                                 items_to_process.append(child.external_record_id)
                 except Exception as e:
                     self.logger.debug(f"No children found for {current_external_id} or error: {e}")
+                    self._mark_full_sync_incomplete(e)
 
             self.logger.info(f"✅ Removed user access from folder and {len(processed_items) - 1} descendants")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to remove folder access recursively: {e}", exc_info=True)
+            self._mark_full_sync_incomplete(e)
 
     async def _sync_user_groups(self) -> None:
         """
@@ -1644,8 +1647,10 @@ class BoxConnector(BaseConnector):
                                 granted_email = user_data.get('login')
                             else:
                                 self.logger.warning(f"⚠️ Failed to fetch user details for ID {granted_user_box_id}: {user_response.error}")
+                                self._mark_full_sync_incomplete(user_response.error)
                         except Exception as e:
                             self.logger.error(f"❌ Failed to resolve Box ID {granted_user_box_id}: {e}")
+                            self._mark_full_sync_incomplete(e)
 
                 # EXECUTE GRANT - Queue item for sync to update permissions
                 if item_id:
@@ -1668,8 +1673,11 @@ class BoxConnector(BaseConnector):
                                 item_data = self._to_dict(item_response.data)
                                 owned_by = item_data.get('owned_by', {})
                                 owner_id = owned_by.get('id')
+                            else:
+                                self._mark_full_sync_incomplete(item_response.error)
                         except Exception as e:
                             self.logger.warning(f"⚠️ Failed to fetch owner for {item_type} {item_id}: {e}")
+                            self._mark_full_sync_incomplete(e)
 
                     if owner_id:
                         # Queue for sync to refresh permissions (owner's drive)
@@ -1745,8 +1753,11 @@ class BoxConnector(BaseConnector):
                             if item:
                                 file_id = item.get('id')
                                 self.logger.debug(f"Found item ID {file_id} from collaboration lookup")
+                        elif not collab_response.success:
+                            self._mark_full_sync_incomplete(collab_response.error)
                     except Exception as e:
                         self.logger.debug(f"Could not fetch collaboration details for {collaboration_id}: {e}")
+                        self._mark_full_sync_incomplete(e)
 
                 # Log what we found for debugging
                 self.logger.debug(f"Revocation event - file_id={file_id}, email={removed_email}, user_box_id={removed_user_box_id}, collab_id={collaboration_id}")
@@ -1779,8 +1790,10 @@ class BoxConnector(BaseConnector):
                                 removed_email = user_data.get('login')
                             else:
                                 self.logger.warning(f"⚠️ Failed to fetch user details for ID {removed_user_box_id}: {user_response.error}")
+                                self._mark_full_sync_incomplete(user_response.error)
                         except Exception as e:
                             self.logger.error(f"❌ Failed to resolve Box ID {removed_user_box_id}: {e}")
+                            self._mark_full_sync_incomplete(e)
 
                 # EXECUTE REMOVAL
                 if file_id and removed_email:

@@ -640,3 +640,113 @@ class TestDatabaseFailuresDuringAFullSync:
         await connector.run_sync()
 
         assert f"0S:{BOB_EMAIL}" in db.shared_links["file-1"]
+
+
+def revoke_history(api: FakeBoxApi, item_id: str, user_id: str, *, with_login: bool = True, with_item: bool = True) -> str:
+    """Remove ``user_id``'s collaboration on ``item_id`` in Box and log the removal event."""
+    collab = next(c for c in api.collaborations[item_id] if c["accessible_by"]["id"] == user_id)
+    api.collaborations[item_id].remove(collab)
+    accessible_by = {"type": "user", "id": user_id}
+    if with_login:
+        accessible_by["login"] = api.users[user_id]["login"]
+    source: dict[str, Any] = {"type": "collaboration", "id": collab["id"], "accessible_by": accessible_by}
+    if with_item:
+        source["item"] = {"type": api.items[item_id]["type"], "id": item_id}
+    api.add_event("COLLABORATION_REMOVE", source, created_by={"type": "user", "id": ALICE, "login": ALICE_EMAIL})
+    return collab["id"]
+
+
+class TestReplayedShareLookups:
+    async def test_a_grantee_who_could_not_be_looked_up_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        collab_id = box_api.collaborate("file-1", BOB)
+        box_api.add_event(
+            "COLLABORATION_INVITE",
+            {"type": "collaboration", "id": collab_id, "item": {"type": "file", "id": "file-1"}, "accessible_by": {"type": "user", "id": BOB}},
+            created_by={"type": "user", "id": ALICE, "login": ALICE_EMAIL},
+        )
+        box_api.fail("GET", f"/2.0/users/{BOB}", 503, times=5)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert f"0S:{BOB_EMAIL}" not in db.shared_links["file-1"]
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert f"0S:{BOB_EMAIL}" in db.shared_links["file-1"]
+
+    async def test_an_owner_who_could_not_be_looked_up_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        collab_id = box_api.collaborate("file-1", BOB)
+        box_api.add_event(
+            "COLLABORATION_INVITE",
+            {"type": "collaboration", "id": collab_id, "item": {"type": "file", "id": "file-1"},
+             "accessible_by": {"type": "user", "id": BOB, "login": BOB_EMAIL}},
+        )
+        box_api.fail("GET", "/2.0/files/file-1", 503, times=5)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor() is None
+
+    async def test_a_removed_collaborator_who_could_not_be_looked_up_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        box_api.collaborate("file-1", BOB)
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        checkpoints.sync_points.clear()
+        revoke_history(box_api, "file-1", BOB, with_login=False)
+        box_api.fail("GET", f"/2.0/users/{BOB}", 503, times=5)
+
+        await connector.run_sync()
+
+        assert BOB_EMAIL in db.access("file-1")
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert BOB_EMAIL not in db.access("file-1")
+
+    async def test_a_removal_whose_collaboration_could_not_be_looked_up_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        box_api.collaborate("file-1", BOB)
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        checkpoints.sync_points.clear()
+        collab_id = revoke_history(box_api, "file-1", BOB, with_item=False)
+        box_api.fail("GET", f"/2.0/collaborations/{collab_id}", 503, times=5)
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor() is None
+
+    @pytest.mark.parametrize("failing", ["remove_user_access_to_record", "get_records_by_parent"])
+    async def test_a_folder_removal_that_could_not_be_applied_leaves_no_cursor(self, box_api, db, checkpoints, failing) -> None:
+        enterprise(box_api, db)
+        box_api.add_folder("fold-a", "Team", ALICE)
+        box_api.add_file("file-1", "plan.pdf", ALICE, parent="fold-a")
+        box_api.collaborate("fold-a", BOB)
+        box_api.collaborate("file-1", BOB)
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        checkpoints.sync_points.clear()
+        revoke_history(box_api, "fold-a", BOB)
+        box_api.collaborations["file-1"].clear()
+        db.failing.add(failing)
+
+        await connector.run_sync()
+
+        assert BOB_EMAIL in db.access("file-1")
+        assert checkpoints.cursor() is None
+
+        db.failing.clear()
+        await connector.run_sync()
+
+        assert BOB_EMAIL not in db.access("file-1")
