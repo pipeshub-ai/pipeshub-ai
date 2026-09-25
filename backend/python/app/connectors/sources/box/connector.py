@@ -520,6 +520,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error processing Box entry {entry.get('id')}: {e}", exc_info=True)
+            self._mark_full_sync_incomplete(e)
             return None
 
     async def _get_permissions(self, item_id: str, item_type: str) -> list[Permission] | None:
@@ -634,6 +635,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error handling record update: {e}", exc_info=True)
+            self._mark_full_sync_incomplete(e)
 
     async def _sync_users(self) -> List[AppUser]:
         """
@@ -713,6 +715,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get users by emails: {e}", exc_info=True)
+            self._mark_full_sync_incomplete(e)
             return []
 
     async def _remove_user_access_from_folder_recursively(
@@ -1186,6 +1189,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Failed to create virtual groups: {e}")
+            self._mark_full_sync_incomplete(e)
 
     async def run_sync(self) -> None:
         """

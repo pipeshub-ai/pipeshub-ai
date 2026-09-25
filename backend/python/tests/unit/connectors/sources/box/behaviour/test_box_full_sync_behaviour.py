@@ -576,3 +576,67 @@ class TestActingAsEachUser:
         await connector.run_sync()
 
         assert {ALICE, f"0S:{ALICE_EMAIL}"} <= set(db.record_groups)
+
+
+class TestDatabaseFailuresDuringAFullSync:
+    async def test_an_item_that_could_not_be_processed_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-a", "a.txt", ALICE)
+        db.fail_lookup_for.add("file-a")
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert "file-a" not in db.records
+        assert checkpoints.cursor() is None
+
+        db.fail_lookup_for.clear()
+        await connector.run_sync()
+
+        assert "file-a" in db.records
+
+    async def test_an_update_that_could_not_be_saved_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-a", "a.txt", ALICE)
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        checkpoints.sync_points.clear()
+        box_api.items["file-a"]["modified_at"] = "2024-06-01T00:00:00Z"
+        db.fail_write_for.add("file-a")
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor() is None
+
+    async def test_virtual_groups_that_could_not_be_saved_leave_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-a", "a.txt", ALICE, shared_link_access="company")
+        db.fail_group_write_for.add("PUBLIC")
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert "ORG_org-1" not in db.access("file-a")
+        assert checkpoints.cursor() is None
+
+        db.fail_group_write_for.clear()
+        await connector.run_sync()
+
+        assert "ORG_org-1" in db.access("file-a")
+
+    async def test_a_share_whose_collaborator_could_not_be_looked_up_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        share_history(box_api, "file-1", BOB)
+        db.failing.add("get_app_user_by_email")
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert f"0S:{BOB_EMAIL}" not in db.shared_links.get("file-1", set())
+        assert checkpoints.cursor() is None
+
+        db.failing.clear()
+        await connector.run_sync()
+
+        assert f"0S:{BOB_EMAIL}" in db.shared_links["file-1"]
