@@ -41,7 +41,7 @@ When it finishes, open the URL, create the admin account, and choose S3 in stora
 
 If a step fails, the script prints the command that failed. Fix the cause and run the same command again. Every step skips what already exists. Run it again later to update the chart.
 
-`./deployment/helm/aws/deploy.sh --help` lists the options: `--cluster`, `--hosted-zone-id`, `--cert-arn`, `--kms-key-arn`, `--k8s-version`, `--zones`, and `--bucket`.
+`./deployment/helm/aws/deploy.sh --help` prints what the command does and the full option list, including `--namespace`, `--release`, `--no-backups`, and `--destroy`.
 
 To remove the release and the cluster:
 

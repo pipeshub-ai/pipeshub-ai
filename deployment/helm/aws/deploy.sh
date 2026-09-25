@@ -29,12 +29,19 @@ usage() {
   cat <<'EOF'
 Usage: deploy.sh --domain HOST [options]
 
-Required:
+Creates the EKS cluster, gp3 storage, load balancer, TLS certificate, S3 bucket,
+Helm release, DNS record and daily backups. A new cluster takes about an hour,
+mostly waiting for EKS. Re-running the same command skips what already exists
+and upgrades the Helm release.
+
+Required for a deploy (--destroy and --render-cluster-config do not need it):
   --domain HOST            Public hostname for PipesHub, e.g. pipeshub.example.com
 
 Options:
   --region REGION          AWS region (default: AWS_REGION or aws configure)
-  --cluster NAME           EKS cluster name (default: pipeshub)
+  --cluster NAME           EKS cluster name (default: pipeshub, or CLUSTER)
+  --namespace NAME         Kubernetes namespace (default: pipeshub, or NAMESPACE)
+  --release NAME           Helm release name (default: pipeshub-ai, or RELEASE)
   --hosted-zone-id ID      Route 53 public zone for DNS and certificate validation
                            (default: found automatically from --domain)
   --cert-arn ARN           Use this ACM certificate instead of requesting one
@@ -57,6 +64,8 @@ while [[ $# -gt 0 ]]; do
     --domain) DOMAIN="$2"; shift 2 ;;
     --region) REGION="$2"; shift 2 ;;
     --cluster) CLUSTER="$2"; shift 2 ;;
+    --namespace) NAMESPACE="$2"; shift 2 ;;
+    --release) RELEASE="$2"; shift 2 ;;
     --hosted-zone-id) HOSTED_ZONE_ID="${2#/hostedzone/}"; shift 2 ;;
     --cert-arn) CERT_ARN="$2"; shift 2 ;;
     --kms-key-arn) KMS_KEY_ARN="$2"; shift 2 ;;
@@ -103,6 +112,12 @@ if [[ "$ACTION" == render ]]; then
     || die "--render-cluster-config needs --region, --zones, --kms-key-arn and --k8s-version"
   render_cluster_config
   exit 0
+fi
+
+# Reject a deploy before installing tools or calling AWS.
+if [[ "$ACTION" == deploy ]]; then
+  [[ -n "$DOMAIN" ]] || { usage >&2; die "--domain is required"; }
+  [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || die "invalid domain: $DOMAIN"
 fi
 
 export PATH="${PIPESHUB_BIN_DIR:-${PIPESHUB_HOME:-${HOME}/.pipeshub}/bin}:${PATH}"
@@ -295,8 +310,6 @@ if [[ "$ACTION" == destroy ]]; then
   exit 0
 fi
 
-[[ -n "$DOMAIN" ]] || { usage >&2; die "--domain is required"; }
-[[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || die "invalid domain: $DOMAIN"
 FRONTEND_PUBLIC_URL="https://${DOMAIN}"
 [[ -n "$BUCKET" ]] || BUCKET="$(echo "pipeshub-${CLUSTER}-${ACCOUNT_ID}-${REGION}" | tr '[:upper:]' '[:lower:]' | cut -c1-63)"
 [[ -n "$HOSTED_ZONE_ID" ]] || HOSTED_ZONE_ID="$(find_hosted_zone "$DOMAIN" || true)"
@@ -305,11 +318,18 @@ step "Plan"
 note "account      ${ACCOUNT_ID}"
 note "region       ${REGION}"
 note "cluster      ${CLUSTER}"
+note "namespace    ${NAMESPACE}"
+note "release      ${RELEASE}"
 note "url          ${FRONTEND_PUBLIC_URL}"
 note "dns          ${HOSTED_ZONE_ID:-manual (no Route 53 zone found for ${DOMAIN})}"
 note "s3 bucket    ${BUCKET}"
 note "backups      ${BACKUPS}"
-note "Creates 8 EC2 instances, EBS volumes, a load balancer and a NAT gateway. These cost money until you run --destroy."
+if cluster_exists; then
+  note "Cluster ${CLUSTER} already exists. Finished steps are skipped, and the Helm release is upgraded."
+else
+  note "Creates 8 EC2 instances, EBS volumes, a load balancer and a NAT gateway. These cost money until you run --destroy."
+  note "A new cluster takes about an hour, mostly waiting for EKS."
+fi
 confirm "Continue?"
 
 step "KMS key for Kubernetes Secrets"
@@ -512,10 +532,14 @@ else
 fi
 
 step "Load balancer and DNS"
+note "waiting for the load balancer hostname (up to 10 minutes)"
 ALB_HOST=""
-for _ in $(seq 1 60); do
+for attempt in $(seq 1 60); do
   ALB_HOST="$(kubectl get ingress -n "$NAMESPACE" "$RELEASE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
   [[ -n "$ALB_HOST" ]] && break
+  if [[ $(( attempt % 6 )) -eq 0 ]]; then
+    note "still waiting for the load balancer"
+  fi
   sleep 10
 done
 [[ -n "$ALB_HOST" ]] || die "the ingress has no load balancer after 10 minutes. kubectl logs -n kube-system deploy/aws-load-balancer-controller"
@@ -565,11 +589,15 @@ if $BACKUPS; then
 fi
 
 step "Health check"
+note "waiting for ${FRONTEND_PUBLIC_URL}/api/v1/health (up to 5 minutes)"
 healthy=false
-for _ in $(seq 1 30); do
+for attempt in $(seq 1 30); do
   if [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${FRONTEND_PUBLIC_URL}/api/v1/health")" == 200 ]]; then
     healthy=true
     break
+  fi
+  if [[ $(( attempt % 6 )) -eq 0 ]]; then
+    note "still waiting for the health check"
   fi
   sleep 10
 done
