@@ -82,13 +82,13 @@ ingress:
     alb.ingress.kubernetes.io/ssl-redirect: "443"
     # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:REGION:ACCOUNT:certificate/ID
     # alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:REGION:ACCOUNT:regional/webacl/NAME/ID
-  hosts: []
+  # hosts, frontendPublicUrl, and allowedOrigins are not set here. An empty
+  # value in this file would override the --set values from install.sh on the
+  # next `helm upgrade -f values-eks.yaml --reuse-values`.
   tls: []
 
 config:
   kvStoreType: redis
-  allowedOrigins: ""
-  frontendPublicUrl: ""
   sandboxMode: docker
   sandboxDockerImage: "pipeshubai/pipeshub-sandbox:0.8.0"
   sandboxAllowNetwork: false

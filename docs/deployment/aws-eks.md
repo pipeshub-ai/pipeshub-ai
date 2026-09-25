@@ -333,7 +333,8 @@ cat > pipeshub-s3-policy.json <<EOF
   "Version": "2012-10-17",
   "Statement": [
     {"Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketLocation"], "Resource": "arn:aws:s3:::${BUCKET}"},
-    {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], "Resource": "arn:aws:s3:::${BUCKET}/*"}
+    {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], "Resource": "arn:aws:s3:::${BUCKET}/*"},
+    {"Effect": "Allow", "Action": ["kms:Decrypt", "kms:GenerateDataKey"], "Resource": "*", "Condition": {"StringEquals": {"kms:ViaService": "s3.${AWS_REGION}.amazonaws.com"}}}
   ]
 }
 EOF
@@ -475,7 +476,7 @@ helm upgrade pipeshub-ai ./deployment/helm/pipeshub-ai \
   --wait --timeout 30m
 ```
 
-`--reuse-values` keeps the public URL, the ingress hosts, and the existing Secret. Do not pass a new `secret-key`. Take an on-demand backup in AWS Backup first.
+`--reuse-values` keeps the public URL, the ingress hosts, and the existing Secret, because `values-eks.yaml` does not set those. Do not pass a new `secret-key`. Take an on-demand backup in AWS Backup first.
 
 MongoDB and Qdrant spread across zones. When you upgrade node groups, drain one node at a time. The disruption budgets allow one database pod down. Neo4j and the Redis master have one pod each and are briefly unavailable while their node drains.
 
