@@ -1068,9 +1068,7 @@ class BoxConnector(BaseConnector):
             ):
                 if record_update.is_deleted or record_update.is_updated:
                     await self._handle_record_updates(record_update)
-                    continue
-
-                if file_record:
+                elif file_record:
                     batch_records.append((file_record, permissions))
 
                     if len(batch_records) >= self.batch_size:

@@ -123,6 +123,18 @@ class TestFullSyncWalk:
         assert {r.as_user for r in listings(box_api, ROOT_ID) if r.query["offset"] == "2"} == {ALICE}
         assert "file-2" in db.records
 
+    async def test_a_second_full_sync_finds_new_files_inside_known_folders(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_folder("fold-a", "Plans", ALICE)
+        box_api.add_file("file-1", "one.txt", ALICE, parent="fold-a")
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        box_api.add_file("file-2", "two.txt", ALICE, parent="fold-a")
+        checkpoints.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert "file-2" in db.records
 
     async def test_an_inactive_user_is_not_walked(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
