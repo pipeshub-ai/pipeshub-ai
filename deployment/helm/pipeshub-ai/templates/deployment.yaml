@@ -432,9 +432,14 @@ spec:
             # cluster network that can route to this pod.
             - name: DOCKER_TLS_CERTDIR
               value: ""
+          # First arg must be `dockerd`. If it starts with `-`, dockerd-entrypoint.sh
+          # prepends `--host=tcp://0.0.0.0:2375`, which then collides with the
+          # loopback listener below (address already in use) and the sidecar exits.
           args:
+            - dockerd
             - "--host=tcp://127.0.0.1:{{ .Values.sandbox.dind.port }}"
             - "--host=unix:///var/run/docker.sock"
+            - "--tls=false"
           resources:
             {{- toYaml .Values.sandbox.dind.resources | nindent 12 }}
           volumeMounts:
