@@ -24,6 +24,7 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import GroupType
+from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.result_merging import (
     CollectionResults,
     ResultMerger,
@@ -140,6 +141,15 @@ class _QueryPlan:
 ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE = (
     "No documents are available for you to search yet. Upload files in Collections "
     "and/or connect a data source under Connectors so content can be indexed."
+)
+
+# When the graph could not say what this user may read. Nothing is shown, and
+# the reader is told why, so "no results" is not mistaken for "no documents".
+# The Node gateway passes a 503's message through only when it is on its list
+# (libs/errors/reader-friendly.ts), so a change here must be made there too.
+PERMISSION_CHECK_UNAVAILABLE_MESSAGE = (
+    "We couldn't check which documents you have access to just now, so no results "
+    "are shown. Please try again in a minute."
 )
 
 
@@ -460,9 +470,17 @@ class RetrievalService:
                     metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
                     filters[metadata_key] = values
 
-            containers, accessible_virtual_id_to_record_id, user = (
-                await self._resolve_search_scope(user_id, org_id, filters, time_range)
-            )
+            try:
+                containers, accessible_virtual_id_to_record_id, user = (
+                    await self._resolve_search_scope(user_id, org_id, filters, time_range)
+                )
+            except PermissionVerificationUnavailableError as exc:
+                self.logger.warning(
+                    "Could not read what user %s may access in org %s: %s", user_id, org_id, exc
+                )
+                return self._create_empty_response(
+                    PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
+                )
             use_containers = containers is not None
 
             # Under container scoping the accessible map is not built up front —
@@ -516,8 +534,7 @@ class RetrievalService:
                     # The graph could not answer. Telling this user to upload
                     # documents would be wrong and unactionable.
                     return self._create_empty_response(
-                        "Could not verify document permissions right now. "
-                        "Please retry shortly.",
+                        PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
                         Status.PERMISSION_CHECK_UNAVAILABLE,
                     )
             else:
@@ -920,11 +937,14 @@ class RetrievalService:
         the graph declined (an unbacklogged connector, a filter too large).
         The two are never both authoritative.
         """
+        excluded = await self._excluded_demo_apps(user_id, org_id)
+
         # Built on demand, never eagerly: an un-awaited coroutine is a
         # RuntimeWarning on every search, and the ON path does not want one.
         def _legacy():
             return self._get_accessible_virtual_ids_task(
-                user_id, org_id, filters, self.graph_provider, time_range=time_range
+                user_id, org_id, filters, self.graph_provider, time_range=time_range,
+                exclude_app_ids=excluded,
             )
 
         user_task = self._get_user_cached(user_id)
@@ -933,7 +953,9 @@ class RetrievalService:
         # a single ~0.2ms KV read, and every branch below overlaps `user_task`
         # with its own expensive call. Gathering the flag here instead would
         # leave that call serialised behind the user lookup.
-        if not await self._container_filter_enabled():
+        # A container scope cannot leave one app out, so an exclusion keeps the
+        # record-id path.
+        if excluded or not await self._container_filter_enabled():
             accessible, user = await asyncio.gather(_legacy(), user_task)
             return None, accessible, user
 
@@ -1249,16 +1271,38 @@ class RetrievalService:
         filters: dict[str, list[str]],
         graph_provider: IGraphDBProvider,
         time_range: dict[str, int] | None = None,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, str]:
         """
         Separate task for getting accessible virtualRecordId -> recordId mapping (optimized version).
 
         Returns a dict mapping each accessible virtualRecordId to the specific recordId that the
         user has permission to access, preventing cross-connector leakage.
+
+        Raises PermissionVerificationUnavailableError when that could not be read.
+        Without the strict read a failure returns {}, which search would report
+        as "no documents are available", the wrong thing to tell this user.
         """
-        return await graph_provider.get_accessible_virtual_record_ids(
-            user_id=user_id, org_id=org_id, filters=filters, time_range=time_range
-        )
+        try:
+            return await graph_provider.get_accessible_virtual_record_ids(
+                user_id=user_id, org_id=org_id, filters=filters, time_range=time_range,
+                raise_on_error=True, exclude_app_ids=exclude_app_ids,
+            )
+        except PermissionVerificationUnavailableError:
+            raise
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+
+    async def _excluded_demo_apps(self, user_id: str, org_id: str) -> frozenset[str]:
+        """The Acme Corp demo connectors this person has switched off, if any."""
+        try:
+            return await excluded_demo_connector_ids(
+                self.graph_provider, self.config_service, org_id, user_id
+            )
+        except Exception as exc:
+            # Unreadable setting: search as before rather than fail the search.
+            self.logger.warning("demo data setting unreadable for user=%s: %s", user_id, exc)
+            return frozenset()
 
     async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
         """

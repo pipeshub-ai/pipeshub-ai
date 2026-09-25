@@ -156,9 +156,14 @@ class CloseIssueInput(BaseModel):
 
 
 def _normalize_assignees(v: object) -> Optional[List[str]]:
-    """Accept list of strings or list of dicts (from get_issue) and return list of logins."""
+    """Accept list of strings or list of dicts (from get_issue) and return list of logins.
+
+    An empty list stays empty: for update_issue it means "remove every assignee".
+    """
     if v is None:
         return None
+    if isinstance(v, str):
+        return [v]
     if not isinstance(v, list):
         return None
     out: List[str] = []
@@ -171,13 +176,18 @@ def _normalize_assignees(v: object) -> Optional[List[str]]:
             out.append(str(item.get("login", item)))
         else:
             out.append(str(item))
-    return out if out else None
+    return out
 
 
 def _normalize_labels(v: object) -> Optional[List[str]]:
-    """Accept list of strings or list of dicts (from get_issue) and return list of label names."""
+    """Accept list of strings or list of dicts (from get_issue) and return list of label names.
+
+    An empty list stays empty: for update_issue it means "remove every label".
+    """
     if v is None:
         return None
+    if isinstance(v, str):
+        return [v]
     if not isinstance(v, list):
         return None
     out: List[str] = []
@@ -190,7 +200,13 @@ def _normalize_labels(v: object) -> Optional[List[str]]:
             out.append(str(item.get("name", item)))
         else:
             out.append(str(item))
-    return out if out else None
+    return out
+
+
+def _blank_to_none(v: Optional[str]) -> Optional[str]:
+    if isinstance(v, str) and not v.strip():
+        return None
+    return v
 
 
 class UpdateIssueInput(BaseModel):
@@ -651,6 +667,9 @@ class GitHub:
         labels: Optional[List[str]] = None,
     ) -> Tuple[bool, str]:
         """Create a new issue in a GitHub repository."""
+        # The agent runtime skips the input schemas, so normalise here: get_issue returns assignee and label objects.
+        assignees = _normalize_assignees(assignees) or None
+        labels = _normalize_labels(labels) or None
         try:
             logger.info("github.create_issue called with args: %s", {"owner": owner, "repo": repo, "title": title, "body": body, "assignees": assignees, "labels": labels})
             response = self.client.create_issue(
@@ -812,6 +831,25 @@ class GitHub:
         labels: Optional[List[str]] = None,
     ) -> Tuple[bool, str]:
         """Update an existing issue. Only provided fields are changed."""
+        # The agent runtime skips UpdateIssueInput, so apply its rules here.
+        title = _blank_to_none(title)
+        body = _blank_to_none(body)
+        state = _blank_to_none(state)
+        if isinstance(state, str):
+            state = state.strip().lower()
+            if state not in ("open", "closed"):
+                return False, json.dumps({
+                    "error": f"state {state!r} is not valid. Use 'open' to reopen the issue or 'closed' to close it."
+                })
+        assignees = _normalize_assignees(assignees)
+        labels = _normalize_labels(labels)
+        if all(value is None for value in (title, body, state, assignees, labels)):
+            return False, json.dumps({
+                "error": (
+                    "No fields provided to update. Pass at least one of title, body, state, "
+                    "assignees or labels."
+                )
+            })
         try:
             logger.info("github.update_issue called with args: %s", {"owner": owner, "repo": repo, "number": number, "title": title, "body": body, "state": state, "assignees": assignees, "labels": labels})
             response = self.client.update_issue(
@@ -1006,16 +1044,20 @@ class GitHub:
                 comments_response, "Issue comments listed successfully"
             )
             pr_payload = json.loads(json_str_pr)
-            pr_data = pr_payload["data"]
-            if success_comments:
-                comments_payload = json.loads(json_str_comments)
-                conversation_comments = comments_payload["data"]
-            else:
-                conversation_comments = []
             combined = {
                 "message": "Pull request and conversation fetched successfully",
-                "data": {"pr": pr_data, "conversation_comments": conversation_comments},
+                "data": {"pr": pr_payload["data"], "conversation_comments": []},
             }
+            comments_payload = json.loads(json_str_comments)
+            if success_comments:
+                combined["data"]["conversation_comments"] = comments_payload["data"]
+            else:
+                # Say so, rather than let an empty list read as "nobody has commented".
+                combined["message"] = (
+                    "Pull request fetched, but its conversation comments could not be loaded. "
+                    "Try list_issue_comments with the pull request number."
+                )
+                combined["data"]["conversation_comments_error"] = comments_payload.get("error")
             return True, json.dumps(combined)
         except Exception as e:
             logger.error(f"Error getting pull request: {e}")

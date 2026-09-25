@@ -179,7 +179,7 @@ export const KnowledgeHubApi = {
    * @param params - Search query, filters, sorting, pagination
    * @returns Filtered results across all sources
    */
-  async searchAllRecords(params: KnowledgeHubQueryParams) {
+  async searchAllRecords(params: KnowledgeHubQueryParams, options?: { suppressErrorToast?: boolean }) {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
       {
@@ -190,6 +190,7 @@ export const KnowledgeHubApi = {
           // Data area: Never use onlyContainers (we need all record types)
           ...params,
         },
+        ...options,
       }
     );
     return data;

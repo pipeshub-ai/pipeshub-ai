@@ -30,7 +30,7 @@ import { IUserCredentials, UserCredentials } from '../schema/userCredentials.sch
 
 import { AuthSessionRequest } from '../middlewares/types';
 
-import { SessionService } from '../services/session.service';
+import { SessionData, SessionService } from '../services/session.service';
 import mongoose from 'mongoose';
 import { OAuth2Client } from 'google-auth-library';
 import {
@@ -68,6 +68,10 @@ import { Org } from '../../user_management/schema/org.schema';
 import { Users } from '../../user_management/schema/users.schema';
 import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
+import {
+  assertMethodAllowedAtStep,
+  IOrgAuthConfigLike,
+} from '../utils/authMethodGuard';
 
 const {
   LOGIN,
@@ -89,12 +93,16 @@ export const SESSION_NO_LONGER_VALID =
   'Your session is no longer valid. Please sign in again.';
 export const OTP_SEND_FAILED =
   "We couldn't send your sign-in code. Wait a minute and try again, or use another sign-in method.";
+export const OTP_ALREADY_USED =
+  'That sign-in code has already been used. Request a new code and try again.';
 export const EMAIL_MISMATCH =
   "You signed in with a different account than the email you entered. Sign in with the matching account, or go back and enter that account's email.";
 export const PROVIDER_SHARED_NO_EMAIL =
   "Your sign-in provider didn't share an email address, so we couldn't sign you in. Ask your admin to allow the email permission for PipesHub.";
 export const ADMIN_ONLY_SIGN_IN_SETTINGS =
   'Only workspace admins can view or change sign-in settings.';
+export const SIGN_IN_ACCOUNT_CHANGED =
+  'This step was completed with a different account than the step before it. Start again from the sign-in page and use the same account for every step.';
 export const OAUTH_SIGN_IN_FAILED =
   "Sign-in with your identity provider didn't complete. Try again; if it keeps happening, ask your admin to check the sign-in settings.";
 
@@ -171,6 +179,23 @@ export class UserAccountController {
       });
     }
     target.email = tokenEmail.toLowerCase();
+  }
+
+  // A later sign-in step must prove the account an earlier step already proved.
+  protected assertSameAccountAsEarlierSteps(
+    sessionInfo: SessionData,
+    user: Record<string, unknown> | null | undefined,
+  ): void {
+    const id = user?._id;
+    const userId =
+      id instanceof mongoose.Types.ObjectId
+        ? id.toHexString()
+        : typeof id === 'string'
+          ? id
+          : '';
+    if (Number(sessionInfo.currentStep) > 0 && userId !== sessionInfo.userId) {
+      throw new UnauthorizedError(SIGN_IN_ACCOUNT_CHANGED);
+    }
   }
 
   async generateHashedOTP() {
@@ -298,9 +323,20 @@ export class UserAccountController {
         );
       }
       throw new UnauthorizedError('Invalid OTP. Please try again.');
-    } else {
-      userCredentials.wrongCredentialCount = 0;
-      await userCredentials.save();
+    }
+
+    // Clearing the code in the same write that matches it makes it single-use,
+    // even when two requests race with the same code.
+    const claimed = await UserCredentials.findOneAndUpdate(
+      { userId, orgId, isDeleted: false, hashedOTP: userCredentials.hashedOTP },
+      {
+        $set: { wrongCredentialCount: 0 },
+        $unset: { hashedOTP: '', otpValidity: '' },
+      },
+      { new: true },
+    );
+    if (!claimed) {
+      throw new UnauthorizedError(OTP_ALREADY_USED);
     }
 
     return { statusCode: 200 };
@@ -503,7 +539,7 @@ export class UserAccountController {
       const isPasswordValid = passwordValidator(newPassword);
       if (!isPasswordValid) {
         throw new BadRequestError(
-          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number, and one special character.',
+          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number, and one special character, and be no longer than 72 bytes.',
         );
       }
       let userCredentialData = await UserCredentials.findOne({
@@ -1489,6 +1525,12 @@ export class UserAccountController {
         sessionInfo.email = req.body.email || "";
       }
 
+      assertMethodAllowedAtStep(
+        sessionInfo.authConfig as IOrgAuthConfigLike['authSteps'] | undefined,
+        Number(sessionInfo.currentStep),
+        String(method),
+      );
+
       // 1. Password Guard (Turnstile)
       if (method === AuthMethodType.PASSWORD) {
         const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
@@ -1586,6 +1628,7 @@ export class UserAccountController {
           const authToken = iamJwtGenerator(providerEmail, this.config.scopedJwtSecret);
           userFindResult = await this.iamService.getUserByEmail(providerEmail, authToken);
           user = userFindResult?.statusCode === 200 ? userFindResult?.data : null;
+          this.assertSameAccountAsEarlierSteps(sessionInfo, user);
 
           const methodKey = method === AuthMethodType.AZURE_AD ? 'azureAd' :
             method === AuthMethodType.MICROSOFT ? 'microsoft' :
@@ -1616,6 +1659,7 @@ export class UserAccountController {
         user = userFindResult?.data;
         if (!user) throw new NotFoundError('User not found');
       }
+      this.assertSameAccountAsEarlierSteps(sessionInfo, user);
 
       switch (method) {
         case AuthMethodType.PASSWORD:
@@ -1644,6 +1688,7 @@ export class UserAccountController {
 
       // 4. MULTI-STEP HANDLING
       if (sessionInfo.currentStep < sessionInfo.authConfig.length - 1) {
+        sessionInfo.userId = String(user._id);
         sessionInfo.currentStep++;
         await this.sessionService.updateSession(sessionInfo);
 

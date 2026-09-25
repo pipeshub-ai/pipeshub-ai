@@ -390,7 +390,7 @@ class MockTransactionStore:
 
     # -- user groups ---
 
-    async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
+    async def get_user_group_by_external_id(self, connector_id: str, external_id: str, *, raise_on_error: bool = False) -> Optional[AppUserGroup]:
         for doc in self._s.collections.get(CollectionNames.GROUPS.value, {}).values():
             if doc.get("connectorId") == connector_id and doc.get("externalGroupId") == external_id:
                 return AppUserGroup(
@@ -410,7 +410,7 @@ class MockTransactionStore:
 
     # -- roles ---
 
-    async def get_app_role_by_external_id(self, external_id: str, connector_id: str) -> Optional[AppRole]:
+    async def get_app_role_by_external_id(self, external_id: str, connector_id: str, *, raise_on_error: bool = False) -> Optional[AppRole]:
         for doc in self._s.collections.get(CollectionNames.ROLES.value, {}).values():
             if doc.get("connectorId") == connector_id and doc.get("externalRoleId") == external_id:
                 return AppRole(

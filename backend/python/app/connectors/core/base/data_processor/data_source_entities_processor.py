@@ -2215,9 +2215,15 @@ class DataSourceEntitiesProcessor:
                     self.logger.debug(f"Processing user group: {user_group.name} with id {user_group.id}")
 
                     # Check if the user group already exists in the DB
+                    # Raising: None below means "create", with the fresh id already
+                    # on the object, so a lookup that failed would write a second
+                    # group for the same external id -- and split its members and
+                    # permission edges across the two. Pseudo-groups for users
+                    # without an email come through here too.
                     existing_user_group = await tx_store.get_user_group_by_external_id(
                         connector_id=user_group.connector_id,
-                        external_id=user_group.source_user_group_id
+                        external_id=user_group.source_user_group_id,
+                        raise_on_error=True,
                     )
 
                     if existing_user_group is None:
@@ -2299,9 +2305,12 @@ class DataSourceEntitiesProcessor:
                     self.logger.debug(f"Processing app role: {role.name}")
 
                     # Check if the app role already exists in the DB
+                    # Raising, for the same reason as user groups above: a failed
+                    # lookup would otherwise create a second role for one external id.
                     existing_app_role = await tx_store.get_app_role_by_external_id(
                         connector_id=role.connector_id,
-                        external_id=role.source_role_id
+                        external_id=role.source_role_id,
+                        raise_on_error=True,
                     )
 
                     if existing_app_role is None:

@@ -1,6 +1,6 @@
 """Unit tests for app.modules.parsers.markdown.mdx_parser — MDX-to-Markdown conversion."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -229,24 +229,24 @@ class TestDefaultPassthrough:
 # ---------------------------------------------------------------------------
 
 class TestErrorHandling:
-    def test_non_utf8_input_raises(self, parser):
-        """Non-decodable bytes should raise an Exception."""
-        bad_bytes = b"\xff\xfe"  # Not valid UTF-8
-        with pytest.raises(Exception, match="Error converting MDX to Markdown"):
-            parser.convert_mdx_to_md(bad_bytes)
+    def test_utf16_input_is_decoded_not_rejected(self, parser):
+        """Bytes FF FE are the UTF-16 byte-order mark Windows tools write."""
+        result = parser.convert_mdx_to_md(b"\xff\xfe" + "Hello".encode("utf-16-le"))
+        assert result == b"Hello"
 
     def test_error_message_includes_cause(self, parser):
-        """The raised exception should include the original error message."""
-        bad_bytes = b"\xff\xfe"
-        with pytest.raises(Exception) as exc_info:
-            parser.convert_mdx_to_md(bad_bytes)
+        """A failure while converting is wrapped with a clear message."""
+        with patch("app.modules.parsers.markdown.mdx_parser.re.sub", side_effect=RuntimeError("boom")):
+            with pytest.raises(Exception) as exc_info:
+                parser.convert_mdx_to_md(b"# Title")
         assert "Error converting MDX to Markdown" in str(exc_info.value)
+        assert "boom" in str(exc_info.value)
 
     def test_error_has_chained_cause(self, parser):
         """The raised exception should have a __cause__ (from ... syntax)."""
-        bad_bytes = b"\xff\xfe"
-        with pytest.raises(Exception) as exc_info:
-            parser.convert_mdx_to_md(bad_bytes)
+        with patch("app.modules.parsers.markdown.mdx_parser.re.sub", side_effect=RuntimeError("boom")):
+            with pytest.raises(Exception) as exc_info:
+                parser.convert_mdx_to_md(b"# Title")
         assert exc_info.value.__cause__ is not None
 
 

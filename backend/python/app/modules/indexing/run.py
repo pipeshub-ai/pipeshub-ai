@@ -1099,8 +1099,13 @@ class IndexingPipeline:
 
             for virtual_record_id in normalized_virtual_record_ids:
                 try:
+                    # Raising: the handler below skips the id "to avoid
+                    # accidental data loss" and could not fire, because the
+                    # provider swallowed the failure and answered [] -- which
+                    # this loop reads as unreferenced and queues for deletion.
                     remaining_records = await self.graph_provider.get_records_by_virtual_record_id(
-                        virtual_record_id=virtual_record_id
+                        virtual_record_id=virtual_record_id,
+                        raise_on_error=True,
                     )
                     remaining_keys = remaining_record_keys(remaining_records)
                     if remaining_keys:
@@ -1155,7 +1160,8 @@ class IndexingPipeline:
             for virtual_record_id in safe_virtual_record_ids:
                 try:
                     recheck = await self.graph_provider.get_records_by_virtual_record_id(
-                        virtual_record_id=virtual_record_id
+                        virtual_record_id=virtual_record_id,
+                        raise_on_error=True,
                     )
                     if remaining_record_keys(recheck):
                         self.logger.warning(

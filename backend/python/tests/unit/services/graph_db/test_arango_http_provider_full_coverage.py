@@ -570,10 +570,13 @@ class TestGetRecordByExternalId:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_lookup_raises_rather_than_answering_none(self, connected_provider):
+        """None means no such record, and callers create one when told that."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider.get_record_by_external_id("c1", "ext1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_record_by_external_id("c1", "ext1")
 
 
 class TestGetRecordPath:

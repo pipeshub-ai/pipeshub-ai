@@ -170,6 +170,22 @@ tags:
       the scopes below are enforced as well — creating a service account grants
       access to the organisation's documents, so a narrowly scoped credential
       cannot do it merely because its owner is an admin.
+  - name: Service Tokens
+    description: |
+      The credential a service account authenticates with.
+
+      A service token is an OAuth access token, so signing, hashing, revocation
+      and the `/mcp` path are the same machinery personal access tokens use.
+      What differs is the policy around it: an administrator mints it *for* a
+      service account rather than for themselves, scopes must be chosen
+      explicitly, `agent:execute` is refused so version one is read-only, and
+      it always expires.
+
+      The raw token is shown once, in the create response, and never again.
+      Only its hash is stored. Service tokens carry a `phsvc_` prefix rather
+      than the `phpat_` used by personal access tokens, so a secret scanner and
+      anyone reading a log can tell a shared machine credential from one
+      person's.
   - name: Teams
     description: Team management operations
   - name: Organizations
@@ -881,6 +897,7 @@ components:
             - At least 1 lowercase letter
             - At least 1 number
             - At least 1 special character (#?!@$%^&*-)
+            - At most 72 bytes (bcrypt ignores anything past that)
           minLength: 8
           pattern: '^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[#?!@$%^&*-]).{8,}$'
         cf-turnstile-response:
@@ -1004,6 +1021,13 @@ components:
             The account is suspended: its tokens stop working and no session
             can be issued, but the record, its group memberships and its
             permission-graph node survive so it can be switched back on.
+        restoreOpId:
+          type: string
+          description: |
+            Internal and transient. Present only while a deleted service
+            account is being brought back, and cleared when that finishes
+            either way. It lets the steps that complete or undo a restore tell
+            their own attempt from a later one. Not something to depend on.
         role:
           type: string
           enum: [admin, member]
@@ -2453,6 +2477,13 @@ components:
             The account is suspended: its tokens stop working and no session
             can be issued, but the record, its group memberships and its
             permission-graph node survive so it can be switched back on.
+        restoreOpId:
+          type: string
+          description: |
+            Internal and transient. Present only while a deleted service
+            account is being brought back, and cleared when that finishes
+            either way. It lets the steps that complete or undo a restore tell
+            their own attempt from a later one. Not something to depend on.
         role:
           type: string
           enum: [admin, member]
@@ -2554,6 +2585,13 @@ components:
             The account is suspended: its tokens stop working and no session
             can be issued, but the record, its group memberships and its
             permission-graph node survive so it can be switched back on.
+        restoreOpId:
+          type: string
+          description: |
+            Internal and transient. Present only while a deleted service
+            account is being brought back, and cleared when that finishes
+            either way. It lets the steps that complete or undo a restore tell
+            their own attempt from a later one. Not something to depend on.
         role:
           type: string
           enum: [admin, member]
@@ -3056,6 +3094,80 @@ components:
           maxLength: 500
         isDisabled:
           type: boolean
+
+    ServiceToken:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          description: What this token is for, shown in the list
+          example: "Release digest job"
+        serviceAccountId:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+
+    ServiceTokenWithSecret:
+      allOf:
+        - $ref: '#/components/schemas/ServiceToken'
+        - type: object
+          properties:
+            accessToken:
+              type: string
+              description: |
+                The raw token, returned by this call and never retrievable
+                again. Carries a `phsvc_` prefix ahead of the JWT, which is
+                display-only and stripped before the token is verified.
+              example: "phsvc_eyJhbGciOi..."
+
+    ServiceTokenCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - serviceAccountId
+        - name
+        - scopes
+      properties:
+        serviceAccountId:
+          type: string
+          pattern: '^[0-9a-fA-F]{24}$'
+          description: The service account this token authenticates as
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: |
+            Required, and required to be non-empty. Unlike a personal access
+            token, omitting scopes is not a shorthand for granting all of them:
+            a credential that runs unattended should hold the access someone
+            chose for it. `agent:execute` is refused.
+        expiryDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          default: 90
+          description: |
+            There is no "never". A credential for an unattended process is the
+            one most likely to outlive the reason it was created.
 
     TeamCreateRequest:
       type: object
@@ -3944,6 +4056,7 @@ components:
         - "DROPBOX PERSONAL"
         - "WEB"
         - "BOOKSTACK"
+        - "DRUPAL WIKI"
         - "GITHUB"
         - "GITHUB TEAMS"
         - "SERVICENOW"
@@ -4983,6 +5096,27 @@ components:
         eventPublished:
           type: boolean
 
+    DemoDataStatus:
+      type: object
+      required: [hasDemo, include, chosen, realData, demoConnectorIds]
+      properties:
+        hasDemo:
+          type: boolean
+          description: Whether the organization has the Acme Corp demo connector.
+        include:
+          type: boolean
+          description: Whether the demo reaches the caller's answers, search and listings.
+        chosen:
+          type: boolean
+          nullable: true
+          description: The caller's own choice; null while they use the default.
+        realData:
+          type: boolean
+          description: Whether any source other than the demo has indexed records.
+        demoConnectorIds:
+          type: array
+          items:
+            type: string
     UploadLimitsResponseSchema:
       type: object
       additionalProperties: false
@@ -8604,6 +8738,13 @@ components:
         connector:
           type: string
           nullable: true
+        connectorId:
+          type: string
+          nullable: true
+          description: |
+            The connector instance the record came from. `connector` names only
+            the kind of source (for example `SLACK`), which several instances can
+            share. Absent on citations saved before this field was stored.
         recordType:
           type: string
           nullable: true
@@ -17824,6 +17965,7 @@ paths:
         - No duplicate methods within the same step
         - No method can appear in multiple steps
         - Each step must have at least one allowed method
+        - `samlSso` is only allowed in a single-step policy; it can't be combined with other steps
 
         **Available Methods:**
         - `password`: Email/password authentication
@@ -17891,6 +18033,7 @@ paths:
             - User is not an organization admin
             - `authMethod` field missing from request body
             - Validation failure (duplicate steps, duplicate methods, out-of-range order, empty methods array)
+            - `samlSso` used in a policy with more than one step
           content:
             application/json:
               schema:
@@ -18390,10 +18533,18 @@ paths:
         - `role`: Optional, `admin` or `member` (defaults to `member` when omitted)
         - `mobile`: Optional, must match `^\+?[0-9]{10,15}$`
         - `designation`: Optional string
+        - `password`: Optional starting password, accepted only for the bundled
+          demo personas. The address must end in `@acme-demo.example`, and the
+          password must be at least 8 characters with an uppercase letter, a
+          lowercase letter, a number and a special character, and at most 72
+          bytes (bcrypt ignores anything past that). Invite real users instead,
+          so they choose their own password.
 
         **Side effects:**
 
         - User is automatically added to the "everyone" group via `$addToSet`
+        - When `password` is given, the bcrypt hash is written to the user's
+          `UserCredentials` record, so the account can sign in straight away
         - A `NewUserEvent` is published to the event bus
 
         **Authorization:** Admin privileges required (`userAdminCheck` middleware).
@@ -18437,6 +18588,14 @@ paths:
                   type: string
                   description: Job title or designation
                   example: "Software Engineer"
+                password:
+                  type: string
+                  minLength: 8
+                  description: |
+                    Starting password for a bundled demo persona. Only accepted when
+                    `email` ends in `@acme-demo.example`. At least 8 characters with an
+                    uppercase letter, a lowercase letter, a number and a special
+                    character, and at most 72 bytes.
       responses:
         '201':
           description: User created successfully
@@ -18452,6 +18611,8 @@ paths:
             - Invalid email format
             - Invalid role (must be `admin` or `member` when provided)
             - Invalid mobile number format
+            - `password` given for an address outside `@acme-demo.example`
+            - `password` fails the complexity rules or is longer than 72 bytes
             - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
@@ -20100,6 +20261,72 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== TEAMS ENDPOINTS ====================
+  /oauth-clients/{appId}/token-identity:
+    put:
+      tags:
+        - OAuth Apps
+      summary: Choose whose identity this app's client_credentials tokens carry
+      description: |
+        By default a `client_credentials` token acts as the person who created
+        the application, carrying their document access and their role, and it
+        stops working if their account is deleted. Pointing the application at
+        a service account instead means its tokens act as an identity that
+        exists for the job, holds only what someone granted it, and survives
+        any one person leaving.
+
+        **This revokes the tokens the application has already issued.** They
+        were minted carrying the previous identity, and the Python services
+        read that claim to decide whose documents a request may reach — so
+        leaving them alive would mean the application went on acting as the
+        previous identity until they expired, which is the situation this call
+        is made to end. Whatever uses the application needs a new token
+        afterwards.
+
+        Pass `serviceAccountId: null` to put the application back to acting as
+        its creator. That revokes outstanding tokens too.
+
+        This does not change who manages the application. The creator still
+        owns it in Developer Settings — moving that would leave the
+        application visible to nobody, since no person can sign in as a
+        service account.
+      operationId: setOAuthAppTokenIdentity
+      security:
+        - bearerAuth: []
+        - oauth2: [user:write]
+      parameters:
+        - name: appId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - serviceAccountId
+              properties:
+                serviceAccountId:
+                  type: string
+                  nullable: true
+                  pattern: '^[0-9a-fA-F]{24}$'
+                  description: The service account, or null to revert to the creator
+      responses:
+        '200':
+          description: Identity changed
+        '400':
+          description: The service account is disabled, or admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '404':
+          description: No such application, or no such service account in this organisation
+
   /service-accounts:
     get:
       tags:
@@ -20120,9 +20347,12 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ServiceAccount'
+                type: object
+                properties:
+                  serviceAccounts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceAccount'
         '400':
           description: Admin access required
         '401':
@@ -20265,6 +20495,170 @@ paths:
           description: Token lacks the required scope
         '404':
           description: No such service account in this organisation
+
+  /service-tokens:
+    get:
+      tags:
+        - Service Tokens
+      summary: List a service account's tokens
+      description: |
+        Active, unexpired, unrevoked tokens held by one service account.
+
+        Works while the account is disabled, so an administrator who has just
+        switched one off can still see and revoke what it holds.
+      operationId: listServiceTokens
+      security:
+        - bearerAuth: []
+        - oauth2: [user:read]
+      parameters:
+        - name: serviceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+      responses:
+        '200':
+          description: Tokens held by this service account
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceToken'
+        '400':
+          description: Admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '404':
+          description: No such service account in this organisation
+    post:
+      tags:
+        - Service Tokens
+      summary: Mint a token for a service account
+      description: |
+        Issues a token **to the service account**, not to the administrator
+        making the request. What it can read is decided by the service
+        account's place in the permission graph.
+
+        The raw token is in this response and nowhere else, ever. Only its hash
+        is stored, as with every other OAuth token.
+
+        Refused if the service account is disabled: enable it first.
+      operationId: createServiceToken
+      security:
+        - bearerAuth: []
+        - oauth2: [user:invite]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceTokenCreateRequest'
+      responses:
+        '201':
+          description: Token minted. The only time the raw token is returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  token:
+                    $ref: '#/components/schemas/ServiceTokenWithSecret'
+        '400':
+          description: |
+            No scopes chosen, a scope this instance does not allow,
+            `agent:execute` (service tokens are read-only), an expiry over 365
+            days, a disabled service account, or admin access required.
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '404':
+          description: No such service account in this organisation
+
+  /service-tokens/scopes:
+    get:
+      tags:
+        - Service Tokens
+      summary: Scopes a service token may be given
+      description: |
+        The scopes this instance allows for MCP, less the ones version one
+        refuses. Only `agent:execute` is removed: it is the write surface, in
+        that an agent run can reach connector tools that create Jira issues and
+        send Slack messages.
+
+        `semantic:write` remains, despite its name. It is what running a search
+        requires, so removing scopes by the word in their name would take
+        reading away and leave writing alone.
+      operationId: listServiceTokenScopes
+      security:
+        - bearerAuth: []
+        - oauth2: [user:read]
+      responses:
+        '200':
+          description: Available scopes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scopes:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          description: Admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+
+  /service-tokens/{tokenId}:
+    delete:
+      tags:
+        - Service Tokens
+      summary: Revoke a service token
+      description: |
+        Revokes one token. Works while the service account is disabled.
+
+        Deleting the service account revokes every token it holds, so this is
+        for retiring one credential rather than the whole identity.
+      operationId: revokeServiceToken
+      security:
+        - bearerAuth: []
+        - oauth2: [user:delete]
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+        - name: serviceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+      responses:
+        '204':
+          description: Revoked
+        '400':
+          description: Admin access required
+        '401':
+          description: Not authenticated
+        '403':
+          description: Token lacks the required scope
+        '404':
+          description: No such token for that service account
 
   /teams:
     post:
@@ -24487,6 +24881,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UploadLimitsResponseSchema'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/demo-data/status:
+    get:
+      tags:
+        - Knowledge Base
+      summary: Get your Acme Corp demo data setting
+      description: |
+        Whether the bundled Acme Corp demo data reaches the caller's answers,
+        search and record listings. Each person chooses for themselves; until
+        they do, the demo is on while the organization has no indexed data of
+        its own and off once it has.
+      operationId: getDemoDataStatus
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      responses:
+        '200':
+          description: The caller's demo data setting
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoDataStatus'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/demo-data/preference:
+    put:
+      tags:
+        - Knowledge Base
+      summary: Show or hide the Acme Corp demo data for yourself
+      description: |
+        Sets the caller's own choice. `include: null` goes back to the default.
+        Affects only the caller; nothing is deleted.
+      operationId: setDemoDataPreference
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [include]
+              properties:
+                include:
+                  type: boolean
+                  nullable: true
+      responses:
+        '200':
+          description: The caller's setting after the change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoDataStatus'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
           content:

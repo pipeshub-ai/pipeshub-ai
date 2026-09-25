@@ -11,7 +11,6 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 from io import BytesIO
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -53,7 +52,6 @@ from app.services.vector_db.strategy import (
 )
 from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
-from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import ENRICHMENT_FAILED
 
@@ -233,10 +231,7 @@ class EventProcessor:
         prev_virtual_record_id: str | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
-        existing PDF pipeline would pick for a native PDF. Shared by the native
-        PDF branch and the EPUB branch (EPUB is converted to PDF via LibreOffice
-        before reaching here) so both stay on the identical Docling/pdfplumber
-        selection logic.
+        existing PDF pipeline would pick for a native PDF.
         """
         self.logger.info("🔍 Checking if PDF needs OCR processing")
         try:
@@ -1293,16 +1288,13 @@ class EventProcessor:
                     yield event
 
             elif extension == ExtensionTypes.EPUB.value or mime_type == MimeTypes.EPUB.value:
-                self.logger.info("📚 Converting EPUB to PDF via LibreOffice for record: %s", record_name)
-                pdf_binary = await convert_with_libreoffice(file_content, "epub", "pdf")
-                pdf_record_name = f"{Path(record_name).stem}.pdf" if record_name else "converted.pdf"
-                async for event in self._dispatch_pdf_binary(
-                    record_name=pdf_record_name,
-                    record_id=record_id,
-                    record_version=record_version,
-                    connector=connector,
-                    org_id=org_id,
-                    pdf_binary=pdf_binary,
+                async for event in self.processor.process_epub_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    epub_binary=file_content,
                     virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,

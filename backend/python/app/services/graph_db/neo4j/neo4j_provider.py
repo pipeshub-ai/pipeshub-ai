@@ -785,6 +785,7 @@ class Neo4jProvider(IGraphDBProvider):
         document_key: str,
         collection: str,
         transaction: str | None = None,
+        *,
         raise_on_error: bool = False,
     ) -> dict | None:
         """
@@ -877,6 +878,7 @@ class Neo4jProvider(IGraphDBProvider):
         filters: dict | None = None,
         sort_field: str | None = None,
         transaction: str | None = None,
+        *,
         raise_on_error: bool = False,
     ) -> list[dict]:
         """
@@ -2116,30 +2118,44 @@ class Neo4jProvider(IGraphDBProvider):
         external_id: str,
         transaction: str | None = None
     ) -> Record | None:
-        """Get record by external ID"""
-        try:
-            query = """
-            MATCH (r:Record {externalRecordId: $external_id, connectorId: $connector_id})
-            RETURN r
-            LIMIT 1
-            """
+        """Get a record by its external ID.
 
+        None means there is no such record. It never means the lookup failed,
+        because callers act on None by creating the record or concluding it was
+        deleted -- so a swallowed failure becomes a duplicate record, or a
+        deletion that never happened. A lookup that could not be read raises
+        GraphQueryError instead.
+        """
+        query = """
+        MATCH (r:Record {externalRecordId: $external_id, connectorId: $connector_id})
+        RETURN r
+        LIMIT 1
+        """
+
+        try:
             results = await self.client.execute_query(
                 query,
                 parameters={"external_id": external_id, "connector_id": connector_id},
                 txn_id=transaction
             )
 
+            # Inside the boundary, and matching the ArangoDB provider: a stored
+            # record that will not rebuild into a Record leaves the caller just
+            # as unable to answer "does this exist?" as an unreachable database
+            # does. Letting the KeyError out instead would break the one promise
+            # this method makes -- that a lookup either answers or raises
+            # GraphQueryError -- and only on one of the two backends.
             if results:
                 record_dict = dict(results[0]["r"])
                 record_dict = self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value)
                 return Record.from_arango_base_record(record_dict)
 
             return None
-
         except Exception as e:
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
-            return None
+            raise GraphQueryError(
+                f"Could not look up record {external_id}: {e}"
+            ) from e
 
     async def find_slack_burst_record_by_ts(
         self,
@@ -2217,7 +2233,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         virtual_record_id: str,
         accessible_record_ids: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[str]:
         """
         Get all record keys that have the given virtualRecordId.
@@ -2285,6 +2303,8 @@ class Neo4jProvider(IGraphDBProvider):
                 virtual_record_id,
                 str(e)
             )
+            if raise_on_error:
+                raise
             return []
 
     async def get_record_by_path(
@@ -3330,7 +3350,9 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def get_user_by_user_id(
         self,
-        user_id: str
+        user_id: str,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """Get user by user ID"""
         try:
@@ -3353,6 +3375,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_graph_user_keys_by_mongo_user_ids(
@@ -3495,7 +3519,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> AppUserGroup | None:
         """Get user group by external ID"""
         try:
@@ -3520,6 +3546,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get user group by external ID failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_user_groups(
@@ -3557,7 +3585,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> AppRole | None:
         """Get app role by external ID"""
         try:
@@ -3582,6 +3612,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get app role by external ID failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     # ==================== Organization Operations ====================
@@ -4136,6 +4168,8 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         record_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Find the next QUEUED duplicate record with the same md5 hash.
@@ -4236,6 +4270,8 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(
                 f"❌ Failed to find next queued duplicate: {str(e)}"
             )
+            if raise_on_error:
+                raise
             return None
 
     async def update_queued_duplicates_status(
@@ -4581,6 +4617,8 @@ class Neo4jProvider(IGraphDBProvider):
         connector_id: str,
         metadata_filters: dict[str, list[str]] | None = None,
         time_range: dict[str, int] | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for a specific connector with all permission paths.
@@ -4735,6 +4773,8 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to get virtual IDs for connector {connector_id}: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return {}
 
     async def _get_kb_virtual_ids(
@@ -4744,6 +4784,8 @@ class Neo4jProvider(IGraphDBProvider):
         kb_ids: list[str] | None = None,
         metadata_filters: dict[str, list[str]] | None = None,
         time_range: dict[str, int] | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
@@ -4848,6 +4890,8 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to get KB virtual IDs: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return {}
 
     async def _get_accessible_kb_ids(
@@ -4959,7 +5003,13 @@ class Neo4jProvider(IGraphDBProvider):
         return virtual_id_to_record_id
 
     async def _get_connector_virtual_ids_cached(
-        self, user_id: str, org_id: str, connector_id: str, permission_model: str | None
+        self,
+        user_id: str,
+        org_id: str,
+        connector_id: str,
+        permission_model: str | None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, str]:
         """One connector's map, through the cache appropriate to its ACL model.
 
@@ -4977,16 +5027,28 @@ class Neo4jProvider(IGraphDBProvider):
                 org_id,
                 connector_id,
                 user_id,
-                lambda: self._get_virtual_ids_for_connector(user_id, org_id, connector_id, None),
+                # Strict whatever the caller asked for: the cache stores what the
+                # loader returns, so a swallowed failure would be kept as "this
+                # user can reach nothing here" until the entry expires.
+                lambda: self._get_virtual_ids_for_connector(
+                    user_id, org_id, connector_id, None, raise_on_error=True
+                ),
             )
         except Exception as e:
             self.logger.warning(
                 f"Cached connector lookup failed for {connector_id}, using live query: {str(e)}"
             )
-            return await self._get_virtual_ids_for_connector(user_id, org_id, connector_id, None)
+            return await self._get_virtual_ids_for_connector(
+                user_id, org_id, connector_id, None, raise_on_error=raise_on_error
+            )
 
     async def _get_kb_virtual_ids_cached(
-        self, user_id: str, org_id: str, kb_ids: list[str] | None
+        self,
+        user_id: str,
+        org_id: str,
+        kb_ids: list[str] | None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, str]:
         """KB half of the accessible map: live access check, cached contents.
 
@@ -5029,7 +5091,9 @@ class Neo4jProvider(IGraphDBProvider):
             return merged
         except Exception as e:
             self.logger.warning(f"Cached KB lookup failed, using live query: {str(e)}")
-            return await self._get_kb_virtual_ids(user_id, org_id, kb_ids, None)
+            return await self._get_kb_virtual_ids(
+                user_id, org_id, kb_ids, None, raise_on_error=raise_on_error
+            )
 
     async def get_accessible_connector_types(
         self,
@@ -5333,6 +5397,9 @@ class Neo4jProvider(IGraphDBProvider):
         org_id: str,
         filters: dict[str, list[str]] | None = None,
         time_range: dict[str, int] | None = None,
+        *,
+        raise_on_error: bool = False,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -5357,6 +5424,9 @@ class Neo4jProvider(IGraphDBProvider):
                 }
             time_range (dict[str, int] | None): Optional source created/modified time bounds
                 in epoch ms — see `_build_time_range_conditions` for the accepted keys.
+            raise_on_error: raise when any part of the permission read fails,
+                instead of leaving that part out. Without it, a failed read and a
+                user who can reach nothing both return {}.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
@@ -5368,7 +5438,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         try:
             # Step 1: Get user and accessible apps (with type information)
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
             if not user:
                 self.logger.warning(f"User not found for userId: {user_id}")
                 return {}
@@ -5384,7 +5454,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if not app_doc:
                     continue
                 app_id = app_doc.get('id') or app_doc.get('_key')
-                if not app_id:
+                if not app_id or app_id in exclude_app_ids:
                     continue
                 user_apps_ids.append(app_id)
                 app_type_map[app_id] = app_doc.get('type', '')
@@ -5445,17 +5515,22 @@ class Neo4jProvider(IGraphDBProvider):
             def connector_task(connector_id: str) -> "Awaitable[dict[str, str]]":
                 if use_cache:
                     return self._get_connector_virtual_ids_cached(
-                        user_id, org_id, connector_id, app_permission_map.get(connector_id)
+                        user_id, org_id, connector_id, app_permission_map.get(connector_id),
+                        raise_on_error=raise_on_error,
                     )
                 return self._get_virtual_ids_for_connector(
-                    user_id, org_id, connector_id, metadata_filters, time_range=time_range
+                    user_id, org_id, connector_id, metadata_filters, time_range=time_range,
+                    raise_on_error=raise_on_error,
                 )
 
             def kb_task(kb_filter: list[str] | None) -> "Awaitable[dict[str, str]]":
                 if use_cache:
-                    return self._get_kb_virtual_ids_cached(user_id, org_id, kb_filter)
+                    return self._get_kb_virtual_ids_cached(
+                        user_id, org_id, kb_filter, raise_on_error=raise_on_error
+                    )
                 return self._get_kb_virtual_ids(
-                    user_id, org_id, kb_filter, metadata_filters, time_range=time_range
+                    user_id, org_id, kb_filter, metadata_filters, time_range=time_range,
+                    raise_on_error=raise_on_error,
                 )
 
             # Step 3: Determine tasks
@@ -5500,6 +5575,11 @@ class Neo4jProvider(IGraphDBProvider):
 
             self.logger.debug(f"Executing {len(tasks)} parallel queries...")
             results = await asyncio.gather(*tasks, return_exceptions=True)
+            failed = next((r for r in results if isinstance(r, Exception)), None)
+            if raise_on_error and failed is not None:
+                # One source whose permissions could not be read makes the map
+                # incomplete, and nothing downstream could tell.
+                raise failed
 
             # Step 6: Merge all virtualRecordId -> recordId dicts (first seen wins)
             virtual_id_to_record_id: dict[str, str] = {}
@@ -5524,6 +5604,8 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get accessible virtual record IDs failed: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return {}
 
     async def get_records_by_record_ids(
@@ -6193,7 +6275,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         key: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """Get sync point by syncPointKey"""
         try:
@@ -6219,6 +6303,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get sync point failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def upsert_sync_point(
@@ -6232,8 +6318,13 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             label = collection_to_label(collection)
 
-            # Check if exists
-            existing = await self.get_sync_point(sync_point_key, collection, transaction)
+            # Raising: a read that failed must not answer "no row here". The
+            # CREATE below is unconstrained -- nothing makes syncPointKey
+            # unique -- so a second sync point would land for the same key and
+            # the two would race to be the one LIMIT 1 returns.
+            existing = await self.get_sync_point(
+                sync_point_key, collection, transaction, raise_on_error=True
+            )
 
             sync_point_data["syncPointKey"] = sync_point_key
             sync_point_data["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
@@ -14024,6 +14115,7 @@ class Neo4jProvider(IGraphDBProvider):
         record_group_ids: list[str] | None = None,
         depth: int | None = None,
         transaction: str | None = None,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """
         Unified search for knowledge hub nodes with permission-first traversal.
@@ -14132,7 +14224,9 @@ class Neo4jProvider(IGraphDBProvider):
 
             owned_app_ids = await self.get_user_app_ids(user_key, transaction=transaction)
             shared_app_ids = await self.get_user_permission_app_ids(user_key, org_id, transaction=transaction)
-            user_accessible_app_ids = list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))
+            user_accessible_app_ids = [
+                a for a in dict.fromkeys([*owned_app_ids, *shared_app_ids]) if a not in exclude_app_ids
+            ]
             params["user_accessible_app_ids"] = user_accessible_app_ids
 
             # Build children intersection cypher (only for kb/recordGroup/record/folder parents)

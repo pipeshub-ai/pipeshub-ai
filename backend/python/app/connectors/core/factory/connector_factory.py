@@ -44,12 +44,14 @@ from app.connectors.sources.atlassian.jira_data_center_personal.connector import
 from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
+from app.connectors.sources.drupal_wiki.connector import DrupalWikiConnector
 from app.connectors.sources.box.connector import BoxConnector
 from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
 from app.connectors.sources.local_fs.connector import LocalFsConnector
+from app.connectors.sources.demo.connector import DemoConnector
 from app.connectors.sources.github.connector import GithubConnector
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
@@ -121,7 +123,9 @@ class ConnectorFactory:
         "web": WebConnector,
         "rss": RSSConnector,
         "localfs": LocalFsConnector,
+        "demo": DemoConnector,
         "bookstack": BookStackConnector,
+        "drupalwiki": DrupalWikiConnector,
         "github": GithubConnector,
         "s3": S3Connector,
         "minio": MinIOConnector,

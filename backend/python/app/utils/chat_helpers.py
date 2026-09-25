@@ -822,8 +822,15 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
     if not record_dict:
         return None
 
+    # get_record copies these straight from the graph, where connectorId may be
+    # null and version may be missing; the Record model rejects None for both.
+    version = record_dict.get("version")
+    version = 1 if version is None else version
+    connector_id = record_dict.get("connector_id") or ""
+
     if not graph_doc:
-        return Record(
+        try:
+            return Record(
                 id=record_dict.get("id", ""),
                 record_name=record_dict.get("record_name", ""),
                 record_type=RecordType(record_dict.get("record_type")),
@@ -832,34 +839,38 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 external_record_id=record_dict.get("external_record_id", ""),
                 weburl=record_dict.get("weburl", ""),
                 location=record_dict.get("location"),
-                version=record_dict.get("version", 1),
+                version=version,
                 origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
-                connector_id=record_dict.get("connector_id", ""),
+                connector_id=connector_id,
                 source_created_at=record_dict.get("source_created_at") or None,
                 source_updated_at=record_dict.get("source_updated_at") or None,
-                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
+                semantic_metadata=SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
             )
+        except Exception as e:
+            # One malformed record must not fail the whole search; it just loses its header.
+            logger.error(f"Error creating record instance: {str(e)}")
+            return None
 
     record_type = record_dict.get("record_type")
 
-    base_args = {
-        "id": record_dict.get("id", ""),
-        "org_id": record_dict.get("org_id", ""),
-        "record_name": record_dict.get("record_name", ""),
-        "external_record_id": record_dict.get("external_record_id", ""),
-        "version": record_dict.get("version", 1),
-        "origin": OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
-        "connector_name": Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
-        "connector_id": record_dict.get("connector_id", ""),
-        "mime_type": record_dict.get("mime_type", ""),
-        "source_created_at": record_dict.get("source_created_at") or None,
-        "source_updated_at": record_dict.get("source_updated_at") or None,
-        "location": record_dict.get("location"),
-        "weburl": record_dict.get("weburl", ""),
-        "semantic_metadata": SemanticMetadata(**record_dict.get("semantic_metadata", {})),
-    }
-
     try:
+        base_args = {
+            "id": record_dict.get("id", ""),
+            "org_id": record_dict.get("org_id", ""),
+            "record_name": record_dict.get("record_name", ""),
+            "external_record_id": record_dict.get("external_record_id", ""),
+            "version": version,
+            "origin": OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
+            "connector_name": Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
+            "connector_id": connector_id,
+            "mime_type": record_dict.get("mime_type", ""),
+            "source_created_at": record_dict.get("source_created_at") or None,
+            "source_updated_at": record_dict.get("source_updated_at") or None,
+            "location": record_dict.get("location"),
+            "weburl": record_dict.get("weburl", ""),
+            "semantic_metadata": SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
+        }
+
         if record_type == RecordType.TICKET.value and graph_doc:
             specific_args = {
                 "record_type": RecordType.TICKET,
@@ -2308,6 +2319,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 continue
         elif block_type == BlockType.TABLE_ROW.value:
             block_group_index = block.get("parent_index")
+            if block_group_index is None:
+                logger.warning("Table row %d has no table, vrid=%s", index, virtual_record_id)
+                continue
             rows_to_be_included[f"{virtual_record_id}_{block_group_index}"].append((index,float(result.get("score",0.0)), None))
             continue
         elif block_type == GroupType.TABLE.value:
@@ -2475,7 +2489,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
     for key,rows_tuple in rows_to_be_included.items():
         sorted_rows_tuple = sorted(rows_tuple)
-        virtual_record_id,block_group_index = key.split("_")
+        virtual_record_id,block_group_index = key.rsplit("_", 1)
         block_group_index = int(block_group_index)
         record = virtual_record_id_to_result[virtual_record_id]
         if record is None:
@@ -2483,6 +2497,12 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         block_container = record.get("block_containers",{})
         blocks = block_container.get("blocks",[])
         block_groups = block_container.get("block_groups",[])
+        if not 0 <= block_group_index < len(block_groups):
+            logger.warning(
+                "Table group index %d out of bounds (len=%d), vrid=%s",
+                block_group_index, len(block_groups), virtual_record_id,
+            )
+            continue
         block_group = block_groups[block_group_index]
         data = block_group.get("data", {})
         table_summary = data.get("table_summary","")
@@ -3779,7 +3799,8 @@ def record_to_message_content(
                 if block_group_id in seen_block_groups:
                     continue
                 seen_block_groups.add(block_group_id)
-                if block_group_index is not None:
+                # A row whose table is missing is skipped like a row with no table at all.
+                if block_group_index is not None and 0 <= block_group_index < len(block_groups):
                     corresponding_block_group = block_groups[block_group_index]
 
                     block_type = corresponding_block_group.get("type")
@@ -4096,7 +4117,8 @@ def record_to_text(record: dict[str, Any]) -> str:
                 if block_group_id in seen_block_groups:
                     continue
                 seen_block_groups.add(block_group_id)
-                if block_group_index is not None:
+                # A row whose table is missing is skipped like a row with no table at all.
+                if block_group_index is not None and 0 <= block_group_index < len(block_groups):
                     corresponding_block_group = block_groups[block_group_index]
 
                     block_type = corresponding_block_group.get("type")
@@ -4313,7 +4335,7 @@ def build_message_content_array(
     current_record_id = ""
     current_file_path = ""
     # True so the first record's blocks get "Record blocks (sorted):"; later records reopen
-    # pending via the i > 0 branch before the next record's metadata.
+    # pending when the previous record is closed, before the next record's metadata.
     pending_record_blocks_sorted_header = True
     record_page_url_for_summary: str | None = None
     summary_citation_insert_index: int | None = None
@@ -4350,10 +4372,19 @@ def build_message_content_array(
             return f"Record blocks (sorted):\n{text}"
         return text
 
-    for i,result in enumerate(flattened_results):
+    # Records that are gone or were never fetched. Their later hits must be skipped
+    # too: rendering them would cite the previous record's URL.
+    unavailable_vrids: set = set()
+    for result in flattened_results:
         virtual_record_id = result.get("virtual_record_id")
+        if virtual_record_id in unavailable_vrids:
+            continue
         if virtual_record_id not in seen_virtual_record_ids:
-            if i > 0:
+            record = virtual_record_id_to_result.get(virtual_record_id)
+            if record is None:
+                unavailable_vrids.add(virtual_record_id)
+                continue
+            if content:
                 insert_summary_citation_if_needed()
                 content.append({
                     "type": "text",
@@ -4363,9 +4394,6 @@ def build_message_content_array(
                 all_contents.append(content)
                 content = []
             seen_virtual_record_ids.add(virtual_record_id)
-            record = virtual_record_id_to_result[virtual_record_id]
-            if record is None:
-                continue
 
             current_frontend_url = record.get("frontend_url", "")
             current_record_id = record.get("id", "")

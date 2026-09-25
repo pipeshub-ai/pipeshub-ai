@@ -34,12 +34,14 @@ from app.models.blocks import (
 from app.models.entities import Record, RecordType
 from app.modules.parsers.code_parser.lang_config import config_for_extension, detect_language
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
+from app.services.parsing.interface import ParseError
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
@@ -1617,6 +1619,31 @@ class Processor:
                 doc_id=recordId,
                 details={"error": str(e)},
             ) from e
+
+    async def process_epub_document(
+        self,
+        recordName: str,
+        recordId: str,
+        version: int,
+        source: str,
+        orgId: str,
+        epub_binary: bytes,
+        virtual_record_id: str,
+        event_type: str | None = None,
+        prev_virtual_record_id: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Process an EPUB book as the HTML document its chapters make up."""
+        self.logger.info(f"🚀 Starting EPUB document processing for record: {recordName}")
+        try:
+            book = await asyncio.to_thread(read_epub, epub_binary)
+        except ParseError as e:
+            # DocumentProcessingError is what marks a file failure as final;
+            # a bare ParseError would be retried as if it were an outage.
+            raise DocumentProcessingError(e.message, doc_id=recordId, details=e.details) from e
+        async for event in self.process_html_document(
+            recordName, recordId, version, source, orgId, book.to_html(), virtual_record_id, event_type, prev_virtual_record_id
+        ):
+            yield event
 
     async def process_mdx_document(
         self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None

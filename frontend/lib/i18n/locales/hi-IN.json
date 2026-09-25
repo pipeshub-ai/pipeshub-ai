@@ -523,6 +523,7 @@
     "heyUser": "नमस्ते, {{name}} 👋",
     "heyUserDefaultName": "दोस्त",
     "askAnything": "कुछ भी पूछें...",
+    "sendMessage": "संदेश भेजें",
     "quick": "त्वरित",
     "listening": "सुन रहे हैं...",
     "voiceInputNotSupported": "इस ब्राउज़र में वॉइस इनपुट समर्थित नहीं है",
@@ -656,7 +657,8 @@
       "editComingSoonTitle": "जल्द आ रहा है",
       "editComingSoonDescription": "हम एडिट के लिए सपोर्ट तैयार कर रहे हैं",
       "deprecatedTools": "इस एजेंट के कुछ टूल अब उपलब्ध नहीं हैं। उन्हें हटाने के लिए Agent Builder खोलें।",
-      "openAgentBuilder": "Agent Builder खोलें"
+      "openAgentBuilder": "Agent Builder खोलें",
+      "loadConversationFailed": "हम यह बातचीत नहीं खोल सके। फिर से कोशिश करने के लिए पेज रीफ़्रेश करें।"
     },
     "queryModes": {
       "chat": {

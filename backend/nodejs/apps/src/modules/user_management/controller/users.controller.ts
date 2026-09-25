@@ -55,6 +55,19 @@ import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { AuthService } from '../services/auth.service';
 import { Org } from '../schema/org.schema';
 import { UserCredentials } from '../../auth/schema/userCredentials.schema';
+import { passwordValidator } from '../../auth/utils/passwordValidator';
+import { SALT_ROUNDS } from '../../auth/controller/userAccount.controller';
+import bcrypt from 'bcryptjs';
+
+/** Reserved domain of the bundled demo personas (RFC 2606 `.example`). */
+export const DEMO_ACCOUNT_DOMAIN = 'acme-demo.example';
+
+export function isDemoAccountEmail(email: unknown): boolean {
+  return (
+    typeof email === 'string' &&
+    email.trim().toLowerCase().endsWith(`@${DEMO_ACCOUNT_DOMAIN}`)
+  );
+}
 import { UserActivities } from '../../auth/schema/userActivities.schema';
 import { userActivitiesType } from '../../../libs/utils/userActivities.utils';
 import { AICommandOptions } from '../../../libs/commands/ai_service/ai.service.command';
@@ -99,6 +112,22 @@ export interface InviteResult {
   mailFailed: string[];
   mailErrorCode?: number;
   limitExceededRestorations?: string[];
+}
+
+type MongoDuplicateKeyError = {
+  code?: number;
+  keyPattern?: Record<string, unknown>;
+  keyValue?: Record<string, unknown>;
+};
+
+// MongoDB reports a unique-index violation as code 11000, naming the key.
+// A caught value can be anything, null or undefined included.
+function isDuplicateEmailKeyError(error: unknown): boolean {
+  const e = error as MongoDuplicateKeyError | null | undefined;
+  return (
+    e?.code === 11000 &&
+    (e.keyPattern?.email !== undefined || e.keyValue?.email !== undefined)
+  );
 }
 
 @injectable()
@@ -585,16 +614,141 @@ export class UserController {
     next: NextFunction,
   ): Promise<void> {
     try {
+      // A starting password creates a sign-in-ready account without SMTP.
+      // It is allowed only for the bundled demo personas: connector
+      // permissions attach to an email address, so an admin who could set a
+      // password for a real colleague's address would inherit everything
+      // that colleague is allowed to see. The demo domain is IANA-reserved
+      // and can never belong to a real person.
+      const { password, ...userFields } = req.body as {
+        password?: string;
+        email?: string;
+        [field: string]: unknown;
+      };
+      if (password !== undefined) {
+        if (!isDemoAccountEmail(userFields.email)) {
+          throw new BadRequestError(
+            `A starting password can only be set for demo accounts (@${DEMO_ACCOUNT_DOMAIN}); invite real users so they choose their own`,
+          );
+        }
+        if (!passwordValidator(password)) {
+          throw new BadRequestError(
+            'Password must be at least 8 characters with an uppercase letter, a lowercase letter, a number and a special character, and no longer than 72 bytes',
+          );
+        }
+      }
+      // Hashed before anything is written: a hash that fails here costs
+      // nothing, whereas one that failed after the user was saved would leave
+      // an account with no way to sign in and no way to retry creating it.
+      const hashedPassword =
+        password !== undefined
+          ? await bcrypt.hash(password, SALT_ROUNDS)
+          : undefined;
       const newUser = new Users({
-        ...req.body,
+        ...userFields,
         orgId: req.user?.orgId,
         role: resolveOptionalUserRole(req.body.role),
       });
 
-      await UserGroups.updateOne(
-        { orgId: newUser.orgId, type: 'everyone' }, // Find the everyone group in the same org
-        { $addToSet: { users: newUser._id } }, // Add user to the group if not already present
-      );
+      // Refuse a duplicate here rather than letting the unique index throw
+      // after side effects have happened.
+      const email =
+        typeof newUser.email === 'string' ? newUser.email.trim() : '';
+      if (email !== '') {
+        const existing = await Users.findOne({ email, isDeleted: false });
+        if (existing) {
+          throw new BadRequestError('A user with this email already exists');
+        }
+      }
+
+      // Persist the account and its credential before anything that is hard
+      // to take back (the group membership, and the event the graph side
+      // acts on). If a later write fails, undo what was saved so the address
+      // is free to try again, and nothing has been published.
+      // Whether the everyone-group write was reached. A write that threw may
+      // still have applied, so the undo takes the membership back either way;
+      // before it, there is nothing to take back.
+      let groupWriteAttempted = false;
+      const undoSavedAccount = async (reason: string): Promise<void> => {
+        // Membership goes first, so nothing is left pointing at a user that is
+        // about to go, and in its own try: when the group write is what failed,
+        // this is likely to fail too, and the account still has to go.
+        try {
+          if (groupWriteAttempted) {
+            await UserGroups.updateOne(
+              { orgId: newUser.orgId, type: 'everyone' },
+              { $pull: { users: newUser._id } },
+            );
+          }
+        } catch (membershipError) {
+          this.logger.warn(
+            `Account was saved but ${reason}, and taking it out of the everyone group failed too`,
+            {
+              userId: String(newUser._id),
+              error:
+                membershipError instanceof Error
+                  ? membershipError.message
+                  : String(membershipError),
+            },
+          );
+        }
+        try {
+          if (hashedPassword !== undefined) {
+            await UserCredentials.deleteOne({ userId: newUser._id });
+          }
+          await Users.deleteOne({ _id: newUser._id });
+        } catch (cleanupError) {
+          this.logger.error(
+            `Account was saved but ${reason}, and removing it failed too`,
+            {
+              userId: String(newUser._id),
+              error:
+                cleanupError instanceof Error
+                  ? cleanupError.message
+                  : String(cleanupError),
+            },
+          );
+        }
+      };
+
+      try {
+        await newUser.save();
+      } catch (saveError) {
+        // The check above only sees live accounts, but the unique index covers
+        // every row, so the email can still collide here: two concurrent
+        // creates, or an address held by a soft-deleted account. Either is a
+        // refused duplicate, not a server error. Only the email key -- slug is
+        // unique too, and a collision there is not a duplicate address.
+        if (isDuplicateEmailKeyError(saveError)) {
+          throw new BadRequestError('A user with this email already exists');
+        }
+        throw saveError;
+      }
+      if (hashedPassword !== undefined) {
+        try {
+          await new UserCredentials({
+            userId: newUser._id,
+            orgId: newUser.orgId,
+            isDeleted: false,
+            hashedPassword,
+            ipAddress: req.ip,
+          }).save();
+        } catch (credentialError) {
+          await undoSavedAccount('its credential was not');
+          throw credentialError;
+        }
+      }
+
+      try {
+        groupWriteAttempted = true;
+        await UserGroups.updateOne(
+          { orgId: newUser.orgId, type: 'everyone' }, // Find the everyone group in the same org
+          { $addToSet: { users: newUser._id } }, // Add user to the group if not already present
+        );
+      } catch (groupError) {
+        await undoSavedAccount('the everyone-group membership was not');
+        throw groupError;
+      }
 
       await this.eventService.start();
       const event: Event = {
@@ -608,9 +762,26 @@ export class UserController {
           syncAction: SyncAction.Immediate,
         } as UserAddedEvent,
       };
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
-      await newUser.save();
+      try {
+        await this.eventService.publishEvent(event);
+      } catch (publishError) {
+        // The event is what the graph side acts on, and publishing writes an
+        // outbox row that can fail by itself. Without this undo the address
+        // stays taken by an account nothing downstream knows about, a demo
+        // account with a password could already sign in, and a retry would hit
+        // the unique email index.
+        await undoSavedAccount('its creation event was not published');
+        throw publishError;
+      } finally {
+        await this.eventService.stop();
+      }
+      if (hashedPassword !== undefined) {
+        this.logger.info('Demo account created with a starting password', {
+          orgId: newUser.orgId.toString(),
+          createdBy: req.user?.userId,
+          email: newUser.email,
+        });
+      }
       this.logger.debug('user created');
       res.status(201).json(newUser);
     } catch (error) {

@@ -247,7 +247,7 @@ class FakeVectorDBService(IVectorDBService):
 def _make_config_service():
     store: dict = {}
 
-    async def get_config(key, default=None):
+    async def get_config(key, default=None, raise_on_error=False):
         return store.get(key, default)
 
     async def set_config(key, value):
@@ -263,7 +263,7 @@ def _make_registry(vector_db_service, strategy) -> CollectionRegistry:
     return CollectionRegistry(
         vector_db_service=vector_db_service,
         strategy=strategy,
-        collection_config_factory=lambda size, sparse_idf=False: CollectionConfig(
+        collection_config_factory=lambda size: CollectionConfig(
             embedding_size=size
         ),
         manifest_store=CollectionManifestStore(_make_config_service(), MagicMock()),

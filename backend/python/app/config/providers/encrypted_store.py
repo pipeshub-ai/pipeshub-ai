@@ -247,9 +247,14 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     ) -> None:
         return await self.create_key(key, value, True, ttl)
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         try:
-            encrypted_value = await self.store.get_key(key)
+            # Forwarded, or the backend's own swallow of an unreadable value
+            # answers None here and reads as a missing key.
+            if raise_on_error:
+                encrypted_value = await self.store.get_key(key, raise_on_error=True)
+            else:
+                encrypted_value = await self.store.get_key(key)
 
             if encrypted_value is not None:
                 try:
@@ -297,6 +302,10 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                     self.logger.error(
                         f"Failed to process value for key {key}: {str(e)}"
                     )
+                    # A value came back and could not be read: not the same as
+                    # no value, so a caller that asked must not see None.
+                    if raise_on_error:
+                        raise
                     return None
             else:
                 self.logger.debug(f"No value found for key: {key}")
@@ -305,6 +314,8 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         except Exception as e:
             self.logger.error("Failed to get config %s: %s", key, str(e))
             self.logger.exception("Detailed error:")
+            if raise_on_error:
+                raise
             return None
 
     async def delete_key(self, key: str) -> bool:

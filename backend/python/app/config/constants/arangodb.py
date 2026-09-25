@@ -63,6 +63,7 @@ class Connectors(Enum):
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
+    DRUPAL_WIKI = "DRUPAL WIKI"
     GITHUB = "GITHUB"
     GITHUB_TEAMS = "GITHUB TEAMS"
     SERVICENOW = "SERVICENOW"
@@ -86,6 +87,7 @@ class Connectors(Enum):
 
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
+    DEMO = "DEMO"
 
     CODING_SANDBOX = "CODING_SANDBOX"
     DATABASE_SANDBOX = "DATABASE_SANDBOX"
@@ -126,6 +128,7 @@ class AppGroups(Enum):
     NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    DRUPAL_WIKI = "Drupal Wiki"
     GITHUB = "Github"
     S3 = "S3"
     MINIO = "MinIO"
@@ -136,6 +139,7 @@ class AppGroups(Enum):
     ZAMMAD = "Zammad"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
+    DEMO = "Demo"
     RSS = "RSS"
     GITLAB = "GitLab"
 

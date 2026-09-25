@@ -1614,12 +1614,30 @@ class TestTraversalAndRecordLookups:
         mock_from_base.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_get_record_by_external_id_none_and_exception(self, neo4j_provider: Neo4jProvider):
+    async def test_get_record_by_external_id_none_and_failure(self, neo4j_provider: Neo4jProvider):
+        """None means no such record, and callers create one when told that."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         assert await neo4j_provider.get_record_by_external_id("conn-1", "ext-1") is None
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("ext fail"))
-        assert await neo4j_provider.get_record_by_external_id("conn-1", "ext-1") is None
+        with pytest.raises(GraphQueryError):
+            await neo4j_provider.get_record_by_external_id("conn-1", "ext-1")
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_will_not_rebuild_raises_the_same_way(self, neo4j_provider: Neo4jProvider):
+        """A stored record the model rejects leaves the caller as unable to answer
+        "does this exist?" as an unreachable database does, so it has to raise the
+        same error -- and on both backends, not one."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"r": {"id": "r1"}}]  # nothing else the model needs
+        )
+
+        with pytest.raises(GraphQueryError):
+            await neo4j_provider.get_record_by_external_id("conn-1", "ext-1")
 
     @pytest.mark.asyncio
     async def test_get_record_key_by_external_id(self, neo4j_provider: Neo4jProvider):
@@ -2602,6 +2620,33 @@ class TestDuplicateAndSyncOperations:
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("remove fail"))
         with pytest.raises(RuntimeError):
             await neo4j_provider.remove_sync_point("k1", "syncPoints")
+
+    @pytest.mark.asyncio
+    async def test_upsert_does_not_create_a_second_sync_point_when_its_read_fails(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """The read that decides insert-or-update failing must not look like
+        "no row here". Nothing makes syncPointKey unique and the CREATE sets no
+        id, so the duplicate would land, and reads that LIMIT 1 would then race
+        between two checkpoints for one key.
+
+        get_sync_point is deliberately not stubbed: the fix is the flag it is
+        called with, and a stub would answer the same either way.
+        """
+        queries: list[str] = []
+
+        async def graph_flapping(query, *_args, **_kwargs):
+            queries.append(query)
+            if "MATCH" in query:
+                raise RuntimeError("graph is restarting")
+            return []  # the write that would create the duplicate succeeds
+
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=graph_flapping)
+
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.upsert_sync_point("k1", {"cursor": "c1"}, "syncPoints")
+
+        assert not any("CREATE" in q for q in queries), queries
 
 
 class TestVirtualAccessAndRecordLookup:

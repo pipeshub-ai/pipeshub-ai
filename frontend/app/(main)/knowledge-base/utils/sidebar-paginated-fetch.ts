@@ -2,6 +2,15 @@ import { KnowledgeHubApi } from '../api';
 import { useKnowledgeBaseStore } from '../store';
 import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
 import { buildConnectorAppSidebarTree, treeHasNodeWithId } from './tree-builder';
+import { isKbCollectionsHubApp } from './all-records-transformer';
+import {
+  fetchRootAppPage,
+  isReplacingRootListLoadInFlight,
+  restoreOpenFoldersInSidebar,
+  rootListPaginationAfter,
+  showCollectionsInSidebar,
+  watchRootList,
+} from './root-app-list';
 import { sidebarNodeChildrenMetaAfterPage } from './sidebar-child-pagination-meta';
 import { toast } from '@/lib/store/toast-store';
 import type { KnowledgeHubNode } from '../types';
@@ -20,36 +29,38 @@ function mergeNodesById(existing: KnowledgeHubNode[], incoming: KnowledgeHubNode
 export async function loadMoreRootAppList(): Promise<void> {
   const state = useKnowledgeBaseStore.getState();
   const meta = state.appRootListPagination;
-  if (!meta?.hasNext) return;
+  // A refresh or first-page load already reads the pages this would; its
+  // result replaces the list, so a page fetched now would only be discarded.
+  if (!meta?.hasNext || isReplacingRootListLoadInFlight()) return;
 
-  const {
-    appendAppNodes,
-    setAppRootListPagination,
-    setLoadingRootAppListMore,
-  } = useKnowledgeBaseStore.getState();
+  const { setLoadingRootAppListMore } = state;
+  const isCurrent = watchRootList();
 
   setLoadingRootAppListMore(true);
   try {
-    const response = await KnowledgeHubApi.getNavigationNodes({
-      page: meta.nextPage,
-      limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-      include: 'counts',
-      sortBy: 'updatedAt',
-      sortOrder: 'desc',
-    });
+    const response = await fetchRootAppPage(meta.nextPage);
+    // Stale if a refresh started meanwhile, or one already running when this
+    // was clicked has since written its own cursor: its pages replace ours.
+    const cursorNow = useKnowledgeBaseStore.getState().appRootListPagination;
+    if (
+      !isCurrent() ||
+      isReplacingRootListLoadInFlight() ||
+      !cursorNow?.hasNext ||
+      cursorNow.nextPage !== meta.nextPage
+    ) {
+      return;
+    }
 
     const appItems = response.items.filter((n) => n.nodeType === 'app');
+    const { appendAppNodes, setAppRootListPagination, nodes } = useKnowledgeBaseStore.getState();
     appendAppNodes(appItems);
+    setAppRootListPagination(rootListPaginationAfter(response.pagination));
 
-    const p = response.pagination;
-    setAppRootListPagination(
-      p
-        ? {
-            hasNext: p.hasNext,
-            nextPage: p.hasNext ? p.page + 1 : p.page,
-          }
-        : null
-    );
+    const knownIds = new Set(nodes.map((n) => n.id));
+    const newCollections = appItems.filter((n) => isKbCollectionsHubApp(n) && !knownIds.has(n.id));
+    if (newCollections.length > 0) {
+      showCollectionsInSidebar([...nodes.filter((n) => n.nodeType === 'app'), ...newCollections]);
+    }
   } catch (error) {
     console.error('loadMoreRootAppList failed:', error);
     toast.error('Could not load more connectors', {
@@ -134,7 +145,6 @@ export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> 
     setLoadingNodeChildrenMore,
     addNodes,
     mergeConnectorAppTreeChildren,
-    reMergeCachedChildrenIntoTree,
   } = useKnowledgeBaseStore.getState();
 
   setLoadingNodeChildrenMore(parentId, true);
@@ -146,6 +156,9 @@ export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> 
       sortBy: 'name',
       sortOrder: 'asc',
     });
+    // Another load replaced this folder's list meanwhile (e.g. the page's own
+    // load of a folder on its path); a name-ordered page does not belong in it.
+    if (useKnowledgeBaseStore.getState().nodeChildrenPagination.get(parentId) !== meta) return;
 
     const previous = useKnowledgeBaseStore.getState().nodeChildrenCache.get(parentId) || [];
     const merged = mergeNodesById(previous, response.items);
@@ -163,7 +176,7 @@ export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> 
     );
 
     addNodes(response.items);
-    reMergeCachedChildrenIntoTree();
+    restoreOpenFoldersInSidebar();
 
     const { connectorAppTrees } = useKnowledgeBaseStore.getState();
     for (const [appId, tree] of connectorAppTrees) {

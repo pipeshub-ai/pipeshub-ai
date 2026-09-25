@@ -16,8 +16,10 @@ from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.core.types import ToolResult
 from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
+    SkillFilter,
     SkillInUseError,
     SkillMetadata,
+    matches_filter,
 )
 from app.agent_loop_lib.modules.providers.skills.bundle import SkillBundle
 from app.agent_loop_lib.modules.providers.skills.loader import render_skill_md
@@ -328,3 +330,58 @@ class TestSkillToolSummaries:
         result = _tool_result("Skill 'docx' not found, or lives in a read-only root", is_error=True)
         assert tool.summarize_result(args, result) == "Skill 'docx' not found, or lives in a read-only root"
 
+
+class _CatalogManager:
+    """`list_skills` over a fixed catalog using the REAL `matches_filter`, so a
+    filter-semantics regression fails here instead of only in production."""
+
+    def __init__(self, metadatas: list[SkillMetadata]) -> None:
+        self._metadatas = metadatas
+
+    async def list_skills(self, filt: SkillFilter | None = None) -> list[SkillMetadata]:
+        if filt is None:
+            return list(self._metadatas)
+        return [m for m in self._metadatas if matches_filter(m, filt)]
+
+
+class TestSkillsListBlankFilters:
+    """A blank optional filter must mean "unfiltered", not "match the empty
+    string". Models routinely emit `""` rather than omitting an optional
+    parameter; the observed payload
+    `{"category": "", "subcategory": "", "tags": ["pdf"], "status": "active"}`
+    returned 0 skills against a catalog holding two matching ones, because
+    `matches_filter` compared every skill's real category against `""`."""
+
+    @staticmethod
+    def _catalog() -> list[SkillMetadata]:
+        return [
+            SkillMetadata(
+                name="pdf", description="pdf things",
+                category="documents", subcategory="pdf", tags=["pdf", "pdfkit"],
+            ),
+            SkillMetadata(
+                name="file-conversion", description="convert things",
+                category="documents", subcategory="conversion", tags=["conversion", "pdf"],
+            ),
+            SkillMetadata(
+                name="data-analysis", description="analyze things",
+                category="data", subcategory="analysis", tags=["pandas"],
+            ),
+        ]
+
+    async def test_blank_category_and_subcategory_do_not_empty_the_catalog(self) -> None:
+        tool = SkillsListTool(_CatalogManager(self._catalog()))
+        out = await tool.execute(category="", subcategory="", tags=["pdf"], status="active")
+        assert out.success is True
+        assert out.data["count"] == 2
+        assert sorted(s["name"] for s in out.data["skills"]) == ["file-conversion", "pdf"]
+
+    async def test_blank_tag_entries_are_dropped_rather_than_matched(self) -> None:
+        tool = SkillsListTool(_CatalogManager(self._catalog()))
+        out = await tool.execute(tags=[""])
+        assert out.data["count"] == 3
+
+    async def test_real_filters_still_narrow(self) -> None:
+        tool = SkillsListTool(_CatalogManager(self._catalog()))
+        out = await tool.execute(category="data")
+        assert [s["name"] for s in out.data["skills"]] == ["data-analysis"]

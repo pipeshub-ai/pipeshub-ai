@@ -132,6 +132,22 @@ export const appIdParamsSchema = z.object({
   }),
 })
 
+/**
+ * `serviceAccountId: null` puts the app back to acting as its creator, which
+ * is why null is accepted rather than the field simply being optional.
+ */
+export const setAppTokenIdentitySchema = z.object({
+  params: z.object({
+    appId: z.string().regex(mongoIdRegex, 'Invalid App ID'),
+  }),
+  body: z.object({
+    serviceAccountId: z
+      .string()
+      .regex(mongoIdRegex, 'Invalid service account ID')
+      .nullable(),
+  }),
+})
+
 export const createAppSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(100),

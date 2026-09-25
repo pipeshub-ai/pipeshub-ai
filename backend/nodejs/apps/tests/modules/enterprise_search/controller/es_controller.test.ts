@@ -3609,6 +3609,7 @@ describe('Enterprise Search Controller', () => {
         deletedBy: null,
         lastActivityAt: null,
         save: sinon.stub().resolves(),
+        toJSON: () => ({ _id: VALID_OID, isDeleted: true }),
       }
       mockConv.save.resolves(mockConv)
       sinon.stub(ChatSession, 'findOne').resolves(mockConv as any)
@@ -3622,6 +3623,7 @@ describe('Enterprise Search Controller', () => {
 
       await deleteAgentConversationById(req, res, next)
 
+      expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
     })
   })

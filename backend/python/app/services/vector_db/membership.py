@@ -443,7 +443,13 @@ async def resolve_virtual_record_state(
     record_keys: list[str] = []
     docs: list[Any] = []
     if virtual_record_id:
-        raw = await graph_provider.get_records_by_virtual_record_id(virtual_record_id)
+        # Raising: `complete` below compares what resolved against
+        # `record_keys`, so a failed read here makes it 0 == 0 -- true, on the
+        # one failure it exists to catch. Every fail-closed check downstream
+        # reads that flag.
+        raw = await graph_provider.get_records_by_virtual_record_id(
+            virtual_record_id, raise_on_error=True
+        )
         record_keys = remaining_record_keys(raw)
 
     if record_keys:
@@ -827,12 +833,22 @@ async def _rewrite_or_delete_locked(
     virtual_record_id: str,
     logger,
 ) -> str:
-    raw = await graph_provider.get_records_by_virtual_record_id(virtual_record_id)
+    # Raising on both: an empty answer here deletes this virtual record's
+    # points from every managed collection, and then the mapping that is the
+    # only way to find orphaned points again. The re-read below guards a
+    # record written concurrently; it cannot guard a graph that is down, since
+    # half a second later the same call fails the same way and answers empty
+    # again -- with more confidence.
+    raw = await graph_provider.get_records_by_virtual_record_id(
+        virtual_record_id, raise_on_error=True
+    )
     remaining = remaining_record_keys(raw)
 
     if not remaining:
         await asyncio.sleep(EMPTY_CONFIRM_DELAY_SECONDS)
-        raw = await graph_provider.get_records_by_virtual_record_id(virtual_record_id)
+        raw = await graph_provider.get_records_by_virtual_record_id(
+            virtual_record_id, raise_on_error=True
+        )
         remaining = remaining_record_keys(raw)
         if remaining and logger is not None:
             logger.warning(
@@ -862,7 +878,13 @@ async def _rewrite_or_delete_locked(
     # points. A VRID shared with a live record would have taken the rewrite
     # branch above, which is what makes deleting across every managed
     # collection the correct scope here rather than an overreach.
-    collections = await locator.all_collections(fresh=True)
+    # strict: a listing that failed and a deployment that genuinely holds
+    # nothing both come back as [], and they want opposite outcomes. The
+    # failure raises here, so its mapping row -- the orphan sweeper's only
+    # handle on these points -- survives to be retried. Genuinely empty still
+    # falls through and drops the mapping: there are no points to orphan, and
+    # keeping it would have the sweeper find it again on every pass.
+    collections = await locator.all_collections(fresh=True, strict=True)
 
     # Points first: the mapping is how an orphaned point set is found again, so it
     # must outlive the delete it describes. Dropping it first would strand the

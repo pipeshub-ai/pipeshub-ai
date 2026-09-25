@@ -760,55 +760,49 @@ class TestOnEventEdgeCases:
 
 
 class TestEpubDispatch:
-    """EPUB must be converted to PDF then routed through the identical PDF
-    decision logic used for native PDFs — never through PyMuPDF/fitz."""
+    """EPUB is read by the processor's EPUB reader, never converted to PDF."""
 
+    @pytest.mark.parametrize(
+        ("extension", "mime_type"),
+        [(ExtensionTypes.EPUB.value, "unknown"), ("unknown", MimeTypes.EPUB.value)],
+    )
     @pytest.mark.asyncio
-    async def test_epub_converts_then_routes_to_docling_by_default(self):
+    async def test_epub_routes_to_the_epub_processor(self, extension: str, mime_type: str) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
-        processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_epub_document = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
-             patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
-             patch(
-                 "app.events.events.convert_with_libreoffice",
-                 new_callable=AsyncMock,
-                 return_value=b"pdf bytes",
-             ) as mock_convert:
+             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
             event_data = _make_event_payload(
-                extension=ExtensionTypes.EPUB.value, record_name="book.epub"
+                extension=extension, mime_type=mime_type, record_name="book.epub"
             )
             events = await _drain(ep.on_event(event_data))
 
-        mock_convert.assert_called_once_with(b"hello", "epub", "pdf")
-        processor.process_pdf_with_docling.assert_called_once()
-        assert processor.process_pdf_with_docling.call_args.kwargs["recordName"] == "book.pdf"
-        assert processor.process_pdf_with_docling.call_args.kwargs["pdf_binary"] == b"pdf bytes"
+        processor.process_epub_document.assert_called_once()
+        kwargs = processor.process_epub_document.call_args.kwargs
+        assert kwargs["epub_binary"] == b"hello"
+        assert kwargs["recordName"] == "book.epub"
+        processor.process_pdf_with_docling.assert_not_called()
+        processor.process_pdf_document_with_ocr.assert_not_called()
+        spawn.assert_not_called()
         assert len(events) == 3
 
     @pytest.mark.asyncio
-    async def test_libreoffice_conversion_failure_bubbles_up(self):
-        """A LibreOffice failure (e.g. missing binary, corrupt EPUB) surfaces
-        as an indexing error rather than being silently swallowed."""
+    async def test_an_epub_failure_bubbles_up(self) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
+        processor.process_epub_document = MagicMock(side_effect=RuntimeError("book could not be read"))
+
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch(
-                 "app.events.events.convert_with_libreoffice",
-                 new_callable=AsyncMock,
-                 side_effect=RuntimeError("LibreOffice is not installed"),
-             ):
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.EPUB.value)
-            with pytest.raises(RuntimeError, match="LibreOffice is not installed"):
+            with pytest.raises(RuntimeError, match="book could not be read"):
                 await _drain(ep.on_event(event_data))
 
         processor.process_pdf_with_docling.assert_not_called()
-        processor.process_pdf_document_with_ocr.assert_not_called()
 
 
 # ===========================================================================

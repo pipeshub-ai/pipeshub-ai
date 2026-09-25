@@ -9,8 +9,10 @@ document must still reach COMPLETED, exactly once:
   * the knowledge base lists each upload once, and nothing else;
   * the graph holds one record per upload for the knowledge base, no more;
   * each document has vectors, and the same number as its siblings. The
-    documents share one shape, so a document indexed twice over shows up as
-    a count the others do not have.
+    documents share one shape -- identical in length, and segmenting into the
+    same sentences -- so any difference in count means the outage changed what
+    was written: a document short of vectors has content that cannot be found,
+    and one carrying extra has a passage indexed more than once.
 
 A document left QUEUED, IN_PROGRESS or FAILED after the recovery window is a
 real failure: the product lost work when a dependency blinked.
@@ -40,6 +42,7 @@ from helper.clients.kb_client import KBClient
 from helper.compose_control import ComposeStack, graph_service
 from helper.fault_switches import KILL_INDEXING
 from helper.stored_names import stored_name
+from helper.vector_counts import describe_divergence
 from helper.indexing_progress import (
     POLL,
     RECOVERY_TIMEOUT,
@@ -174,12 +177,27 @@ async def test_indexing_recovers_from_outage_without_losing_or_duplicating(
         for record_id in record_ids:
             virtual_id = record_fields(kb_client.get_record(record_id)).get("virtualRecordId")
             assert virtual_id, f"record {record_id} is COMPLETED but has no virtual record id"
-            counts[record_id] = await vector_store.count_for_virtual_record(str(virtual_id))
+            counts[record_id] = await vector_store.count_content_chunks(str(virtual_id))
         assert all(counts.values()), f"after a {outage.name}, some COMPLETED documents have no vectors: {counts}"
-        assert len(set(counts.values())) == 1, (
-            f"after a {outage.name}, documents of one shape hold different vector counts {counts}; "
-            "a larger count is a document indexed twice over"
+        # Content chunks only. The record summary is a further vector written by
+        # the enrichment step, which runs once the document is already
+        # searchable and is allowed to fail, so counting it makes two copies of
+        # the same file legitimately differ by one -- which is what this check
+        # was reporting as lost or duplicated content.
+        #
+        # Every document here is byte-identical in length and segments into the
+        # same number of sentences, and chunking is character-based over those
+        # sentences -- so an equal count is arithmetic, not an assumption about
+        # the product. What a difference means is worked out in
+        # `describe_divergence`, which has its own tests: the two directions are
+        # different bugs, and on a tie it declines to pick one rather than
+        # naming whichever count was uploaded first.
+        divergence = describe_divergence(counts)
+        assert divergence is None, (
+            f"after a {outage.name}, documents of one shape hold different vector "
+            f"counts -- {divergence}. All counts: {counts}"
         )
+
     finally:
         try:
             kb_client.delete_kb(kb_id)

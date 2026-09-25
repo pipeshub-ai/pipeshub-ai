@@ -523,6 +523,7 @@
     "heyUser": "Hey, {{name}} 👋",
     "heyUserDefaultName": "there",
     "askAnything": "Ask anything...",
+    "sendMessage": "Send message",
     "quick": "Quick",
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
@@ -656,7 +657,8 @@
       "editComingSoonTitle": "Coming Soon",
       "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
-      "openAgentBuilder": "Open Agent Builder"
+      "openAgentBuilder": "Open Agent Builder",
+      "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again."
     },
     "queryModes": {
       "chat": {
@@ -745,6 +747,47 @@
         ]
       }
     },
+    "demoBanner": "You're looking at Acme Corp, a small fictional company loaded as demo data. Try one of these, or",
+    "demoConnectYourOwn": "connect your own sources",
+    "demoSuggestions": {
+      "1": {
+        "text": "Why was the payment service architecture changed, and how was the decision made?",
+        "icons": [
+          "github",
+          "jira",
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "Which customers reported export timeouts, and what fixed it?",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      },
+      "3": {
+        "text": "What's our policy on being on-call over a public holiday?",
+        "icons": [
+          "sheets"
+        ]
+      },
+      "4": {
+        "text": "Who reviewed and approved PR #482 in the billing worker, and what did Dana ask for before it merged?",
+        "icons": [
+          "github"
+        ]
+      },
+      "5": {
+        "text": "What is the enterprise pricing strategy for 2026?",
+        "icons": [
+          "sheets",
+          "slack"
+        ],
+        "restricted": true
+      }
+    },
+    "demoRestrictedHint": "Pricing committee only, so you'll get no answer here. That's permissions at work.",
+    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer.",
     "askMoreQuestionSets": [
       [
         "What are the key challenges and how are they being addressed",
@@ -931,7 +974,8 @@
         "editor": "Editor",
         "viewer": "Viewer"
       }
-    }
+    },
+    "demoHide": "Hide demo data"
   },
   "workspaceSettings": {
     "title": "Workspace Settings"
@@ -2552,7 +2596,15 @@
       "discardTitle": "Discard changes?",
       "discardMessage": "If you discard, your edits won't be saved",
       "discardConfirm": "Discard",
-      "discardCancel": "Continue Editing"
+      "discardCancel": "Continue Editing",
+      "demoData": {
+        "title": "Demo data",
+        "description": "Acme Corp is a fictional company loaded so you can try PipesHub. This only changes what you see; nothing is deleted.",
+        "label": "Show Acme Corp demo data in my answers, search and records",
+        "followingDefault": "Following the default: shown until your organization has data of its own, then hidden.",
+        "yourChoice": "Your own choice.",
+        "useDefault": "Use the default"
+      }
     },
     "services": {
       "pageTitle": "Services",
@@ -3373,5 +3425,38 @@
     "skip": "Skip",
     "next": "Next",
     "submit": "Submit"
+  },
+  "demoData": {
+    "badge": {
+      "label": "Demo",
+      "tooltip": "Sample data from the Acme Corp demo, not one of your company's records"
+    },
+    "removalNotice": {
+      "title": "Your answers still include the Acme Corp demo data",
+      "description": "Your company's own data is now in PipesHub. Remove the demo so answers only draw on your real sources.",
+      "remove": "Remove demo data",
+      "keep": "Keep for now"
+    },
+    "removeDialog": {
+      "title": "Remove the Acme Corp demo data?",
+      "description": "This deletes the Demo connector with all of its records, groups and permissions, so answers stop citing Acme Corp. You can add it again later from the Connectors page.",
+      "deleteAccounts": "Also delete the sample accounts: {{names}}",
+      "deleteAccountsHint": "They were created with a starting password, so anyone who knows it can sign in as them.",
+      "cancel": "Cancel",
+      "confirm": "Remove demo data",
+      "successTitle": "Demo data removed",
+      "successAccounts": "The sample accounts were deleted too.",
+      "partialTitle": "Demo data removed, but some sample accounts remain",
+      "partialDescription": "Delete {{emails}} under Workspace → Users.",
+      "errorTitle": "Couldn't remove the demo data",
+      "errorDescription": "Please try again. If it keeps happening, remove the Demo connector from the Connectors page."
+    },
+    "switch": {
+      "errorTitle": "Couldn't change the demo data setting",
+      "errorDescription": "Nothing changed. Try again in a moment.",
+      "hiddenTitle": "Acme Corp demo data hidden",
+      "hiddenDescription": "It's out of your answers, search and records. Turn it back on anytime in Profile → Demo data.",
+      "undo": "Undo"
+    }
   }
 }

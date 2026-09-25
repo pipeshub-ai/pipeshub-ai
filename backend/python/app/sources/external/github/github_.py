@@ -179,6 +179,27 @@ class GitHubDataSource:
         """
         return "/pull/" in (getattr(item, "html_url", "") or "")
 
+    def _reload_edited_issue(self, r: Repository, issue: Issue) -> GitHubResponse:
+        """Return the issue as GitHub now has it after a successful edit().
+
+        edit() updates the typed attributes from the PATCH reply but not raw_data, which is what
+        callers serialize, so read it again. If that read fails the change is still saved: say so
+        from the attributes edit() did update, rather than report the write as failed.
+        """
+        try:
+            return GitHubResponse(success=True, data=r.get_issue(issue.number))
+        except Exception as e:
+            return GitHubResponse(success=True, data={
+                "number": issue.number,
+                "title": issue.title,
+                "state": issue.state,
+                "html_url": issue.html_url,
+                "note": (
+                    "The change was saved, but the updated issue could not be reloaded "
+                    f"({e}). Call get_issue to see it in full."
+                ),
+            })
+
     @classmethod
     def _issues_only(cls, items: list) -> list:
         """Filter to items that are issues, excluding PRs."""
@@ -422,7 +443,7 @@ class GitHubDataSource:
             if not params:
                 return GitHubResponse(success=True, data=issue)
             issue.edit(**params)
-            return GitHubResponse(success=True, data=issue)
+            return self._reload_edited_issue(r, issue)
         except Exception as e:
             return self._err(e)
 
@@ -433,7 +454,7 @@ class GitHubDataSource:
             r = self._repo(owner, repo)
             issue = r.get_issue(number)
             issue.edit(state="closed")
-            return GitHubResponse(success=True, data=issue)
+            return self._reload_edited_issue(r, issue)
         except Exception as e:
             return self._err(e)
 

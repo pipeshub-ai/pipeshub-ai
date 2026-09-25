@@ -34,8 +34,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter(dependencies=[Depends(deny_service_tokens)])
 
-SPARSE_IDF = False
-
 # Cloud LLM health checks call external APIs; local runtimes do not need egress.
 _LOCAL_LLM_PROVIDERS = frozenset({"ollama", "lmStudio"})
 _OUTBOUND_PROBE_URL = "https://1.1.1.1/"
@@ -655,9 +653,7 @@ async def recreate_collection(retrieval_service, embedding_size, logger) -> None
     """
     registry = retrieval_service.collection_registry
     try:
-        recreated = await registry.recreate_all_collections(
-            embedding_size, sparse_idf=SPARSE_IDF
-        )
+        recreated = await registry.recreate_all_collections(embedding_size)
         if not recreated:
             # Nothing managed yet. There is no collection to rebuild, and
             # creating one here would have to invent a context — which under a

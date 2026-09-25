@@ -247,7 +247,7 @@ class MessageErrorClassifier:
         0c. ParsingClientError(PARSE_BACKPRESSURE) = TRANSIENT (saturated, not
             failed); every other ParsingClientError code = TERMINAL
         1. Extract HTTP status code if available and classify by status
-        2. JSON decode errors = TERMINAL (bad message format)
+        2. JSON and UTF-8 decode errors = TERMINAL (bad message format)
         3. Pydantic ValidationError = TERMINAL (invalid schema)
         4. Subprocess errors (CalledProcessError, TimeoutExpired) = TERMINAL
         5. FileNotFoundError = TERMINAL (missing dependency/file)
@@ -339,6 +339,17 @@ class MessageErrorClassifier:
             # JSON decode errors in chain
             if isinstance(chain_exc, json.JSONDecodeError):
                 return MessageErrorType.TERMINAL
+
+        # 0e. Undecodable bytes read the same on every delivery, so a retry can
+        # only repeat the failure. Only the raised error and its explicit
+        # `raise ... from` causes count: handlers often try an encoding, catch
+        # the UnicodeDecodeError and fall back, and a network error raised
+        # during that fallback must stay retryable.
+        cause: Optional[BaseException] = exc
+        while cause is not None:
+            if isinstance(cause, UnicodeDecodeError):
+                return MessageErrorType.TERMINAL
+            cause = cause.__cause__
 
         # 1. Check for HTTP status code in exception
         status_code = _extract_status_code(root_exc)

@@ -290,6 +290,7 @@ class ArangoHTTPClient:
         collection: str,
         key: str,
         txn_id: Optional[str] = None,
+        *,
         raise_on_error: bool = False
     ) -> Optional[Dict]:
         """

@@ -180,7 +180,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 await asyncio.to_thread(lease.revoke)
             raise ConnectionError(f"Failed to update key: {str(e)}")
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         """Get value for key from etcd."""
         logger.debug("🔍 Getting key from ETCD: %s", key)
         try:
@@ -199,10 +199,22 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             try:
                 deserialized = self.deserializer(value_bytes)
+                # Present bytes that deserialize to nothing could not be read:
+                # the factory deserializer answers None for bytes that are not
+                # valid UTF-8 instead of raising, so the decode handler below
+                # never sees them. Empty bytes are how None is stored, and stay
+                # absent.
+                if deserialized is None and value_bytes and raise_on_error:
+                    raise ValueError("Stored value could not be decoded")
                 return deserialized
             except json.JSONDecodeError as e:
                 logger.error("❌ Failed to deserialize value: %s", str(e))
                 logger.error("📋 Value that failed: %s", value_bytes)
+                # A stored value that cannot be read is not an absent one.
+                # Surfaces as ConnectionError via the handler below, as every
+                # failed read from this store does.
+                if raise_on_error:
+                    raise
                 return None
 
         except Exception as e:

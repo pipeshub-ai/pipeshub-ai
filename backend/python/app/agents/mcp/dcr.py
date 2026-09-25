@@ -234,6 +234,11 @@ async def register_dynamic_client(
     )
 
 
+RESERVED_AUTHORIZE_PARAMS = frozenset(
+    {"client_id", "redirect_uri", "response_type", "state", "scope", "code_challenge", "code_challenge_method"}
+)
+
+
 def build_authorization_url(
     authorization_url: str,
     client_id: str,
@@ -241,14 +246,21 @@ def build_authorization_url(
     state: str,
     scopes: Optional[list[str]] = None,
     code_challenge: Optional[str] = None,
+    extra_params: Optional[dict[str, str]] = None,
 ) -> str:
-    """Build the full `GET {authorizationUrl}?...` redirect target, with PKCE if provided."""
-    params = {
+    """Build the full `GET {authorizationUrl}?...` redirect target, with PKCE if provided.
+
+    `extra_params` carries provider-specific additions from the catalog template; the
+    protocol parameters below are dropped from it so catalog metadata can never redirect
+    the flow or weaken PKCE.
+    """
+    params = {k: v for k, v in (extra_params or {}).items() if k not in RESERVED_AUTHORIZE_PARAMS}
+    params.update({
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "state": state,
-    }
+    })
     if scopes:
         params["scope"] = " ".join(scopes)
     if code_challenge:

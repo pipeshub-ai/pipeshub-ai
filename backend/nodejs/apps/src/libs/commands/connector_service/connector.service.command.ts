@@ -2,6 +2,7 @@ import { HttpMethod } from '../../enums/http-methods.enum';
 import { Logger } from '../../services/logger.service';
 import { BaseCommand } from '../command.interface';
 import { Readable } from 'stream';
+import { logSafeUrl } from '../log-safe-url';
 
 export interface ConnectorServiceCommandOptions {
   uri: string;
@@ -50,7 +51,7 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
       );
 
       logger.debug('Connector service command success', {
-        url: url,
+        url: logSafeUrl(url),
         statusCode: response.status,
         statusText: response.statusText,
       });
@@ -73,8 +74,9 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
     } catch (error: any) {
       logger.error('Connector service command failed', {
         error: error.message,
-        url: url,
-        requestOptions: requestOptions,
+        url: logSafeUrl(url),
+        // Headers carry the caller's bearer token and bodies carry connector secrets.
+        method: this.method,
       });
       throw error;
     }
@@ -105,7 +107,7 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
       }
 
       logger.info('Connector service streaming command success', {
-        url: url,
+        url: logSafeUrl(url),
         statusCode: response.status,
         statusText: response.statusText,
       });
@@ -142,8 +144,9 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
     } catch (error: any) {
       logger.error('Connector service streaming command failed', {
         error: error.message,
-        url: url,
-        requestOptions: requestOptions,
+        url: logSafeUrl(url),
+        // Headers carry the caller's bearer token and bodies carry connector secrets.
+        method: this.method,
       });
       throw error;
     }

@@ -72,6 +72,9 @@ const createUserBody = z.object({
   designation: z.string().optional(),
   // Absent → member (resolveOptionalUserRole). Present must be admin|member.
   role: z.enum(['admin', 'member']).optional(),
+  // Starting password for the bundled demo personas only (@acme-demo.example);
+  // the controller refuses it for any other address and checks complexity.
+  password: z.string().optional(),
 });
 
 const updateUserBody = z.object({
@@ -911,7 +914,6 @@ export function createUserRouter(container: Container) {
           });
         res.status(200).json({
           message: 'User configuration updated successfully',
-          config: updatedConfig,
         });
         return;
       } catch (error) {

@@ -145,6 +145,17 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_record_by_external_id.assert_awaited_once_with("conn1", "ext1", transaction="txn-123")
 
     @pytest.mark.asyncio
+    async def test_get_record_by_external_id_propagates_a_failed_lookup(self, tx_store, mock_graph_provider) -> None:
+        """The connectors read None as "create this record", so it cannot also mean "we could not ask"."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        mock_graph_provider.get_record_by_external_id = AsyncMock(
+            side_effect=GraphQueryError("db down")
+        )
+        with pytest.raises(GraphQueryError):
+            await tx_store.get_record_by_external_id("conn1", "ext1")
+
+    @pytest.mark.asyncio
     async def test_get_record_by_external_revision_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_record_by_external_revision_id("conn1", "rev1")
         mock_graph_provider.get_record_by_external_revision_id.assert_awaited_once_with("conn1", "rev1", transaction="txn-123")
@@ -425,7 +436,16 @@ class TestGraphTransactionStore:
     async def test_get_user_group_by_external_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_user_group_by_external_id("conn1", "ext1")
         mock_graph_provider.get_user_group_by_external_id.assert_awaited_once_with(
-            "conn1", "ext1", transaction="txn-123"
+            "conn1", "ext1", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_user_group_by_external_id_forwards_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        # Dropping this forward would leave the upsert's lookup swallowing
+        # again: it would read a failed lookup as "absent" and create a duplicate.
+        await tx_store.get_user_group_by_external_id("conn1", "ext1", raise_on_error=True)
+        mock_graph_provider.get_user_group_by_external_id.assert_awaited_once_with(
+            "conn1", "ext1", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio
@@ -437,7 +457,16 @@ class TestGraphTransactionStore:
     async def test_get_app_role_by_external_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_app_role_by_external_id("conn1", "role1")
         mock_graph_provider.get_app_role_by_external_id.assert_awaited_once_with(
-            "conn1", "role1", transaction="txn-123"
+            "conn1", "role1", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_app_role_by_external_id_forwards_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        # Dropping this forward would leave the upsert's lookup swallowing
+        # again: it would read a failed lookup as "absent" and create a duplicate.
+        await tx_store.get_app_role_by_external_id("conn1", "role1", raise_on_error=True)
+        mock_graph_provider.get_app_role_by_external_id.assert_awaited_once_with(
+            "conn1", "role1", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio

@@ -541,6 +541,7 @@
     "heyUser": "Hey, {{name}} 👋",
     "heyUserDefaultName": "there",
     "askAnything": "Ask anything...",
+    "sendMessage": "Send message",
     "quick": "Quick",
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
@@ -698,7 +699,8 @@
       "editComingSoonTitle": "Coming Soon",
       "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
-      "openAgentBuilder": "Open Agent Builder"
+      "openAgentBuilder": "Open Agent Builder",
+      "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again."
     },
     "queryModes": {
       "chat": {
@@ -787,6 +789,47 @@
         ]
       }
     },
+    "demoBanner": "You're looking at Acme Corp, a small fictional company loaded as demo data. Try one of these, or",
+    "demoConnectYourOwn": "connect your own sources",
+    "demoSuggestions": {
+      "1": {
+        "text": "Why was the payment service architecture changed, and how was the decision made?",
+        "icons": [
+          "github",
+          "jira",
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "Which customers reported export timeouts, and what fixed it?",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      },
+      "3": {
+        "text": "What's our policy on being on-call over a public holiday?",
+        "icons": [
+          "sheets"
+        ]
+      },
+      "4": {
+        "text": "Who reviewed and approved PR #482 in the billing worker, and what did Dana ask for before it merged?",
+        "icons": [
+          "github"
+        ]
+      },
+      "5": {
+        "text": "What is the enterprise pricing strategy for 2026?",
+        "icons": [
+          "sheets",
+          "slack"
+        ],
+        "restricted": true
+      }
+    },
+    "demoRestrictedHint": "Pricing committee only, so you'll get no answer here. That's permissions at work.",
+    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer.",
     "askMoreQuestionSets": [
       [
         "What are the key challenges and how are they being addressed",
@@ -949,7 +992,8 @@
         "editor": "Editor",
         "viewer": "Viewer"
       }
-    }
+    },
+    "demoHide": "Hide demo data"
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -1622,7 +1666,8 @@
         "webSearch": "Web Search",
         "tenants": "Tenants",
         "superOrgs": "Organisations",
-        "oauthApps": "OAuth Apps"
+        "oauthApps": "OAuth Apps",
+        "serviceAccounts": "Service accounts"
       }
     },
     "actions": {
@@ -2817,7 +2862,15 @@
       "seeMore": "See more",
       "showMore": "Show More",
       "moreAgents": "More Agents",
-      "moreChats": "More Chats"
+      "moreChats": "More Chats",
+      "demoData": {
+        "title": "Demo data",
+        "description": "Acme Corp is a fictional company loaded so you can try PipesHub. This only changes what you see; nothing is deleted.",
+        "label": "Show Acme Corp demo data in my answers, search and records",
+        "followingDefault": "Following the default: shown until your organization has data of its own, then hidden.",
+        "yourChoice": "Your own choice.",
+        "useDefault": "Use the default"
+      }
     },
     "services": {
       "pageTitle": "Services",
@@ -3072,6 +3125,83 @@
         "loadToolsets": "Failed to load action OAuth apps.",
         "deleteGeneric": "Failed to delete OAuth app."
       }
+    },
+    "serviceAccounts": {
+      "title": "Service accounts",
+      "subtitle": "Machine identities, so automation reads with its own permissions instead of borrowing someone's.",
+      "newAccount": "New service account",
+      "errorGeneric": "Could not load service accounts.",
+      "retry": "Try again",
+      "emptyTitle": "No service accounts yet",
+      "emptyDescription": "A service account is how a script reads from PipesHub without signing in as a colleague. It sees only what you grant it, and it keeps working when people leave.",
+      "columnName": "Name",
+      "columnDescription": "What it is for",
+      "columnStatus": "Status",
+      "statusActive": "Active",
+      "statusDisabled": "Disabled",
+      "manageTokens": "Tokens",
+      "enable": "Enable",
+      "disable": "Disable",
+      "delete": "Delete",
+      "enabledTitle": "Service account enabled",
+      "disabledTitle": "Service account disabled",
+      "disabledBody": "Its tokens stopped working immediately, not just at the next sign-in.",
+      "updateErrorTitle": "Could not update the service account",
+      "deleteTitle": "Delete this service account?",
+      "deleteDescription": "{{name}} will stop working straight away, and every token it holds is revoked. Anything still using one of those tokens will start failing.",
+      "deleteSuccessTitle": "Service account deleted",
+      "deleteErrorTitle": "Could not delete the service account",
+      "create": {
+        "title": "New service account",
+        "intro": "Automation authenticates as this account instead of as a person, so what it can read is decided here rather than inherited from whoever set it up.",
+        "slugLabel": "Short name",
+        "slugHelp": "Lowercase letters, digits and single hyphens. This becomes part of the account's address and cannot be changed later.",
+        "slugLengthError": "Use between 3 and 48 characters.",
+        "slugFormatError": "Use lowercase letters, digits and single hyphens, not starting or ending with a hyphen.",
+        "nameLabel": "Display name",
+        "namePlaceholder": "Nightly sync",
+        "descriptionLabel": "What it is for",
+        "descriptionPlaceholder": "Reads the handbook for the release digest",
+        "note": "Nobody can sign in as a service account, and it is always a member, never an administrator. Give it access the same way you would a colleague: through groups and teams.",
+        "submit": "Create",
+        "successTitle": "Service account created",
+        "errorTitle": "Could not create the service account"
+      },
+      "tokens": {
+        "title": "Tokens",
+        "newToken": "New token",
+        "mint": "Create token",
+        "nameLabel": "What is this token for",
+        "namePlaceholder": "Release digest job",
+        "scopesLabel": "Scopes",
+        "scopesHelp": "Choose what this token may do. There is no default: a credential that runs unattended should hold the access someone chose for it.",
+        "expiryLabel": "Expires after",
+        "expiryDays": "{{count}} days",
+        "existing": "Tokens",
+        "none": "This account holds no tokens yet.",
+        "lastUsed": "Last used {{date}}",
+        "neverUsed": "Never used",
+        "expiresOn": "expires {{date}}",
+        "expiresInDays": "{{count}} days left",
+        "expired": "Expired",
+        "expiringSoon": "{{count}} token(s) expire soon. Create the replacement, move the integration across, then revoke the old one.",
+        "revoke": "Revoke",
+        "revokeSuccessTitle": "Token revoked",
+        "revokeErrorTitle": "Could not revoke the token",
+        "mintErrorTitle": "Could not create the token",
+        "loadErrorTitle": "Could not load tokens",
+        "copyNowTitle": "Copy this token now",
+        "copyNowBody": "This is the only time it is shown. Only its hash is stored, so it cannot be retrieved again.",
+        "disabledNote": "This account is disabled, so no new tokens can be created. Existing ones are listed below and can still be revoked.",
+        "rotationHelp": "To rotate: create the new token, move the integration across while both still work, then revoke the old one. Revoking first would break whatever is using it.",
+        "loading": "Loading tokens…",
+        "copy": "Copy token",
+        "revokeTitle": "Revoke this token?",
+        "revokeDescription": "\"{{name}}\" stops working immediately and cannot be brought back. Anything still using it will start failing. If you are rotating, create the replacement and move the integration across first."
+      },
+      "disableTitle": "Disable this service account?",
+      "disableDescription": "{{name}} stops working immediately — including every token it already holds, not just at the next sign-in. Anything using one of those tokens will start failing until you enable it again.",
+      "disableConfirm": "Disable"
     }
   },
   "filePreview": {
@@ -3685,5 +3815,38 @@
     "skip": "Skip",
     "next": "Next",
     "submit": "Submit"
+  },
+  "demoData": {
+    "badge": {
+      "label": "Demo",
+      "tooltip": "Sample data from the Acme Corp demo, not one of your company's records"
+    },
+    "removalNotice": {
+      "title": "Your answers still include the Acme Corp demo data",
+      "description": "Your company's own data is now in PipesHub. Remove the demo so answers only draw on your real sources.",
+      "remove": "Remove demo data",
+      "keep": "Keep for now"
+    },
+    "removeDialog": {
+      "title": "Remove the Acme Corp demo data?",
+      "description": "This deletes the Demo connector with all of its records, groups and permissions, so answers stop citing Acme Corp. You can add it again later from the Connectors page.",
+      "deleteAccounts": "Also delete the sample accounts: {{names}}",
+      "deleteAccountsHint": "They were created with a starting password, so anyone who knows it can sign in as them.",
+      "cancel": "Cancel",
+      "confirm": "Remove demo data",
+      "successTitle": "Demo data removed",
+      "successAccounts": "The sample accounts were deleted too.",
+      "partialTitle": "Demo data removed, but some sample accounts remain",
+      "partialDescription": "Delete {{emails}} under Workspace → Users.",
+      "errorTitle": "Couldn't remove the demo data",
+      "errorDescription": "Please try again. If it keeps happening, remove the Demo connector from the Connectors page."
+    },
+    "switch": {
+      "errorTitle": "Couldn't change the demo data setting",
+      "errorDescription": "Nothing changed. Try again in a moment.",
+      "hiddenTitle": "Acme Corp demo data hidden",
+      "hiddenDescription": "It's out of your answers, search and records. Turn it back on anytime in Profile → Demo data.",
+      "undo": "Undo"
+    }
   }
 }

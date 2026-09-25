@@ -124,9 +124,11 @@ import {
   SyncEventProducer,
 } from '../services/kafka_events.service';
 import { SamlController } from '../../auth/controller/saml.controller';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(router, 'providerId');
   const keyValueStoreService = container.get<KeyValueStoreService>(
     'KeyValueStoreService',
   );

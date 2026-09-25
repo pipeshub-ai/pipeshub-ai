@@ -3,7 +3,9 @@
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
-import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
+import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -44,8 +46,9 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github-stars';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useUserStore } from '@/lib/store/user-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import {
@@ -796,6 +799,10 @@ function ChatContent() {
           useChatStore.getState().updateSlot(activeSlotId, {
             isInitialized: true,
           });
+          // The API client already explains HTTP failures in its own toast.
+          if (!isProcessedError(error) && useServicesHealthStore.getState().apiServerReachable) {
+            toast.error(t('chat.toasts.loadConversationFailed'));
+          }
         }
       }
     };
@@ -805,7 +812,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId]);
+  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
 
   // When sidebar/list rows arrive after the URL+slot are ready, backfill
   // `modelInfo` from GET /conversations (before history fetch completes)
@@ -1017,6 +1024,10 @@ function ChatContent() {
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
   const profile = useUserStore((s) => s.profile);
+  const isAdmin = useUserStore(selectIsAdmin);
+  const demoDataActive = useDemoDataActive();
+  // Unknown reads as shown, as before the switch existed.
+  const demoHidden = useDemoDataStatus()?.include === false;
   const greetingName = useMemo(() => {
     if (!profile) return '';
     const full = profile.fullName?.trim();
@@ -1030,13 +1041,6 @@ function ChatContent() {
     }
     return '';
   }, [profile]);
-
-  const defaultSuggestionsMap = t('chat.defaultSuggestions', { returnObjects: true }) as Record<string, { text: string; icons: ChatSuggestion['icons'] }>;
-  const defaultSuggestions: ChatSuggestion[] = Object.entries(defaultSuggestionsMap).map(([id, item]) => ({
-    id,
-    text: item.text,
-    icons: item.icons,
-  }));
 
   // Share state
   const [isShareSidebarOpen, setIsShareSidebarOpen] = useState(false);
@@ -1412,6 +1416,15 @@ function ChatContent() {
                   <Box style={{ width: '100%' }}>
                     <ChatInputWrapper />
                   </Box>
+                )}
+                {showChatInput && !demoHidden && (
+                  // Shows itself only when it applies, including for a disabled demo
+                  // whose records are still searchable. Not while this admin has it hidden:
+                  // it would say their answers include it.
+                  <DemoDataRemovalNotice isAdmin={isAdmin} style={{ marginTop: 'var(--space-5)' }} />
+                )}
+                {demoDataActive && showChatInput && !demoHidden && (
+                  <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />
                 )}
               </Flex>
             </Box>

@@ -137,7 +137,16 @@ class RecordEventHandler(BaseEventService):
         record_id = str(record_id)
         try:
             record = await self.event_processor.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id,
+                CollectionNames.RECORDS.value,
+                # Not for retry -- the consumer has already given up by the
+                # time this runs, and the `except` below keeps this method to
+                # its contract of never raising. It is so the log is true: an
+                # unreadable graph answers None, and the line below would call
+                # that "record no longer exists". Chasing a log line saying
+                # exactly that, in a service whose graph was restarting, is
+                # what this whole change came out of.
+                raise_on_error=True,
             )
             if record is None:
                 self.logger.warning(
@@ -273,7 +282,15 @@ class RecordEventHandler(BaseEventService):
         try:
             self.logger.info(f"🔍 Looking for next queued duplicate for record {record_id}")
 
-            next_queued_record = await self.event_processor.graph_provider.find_next_queued_duplicate(record_id)
+            # None means "nothing is waiting behind this record", and the
+            # method returns without publishing anything. A failed read gave
+            # the same answer, and nothing else ever looks again: the queued
+            # duplicates keep that status with no event left to move them.
+            # Raising reaches the handler below, which marks them FAILED --
+            # visible, and recoverable by a reindex.
+            next_queued_record = await self.event_processor.graph_provider.find_next_queued_duplicate(
+                record_id, raise_on_error=True
+            )
 
             if not next_queued_record:
                 self.logger.info(f"✅ No queued duplicates found for record {record_id}")
@@ -674,11 +691,7 @@ class RecordEventHandler(BaseEventService):
                     details={"event_type": event_type},
                 )
 
-        
 
-            record = await self.event_processor.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
 
             self.logger.debug(
                 f"Processing record {record_id} with event type: {event_type}. "
@@ -693,6 +706,20 @@ class RecordEventHandler(BaseEventService):
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
+
+            # Below the delete branch, which does not use `record`: a delete
+            # should still drop the embeddings when the graph is unreadable
+            # rather than exhaust its retries and leave them behind.
+            record = await self.event_processor.graph_provider.get_document(
+                record_id,
+                CollectionNames.RECORDS.value,
+                # None below drains the message -- the record is treated as
+                # deleted and the event is gone. Without this an unreadable
+                # graph gives the same answer as a deletion, so every record
+                # in flight during a restart is discarded and left at QUEUED
+                # with nothing to retry it.
+                raise_on_error=True,
+            )
 
             if record is None:
                 # Legitimately reachable: the record can be deleted between the
@@ -770,7 +797,13 @@ class RecordEventHandler(BaseEventService):
                 origin = record.get("origin")
                 if connector_id and origin == OriginTypes.CONNECTOR.value:
                     connector_instance = await self.event_processor.graph_provider.get_document(
-                        connector_id, CollectionNames.APPS.value
+                        connector_id,
+                        CollectionNames.APPS.value,
+                        # Same reason as the record read above: the two yields
+                        # below ack the message and leave the record QUEUED, so
+                        # an unreadable graph must not reach them by looking
+                        # like a deleted connector.
+                        raise_on_error=True,
                     )
                     if not connector_instance:
                         self.logger.info(

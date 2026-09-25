@@ -1,6 +1,8 @@
 import json
 import logging
 import asyncio
+import re
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -12,6 +14,7 @@ from app.agents.actions.util.tool_summaries import (
     confirmation,
     entity_summary,
     list_summary,
+    parse_json_maybe,
 )
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -27,6 +30,10 @@ from app.connectors.core.registry.tool_builder import (
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.teams.teams import TeamsDataSource
 
+from msgraph.generated.models.aad_user_conversation_member import AadUserConversationMember
+from msgraph.generated.models.channel import Channel
+from msgraph.generated.models.chat import Chat
+from msgraph.generated.models.chat_type import ChatType
 from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
 from msgraph.generated.models.recurrence_pattern import RecurrencePattern
 from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
@@ -46,6 +53,34 @@ def _teams_channel_label(channel: dict) -> str:
 
 def _teams_meeting_label(meeting: dict) -> str:
     return meeting.get("subject") or meeting.get("meeting_id") or "?"
+
+
+def _coerce_str_list(value: object) -> Optional[list[str]]:
+    """Accept a real list, the JSON-array string the tool schema asks for, or a comma-separated string.
+
+    Returns None when the value cannot be read as a list, so a caller never iterates a string's characters.
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("["):
+            parsed = parse_json_maybe(text)
+            if not isinstance(parsed, list):
+                return None
+            items: list[Any] = parsed
+        else:
+            items = text.split(",")
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        return None
+    return [str(item).strip() for item in items if item is not None and str(item).strip()]
+
+
+def _coerce_dict(value: object) -> Optional[dict[str, Any]]:
+    if isinstance(value, dict):
+        return value
+    parsed = parse_json_maybe(value) if isinstance(value, str) else None
+    return parsed if isinstance(parsed, dict) else None
 
 
 # ---------------------------------------------------------------------------
@@ -467,12 +502,75 @@ class GetUsersListInput(BaseModel):
 
 
 class TeamsAmbiguousUserError(Exception):
-    """Raised when multiple Teams users match a provided identifier."""
+    """Raised when a Teams identifier does not pin down exactly one user.
 
-    def __init__(self, query: str, matches: List[Dict[str, Any]]) -> None:
+    exact_required: raised by an exact-only lookup whose only candidates contain the query.
+    """
+
+    def __init__(self, query: str, matches: List[Dict[str, Any]], *, exact_required: bool = False) -> None:
         self.query = query
         self.matches = matches
+        self.exact_required = exact_required
         super().__init__(f"Multiple users found matching '{query}'")
+
+
+_RECURRENCE_PATTERN_TYPES = (
+    "daily", "weekly", "absoluteMonthly", "relativeMonthly", "absoluteYearly", "relativeYearly",
+)
+_RECURRENCE_RANGE_TYPES = ("endDate", "noEnd", "numbered")
+
+
+def _validate_recurrence(pattern: dict[str, Any], range_obj: dict[str, Any]) -> None:
+    """Refuse an invalid recurrence, and rewrite pattern type and dates in place to the form Graph expects.
+
+    The datasource lowercases the pattern type without stripping it and maps anything it doesn't
+    know to daily, and parses dates with date.fromisoformat unstripped, so only canonical values
+    may leave this function.
+    """
+    pattern_type = pattern.get("type")
+    canonical_type = next(
+        (t for t in _RECURRENCE_PATTERN_TYPES
+         if isinstance(pattern_type, str) and pattern_type.strip().lower() == t.lower()),
+        None,
+    )
+    if canonical_type is None:
+        raise ValueError(
+            f"recurrence pattern type {pattern_type!r} is not supported. Use one of: daily, weekly, "
+            "absoluteMonthly (for example the 15th of every month), relativeMonthly (for example "
+            "the first Monday of every month), absoluteYearly, relativeYearly."
+        )
+    pattern["type"] = canonical_type
+    if range_obj.get("type") not in _RECURRENCE_RANGE_TYPES:
+        raise ValueError(
+            f"recurrence range type {range_obj.get('type')!r} is not supported. Use endDate "
+            "(with endDate), noEnd, or numbered (with numberOfOccurrences)."
+        )
+    if "startDate" not in range_obj:
+        raise ValueError("recurrence range is missing startDate.")
+    for key in ("startDate", "endDate"):
+        if key == "endDate" and key not in range_obj:
+            continue
+        parsed = _parse_recurrence_date(range_obj.get(key))
+        if parsed is None:
+            raise ValueError(
+                f"recurrence range {key} must be a date in YYYY-MM-DD form, for example 2026-03-02."
+            )
+        range_obj[key] = parsed.isoformat()
+
+
+def _parse_recurrence_date(value: object) -> Optional[date]:
+    # fromisoformat alone also takes 20260302 and week dates like 2026-W10-1.
+    # datetime is a subclass of date, so check it first: Graph wants a date without a time.
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip(), re.ASCII):
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
 
 
 def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
@@ -530,6 +628,7 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 range_obj["type"] = "noEnd"
 
+        _validate_recurrence(pattern, range_obj)
         return {
             "pattern": pattern,
             "range": range_obj,
@@ -571,9 +670,9 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
 
     # If user passed one nested key, reuse it and fill the missing one from flat keys.
     if "pattern" in recurrence and isinstance(recurrence["pattern"], dict):
-        pattern = recurrence["pattern"]
+        pattern = dict(recurrence["pattern"])
     if "range" in recurrence and isinstance(recurrence["range"], dict):
-        range_obj = recurrence["range"]
+        range_obj = dict(recurrence["range"])
 
     if "type" in range_obj:
         normalized_type = _normalize_range_type(range_obj.get("type"))
@@ -601,8 +700,7 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(
             "recurrence is missing range data. Provide recurrence.range or flat keys like startDate/endDate/numberOfOccurrences."
         )
-    if "startDate" not in range_obj:
-        raise ValueError("recurrence range is missing startDate.")
+    _validate_recurrence(pattern, range_obj)
 
     return {
         "pattern": pattern,
@@ -767,9 +865,13 @@ class Teams:
                     )
                 })
 
+        # ValueErrors come from argument validation (e.g. recurrence); their text says what to fix.
+        if isinstance(error, ValueError):
+            logger.error(f"Invalid arguments for {operation}: {error}")
+            return False, json.dumps({"error": str(error)})
+
         if (
-            isinstance(error, ValueError)
-            or "not authenticated" in error_msg
+            "not authenticated" in error_msg
             or "oauth" in error_msg
             or "authentication" in error_msg
             or "unauthorized" in error_msg
@@ -914,8 +1016,14 @@ class Teams:
         self,
         user_identifier: str,
         allow_ambiguous: bool = False,
+        *,
+        exact_only: bool = False,
     ) -> Optional[str]:
-        """Resolve user identifier (ID, UPN/email, or display name) to user ID."""
+        """Resolve user identifier (ID, UPN/email, or display name) to user ID.
+
+        exact_only: return only an exact match; names that merely contain the query are raised as
+        TeamsAmbiguousUserError candidates, even when there is just one.
+        """
         try:
             if not user_identifier or not isinstance(user_identifier, str):
                 return None
@@ -962,14 +1070,14 @@ class Teams:
                         "user_principal_name": user.get("userPrincipalName") or user.get("user_principal_name"),
                     }
 
-                    names_to_match = [
+                    names = [
                         user.get("displayName"),
                         user.get("display_name"),
                         user.get("mail"),
                         user.get("userPrincipalName"),
                         user.get("user_principal_name"),
-                        user_id,
                     ]
+                    names_to_match = [*names, user_id]
 
                     found_exact = False
                     for name in names_to_match:
@@ -985,13 +1093,13 @@ class Teams:
                     if found_exact:
                         continue
 
-                    for name in names_to_match:
+                    # Only a name that contains the query: never "Ann" for "Joanna", and never a
+                    # substring of a hex object id ("deb" appears in plenty of them).
+                    for name in names:
                         if not isinstance(name, str):
                             continue
                         name_normalized = name.casefold()
-                        if len(target_identifier) >= 3 and (
-                            target_identifier in name_normalized or name_normalized in target_identifier
-                        ):
+                        if len(target_identifier) >= 3 and target_identifier in name_normalized:
                             if not any(m.get("id") == user_id for m in partial_matches):
                                 partial_matches.append(user_info)
                             break
@@ -1008,6 +1116,8 @@ class Teams:
                 return exact_matches[0]["id"]
 
             if partial_matches:
+                if exact_only:
+                    raise TeamsAmbiguousUserError(user_identifier, partial_matches, exact_required=True)
                 if len(partial_matches) > 1 and not allow_ambiguous:
                     raise TeamsAmbiguousUserError(user_identifier, partial_matches)
                 return partial_matches[0]["id"]
@@ -1019,6 +1129,48 @@ class Teams:
         except Exception as e:
             logger.error(f"Error resolving Teams user identifier '{user_identifier}': {e}")
             return None
+
+    @staticmethod
+    def _ambiguous_user_message(error: TeamsAmbiguousUserError) -> str:
+        matches_list = []
+        for match in error.matches[:20]:
+            label = match.get("display_name") or match.get("user_principal_name") or "Unknown"
+            if match.get("mail"):
+                label += f" ({match.get('mail')})"
+            label += f" [ID: {match.get('id', 'Unknown')}]"
+            matches_list.append(f"  - {label}")
+        if error.exact_required:
+            return (
+                f"No Teams user is named exactly '{error.query}'. If you meant one of these people, "
+                f"call the tool again with their email address or user ID.\n\n"
+                f"Closest matches:\n" + "\n".join(matches_list)
+            )
+        return (
+            f"Multiple users found matching '{error.query}'. Please use email/UPN or user ID for disambiguation.\n\n"
+            f"Matching users:\n" + "\n".join(matches_list)
+        )
+
+    async def _resolve_single_user(self, user_identifier: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        """Return (user_id, None) for exactly one exact match, else (None, error message for the agent).
+
+        Exact only: these callers message someone or read their chat, so a near miss must be confirmed.
+        """
+        identifier = (user_identifier or "").strip() if isinstance(user_identifier, str) else ""
+        if not identifier:
+            return None, (
+                "user_identifier is required. Pass the person's email address, "
+                "user principal name, display name or user ID."
+            )
+        try:
+            user_id = await self._resolve_user_identifier(identifier, allow_ambiguous=False, exact_only=True)
+        except TeamsAmbiguousUserError as e:
+            return None, self._ambiguous_user_message(e)
+        if not user_id:
+            return None, (
+                f"No Teams user matches '{identifier}'. Check the spelling, or use "
+                "get_users_list to find the person's email address or user ID."
+            )
+        return user_id, None
 
     # ------------------------------------------------------------------
     # User tools
@@ -1039,19 +1191,7 @@ class Teams:
             try:
                 user_id = await self._resolve_user_identifier(user, allow_ambiguous=False)
             except TeamsAmbiguousUserError as e:
-                matches_list = []
-                for match in e.matches[:20]:
-                    label = match.get("display_name") or match.get("user_principal_name") or "Unknown"
-                    if match.get("mail"):
-                        label += f" ({match.get('mail')})"
-                    label += f" [ID: {match.get('id', 'Unknown')}]"
-                    matches_list.append(f"  - {label}")
-
-                error_msg = (
-                    f"Multiple users found matching '{user}'. Please use email/UPN or user ID for disambiguation.\n\n"
-                    f"Matching users:\n" + "\n".join(matches_list)
-                )
-                return False, json.dumps({"error": error_msg})
+                return False, json.dumps({"error": self._ambiguous_user_message(e)})
 
             if not user_id:
                 user_id = user
@@ -1206,9 +1346,15 @@ class Teams:
         ) -> tuple[bool, str]:
 
         try:
+            # The datasource's own lookup takes the first substring match on the first directory
+            # page, so resolve exactly one user here and hand over the id.
+            user_id, resolve_error = await self._resolve_single_user(user_identifier)
+            if resolve_error:
+                return False, json.dumps({"error": resolve_error})
 
             response = await self.client.teams_get_conversation_with_user(
-                user_identifier=user_identifier,
+                user_identifier=user_id,
+                user_id=user_id,
                 minutes=minutes,
                 hours=hours,
                 days=days,
@@ -1513,13 +1659,11 @@ class Teams:
     ) -> tuple[bool, str]:
         """Search calendar events by partial subject match within a time range.
 
-        Uses Graph API $filter with:
-        - contains(subject, '{keyword}')        — partial name match
-        - start/dateTime ge '{start_datetime}'  — time range start
-        - end/dateTime   le '{end_datetime}'    — time range end
+        The datasource reads calendarView for the range and matches subjects in Python,
+        so the keyword is not part of an OData filter and must not be quote-escaped.
         """
         try:
-            keyword = keyword.strip().replace("'", "''")
+            keyword = (keyword or "").strip()
 
             if not keyword:
                 return False, json.dumps({"error": "keyword cannot be empty."})
@@ -1554,7 +1698,6 @@ class Teams:
             })
 
         except Exception as e:
-            print(f"[search_calendar_events_in_range] exception: {e!r}")
             return self._handle_error(e, "search calendar events in range")
 
 
@@ -1926,17 +2069,27 @@ class Teams:
                 event_body["location"] = {"displayName": location}
 
             if attendees:
+                attendee_addresses = _coerce_str_list(attendees)
+                if attendee_addresses is None:
+                    return False, json.dumps({
+                        "error": 'attendees must be a list of email addresses, for example ["ann@contoso.com"].'
+                    })
                 event_body["attendees"] = [
-                    {
-                        "emailAddress": {"address": addr.strip()},
-                        "type": "required",
-                    }
-                    for addr in attendees
-                    if addr.strip()
+                    {"emailAddress": {"address": addr}, "type": "required"}
+                    for addr in attendee_addresses
                 ]
 
             if recurrence:
-                event_body["recurrence"] = _build_recurrence_body(recurrence)
+                recurrence_dict = _coerce_dict(recurrence)
+                if recurrence_dict is None:
+                    return False, json.dumps({
+                        "error": (
+                            "recurrence must be an object with 'pattern' and 'range' keys, for example "
+                            '{"pattern": {"type": "daily", "interval": 1}, '
+                            '"range": {"type": "noEnd", "startDate": "2026-03-02"}}.'
+                        )
+                    })
+                event_body["recurrence"] = _build_recurrence_body(recurrence_dict)
             response = await self.client.me_calendar_create_events(request_body=event_body)
             if response.success:
                 serialized_result = self._serialize_response(response.data)
@@ -1989,7 +2142,7 @@ class Teams:
                 serialized_result = self._serialize_response(response.data)
                 event_id = None
                 if isinstance(serialized_result, dict):
-                    event_id = serialized_result.get("id")
+                    event_id = serialized_result.get("event_id") or serialized_result.get("id")
                 return True, json.dumps(
                     {
                         "message": "Channel meeting created successfully",
@@ -2098,7 +2251,8 @@ class Teams:
     )
     async def get_team(self, team_id: str) -> tuple[bool, str]:
         try:
-            response = await self.client.me_get_joined_teams(team_id=team_id)
+            # me_get_joined_teams needs a joinedTeams item selector this SDK version does not have.
+            response = await self.client.teams_team_get_team(team_id=team_id)
             if response.success:
                 return True, json.dumps(self._serialize_response(response.data))
             return False, json.dumps({"error": response.error or "Failed to get team"})
@@ -2499,14 +2653,15 @@ class Teams:
         description: Optional[str] = None,
     ) -> tuple[bool, str]:
         try:
-            patch_body: Dict[str, Any] = {}
-            if display_name is not None:
-                patch_body["displayName"] = display_name
-            if description is not None:
-                patch_body["description"] = description
-
-            if not patch_body:
+            if display_name is None and description is None:
                 return False, json.dumps({"error": "No fields provided to update"})
+
+            # The SDK serializes only model objects; a plain dict body fails before any request is sent.
+            patch_body = Channel()
+            if display_name is not None:
+                patch_body.display_name = display_name
+            if description is not None:
+                patch_body.description = description
 
             response = await self.client.teams_update_channels(
                 team_id=team_id,
@@ -2575,8 +2730,15 @@ class Teams:
         message: str,
     ) -> tuple[bool, str]:
         try:
+            # The datasource's own lookup takes the first substring match on the first directory
+            # page ("Sam" could reach "Samantha"), so resolve exactly one user here and hand over the id.
+            user_id, resolve_error = await self._resolve_single_user(user_identifier)
+            if resolve_error:
+                return False, json.dumps({"error": resolve_error})
+
             response = await self.client.teams_send_message_to_user(
-                user_identifier=user_identifier,
+                user_identifier=user_id,
+                user_id=user_id,
                 message=message,
             )
             if response.success:
@@ -2650,9 +2812,17 @@ class Teams:
         message: str,
     ) -> tuple[bool, str]:
         try:
+            channel_list = _coerce_str_list(channel_ids)
+            if not channel_list:
+                return False, json.dumps({
+                    "error": (
+                        "channel_ids must list at least one channel ID, for example "
+                        '["19:abc@thread.tacv2"]. Use get_channels to look up the channel IDs of a team.'
+                    )
+                })
             response = await self.client.teams_send_message_to_multiple_channels(
                 team_id=team_id,
-                channel_ids=channel_ids,
+                channel_ids=channel_list,
                 message=message,
             )
             serialized = self._serialize_response(response.data)
@@ -3014,24 +3184,33 @@ class Teams:
             if normalized_type not in ("oneOnOne", "group"):
                 normalized_type = "oneOnOne"
 
-            members = [
-                {
-                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
-                    "roles": ["owner"],
-                    "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{uid.strip()}')",
+            member_ids = _coerce_str_list(member_user_ids)
+            if not member_ids:
+                return False, json.dumps({
+                    "error": (
+                        "member_user_ids must list at least one user ID or email address. "
+                        "Use get_user_info or get_users_list to look up user IDs."
+                    )
+                })
+
+            members: list[AadUserConversationMember] = []
+            for uid in member_ids:
+                member = AadUserConversationMember()
+                member.roles = ["owner"]
+                safe_uid = uid.replace("'", "''")
+                member.additional_data = {
+                    "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{safe_uid}')",
                 }
-                for uid in member_user_ids
-                if uid.strip()
-            ]
+                members.append(member)
 
-            request_body: Dict[str, Any] = {
-                "chatType": normalized_type,
-                "members": members,
-            }
+            # The SDK serializes only model objects; a plain dict body fails before any request is sent.
+            chat = Chat()
+            chat.chat_type = ChatType.Group if normalized_type == "group" else ChatType.OneOnOne
+            chat.members = members
             if topic and normalized_type == "group":
-                request_body["topic"] = topic
+                chat.topic = topic
 
-            response = await self.client.me_create_chats(body=request_body)
+            response = await self.client.chats_chat_create_chat(body=chat)
             if response.success:
                 data = self._serialize_response(response.data)
                 chat_id = None

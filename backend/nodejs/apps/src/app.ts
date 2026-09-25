@@ -87,6 +87,9 @@ import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
+import { createServiceTokenRouter } from './modules/oauth_provider/routes/service-token.routes';
+import { ServiceAccountsService } from './modules/user_management/services/service-accounts.service';
+import { ServiceTokenService } from './modules/oauth_provider/services/service-token.service';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import {
@@ -674,10 +677,28 @@ export class Application {
       createOAuthClientsRouter(this.oauthProviderContainer),
     );
 
+    // Service accounts own the identity; service tokens own the credential,
+    // and they live in different containers. Joined here, where both exist,
+    // so deleting an account revokes its tokens and restoring one under the
+    // same name does not bring old tokens back with it.
+    this.entityManagerContainer
+      .get<ServiceAccountsService>('ServiceAccountsService')
+      .setTokenRevoker(
+        this.oauthProviderContainer.get<ServiceTokenService>(
+          'ServiceTokenService',
+        ),
+      );
+
     // Service accounts (machine identities, admin-managed)
     this.app.use(
       '/api/v1/service-accounts',
       createServiceAccountsRouter(this.entityManagerContainer),
+    );
+
+    // Service tokens (the credential a service account authenticates with)
+    this.app.use(
+      '/api/v1/service-tokens',
+      createServiceTokenRouter(this.oauthProviderContainer),
     );
 
     this.app.use(

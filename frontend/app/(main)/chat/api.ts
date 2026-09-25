@@ -1,4 +1,5 @@
 import { apiClient, streamSSERequest } from '@/lib/api';
+import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import {
   ChatMessage,
@@ -83,11 +84,20 @@ async function runChatStream(
 ): Promise<void> {
   const body = { ...payload, protocol: 'agui' };
   const tracking: AGUIStreamTracking = { receivedComplete: false };
+  let transportFailed = false;
   await streamSSERequest(endpoint, body, {
     onEvent: createAGUIEventHandler(callbacks, tracking),
-    onError: (error) => callbacks.onError?.(error),
+    onError: (error) => {
+      transportFailed = true;
+      callbacks.onError?.(error);
+    },
     signal: callbacks.signal,
   });
+  // A connection that closes cleanly without a terminal frame would otherwise
+  // leave the turn "streaming" forever, with Stop showing and no answer.
+  if (!tracking.receivedComplete && !tracking.receivedError && !transportFailed && !callbacks.signal?.aborted) {
+    callbacks.onError?.(new Error(CHAT_STREAM_ERROR_MESSAGES.interrupted));
+  }
 }
 
 /** Map GET /conversations (or agent conversations) row → sidebar `Conversation` */

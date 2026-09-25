@@ -142,7 +142,11 @@ class VectorStoreProbe:
         result = await client.get_collections()
         return sorted(c.name for c in result.collections)
 
-    async def _count_matching(self, condition: qmodels.FieldCondition) -> int:
+    async def _count_matching(
+        self,
+        condition: qmodels.FieldCondition,
+        must_not: list[qmodels.FieldCondition] | None = None,
+    ) -> int:
         """Total points matching a condition across every collection.
 
         Retried once on a fresh client: the probe is shared by a whole session,
@@ -150,20 +154,24 @@ class VectorStoreProbe:
         restarting under it. A second failure is a real one.
         """
         try:
-            return await self._count_matching_once(condition)
+            return await self._count_matching_once(condition, must_not)
         except Exception as exc:  # noqa: BLE001 - re-raised below if a new client fails too
             logger.info("Reconnecting to the vector database after: %s", exc)
             await self.close()
-            return await self._count_matching_once(condition)
+            return await self._count_matching_once(condition, must_not)
 
-    async def _count_matching_once(self, condition: qmodels.FieldCondition) -> int:
+    async def _count_matching_once(
+        self,
+        condition: qmodels.FieldCondition,
+        must_not: list[qmodels.FieldCondition] | None = None,
+    ) -> int:
         client = await self._conn()
         total = 0
         for name in await self.collections():
             try:
                 result = await client.count(
                     collection_name=name,
-                    count_filter=qmodels.Filter(must=[condition]),
+                    count_filter=qmodels.Filter(must=[condition], must_not=must_not or []),
                     exact=True,
                 )
             except Exception as exc:
@@ -187,6 +195,30 @@ class VectorStoreProbe:
                 key="metadata.virtualRecordId",
                 match=qmodels.MatchValue(value=virtual_record_id),
             )
+        )
+
+    async def count_content_chunks(self, virtual_record_id: str) -> int:
+        """The document's own chunks, without the record summary.
+
+        The summary is one extra vector written by the enrichment step, which
+        runs after the document is already searchable and is allowed to fail --
+        `events.py` catches it with "document remains searchable". So a document
+        holds one more vector when enrichment succeeded than when it did not,
+        and two copies of the same file can legitimately differ by exactly one.
+        Counting only the content chunks makes a difference mean what a reader
+        assumes it means: a chunk was lost, or written twice.
+        """
+        return await self._count_matching(
+            qmodels.FieldCondition(
+                key="metadata.virtualRecordId",
+                match=qmodels.MatchValue(value=virtual_record_id),
+            ),
+            must_not=[
+                qmodels.FieldCondition(
+                    key="metadata.isRecordSummary",
+                    match=qmodels.MatchValue(value=True),
+                )
+            ],
         )
 
     async def count_for_connector(self, connector_id: str) -> int:

@@ -342,12 +342,36 @@ export const getMessages = async (
  * `.toObject()` results that never passed through a query projection:
  * strips `nextSeq`/`sessionType` from the session and `sessionId`/`orgId`/
  * `seq` from each message, neither of which is part of any documented
- * response shape.
+ * response shape, and (via `withoutErrorStacks`) the server stack trace from
+ * each `conversationErrors` entry.
  */
+const withoutStack = (entry: unknown): unknown => {
+  if (entry === null || typeof entry !== 'object') return entry;
+  const { stack: _stack, ...rest } = entry as Record<string, unknown>;
+  return rest;
+};
+
+/**
+ * A copy of a conversation fit to send to the browser: each saved
+ * `conversationErrors` entry keeps its message but loses the server stack
+ * trace, which stays in the database for the logs and admins. Every
+ * response that carries a whole conversation goes through this.
+ */
+export const withoutErrorStacks = <T extends object>(conversation: T): T => {
+  const conversationErrors: unknown = (
+    conversation as { conversationErrors?: unknown }
+  ).conversationErrors;
+  if (!Array.isArray(conversationErrors)) return conversation;
+  return {
+    ...conversation,
+    conversationErrors: conversationErrors.map(withoutStack),
+  };
+};
+
 export const attachMessages = (session: any, messages: any[]): any => {
   const { nextSeq, sessionType, ...cleanSession } = session ?? {};
   return {
-    ...cleanSession,
+    ...withoutErrorStacks(cleanSession as object),
     messages: (messages || []).map((message: any) => {
       const { sessionId, orgId, seq, ...rest } = message;
       return rest;
@@ -706,7 +730,7 @@ export const addComputedFields = <
   userId: string,
 ) => {
   return {
-    ...conversation,
+    ...withoutErrorStacks(conversation),
     isOwner: conversation.initiator.toString() === userId,
     accessLevel:
       conversation.sharedWith?.find(
@@ -980,6 +1004,22 @@ export const buildPaginationMetadata = (
   hasNextPage: page * limit < totalCount,
   hasPrevPage: page > 1,
 });
+
+/**
+ * The `skip`/`limit` window for page `page` of a conversation's messages,
+ * where page 1 is the newest `limit` messages and each later page steps
+ * further back. The oldest page is short rather than overlapping the page
+ * before it, and a page past the start is empty.
+ */
+export const olderMessagesWindow = (
+  totalMessages: number,
+  page: number,
+  limit: number,
+): { skip: number; limit: number } => {
+  const end = Math.max(0, totalMessages - (page - 1) * limit);
+  const skip = Math.max(0, end - limit);
+  return { skip, limit: end - skip };
+};
 
 export const buildFiltersMetadata = (
   appliedFilters: any,
@@ -1939,7 +1979,11 @@ export const validateAgentConversationAccess = async (
       accessLevel,
       error: error.message,
     });
-    return null;
+    // A malformed id can match nothing; any other failure is not "not found".
+    if (error instanceof mongoose.Error.CastError) {
+      return null;
+    }
+    throw error;
   }
 };
 
@@ -2098,6 +2142,7 @@ export const handleRegenerationStreamData = (
   isAgentSession: boolean,
   protocol?: SSEProtocol,
   accumulator?: StreamedContentAccumulator,
+  onUpstreamError?: () => void,
 ): string => {
   const chunkStr = chunk.toString();
   let newBuffer = buffer + chunkStr;
@@ -2147,6 +2192,7 @@ export const handleRegenerationStreamData = (
       } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
         try {
           const errorData = JSON.parse(dataLine);
+          onUpstreamError?.();
           if (existingConversation && messageId) {
             const errorMessage = errorData.message || CHAT_ERROR_MESSAGES.failed;
             replaceMessageWithError(
@@ -2242,6 +2288,7 @@ export const handleRegenerationStreamData = (
         }
         filteredChunk += event + '\n\n';
       } else if (!agui && eventType === 'error' && dataLine) {
+        onUpstreamError?.();
         try {
           const errorData = JSON.parse(dataLine);
           if (existingConversation && messageId) {

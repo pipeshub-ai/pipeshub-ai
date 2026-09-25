@@ -1825,14 +1825,14 @@ class TestFetchPagePermissions:
         connector._transform_page_restriction_to_permissions.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_returns_none(self):
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_page_permissions_v1 = AsyncMock(return_value=_make_mock_response(403, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         permissions = await connector._fetch_page_permissions("page-1")
-        assert permissions == []
+        assert permissions is None
 
 
 # ===========================================================================
@@ -5594,20 +5594,20 @@ class TestFetchSpacePermissions:
 
 class TestFetchPagePermissionsErrors:
     @pytest.mark.asyncio
-    async def test_failed_response_returns_empty(self):
+    async def test_failed_response_returns_none(self):
         c = _mk_connector()
         ds = MagicMock()
         ds.get_page_permissions_v1 = AsyncMock(return_value=_mk_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         result = await c._fetch_page_permissions("page-1")
-        assert result == []
+        assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         c = _mk_connector()
         c._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("fail"))
         result = await c._fetch_page_permissions("page-1")
-        assert result == []
+        assert result is None
 
 
 # ===========================================================================

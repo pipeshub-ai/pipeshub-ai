@@ -131,7 +131,7 @@ class VirtualRecordCollectionLocator:
         if self._list_managed is not None:
             managed = await self._list_managed(fresh=fresh, strict=strict)
         else:
-            managed = await self._manifest_store.list(fresh=fresh)
+            managed = await self._manifest_store.list(fresh=fresh, strict=strict)
         return [
             entry.name
             for entry in managed

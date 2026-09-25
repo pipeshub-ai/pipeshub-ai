@@ -217,10 +217,70 @@ class TestIndexingPipelineBulkDelete:
         pipeline.vector_db_service.delete_points.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_an_unreadable_graph_skips_instead_of_deleting(self):
+        """The connector purge keeps its own copy of the candidate read, so
+        the raise inside rewrite_or_delete does not reach it. An unreadable
+        graph answered [] here, both passes agreed, and the batch deleted the
+        points and mapping for every shared virtual record in it.
+        """
+        pipeline = _make_indexing_pipeline()
+
+        async def unreadable_graph(*_args, raise_on_error=False, **_kwargs):
+            # What both providers do: swallow and answer [] unless asked not
+            # to. A double that raised either way would pass without the fix.
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return []
+
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(
+            side_effect=unreadable_graph
+        )
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value={})
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        result = await pipeline.bulk_delete_embeddings(["vr-1"])
+
+        assert result["success"] is True
+        assert result["virtual_record_ids_processed"] == 0
+        pipeline.vector_db_service.delete_points.assert_not_awaited()
+        pipeline.graph_provider.delete_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_graph_that_fails_only_on_the_confirming_pass_still_skips(self):
+        """The two reads are separate call sites and the second was easy to
+        leave behind: the candidate pass reads a genuinely empty result, and
+        the graph goes down in the half second before the confirmation.
+        """
+        calls = {"n": 0}
+
+        async def fails_on_the_second_read(*_args, raise_on_error=False, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return []
+            if raise_on_error:
+                raise RuntimeError("graph went down between the two passes")
+            return []
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(
+            side_effect=fails_on_the_second_read
+        )
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value={})
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        result = await pipeline.bulk_delete_embeddings(["vr-1"])
+
+        assert result["virtual_record_ids_processed"] == 0
+        pipeline.vector_db_service.delete_points.assert_not_awaited()
+        pipeline.graph_provider.delete_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_mixed_rewrite_and_delete(self):
         pipeline = _make_indexing_pipeline()
 
-        async def remaining(virtual_record_id):
+        async def remaining(virtual_record_id, *_args, raise_on_error=False, **_kwargs):
             return ["rec-keep"] if virtual_record_id == "vr-shared" else []
 
         pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(

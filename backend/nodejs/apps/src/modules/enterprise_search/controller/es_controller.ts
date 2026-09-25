@@ -72,6 +72,7 @@ import {
   formatPreviousConversations,
   StageTimer,
   getPaginationParams,
+  olderMessagesWindow,
   sortMessages,
   attachPopulatedCitations,
   appendMessages,
@@ -80,6 +81,7 @@ import {
   appendMessageFeedback,
   findSessionIdsMatchingContent,
   validateAndEscapeSearch,
+  withoutErrorStacks,
   recordClassifiedFailureOnSession,
   savePartialConversation,
 } from '../utils/utils';
@@ -852,6 +854,9 @@ export const streamChat =
             session,
           );
         });
+        // The stream outlives this request, so its listeners write without the session.
+        await session.endSession();
+        session = null;
       } else {
         const conversation = new ChatSession(userConversationData);
         savedConversation = await conversation.save();
@@ -963,9 +968,6 @@ export const streamChat =
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || completeData || !savedConversation) return;
         streamSettled = true;
-        // `session` is request-scoped and ends (see `finally` below) as
-        // soon as this handler finishes registering stream listeners — long
-        // before a disconnect can fire, so never reuse it here.
         disconnectSave.pending = savePartialConversation(
           savedConversation,
           contentAccumulator.getText(),
@@ -1335,13 +1337,22 @@ export const streamChat =
           });
 
           if (savedConversation) {
+            // Awaited but contained: a second failed write must not keep the stream open.
             await markConversationFailed(
               savedConversation,
               CHAT_ERROR_MESSAGES.saveFailed,
               session,
               'save_error',
               dbError.stack,
-            );
+            ).catch((markErr: unknown) => {
+              logger.error(
+                'Failed to mark conversation as failed after save error',
+                {
+                  requestId,
+                  error: markErr instanceof Error ? markErr.message : markErr,
+                },
+              );
+            });
           }
 
           // Send error event
@@ -2269,6 +2280,9 @@ export const addMessageStream =
       if (rsAvailable) {
         session = await mongoose.startSession();
         await session.withTransaction(() => performAddMessageStream(session));
+        // The stream outlives this request, so its listeners write without the session.
+        await session.endSession();
+        session = null;
       } else {
         await performAddMessageStream();
       }
@@ -2353,9 +2367,6 @@ export const addMessageStream =
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || completeData || !existingConversation) return;
         streamSettled = true;
-        // `session` is request-scoped and ends (see `finally` below) as
-        // soon as this handler finishes registering stream listeners — long
-        // before a disconnect can fire, so never reuse it here.
         disconnectSave.pending = savePartialConversation(
           existingConversation,
           contentAccumulator.getText(),
@@ -3096,9 +3107,11 @@ export const getConversationById = async (
       sessionId,
     });
 
-    // Calculate skip and limit for backward pagination
-    const skip = Math.max(0, totalMessages - page * limit);
-    const effectiveLimit = Math.min(limit, totalMessages - skip);
+    const { skip, limit: effectiveLimit } = olderMessagesWindow(
+      totalMessages,
+      page,
+      limit,
+    );
 
     const messages = await getMessages(sessionId, {
       skip,
@@ -3993,6 +4006,9 @@ async function regenerateAnswersInternal(
       validationResult = await session.withTransaction(() =>
         performRegenerateAnswersValidation(session),
       );
+      // The stream outlives this request, so its listeners write without the session.
+      await session.endSession();
+      session = null;
     } else {
       validationResult = await performRegenerateAnswersValidation();
     }
@@ -4067,6 +4083,8 @@ async function regenerateAnswersInternal(
     // Variables to collect complete response data
     let completeData: IAIResponse | null = null;
     let buffer = '';
+    /** True when the AI backend already sent a terminal error we forwarded and saved */
+    let upstreamAiErrorEventForwarded = false;
     /** Guards `onDisconnect` against also running after the normal
      * `stream.on('end')`/`'error'` path already finalized this run. */
     let streamSettled = false;
@@ -4082,9 +4100,6 @@ async function regenerateAnswersInternal(
     const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
       if (streamSettled || completeData || !existingConversation) return;
       streamSettled = true;
-      // `session` is request-scoped and ends (see `finally` below) as soon
-      // as this handler finishes registering stream listeners — long before
-      // a disconnect can fire, so never reuse it here.
       disconnectSave.pending = savePartialConversation(
         existingConversation,
         contentAccumulator.getText(),
@@ -4147,6 +4162,9 @@ async function regenerateAnswersInternal(
         config.isAgentSession,
         protocol,
         contentAccumulator,
+        () => {
+          upstreamAiErrorEventForwarded = true;
+        },
       );
     });
 
@@ -4155,62 +4173,38 @@ async function regenerateAnswersInternal(
       logger.debug('Stream ended successfully', { requestId });
       try {
         // Save the AI response to the conversation, replacing the existing message
+        // A failed save is handled once, by the catch below: one error frame, one saved reason.
         if (completeData && existingConversation) {
-          try {
-            const { conversation: responseConversation, savedCitations } =
-              await handleRegenerationSuccess(
-                completeData,
-                existingConversation,
-                messageId || '',
-                orgId || '',
-                session,
-                modelInfo,
-              );
-
-            // Send final response event with the complete conversation data
-            sendSSECompleteEvent(
-              res,
-              responseConversation,
-              savedCitations.length,
-              requestId || '',
-              startTime,
-              protocol,
+          const { conversation: responseConversation, savedCitations } =
+            await handleRegenerationSuccess(
+              completeData,
+              existingConversation,
+              messageId || '',
+              orgId || '',
+              session,
+              modelInfo,
             );
 
-            logger.debug(
-              'Answer regenerated and conversation updated, sent custom complete event',
-              {
-                requestId,
-                conversationId: existingConversation._id,
-                messageId,
-                duration: Date.now() - startTime,
-              },
-            );
-          } catch (error: any) {
-            // Update conversation status for general errors
-            if (existingConversation && messageId) {
-              await handleRegenerationError(
-                res,
-                error,
-                existingConversation,
-                messageId,
-                conversationId || '',
-                session,
-                requestId || '',
-                'regeneration_error',
-                protocol,
-              );
-            }
+          // Send final response event with the complete conversation data
+          sendSSECompleteEvent(
+            res,
+            responseConversation,
+            savedCitations.length,
+            requestId || '',
+            startTime,
+            protocol,
+          );
 
-            if (error.cause && error.cause.code === 'ECONNREFUSED') {
-              throw new InternalServerError(
-                SERVICE_UNAVAILABLE_MESSAGE,
-                error,
-              );
-            }
-            throw error;
-          }
-        } else {
+          logger.debug(
+            'Answer regenerated and conversation updated, sent custom complete event',
+            {
+              requestId,
+              conversationId: existingConversation._id,
+              messageId,
+              duration: Date.now() - startTime,
+            },
+          );
+        } else if (!upstreamAiErrorEventForwarded) {
           // Mark as failed if no complete data received
           if (existingConversation && messageId) {
             const errorMessage =
@@ -4267,10 +4261,14 @@ async function regenerateAnswersInternal(
           },
         );
 
+        const errorMessage =
+          causeCode(dbError) === 'ECONNREFUSED'
+            ? CHAT_ERROR_MESSAGES.unavailable
+            : CHAT_ERROR_MESSAGES.saveFailed;
+
         // Try to replace message with error if we have the message id
         if (existingConversation && messageId) {
           try {
-            const errorMessage = CHAT_ERROR_MESSAGES.saveFailed;
             await replaceMessageWithError(
               existingConversation,
               messageId,
@@ -4314,7 +4312,7 @@ async function regenerateAnswersInternal(
             );
             await sendSSEErrorEvent(
               res,
-              CHAT_ERROR_MESSAGES.saveFailed,
+              errorMessage,
               dbError.message,
               undefined,
               protocol,
@@ -4323,7 +4321,7 @@ async function regenerateAnswersInternal(
         } else {
           await sendSSEErrorEvent(
             res,
-            CHAT_ERROR_MESSAGES.saveFailed,
+            errorMessage,
             dbError.message,
             undefined,
             protocol,
@@ -4562,7 +4560,7 @@ export const updateTitle = async (
 
     const response = {
       conversation: {
-        ...conversation.toObject(),
+        ...withoutErrorStacks(conversation.toObject()),
         title: conversation.title,
       },
       meta: {
@@ -4682,8 +4680,7 @@ export const updateFeedback = async (
       ...EXCLUDE_AGENT,
       $or: [
         { initiator: userId },
-        { 'sharedWith.userId': userId },
-        { isShared: true },
+        { isShared: true, 'sharedWith.userId': userId },
       ],
     };
 
@@ -6405,6 +6402,9 @@ export const deleteAgent =
             session,
           );
         });
+        // The stream outlives this request, so its listeners write without the session.
+        await session.endSession();
+        session = null;
       } else {
         const conversation = new ChatSession(userConversationData);
         savedConversation =
@@ -6520,9 +6520,6 @@ export const deleteAgent =
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || completeData || !savedConversation) return;
         streamSettled = true;
-        // `session` is request-scoped and ends (see `finally` below) as
-        // soon as this handler finishes registering stream listeners — long
-        // before a disconnect can fire, so never reuse it here.
         disconnectSave.pending = savePartialConversation(
           savedConversation,
           contentAccumulator.getText(),
@@ -6892,13 +6889,22 @@ export const deleteAgent =
           });
 
           if (savedConversation) {
+            // Awaited but contained: a second failed write must not keep the stream open.
             await markAgentConversationFailed(
               savedConversation,
               CHAT_ERROR_MESSAGES.saveFailed,
               session,
               'save_error',
               dbError.stack,
-            );
+            ).catch((markErr: unknown) => {
+              logger.error(
+                'Failed to mark agent conversation as failed after save error',
+                {
+                  requestId,
+                  error: markErr instanceof Error ? markErr.message : markErr,
+                },
+              );
+            });
           }
 
           // Send error event
@@ -7748,6 +7754,9 @@ export const addMessageStreamToAgentConversation =
       if (rsAvailable) {
         session = await mongoose.startSession();
         await session.withTransaction(() => performAddMessageStream(session));
+        // The stream outlives this request, so its listeners write without the session.
+        await session.endSession();
+        session = null;
       } else {
         await performAddMessageStream();
       }
@@ -7830,9 +7839,6 @@ export const addMessageStreamToAgentConversation =
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || completeData || !existingConversation) return;
         streamSettled = true;
-        // `session` is request-scoped and ends (see `finally` below) as
-        // soon as this handler finishes registering stream listeners — long
-        // before a disconnect can fire, so never reuse it here.
         disconnectSave.pending = savePartialConversation(
           existingConversation,
           contentAccumulator.getText(),
@@ -8681,9 +8687,11 @@ export const getAgentConversationById = async (
       sessionId,
     });
 
-    // Calculate skip and limit for backward pagination
-    const skip = Math.max(0, totalMessages - page * limit);
-    const effectiveLimit = Math.min(limit, totalMessages - skip);
+    const { skip, limit: effectiveLimit } = olderMessagesWindow(
+      totalMessages,
+      page,
+      limit,
+    );
 
     const messages = await getMessages(sessionId, {
       skip,
@@ -8776,7 +8784,7 @@ export const deleteAgentConversationById = async (
 
     res.status(200).json({
       message: 'Conversation deleted successfully',
-      conversation,
+      conversation: conversation && withoutErrorStacks(conversation.toJSON()),
     });
   } catch (error: any) {
       logger.error('Error deleting conversation', {
@@ -9137,7 +9145,7 @@ export const updateAgentConversationTitle = async (
 
     res.status(HTTP_STATUS.OK).json({
       conversation: {
-        ...conversation.toObject(),
+        ...withoutErrorStacks(conversation.toObject()),
         title: conversation.title,
       },
       meta: {

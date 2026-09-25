@@ -39,6 +39,8 @@ const MANUAL_INDEXING_FIELD_NAME = 'enable_manual_sync';
 const INITIAL_LIMIT = 20;
 const PAGE_LIMIT = 20;
 const MAX_OPTIONS_IN_MEMORY = 5000;
+const OPTIONS_LOAD_FAILED_MESSAGE =
+  "We couldn't load the options for this filter. Close this list and open it again to retry.";
 
 const inputLike: React.CSSProperties = {
   height: 32,
@@ -541,7 +543,7 @@ function useDynamicFilterOptions(
         if (!append) {
           setOptions([]);
           setHasMore(false);
-          setEmptyMessage(undefined);
+          setEmptyMessage(OPTIONS_LOAD_FAILED_MESSAGE);
         }
       } finally {
         if (append) appendFetchingRef.current = false;

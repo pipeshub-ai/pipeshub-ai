@@ -24,6 +24,15 @@ export default defineConfig({
     // test:electron:local-sync) have their own runners.
     include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
     passWithNoTests: false,
+    // `include` lists every source file, loaded by a test or not, so the
+    // percentage counts untested files instead of hiding them.
+    coverage: {
+      provider: 'v8',
+      include: ['app/**/*.{ts,tsx}', 'lib/**/*.{ts,tsx}'],
+      exclude: ['**/*.test.{ts,tsx}', '**/__tests__/**', '**/*.d.ts'],
+      reporter: ['text-summary', 'json-summary', 'json', 'html'],
+      reportsDirectory: 'coverage/unit',
+    },
   },
   resolve: {
     alias: {

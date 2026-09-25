@@ -43,6 +43,7 @@ on:
             - oauth_clients
             - mcp
             - zammad
+            - demo
             - resilience
             - permissions
             - storage
@@ -273,8 +274,12 @@ jobs:
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
       SHAREPOINT_TEST_CLIENT_ID: ${{ secrets.SHAREPOINT_TEST_CLIENT_ID }}
       SHAREPOINT_TEST_SHAREPOINT_DOMAIN: ${{ secrets.SHAREPOINT_TEST_SHAREPOINT_DOMAIN }}
-      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE_CONTENT }}
-      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE_CONTENT }}
+      # No _CONTENT suffix: the secrets are stored under these names, and a
+      # reference to a secret that does not exist resolves to empty, which the
+      # suite reports as "the SharePoint tenant is not configured" -- the same
+      # message as having no credentials at all.
+      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE }}
+      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE }}
       JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
       JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
       JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}

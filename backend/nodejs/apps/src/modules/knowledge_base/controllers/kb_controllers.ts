@@ -146,6 +146,61 @@ export const getKnowledgeHubNodes =
     }
   };
 
+/**
+ * The demo data switch is owned by the connector service, which also applies
+ * it to search and browsing; these only forward the caller's request.
+ */
+export const getDemoDataStatus =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      if (!req.user?.userId || !req.user?.orgId) {
+        throw new UnauthorizedError('User not authenticated');
+      }
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/demo-data/status`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+      handleConnectorResponse(response, res, 'Getting demo data status', 'Failed to get demo data status');
+    } catch (error: unknown) {
+      logger.error('Error getting demo data status', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      next(handleBackendError(error, 'get demo data status'));
+    }
+  };
+
+export const setDemoDataPreference =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      if (!req.user?.userId || !req.user?.orgId) {
+        throw new UnauthorizedError('User not authenticated');
+      }
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/demo-data/preference`,
+        HttpMethod.PUT,
+        req.headers as Record<string, string>,
+        { include: req.body.include },
+      );
+      handleConnectorResponse(response, res, 'Saving demo data preference', 'Failed to save demo data preference');
+    } catch (error: unknown) {
+      logger.error('Error saving demo data preference', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      next(handleBackendError(error, 'save demo data preference'));
+    }
+  };
+
 export const createKnowledgeBase =
   (appConfig: AppConfig) =>
   async (

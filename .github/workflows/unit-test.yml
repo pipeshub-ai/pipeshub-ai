@@ -22,6 +22,10 @@ on:
       # to run it.
       - 'integration-tests/unit/**'
       - 'integration-tests/validation/**'
+      # The connector-type guard checks the types these suites ask for against
+      # the names the connectors register under backend/python/app, so a
+      # misspelling on the suite side has to run it too.
+      - 'integration-tests/connectors/**'
 
   workflow_call:
     inputs:
@@ -155,7 +159,12 @@ jobs:
       # sits behind a reviewer gate, so on a pull request it would not run until
       # someone approved it, and in practice not until the nightly. That is the
       # delay the guard exists to remove, so it runs here too.
-      - name: Run the graph-entity schema guard
+      # Two offline guards over integration-tests: the graph-entity schemas, and
+      # the connector types the suites ask for, which must match a registered
+      # @ConnectorBuilder name exactly. The second exists because the SharePoint
+      # suite asked for "SharePointOnline" against "SharePoint Online" and only
+      # a nightly with a real tenant could find out.
+      - name: Run the integration-suite guards
         run: |
           uv pip install --system pyyaml
           # `-c` and `--noconftest` because the file sits inside integration-tests,
@@ -165,6 +174,7 @@ jobs:
           # -- leaving it exactly as unenforced on a pull request as it was.
           PYTHONPATH=backend/python:integration-tests \
             pytest integration-tests/unit/test_graph_entity_schemas.py \
+              integration-tests/unit/test_connector_types_are_registered.py \
               --noconftest -c backend/python/pytest.ini -v
 
       # The only automated check on agent behaviour: six golden properties the

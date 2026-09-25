@@ -26,7 +26,11 @@ def make_config_service() -> MagicMock:
     """An in-memory ConfigurationService: get/set/create-if-absent over a dict."""
     store: dict = {}
 
-    async def get_config(key, default=None):
+    # raise_on_error is accepted and ignored: this store never fails, and the
+
+    # manifest passes it on delete paths, where the real get_config honours it.
+
+    async def get_config(key, default=None, raise_on_error=False):
         return store.get(key, default)
 
     async def set_config(key, value):
@@ -107,7 +111,7 @@ def make_collection_registry(collection_name: str = "records") -> MagicMock:
         ]
     )
     registry.build_collection_config = MagicMock(
-        side_effect=lambda size, sparse_idf=False: CollectionConfig(embedding_size=size)
+        side_effect=lambda size: CollectionConfig(embedding_size=size)
     )
     registry.invalidate = MagicMock()
     return registry
