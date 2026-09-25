@@ -222,16 +222,6 @@ class TestDuplicates:
 
 
 class TestTransientFailures:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left for a follow-up because consumer.py is part of open PR #3128: "
-            "on a transient failure the loop stops reading that batch and waits for "
-            "Kafka to redeliver, but Kafka never redelivers a fetched record without "
-            "a seek, so the failed message and the rest of its batch are skipped, and "
-            "the next successful commit moves past them for good."
-        ),
-    )
     async def test_a_transient_failure_does_not_lose_that_message_or_the_ones_after_it(
         self, broker, retry_manager
     ) -> None:
@@ -250,10 +240,6 @@ class TestTransientFailures:
         assert handler.seen.count(0) == 2
         assert {1, 2, 3} <= set(handler.seen)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Same bug as above: a failed message is never offered again, so it is never retried.",
-    )
     async def test_a_message_that_keeps_failing_is_tried_max_attempts_times_then_skipped(
         self, broker, retry_manager
     ) -> None:
@@ -263,6 +249,76 @@ class TestTransientFailures:
         await _until(lambda: handler.seen.count(0) >= 3, timeout=3)
         await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 1)
         await consumer.stop()
+
+    async def test_a_failure_in_the_middle_of_a_batch_is_retried_before_anything_after_it_is_committed(
+        self, broker, retry_manager
+    ) -> None:
+        for i in range(4):
+            broker.produce(TOPIC, _event(i))
+        handler = Recorder(broker, fail={1: ConnectionError("graph database unreachable")})
+        consumer = await _start(handler, retry_manager)
+        await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 4)
+        await consumer.stop()
+
+        assert handler.seen == [0, 1, 1, 2, 3]
+        # The retry of 1 ran with only 0 committed: nothing jumped past it.
+        assert handler.committed_when_seen[2] == 1
+        assert await retry_manager.get_count(f"{TOPIC}-0-1") == 0
+
+    async def test_a_restart_after_a_failure_still_delivers_the_failed_message_and_those_after_it(
+        self, broker, retry_manager, monkeypatch
+    ) -> None:
+        # A long pause between attempts, so the stop lands before the retry.
+        monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "30000")
+        for i in range(3):
+            broker.produce(TOPIC, _event(i))
+        handler = Recorder(broker, fail={0: ConnectionError("down")})
+        first = await _start(handler, retry_manager)
+        await _until(lambda: 0 in handler.seen)
+        # A later message must not be committed past the failed one.
+        broker.produce(TOPIC, _event(3))
+        await _settle()
+        await first.stop()
+        assert broker.committed_offset(GROUP, TOPIC) is None
+
+        monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "10")
+        second = await _start(handler, retry_manager)
+        await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 4)
+        await second.stop()
+        assert handler.seen == [0, 0, 1, 2, 3]
+        assert await retry_manager.get_count(f"{TOPIC}-0-0") == 0
+
+    async def test_giving_up_on_a_message_still_delivers_the_ones_after_it(self, broker, retry_manager) -> None:
+        for i in range(3):
+            broker.produce(TOPIC, _event(i))
+        handler = Recorder(broker, fail={0: ConnectionError("down")}, fail_times=99)
+        consumer = await _start(handler, retry_manager)
+        await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 3)
+        await _settle()
+        await consumer.stop()
+
+        assert handler.seen == [0, 0, 0, 1, 2]
+        assert await retry_manager.get_count(f"{TOPIC}-0-0") == 0
+
+    async def test_a_failure_on_one_partition_neither_blocks_nor_skips_another(
+        self, broker, retry_manager
+    ) -> None:
+        broker.produce(TOPIC, _event(0), partition=0)
+        broker.produce(TOPIC, _event(1), partition=0)
+        broker.produce(TOPIC, _event(10), partition=1)
+        broker.produce(TOPIC, _event(11), partition=1)
+        handler = Recorder(broker, fail={0: ConnectionError("down")}, fail_times=2)
+        consumer = await _start(handler, retry_manager)
+        await _until(
+            lambda: broker.committed_offset(GROUP, TOPIC, 0) == 2
+            and broker.committed_offset(GROUP, TOPIC, 1) == 2
+        )
+        await consumer.stop()
+
+        assert [i for i in handler.seen if i < 10] == [0, 0, 0, 1]
+        assert [i for i in handler.seen if i >= 10] == [10, 11]
+        last_attempt_of_0 = len(handler.seen) - 1 - handler.seen[::-1].index(0)
+        assert handler.seen.index(11) < last_attempt_of_0
 
 
 class TestGracefulShutdown:

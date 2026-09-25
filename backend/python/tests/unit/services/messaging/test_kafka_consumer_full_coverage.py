@@ -128,8 +128,9 @@ class TestConsumeLoop:
         mock_aio.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_failed_message_does_not_commit(self, consumer):
-        """Failed processing with retry manager does not commit."""
+    async def test_failed_message_does_not_commit(self, consumer, monkeypatch):
+        """Failed processing with retry manager does not commit, and seeks back to retry."""
+        monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "10")
         msg = _make_message(
             value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=20
         )
@@ -149,6 +150,7 @@ class TestConsumeLoop:
         mock_aio.getmany = mock_getmany
         mock_aio.commit = AsyncMock()
         mock_aio.stop = AsyncMock()
+        mock_aio.seek = MagicMock()
         consumer.consumer = mock_aio
         consumer.running = True
         consumer.message_handler = AsyncMock(return_value=False)
@@ -161,6 +163,7 @@ class TestConsumeLoop:
         await consumer._KafkaMessagingConsumer__consume_loop()
 
         mock_aio.commit.assert_not_awaited()
+        mock_aio.seek.assert_called_once_with(tp, 20)
 
     @pytest.mark.asyncio
     async def test_per_message_exception_continues_loop(self, consumer):

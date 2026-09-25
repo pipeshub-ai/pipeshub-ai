@@ -17,6 +17,8 @@ from app.utils.request_context import (
 )
 
 if TYPE_CHECKING:
+    from aiokafka.structs import TopicPartition
+
     from app.services.messaging.retry_manager import RetryManager
 
 
@@ -24,8 +26,10 @@ class KafkaMessagingConsumer(IMessagingConsumer):
     """Kafka implementation of messaging consumer.
 
     Uses Redis-based RetryManager for persistent retry tracking across restarts.
-    Messages are processed sequentially; failed messages are not committed and
-    will be redelivered by Kafka when no new messages arrive (idle-based retry).
+    Messages are processed sequentially. A message that fails with a transient
+    error is not committed: its partition is seeked back to it, so it and the
+    messages after it are read again on a later poll, until it succeeds or
+    reaches max_delivery_attempts and is skipped.
     """
 
     def __init__(
@@ -228,12 +232,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             return False, e
 
     async def __consume_loop(self) -> None:
-        """Main consumption loop with Redis-based retry tracking.
-
-        New messages are processed first. When getmany() returns empty (idle),
-        Kafka will redeliver uncommitted messages on the next poll, enabling
-        retry of failed messages without blocking new ones.
-        """
+        """Main consumption loop with Redis-based retry tracking."""
         try:
             self.logger.info("Starting Kafka consumer loop")
             while self.running:
@@ -248,7 +247,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                         await asyncio.sleep(0.1)
                         continue
 
-                    # Process messages from all topic partitions
+                    retry_pending = False
                     for topic_partition, messages in message_batch.items():
                         for message in messages:
                             try:
@@ -316,17 +315,26 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                     # Mark as processed only when we commit (prevents skipped retries)
                                     self.__mark_message_processed(message_id)
                                 else:
-                                    # Transient failure - stop processing this partition to prevent cumulative commits
+                                    # Kafka never re-sends a fetched record on its own, so
+                                    # without this seek the rest of the batch is skipped and
+                                    # the next commit moves past it for good.
+                                    self.__seek_back(topic_partition, message.offset)
+                                    retry_pending = True
                                     self.logger.warning(
                                         f"Partition {message.topic}-{message.partition} processing "
                                         f"stopped at offset {message.offset} due to retryable failure. "
-                                        f"Subsequent messages in this batch will be retried."
+                                        f"It and the messages after it will be read again."
                                     )
-                                    break  # Exit inner loop for this partition, prevent cumulative commit
+                                    break
 
                             except Exception as e:
                                 self.logger.error(f"Error processing individual message: {e}")
                                 continue
+
+                    if retry_pending:
+                        # Spaces the attempts out, so a brief outage does not use
+                        # up max_delivery_attempts within milliseconds.
+                        await asyncio.sleep(messaging_env.message_timeout_ms / 1000)
 
                 except asyncio.CancelledError:
                     self.logger.info("Kafka consumer task cancelled")
@@ -339,6 +347,14 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             self.logger.error(f"Fatal error in consume_messages: {e}")
         finally:
             await self.cleanup()
+
+    def __seek_back(self, topic_partition: "TopicPartition", offset: int) -> None:
+        try:
+            self.consumer.seek(topic_partition, offset)  # type: ignore
+        except Exception as e:
+            # Typically the partition was revoked mid-batch; its new owner
+            # starts from the committed offset, which is still this message.
+            self.logger.error(f"Failed to seek {topic_partition} back to {offset}: {e}")
 
     def __is_message_processed(self, message_id: str) -> bool:
         """Check if a message has already been processed."""
