@@ -132,6 +132,7 @@ class RetryUrl:
     referer: str | None = None   # referer at the time of first attempt
     retry_after: float | None = None  # server-requested backoff (seconds)
     deferred: bool = False  # site asked to wait longer than we hold a sync open
+    reason: str | None = None  # shown on the failed page instead of the status-based reason
 
 class Status(Enum):
     PENDING = "PENDING"
@@ -1709,6 +1710,11 @@ class WebConnector(BaseConnector):
                     referer=referer,
                     retry_after=getattr(result, "retry_after", None),
                 )
+            else:
+                size_skip = result.headers.get("X-Fetch-Skip-Reason") == "max_size_exceeded"
+                self._record_final_failure(
+                    url, depth, referer, result.status_code, self._too_large_reason() if size_skip else None,
+                )
             return None
         elif not result.success:
             normalized = self._normalize_url(url)
@@ -1734,9 +1740,32 @@ class WebConnector(BaseConnector):
 
         content_bytes = result.content_bytes
         if len(content_bytes) > self.max_size_mb * 1024 * 1024:
+            self._record_final_failure(url, depth, referer, result.status_code, self._too_large_reason())
             return None
 
         return result
+
+    def _record_final_failure(
+        self, url: str, depth: int, referer: str | None, status_code: int | None, reason: str | None = None,
+    ) -> None:
+        """A failure retrying can't fix (404, 401, too large): shown as a failed page, never re-fetched this sync."""
+        normalized = self._normalize_url(url)
+        self.retry_urls[normalized] = RetryUrl(
+            url=normalized,
+            status=Status.PENDING.value,
+            status_code=status_code,
+            retries=MAX_RETRIES,
+            last_attempted=get_epoch_timestamp_in_ms(),
+            depth=depth,
+            referer=referer,
+            reason=reason,
+        )
+
+    def _too_large_reason(self) -> str:
+        return (
+            f"This file is larger than this connector's {self.max_size_mb} MB size limit, so it wasn't downloaded. "
+            "Raise the Maximum Size in MB setting to include it, then sync again."
+        )
 
     def _excluded_by_extension_filter(self, result: FetchResponse) -> bool:
         """Checked after links are extracted: an "only PDFs" filter must still crawl the pages linking to them."""
@@ -2050,7 +2079,7 @@ class WebConnector(BaseConnector):
         return links
 
     async def _create_failed_placeholder_record(
-        self, url: str, status_code: int | None
+        self, url: str, status_code: int | None, reason: str | None = None,
     ) -> tuple[FileRecord | None, list[Permission] | None]:
         """Build a FAILED-status placeholder FileRecord for a URL that could not be fetched.
 
@@ -2122,7 +2151,7 @@ class WebConnector(BaseConnector):
             parent_external_record_id=parent_url,
             parent_record_type=RecordType.FILE if parent_url else None,
             indexing_status=ProgressStatus.FAILED.value,
-            reason=failed_page_reason(status_code),
+            reason=reason or failed_page_reason(status_code),
         )
 
         permissions = []
@@ -2152,7 +2181,7 @@ class WebConnector(BaseConnector):
 
         for retry_url in snapshot:
             placeholder, perms = await self._create_failed_placeholder_record(
-                retry_url.url, retry_url.status_code
+                retry_url.url, retry_url.status_code, retry_url.reason
             )
 
             if placeholder is None:

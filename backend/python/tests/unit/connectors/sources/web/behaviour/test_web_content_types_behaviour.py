@@ -17,6 +17,10 @@ from web_behaviour_fakes import (
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 
 MB = 1024 * 1024
+TOO_LARGE = (
+    "This file is larger than this connector's 1 MB size limit, so it wasn't downloaded. "
+    "Raise the Maximum Size in MB setting to include it, then sync again."
+)
 OFFICE_TYPES = "application/vnd.openxmlformats-officedocument"
 
 
@@ -111,7 +115,7 @@ async def test_with_webpage_indexing_off_pages_are_stored_but_not_queued_for_ind
     assert db.pages()["http://site.test/guide.pdf"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
 
-async def test_an_oversized_download_is_skipped_without_fetching_its_body(
+async def test_an_oversized_download_is_shown_as_too_large_without_fetching_its_body(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     big = "http://site.test/huge.pdf"
@@ -122,7 +126,7 @@ async def test_an_oversized_download_is_skipped_without_fetching_its_body(
     await (await make_connector(max_size_mb=1)).run_sync()
 
     assert site.gets(big) == 0
-    assert big not in db.pages()
+    assert db.pages()[big].reason == TOO_LARGE
     assert "http://site.test/small" in db.pages()
 
 
@@ -141,7 +145,7 @@ async def test_an_oversized_download_does_not_start_the_headless_browser(
     assert site.browser_starts == starts_after_init
 
 
-async def test_an_oversized_page_without_a_declared_size_is_not_stored(
+async def test_an_oversized_page_without_a_declared_size_is_shown_as_too_large(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     big = "http://site.test/stream.pdf"
@@ -150,7 +154,8 @@ async def test_an_oversized_page_without_a_declared_size_is_not_stored(
 
     await (await make_connector(max_size_mb=1)).run_sync()
 
-    assert big not in db.pages()
+    assert db.pages()[big].indexing_status == ProgressStatus.FAILED.value
+    assert db.pages()[big].reason == TOO_LARGE
 
 
 async def test_a_page_that_grew_too_big_keeps_its_stored_record(

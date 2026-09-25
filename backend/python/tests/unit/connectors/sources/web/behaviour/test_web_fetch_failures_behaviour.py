@@ -56,7 +56,7 @@ async def test_a_page_that_stays_down_is_retried_a_bounded_number_of_times(
 
 
 @pytest.mark.parametrize("status", [404, 410])
-async def test_a_missing_page_is_asked_for_once_and_not_stored(
+async def test_a_missing_page_is_asked_for_once_and_shown_as_not_found(
     status: int, site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     _home_linking_to_page(site)
@@ -66,7 +66,24 @@ async def test_a_missing_page_is_asked_for_once_and_not_stored(
 
     assert site.gets(PAGE) == 1
     assert PAGE not in site.browser_visits
-    assert PAGE not in db.pages()
+    failed = db.pages()[PAGE]
+    assert failed.indexing_status == ProgressStatus.FAILED.value
+    assert failed.reason is not None and failed.reason.startswith(f"The page wasn't found ({status} ")
+
+
+async def test_a_page_behind_a_login_is_shown_as_refused(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    _home_linking_to_page(site)
+    site.add(PAGE, Page(status=401, body=b"login"))
+
+    await (await make_connector()).run_sync()
+
+    assert site.gets(PAGE) == 1
+    assert db.pages()[PAGE].reason == (
+        "The page refused access (401 Unauthorized). It may need a login or block automated visitors; "
+        "make sure it's publicly reachable, then sync again."
+    )
 
 
 async def test_a_long_retry_after_leaves_the_page_for_the_next_sync_without_waiting(

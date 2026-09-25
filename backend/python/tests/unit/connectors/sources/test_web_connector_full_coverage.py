@@ -667,7 +667,8 @@ class TestFetchAndProcessUrl:
             )
             result = await connector._fetch_and_process_url("https://example.com/page", 0)
         assert result is None
-        assert "https://example.com/page" not in connector.retry_urls
+        # Recorded as a failed page, but never re-fetched this sync.
+        assert connector.retry_urls["https://example.com/page"].retries == MAX_RETRIES
 
 
 class TestEnsureParentRecordsExist:
