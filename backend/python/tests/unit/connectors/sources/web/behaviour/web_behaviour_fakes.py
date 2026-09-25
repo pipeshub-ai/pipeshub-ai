@@ -102,6 +102,7 @@ class FakeWeb:
         self.storage_docs: dict[str, bytes] = {}
         self.storage_uploads: list[str] = []
         self.storage_buffer_updates: list[str] = []
+        self.storage_deletes: list[str] = []
         self.storage_down = False
         self._doc_seq = 0
 
@@ -192,6 +193,11 @@ class FakeWeb:
             if doc_id not in self.storage_docs:
                 return web.Response(status=404)
             return web.Response(body=self.storage_docs[doc_id], content_type="application/octet-stream")
+        if request.method == "DELETE" and path.startswith("/api/v1/document/internal/"):
+            doc_id = path.rsplit("/", 1)[-1]
+            self.storage_deletes.append(doc_id)
+            self.storage_docs.pop(doc_id, None)
+            return web.Response(status=204)
         if request.method == "GET" and path.endswith("/download"):
             doc_id = path.split("/")[-2]
             return web.json_response({"signedUrl": f"http://{STORAGE_HOST}/signed/{doc_id}"})

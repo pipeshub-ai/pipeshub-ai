@@ -143,6 +143,8 @@ class Status(Enum):
 # with SignatureDoesNotMatch. Handle the redirect ourselves and PUT instead.
 STORAGE_UPLOAD_REDIRECT_STATUS_CODES = frozenset({301, 302, 307, 308})
 
+GONE_STATUS_CODES = frozenset({HTTPStatus.NOT_FOUND.value, HTTPStatus.GONE.value})
+
 RETRYABLE_STATUS_CODES = {
     403, 408, 429,
     500, 502, 503, 504,
@@ -402,6 +404,9 @@ class WebConnector(BaseConnector):
         # Where redirects landed: deduplicated like visited_urls, but not counted toward max_pages.
         self._landed_urls: set[str] = set()
         self.retry_urls: dict[str, RetryUrl] = {}
+        # Stored pages that answered 404/410: deleted when the next sync gets the same answer.
+        self._gone_last_sync: set[str] = set()
+        self._gone_this_sync: set[str] = set()
         self._domain_next_retry_at: dict[str, float] = {}  # domain -> monotonic time when retry is allowed
         self.processed_urls: int = 0
         self.base_domain: Optional[str] = None
@@ -763,6 +768,8 @@ class WebConnector(BaseConnector):
             sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
             if not sync_point:
                 self.full_sync = True
+            self._gone_last_sync = set((sync_point or {}).get("goneOnce") or [])
+            self._gone_this_sync = set()
 
             if self.scope == ConnectorScope.TEAM.value:
                 await self.data_entities_processor.ensure_team_app_edge(
@@ -814,7 +821,8 @@ class WebConnector(BaseConnector):
             await self.record_sync_point.update_sync_point(
                 sync_point_key,
                 {
-                    "timestamp": get_epoch_timestamp_in_ms()
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                    "goneOnce": sorted(self._gone_this_sync),
                 }
             )
             self.full_sync = False
@@ -2178,8 +2186,13 @@ class WebConnector(BaseConnector):
         """
 
         snapshot = list(self.retry_urls.values())
+        start = self.retry_urls.get(self._normalize_url(self.url or ""))
+        # A start page that is gone means the whole site is, or it is misconfigured: delete nothing.
+        site_gone = start is not None and start.status_code in GONE_STATUS_CODES
 
         for retry_url in snapshot:
+            if retry_url.status_code in GONE_STATUS_CODES and not site_gone:
+                await self._handle_gone_page(retry_url.url)
             placeholder, perms = await self._create_failed_placeholder_record(
                 retry_url.url, retry_url.status_code, retry_url.reason
             )
@@ -2197,6 +2210,30 @@ class WebConnector(BaseConnector):
                 permissions_changed=False,
                 new_permissions=perms,
             )
+
+    async def _handle_gone_page(self, url: str) -> None:
+        """Delete a stored page the second sync in a row it answers 404/410.
+
+        Only a clear "gone" answer counts: errors, blocks and timeouts never reach here.
+        Failed-page records and folder placeholders are left alone.
+        """
+        external_id = self._ensure_trailing_slash(self._normalize_url(url))
+        record = None
+        for candidate in dict.fromkeys([external_id, external_id.rstrip("/")]):
+            record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=candidate
+            )
+            if record:
+                break
+        if record is None or record.is_internal or record.indexing_status == ProgressStatus.FAILED.value:
+            return
+        if external_id not in self._gone_last_sync:
+            self._gone_this_sync.add(external_id)
+            return
+        self.logger.info("Removing %s: it answered 404/410 on two syncs in a row", url)
+        await self.data_entities_processor.on_record_deleted(record.id)
+        if record.storage_document_id and not await self._delete_storage_document(record.storage_document_id):
+            self.logger.warning("Removed %s but could not delete its stored copy %s", url, record.storage_document_id)
 
     async def process_retry_urls(self, max_retries: int = 2) -> None:
         """Process retry URLs in batches.

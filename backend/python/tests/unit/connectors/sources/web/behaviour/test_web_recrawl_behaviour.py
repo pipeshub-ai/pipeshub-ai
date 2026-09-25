@@ -113,6 +113,7 @@ async def test_a_page_that_fails_to_load_keeps_its_stored_record(
 
     site.add(GUIDE, outage)
     await connector.run_sync()
+    await connector.run_sync()
 
     kept = db.pages()[GUIDE]
     assert db.deleted == []
@@ -133,6 +134,7 @@ async def test_a_site_that_is_unreachable_keeps_every_stored_record(
     site.add(START_URL, Page(status=503, body=b""))
     site.add(GUIDE, Page(status=503, body=b""))
     await connector.run_sync()
+    await connector.run_sync()
 
     assert {url: (r.id, r.external_revision_id) for url, r in db.pages().items()} == before
     assert db.deleted == []
@@ -150,23 +152,53 @@ async def test_a_page_the_start_page_stops_linking_to_is_kept(
     assert db.deleted == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Pages that are gone (404/410) stay in search forever: the crawler never "
-        "removes records. Deciding when a page counts as removed is a product decision."
-    ),
-)
 @pytest.mark.parametrize("status", [404, 410])
-async def test_a_page_that_is_gone_is_removed_from_the_index(
+async def test_a_page_gone_on_two_syncs_in_a_row_is_removed_with_its_stored_copy(
     status: int, site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     connector = await _first_sync(site, db, make_connector)
+    first = db.pages()[GUIDE]
 
     site.add(GUIDE, Page(status=status, body=b"gone"))
     await connector.run_sync()
+    assert GUIDE in db.pages() and db.deleted == []
 
-    assert GUIDE not in db.pages()
+    await connector.run_sync()
+
+    assert db.deleted == [first.id]
+    assert site.storage_deletes == [first.storage_document_id]
+    # Still linked from the site, so it stays listed as a failed page with nothing indexed.
+    remains = db.pages()[GUIDE]
+    assert remains.id != first.id and remains.storage_document_id is None
+    assert remains.indexing_status == ProgressStatus.FAILED.value
+    assert START_URL in db.pages()
+
+
+async def test_a_page_gone_once_and_then_back_starts_counting_again(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    connector = await _first_sync(site, db, make_connector)
+
+    for page in (Page(status=404), html_page("Guide", text="Install with pip"), Page(status=404)):
+        site.add(GUIDE, page if isinstance(page, Page) else Page(body=page))
+        await connector.run_sync()
+
+    assert GUIDE in db.pages()
+    assert db.deleted == []
+
+
+async def test_nothing_is_removed_while_the_start_page_itself_is_gone(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    connector = await _first_sync(site, db, make_connector)
+
+    site.add(START_URL, Page(status=404))
+    site.add(GUIDE, Page(status=404))
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert db.deleted == []
+    assert {START_URL, GUIDE} <= set(db.pages())
 
 
 async def test_a_page_that_failed_last_time_is_indexed_once_it_loads(
