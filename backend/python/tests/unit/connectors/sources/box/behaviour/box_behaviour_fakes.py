@@ -48,6 +48,7 @@ class Fault:
     remaining: int
     headers: dict[str, str]
     as_user: str | None = None
+    query: dict[str, str] | None = None
 
 
 class FakeBoxApi(BaseAdapter):
@@ -132,9 +133,12 @@ class FakeBoxApi(BaseAdapter):
             "created_at": f"2024-03-01T00:{len(self.events):02d}:00Z", "source": source, **extra,
         })
 
-    def fail(self, method: str, path: str, status: int, times: int = 1, headers: dict[str, str] | None = None, as_user: str | None = None) -> None:
+    def fail(
+        self, method: str, path: str, status: int, times: int = 1, headers: dict[str, str] | None = None,
+        as_user: str | None = None, query: dict[str, str] | None = None,
+    ) -> None:
         """Answer the next ``times`` matching requests with ``status`` (then behave normally)."""
-        self.faults.append(Fault(method.upper(), path, status, times, headers or {}, as_user))
+        self.faults.append(Fault(method.upper(), path, status, times, headers or {}, as_user, query))
 
     def expire(self, token: str) -> None:
         """Box stops accepting ``token``; the SDK must fetch a new one."""
@@ -170,6 +174,7 @@ class FakeBoxApi(BaseAdapter):
                     and fault.method == request.method
                     and fault.path == url.path
                     and (fault.as_user is None or fault.as_user == as_user)
+                    and all(query.get(k) == v for k, v in (fault.query or {}).items())
                 ):
                     fault.remaining -= 1
                     return self._error(request, fault.status, "staged failure", fault.headers)

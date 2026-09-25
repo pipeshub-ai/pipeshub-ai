@@ -5,7 +5,6 @@ refresh) are real; every HTTP request is answered by an in-memory Box and our
 databases are in-memory fakes. SDK retry waits are recorded, not slept.
 """
 
-import contextlib
 import logging
 from typing import Any
 
@@ -369,22 +368,39 @@ class TestEventStreamAnchor:
 
         assert checkpoints.cursor() is None
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Left alone: when Box's user list fails, _sync_users returns the users read so "
-            "far (or none), the full sync 'succeeds' with them and saves the cursor, so the "
-            "missing users' files wait for a full sync that incremental runs never trigger. "
-            "Existing tests pin the return-what-we-have behaviour; changing it is a decision."
-        ),
-    )
     async def test_a_full_sync_that_could_not_list_users_saves_no_cursor(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
         box_api.fail("GET", "/2.0/users", 503, times=10)
         connector = await ready_connector(db, checkpoints)
 
-        with contextlib.suppress(Exception):
-            await connector.run_sync()
+        await connector.run_sync()
+
+        assert checkpoints.cursor() is None
+
+    async def test_a_user_whose_files_could_not_be_listed_leaves_no_cursor(self, box_api, db, checkpoints, sdk_sleeps) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-a", "a.txt", ALICE)
+        box_api.add_file("file-b", "b.txt", BOB)
+        box_api.fail("GET", "/2.0/folders/0/items", 503, times=5, as_user=ALICE)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert len(sdk_sleeps) == 4
+        assert "file-b" in db.records and "file-a" not in db.records
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert "file-a" in db.records
+        assert checkpoints.cursor() is not None
+
+    async def test_a_failed_page_of_share_history_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.fail("GET", "/2.0/events", 503, times=5, query={"stream_type": "admin_logs"})
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
 
         assert checkpoints.cursor() is None
 

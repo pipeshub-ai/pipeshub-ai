@@ -210,6 +210,9 @@ class BoxConnector(BaseConnector):
     # Box only retains admin_logs_streaming events for 2 weeks. If last sync was longer ago, do full sync.
     BOX_EVENT_STREAM_RETENTION_DAYS = 14
 
+    # Cleared when a full sync fails to read part of Box, so it does not save the stream position.
+    _full_sync_complete: bool = True
+
     def __init__(
         self,
         logger: Logger,
@@ -294,6 +297,11 @@ class BoxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to initialize Box CCG client: {e}", exc_info=True)
             return False
+
+    def _mark_full_sync_incomplete(self, error: object) -> None:
+        """Record a read that did not finish; 403 and 404 are Box's final answer, so they don't count."""
+        if not str(error).startswith(("403", "404")):
+            self._full_sync_complete = False
 
     def _parse_box_timestamp(self, ts_str: Optional[str], field_name: str, entry_name: str) -> int:
         """Helper to parse Box timestamps safely."""
@@ -635,6 +643,7 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.error(f"Failed to fetch users: {response.error}")
+                    self._mark_full_sync_incomplete(response.error)
                     break
 
                 data = self._to_dict(response.data)
@@ -667,6 +676,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing Box users: {e}", exc_info=True)
+            self._mark_full_sync_incomplete(e)
             return []
 
     async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
@@ -993,6 +1003,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing for user {user.email}: {e}", exc_info=True)
+            self._mark_full_sync_incomplete(e)
         finally:
             # Once per user: clearing inside the recursion left the parent folder's later pages listed without As-User.
             try:
@@ -1047,6 +1058,7 @@ class BoxConnector(BaseConnector):
 
             if not response.success:
                 self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
+                self._mark_full_sync_incomplete(response.error)
                 break
 
             data = self._to_dict(response.data)
@@ -1110,6 +1122,7 @@ class BoxConnector(BaseConnector):
                     await self._run_sync_for_user(user)
                 except Exception as e:
                     self.logger.error(f"Error syncing user {user.email}: {e}")
+                    self._mark_full_sync_incomplete(e)
                     # Continue to next user even if one fails
                     continue
 
@@ -1228,6 +1241,7 @@ class BoxConnector(BaseConnector):
                 self.logger.warning(f"❌ [Smart Sync] Failed to anchor event stream: {e}", exc_info=True)
 
             # SYNC RESOURCES (Full Scan)
+            self._full_sync_complete = True
             self.logger.info("📦 [Full Sync] Syncing users...")
             users = await self._sync_users()
             await self.data_entities_processor.on_new_app_users(users)
@@ -1251,8 +1265,13 @@ class BoxConnector(BaseConnector):
             }
             await self._backfill_shared_with_me_history(our_org_box_user_ids)
 
-            if anchor:
+            if anchor and self._full_sync_complete:
                 await self.box_cursor_sync_point.update_sync_point(key, anchor)
+            elif anchor:
+                self.logger.warning(
+                    "⚠️ [Full Sync] Part of Box could not be read, so the event-stream position was not saved "
+                    "and the next run will be a full sync again."
+                )
 
             self.logger.info("✅ [Full Sync] Completed successfully.")
 
@@ -1288,6 +1307,7 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.warning(f"⚠️ [Backfill] Failed to fetch historical collaboration events: {response.error}")
+                    self._mark_full_sync_incomplete(response.error)
                     break
 
                 data = self._to_dict(response.data)
@@ -1306,6 +1326,7 @@ class BoxConnector(BaseConnector):
             self.logger.info(f"✅ [Backfill] Completed. Replayed {total_events} historical collaboration event(s).")
         except Exception as e:
             self.logger.error(f"❌ [Backfill] Error backfilling historical collaborations: {e}", exc_info=True)
+            self._mark_full_sync_incomplete(e)
 
     async def run_incremental_sync(self) -> None:
         """
