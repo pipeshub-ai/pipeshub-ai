@@ -2155,6 +2155,7 @@ export const resyncConnectorRecords =
         connectorName: normalizeAppName(connectorName),
         connectorId,
         fullSync,
+        force,
       };
 
       const resyncConnectorResponse =

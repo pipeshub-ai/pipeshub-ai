@@ -21,6 +21,7 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.connectors.services.sync_lifecycle import run_sync_with_lifecycle
 from app.connectors.services.sync_progress_store import (
+    ConnectorSyncProgressStore,
     get_connector_sync_progress_store,
 )
 from app.connectors.services.vector_cleanup_events import (
@@ -332,6 +333,9 @@ class EventService:
         org_id = payload.get("orgId")
         connector_id = payload.get("connectorId")
         full_sync = payload.get("fullSync", False)
+        # Only a user's confirmed "cancel and restart" sets this; scheduled
+        # ticks and older events never carry it.
+        force = payload.get("force") is True
 
         if not org_id:
             self.logger.error("orgId is required in start sync payload")
@@ -483,13 +487,17 @@ class EventService:
             # Declined rather than restarted: a scheduled tick that lands while
             # the previous sync is still running used to cancel it, so a sync
             # slower than its own interval could be killed and restarted for
-            # ever and never finish. An explicit full sync still pre-empts,
-            # because asking for one is a deliberate act.
+            # ever and never finish. An explicit full sync or a forced restart
+            # still pre-empts, because asking for one is a deliberate act.
             #
             # Checked before a run id is minted: start_run makes the new id the
             # current run, so minting one for a request that is then declined
             # would leave the running sync looking superseded, and its progress
             # would stop updating.
+            if force:
+                return await self._restart_sync(
+                    connector, connector_name, connector_id, org_id, store
+                )
             if sync_task_manager.is_running(connector_id):
                 self.logger.info(
                     f"Sync already running for {connector_name} {connector_id}; "
@@ -522,6 +530,32 @@ class EventService:
                 return True
             self.logger.info(f"Started sync task for {connector_name} {connector_id}")
 
+        return True
+
+    async def _restart_sync(
+        self,
+        connector: BaseConnector,
+        connector_name: str,
+        connector_id: str,
+        org_id: str,
+        store: ConnectorSyncProgressStore | None,
+    ) -> bool:
+        """Cancel any in-flight sync for this connector and start a fresh one."""
+        # The new run id is minted before the old task is cancelled, so the old
+        # task's cleanup sees itself superseded and leaves status and progress alone.
+        run_id: str | None = None
+        if store:
+            run_id = await store.start_run(org_id, connector_id, full_sync=False)
+        try:
+            await sync_task_manager.start_sync(
+                connector_id,
+                self._run_sync_and_clear_status(connector, connector_id, org_id, run_id),
+            )
+        except Exception:
+            if store and run_id:
+                await store.clear(org_id, connector_id, expected_run_id=run_id)
+            raise
+        self.logger.info(f"Restarted sync task for {connector_name} {connector_id}")
         return True
 
     async def _run_sync_and_clear_status(

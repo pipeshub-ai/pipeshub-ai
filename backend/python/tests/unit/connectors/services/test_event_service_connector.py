@@ -14,12 +14,18 @@ Covers:
 - _handle_delete: missing ids, success, graph fails with revert, config delete fail, kafka fail
 """
 
+import asyncio
 import logging
+from collections.abc import Coroutine
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.sync.task_manager import (
+    SyncTaskManager,
+    reindex_task_manager,
+    sync_task_manager,
+)
 from app.connectors.services.event_service import EventService
 
 from app.config.constants.arangodb import CollectionNames
@@ -410,6 +416,93 @@ class TestHandleStartSync:
         # only repeat the decision.
         assert result is True
         mock_stm.start_sync.assert_not_awaited()
+
+    async def _run_start_sync_over_a_running_sync(self, service, payload) -> dict[str, bool]:
+        """Start a real long-running sync for c1, then send ``payload`` at it."""
+        manager = SyncTaskManager(label="Sync")
+        old_sync_cancelled = asyncio.Event()
+        new_sync_started = asyncio.Event()
+
+        async def _old_sync() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                old_sync_cancelled.set()
+                raise
+
+        async def _new_sync(*_args) -> None:
+            new_sync_started.set()
+            await asyncio.Event().wait()
+
+        old_task = manager._spawn("c1", _old_sync())
+        await asyncio.sleep(0)
+        mock_conn = AsyncMock()
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch.object(service, "_get_connector", return_value=mock_conn), \
+             patch.object(service, "_update_app_status", new_callable=AsyncMock), \
+             patch.object(service, "_sync_progress_store", new_callable=AsyncMock, return_value=None), \
+             patch.object(service, "_run_sync_and_clear_status", side_effect=_new_sync), \
+             patch("app.connectors.services.event_service.sync_task_manager", manager):
+            result = await service._handle_start_sync("gmail", payload)
+            await asyncio.sleep(0)
+            outcome = {
+                "result": result,
+                "old_cancelled": old_sync_cancelled.is_set(),
+                "new_started": new_sync_started.is_set(),
+                "running_task_is_old": manager._tasks.get("c1") is old_task,
+            }
+        await manager.cancel_all()
+        return outcome
+
+    @pytest.mark.asyncio
+    async def test_forced_quick_sync_cancels_the_running_sync_and_restarts(self, service) -> None:
+        outcome = await self._run_start_sync_over_a_running_sync(
+            service, {"orgId": "org1", "connectorId": "c1", "fullSync": False, "force": True}
+        )
+        assert outcome == {
+            "result": True,
+            "old_cancelled": True,
+            "new_started": True,
+            "running_task_is_old": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_tick_without_force_leaves_the_running_sync_alone(self, service) -> None:
+        outcome = await self._run_start_sync_over_a_running_sync(
+            service, {"orgId": "org1", "connectorId": "c1"}
+        )
+        assert outcome == {
+            "result": True,
+            "old_cancelled": False,
+            "new_started": False,
+            "running_task_is_old": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_forced_restart_supersedes_the_old_run_before_cancelling_it(self, service) -> None:
+        calls: list[str] = []
+        store = AsyncMock()
+        store.start_run = AsyncMock(side_effect=lambda *a, **k: calls.append("start_run") or "run-B")
+        mock_conn = AsyncMock()
+
+        async def _start_sync(key: str, coro: Coroutine) -> None:
+            calls.append("start_sync")
+            coro.close()
+
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch.object(service, "_get_connector", return_value=mock_conn), \
+             patch.object(service, "_update_app_status", new_callable=AsyncMock), \
+             patch.object(service, "_sync_progress_store", new_callable=AsyncMock, return_value=store), \
+             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+            mock_stm.start_sync = AsyncMock(side_effect=_start_sync)
+            result = await service._handle_start_sync(
+                "gmail", {"orgId": "org1", "connectorId": "c1", "force": True}
+            )
+
+        assert result is True
+        assert calls == ["start_run", "start_sync"]
+        store.start_run.assert_awaited_once_with("org1", "c1", full_sync=False)
+        mock_stm.start_if_idle.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_full_sync_success(self, service):

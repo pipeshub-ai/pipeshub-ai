@@ -2362,6 +2362,7 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
         connectorId: 'c1',
         connectorName: 'googledrive',
         fullSync: false,
+        force: false,
       })
       expect(execStub.getCall(2).args[0]).to.include('include_coverage=false')
     })
@@ -2456,6 +2457,12 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
       expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
+      // Without force on the event, the connectors service declines the
+      // restart while the current sync is still running.
+      expect(mockRecordRelation.resyncConnectorRecords.firstCall.args[0]).to.deep.include({
+        fullSync: false,
+        force: true,
+      })
       // force skips the sync-progress lookup
       expect(execStub.callCount).to.equal(2)
     })

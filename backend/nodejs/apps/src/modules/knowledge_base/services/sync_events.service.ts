@@ -25,13 +25,26 @@ export interface ConnectorSyncEvent {
   sourceCreatedAtTimestamp: string;
 }
 
+export interface ResyncConnectorRequest {
+  orgId: string;
+  userId?: string;
+  connectorName: string;
+  connectorId: string;
+  origin?: string;
+  fullSync?: boolean;
+  force?: boolean;
+}
+
 export interface BaseSyncEvent {
   orgId: string;
   connector: string;
   connectorId: string;
-  origin: string;
+  origin?: string;
   syncedBy?: string;
   fullSync?: boolean;
+  // Cancel the in-flight sync and restart; without it a sync that overlaps a
+  // running one is declined.
+  force?: boolean;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;
   sourceCreatedAtTimestamp: string;
