@@ -1809,17 +1809,17 @@ class WebConnector(BaseConnector):
                 connector_id=self.connector_id, external_record_id=external_id
             )
 
-            # Migration compatibility: old records may have been saved WITHOUT a trailing slash.
-            # If not found by the new normalized id, fall back to the legacy (no-slash) form.
+            # Migration compatibility: older records may be stored without the trailing slash,
+            # or under the query string as the site gave it rather than in name order.
             legacy_lookup = False
-            if not existing_record:
-                legacy_external_id = external_id.rstrip('/')
-                if legacy_external_id != external_id:
-                    existing_record = await self.data_entities_processor.get_record_by_external_id(
-                        connector_id=self.connector_id, external_record_id=legacy_external_id
-                    )
-                    if existing_record:
-                        legacy_lookup = True
+            legacy_ids = [external_id.rstrip('/'), urlunparse(urlparse(final_url)._replace(fragment=""))]
+            for legacy_external_id in dict.fromkeys(legacy_ids):
+                if existing_record or legacy_external_id == external_id:
+                    continue
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=legacy_external_id
+                )
+                legacy_lookup = existing_record is not None
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
@@ -2261,7 +2261,7 @@ class WebConnector(BaseConnector):
                 parsed.netloc.lower(),
                 parsed.path.rstrip('/') or '/',
                 parsed.params,
-                parsed.query,
+                self._sort_query(parsed.query),
                 ''  # Remove fragment
             ))
         except Exception:
@@ -2433,15 +2433,22 @@ class WebConnector(BaseConnector):
 
         return parsed.netloc
 
+    @staticmethod
+    def _sort_query(query: str) -> str:
+        """?b=2&a=1 and ?a=1&b=2 are one page: parameters in name order, repeats and encoding kept as given."""
+        if not query:
+            return query
+        return "&".join(sorted(query.split("&"), key=lambda part: part.split("=", 1)[0]))
+
     def _ensure_trailing_slash(self, url: str) -> str:
         """Append a trailing slash to extensionless (page) URLs to prevent duplicate records.
         File URLs containing a dot in the last path segment (e.g. /doc.pdf) are returned unchanged.
         """
         try:
             parsed = urlparse(url)
-            # Don't touch URLs with query params — the param might be the identifier
+            # Don't touch the path of URLs with query params — the param might be the identifier
             if parsed.query:
-                return url
+                return urlunparse(parsed._replace(query=self._sort_query(parsed.query), fragment=""))
             last_segment = parsed.path.rstrip('/').rsplit('/', 1)[-1]
             if '.' not in last_segment:  # no file extension → treat as a page URL
                 path = parsed.path.rstrip('/') + '/'

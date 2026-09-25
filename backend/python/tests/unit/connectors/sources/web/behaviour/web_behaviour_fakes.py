@@ -314,6 +314,8 @@ class FakeRecordsDb:
         existing = self.records.get(record.external_record_id)
         if existing is not None:
             record.id = existing.id
+        # Records are upserted by id, so one stored under an older external id is replaced.
+        self.records = {k: v for k, v in self.records.items() if v.id != record.id}
         self.records[record.external_record_id] = record.model_copy(deep=True)
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:

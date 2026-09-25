@@ -183,14 +183,6 @@ async def test_a_page_linked_only_with_a_fragment_is_still_crawled(
     assert "http://site.test/guide" in _page_urls(db)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "The crawler treats ?a=1&b=2 and ?b=2&a=1 as different pages. Sorting query "
-        "strings would change the stored id of existing query-string records, so it "
-        "is a product decision, not a bug fix."
-    ),
-)
 async def test_query_string_order_does_not_make_a_second_page(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
@@ -293,3 +285,23 @@ async def test_a_redirect_uses_one_page_of_the_page_limit(
     await (await make_connector(max_pages=3, use_headless_browser=robust)).run_sync()
 
     assert _page_urls(db) == {START_URL, "http://site.test/moved-here", "http://site.test/other"}
+
+
+async def test_a_query_page_stored_before_keys_were_sorted_is_updated_not_duplicated(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    listing = "http://site.test/list?b=2&a=1"
+    site.html(START_URL, "Home", "/list?b=2&a=1")
+    site.html(listing, "List", text="old")
+    connector = await make_connector()
+    await connector.run_sync()
+    [key] = [k for k in db.records if "/list" in k]
+    stored = db.records.pop(key)
+    stored.external_record_id = listing
+    db.records[listing] = stored
+
+    site.html(listing, "List", text="new")
+    await connector.run_sync()
+
+    list_records = [r for r in db.records.values() if "/list" in r.external_record_id]
+    assert [(r.id, r.external_record_id) for r in list_records] == [(stored.id, "http://site.test/list?a=1&b=2")]
