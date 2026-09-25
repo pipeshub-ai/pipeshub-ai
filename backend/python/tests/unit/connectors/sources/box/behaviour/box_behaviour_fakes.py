@@ -354,8 +354,9 @@ class FakeBoxRecordsDb:
 
     Mirrors the real processor's write semantics where they matter: record
     permissions are added to what is stored (``on_new_records`` never removes an
-    edge), while ``on_new_user_groups`` replaces a stored group's members with the
-    list it is given. Only the methods the Box connector calls are implemented.
+    edge) and a group permission is dropped when that group is not stored yet,
+    while ``on_new_user_groups`` replaces a stored group's members with the list
+    it is given. Only the methods the Box connector calls are implemented.
     """
 
     def __init__(self, org_id: str = "org-1") -> None:
@@ -393,6 +394,8 @@ class FakeBoxRecordsDb:
             self.records[record.external_record_id] = record
             stored = self.permissions.setdefault(record.external_record_id, {})
             for p in permissions or []:
+                if p.entity_type.value == "GROUP" and p.external_id not in self.user_groups:
+                    continue
                 stored[f"{p.entity_type.value}:{p.external_id}"] = p
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:

@@ -351,6 +351,42 @@ class TestGroups:
         assert db.deleted_groups == []
         assert "g-eng" in db.user_groups
 
+    async def test_a_failed_group_listing_leaves_no_cursor_and_the_next_run_grants_the_group(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_group("g-eng", "Engineering", (BOB,))
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        box_api.collaborate("file-1", "g-eng", kind="group")
+        box_api.fail("GET", "/2.0/groups", 503, times=5)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert "g-eng" not in db.access("file-1")
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert "g-eng" in db.user_groups
+        assert "g-eng" in db.access("file-1")
+
+    async def test_a_failed_member_read_of_a_new_group_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_group("g-eng", "Engineering", (BOB,))
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        box_api.collaborate("file-1", "g-eng", kind="group")
+        box_api.fail("GET", "/2.0/groups/g-eng/memberships", 503, times=5)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert "g-eng" not in db.user_groups
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert db.group_members["g-eng"] == [BOB_EMAIL]
+        assert "g-eng" in db.access("file-1")
+
     async def test_a_group_removed_in_box_is_deleted(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
         box_api.add_group("g-eng", "Engineering", (ALICE,))

@@ -805,6 +805,7 @@ class BoxConnector(BaseConnector):
                 if not response.success:
                     self.logger.error(f"Failed to fetch groups: {response.error}")
                     self.logger.warning("Skipping removal of deleted groups because the group list from Box is incomplete.")
+                    self._mark_full_sync_incomplete(response.error)
                     return
 
                 data = self._to_dict(response.data)
@@ -862,6 +863,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing Box groups: {e}", exc_info=True)
+            self._mark_full_sync_incomplete(e)
 
     async def _get_group_memberships(self, group_id: str) -> list[dict] | None:
         """Every membership of a group, or None when a page of them could not be read."""
@@ -874,6 +876,7 @@ class BoxConnector(BaseConnector):
             )
             if not response.success:
                 self.logger.warning(f"Failed to fetch members of group {group_id}: {response.error}")
+                self._mark_full_sync_incomplete(response.error)
                 return None
             data = self._to_dict(response.data)
             entries = data.get('entries', [])
