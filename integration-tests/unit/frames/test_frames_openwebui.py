@@ -56,6 +56,10 @@ class _FakeClient:
         self.linked: dict[str, list[str]] = {}
         self.status_calls: list[str] = []
         self.updated_at: dict[str, float] = {}
+        self.set_calls: list[bool] = []
+        self.server_value = False
+        self.server_keeps: bool | None = None
+        self.restart_during_chat = False
 
     def knowledge_id(self, name: str) -> str | None:
         return self.knowledge.get(name)
@@ -83,8 +87,18 @@ class _FakeClient:
     def file_state(self, file_id: str) -> tuple[str, float]:
         return self.file_status(file_id), self.updated_at.get(file_id, time.time())
 
+    def query_generation(self) -> bool:
+        return self.server_value
+
+    def set_query_generation(self, enabled: bool) -> bool:
+        self.set_calls.append(enabled)
+        self.server_value = enabled if self.server_keeps is None else self.server_keeps
+        return self.server_value
+
     def chat(self, body: dict[str, Any]) -> dict[str, Any]:
         self.chats.append(body)
+        if self.restart_during_chat:
+            self.server_value = False  # a restart reloads the environment's setting
         if isinstance(self.reply, Exception):
             raise self.reply
         return self.reply
@@ -300,11 +314,12 @@ class TestResponse:
 
 
 class TestAnswer:
-    def _adapter(self, client: _FakeClient) -> OpenWebUIAdapter:
+    def _adapter(self, client: _FakeClient, *, query_generation: bool = False) -> OpenWebUIAdapter:
         model = ResolvedModel(model_key="answerer", provider="azureOpenAI", model_name="gpt-5.6-luna",
                               reasoning_effort="high")
         return OpenWebUIAdapter("openwebui", client, None, model,  # type: ignore[arg-type]
-                                reasoning_effort="high", current_time=_SNAPSHOT, price=None)
+                                reasoning_effort="high", current_time=_SNAPSHOT, price=None,
+                                query_generation=query_generation)
 
     def _prepared(self, tmp_path: Path) -> PreparedCorpus:
         docs = [_doc(0), _doc(1)]
@@ -336,6 +351,70 @@ class TestAnswer:
 
         assert prediction.error is not None and prediction.error.kind == "http"
         assert prediction.answer == ""
+
+    def test_query_generation_is_set_only_when_the_server_drifted(self, tmp_path: Path) -> None:
+        prepared = self._prepared(tmp_path)
+        client = _FakeClient()
+        client.reply = {"choices": [{"message": {"content": "x"}}],
+                        "sources": [{"metadata": [{"file_id": "file-Article_1.html"}]}]}
+        adapter = self._adapter(client, query_generation=True)
+
+        adapter.answer(AskItem(question_id="1", prompt="Which?"), prepared, 0)
+        adapter.answer(AskItem(question_id="2", prompt="Which?"), prepared, 0)
+        client.server_value = False  # restarted between questions
+        prediction = adapter.answer(AskItem(question_id="3", prompt="Which?"), prepared, 0)
+
+        assert client.set_calls == [True, True]
+        assert prediction.error is None
+
+    def test_a_default_run_switches_off_what_a_best_run_left_on(self, tmp_path: Path) -> None:
+        prepared = self._prepared(tmp_path)
+        client = _FakeClient()
+        client.server_value = True
+        client.reply = {"choices": [{"message": {"content": "x"}}],
+                        "sources": [{"metadata": [{"file_id": "file-Article_1.html"}]}]}
+
+        self._adapter(client, query_generation=False).answer(AskItem(question_id="1", prompt="Which?"), prepared, 0)
+
+        assert client.set_calls == [False]
+
+    def test_a_restart_during_the_answer_fails_the_question(self, tmp_path: Path) -> None:
+        """The answer may have been retrieved under either setting; it is
+        re-asked rather than scored as the configured one."""
+        prepared = self._prepared(tmp_path)
+        client = _FakeClient()
+        client.restart_during_chat = True
+        client.reply = {"choices": [{"message": {"content": "x"}}],
+                        "sources": [{"metadata": [{"file_id": "file-Article_1.html"}]}]}
+
+        prediction = self._adapter(client, query_generation=True).answer(
+            AskItem(question_id="1", prompt="Which?"), prepared, 0,
+        )
+
+        assert prediction.error is not None and prediction.error.code == "setting_lost"
+
+    def test_a_server_that_ignores_the_switch_fails_the_question(self, tmp_path: Path) -> None:
+        prepared = self._prepared(tmp_path)
+        client = _FakeClient()
+        client.server_keeps = False
+
+        prediction = self._adapter(client, query_generation=True).answer(
+            AskItem(question_id="7", prompt="Which?"), prepared, 0,
+        )
+
+        assert prediction.error is not None and client.chats == []
+
+    def test_an_answer_with_no_retrieved_context_is_a_failure(self, tmp_path: Path) -> None:
+        """With the vector store down Open WebUI still answers, from the model
+        alone; that is not a measurement of its retrieval."""
+        prepared = self._prepared(tmp_path)
+        client = _FakeClient()
+        client.reply = {"choices": [{"message": {"content": "From memory."}}], "sources": []}
+
+        prediction = self._adapter(client).answer(AskItem(question_id="7", prompt="Which?"), prepared, 0)
+
+        assert prediction.error is not None and prediction.error.code == "no_context"
+        assert prediction.answer == "From memory.", "kept for inspection"
 
 
 class TestModelsWithoutPipesHub:

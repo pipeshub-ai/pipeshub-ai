@@ -186,13 +186,13 @@ def _advanced_rag(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
     return _rag(options, system, deps)
 
 
-_OPENWEBUI_OPTIONS = frozenset({"base_url", "api_key_env", "upload_workers", "request_timeout_s"})
+_OPENWEBUI_OPTIONS = frozenset({"base_url", "api_key_env", "upload_workers", "request_timeout_s", "query_generation"})
 
 
 def _openwebui(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
     """Open WebUI's own pipeline. Its retrieval settings live in the
-    instance's environment (see the run config's header); this reads only
-    where to reach it."""
+    instance's environment (see the run config's header); `query_generation`
+    is the one switched per run, since it is instance-wide."""
     import os
 
     unknown = set(system.options) - _OPENWEBUI_OPTIONS
@@ -212,12 +212,12 @@ def _openwebui(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
     return OpenWebUIAdapter(
         system.id, client, ingestor, model,
         reasoning_effort=model.reasoning_effort, current_time=deps.config.corpus.snapshot,
-        price=_answerer_kwargs(deps)["price"],
+        price=_answerer_kwargs(deps)["price"], query_generation=bool(system.options.get("query_generation", False)),
     )
 
 
 _RAGFLOW_OPTIONS = frozenset({
-    "base_url", "api_key_env", "dataset", "chat", "batch_size", "upload_workers", "request_timeout_s",
+    "base_url", "api_key_env", "dataset", "chat", "system_prompt", "batch_size", "upload_workers", "request_timeout_s",
 })
 
 
@@ -244,8 +244,12 @@ def _ragflow(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
         batch_size=int(system.options.get("batch_size", 50)),
         upload_workers=int(system.options.get("upload_workers", 4)),
     )
+    system_prompt = system.options.get("system_prompt")
+    if system_prompt is not None and "{knowledge}" not in str(system_prompt):
+        raise ConfigError(f"{system.id}: `system_prompt` must contain {{knowledge}}, where RAGFlow puts the chunks")
     return RagflowAdapter(
         system.id, client, ingestor, chat_config=chat, current_time=deps.config.corpus.snapshot,
+        system_prompt=None if system_prompt is None else str(system_prompt),
     )
 
 

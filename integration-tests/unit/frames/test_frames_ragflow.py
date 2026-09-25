@@ -202,6 +202,19 @@ class TestAnswer:
 
         assert prediction.error is not None and prediction.answer == ""
 
+    def test_an_answer_with_no_retrieved_context_is_a_failure(self, tmp_path: Path) -> None:
+        docs = [_doc(0)]
+        client = _FakeClient()
+        ingestor = _ingestor(client, tmp_path, docs)
+        prepared = ingestor.prepare(_manifest(docs))
+        client.reply = {"answer": "From memory.", "reference": {"chunks": []}}
+
+        prediction = RagflowAdapter("ragflow", client, ingestor, chat_config=_CHAT, current_time=_SNAPSHOT).answer(
+            AskItem(question_id="3", prompt="Which?"), prepared, 0,
+        )
+
+        assert prediction.error is not None and prediction.error.code == "no_context"
+
 
 class TestChat:
     def test_one_chat_is_created_bound_to_the_dataset_with_the_snapshot_date(self, tmp_path: Path) -> None:
@@ -230,7 +243,7 @@ class TestChat:
         prepared = ingestor.prepare(_manifest(docs))
         from benchmarks.harness.systems.ragflow.adapter import chat_name
 
-        existing = client.create_chat({"name": chat_name(prepared.ingest.kb_id)})
+        existing = client.create_chat({"name": chat_name(prepared.ingest.kb_id, _CHAT, None)})
         client.reply = {"answer": "x", "reference": {"chunks": []}}
 
         RagflowAdapter("ragflow", client, ingestor, chat_config=_CHAT, current_time=_SNAPSHOT).answer(
@@ -239,3 +252,36 @@ class TestChat:
 
         assert list(client.chats) == [existing]
         assert "Today" not in client.chats[existing]["prompt_config"]["system"]
+
+    def test_a_given_system_prompt_replaces_the_default(self, tmp_path: Path) -> None:
+        docs = [_doc(0)]
+        client = _FakeClient()
+        ingestor = _ingestor(client, tmp_path, docs)
+        prepared = ingestor.prepare(_manifest(docs))
+        client.reply = {"answer": "x", "reference": {"chunks": [{"document_id": "doc-Article_0.html"}]}}
+
+        RagflowAdapter(
+            "ragflow-best", client, ingestor, chat_config=_CHAT, current_time=_SNAPSHOT,
+            system_prompt="Answer from these.\n{knowledge}",
+        ).answer(AskItem(question_id="1", prompt="q"), prepared, 0)
+
+        [chat] = client.chats.values()
+        assert chat["prompt_config"]["system"] == "Answer from these.\n{knowledge}\n\nToday's date is 2024-10-15."
+
+    def test_different_settings_never_share_a_chat(self, tmp_path: Path) -> None:
+        docs = [_doc(0)]
+        client = _FakeClient()
+        ingestor = _ingestor(client, tmp_path, docs)
+        prepared = ingestor.prepare(_manifest(docs))
+        client.reply = {"answer": "x", "reference": {"chunks": [{"document_id": "doc-Article_0.html"}]}}
+
+        for prompt in (None, "Custom {knowledge}"):
+            RagflowAdapter("r", client, ingestor, chat_config=_CHAT, current_time=_SNAPSHOT, system_prompt=prompt).answer(
+                AskItem(question_id="1", prompt="q"), prepared, 0,
+            )
+        RagflowAdapter("r", client, ingestor, chat_config={**_CHAT, "top_n": 8}, current_time=_SNAPSHOT).answer(
+            AskItem(question_id="1", prompt="q"), prepared, 0,
+        )
+
+        assert len(client.chats) == 3
+

@@ -92,6 +92,19 @@ class OpenWebUIClient:
         body = self._request("GET", f"/api/v1/files/{file_id}").json()
         return str((body.get("data") or {}).get("status", "")), float(body.get("updated_at") or 0)
 
+    @http_retry()
+    def query_generation(self) -> bool:
+        return bool(self._request("GET", "/api/v1/tasks/config").json().get("ENABLE_RETRIEVAL_QUERY_GENERATION"))
+
+    @http_retry()
+    def set_query_generation(self, enabled: bool) -> bool:
+        """Switch LLM query generation for knowledge retrieval; returns the
+        value the server now holds. The update takes the whole task config."""
+        config = self._request("GET", "/api/v1/tasks/config").json()
+        config["ENABLE_RETRIEVAL_QUERY_GENERATION"] = enabled
+        updated = self._request("POST", "/api/v1/tasks/config/update", json=config).json()
+        return bool(updated.get("ENABLE_RETRIEVAL_QUERY_GENERATION"))
+
     @http_retry(attempts=3)
     def retrieval_config(self) -> dict[str, Any]:
         return self._request("GET", "/api/v1/retrieval/config").json()

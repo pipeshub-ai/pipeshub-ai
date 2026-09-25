@@ -11,7 +11,16 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from benchmarks.harness.models import AskItem, CorpusManifest, IndexReport, IngestManifest, Prediction, RankedList
+from benchmarks.harness.models import (
+    AskItem,
+    CorpusManifest,
+    IndexReport,
+    IngestManifest,
+    Prediction,
+    RankedList,
+    RetrievedChunk,
+    SystemFailure,
+)
 
 
 class AdapterCapabilities(BaseModel):
@@ -57,3 +66,15 @@ class SystemAdapter(Protocol):
     def ingestor(self) -> CorpusIngestor | None: ...
 
     def retriever(self) -> RankedRetriever | None: ...
+
+
+def no_context_failure(chunks: list[RetrievedChunk]) -> SystemFailure | None:
+    """A RAG product that retrieved nothing answered from the model alone.
+
+    Retrieval with a zero threshold over the whole corpus always returns
+    chunks, so an empty result means it failed; the answer is not scored as
+    the product's and a retry re-asks it.
+    """
+    if chunks:
+        return None
+    return SystemFailure(kind="run_error", code="no_context", message="retrieval returned no chunks from the corpus")

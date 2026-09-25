@@ -4,13 +4,15 @@ hybrid retrieval and RAG prompt, answering through the shared model.
 One non-streaming `/chat/completions` call per question. The chat is created
 on first use from the run config's settings (model, top-n, retrieval
 weights), bound to the corpus dataset. It keeps RAGFlow's default system
-prompt, with one line appended giving the corpus snapshot as today's date --
-the same "today" PipesHub and the RAG baselines get. Every call opens a fresh
-session that is not stored.
+prompt unless the run config gives one, and appends one line giving the
+corpus snapshot as today's date -- the same "today" PipesHub and the RAG
+baselines get. Every call opens a fresh session that is not stored.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import threading
 import time
@@ -18,7 +20,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from benchmarks.harness.models import AskItem, Prediction, RetrievedChunk, SystemFailure
-from benchmarks.harness.systems.base import AdapterCapabilities, PreparedCorpus
+from benchmarks.harness.systems.base import AdapterCapabilities, PreparedCorpus, no_context_failure
 
 if TYPE_CHECKING:
     from benchmarks.harness.systems.base import CorpusIngestor, RankedRetriever
@@ -45,8 +47,11 @@ def retrieved_chunks(data: dict[str, Any], url_of_document: dict[str, str]) -> l
     return chunks
 
 
-def chat_name(dataset_id: str) -> str:
-    return f"frames-chat-{dataset_id}"
+def chat_name(dataset_id: str, chat_config: dict[str, Any], system_prompt: str | None) -> str:
+    """Keyed by the chat's settings: a chat is reused as found, so different
+    settings must never land on an existing chat."""
+    settings = json.dumps({"chat": chat_config, "system_prompt": system_prompt}, sort_keys=True)
+    return f"frames-chat-{dataset_id}-{hashlib.sha256(settings.encode()).hexdigest()[:8]}"
 
 
 def date_line(current_time: datetime) -> str:
@@ -64,11 +69,13 @@ class RagflowAdapter:
         *,
         chat_config: dict[str, Any],
         current_time: datetime,
+        system_prompt: str | None = None,
     ) -> None:
         self.system_id = system_id
         self._client = client
         self._ingestor = ingestor
         self._chat_config = chat_config
+        self._system_prompt = system_prompt
         self._current_time = current_time
         self._chat_id: str | None = None
         self._chat_lock = threading.Lock()
@@ -81,14 +88,15 @@ class RagflowAdapter:
                 return self._chat_id
             if prepared.ingest is None:
                 raise ValueError(f"{self.system_id}: corpus was not ingested")
-            name = chat_name(prepared.ingest.kb_id)
+            name = chat_name(prepared.ingest.kb_id, self._chat_config, self._system_prompt)
             chat_id = self._client.chat_id(name)
             if chat_id is None:
                 chat_id = self._client.create_chat(
                     {**self._chat_config, "name": name, "dataset_ids": [prepared.ingest.kb_id]},
                 )
                 prompt_config = dict(self._client.get_chat(chat_id).get("prompt_config") or {})
-                prompt_config["system"] = str(prompt_config.get("system", "")) + date_line(self._current_time)
+                system = self._system_prompt if self._system_prompt is not None else prompt_config.get("system", "")
+                prompt_config["system"] = str(system) + date_line(self._current_time)
                 self._client.update_chat(chat_id, {"prompt_config": prompt_config})
             self._chat_id = chat_id
             return chat_id
@@ -119,6 +127,7 @@ class RagflowAdapter:
             "latency_ms": int((time.monotonic() - started) * 1000),
             "retrieved": chunks,
             "context_urls": list(dict.fromkeys(c.url for c in chunks)),
+            "error": no_context_failure(chunks),
         })
 
     def ingestor(self) -> CorpusIngestor | None:
