@@ -300,6 +300,26 @@ class TestSharingEvents:
         assert not [r for r in box_api.calls("GET", "/2.0/files/file-1") if r.as_user == BOB]
         assert BOB_EMAIL not in db.access("file-1")
 
+    async def test_a_failed_read_of_a_replayed_shared_folder_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_folder("fold-a", "Team", ALICE)
+        box_api.add_file("file-1", "plan.pdf", ALICE, parent="fold-a")
+        collab_id = box_api.collaborate("fold-a", BOB)
+        box_api.add_event(
+            "COLLABORATION_INVITE", collab_event_source(box_api, "fold-a", BOB, collab_id),
+            created_by=by(ALICE, box_api), additional_details={"collab_id": collab_id},
+        )
+        box_api.fail("GET", "/2.0/folders/fold-a/items", 503, times=5, as_user=BOB)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert db.records["file-1"].shared_with_me_record_group_ids == [f"0S:{BOB_EMAIL}"]
+
     async def test_a_full_sync_replays_shares_made_before_the_connector_existed(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
         box_api.add_file("file-1", "plan.pdf", ALICE)

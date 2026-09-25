@@ -1920,12 +1920,14 @@ class BoxConnector(BaseConnector):
                             folder_response = await self.data_source.folders_get_folder_by_id(item_id)
                             if not folder_response.success:
                                 self.logger.warning(f"Failed to fetch folder {item_id} as shared-with-me: {folder_response.error}")
+                                self._mark_full_sync_incomplete(folder_response.error)
                                 continue
                             entry = self._to_dict(folder_response.data)
                         else:
                             file_response = await self.data_source.files_get_file_by_id(item_id)
                             if not file_response.success:
                                 self.logger.warning(f"Failed to fetch file {item_id} as shared-with-me: {file_response.error}")
+                                self._mark_full_sync_incomplete(file_response.error)
                                 continue
                             entry = self._to_dict(file_response.data)
                         if not entry:
@@ -1950,10 +1952,12 @@ class BoxConnector(BaseConnector):
                                     await self.data_entities_processor.on_new_records(batch_records)
                     except Exception as e:
                         self.logger.warning(f"Error syncing shared-with-me item {item_id} for {collab_email}: {e}")
+                        self._mark_full_sync_incomplete(e)
                 if updates_to_push:
                     await self.data_entities_processor.on_new_records(updates_to_push)
             except Exception as e:
                 self.logger.error(f"Error syncing shared-with-me for collaborator {collab_email}: {e}")
+                self._mark_full_sync_incomplete(e)
             finally:
                 await self.data_source.clear_as_user_context()
 
@@ -1974,6 +1978,10 @@ class BoxConnector(BaseConnector):
             file_entries: List[Optional[Dict]] = []
             for file_id, res in zip(file_ids, responses):
                 entry = None if isinstance(res, Exception) or not res.success else self._to_dict(res.data)
+                if entry is None:
+                    failure = res if isinstance(res, Exception) else res.error
+                    self.logger.warning(f"Failed to fetch file {file_id} for owner {owner_id}: {failure}")
+                    self._mark_full_sync_incomplete(failure)
                 file_entries.append(entry)
 
             updates_to_push = []
@@ -2018,6 +2026,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing files for owner {owner_id}: {e}")
+            self._mark_full_sync_incomplete(e)
         finally:
             # 7. ALWAYS Clear Context
             await self.data_source.clear_as_user_context()
@@ -2044,6 +2053,7 @@ class BoxConnector(BaseConnector):
 
                 if not folder_response.success:
                     self.logger.warning(f"Failed to fetch parent folder {folder_id}: {folder_response.error}")
+                    self._mark_full_sync_incomplete(folder_response.error)
                     continue
 
                 folder_entry = self._to_dict(folder_response.data)
@@ -2073,6 +2083,7 @@ class BoxConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error(f"Error ensuring parent folder {folder_id} exists: {e}", exc_info=True)
+                self._mark_full_sync_incomplete(e)
 
     async def _fetch_and_sync_folders_for_owner(self, owner_id: str, folder_ids: List[str]) -> None:
         """
@@ -2092,6 +2103,7 @@ class BoxConnector(BaseConnector):
 
                     if not folder_response.success:
                         self.logger.warning(f"Failed to fetch folder {folder_id}: {folder_response.error}")
+                        self._mark_full_sync_incomplete(folder_response.error)
                         continue
 
                     folder_entry = self._to_dict(folder_response.data)
@@ -2120,6 +2132,7 @@ class BoxConnector(BaseConnector):
 
                 except Exception as e:
                     self.logger.error(f"Error processing folder {folder_id}: {e}", exc_info=True)
+                    self._mark_full_sync_incomplete(e)
 
             # 5. Commit any remaining records
             if batch_records:
@@ -2128,6 +2141,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing folders for owner {owner_id}: {e}", exc_info=True)
+            self._mark_full_sync_incomplete(e)
         finally:
             # 6. ALWAYS Clear Context
             await self.data_source.clear_as_user_context()
@@ -2160,6 +2174,7 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
+                    self._mark_full_sync_incomplete(response.error)
                     break
 
                 data = self._to_dict(response.data)
@@ -2197,6 +2212,7 @@ class BoxConnector(BaseConnector):
 
                     except Exception as e:
                         self.logger.error(f"Error processing item in folder {folder_id}: {e}", exc_info=True)
+                        self._mark_full_sync_incomplete(e)
 
                 # Recursively process subfolders
                 for sub_folder_id in sub_folders_to_traverse:
@@ -2210,6 +2226,7 @@ class BoxConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error(f"Error in _sync_folder_contents_recursively for folder {folder_id}: {e}", exc_info=True)
+                self._mark_full_sync_incomplete(e)
                 break
 
     async def _execute_deletions(self, file_ids: List[str]) -> None:
