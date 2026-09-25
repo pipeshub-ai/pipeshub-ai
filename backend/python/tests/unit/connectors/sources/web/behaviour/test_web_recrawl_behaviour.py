@@ -299,3 +299,35 @@ async def test_a_redirect_off_the_site_never_removes_the_stored_page(
 
     assert db.deleted == []
     assert GUIDE in db.pages()
+
+
+@pytest.mark.parametrize(
+    ("link", "stored_key"),
+    [
+        pytest.param("/docs/", "http://site.test/docs/", id="trailing-slash"),
+        pytest.param("/list?b=2&a=1", "http://site.test/list?b=2&a=1", id="query-in-the-site-s-order"),
+    ],
+)
+async def test_a_stored_page_gone_twice_is_removed_whatever_key_it_was_stored_under(
+    link: str, stored_key: str, site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    url = f"http://site.test{link}"
+    site.html(START_URL, "Home", link)
+    site.html(url, "Page")
+    connector = await make_connector()
+    await connector.run_sync()
+    [key] = [k for k in db.records if k.startswith(url.split("?")[0].rstrip("/"))]
+    stored = db.records.pop(key)
+    stored.external_record_id = stored_key  # as an older version of the connector keyed it
+    db.records[stored_key] = stored
+
+    site.add(url, Page(status=404))
+    await connector.run_sync()
+    # The first 404 finds the stored record, so no failed copy is added beside it.
+    assert [r.id for r in db.records.values() if r.weburl != START_URL] == [stored.id]
+    await connector.run_sync()
+
+    assert db.deleted == [stored.id]
+    # Still linked from the site, so it stays listed as one failed page with nothing indexed.
+    [remains] = [r for r in db.records.values() if r.weburl != START_URL]
+    assert remains.indexing_status == ProgressStatus.FAILED.value and remains.storage_document_id is None
