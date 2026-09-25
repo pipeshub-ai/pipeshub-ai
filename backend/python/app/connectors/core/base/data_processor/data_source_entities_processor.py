@@ -88,25 +88,6 @@ PERMISSION_HIERARCHY = {
     "OWNER": 4,
 }
 
-_RECORD_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://pipeshub.ai/ns/connector-record")
-
-
-def deterministic_record_id(connector_id: str, external_record_id: str) -> str:
-    """Record id derived from the pair it represents, not from randomness.
-
-    `_process_record` reads by external id and inserts when absent. Two syncs of
-    the same connector that overlap both read None and, with a random id, both
-    insert — one record becomes two. Deriving the id from the pair makes the
-    second insert overwrite the first instead: Arango upserts on `_key`, Neo4j
-    MERGEs on `id`. A lease makes overlap rare; this makes it harmless.
-
-    The NUL separator keeps ("ab", "c") and ("a", "bc") from colliding. The
-    namespace must never change — its whole purpose is that independent
-    processes, and separate runs, arrive at the same key.
-    """
-    return str(uuid.uuid5(_RECORD_ID_NAMESPACE, f"{connector_id}\x00{external_record_id}"))
-
-
 @dataclass
 class RecordGroupWithPermissions:
     record_group: RecordGroup
@@ -381,9 +362,6 @@ class DataSourceEntitiesProcessor:
             A placeholder Record instance of the appropriate type
         """
         base_params = {
-            # Placeholders are created on the same read-then-insert path as real
-            # records, so they duplicate under overlap for the same reason.
-            "id": deterministic_record_id(record.connector_id, parent_external_id),
             "org_id": self.org_id,
             "external_record_id": parent_external_id,
             "record_name": record_name or parent_external_id,
@@ -1443,13 +1421,6 @@ class DataSourceEntitiesProcessor:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
             if publishes_event:
                 self._stamp_queued_at(record)
-            # Connector records only: the id exists to make two overlapping syncs
-            # of the same connector converge on one row. An upload has no such
-            # race, and its identity is set by whoever created it.
-            if record.origin != OriginTypes.UPLOAD:
-                record.id = deterministic_record_id(
-                    record.connector_id, record.external_record_id
-                )
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id

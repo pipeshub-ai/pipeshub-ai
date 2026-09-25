@@ -13,7 +13,6 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    deterministic_record_id,
     PERMISSION_HIERARCHY,
     DataSourceEntitiesProcessor,
     RecordGroupWithPermissions,
@@ -450,15 +449,10 @@ class TestOnNewRecords:
 
         await proc.on_new_records([(record, [])])
 
-        # A new record's id is derived from (connector_id, external_record_id),
-        # not taken from the caller, so two processes converge on one key.
-        expected = deterministic_record_id(
-            record.connector_id, record.external_record_id
-        )
         proc.messaging_producer.send_messages.assert_awaited_once()
         topic, messages = proc.messaging_producer.send_messages.await_args.args
         assert topic == "record-events"
-        assert [key for key, _ in messages] == [expected]
+        assert [key for key, _ in messages] == ["rec-1"]
 
     @pytest.mark.asyncio
     async def test_auto_index_off_skips_publish(self):
@@ -673,7 +667,7 @@ class TestOnRecordContentUpdate:
         # conditional swap - never written ahead of the publish.
         proc.messaging_producer.send_message.assert_awaited()
         proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
-            [deterministic_record_id(record.connector_id, record.external_record_id)],
+            ["rec-1"],
             ProgressStatus.NOT_STARTED.value,
             ProgressStatus.QUEUED.value,
         )
@@ -1656,39 +1650,26 @@ class TestLinkRecordToGroup:
         tx_store.delete_inherit_permissions_relation_record_group.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_an_upload_keeps_the_id_it_was_created_with(self):
-        """The derived id is a connector-sync guarantee, not a global one.
+    async def test_a_new_record_keeps_the_id_its_connector_set(self):
+        """Connectors hand that id to other records before processing.
 
-        It exists so two overlapping syncs of one connector converge on a single
-        row. An upload has no such race and its id is set by whoever created it,
-        so deriving one here would overwrite an identity the caller still holds.
+        Jira, Confluence, Linear, Slack, Outlook and Zammad copy a new parent's id
+        into its attachments' parent_node_id, Gmail writes sibling edges with it,
+        and the object stores move a record by reusing its id under a new key.
+        Replacing it here left all of those pointing at a record that does not
+        exist.
         """
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_record_by_external_id = AsyncMock(return_value=None)
 
-        record = _make_record(origin=OriginTypes.UPLOAD.value)
-        record.id = "given-by-caller"
+        for origin in (OriginTypes.CONNECTOR.value, OriginTypes.UPLOAD.value):
+            record = _make_record(origin=origin)
+            record.id = "given-by-caller"
 
-        await proc._process_record(record, [], tx_store)
+            await proc._process_record(record, [], tx_store)
 
-        assert record.id == "given-by-caller"
-
-    @pytest.mark.asyncio
-    async def test_a_connector_record_still_gets_a_derived_id(self):
-        """The counterpart: the guarantee must still hold where it applies."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
-        record = _make_record(origin=OriginTypes.CONNECTOR.value)
-        record.id = "whatever-the-caller-set"
-
-        await proc._process_record(record, [], tx_store)
-
-        assert record.id == deterministic_record_id(
-            record.connector_id, record.external_record_id
-        )
+            assert record.id == "given-by-caller"
 
     @pytest.mark.asyncio
     async def test_deletes_old_group_edge_when_group_changed(self):
@@ -2930,15 +2911,11 @@ class TestNewRecordsAreStoredNotStarted:
 
         await proc.on_new_records([(record, [])])
 
-        # A new connector record is stored under the id derived from its external
-        # id, so the event and the CAS must both name that id, not the one the
-        # record was built with.
-        stored_id = deterministic_record_id(record.connector_id, record.external_record_id)
         proc.messaging_producer.send_messages.assert_awaited_once()
         published = proc.messaging_producer.send_messages.await_args.args[1]
-        assert [key for key, _ in published] == [stored_id]
+        assert [key for key, _ in published] == ["rec-1"]
         proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
-            [stored_id],
+            ["rec-1"],
             ProgressStatus.NOT_STARTED.value,
             ProgressStatus.QUEUED.value,
         )
