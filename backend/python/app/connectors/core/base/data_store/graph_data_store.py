@@ -673,6 +673,10 @@ class GraphTransactionStore(TransactionStore):
         result = await self.graph_provider.batch_upsert_records(
             records, transaction=self.txn, release_trashed_external_ids=release_trashed_external_ids
         )
+        # Forget, never cache, what was just written: the upsert merges into the
+        # stored vertex, so the caller's object is not what a read returns (it
+        # lacks virtualRecordId, which the upsert never writes), and some record
+        # types are skipped by the provider altogether. The next lookup rereads.
         for record in records:
             record_id = getattr(record, "id", None)
             if record_id:
@@ -680,10 +684,8 @@ class GraphTransactionStore(TransactionStore):
             external_id = getattr(record, "external_record_id", None)
             connector_id = getattr(record, "connector_id", None)
             if external_id and connector_id:
-                # Releasing a trashed record's external id renames it, so whatever
-                # any visibility cached for this id is stale now.
+                # Every visibility: releasing a trashed record's external id renames it.
                 self._memo_drop_external_id(connector_id, external_id)
-                self._memo_put(("record", connector_id, external_id, RecordVisibility.ALL), record)
         return result
 
     async def batch_upsert_record_groups(self, record_groups: list[RecordGroup]) -> None:
@@ -697,7 +699,7 @@ class GraphTransactionStore(TransactionStore):
             external_id = getattr(group, "external_group_id", None)
             connector_id = getattr(group, "connector_id", None)
             if external_id and connector_id:
-                self._memo_put(("record_group", connector_id, external_id), group)
+                self._memo_drop(("record_group", connector_id, external_id))
         return result
 
     async def batch_upsert_record_permissions(self, record_id: str, permissions: list[Permission]) -> None:
