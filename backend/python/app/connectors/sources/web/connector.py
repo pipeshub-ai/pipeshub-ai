@@ -12,7 +12,6 @@ from io import BytesIO
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urldefrag, urljoin, urlparse, urlunparse
-from urllib.robotparser import RobotFileParser
 
 import aiohttp
 import pillow_avif  # noqa: F401  # pyright: ignore[reportUnusedImport]
@@ -79,6 +78,7 @@ from app.connectors.sources.web.fetch_strategy import (
     fetch_url_with_fallback,
 )
 from app.connectors.sources.web.crawl4ai_fetcher import Crawl4AIFetcher, FetchResult, get_shared_fetcher, release_shared_fetcher, resolve_fetch_status_code
+from app.connectors.sources.web.robots import RobotsRules
 from app.connectors.sources.web.csr_detection import CSR_PROBE_JS, PRE_HYDRATION_INIT_SCRIPT, analyze_rendering
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint, generate_record_sync_point_key
 from app.services.notification.types import NotificationSeverity, NotificationType
@@ -427,7 +427,7 @@ class WebConnector(BaseConnector):
         self.use_headless_browser: bool = False
         self.respect_robots_txt: bool = True
         # Per crawl: each site's robots.txt rules, or None when it couldn't be read (RFC 9309: crawl nothing there).
-        self._robots: dict[str, RobotFileParser | None] = {}
+        self._robots: dict[str, RobotsRules | None] = {}
         self._robots_skipped: set[str] = set()
         self.crawl4ai_fetcher: Optional[Crawl4AIFetcher] = None
 
@@ -1386,7 +1386,7 @@ class WebConnector(BaseConnector):
         if origin not in self._robots:
             self._robots[origin] = await self._read_robots(origin)
         rules = self._robots[origin]
-        allowed = rules is not None and rules.can_fetch(ROBOTS_USER_AGENT, url)
+        allowed = rules is not None and rules.allows(url)
         if not allowed:
             normalized = self._normalize_url(url)
             self._robots_skipped.add(normalized)
@@ -1394,7 +1394,7 @@ class WebConnector(BaseConnector):
             self.retry_urls.pop(normalized, None)
         return allowed
 
-    async def _read_robots(self, origin: str) -> RobotFileParser | None:
+    async def _read_robots(self, origin: str) -> RobotsRules | None:
         """RFC 9309: a missing or refused robots.txt (4xx) allows everything; one that can't be read (5xx,
         429, no answer) means crawl nothing on that site for now."""
         if self.session is None:
@@ -1409,10 +1409,9 @@ class WebConnector(BaseConnector):
                 origin, result.status_code if result else "no answer",
             )
             return None
-        rules = RobotFileParser()
-        lines = result.content_bytes.decode("utf-8", "replace").splitlines() if result.status_code < 400 else []
-        rules.parse(lines)
-        return rules
+        if result.status_code >= 400:
+            return RobotsRules()
+        return RobotsRules.parse(result.content_bytes.decode("utf-8", "replace"), ROBOTS_USER_AGENT)
 
     def _robots_summary(self) -> str:
         unreadable = sorted(urlparse(origin).netloc for origin, rules in self._robots.items() if rules is None)

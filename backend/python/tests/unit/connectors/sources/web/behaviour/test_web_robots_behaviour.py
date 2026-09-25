@@ -134,3 +134,33 @@ async def test_each_site_s_own_robots_txt_applies_to_its_pages(
     await (await make_connector(follow_external=True)).run_sync()
 
     assert set(db.pages()) == {START_URL, "http://site.test/b"}
+
+
+@pytest.mark.parametrize(
+    ("robots", "allowed", "blocked"),
+    [
+        pytest.param("Disallow: /\nAllow: /public\nAllow: /$", ["/public", "/public/a"], ["/other"], id="allow-inside-disallow-all"),
+        pytest.param("Allow: /\nDisallow: /private/", ["/other"], ["/private/secret"], id="disallow-inside-allow-all"),
+        pytest.param("Disallow: /wp-admin/\nAllow: /wp-admin/admin-ajax.php", ["/wp-admin/admin-ajax.php"],
+                     ["/wp-admin/options"], id="longer-allow-wins"),
+        pytest.param("Disallow: /page\nAllow: /page", ["/page"], [], id="allow-wins-a-tie"),
+        pytest.param("Disallow: /*.pdf$", ["/files/a.pdf?download=1", "/files/a.pdfx"], ["/files/a.pdf"],
+                     id="star-and-dollar"),
+    ],
+)
+async def test_the_longest_matching_rule_decides_and_allow_wins_a_tie(
+    robots: str, allowed: list[str], blocked: list[str],
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    paths = allowed + blocked
+    site.html(START_URL, "Home", *paths)
+    for path in paths:
+        site.html(f"http://site.test{path}", path)
+    _robots(site, "User-agent: *\n" + robots + "\n")
+
+    await (await make_connector()).run_sync()
+
+    for path in allowed:
+        assert f"http://site.test{path}" in db.pages(), path
+    for path in blocked:
+        assert site.gets(f"http://site.test{path}") == 0, path
