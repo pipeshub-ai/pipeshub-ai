@@ -12,6 +12,7 @@ import pytest
 from box_behaviour_fakes import (
     CONNECTOR_ID,
     ROOT_ID,
+    SERVICE_ACCOUNT_ID,
     FakeBoxApi,
     FakeBoxRecordsDb,
     FakeConfigService,
@@ -544,6 +545,26 @@ class TestActingAsEachUser:
         await connector.run_sync()
 
         assert "file-a" in db.records
+
+    async def test_an_unknown_service_account_gives_no_one_its_files(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("svc-file", "service.txt", SERVICE_ACCOUNT_ID)
+        box_api.fail("GET", "/2.0/users/me", 503, times=100)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert "svc-file" not in db.records
+
+    async def test_a_walk_that_cannot_act_as_the_user_gives_them_no_other_files(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("svc-file", "service.txt", SERVICE_ACCOUNT_ID)
+        connector = await ready_connector(db, checkpoints)
+        fail_as_user(connector, ALICE, nth=2)
+
+        await connector.run_sync()
+
+        assert "svc-file" not in db.records
 
     async def test_an_unread_root_leaves_no_cursor_and_the_next_run_links_shared_files(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

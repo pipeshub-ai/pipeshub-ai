@@ -1066,9 +1066,10 @@ class BoxConnector(BaseConnector):
             except Exception as e:
                 self.logger.warning(f"Could not fetch current user ID: {e}")
             if not self.current_user_id:
-                # Without it the walk below lists as the service account, which reads an empty root.
+                # Listing now would read the service account's own files and file them under this user.
                 self.logger.warning("Could not identify the Box service account; this user's files are not listed.")
                 self._read_complete = False
+                return
 
         # Set As-User context if syncing for a different user
         try:
@@ -1082,6 +1083,7 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"Failed to set As-User context: {e}")
             # Listing without impersonation reads the service account's own files, not this user's.
             self._read_complete = False
+            return
 
         while True:
 
