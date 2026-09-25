@@ -79,6 +79,11 @@ def _running_here(connector_id: str) -> bool:
     return coordinator is not None and coordinator.is_running_here(connector_id)
 
 
+def _reindexing_here(connector_id: str) -> bool:
+    prefix = f"reindex:{connector_id}:"
+    return any(key.startswith(prefix) for key in reindex_task_manager.active_keys())
+
+
 def connector_cache_max() -> int:
     """How many initialised connectors one process may keep. 0 disables the bound."""
     try:
@@ -172,7 +177,7 @@ class EventService:
 
             cache.pop(connector_id, None)
             cache[connector_id] = connector
-            self._evict_stale_connectors(cache)
+            self._evict_stale_connectors(cache, keep=connector_id)
 
         if previous is None or previous is connector:
             return
@@ -193,8 +198,8 @@ class EventService:
         except Exception as e:
             self.logger.warning(f"Failed to clean up the replaced {connector_id} connector instance: {e}")
 
-    def _evict_stale_connectors(self, cache: OrderedDict) -> None:
-        """Drop least-recently-used connectors that are not mid-sync."""
+    def _evict_stale_connectors(self, cache: OrderedDict, keep: str | None = None) -> None:
+        """Drop least-recently-used connectors that nothing is using."""
         limit = connector_cache_max()
         if limit <= 0 or len(cache) <= limit:
             return
@@ -202,9 +207,11 @@ class EventService:
         for cached_id in list(cache.keys()):
             if len(cache) <= limit:
                 break
-            # Evicting a connector that a sync is using would pull the client
-            # out from under it, so a busy one keeps its place in the cache.
-            if _running_here(cached_id):
+            # Evicting a connector a sync or a reindex is using would pull the
+            # client out from under it, and the one just stored is about to be
+            # used by the caller that stored it -- when every other entry was
+            # busy, that was the one evicted.
+            if cached_id == keep or _running_here(cached_id) or _reindexing_here(cached_id):
                 continue
             self._release_connector(cached_id, cache.pop(cached_id))
 

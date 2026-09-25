@@ -1669,6 +1669,44 @@ class TestConnectorCacheIsBounded:
         assert "busy" in mock_container.connectors_map
 
     @pytest.mark.asyncio
+    async def test_the_connector_just_stored_is_not_the_one_evicted(
+        self, service, mock_container, monkeypatch
+    ) -> None:
+        """With every other entry busy, the new one was evicted -- and closed --
+        before the caller that stored it (a reindex, say) could use it."""
+        monkeypatch.setenv("CONNECTOR_CACHE_MAX", "1")
+        mock_container = self._with_cache(service)
+        fresh = self._connector()
+
+        with _current_coordinator() as stm:
+            stm.is_running_here.side_effect = lambda cid: cid == "busy"
+            await service._store_connector("busy", self._connector())
+            await service._store_connector("fresh", fresh)
+
+        await asyncio.sleep(0)
+        assert mock_container.connectors_map.get("fresh") is fresh
+        fresh.cleanup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_connector_being_reindexed_is_not_evicted(
+        self, service, mock_container, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("CONNECTOR_CACHE_MAX", "1")
+        mock_container = self._with_cache(service)
+        reindexing = self._connector()
+
+        with _current_coordinator() as stm, patch.object(
+            reindex_task_manager, "active_keys", return_value=["reindex:r1:all"]
+        ):
+            stm.is_running_here.return_value = False
+            await service._store_connector("r1", reindexing)
+            await service._store_connector("other", self._connector())
+
+        await asyncio.sleep(0)
+        assert "r1" in mock_container.connectors_map
+        reindexing.cleanup.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_eviction_closes_the_connector(self, service, mock_container, monkeypatch) -> None:
         """Dropping the reference alone would leak sockets instead of memory."""
         monkeypatch.setenv("CONNECTOR_CACHE_MAX", "1")
