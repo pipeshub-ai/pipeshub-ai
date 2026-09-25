@@ -7,6 +7,7 @@ the cursor is fresh. The Box SDK underneath is real; its retry waits are recorde
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -484,3 +485,27 @@ class TestSharingEvents:
         history = [r for r in box_api.calls("GET", "/2.0/events") if r.query.get("stream_type") == "admin_logs"]
         assert history and history[0].query["stream_position"] == "0"
         assert db.records["file-1"].shared_with_me_record_group_ids == [f"0S:{BOB_EMAIL}"]
+
+
+class TestOverlappingRuns:
+    async def test_webhooks_during_a_sync_queue_one_follow_up_run_after_it(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        connector = await ready_connector(db, checkpoints)
+        reached, release = box_api.hold("GET", "/2.0/users")
+        full_sync = asyncio.create_task(connector.run_sync())
+        await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
+
+        for _ in range(3):
+            connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
+        for _ in range(5):
+            await asyncio.sleep(0)
+        release.set()
+        await full_sync
+        others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*others)
+
+        polls = [r.query["stream_position"] for r in box_api.calls("GET", "/2.0/events")
+                 if r.query.get("stream_type") == "admin_logs_streaming" and r.query.get("limit") == "500"]
+        assert polls == ["0"]
+        assert len(box_api.calls("GET", "/2.0/users")) == 2

@@ -2,6 +2,7 @@ import asyncio
 import mimetypes
 import uuid
 from collections import deque
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from logging import Logger
 from typing import AsyncGenerator, Callable, Dict, List, NoReturn, Optional, Set, Tuple
@@ -263,6 +264,25 @@ class BoxConnector(BaseConnector):
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
+        # One sync at a time per connector: runs share the As-User context, the read flag and the cursor.
+        self._sync_lock = asyncio.Lock()
+        self._sync_owner: asyncio.Task | None = None
+        self._webhook_run_pending = False
+        self._webhook_tasks: set[asyncio.Task] = set()
+
+    @asynccontextmanager
+    async def _one_sync_at_a_time(self) -> AsyncGenerator[None, None]:
+        # run_sync calls run_incremental_sync, so a task that already holds the lock goes straight in.
+        task = asyncio.current_task()
+        if task is not None and self._sync_owner is task:
+            yield
+            return
+        async with self._sync_lock:
+            self._sync_owner = task
+            try:
+                yield
+            finally:
+                self._sync_owner = None
 
     async def init(self) -> bool:
         """Initializes the Box client using CCG authentication."""
@@ -1222,6 +1242,10 @@ class BoxConnector(BaseConnector):
         """
         Smart Sync: Decides between Full vs. Incremental based on cursor state.
         """
+        async with self._one_sync_at_a_time():
+            await self._run_sync()
+
+    async def _run_sync(self) -> None:
         try:
             self.logger.info("🔍 [Smart Sync] Checking sync state...")
 
@@ -1406,6 +1430,10 @@ class BoxConnector(BaseConnector):
         """
         Runs an incremental sync using the Box Enterprise Event Stream.
         """
+        async with self._one_sync_at_a_time():
+            await self._run_incremental_sync()
+
+    async def _run_incremental_sync(self) -> None:
         self.logger.info("🔄 [Incremental] Starting Box Enterprise incremental sync.")
 
         # Set before the user and group refresh: a batch applied without those groups loses their edges.
@@ -2472,9 +2500,21 @@ class BoxConnector(BaseConnector):
             return False
 
     def handle_webhook_notification(self, notification: Dict) -> None:
-        """Handle a webhook notification by triggering an incremental sync."""
-        self.logger.info("Box webhook received. Triggering incremental sync.")
-        asyncio.create_task(self.run_incremental_sync())
+        """Queue one incremental sync; notifications that arrive while it waits are covered by it."""
+        if self._webhook_run_pending:
+            self.logger.info("Box webhook received; an incremental sync is already queued and will include it.")
+            return
+        self.logger.info("Box webhook received. Queuing an incremental sync.")
+        self._webhook_run_pending = True
+        task = asyncio.create_task(self._run_queued_incremental_sync())
+        self._webhook_tasks.add(task)
+        task.add_done_callback(self._webhook_tasks.discard)
+
+    async def _run_queued_incremental_sync(self) -> None:
+        async with self._one_sync_at_a_time():
+            # Cleared as the run starts, so a change that lands during it queues the next one.
+            self._webhook_run_pending = False
+            await self.run_incremental_sync()
 
     @classmethod
     async def create_connector(
