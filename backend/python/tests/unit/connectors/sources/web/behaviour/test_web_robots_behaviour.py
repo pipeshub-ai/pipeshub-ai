@@ -229,18 +229,21 @@ async def test_a_redirect_onto_another_site_follows_that_site_s_robots_txt(
     assert "http://other.test/secret" not in db.pages()
 
 
+@pytest.mark.parametrize("aborts", [False, True], ids=["browser-lands", "browser-aborts"])
 async def test_robust_mode_never_downloads_a_file_a_redirect_lands_on_when_robots_txt_disallows_it(
-    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+    aborts: bool, browser: FakeWeb, db: FakeRecordsDb, clock: VirtualClock, make_connector: MakeConnector
 ) -> None:
     browser.html(START_URL, "Home", "/go")
     browser.redirect("http://site.test/go", "/private/report.pdf")
-    browser.add("http://site.test/private/report.pdf", Page(body=b"%PDF-1.4 secret", content_type="application/pdf"))
+    browser.add("http://site.test/private/report.pdf",
+                Page(body=b"%PDF-1.4 secret", content_type="application/pdf", browser_aborts=aborts))
     _robots(browser, "User-agent: *\nDisallow: /private/\n")
 
     await (await make_connector(use_headless_browser=True)).run_sync()
 
     assert browser.gets("http://site.test/private/report.pdf") == 0
     assert set(db.pages()) == {START_URL}
+    assert 240.0 not in clock.sleeps
 
 
 async def test_a_single_page_that_redirects_onto_a_disallowed_page_is_not_stored(
