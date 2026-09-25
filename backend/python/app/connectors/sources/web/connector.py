@@ -2276,7 +2276,7 @@ class WebConnector(BaseConnector):
                 return MimeTypes.HTML, 'html'
             elif 'pdf' in content_type_lower:
                 return MimeTypes.PDF, 'pdf'
-            # Before the 'xml' check: Office types are "application/vnd.openxmlformats-...".
+            # Office and SVG checks come before 'xml': "application/vnd.openxmlformats-...", "image/svg+xml".
             elif 'wordprocessingml' in content_type_lower or 'msword' in content_type_lower:
                 if 'openxml' in content_type_lower:
                     return MimeTypes.DOCX, 'docx'
@@ -2294,6 +2294,8 @@ class WebConnector(BaseConnector):
                     return MimeTypes.PPT, 'ppt'
             elif 'json' in content_type_lower:
                 return MimeTypes.JSON, 'json'
+            elif 'image/svg' in content_type_lower:  # "image/svg+xml" would match 'xml' below
+                return MimeTypes.SVG, 'svg'
             elif 'xml' in content_type_lower:
                 return MimeTypes.XML, 'xml'
             elif 'plain' in content_type_lower:
@@ -2318,8 +2320,6 @@ class WebConnector(BaseConnector):
                 return MimeTypes.JPEG, 'jpeg'
             elif 'image/gif' in content_type_lower:
                 return MimeTypes.GIF, 'gif'
-            elif 'image/svg' in content_type_lower:
-                return MimeTypes.SVG, 'svg'
             elif 'zip' in content_type_lower or 'compressed' in content_type_lower:
                 return MimeTypes.ZIP, 'zip'
 

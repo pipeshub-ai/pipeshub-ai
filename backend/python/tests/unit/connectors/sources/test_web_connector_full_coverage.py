@@ -350,7 +350,7 @@ class TestDetermineMimeType:
     def test_svg_from_content_type(self):
         connector = _make_connector()
         mime, ext = connector._determine_mime_type("https://example.com/f", "image/svg+xml")
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.SVG
 
     def test_htm_extension(self):
         connector = _make_connector()

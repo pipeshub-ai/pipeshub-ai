@@ -1593,10 +1593,8 @@ class TestDetermineMimeTypeExtended:
 
     def test_svg_content_type(self):
         c = _make_connector_cov()
-        # 'image/svg+xml' contains 'xml', which the code checks before 'svg',
-        # so the XML branch takes precedence
         mime, ext = c._determine_mime_type("https://x.com/f", "image/svg+xml")
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.SVG
 
     def test_docx_content_type(self):
         c = _make_connector_cov()
@@ -2332,7 +2330,7 @@ class TestDetermineMimeType:
     def test_svg_from_content_type(self):
         connector = _make_connector_fullcov()
         mime, ext = connector._determine_mime_type("https://example.com/f", "image/svg+xml")
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.SVG
 
     def test_htm_extension(self):
         connector = _make_connector_fullcov()

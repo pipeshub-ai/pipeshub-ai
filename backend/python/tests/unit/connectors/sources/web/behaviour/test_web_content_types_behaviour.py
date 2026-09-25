@@ -291,3 +291,14 @@ async def test_robust_mode_never_stores_the_viewer_page_when_the_file_is_blocked
     assert not any(b"<embed" in doc for doc in browser.storage_docs.values())
     assert "http://site.test/handbook.pdf" not in db.pages()
     assert "403 Forbidden" in (db.pages()["http://site.test/handbook"].reason or "")
+
+
+async def test_an_svg_is_stored_as_an_svg_not_as_xml(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    diagram = "http://site.test/diagram"
+    site.add(diagram, Page(body=b'<svg xmlns="http://www.w3.org/2000/svg"></svg>', content_type="image/svg+xml"))
+
+    await (await make_connector(diagram, crawl_type="single")).run_sync()
+
+    assert (db.pages()[diagram].mime_type, db.pages()[diagram].extension) == (MimeTypes.SVG.value, "svg")
