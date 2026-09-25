@@ -94,6 +94,9 @@ from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
 from app.connectors.sources.mariadb.connector import MariaDBConnector
+from app.connectors.sources.smb.connector import SmbConnector
+from app.connectors.sources.cifs.connector import CifsConnector
+
 
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
@@ -146,6 +149,8 @@ class ConnectorFactory:
         "mariadb": MariaDBConnector,
         "slackworkspace": SlackConnector,
         "slack": SlackIndividualConnector,
+        "smb": SmbConnector,
+        "cifs": CifsConnector,
     }
 
     # Beta connector definitions - single source of truth

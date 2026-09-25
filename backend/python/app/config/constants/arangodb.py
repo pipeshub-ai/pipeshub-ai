@@ -88,6 +88,8 @@ class Connectors(Enum):
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
     DEMO = "DEMO"
+    SMB = "SMB"
+    CIFS = "CIFS"
 
     CODING_SANDBOX = "CODING_SANDBOX"
     DATABASE_SANDBOX = "DATABASE_SANDBOX"
@@ -146,6 +148,8 @@ class AppGroups(Enum):
     SNOWFLAKE = "Snowflake"
     POSTGRESQL = "PostgreSQL"
     MARIADB = "MariaDB"
+    SMB = "SMB"
+    CIFS = "CIFS"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
