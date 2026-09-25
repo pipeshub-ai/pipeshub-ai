@@ -369,6 +369,11 @@ export const KB_ROUTES: KbRoute[] = [
   { method: 'PUT', pattern: '/:kbId/record/:recordId/move', path: `/${KB_ID}/record/${RECORD_ID}/move`, json: { newParentId: FOLDER_ID }, scope: 'kb:write', forwards: `PUT /api/v1/kb/${KB_ID}/record/${RECORD_ID}/move`, reply: { status: 200, body: { success: true } } },
 ]
 
+/** Routes an org admin alone may call; members with the scope still get 403, so they sit outside KB_ROUTES. */
+export const ADMIN_ONLY_KB_ROUTES: KbRoute[] = [
+  { method: 'PUT', pattern: '/demo-data/workspace', path: '/demo-data/workspace', json: { enabled: true }, scope: 'kb:write', forwards: 'PUT /api/v1/demo-data/workspace', reply: { status: 200, body: { offForEveryone: false } } },
+]
+
 export const callRoute = (h: KbHarness, route: KbRoute, token?: string, headers?: Record<string, string>): Promise<ApiResponse> =>
   call(h, route.method, route.path, { token, json: route.json, form: route.form?.(), headers })
 

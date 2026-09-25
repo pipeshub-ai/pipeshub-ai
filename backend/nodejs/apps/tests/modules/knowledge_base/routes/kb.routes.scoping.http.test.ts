@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
 import {
   ADMIN,
+  ADMIN_ONLY_KB_ROUTES,
   KB_ID,
   KB_ROUTES,
   KbHarness,
@@ -20,6 +21,7 @@ import {
   startKbHarness,
   stubRoute,
 } from './kb-http-harness'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 
 const ALL_KB_SCOPES = ['kb:read', 'kb:write', 'kb:delete', 'kb:upload'] as const
 
@@ -36,7 +38,35 @@ describe('Knowledge base routes over HTTP: who may call what', () => {
   })
 
   it('lists every route the router declares, so none escapes the checks below', () => {
-    expect(declaredRoutes(h.router).sort()).to.deep.equal(KB_ROUTES.map((r) => `${r.method} ${r.pattern}`).sort())
+    expect(declaredRoutes(h.router).sort()).to.deep.equal(
+      [...KB_ROUTES, ...ADMIN_ONLY_KB_ROUTES].map((r) => `${r.method} ${r.pattern}`).sort(),
+    )
+  })
+
+  describe('admin-only routes', () => {
+    for (const route of ADMIN_ONLY_KB_ROUTES) {
+      it(`${route.method} ${route.pattern} needs a signed-in org admin with ${route.scope}`, async () => {
+        const updateMany = sinon.stub(Users, 'updateMany').resolves({ modifiedCount: 0 } as never)
+        h.backend.on('GET', '/api/v1/demo-data/status', { status: 200, body: { offForEveryone: false } })
+        stubRoute(h, route)
+
+        expect((await callRoute(h, route)).status).to.equal(401)
+        expect((await callRoute(h, route, oauthToken(h, MEMBER, route.scope))).status).to.equal(403)
+        const unscoped = await callRoute(h, route, oauthToken(h, ADMIN, ALL_KB_SCOPES.filter((s) => s !== route.scope).join(' ')))
+        expect(unscoped.status).to.equal(403)
+        expect(errorMessage(unscoped)).to.include(route.scope)
+        expect(h.backend.calls).to.deep.equal([])
+        expect(updateMany.called).to.equal(false)
+
+        const token = sessionToken(h, ADMIN)
+        const allowed = await callRoute(h, route, token, { 'x-org-id': ORG_B })
+        expect(allowed.status).to.be.within(200, 299)
+        const forwarded = h.backend.calls.find((c) => `${c.method} ${c.path}` === route.forwards)
+        expect(forwarded, route.pattern).to.exist
+        expect(forwarded!.headers.authorization).to.equal(`Bearer ${token}`)
+        expect(forwarded!.headers).to.not.have.property('x-org-id')
+      })
+    }
   })
 
   it('refuses every route without a sign-in, before reaching any other service', async () => {
