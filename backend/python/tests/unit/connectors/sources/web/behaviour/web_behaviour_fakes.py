@@ -123,7 +123,8 @@ class FakeWeb:
         return sum(1 for method, u in self.requests if method == "GET" and _key(u) == _key(url))
 
     def fetched_urls(self) -> set[str]:
-        return {u for method, u in self.requests if method == "GET"}
+        """Pages fetched, leaving out the crawler's robots.txt reads."""
+        return {u for method, u in self.requests if method == "GET" and not u.endswith("/robots.txt")}
 
     def _current(self, url: str, consume: bool) -> Page:
         with self._lock:

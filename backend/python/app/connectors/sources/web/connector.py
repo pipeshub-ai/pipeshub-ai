@@ -12,6 +12,7 @@ from io import BytesIO
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urldefrag, urljoin, urlparse, urlunparse
+from urllib.robotparser import RobotFileParser
 
 import aiohttp
 import pillow_avif  # noqa: F401  # pyright: ignore[reportUnusedImport]
@@ -163,6 +164,9 @@ REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 HEAD_NOT_SUPPORTED = frozenset({HTTPStatus.METHOD_NOT_ALLOWED.value, HTTPStatus.NOT_IMPLEMENTED.value})
 PROBE_TIMEOUT_SECONDS = 10
 
+# The name robots.txt groups are matched against; sites without a group for it get their "*" rules.
+ROBOTS_USER_AGENT = "PipesHub"
+
 DOCUMENT_MIME_TYPES = {
     MimeTypes.PDF.value,
     MimeTypes.DOC.value,
@@ -311,6 +315,14 @@ def failed_page_reason(status_code: int | None) -> str:
                 "without this, some pages may not be indexed properly."
             )
         ))
+        .add_sync_custom_field(CustomField(
+            name="respect_robots_txt",
+            display_name="Respect robots.txt",
+            field_type="BOOLEAN",
+            required=False,
+            default_value="true",
+            description="Skip pages the site's robots.txt asks crawlers not to visit",
+        ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(FilterField(
@@ -413,6 +425,10 @@ class WebConnector(BaseConnector):
         self.session: Optional[aiohttp.ClientSession] = None
         self.full_sync: bool = False
         self.use_headless_browser: bool = False
+        self.respect_robots_txt: bool = True
+        # Per crawl: each site's robots.txt rules, or None when it couldn't be read (RFC 9309: crawl nothing there).
+        self._robots: dict[str, RobotFileParser | None] = {}
+        self._robots_skipped: set[str] = set()
         self.crawl4ai_fetcher: Optional[Crawl4AIFetcher] = None
 
         # Batch processing
@@ -438,6 +454,7 @@ class WebConnector(BaseConnector):
             self.start_path_prefix = config_values["start_path_prefix"]
             self.url_should_contain = config_values["url_should_contain"]
             self.use_headless_browser = config_values["use_headless_browser"]
+            self.respect_robots_txt = config_values["respect_robots_txt"]
 
             # Load creator email if needed (for personal scope permission creation)
             await self._load_creator_email()
@@ -531,6 +548,8 @@ class WebConnector(BaseConnector):
                 url_should_contain = []
             _uhb_raw = sync_config.get("use_headless_browser", False)
             use_headless_browser = _uhb_raw if isinstance(_uhb_raw, bool) else str(_uhb_raw).lower() == "true"
+            _robots_raw = sync_config.get("respect_robots_txt", True)
+            respect_robots_txt = _robots_raw if isinstance(_robots_raw, bool) else str(_robots_raw).lower() != "false"
 
             # restrict_to_start_path implies staying on the starting domain,
             # so follow_external must be False — override with a warning.
@@ -584,6 +603,7 @@ class WebConnector(BaseConnector):
                 "start_path_prefix": start_path_prefix,
                 "url_should_contain": url_should_contain,
                 "use_headless_browser": use_headless_browser,
+                "respect_robots_txt": respect_robots_txt,
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch and parse config: {e}")
@@ -739,6 +759,8 @@ class WebConnector(BaseConnector):
                 self.restrict_to_start_path = new_restrict_to_start_path
                 self.start_path_prefix = new_start_path_prefix
 
+            self.respect_robots_txt = config_values["respect_robots_txt"]
+
             new_url_should_contain = config_values["url_should_contain"]
             if new_url_should_contain != self.url_should_contain:
                 self.url_should_contain = new_url_should_contain
@@ -801,6 +823,8 @@ class WebConnector(BaseConnector):
             # Reset state for new sync
             self.visited_urls.clear()
             self._landed_urls.clear()
+            self._robots.clear()
+            self._robots_skipped.clear()
             self.retry_urls.clear()
             self._domain_next_retry_at.clear()
             self.processed_urls = 0
@@ -835,19 +859,15 @@ class WebConnector(BaseConnector):
             )
 
             if len(self.retry_urls) > 0:
-                await self.notify(
-                    type=NotificationType.CONNECTOR_INFO,
-                    severity=NotificationSeverity.INFO,
-                    title=f"Web crawl completed",
-                    message=f"Failed to crawl {len(self.retry_urls)} pages.\nCrawled {len(self.visited_urls)} pages.\nProcessed {self.processed_urls} pages.",
-                )
+                message = f"Failed to crawl {len(self.retry_urls)} pages.\nCrawled {len(self.visited_urls)} pages.\nProcessed {self.processed_urls} pages."
             else:
-                await self.notify(
-                    type=NotificationType.CONNECTOR_INFO,
-                    severity=NotificationSeverity.INFO,
-                    title=f"Web crawl completed",
-                    message=f"Added {self.processed_urls} pages.",
-                )
+                message = f"Added {self.processed_urls} pages."
+            await self.notify(
+                type=NotificationType.CONNECTOR_INFO,
+                severity=NotificationSeverity.INFO,
+                title=f"Web crawl completed",
+                message=message + self._robots_summary(),
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Error during web sync: {e}", exc_info=True)
@@ -856,6 +876,8 @@ class WebConnector(BaseConnector):
     async def _crawl_single_page(self, url: str) -> None:
         """Crawl a single page and index it."""
         try:
+            if not await self._robots_allows(url):
+                return
             record_update = await self._fetch_and_process_url(url, depth=0)
 
             self.visited_urls.add(self._normalize_url(url))
@@ -1188,6 +1210,8 @@ class WebConnector(BaseConnector):
                         continue
                     if candidate_depth > self.max_depth:
                         continue
+                    if not await self._robots_allows(candidate_url):
+                        continue
                     batch.append((candidate_url, candidate_depth, candidate_referer))
                     batch_seen.add(norm)
                 if not batch:
@@ -1235,6 +1259,8 @@ class WebConnector(BaseConnector):
                         continue
 
                 if current_depth > self.max_depth:
+                    continue
+                if not await self._robots_allows(current_url):
                     continue
 
                 try:
@@ -1347,6 +1373,61 @@ class WebConnector(BaseConnector):
                 self.logger.warning("⚠️ Failed to initialise crawl4ai fetcher for fallback: %s", e)
                 return None
         return self.crawl4ai_fetcher
+
+    async def _robots_allows(self, url: str) -> bool:
+        """Whether the site's robots.txt lets us fetch ``url``; read once per site per crawl."""
+        if not self.respect_robots_txt:
+            return True
+        parsed = urlparse(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}".lower()
+        if origin not in self._robots:
+            self._robots[origin] = await self._read_robots(origin)
+        rules = self._robots[origin]
+        allowed = rules is not None and rules.can_fetch(ROBOTS_USER_AGENT, url)
+        if not allowed:
+            normalized = self._normalize_url(url)
+            self._robots_skipped.add(normalized)
+            # Never fetched, so never retried either: a queued retry would come back here forever.
+            self.retry_urls.pop(normalized, None)
+        return allowed
+
+    async def _read_robots(self, origin: str) -> RobotFileParser | None:
+        """RFC 9309: a missing or refused robots.txt (4xx) allows everything; one that can't be read (5xx,
+        429, no answer) means crawl nothing on that site for now."""
+        if self.session is None:
+            return None
+        result = await fetch_url_with_fallback(
+            url=f"{origin}/robots.txt", session=self.session, logger=self.logger,
+            timeout=15, max_retries_per_strategy=1,
+        )
+        if result is None or result.status_code == HTTPStatus.TOO_MANY_REQUESTS or result.status_code >= 500:
+            self.logger.warning(
+                "Couldn't read %s/robots.txt (%s); not crawling that site this sync",
+                origin, result.status_code if result else "no answer",
+            )
+            return None
+        rules = RobotFileParser()
+        lines = result.content_bytes.decode("utf-8", "replace").splitlines() if result.status_code < 400 else []
+        rules.parse(lines)
+        return rules
+
+    def _robots_summary(self) -> str:
+        unreadable = sorted(urlparse(origin).netloc for origin, rules in self._robots.items() if rules is None)
+        blocked = len(self._robots_skipped) - sum(
+            1 for url in self._robots_skipped if urlparse(url).netloc in unreadable
+        )
+        summary = ""
+        if blocked:
+            summary += (
+                f"\nSkipped {blocked} pages that the site's robots.txt asks crawlers not to visit. "
+                "To include them, turn off Respect robots.txt in the connector settings."
+            )
+        if unreadable:
+            summary += (
+                f"\nCouldn't read robots.txt for {', '.join(unreadable)}, so it wasn't crawled this time. "
+                "PipesHub will try again on the next sync."
+            )
+        return summary
 
     def _is_rate_limited(
         self,

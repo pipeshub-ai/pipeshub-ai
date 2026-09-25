@@ -83,6 +83,8 @@ def _make_connector(scope: str = "personal", created_by: str = "test-user-id"):
     )
     c.record_sync_point.read_sync_point = AsyncMock(return_value={})
     c.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    c.respect_robots_txt = False
     return c
 
 

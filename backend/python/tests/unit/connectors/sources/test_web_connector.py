@@ -108,6 +108,8 @@ def _make_connector():
     )
     connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    connector.respect_robots_txt = False
     return connector
 
 
@@ -1447,6 +1449,8 @@ def _make_connector_cov():
     )
     c.record_sync_point.read_sync_point = AsyncMock(return_value={})
     c.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    c.respect_robots_txt = False
     return c
 
 
@@ -2032,6 +2036,8 @@ def _make_connector_fullcov():
     )
     connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    connector.respect_robots_txt = False
     return connector
 
 

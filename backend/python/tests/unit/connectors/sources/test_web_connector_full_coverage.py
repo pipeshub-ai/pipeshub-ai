@@ -52,6 +52,8 @@ def _make_connector():
     )
     connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    connector.respect_robots_txt = False
     return connector
 
 

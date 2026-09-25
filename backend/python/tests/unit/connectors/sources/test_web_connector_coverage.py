@@ -47,6 +47,8 @@ def _make_connector():
         data_store_provider=dsp, config_service=cs, connector_id="web-c-1",
         scope="personal", created_by="test-user-id",
     )
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    c.respect_robots_txt = False
     return c
 
 

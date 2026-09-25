@@ -206,13 +206,6 @@ async def test_asset_links_are_not_crawled_as_pages(
     assert site.fetched_urls() == {"http://site.test/", "http://site.test/manual.pdf"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "The crawler never reads robots.txt, so pages a site asks crawlers to skip are "
-        "fetched and indexed. Honouring robots.txt is a product decision."
-    ),
-)
 async def test_pages_disallowed_by_robots_txt_are_not_crawled(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
