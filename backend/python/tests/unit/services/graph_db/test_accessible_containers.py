@@ -684,7 +684,7 @@ class TestScopeInTheContainerQuery:
         a record the user can read and asked for, lost without an error."""
         query, _, _, _ = await _render_containers(backend, {"kb": ["k"]})
         if backend == "neo4j":
-            seeds = query[query.index("OPTIONAL MATCH (u)-[:PERMISSION]->(rg:RecordGroup"):query.index("AS seed_rgs")]
+            seeds = query[query.index("OPTIONAL MATCH (pu)-[:PERMISSION]->(rg:RecordGroup"):query.index("AS seed_rgs")]
         else:
             seeds = query[query.index("LET path1_seed_rgs"):query.index("LET seed_rgs")]
         assert "scope_ids" not in seeds

@@ -1,5 +1,6 @@
 """Unit tests for app.agents.mcp.dcr."""
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -494,3 +495,64 @@ class TestBuildAuthorizationUrl:
             state="state123",
         )
         assert "code_challenge" not in url
+
+    def test_includes_extra_params(self) -> None:
+        url = build_authorization_url(
+            authorization_url="https://example.com/authorize",
+            client_id="cid",
+            redirect_uri="https://app.example.com/callback",
+            state="state123",
+            extra_params={"access_type": "offline", "prompt": "consent"},
+        )
+        params = parse_qs(urlparse(url).query)
+        assert params["access_type"] == ["offline"]
+        assert params["prompt"] == ["consent"]
+
+    def test_omits_extra_params_when_not_provided(self) -> None:
+        url = build_authorization_url(
+            authorization_url="https://example.com/authorize",
+            client_id="cid",
+            redirect_uri="https://app.example.com/callback",
+            state="state123",
+        )
+        assert "access_type" not in parse_qs(urlparse(url).query)
+
+    def test_extra_params_cannot_override_protocol_params(self) -> None:
+        """Catalog metadata must not be able to redirect the flow or replay a state."""
+        url = build_authorization_url(
+            authorization_url="https://example.com/authorize",
+            client_id="cid",
+            redirect_uri="https://app.example.com/callback",
+            state="state123",
+            scopes=["read"],
+            extra_params={
+                "client_id": "attacker",
+                "redirect_uri": "https://evil.example.com/steal",
+                "response_type": "token",
+                "state": "replayed",
+                "scope": "admin",
+                "prompt": "consent",
+            },
+        )
+        params = parse_qs(urlparse(url).query)
+        assert params["client_id"] == ["cid"]
+        assert params["redirect_uri"] == ["https://app.example.com/callback"]
+        assert params["response_type"] == ["code"]
+        assert params["state"] == ["state123"]
+        assert params["scope"] == ["read"]
+        assert "evil.example.com" not in url
+        # Non-reserved extras still pass through alongside the rejected ones.
+        assert params["prompt"] == ["consent"]
+
+    def test_extra_params_cannot_downgrade_pkce(self) -> None:
+        url = build_authorization_url(
+            authorization_url="https://example.com/authorize",
+            client_id="cid",
+            redirect_uri="https://app.example.com/callback",
+            state="state123",
+            code_challenge="challenge123",
+            extra_params={"code_challenge": "attacker", "code_challenge_method": "plain"},
+        )
+        params = parse_qs(urlparse(url).query)
+        assert params["code_challenge"] == ["challenge123"]
+        assert params["code_challenge_method"] == ["S256"]

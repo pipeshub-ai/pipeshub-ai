@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from logging import Logger
@@ -108,6 +108,51 @@ def sanitize_graph_error(error: ODataError) -> str:
     if status_code:
         return f"{details or 'Microsoft Graph request failed'} (HTTP {status_code})"
     return details or "Microsoft Graph request failed"
+
+
+class DrivePageIncompleteError(Exception):
+    """A change on this delta page could not be fully applied; the page must be read again."""
+
+
+# How many runs a delta page is read again for a temporary failure before its
+# unreadable items are skipped (keeping what is stored) so the rest can move on.
+MAX_PAGE_ATTEMPTS = 5
+
+# A 403 or 404 on one item's members or access won't clear up by trying again.
+_PERMANENT_READ_STATUSES = frozenset({403, 404})
+
+
+class GraphReadFailedError(Exception):
+    """A Graph read needed to apply a change failed; ``permanent`` when retrying can't help."""
+
+    def __init__(self, message: str, *, permanent: bool) -> None:
+        super().__init__(message)
+        self.permanent = permanent
+
+
+def _read_failure(what: str, error: Exception) -> GraphReadFailedError:
+    status = error.response_status_code if isinstance(error, ODataError) else None
+    return GraphReadFailedError(f"could not read {what}: {error}", permanent=status in _PERMANENT_READ_STATUSES)
+
+
+@dataclass
+class _FolderWalk:
+    """Items below a folder whose access could not be brought up to date."""
+
+    unread_items: list[str] = field(default_factory=list)
+    unlisted_folders: list[str] = field(default_factory=list)
+    temporary: bool = False
+
+    @property
+    def complete(self) -> bool:
+        return not self.unread_items and not self.unlisted_folders
+
+
+def _held_page_attempts(sync_point: Optional[dict[str, Any]], url: str) -> int:
+    """Runs that already failed on this page, when it is the page the checkpoint is held at."""
+    if sync_point and sync_point.get("heldPage") == url:
+        return int(sync_point.get("heldPageAttempts") or 0)
+    return 0
 
 
 @dataclass
@@ -302,7 +347,13 @@ class OneDriveConnector(BaseConnector):
         self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
         return True
 
-    async def _process_delta_item(self, item: DriveItem) -> Optional[RecordUpdate]:
+    async def _process_delta_item(
+        self,
+        item: DriveItem,
+        *,
+        hold_page_on_incomplete_walk: bool = True,
+        unresolved_access: list[str] | None = None,
+    ) -> Optional[RecordUpdate]:
         """
         Process a single delta item and detect changes.
 
@@ -310,17 +361,8 @@ class OneDriveConnector(BaseConnector):
             RecordUpdate object containing the record and change information
         """
         try:
-
-            # Apply Date Filters
-            if not self._pass_date_filters(item):
-                self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to date filters.")
-                return # Skip this item
-
-            if not self._pass_extension_filter(item):
-                self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to extention filters.")
-                return
-
-            # Check if item is deleted
+            # Before the filters: OneDrive for Business sends deleted items without a
+            # name or dates, which the filters would read as "doesn't match" and skip.
             if hasattr(item, 'deleted') and item.deleted is not None:
                 self.logger.info(f"Item {item.id} has been deleted")
                 return RecordUpdate(
@@ -333,6 +375,14 @@ class OneDriveConnector(BaseConnector):
                     content_changed=False,
                     permissions_changed=False
                 )
+
+            if not self._pass_date_filters(item):
+                self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to date filters.")
+                return None
+
+            if not self._pass_extension_filter(item):
+                self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to extention filters.")
+                return None
 
             # Get existing record if any
             existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -418,11 +468,24 @@ class OneDriveConnector(BaseConnector):
             if file_record.is_file and file_record.extension is None:
                 return None
 
-            # Get current permissions
-            permission_result = await self.msgraph_client.get_file_permission(
-                item.parent_reference.drive_id if item.parent_reference else None,
-                item.id
-            )
+            permission_failure = None
+            try:
+                permission_result = await self.msgraph_client.get_file_permission(
+                    item.parent_reference.drive_id if item.parent_reference else None,
+                    item.id,
+                    raise_on_error=True,
+                )
+            except Exception as read_error:
+                permission_failure = _read_failure(f"permissions of item {item.id}", read_error)
+                self.logger.warning(str(permission_failure))
+                permission_result = []
+
+            if permission_failure and existing_record is None:
+                # A new file saved with no access stays that way until it next changes.
+                if not permission_failure.permanent and hold_page_on_incomplete_walk:
+                    raise DrivePageIncompleteError(f"access of new item {item.id} could not be read")
+                if unresolved_access is not None:
+                    unresolved_access.append(item.id)
 
             new_permissions = await self._convert_to_permissions(permission_result)
 
@@ -435,10 +498,29 @@ class OneDriveConnector(BaseConnector):
             if existing_record and existing_record.is_shared != is_shared_folder:
                 metadata_changed = True
                 is_updated = True
-                await self._update_folder_children_permissions(
-                    drive_id=item.parent_reference.drive_id,
-                    folder_id=item.id
-                )
+                if item.folder is not None:
+                    # The walk runs only when the shared flag flips; saving the folder now
+                    # would stop it from ever running again for the files it missed.
+                    if permission_failure and not permission_failure.permanent and hold_page_on_incomplete_walk:
+                        raise DrivePageIncompleteError(f"access of folder {item.id} could not be read")
+                    walk = await self._update_folder_children_permissions(
+                        drive_id=item.parent_reference.drive_id,
+                        folder_id=item.id
+                    )
+                    if walk.temporary and hold_page_on_incomplete_walk:
+                        raise DrivePageIncompleteError(f"access of some items inside folder {item.id} could not be read")
+                    if permission_failure:
+                        unresolved = [item.id, *walk.unread_items]
+                        for unlisted_folder in walk.unlisted_folders:
+                            unresolved.extend(r.external_record_id for r in await self._stored_descendants(unlisted_folder))
+                        if unresolved_access is not None:
+                            unresolved_access.extend(unresolved)
+                        self.logger.error(
+                            f"❌ The access of folder {item.id} could not be read; {unresolved} keep their stored access "
+                            "and are read again on later runs until it can be read."
+                        )
+                    elif not walk.complete:
+                        await self._settle_unread_children(walk, item.id, new_permissions, unshared=existing_record.is_shared)
 
 
             return RecordUpdate(
@@ -453,6 +535,8 @@ class OneDriveConnector(BaseConnector):
                 new_permissions=new_permissions
             )
 
+        except DrivePageIncompleteError:
+            raise
         except Exception as ex:
             self.logger.error(f"❌ Error processing delta item {item.id}: {ex}", exc_info=True)
             return None
@@ -647,7 +731,13 @@ class OneDriveConnector(BaseConnector):
         # Unknown operator, default to allowing the file
         return True
 
-    async def _process_delta_items_generator(self, delta_items: List[dict]) -> AsyncGenerator[Tuple[FileRecord, List[Permission], RecordUpdate], None]:
+    async def _process_delta_items_generator(
+        self,
+        delta_items: List[dict],
+        *,
+        hold_page_on_incomplete_walk: bool = True,
+        unresolved_access: list[str] | None = None,
+    ) -> AsyncGenerator[Tuple[FileRecord, List[Permission], RecordUpdate], None]:
         """
         Process delta items and yield records with their permissions.
         This allows non-blocking processing of large datasets.
@@ -657,7 +747,9 @@ class OneDriveConnector(BaseConnector):
         """
         for item in delta_items:
             try:
-                record_update = await self._process_delta_item(item)
+                record_update = await self._process_delta_item(
+                    item, hold_page_on_incomplete_walk=hold_page_on_incomplete_walk, unresolved_access=unresolved_access
+                )
 
                 if record_update:
                     if record_update.is_deleted:
@@ -676,6 +768,8 @@ class OneDriveConnector(BaseConnector):
                 # Allow other tasks to run
                 await asyncio.sleep(0)
 
+            except DrivePageIncompleteError:
+                raise
             except Exception as e:
                 self.logger.error(f"❌ Error processing item in generator: {e}", exc_info=True)
                 continue
@@ -684,8 +778,9 @@ class OneDriveConnector(BaseConnector):
         self,
         drive_id: str,
         folder_id: str,
-        inherited_permissions: Optional[List[Permission]] = None
-    ) -> None:
+        inherited_permissions: Optional[List[Permission]] = None,
+        walk: Optional[_FolderWalk] = None,
+    ) -> _FolderWalk:
         """
         Recursively update permissions for all children of a folder.
 
@@ -693,47 +788,110 @@ class OneDriveConnector(BaseConnector):
             drive_id: The drive ID
             folder_id: The folder ID whose children need permission updates
             inherited_permissions: The permissions to apply to children
-        """
-        try:
-            # Get all children of this folder
-            children = await self.msgraph_client.list_folder_children(drive_id, folder_id)
+            walk: Collects the items that could not be updated, across the recursion
 
-            for child in children:
+        Returns:
+            The items whose access could not be read or saved, and the folders whose
+            children could not be listed.
+        """
+        walk = walk if walk is not None else _FolderWalk()
+        try:
+            children = await self.msgraph_client.list_folder_children(drive_id, folder_id, raise_on_error=True)
+        except Exception as ex:
+            failure = _read_failure(f"children of folder {folder_id}", ex)
+            self.logger.error(f"Error updating folder children permissions: {failure}", exc_info=True)
+            walk.unlisted_folders.append(folder_id)
+            walk.temporary = walk.temporary or not failure.permanent
+            return walk
+
+        for child in children:
+            try:
                 try:
-                    # Get the child's current permissions
                     child_permissions = await self.msgraph_client.get_file_permission(
                         drive_id,
-                        child.id
+                        child.id,
+                        raise_on_error=True,
                     )
+                except Exception as read_error:
+                    failure = _read_failure(f"permissions of child item {child.id}", read_error)
+                    self.logger.warning(str(failure))
+                    walk.unread_items.append(child.id)
+                    walk.temporary = walk.temporary or not failure.permanent
+                    child_permissions = None
 
-                    # Convert to our permission model
+                existing_child_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, child.id
+                )
+
+                if child_permissions is not None and existing_child_record:
                     converted_permissions = await self._convert_to_permissions(child_permissions)
-
-                    existing_child_record = await self.data_entities_processor.get_record_by_external_id(
-                        self.connector_id, child.id
+                    await self.data_entities_processor.on_updated_record_permissions(
+                        record=existing_child_record,
+                        permissions=converted_permissions
                     )
+                    self.logger.info(f"Updated permissions for child item {child.id}")
 
-                    if existing_child_record:
-                        await self.data_entities_processor.on_updated_record_permissions(
-                            record=existing_child_record,
-                            permissions=converted_permissions
-                        )
-                        self.logger.info(f"Updated permissions for child item {child.id}")
+                # If this child is also a folder, recurse
+                if child.folder is not None:
+                    await self._update_folder_children_permissions(drive_id=drive_id, folder_id=child.id, walk=walk)
 
-                    # If this child is also a folder, recurse
-                    if child.folder is not None:
-                        await self._update_folder_children_permissions(
-                            drive_id=drive_id,
-                            folder_id=child.id
-                            # inherited_permissions=converted_permissions
-                        )
+            except Exception as child_ex:
+                self.logger.error(f"Error updating child {child.id}: {child_ex}", exc_info=True)
+                if child.id not in walk.unread_items:
+                    walk.unread_items.append(child.id)
+                walk.temporary = True
 
-                except Exception as child_ex:
-                    self.logger.error(f"Error updating child {child.id}: {child_ex}", exc_info=True)
+        return walk
+
+    async def _settle_unread_children(
+        self, walk: _FolderWalk, folder_id: str, folder_permissions: list[Permission], *, unshared: bool
+    ) -> None:
+        """Decide what items whose access couldn't be read keep once the folder is saved.
+
+        After a share, their stored access is kept: it can only be narrower than the
+        folder's. After an unshare, keeping it could leave the old share in place, and
+        stored grants don't record whether they came from the folder, so those items
+        are given the folder's current access instead. That drops any sharing of
+        their own too, until the item changes or is reindexed.
+        """
+        if not unshared:
+            self.logger.error(
+                f"❌ Folder {folder_id} was shared, but the access of {walk.unread_items + walk.unlisted_folders} "
+                "could not be read; they keep their stored access. Reindex them to pick up the new sharing."
+            )
+            return
+
+        records = []
+        for external_id in walk.unread_items:
+            record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, external_id)
+            if record:
+                records.append(record)
+        for unlisted_folder in walk.unlisted_folders:
+            records.extend(await self._stored_descendants(unlisted_folder))
+
+        for record in records:
+            await self.data_entities_processor.on_updated_record_permissions(record, list(folder_permissions))
+        self.logger.error(
+            f"❌ Folder {folder_id} was unshared, but the access of {[r.external_record_id for r in records]} could not be "
+            "read; they now have the folder's current access, which also drops any sharing of their own. "
+            "Reindex them to restore that."
+        )
+
+    async def _stored_descendants(self, folder_id: str) -> list[Record]:
+        # get_records_by_parent returns base Records, which carry no is_file, so every
+        # child is looked up in turn; a file simply has no children.
+        found: list[Record] = []
+        seen = {folder_id}
+        pending = [folder_id]
+        while pending:
+            children = await self.data_entities_processor.get_records_by_parent(self.connector_id, pending.pop())
+            for child in children:
+                if child.external_record_id in seen:
                     continue
-
-        except Exception as ex:
-            self.logger.error(f"Error updating folder children permissions for {folder_id}: {ex}", exc_info=True)
+                seen.add(child.external_record_id)
+                found.append(child)
+                pending.append(child.external_record_id)
+        return found
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """
@@ -787,8 +945,12 @@ class OneDriveConnector(BaseConnector):
                 self.data_entities_processor.org_id
             )
             sync_point = await self.user_group_sync_point.read_sync_point(sync_point_key)
+            if sync_point and sync_point.get('pendingGroupDeletes'):
+                await self._retry_pending_group_deletes(sync_point['pendingGroupDeletes'], sync_point_key)
 
-            delta_link = sync_point.get('deltaLink') if sync_point else None
+            # A run stopped mid-delta leaves only nextLink; resuming there keeps the
+            # group deletions on the remaining pages, which a full sync would not see.
+            delta_link = (sync_point.get('deltaLink') or sync_point.get('nextLink')) if sync_point else None
 
             if delta_link is None:
                 self.logger.info("No sync point found, performing initial full sync...")
@@ -797,18 +959,47 @@ class OneDriveConnector(BaseConnector):
                 # that occur during the sync
                 delta_link = await self._get_initial_delta_link()
 
-                # Perform the full sync
-                await self._perform_initial_full_sync()
+                all_groups_read = await self._perform_initial_full_sync()
 
-                # Only save the delta link if full sync succeeded
+                # The link is saved even when some groups could not be read: only a delta
+                # from before the full sync reports groups deleted since. The marker makes
+                # the next run read every group again before applying it.
                 if delta_link:
                     await self.user_group_sync_point.update_sync_point(
                         sync_point_key,
-                        {"nextLink": None, "deltaLink": delta_link}
+                        {
+                            "nextLink": None,
+                            "deltaLink": delta_link,
+                            "fullSyncIncomplete": not all_groups_read,
+                            "fullSyncAttempts": 0 if all_groups_read else 1,
+                        }
                     )
                     self.logger.info("Initial sync completed and delta link saved for future syncs")
                 else:
                     self.logger.warning("Initial sync completed but no delta link was obtained")
+                if not all_groups_read:
+                    self.logger.warning("Some groups could not be read; the next run will read every group again")
+            elif sync_point.get('fullSyncIncomplete'):
+                self.logger.info("Previous full group sync was incomplete, reading every group again...")
+                all_groups_read = await self._perform_initial_full_sync()
+                attempts = int(sync_point.get('fullSyncAttempts') or 1) + 1
+                if all_groups_read:
+                    await self.user_group_sync_point.update_sync_point(
+                        sync_point_key, {"fullSyncIncomplete": False, "fullSyncAttempts": 0}
+                    )
+                elif attempts >= MAX_PAGE_ATTEMPTS:
+                    self.logger.error(
+                        f"❌ Some groups still could not be read after {attempts} full group syncs; "
+                        "they keep their stored members and are read again when they next change"
+                    )
+                    await self.user_group_sync_point.update_sync_point(
+                        sync_point_key, {"fullSyncIncomplete": False, "fullSyncAttempts": 0}
+                    )
+                else:
+                    await self.user_group_sync_point.update_sync_point(sync_point_key, {"fullSyncAttempts": attempts})
+                # Run after the marker is settled: a group the delta gives up on sets it
+                # again, and that must not be cleared by this full sync's outcome.
+                await self._perform_delta_sync(delta_link, sync_point_key)
             else:
                 self.logger.info("Sync point found, performing incremental delta sync...")
                 await self._perform_delta_sync(delta_link, sync_point_key)
@@ -868,10 +1059,13 @@ class OneDriveConnector(BaseConnector):
             return None
 
 
-    async def _perform_initial_full_sync(self) -> None:
+    async def _perform_initial_full_sync(self) -> bool:
         """
         Performs initial full sync using the standard /groups API.
         Gets current state of all groups and their members.
+
+        Returns:
+            True if every group and its members were read.
         """
         self.logger.info("Starting initial full user group synchronization")
 
@@ -883,55 +1077,85 @@ class OneDriveConnector(BaseConnector):
             return_exceptions=True
         )
 
-        # Filter out None results (failed groups) and exceptions
         group_with_members = []
+        all_groups_read = True
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, GraphReadFailedError) and result.permanent:
+                self.logger.warning(f"Skipping group: {result}; it keeps its stored members")
+            elif isinstance(result, Exception):
                 self.logger.error(f"❌ Error processing group: {result}", exc_info=True)
-            elif result is not None:
+                all_groups_read = False
+            elif result is None:
+                all_groups_read = False
+            else:
                 group_with_members.append(result)
 
         if group_with_members:
             await self.data_entities_processor.on_new_user_groups(group_with_members)
 
         self.logger.info(f"Initial full sync completed: processed {len(groups)} user groups")
+        return all_groups_read
 
     async def _process_single_group(self, group) -> Optional[Tuple[AppUserGroup, List[AppUser]]]:
         """
         Processes a single group and returns a tuple of (user_group, app_users).
-        Returns None if processing fails.
+        Returns None if processing fails. A permanent member-read failure is raised
+        instead, so the full sync can skip the group without counting it as incomplete.
         """
         try:
-            members = await self.msgraph_client.get_group_members(group.id)
+            app_users = await self._collect_group_users(group)
+            return (self._to_app_user_group(group), app_users)
 
-            user_group = AppUserGroup(
-                source_user_group_id=group.id,
-                app_name=self.connector_name,
-                connector_id=self.connector_id,
-                name=group.display_name,
-                description=group.description,
-                source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
-            )
-
-            app_users = []
-            for member in members:
-                odata_type = getattr(member, 'odata_type', None) or (member.additional_data or {}).get('@odata.type', '')
-
-                if '#microsoft.graph.user' in odata_type:
-                    app_user = self._create_app_user_from_member(member)
-                    if app_user:
-                        app_users.append(app_user)
-                elif '#microsoft.graph.group' in odata_type:
-                    nested_users = await self._get_users_from_nested_group(member)
-                    app_users.extend(nested_users)
-                else:
-                    self.logger.debug(f"Skipping member type '{odata_type}' for member {member.id}")
-
-            return (user_group, app_users)
-
+        except GraphReadFailedError as e:
+            if e.permanent:
+                raise
+            self.logger.error(f"❌ Error processing group {group.display_name}: {e}")
+            return None
         except Exception as e:
             self.logger.error(f"❌ Error processing group {group.display_name}: {e}", exc_info=True)
             return None
+
+    def _to_app_user_group(self, group: Group) -> AppUserGroup:
+        return AppUserGroup(
+            source_user_group_id=group.id,
+            app_name=self.connector_name,
+            connector_id=self.connector_id,
+            name=group.display_name,
+            description=group.description,
+            source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
+        )
+
+    async def _collect_group_users(self, group: Group) -> list[AppUser]:
+        """
+        Users in a group, including those of nested groups (one level deep).
+
+        Supported member types:
+        - User: Added directly
+        - Group (nested): Fetch its users and add them (only one level deep)
+        - Device, Service Principal, Org Contact: Ignored
+
+        Raises GraphReadFailedError when the group's members, or a nested group's,
+        can't be read: saving a partial list would replace the group's stored members.
+        """
+        try:
+            members = await self.msgraph_client.get_group_members(group.id, raise_on_error=True)
+        except Exception as e:
+            raise _read_failure(f"members of group {group.id}", e) from e
+
+        app_users = []
+        for member in members:
+            odata_type = getattr(member, 'odata_type', None) or (member.additional_data or {}).get('@odata.type', '')
+
+            if '#microsoft.graph.user' in odata_type:
+                app_user = self._create_app_user_from_member(member)
+                if app_user:
+                    app_users.append(app_user)
+            elif '#microsoft.graph.group' in odata_type:
+                app_users.extend(await self._get_users_from_nested_group(member))
+            else:
+                self.logger.debug(f"Skipping member type '{odata_type}' for member {member.id}")
+
+        return app_users
 
 
     async def _perform_delta_sync(self, url: str, sync_point_key: str) -> None:
@@ -952,6 +1176,8 @@ class OneDriveConnector(BaseConnector):
 
             self.logger.info(f"Fetched delta page with {len(groups)} group changes")
 
+            unapplied: list[str] = []
+            failed_deletes: list[str] = []
             for group in groups:
                 # Handle group DELETION
                 if hasattr(group, 'additional_data') and group.additional_data and '@removed' in group.additional_data:
@@ -959,6 +1185,8 @@ class OneDriveConnector(BaseConnector):
                     success = await self.handle_delete_group(group.id)
                     if not success:
                         self.logger.error(f"❌ Error handling group delete for {group.id}")
+                        unapplied.append(group.id)
+                        failed_deletes.append(group.id)
                     continue
 
                 # Handle ADD/UPDATE
@@ -966,28 +1194,67 @@ class OneDriveConnector(BaseConnector):
                 success = await self.handle_group_create(group)
                 if not success:
                     self.logger.error(f"❌ Error handling group create for {group.id}")
-                    continue
+                    unapplied.append(group.id)
 
-                # Handle MEMBER changes
+                # Applied even when the member read above failed: a removal listed here needs
+                # no other read, and is lost for good once the delta link moves past this page.
                 member_changes = (group.additional_data or {}).get('members@delta', [])
 
                 if member_changes:
                     self.logger.info(f"    -> [DELTA] 👥 Processing {len(member_changes)} member changes for group: {group.id}")
 
                 for member_change in member_changes:
-                    await self._process_member_change(group.id, member_change)
+                    if not await self._process_member_change(group.id, member_change) and group.id not in unapplied:
+                        unapplied.append(group.id)
+
+            # Graph won't send this page again once the link moves past it, so a group
+            # that couldn't be applied would lose its changes for good. A page is held
+            # for a bounded number of runs so one broken group can't freeze group sync.
+            if unapplied:
+                stored = await self.user_group_sync_point.read_sync_point(sync_point_key)
+                attempts = _held_page_attempts(stored, url) + 1
+                if attempts < MAX_PAGE_ATTEMPTS:
+                    await self.user_group_sync_point.update_sync_point(
+                        sync_point_key, {"heldPage": url, "heldPageAttempts": attempts}
+                    )
+                    self.logger.warning(
+                        f"Groups {unapplied} could not be applied; this page will be read again next run "
+                        f"(attempt {attempts} of {MAX_PAGE_ATTEMPTS})"
+                    )
+                    break
+                self.logger.error(
+                    f"❌ Groups {unapplied} still could not be applied after {attempts} attempts; "
+                    "skipping them so group sync can continue. They keep their stored members, less any "
+                    "removals listed on this page"
+                )
+                # The page moves on without these groups' member changes; a full group
+                # sync reads their current members again, within its own attempt limit.
+                if any(group_id not in failed_deletes for group_id in unapplied):
+                    await self.user_group_sync_point.update_sync_point(
+                        sync_point_key, {"fullSyncIncomplete": True, "fullSyncAttempts": 1}
+                    )
+                # Graph reports a deletion once. Queue it so every later run tries it again,
+                # rather than leaving the deleted group's members with its access.
+                still_failing = [g for g in failed_deletes if not await self.handle_delete_group(g)]
+                if still_failing:
+                    queued = sorted(set(stored.get('pendingGroupDeletes') or []) | set(still_failing))
+                    await self.user_group_sync_point.update_sync_point(sync_point_key, {"pendingGroupDeletes": queued})
+                    self.logger.error(
+                        f"❌ Deleted groups {still_failing} could not be removed; their members keep the group's access "
+                        "until a later run removes them"
+                    )
 
             # Handle pagination and completion
             if result.get('next_link'):
                 url = result.get('next_link')
                 await self.user_group_sync_point.update_sync_point(
                     sync_point_key,
-                    {"nextLink": url, "deltaLink": None}
+                    {"nextLink": url, "deltaLink": None, "heldPage": None, "heldPageAttempts": 0}
                 )
             elif result.get('delta_link'):
                 await self.user_group_sync_point.update_sync_point(
                     sync_point_key,
-                    {"nextLink": None, "deltaLink": result.get('delta_link')}
+                    {"nextLink": None, "deltaLink": result.get('delta_link'), "heldPage": None, "heldPageAttempts": 0}
                 )
                 self.logger.info("Delta sync completed, delta link saved for next run")
                 break
@@ -996,84 +1263,70 @@ class OneDriveConnector(BaseConnector):
                 break
 
 
-    async def _process_member_change(self, group_id: str, member_change: dict) -> None:
+    async def _retry_pending_group_deletes(self, pending: list[str], sync_point_key: str) -> None:
+        remaining = [group_id for group_id in pending if not await self.handle_delete_group(group_id)]
+        await self.user_group_sync_point.update_sync_point(sync_point_key, {"pendingGroupDeletes": remaining})
+        if remaining:
+            self.logger.error(f"❌ Deleted groups {remaining} still could not be removed; will try again next run")
+        else:
+            self.logger.info(f"Removed previously failed group deletions: {pending}")
+
+    async def _process_member_change(self, group_id: str, member_change: dict) -> bool:
         """
         Processes a single member change from the delta response.
+
+        Returns False when a removal could not be applied. Additions need no work
+        here: the group's full member list is saved separately.
         """
+        if '@removed' not in member_change:
+            return True
+
         user_id = member_change.get('id')
         email = await self.msgraph_client.get_user_email(user_id)
 
         if not email:
-            return
+            self.logger.error(f"❌ Could not look up member {user_id} to remove from group {group_id}")
+            return False
 
-        if '@removed' in member_change:
-            self.logger.info(f"    -> [DELTA] 👤⛔ REMOVING member: {email} ({user_id}) from group {group_id}")
-            success = await self.data_entities_processor.on_user_group_member_removed(
-                external_group_id=group_id,
-                user_email=email,
-                connector_id=self.connector_id
-            )
-            if not success:
-                self.logger.error(f"❌ Error removing member {email} from group {group_id}")
-        else:
-            self.logger.info(f"    -> [DELTA] 👤✨ ADDING member: {email} ({user_id}) to group {group_id}")
+        self.logger.info(f"    -> [DELTA] 👤⛔ REMOVING member: {email} ({user_id}) from group {group_id}")
+        success = await self.data_entities_processor.on_user_group_member_removed(
+            external_group_id=group_id,
+            user_email=email,
+            connector_id=self.connector_id
+        )
+        if not success:
+            self.logger.error(f"❌ Error removing member {email} from group {group_id}")
+        return bool(success)
 
     async def handle_group_create(self, group: Group) -> bool:
         """
         Handles the creation or update of a single user group.
         Fetches members and sends to data processor.
 
-        Supported member types:
-        - User: Added directly
-        - Group (nested): Fetch its users and add them (only one level deep)
-        - Device, Service Principal, Org Contact: Ignored
-
         Returns:
-            True if group creation/update was successful, False otherwise.
+            False if the change should be tried again later. A group whose members
+            can never be read (403/404) is skipped, keeping its stored members, and
+            counts as handled.
         """
         try:
-            # 1. Fetch latest members for this group
-            members = await self.msgraph_client.get_group_members(group.id)
-
-            # 2. Create AppUserGroup entity
-            user_group = AppUserGroup(
-                source_user_group_id=group.id,
-                app_name=self.connector_name,
-                connector_id=self.connector_id,
-                name=group.display_name,
-                description=group.description,
-                source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
-            )
-
-            # 3. Create AppUser entities for members (filter by type)
-            app_users = []
-            for member in members:
-                # Check the odata type to determine member type
-                odata_type = getattr(member, 'odata_type', None) or (member.additional_data or {}).get('@odata.type', '')
-
-                if '#microsoft.graph.user' in odata_type:
-                    # Direct user member
-                    app_user = self._create_app_user_from_member(member)
-                    if app_user:
-                        app_users.append(app_user)
-
-                elif '#microsoft.graph.group' in odata_type:
-                    # Nested group - fetch its users (one level deep only)
-                    nested_users = await self._get_users_from_nested_group(member)
-                    app_users.extend(nested_users)
-
-                else:
-                    self.logger.debug(f"Skipping member type '{odata_type}' for member {member.id}")
-
-            # 4. Send to processor (wrapped in list as expected by on_new_user_groups)
-            await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
-
-            self.logger.info(f"Processed group creation/update for: {group.display_name} with {len(app_users)} user members")
+            await self._save_group(group)
             return True
 
+        except GraphReadFailedError as e:
+            if e.permanent:
+                self.logger.warning(f"Skipping group {group.id}: {e}; it keeps its stored members")
+                return True
+            self.logger.error(f"❌ Error handling group create for {group.id}: {e}")
+            return False
         except Exception as e:
             self.logger.error(f"❌ Error handling group create for {getattr(group, 'id', 'unknown')}: {e}", exc_info=True)
             return False
+
+    async def _save_group(self, group: Group) -> None:
+        """Read a group's members and save it. Raises GraphReadFailedError if they can't be read."""
+        app_users = await self._collect_group_users(group)
+        await self.data_entities_processor.on_new_user_groups([(self._to_app_user_group(group), app_users)])
+        self.logger.info(f"Processed group creation/update for: {group.display_name} with {len(app_users)} user members")
 
 
     async def _get_users_from_nested_group(self, nested_group) -> List[AppUser]:
@@ -1085,27 +1338,28 @@ class OneDriveConnector(BaseConnector):
 
         Returns:
             List of AppUser entities from the nested group
+
+        Raises:
+            GraphReadFailedError: if the nested group's members can't be read
         """
         nested_group_name = getattr(nested_group, 'display_name', nested_group.id)
         self.logger.info(f"Processing nested group member: {nested_group_name}")
 
-        app_users = []
-
         try:
-            nested_members = await self.msgraph_client.get_group_members(nested_group.id)
-
-            for nested_member in nested_members:
-                nested_odata_type = getattr(nested_member, 'odata_type', None) or (nested_member.additional_data or {}).get('@odata.type', '')
-
-                if '#microsoft.graph.user' in nested_odata_type:
-                    app_user = self._create_app_user_from_member(nested_member)
-                    if app_user:
-                        app_users.append(app_user)
-                else:
-                    self.logger.debug(f"Skipping non-user member '{nested_odata_type}' in nested group {nested_group_name}")
-
+            nested_members = await self.msgraph_client.get_group_members(nested_group.id, raise_on_error=True)
         except Exception as e:
-            self.logger.warning(f"Failed to fetch members from nested group {nested_group_name}: {e}")
+            raise _read_failure(f"members of nested group {nested_group_name}", e) from e
+
+        app_users = []
+        for nested_member in nested_members:
+            nested_odata_type = getattr(nested_member, 'odata_type', None) or (nested_member.additional_data or {}).get('@odata.type', '')
+
+            if '#microsoft.graph.user' in nested_odata_type:
+                app_user = self._create_app_user_from_member(nested_member)
+                if app_user:
+                    app_users.append(app_user)
+            else:
+                self.logger.debug(f"Skipping non-user member '{nested_odata_type}' in nested group {nested_group_name}")
 
         return app_users
 
@@ -1179,6 +1433,9 @@ class OneDriveConnector(BaseConnector):
             root_url = f"/users/{user_id}/drive/root/delta"
             sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "users", user_id)
             sync_point = await self.drive_delta_sync_point.read_sync_point(sync_point_key)
+            pending_access: list[str] = []
+            if sync_point and sync_point.get('pendingAccessReads'):
+                pending_access = await self._retry_pending_access_reads(sync_point['pendingAccessReads'], sync_point_key)
 
             # Create RecordGroup if sync_point doesn't exist (first sync)
             if not sync_point:
@@ -1233,13 +1490,37 @@ class OneDriveConnector(BaseConnector):
             while True:
                 # Fetch delta changes
                 result = await self.msgraph_client.get_delta_response(url)
+                # Graph can send an empty page with a nextLink, and the last page of a
+                # no-change sync is empty too; both links still have to be followed or saved.
+                drive_items = result.get('drive_items') or []
 
-                drive_items = result.get('drive_items')
-                if not result or not drive_items:
-                    break
+                # A page held for a temporary failure is replayed a bounded number of
+                # times, so one unreadable file can't stop this drive from syncing.
+                attempts_so_far = _held_page_attempts(sync_point, url)
+                unresolved_access: list[str] = []
+                page_items = self._process_delta_items_generator(
+                    drive_items,
+                    hold_page_on_incomplete_walk=attempts_so_far + 1 < MAX_PAGE_ATTEMPTS,
+                    unresolved_access=unresolved_access,
+                )
+                try:
+                    processed = [entry async for entry in page_items]
+                except DrivePageIncompleteError:
+                    await self.drive_delta_sync_point.update_sync_point(
+                        sync_point_key,
+                        sync_point_data={"heldPage": url, "heldPageAttempts": attempts_so_far + 1},
+                    )
+                    raise
 
-                # Process items using generator for non-blocking operation
-                async for file_record, permissions, record_update in self._process_delta_items_generator(drive_items):
+                # Saved before any record: once one is stored, a replay no longer sees the
+                # item as new, and a saved shared flag won't start the folder walk again.
+                if unresolved_access:
+                    pending_access = sorted(set(pending_access) | set(unresolved_access))
+                    await self.drive_delta_sync_point.update_sync_point(
+                        sync_point_key, sync_point_data={"pendingAccessReads": pending_access}
+                    )
+
+                for file_record, permissions, record_update in processed:
                     if record_update.is_deleted:
                         # Handle deletion immediately
                         await self._handle_record_updates(record_update)
@@ -1277,17 +1558,28 @@ class OneDriveConnector(BaseConnector):
                         sync_point_key,
                         sync_point_data={
                             "nextLink": next_link,
+                            "heldPage": None,
+                            "heldPageAttempts": 0,
+                            "pendingAccessReads": pending_access,
                         }
                     )
                     url = next_link
                 else:
                     # No more pages - store deltaLink and clear nextLink
                     delta_link = result.get('delta_link', None)
+                    if not delta_link:
+                        # Saving None would make the next run start a fresh delta, which
+                        # never reports files deleted since the stored link.
+                        self.logger.warning(f"Delta page for user {user_id} had neither a next nor a delta link; keeping the saved checkpoint")
+                        break
                     await self.drive_delta_sync_point.update_sync_point(
                         sync_point_key,
                         sync_point_data={
                             "nextLink": None,
-                            "deltaLink": delta_link
+                            "deltaLink": delta_link,
+                            "heldPage": None,
+                            "heldPageAttempts": 0,
+                            "pendingAccessReads": pending_access,
                         }
                     )
                     break
@@ -1297,6 +1589,29 @@ class OneDriveConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"❌ Error in delta sync for user {user_id}: {ex}")
             raise
+
+    async def _retry_pending_access_reads(self, pending: list[str], sync_point_key: str) -> list[str]:
+        """Read again the access of items saved while it couldn't be read; returns those still unread."""
+        remaining = []
+        for item_id in pending:
+            record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, item_id)
+            # Deleted, or its page never committed; a replay of that page queues it again.
+            if not record:
+                continue
+            try:
+                grants = await self.msgraph_client.get_file_permission(
+                    record.external_record_group_id, item_id, raise_on_error=True
+                )
+                await self.data_entities_processor.on_updated_record_permissions(
+                    record, await self._convert_to_permissions(grants)
+                )
+            except Exception as ex:
+                self.logger.warning(f"Access of item {item_id} still could not be read or saved: {ex}")
+                remaining.append(item_id)
+        await self.drive_delta_sync_point.update_sync_point(sync_point_key, sync_point_data={"pendingAccessReads": remaining})
+        if remaining:
+            self.logger.error(f"❌ The access of {remaining} still could not be read; they are tried again next run")
+        return remaining
 
     async def _process_users_in_batches(self, users: List[AppUser]) -> None:
         """

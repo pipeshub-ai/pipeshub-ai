@@ -64,7 +64,6 @@ export function createMailServiceRouter(container: Container) {
 
         res.status(200).json({
           message: 'SMTP configuration updated successfully',
-          smtp: updatedConfig.smtp,
         });
         return;
       } catch (error) {

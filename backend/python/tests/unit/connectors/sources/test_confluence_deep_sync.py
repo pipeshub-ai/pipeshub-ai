@@ -883,14 +883,14 @@ class TestFetchPagePermissions:
         assert len(perms) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_returns_none(self):
         connector = _make_connector()
         ds = MagicMock()
         ds.get_page_permissions_v1 = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         perms = await connector._fetch_page_permissions("pg1")
-        assert perms == []
+        assert perms is None
 
 
 # ===========================================================================

@@ -243,6 +243,8 @@ class MariaDB:
     ) -> tuple[bool, str]:
         """Fetch schema details for a given list of tables in the default MariaDB database."""
         try:
+            if isinstance(tables, str):
+                tables = [tables]
             if not tables:
                 return self._result(False, {
                     "error": "Missing required parameter: tables",
@@ -328,13 +330,10 @@ class MariaDB:
             for db_name in [target_db]:
                 tables_resp = await self.client.list_tables(database=db_name)
                 if not tables_resp.success:
-                    databases_payload.append({
-                        "name": db_name,
+                    return self._result(False, {
                         "error": tables_resp.error or "Failed to list tables",
-                        "tables": [],
-                        "views": [],
+                        "message": tables_resp.message,
                     })
-                    continue
 
                 table_payload: list[dict[str, Any]] = []
                 for table in tables_resp.data or []:

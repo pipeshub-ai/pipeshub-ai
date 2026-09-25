@@ -26,11 +26,50 @@ from app.connectors.core.registry.tool_builder import (
 )
 from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.clickup.clickup import ClickUpClient, ClickUpResponse
-from app.sources.external.clickup.clickup import ClickUpDataSource
+from app.sources.external.clickup.clickup import VALID_PRIORITIES, ClickUpDataSource
 
 logger = logging.getLogger(__name__)
 
 CLICKUP_APP_BASE = "https://app.clickup.com"
+
+# Shared by the input schemas and the tools: the agent runtime does not run the schema validators.
+_LIST_PARENT_REQUIRED = (
+    "Provide folder_id (from get_folders) to create the list in a folder, "
+    "or space_id (from get_spaces) to create a folderless list."
+)
+_GET_COMMENTS_TARGET_REQUIRED = (
+    "At least one of task_id or comment_id is required. Use task_id for comments on a task, "
+    "comment_id for replies to a comment (optionally task_id for web_url)."
+)
+_CREATE_COMMENT_TARGET_REQUIRED = (
+    "At least one of task_id or comment_id is required. Use task_id for a new comment, "
+    "comment_id for a reply (optionally task_id too for reply web_url)."
+)
+
+
+def _no_update_fields(*values: object, empty_is_unset: bool = False) -> Optional[str]:
+    """Message for an update with nothing to change.
+
+    empty_is_unset: the datasource method also leaves out "" and [] (update_task does).
+    """
+    if all(value is None or (empty_is_unset and value in ("", [])) for value in values):
+        return "No fields provided to update. Pass at least one field to change, for example name or status."
+    return None
+
+
+def _normalize_priority(priority: object) -> tuple[Optional[int], Optional[str]]:
+    """Return (priority, None), or (None, message) for a value the datasource would silently drop."""
+    if priority is None:
+        return None, None
+    value = priority
+    if isinstance(priority, str):
+        try:
+            value = int(priority.strip())
+        except ValueError:
+            value = priority
+    if isinstance(value, bool) or not isinstance(value, int) or value not in VALID_PRIORITIES:
+        return None, f"priority {priority!r} is not valid. Use 1 (Urgent), 2 (High), 3 (Normal) or 4 (Low)."
+    return value, None
 
 
 def _clickup_task_label(task: dict) -> str:
@@ -307,7 +346,7 @@ class CreateListInput(BaseModel):
     @model_validator(mode="after")
     def require_folder_or_space(self) -> "CreateListInput":
         if not self.folder_id and not self.space_id:
-            raise ValueError("At least one of folder_id or space_id is required.")
+            raise ValueError(_LIST_PARENT_REQUIRED)
         return self
 
 
@@ -336,7 +375,7 @@ class GetCommentsInput(BaseModel):
     @model_validator(mode="after")
     def require_task_or_comment(self) -> "GetCommentsInput":
         if not self.task_id and not self.comment_id:
-            raise ValueError("At least one of task_id or comment_id is required. Use task_id for comments on a task, comment_id for replies to a comment (optionally task_id for web_url).")
+            raise ValueError(_GET_COMMENTS_TARGET_REQUIRED)
         return self
 
 
@@ -353,7 +392,7 @@ class CreateTaskCommentInput(BaseModel):
     @model_validator(mode="after")
     def require_task_or_comment(self) -> "CreateTaskCommentInput":
         if not self.task_id and not self.comment_id:
-            raise ValueError("At least one of task_id or comment_id is required. Use task_id for a new comment, comment_id for a reply (optionally task_id too for reply web_url).")
+            raise ValueError(_CREATE_COMMENT_TARGET_REQUIRED)
         return self
 
 
@@ -746,6 +785,11 @@ class ClickUp:
         status: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Create a list in a folder or a folderless list in a space."""
+        if not folder_id and not space_id:
+            return False, json.dumps({"error": _LIST_PARENT_REQUIRED})
+        priority, priority_error = _normalize_priority(priority)
+        if priority_error:
+            return False, json.dumps({"error": priority_error})
         try:
             if folder_id:
                 response = await self.client.create_list(
@@ -817,6 +861,14 @@ class ClickUp:
         unset_status: Optional[bool] = None,
     ) -> tuple[bool, str]:
         """Update a list."""
+        nothing_to_change = _no_update_fields(
+            name, content, due_date, due_date_time, priority, assignee_add, assignee_rem, unset_status,
+        )
+        if nothing_to_change:
+            return False, json.dumps({"error": nothing_to_change})
+        priority, priority_error = _normalize_priority(priority)
+        if priority_error:
+            return False, json.dumps({"error": priority_error})
         try:
             response = await self.client.update_list(
                 list_id,
@@ -1031,6 +1083,9 @@ class ClickUp:
         parent: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Create a new task in a list."""
+        priority, priority_error = _normalize_priority(priority)
+        if priority_error:
+            return False, json.dumps({"error": priority_error})
         try:
             response = await self.client.create_task(
                 list_id,
@@ -1101,6 +1156,18 @@ class ClickUp:
             "clickup update_task: task_id=%s assignees_add=%s assignees_rem=%s (name=%s status=%s priority=%s)",
             task_id, assignees_add, assignees_rem, name, status, priority,
         )
+        # The datasource also leaves out due_date, time_estimate and start_date when they are 0.
+        nothing_to_change = _no_update_fields(
+            name, description, markdown_description, status, priority, due_date_time, start_date_time,
+            assignees_add, assignees_rem, archived,
+            *(None if value == 0 else value for value in (due_date, time_estimate, start_date)),
+            empty_is_unset=True,
+        )
+        if nothing_to_change:
+            return False, json.dumps({"error": nothing_to_change})
+        priority, priority_error = _normalize_priority(priority)
+        if priority_error:
+            return False, json.dumps({"error": priority_error})
         try:
             response = await self.client.update_task(
                 task_id,
@@ -1160,6 +1227,8 @@ class ClickUp:
         start_id: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Get comments on a task or replies to a comment."""
+        if not task_id and not comment_id:
+            return False, json.dumps({"error": _GET_COMMENTS_TARGET_REQUIRED})
         try:
             if comment_id:
                 response = await self.client.get_comment_replies(comment_id)
@@ -1237,6 +1306,8 @@ class ClickUp:
         team_id: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Add a comment to a task or a reply to a comment."""
+        if not task_id and not comment_id:
+            return False, json.dumps({"error": _CREATE_COMMENT_TARGET_REQUIRED})
         try:
             if comment_id:
                 response = await self.client.create_task_comment_reply(
@@ -1363,6 +1434,9 @@ class ClickUp:
         parent: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Update or check/uncheck a checklist item."""
+        nothing_to_change = _no_update_fields(name, assignee, resolved, parent)
+        if nothing_to_change:
+            return False, json.dumps({"error": nothing_to_change})
         try:
             response = await self.client.update_checklist_item(
                 checklist_id,
@@ -1630,6 +1704,9 @@ class ClickUp:
         content_format: str = "text/md",
     ) -> tuple[bool, str]:
         """Edit or update a doc page."""
+        nothing_to_change = _no_update_fields(name, sub_title, content)
+        if nothing_to_change:
+            return False, json.dumps({"error": nothing_to_change})
         try:
             response = await self.client.update_doc_page(
                 workspace_id,

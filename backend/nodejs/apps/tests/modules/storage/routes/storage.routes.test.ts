@@ -786,8 +786,11 @@ describe('Storage Routes', () => {
       const loadAppConfigModule = await import('../../../../src/modules/tokens_manager/config/config')
       const loadStub = sinon.stub(loadAppConfigModule, 'loadAppConfig').resolves({
         storage: { provider: 'local', basePath: '/tmp' },
+        jwtSecret: 'reloaded-jwt-secret',
+        scopedJwtSecret: 'reloaded-scoped-secret',
       } as any)
 
+      container.bind('StorageConfig').toConstantValue({})
       const router = createStorageRouter(container)
       const handler = findRouteHandler(router, '/updateAppConfig', 'post')
       expect(handler).to.not.be.undefined
@@ -795,9 +798,12 @@ describe('Storage Routes', () => {
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       await handler(mockReq, mockRes, mockNext)
 
-      // Should either respond 200 or call next (depending on loadAppConfig mock)
-      const responded = mockRes.status.calledWith(200) || mockNext.called
-      expect(responded).to.be.true
+      expect(mockNext.called, String(mockNext.firstCall?.args[0])).to.be.false
+      expect(mockRes.status.calledWith(200)).to.be.true
+      // The reloaded config holds every service secret; it must not be echoed back.
+      expect(mockRes.json.firstCall.args[0]).to.deep.equal({
+        message: 'Storage configuration updated successfully',
+      })
 
       loadStub.restore()
     })

@@ -525,6 +525,16 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.ensure_team_app_edge(connector_id, org_id, transaction=self.txn)
 
+    async def upsert_authenticated_as(
+        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str
+    ) -> None:
+        return await self.graph_provider.upsert_authenticated_as(
+            creator_key, source_user_key, connector_id, org_id, transaction=self.txn
+        )
+
+    async def remove_authenticated_as(self, connector_id: str) -> bool:
+        return await self.graph_provider.remove_authenticated_as(connector_id, transaction=self.txn)
+
     async def batch_upsert_orgs(self, orgs: list[Org]) -> None:
         return await self.graph_provider.batch_upsert_orgs(orgs, transaction=self.txn)
 

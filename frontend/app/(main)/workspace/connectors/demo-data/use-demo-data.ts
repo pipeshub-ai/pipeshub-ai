@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useDemoDataStore } from './store';
+import type { DemoDataStatus } from './api';
 import { hasActiveDemo, isRemovalNoticeSnoozed, snoozeRemovalNotice } from './demo-data';
 
 /**
@@ -61,4 +62,19 @@ export function useDemoRemovalNotice(isAdmin: boolean | null) {
     !isRemovalNoticeSnoozed(noticeKey);
 
   return { show, demoConnectors, snooze };
+}
+
+/**
+ * This person's demo data switch, read once per page. `null` until known;
+ * treat that as "as before" (shown) rather than guessing.
+ */
+export function useDemoDataStatus(): DemoDataStatus | null {
+  const status = useDemoDataStore((s) => s.status);
+  const load = useDemoDataStore((s) => s.loadStatus);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return status;
 }

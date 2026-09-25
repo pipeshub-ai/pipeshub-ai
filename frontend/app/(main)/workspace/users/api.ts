@@ -58,10 +58,10 @@ export const UsersApi = {
     hasLoggedIn?: string;
     isBlocked?: string;
     groupIds?: string;
-  }): Promise<{ users: User[]; totalCount: number }> {
+  }, options?: { suppressErrorToast?: boolean }): Promise<{ users: User[]; totalCount: number }> {
     const { data } = await apiClient.get<UsersListResponse>(
       BASE_URL,
-      { params }
+      { params, ...options }
     );
     return {
       users: data.users ?? [],

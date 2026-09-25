@@ -712,7 +712,7 @@ class TestJiraDataCenterDeletionAudit:
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
 
-        assert keys == []
+        assert keys is None, "an unread window is not reported as 'no deletions'"
         mock_ds.get_auditing_events_v1.assert_awaited_once()
 
     @pytest.mark.asyncio

@@ -74,6 +74,10 @@ class MCPServerTemplate(MCPCamelModel):
     authorization_url: Optional[str] = None
     token_url: Optional[str] = None
     default_scopes: list[str] = Field(default_factory=list)
+    # Extra `GET {authorizationUrl}` query parameters this provider needs (e.g. Google's
+    # `access_type=offline`). Protocol parameters are not overridable — see
+    # `dcr.build_authorization_url`.
+    authorization_params: dict[str, str] = Field(default_factory=dict)
     # UI hint only (shown before a live probe resolves) — the authorize flow always
     # re-discovers via `app.agents.mcp.dcr.discover_oauth_metadata` (RFC 9728/8414) rather
     # than trusting this flag, since real DCR support can differ from what a template

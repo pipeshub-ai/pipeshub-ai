@@ -2172,7 +2172,7 @@ export const resyncConnectorRecords =
       logger.error('Error resyncing connector records', {
         error,
       });
-      next(error);
+      next(handleBackendError(error, 'resync connector'));
       return; // Added return statement
     }
   };

@@ -33,6 +33,14 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
 _RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 500, 503})
 
+# Returned when a search limited with source_ids finds nothing.
+NARROWED_SEARCH_EMPTY_MESSAGE = (
+    "No results in the source(s) you named. Before concluding this does not "
+    "exist, search again with source_ids omitted: a source's name rarely says "
+    "everything it holds. Skip that only if the user asked to search just "
+    "these sources."
+)
+
 _RECORD_NAME_RE = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
 _RETRIEVED_COUNT_RE = re.compile(
     r"^Top (\d+) blocks? from (\d+) records?", re.IGNORECASE | re.MULTILINE
@@ -152,6 +160,7 @@ async def execute_search(
         is_service_account = bool(state.get("is_service_account", False))
         fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
         per_source_fan_out = False
+        failed_sources = 0
 
         async def _search_one(fg: dict[str, list[str]]) -> dict[str, Any] | None:
             return await retrieval_service.search_with_filters(
@@ -189,11 +198,14 @@ async def execute_search(
             for raw in raw_results:
                 if isinstance(raw, Exception):
                     logger_instance.warning("Per-source search failed: %s", raw, exc_info=raw)
+                    failed_sources += 1
                     continue
                 if raw is None:
+                    failed_sources += 1
                     continue
                 status_code = raw.get("status_code", 200)
                 if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+                    failed_sources += 1
                     error_status = error_status or status_code
                     error_message = raw.get("message", error_message)
                     continue
@@ -208,12 +220,8 @@ async def execute_search(
                         "status_code": error_status,
                         "message": error_message,
                     })
-                return json.dumps({
-                    "status": "success",
-                    "message": "No results found",
-                    "results": [],
-                    "result_count": 0,
-                })
+                # Every source raised or returned nothing: nothing was searched.
+                return json.dumps({"status": "error", "message": error_message})
         else:
             results = await _search_one(filter_groups)
             if results is None:
@@ -228,10 +236,30 @@ async def execute_search(
             search_results = results.get("searchResults", [])
             virtual_to_record_map = results.get("virtual_to_record_map", {})
 
+        if not search_results and failed_sources:
+            # Nothing found where the search ran, but some sources were never searched.
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    f"{failed_sources} of the sources you named could not be searched "
+                    "and the rest returned nothing, so this does not show the information is missing. "
+                    "Try again, or search with source_ids omitted."
+                ),
+                "results": [],
+                "result_count": 0,
+            })
+
         if not search_results:
+            message = "No results found"
+            # The model picks sources by name, and a name rarely says what a
+            # source holds, so an empty narrowed search says little about
+            # whether the answer exists. source_ids stays a hard filter; the
+            # model is told to look everywhere before concluding, as with dates.
+            if narrowed_scope is not None and filter_groups != base_scope.to_filter_groups():
+                message = NARROWED_SEARCH_EMPTY_MESSAGE
             return json.dumps({
                 "status": "success",
-                "message": "No results found",
+                "message": message,
                 "results": [],
                 "result_count": 0,
             })

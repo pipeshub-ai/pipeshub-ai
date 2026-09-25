@@ -74,6 +74,7 @@ import {
   maskWebSearchProvider,
   mergeWebSearchProviderPlaceholders,
 } from '../utils/maskConfigSecrets';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import {
   buildS3HealthCheckErrorMessage,
   validateS3Capabilities,
@@ -104,6 +105,17 @@ type SlackBotStore = {
 /** Returns true when the HIDE_SECRET_CONFIG env var is set to "true". */
 function shouldHideSecrets(): boolean {
   return process.env.HIDE_SECRET_CONFIG === 'true';
+}
+
+async function requesterIsOrgAdmin(
+  req: AuthenticatedUserRequest,
+): Promise<boolean> {
+  const userId: unknown = req.user?.userId;
+  const orgId: unknown = req.user?.orgId;
+  if (typeof userId !== 'string' || typeof orgId !== 'string') {
+    return false;
+  }
+  return isUserOrgAdmin(userId, orgId);
 }
 
 const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
@@ -549,6 +561,8 @@ export const getSmtpConfigStatus =
     }
   };
 const SLACK_BOT_CAS_MAX_RETRIES = 5;
+export const SLACK_BOT_SETTINGS_UNREADABLE =
+  "The saved Slack bot settings couldn't be read, so nothing was shown or changed. This usually means the server's encryption key (the SECRET_KEY setting) changed after the bots were saved. Ask whoever runs your PipesHub server to restore the original key, then try again.";
 
 const parseSlackBotStore = (
   encrypted: string | null | undefined,
@@ -569,8 +583,9 @@ const parseSlackBotStore = (
       configs: Array.isArray(parsed.configs) ? parsed.configs : [],
     };
   } catch (error) {
-    logger.warn('Failed to parse slack bot settings, using empty config', { error });
-    return { configs: [] };
+    // Answering "no bots" here would let the next save overwrite every stored bot.
+    logger.error('Failed to read stored slack bot settings', { error });
+    throw new InternalServerError(SLACK_BOT_SETTINGS_UNREADABLE);
   }
 };
 
@@ -4205,7 +4220,7 @@ export const getAIModelProviderSchema =
 // Web Search Provider Management Functions
 export const getWebSearchProviders =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
@@ -4232,7 +4247,10 @@ export const getWebSearchProviders =
       const storedProviders = Array.isArray(webSearchConfig.providers)
         ? webSearchConfig.providers
         : [];
-      const hideSecrets = shouldHideSecrets();
+      // Members may list providers (the agent builder does), but only admins
+      // may read their API keys.
+      const hideSecrets =
+        shouldHideSecrets() || !(await requesterIsOrgAdmin(req));
       const providers = [
         {
           ...DUCKDUCKGO_WEB_SEARCH_PROVIDER,

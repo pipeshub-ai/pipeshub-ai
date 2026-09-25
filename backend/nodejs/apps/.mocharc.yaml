@@ -4,6 +4,7 @@ require:
   - './tests/helpers/mock-ioredis-global.ts'
   - './tests/helpers/mock-kafkajs-global.ts'
   - './tests/helpers/mock-mcp-global.ts'
+  - './tests/helpers/keep-worker-coverage.ts'
 spec: 'tests/**/*.test.ts'
 timeout: 10000
 recursive: true

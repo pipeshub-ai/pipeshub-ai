@@ -1915,14 +1915,28 @@ describe('Enterprise Search Utils', () => {
       expect(result).to.be.null
     })
 
-    it('should return null on error', async () => {
-      sinon.stub(ChatSession, 'findOne').rejects(new Error('DB down'))
+    it('should return null when the id cannot be cast, since it can match nothing', async () => {
+      sinon.stub(ChatSession, 'findOne').rejects(new mongoose.Error.CastError('ObjectId', 'not-an-id', '_id'))
 
       const result = await validateAgentConversationAccess(
-        VALID_OID, 'agent-1', VALID_OID, VALID_OID2
+        'not-an-id', 'agent-1', VALID_OID, VALID_OID2
       )
 
       expect(result).to.be.null
+    })
+
+    it('should pass any other lookup failure on instead of treating it as not found', async () => {
+      const outage = new Error('DB down')
+      sinon.stub(ChatSession, 'findOne').rejects(outage)
+
+      let thrown: unknown
+      try {
+        await validateAgentConversationAccess(VALID_OID, 'agent-1', VALID_OID, VALID_OID2)
+      } catch (error) {
+        thrown = error
+      }
+
+      expect(thrown).to.equal(outage)
     })
 
     it('should scope the query to agent sessions only (defense-in-depth)', async () => {

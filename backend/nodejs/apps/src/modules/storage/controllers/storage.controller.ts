@@ -8,7 +8,6 @@ import {
 import { Response, NextFunction } from 'express';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import {
-  endpoint,
   storageEtcdPaths,
   STORAGE_WRITE_FAILED_MESSAGE,
 } from '../constants/constants';
@@ -59,6 +58,7 @@ import {
   writeToStorage,
 } from '../utils/utils';
 import { UploadDocumentService } from './storage.upload.service';
+import { storedServiceEndpoint } from '../utils/service-endpoint';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import { DocumentModel } from '../schema/document.schema';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
@@ -91,14 +91,17 @@ export class StorageController {
       return storageConfig;
     }
 
-    const url = (await keyValueStoreService.get<string>(endpoint)) || '{}';
     let storageConfigRoute;
     if ('user' in req && req.user && 'userId' in req.user) {
       storageConfigRoute = 'api/v1/configurationManager/storageConfig';
     } else {
       storageConfigRoute = 'api/v1/configurationManager/internal/storageConfig';
     }
-    const cmUrl = JSON.parse(url).cm.endpoint || defaultConfig.endpoint;
+    const cmUrl = await storedServiceEndpoint(
+      keyValueStoreService,
+      'cm',
+      defaultConfig.endpoint,
+    );
 
     const token = req.headers.authorization?.split(' ')[1];
     const configurationManagerServiceCommand =

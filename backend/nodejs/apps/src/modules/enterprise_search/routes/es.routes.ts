@@ -120,12 +120,14 @@ import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 /** Max bytes per file for chat attachment uploads (PDF/JPEG/PNG). Aligned with frontend, Slack, and Python. */
 const CHAT_ATTACHMENT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
 
 export function createConversationalRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(router, 'recordId');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
   const chatPdfUpload = createMulter({
@@ -594,7 +596,6 @@ export function createSemanticSearchRouter(container: Container): Router {
 
         res.status(200).json({
           message: 'User configuration updated successfully',
-          config: appConfig,
         });
         return;
       } catch (error) {
@@ -608,6 +609,7 @@ export function createSemanticSearchRouter(container: Container): Router {
 
 export function createAgentConversationalRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(router, 'agentKey', 'recordId', 'provider', 'model_key');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
   const keyValueStoreService = container.isBound('KeyValueStoreService')

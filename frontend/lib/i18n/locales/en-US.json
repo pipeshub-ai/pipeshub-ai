@@ -567,6 +567,7 @@
     "heyUser": "Hey, {{name}} 👋",
     "heyUserDefaultName": "there",
     "askAnything": "Ask anything...",
+    "sendMessage": "Send message",
     "quick": "Quick",
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
@@ -724,7 +725,8 @@
       "editComingSoonTitle": "Coming Soon",
       "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
-      "openAgentBuilder": "Open Agent Builder"
+      "openAgentBuilder": "Open Agent Builder",
+      "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again."
     },
     "queryModes": {
       "chat": {
@@ -848,9 +850,12 @@
         "icons": [
           "sheets",
           "slack"
-        ]
+        ],
+        "restricted": true
       }
     },
+    "demoRestrictedHint": "Pricing committee only, so you'll get no answer here. That's permissions at work.",
+    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer.",
     "askMoreQuestionSets": [
       [
         "What are the key challenges and how are they being addressed",
@@ -1013,7 +1018,8 @@
         "editor": "Editor",
         "viewer": "Viewer"
       }
-    }
+    },
+    "demoHide": "Hide demo data"
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -2983,7 +2989,15 @@
       "seeMore": "See more",
       "showMore": "Show More",
       "moreAgents": "More Agents",
-      "moreChats": "More Chats"
+      "moreChats": "More Chats",
+      "demoData": {
+        "title": "Demo data",
+        "description": "Acme Corp is a fictional company loaded so you can try PipesHub. This only changes what you see; nothing is deleted.",
+        "label": "Show Acme Corp demo data in my answers, search and records",
+        "followingDefault": "Following the default: shown until your organization has data of its own, then hidden.",
+        "yourChoice": "Your own choice.",
+        "useDefault": "Use the default"
+      }
     },
     "services": {
       "pageTitle": "Services",
@@ -3953,6 +3967,13 @@
       "partialDescription": "Delete {{emails}} under Workspace → Users.",
       "errorTitle": "Couldn't remove the demo data",
       "errorDescription": "Please try again. If it keeps happening, remove the Demo connector from the Connectors page."
+    },
+    "switch": {
+      "errorTitle": "Couldn't change the demo data setting",
+      "errorDescription": "Nothing changed. Try again in a moment.",
+      "hiddenTitle": "Acme Corp demo data hidden",
+      "hiddenDescription": "It's out of your answers, search and records. Turn it back on anytime in Profile → Demo data.",
+      "undo": "Undo"
     }
   }
 }

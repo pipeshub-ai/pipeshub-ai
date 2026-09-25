@@ -358,3 +358,8 @@ export const moveRecordSchema = z.object({
     recordId: z.string().min(1),
   }),
 });
+
+// Each person's switch for the bundled Acme Corp demo data; null goes back to the default.
+export const demoDataPreferenceSchema = z.object({
+  body: z.object({ include: z.boolean().nullable() }).strict(),
+});

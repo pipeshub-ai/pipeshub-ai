@@ -3007,6 +3007,7 @@ class IGraphDBProvider(ABC):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -3036,6 +3037,8 @@ class IGraphDBProvider(ABC):
             raise_on_error: raise when any part of the permission read fails,
                 instead of leaving that part out. Without it, a failed read and a
                 user who can reach nothing both return {}.
+            exclude_app_ids: apps to leave out even where the user has access,
+                e.g. the Acme Corp demo for someone who switched it off.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
@@ -3374,6 +3377,34 @@ class IGraphDBProvider(ABC):
         The All team and user PERMISSION edges are created by migration and user-added
         events (see ensure_all_team_with_users); this method only creates the team->app edge.
         """
+        pass
+
+    # ==================== Authenticated-as (creator -> source account) ====================
+
+    @abstractmethod
+    async def upsert_authenticated_as(
+        self,
+        creator_key: str,
+        source_user_key: str,
+        connector_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Link a connector creator to the source-account user the connector is authenticated as.
+
+        Exactly one link exists per connector instance: re-linking with a different
+        source user repoints the existing link.
+        """
+        pass
+
+    @abstractmethod
+    async def remove_authenticated_as(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Remove the authenticated-as link for a connector instance. True if one existed."""
         pass
 
     @abstractmethod
@@ -4316,6 +4347,7 @@ class IGraphDBProvider(ABC):
         record_group_ids: list[str] | None = None,
         depth: int | None = None,
         transaction: str | None = None,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """
         Unified search for knowledge hub nodes with permission-first traversal.

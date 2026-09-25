@@ -23,7 +23,10 @@ import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
-import { UserAccountController } from '../controller/userAccount.controller';
+import {
+  SIGN_IN_ACCOUNT_CHANGED,
+  UserAccountController,
+} from '../controller/userAccount.controller';
 import { MailService } from '../services/mail.service';
 import { ConfigurationManagerService, SSO_AUTH_CONFIG_PATH } from '../services/cm.service';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
@@ -161,6 +164,20 @@ export function createSamlRouter(container: Container) {
           const iamResponse = await iamService.getUserByEmail(verifiedEmail, iamToken);
           user = iamResponse.statusCode === 200 ? iamResponse.data : null;
 
+          // An earlier step already proved an account (session.userId); SAML must
+          // prove the same one, and before any JIT create below.
+          const samlUserId: unknown = (user as { _id?: unknown } | null)?._id;
+          const samlAccountId =
+            typeof samlUserId === 'string' ? samlUserId : '';
+          if (
+            Number(session.currentStep) > 0 &&
+            samlAccountId !== session.userId
+          ) {
+            logger.warn('SAML account differs from the earlier sign-in step');
+            const message = encodeURIComponent(SIGN_IN_ACCOUNT_CHANGED);
+            res.redirect(`${config.frontendUrl}/login?saml_error=${message}`);
+            return;
+          }
         }
 
         if (session?.userId === "NOT_FOUND" && !user) {
@@ -247,7 +264,6 @@ export function createSamlRouter(container: Container) {
           });
         res.status(200).json({
           message: 'Auth configuration updated successfully',
-          config,
         });
         return;
       } catch (error) {

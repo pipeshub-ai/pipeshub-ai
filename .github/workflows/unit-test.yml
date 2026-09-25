@@ -29,10 +29,14 @@ on:
 
   workflow_call:
     inputs:
+      # Only ever raise the Python minimum; never lower it to make a PR pass. Add tests instead.
+      # It lives in three places that must move together: this default, the `|| 89.8`
+      # fallback on the `coverage report --fail-under` line (the one pull_request runs use),
+      # and weekly-coverage.yml (its input and its Slack text).
       python-coverage-threshold:
         description: 'Minimum Python coverage percentage'
         type: number
-        default: 88.4
+        default: 89.8
       generate-coverage-reports:
         description: 'Generate and upload coverage report artifacts'
         type: boolean
@@ -152,7 +156,7 @@ jobs:
         run: |
           cd backend/python
           coverage run -m pytest tests/unit -v
-          coverage report --fail-under=${{ inputs.python-coverage-threshold || 88.4 }}
+          coverage report --fail-under=${{ inputs.python-coverage-threshold || 89.8 }}
 
       # Lives under integration-tests because it guards that suite's schemas,
       # but it is pure and needs no stack -- and the job that normally runs it

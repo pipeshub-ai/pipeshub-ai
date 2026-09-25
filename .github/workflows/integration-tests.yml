@@ -43,6 +43,7 @@ on:
             - oauth_clients
             - mcp
             - zammad
+            - demo
             - resilience
             - permissions
             - storage

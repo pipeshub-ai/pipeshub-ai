@@ -41,6 +41,10 @@ vi.mock('@/app/(main)/knowledge-base/api', () => ({
   KnowledgeHubApi: { searchAllRecords: vi.fn(async () => ({ items: [] })) },
 }));
 
+vi.mock('../api', () => ({
+  DemoDataApi: { getStatus: vi.fn(async () => null), setInclude: vi.fn() },
+}));
+
 vi.mock('../remove-demo-data', () => ({
   findSampleAccounts: vi.fn(),
   removeDemoData: vi.fn(),

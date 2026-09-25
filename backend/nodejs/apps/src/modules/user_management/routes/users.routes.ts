@@ -914,7 +914,6 @@ export function createUserRouter(container: Container) {
           });
         res.status(200).json({
           message: 'User configuration updated successfully',
-          config: updatedConfig,
         });
         return;
       } catch (error) {

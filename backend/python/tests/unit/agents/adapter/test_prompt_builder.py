@@ -573,6 +573,24 @@ class TestIdentityAndOperatingRules:
         assert "Organization scope" in result
         assert "Current User Information" in result
 
+    def test_org_scope_rule_keeps_the_demo_data(self) -> None:
+        # The demo's questions say "our"; the plain rule would discard every
+        # Acme Corp record whenever the workspace has another name.
+        demo = {"displayName": "Acme Corp demo data", "type": "Demo", "connectorId": "demo-1"}
+        result = _build(make_context(send_user_info=True, agent_knowledge=[demo]))
+        rules = result.split("## Operating Rules", 1)[1].split("\n## ", 1)[0]
+        # "our" stays the user's organization; Acme Corp is the named fallback.
+        assert "mean the organization in Current User Information" in rules
+        assert "Answer from its records first" in rules
+        assert "only when none of that organization's records answer" in rules
+        assert "never \"our policy is ...\"" in rules
+
+    def test_org_scope_rule_unchanged_without_the_demo(self) -> None:
+        jira = {"displayName": "Engineering Jira", "type": "JIRA", "connectorId": "jira-1"}
+        result = _build(make_context(send_user_info=True, agent_knowledge=[jira]))
+        assert "Acme Corp" not in result
+        assert "belong to a different organization" in result
+
     def test_org_scope_rule_absent_when_user_context_disabled(self) -> None:
         context = make_context(send_user_info=False)
         result = _build(context)

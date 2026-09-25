@@ -111,18 +111,16 @@ class TestCloudInitCoverageGaps:
                 await connector.init()
 
     @pytest.mark.asyncio
-    async def test_init_resolves_creator_email_and_caches_myself(self):
+    async def test_init_caches_myself_without_resolving_creator(self):
         connector = _make_cloud_connector()
-        creator = MagicMock()
-        creator.email = "creator@example.com"
-        connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=creator)
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
             mock_client = MagicMock()
             mock_ds = MagicMock()
             mock_ds.get_current_user = AsyncMock(return_value=MagicMock(
                 status=200,
-                json=MagicMock(return_value={"emailAddress": "creator@example.com"}),
+                json=MagicMock(return_value={"emailAddress": "jira@example.com"}),
             ))
             mock_client.get_client = MagicMock(return_value=MagicMock())
             MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
@@ -138,7 +136,8 @@ class TestCloudInitCoverageGaps:
                 result = await connector.init()
 
         assert result is True
-        assert connector.creator_email == "creator@example.com"
+        assert connector._authenticated_jira_email == "jira@example.com"
+        connector.data_entities_processor.get_user_by_user_id.assert_not_awaited()
 
 
 class TestCloudHandleDeletedIssueGaps:
@@ -246,7 +245,7 @@ class TestDcInitAndAuditGaps:
         assert ds.get_auditing_events_v1.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_fetch_deleted_issues_from_audit_unauthorized_returns_empty(self):
+    async def test_fetch_deleted_issues_from_audit_forbidden_returns_none(self):
         conn = _make_dc_connector()
         resp = MagicMock()
         resp.status = 403
@@ -255,10 +254,10 @@ class TestDcInitAndAuditGaps:
         ds.get_auditing_events_v1 = AsyncMock(return_value=resp)
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
-            assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) == []
+            assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) is None
 
     @pytest.mark.asyncio
-    async def test_fetch_deleted_issues_from_audit_exception_returns_partial(self):
+    async def test_fetch_deleted_issues_from_audit_exception_returns_none(self):
         conn = _make_dc_connector()
         ok = MagicMock()
         ok.status = 200
@@ -274,4 +273,4 @@ class TestDcInitAndAuditGaps:
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
 
-        assert keys == ["PROJ-9"]
+        assert keys is None, "a half-read window must not be reported as complete"

@@ -407,6 +407,17 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def upsert_authenticated_as(
+        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str
+    ) -> None:
+        """Link the connector creator to the source-account user it authenticated as (one per connector)."""
+        pass
+
+    @abstractmethod
+    async def remove_authenticated_as(self, connector_id: str) -> bool:
+        pass
+
+    @abstractmethod
     async def get_record_by_weburl(self, weburl: str, org_id: Optional[str] = None) -> Optional[Record]:
         pass
 

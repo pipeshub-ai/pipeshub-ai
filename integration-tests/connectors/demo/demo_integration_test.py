@@ -10,6 +10,13 @@ least ``MIN_PASS`` of ``RUNS`` per persona, and the restricted pricing
 question must pass every run — Bob always gets the document, Alice never
 does. One leak fails the test.
 
+Each question is asked in both chat modes. "agent" is what the chat landing's
+suggested questions use and picks its own sources, so it can miss an answer
+"internal_search" finds; it once told Bob no pricing strategy existed. Agent
+answers are slower and less deterministic, so it runs ``AGENT_RUNS`` times and
+needs ``AGENT_MIN_PASS`` of them. The restricted question still needs every run
+in both modes: Bob must always find pricing and Alice must never see it.
+
 Needs an LLM configured on the instance (the integration workflow does that
 before the suite runs). ``DEMO_PERSONA_PASSWORD`` may be set to reuse
 existing persona accounts; otherwise a throwaway password is generated.
@@ -29,6 +36,7 @@ import yaml
 
 from app.connectors.sources.demo.harness import kb_harness  # type: ignore[import-not-found]
 from app.connectors.sources.demo.harness.kb_harness import (  # type: ignore[import-not-found]
+    CHAT_MODES,
     ask,
     build_name_index,
     cited_fixture_ids,
@@ -44,6 +52,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.demo, pytest.mark.slow]
 
 RUNS = int(os.environ.get("DEMO_ACCEPTANCE_RUNS", "3"))
 MIN_PASS = int(os.environ.get("DEMO_ACCEPTANCE_MIN_PASS", "2"))
+AGENT_RUNS = int(os.environ.get("DEMO_ACCEPTANCE_AGENT_RUNS", "2"))
+AGENT_MIN_PASS = int(os.environ.get("DEMO_ACCEPTANCE_AGENT_MIN_PASS", "1"))
 INDEX_TIMEOUT_S = 420
 CONNECTOR_NAME = "Acme Corp demo data: GitHub, Jira, Slack, Google Drive and ServiceNow"
 PERSONAS = ("alice", "bob")
@@ -176,27 +186,32 @@ def demo_connector(pipeshub_client: PipeshubClient, personas: dict[str, str]) ->
         _api(pipeshub_client, "DELETE", f"/api/v1/connectors/{connector_id}")
 
 
+@pytest.mark.parametrize("chat_mode", CHAT_MODES)
 @pytest.mark.parametrize("persona", PERSONAS)
 def test_golden_questions_pass_for_persona(
-    pipeshub_client: PipeshubClient, demo_connector: str, personas: dict[str, str], persona: str
+    pipeshub_client: PipeshubClient, demo_connector: str, personas: dict[str, str], persona: str, chat_mode: str
 ) -> None:
     fx = _fixture()
     name_to_id, thread_of = build_name_index(fx)
     jwt = personas[persona]
+    runs, min_pass = (AGENT_RUNS, AGENT_MIN_PASS) if chat_mode == "agent" else (RUNS, MIN_PASS)
     failures: list[str] = []
     for q in fx["questions"]:
         expect = q["personas"][persona]
         passes = 0
         verdicts: list[str] = []
-        for _ in range(RUNS):
-            answer, cited_names = ask(pipeshub_client.base_url, jwt, q["ask"])
+        for _ in range(runs):
+            answer, cited_names = ask(pipeshub_client.base_url, jwt, q["ask"], chat_mode)
             ok, verdict = score(q, expect, cited_fixture_ids(cited_names, name_to_id, thread_of), answer)
             passes += int(ok)
-            verdicts.append(verdict)
-        # A leak of restricted material fails the whole demo: those questions must pass every run.
-        need = RUNS if q.get("restricted") else MIN_PASS
+            # A failed run shows what was said, so a nightly miss can be diagnosed from the log.
+            verdicts.append(verdict if ok else f"{verdict} answer={' '.join(answer.split())[:300]!r}")
+        # The restricted question is the permissions lesson, so it needs every
+        # run in both modes: Alice never gets pricing and Bob always does.
+        restricted = bool(q.get("restricted"))
+        need = runs if restricted else min_pass
         if passes < need:
-            failures.append(f"{q['id']} [{persona}]: {passes}/{RUNS} (need {need}) — {verdicts}")
+            failures.append(f"{q['id']} [{persona}, {chat_mode}]: {passes}/{runs} (need {need}) — {verdicts}")
     assert not failures, "\n".join(failures)
 
 

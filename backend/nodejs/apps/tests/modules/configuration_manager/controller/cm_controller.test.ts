@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import nock from 'nock'
 import * as cmConfig from '../../../../src/modules/configuration_manager/config/config'
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
+import { CONFIG_SECRET_PLACEHOLDER } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import * as generateAuthTokenModule from '../../../../src/modules/auth/utils/generateAuthToken'
 import * as s3HealthCheckModule from '../../../../src/modules/storage/utils/s3-health-check.util'
@@ -1365,9 +1366,10 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       const response = res.json.firstCall.args[0]
+      // The request comes from a member, so the stored key is masked.
       expect(response.providers).to.deep.equal([
         { ...duckDuckGoProvider, isDefault: true },
-        storedSerper,
+        { ...storedSerper, configuration: { apiKey: CONFIG_SECRET_PLACEHOLDER } },
       ])
       expect(response.message).to.equal(
         'Web search providers retrieved successfully',
@@ -1398,7 +1400,7 @@ describe('ConfigurationManager Controller', () => {
       const response = res.json.firstCall.args[0]
       expect(response.providers).to.deep.equal([
         { ...duckDuckGoProvider, isDefault: false },
-        storedTavily,
+        { ...storedTavily, configuration: { apiKey: CONFIG_SECRET_PLACEHOLDER } },
       ])
       expect(response.settings).to.deep.equal({
         includeImages: true,

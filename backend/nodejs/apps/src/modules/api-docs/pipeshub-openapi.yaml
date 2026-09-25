@@ -861,7 +861,7 @@ components:
     OtpGenerateRequest:
       type: object
       additionalProperties: false
-      description: Request to generate and send OTP
+      description: Request for a sign-in code (OTP); a code is sent only if that email can sign in with one
       properties:
         email:
           type: string
@@ -876,7 +876,9 @@ components:
     LoginOtpGenerateResponse:
       type: string
       description: |
-        Plain-text response body. The server sends the literal string ``OTP sent``.
+        Plain-text response body, identical whether or not the email has an account, and
+        worded so it doesn't claim a code was delivered:
+        ``If that email can sign in with a code, one is being sent. It works for 10 minutes. If nothing arrives, check your spam folder or try again later.``
 
     PasswordResetRequest:
       type: object
@@ -5096,6 +5098,27 @@ components:
         eventPublished:
           type: boolean
 
+    DemoDataStatus:
+      type: object
+      required: [hasDemo, include, chosen, realData, demoConnectorIds]
+      properties:
+        hasDemo:
+          type: boolean
+          description: Whether the organization has the Acme Corp demo connector.
+        include:
+          type: boolean
+          description: Whether the demo reaches the caller's answers, search and listings.
+        chosen:
+          type: boolean
+          nullable: true
+          description: The caller's own choice; null while they use the default.
+        realData:
+          type: boolean
+          description: Whether any source other than the demo has indexed records.
+        demoConnectorIds:
+          type: array
+          items:
+            type: string
     UploadLimitsResponseSchema:
       type: object
       additionalProperties: false
@@ -17368,8 +17391,12 @@ paths:
 
         **Security:**
 
-        - Account locks after 5 consecutive failed attempts
+        - Account locks for 24 hours after 5 consecutive failed attempts, and the owner is
+          sent an email saying so. While it is locked, sign-in is refused with the same answer
+          as a wrong password or code, even when the password or code is right
         - CAPTCHA may be required if enabled (pass `cf-turnstile-response`)
+        - An email with no account gets the same status and message as a real account given
+          a wrong password (`400`) or a wrong, missing or expired sign-in code (`401`)
       operationId: authenticate
       x-pipeshub-sdk: true
       security: []
@@ -17395,25 +17422,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthenticateResponse'
         '400':
-          description: Invalid request, method not allowed, invalid credential format or Account blocked due to too many failed attempts (5 attempts max)
+          description: Invalid request, method not allowed, invalid credential format, or wrong or missing password. A wrong password, an email with no account and a locked account all get the same message
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Invalid credentials (wrong password, expired OTP, etc.)
+          description: Wrong, missing or expired sign-in code (the same message for an email with no account and for a locked account), CAPTCHA refused, or the identity provider rejected the sign-in
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Session expired or user not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '410':
-          description: OTP has expired (valid for 10 minutes)
+          description: Sign-in session expired or missing; start again with `/initAuth`
           content:
             application/json:
               schema:
@@ -17429,16 +17450,17 @@ paths:
     post:
       tags:
         - User Account
-      summary: Generate and send OTP for login
+      summary: Request a sign-in code (OTP) for login
       description: |
-        Generate and send a 6-digit one-time password (OTP) to the user's email.
-        Use this endpoint before authenticating with the `otp` method.
+        Ask for a 6-digit one-time password (OTP) to be emailed, for use with the `otp`
+        method on `/authenticate`. If that email can sign in with a code, one is sent;
+        the answer is the same either way (see **Account privacy** below).
 
         **OTP Details:**
 
         - 6 digits numeric code
         - Valid for **10 minutes** after generation
-        - Sent to user's registered email address
+        - Sent only to the email of an existing account that isn't locked
 
         **Rate Limiting:**
 
@@ -17449,9 +17471,18 @@ paths:
 
         If Cloudflare Turnstile is enabled, include `cf-turnstile-response` in the request body.
 
+        **Account privacy:**
+
+        The answer is the same `200` and message whether or not the email has an account,
+        and also when the account is locked or the email could not be sent. A code is only
+        sent when the account exists and isn't locked. Failures to send are logged on the
+        server.
+
         **Success response body**
 
-        - `200` returns a **plain string** (`OTP sent`).
+        - `200` returns a **plain string**: `If that email can sign in with a code, one is being sent. ...`
+        - The answer doesn't wait for the email to go out, and a failed send is only
+          logged on the server
       operationId: generateLoginOtp
       security: []
       requestBody:
@@ -17463,7 +17494,7 @@ paths:
         required: true
       responses:
         '200':
-          description: OTP generated and sent successfully
+          description: Request accepted. If that email can sign in with a code (an existing account that isn't locked), one is being sent. The answer is the same either way, and doesn't say whether the email was delivered.
           content:
             text/html:
               schema:
@@ -17474,20 +17505,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '403':
-          description: Account is blocked due to too many failed attempts
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: User not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Internal server error
+          description: The account lookup failed on the server (the same for every email)
           content:
             application/json:
               schema:
@@ -17982,6 +18001,7 @@ paths:
         - No duplicate methods within the same step
         - No method can appear in multiple steps
         - Each step must have at least one allowed method
+        - `samlSso` is only allowed in a single-step policy; it can't be combined with other steps
 
         **Available Methods:**
         - `password`: Email/password authentication
@@ -18049,6 +18069,7 @@ paths:
             - User is not an organization admin
             - `authMethod` field missing from request body
             - Validation failure (duplicate steps, duplicate methods, out-of-range order, empty methods array)
+            - `samlSso` used in a policy with more than one step
           content:
             application/json:
               schema:
@@ -24896,6 +24917,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UploadLimitsResponseSchema'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/demo-data/status:
+    get:
+      tags:
+        - Knowledge Base
+      summary: Get your Acme Corp demo data setting
+      description: |
+        Whether the bundled Acme Corp demo data reaches the caller's answers,
+        search and record listings. Each person chooses for themselves; until
+        they do, the demo is on while the organization has no indexed data of
+        its own and off once it has.
+      operationId: getDemoDataStatus
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      responses:
+        '200':
+          description: The caller's demo data setting
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoDataStatus'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/demo-data/preference:
+    put:
+      tags:
+        - Knowledge Base
+      summary: Show or hide the Acme Corp demo data for yourself
+      description: |
+        Sets the caller's own choice. `include: null` goes back to the default.
+        Affects only the caller; nothing is deleted.
+      operationId: setDemoDataPreference
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [include]
+              properties:
+                include:
+                  type: boolean
+                  nullable: true
+      responses:
+        '200':
+          description: The caller's setting after the change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoDataStatus'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -39171,6 +39264,11 @@ paths:
 
         **Authentication:** Session JWT or OAuth 2.0 access token via `Authorization: Bearer`.
         OAuth tokens must include the `config:read` scope. Admin role is not required.
+
+        **API keys:** for anyone who isn't an org admin, each provider's `configuration.apiKey`
+        comes back as the placeholder `****************`. Admins get the stored key, unless the
+        server hides secrets from everyone (`HIDE_SECRET_CONFIG=true`). When updating a provider,
+        sending the placeholder back keeps the stored key.
       operationId: getWebSearchProviders
       x-pipeshub-sdk: true
       security:

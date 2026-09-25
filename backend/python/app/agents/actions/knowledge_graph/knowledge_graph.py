@@ -21,6 +21,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder
@@ -450,6 +451,7 @@ class KnowledgeGraph:
                     folder_mime_types=FOLDER_MIME_TYPES,
                     agent_connector_ids=connector_ids,
                     frontend_url=frontend_url,
+                    excluded_app_ids=excluded_app_ids(state),
                 )
                 result = await resolver.resolve_many([node_id])
                 if result.matches:
@@ -461,6 +463,7 @@ class KnowledgeGraph:
             user_key=user_key,
             org_id=org_id,
             frontend_url=frontend_url,
+            excluded_app_ids=excluded_app_ids(state),
         )
 
         app_names = {c.id: c.name for c in catalog.connectors}
@@ -599,6 +602,7 @@ class KnowledgeGraph:
             agent_connector_ids=connector_ids,
             connector_name_hint=connector_name,
             frontend_url=await resolve_frontend_url(state.get("config_service")),
+            excluded_app_ids=excluded_app_ids(state),
         )
 
         try:
@@ -652,7 +656,11 @@ class KnowledgeGraph:
             "count search results — navigate the record group or scope list_files to one "
             "source instead.\n\n"
             "Parallel searches: pass one source_id per call and run calls in parallel for "
-            "per-source recall. Omit source_ids to search all accessible sources in one call.\n\n"
+            "per-source recall. Omit source_ids to search all accessible sources in one call. "
+            "If searches limited with source_ids find nothing, search once more with "
+            "source_ids omitted before concluding the information does not exist: a "
+            "source's name rarely says everything it holds. Skip that only when the user "
+            "asked to search just those sources.\n\n"
             "Time filtering: use created_after/created_before to scope by source creation date, "
             "and modified_after/modified_before to scope by source last-modified date. "
             "All dates use the source system's timestamp (when the file was created in Drive, "

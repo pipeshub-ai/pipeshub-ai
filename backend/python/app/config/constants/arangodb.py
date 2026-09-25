@@ -237,6 +237,7 @@ class CollectionNames(Enum):
     APPS = "apps"
     ORG_APP_RELATION = "orgAppRelation"
     USER_APP_RELATION = "userAppRelation"
+    AUTHENTICATED_AS = "authenticatedAs"  # User -> User: connector creator -> source account it authenticated as, per connectorId
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
     PROSPECT = "prospect"  # Org -> Org: prospect/account relationship
     CUSTOMER = "customer"  # Org -> Org: customer relationship

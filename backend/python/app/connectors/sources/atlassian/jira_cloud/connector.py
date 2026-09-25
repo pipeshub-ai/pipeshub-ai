@@ -383,6 +383,7 @@ class JiraConnector(BaseConnector):
         # Email + timezone from GET /rest/api/3/myself (cached in init). Jira reads
         # bare JQL datetimes in the account timezone (see _jql_datetime, C5).
         self._authenticated_jira_email: Optional[str] = None
+        self._authenticated_jira_account_id: str | None = None
         self._jql_timezone: tzinfo = timezone.utc
 
     def _cache_authenticated_jira_profile(self, response: Any) -> None:
@@ -408,6 +409,7 @@ class JiraConnector(BaseConnector):
         email = data.get("emailAddress")
         if email:
             self._authenticated_jira_email = email.strip()
+        self._authenticated_jira_account_id = data.get("accountId")
 
         tz_name = data.get("timeZone")
         if tz_name:
@@ -451,14 +453,6 @@ class JiraConnector(BaseConnector):
             # Site already resolved in build_from_services (multi-site OAuth rejected there)
             self.site_url = client.get_site_url()
             self.logger.info("✅ Jira client initialized (site: %s)", self.site_url or "unknown")
-
-            if self.created_by:
-                try:
-                    creator = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                    if creator and getattr(creator, "email", None):
-                        self.creator_email = creator.email
-                except Exception as e:
-                    self.logger.warning("Could not resolve creator email for created_by %s: %s", self.created_by, e)
 
             try:
                 myself_response = await self.data_source.get_current_user()
@@ -546,6 +540,10 @@ class JiraConnector(BaseConnector):
                 )
                 init_error._notification_sent = True
                 raise init_error
+
+            await self.register_authenticated_source_user(
+                self._authenticated_jira_email, self._authenticated_jira_account_id
+            )
 
             # 2. Load latest sync/indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1590,54 +1588,48 @@ class JiraConnector(BaseConnector):
         status: int,
         stage: str,
     ) -> list[Permission]:
-        """Build a single-user BROWSE permission for the configuring user when
-        the permission-scheme endpoints return 403 for this project (the account
-        isn't a project admin). 401/transient failures return None from the
-        scheme fetch; the caller syncs the RecordGroup with an empty ACL.
+        """Build a single-user BROWSE permission for the authenticated Jira account
+        when the permission-scheme endpoints return 403 for this project (the
+        account isn't a project admin). 401/transient failures return None from
+        the scheme fetch; the caller syncs the RecordGroup with an empty ACL.
 
         Mirrors the ``_app_roles_forbidden`` fallback in
         ``_fetch_application_roles_to_groups_mapping``: rather than indexing
         the project with no ACLs (which would silently hide it from search
-        results across the org), give the configuring user direct READ access
-        so they can still discover their own data.
+        results across the org), give the account that fetched the issues
+        direct READ access. The connector creator reaches it through the
+        ``authenticatedAs`` link when their PipesHub email differs.
         """
-        if self.creator_email:
+        jira_email = self._authenticated_jira_email
+        if jira_email:
             self.logger.warning(
-                "⚠️ %s for %s returned %s — configuring user lacks Administer "
-                "Projects. Granting configuring user '%s' direct BROWSE access "
-                "instead of dropping all ACLs for this project.",
-                stage, project_key, status, self.creator_email,
+                "⚠️ %s for %s returned %s — Jira account lacks Administer Projects. "
+                "Granting Jira account '%s' direct BROWSE access instead of dropping "
+                "all ACLs for this project.",
+                stage, project_key, status, jira_email,
             )
-            jira_email = self._authenticated_jira_email
-            if jira_email:
-                notify_message = (
-                    f"The connector's Jira account ({jira_email}) can't read the permission scheme "
-                    f"for {project_key}. Grant it project admin on {project_key}; until then, only the "
-                    "connector owner can access this project's issues in PipesHub."
-                )
-            else:
-                notify_message = (
-                    f"The connector's Jira account can't read the permission scheme for {project_key}. "
-                    "Grant it project admin access; until then, only the connector owner can access "
-                    "this project's issues in PipesHub."
-                )
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,
                 severity=NotificationSeverity.WARNING,
                 title=self._notification_title(f"couldn't read permissions for project {project_key}"),
-                message=notify_message,
+                message=(
+                    f"The connector's Jira account ({jira_email}) can't read the permission scheme "
+                    f"for {project_key}. Grant it project admin on {project_key}; until then, only that "
+                    "Jira account (and the connector owner through it) can access this project's "
+                    "issues in PipesHub."
+                ),
                 payload={
                     "redirect_link": f"{self.site_url}/plugins/servlet/project-config/{project_key}/permissions",
                 },
             )
             return [Permission(
                 entity_type=EntityType.USER,
-                email=self.creator_email,
+                email=jira_email,
                 type=PermissionType.READ,
             )]
 
         self.logger.warning(
-            "⚠️ %s for %s returned %s and no configuring user email resolved — "
+            "⚠️ %s for %s returned %s and the authenticated Jira account email is unknown — "
             "project will be indexed with no BROWSE permissions.",
             stage, project_key, status,
         )
@@ -1813,20 +1805,21 @@ class JiraConnector(BaseConnector):
                     external_id=ORG_SCOPE_ALL_LICENSED_USERS,
                     type=PermissionType.READ
                 ))
-            elif self._app_roles_forbidden and self.creator_email:
+            elif self._app_roles_forbidden and self._authenticated_jira_email:
                 # API returned 403 — can't resolve role to groups; grant only the
-                # configuring user instead of over-granting to ORG
-                user_key = f"user:{self.creator_email.lower()}"
+                # authenticated Jira account instead of over-granting to ORG
+                jira_email = self._authenticated_jira_email
+                user_key = f"user:{jira_email.lower()}"
                 if user_key not in seen_holders:
                     seen_holders.add(user_key)
                     grant_permissions.append(Permission(
                         entity_type=EntityType.USER,
-                        email=self.creator_email,
+                        email=jira_email,
                         type=PermissionType.READ,
                     ))
                     self.logger.info(
-                        "applicationRole '%s' unresolvable (403) — granting configuring user '%s' direct access on %s",
-                        role_key, self.creator_email, project_key
+                        "applicationRole '%s' unresolvable (403) — granting Jira account '%s' direct access on %s",
+                        role_key, jira_email, project_key
                     )
             else:
                 self.logger.warning(

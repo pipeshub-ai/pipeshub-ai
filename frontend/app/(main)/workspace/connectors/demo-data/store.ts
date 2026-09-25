@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { ConnectorsApi } from '../api';
 import { KnowledgeHubApi } from '@/app/(main)/knowledge-base/api';
+import { DemoDataApi, type DemoDataStatus } from './api';
 import type { Connector, ConnectorScope } from '../types';
 import { demoConnectorsIn, hasActiveDemo, hasIndexedRecords, otherConnectorsIn } from './demo-data';
 
@@ -15,8 +16,13 @@ interface DemoDataState {
    * answers start mixing Acme Corp with the company's own data. `null` until checked.
    */
   realDataIndexed: boolean | null;
+  /** This person's demo data switch; `null` until read. */
+  status: DemoDataStatus | null;
   loadDemoConnectors: () => Promise<void>;
   checkRealData: () => Promise<void>;
+  loadStatus: () => Promise<void>;
+  /** Show or hide the demo for this person; `null` goes back to the default. */
+  setInclude: (include: boolean | null) => Promise<void>;
   /** Forget what was found, e.g. once the demo data has been removed. */
   reset: () => void;
 }
@@ -24,6 +30,10 @@ interface DemoDataState {
 // One lookup at a time, however many components ask.
 let demoLookup: Promise<void> | null = null;
 let realDataLookup: Promise<void> | null = null;
+let statusLookup: Promise<void> | null = null;
+// Bumped by every change of the switch, so a status read that started before
+// it cannot overwrite the answer to the change.
+let statusRevision = 0;
 // Bumped by reset(), so an answer to a lookup started before it is dropped
 // instead of bringing back a demo that has just been removed.
 let generation = 0;
@@ -61,6 +71,7 @@ export const useDemoDataStore = create<DemoDataState>()(
     (set, get) => ({
       demoConnectors: [],
       realDataIndexed: null,
+      status: null,
 
       // Only a positive answer is remembered. Chat is the landing page, so the
       // first lookup of a session usually runs before anyone has turned the
@@ -120,11 +131,36 @@ export const useDemoDataStore = create<DemoDataState>()(
         return lookup;
       },
 
+      loadStatus: () => {
+        if (statusLookup) return statusLookup;
+        const started = generation;
+        const revision = statusRevision;
+        const lookup: Promise<void> = DemoDataApi.getStatus()
+          .then((status) => {
+            if (started === generation && revision === statusRevision) set({ status });
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            if (statusLookup === lookup) statusLookup = null;
+          });
+        statusLookup = lookup;
+        return lookup;
+      },
+
+      // Not swallowed: the caller shows the failure, and the switch stays where it was.
+      setInclude: async (include) => {
+        const started = generation;
+        statusRevision += 1;
+        const status = await DemoDataApi.setInclude(include);
+        if (started === generation) set({ status });
+      },
+
       reset: () => {
         generation += 1;
         demoLookup = null;
         realDataLookup = null;
-        set({ demoConnectors: [], realDataIndexed: null });
+        statusLookup = null;
+        set({ demoConnectors: [], realDataIndexed: null, status: null });
       },
     }),
     { name: 'demo-data-store' },

@@ -1877,6 +1877,10 @@ class TestHandleOAuthCallback:
 
         assert result["success"] is True
         assert "redirect_url" in result
+        # whoever completes the consent is recorded as the one who authenticated the connector
+        updates = req.app.state.connector_registry.update_connector_instance.await_args.kwargs["updates"]
+        assert updates["isAuthenticated"] is True
+        assert updates["authenticatedBy"] == "u1"
 
     async def test_invalid_token_returns_failure(self):
         from app.connectors.api.router import handle_oauth_callback

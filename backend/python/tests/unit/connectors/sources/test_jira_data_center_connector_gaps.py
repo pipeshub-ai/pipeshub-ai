@@ -157,7 +157,7 @@ class TestIssueDeletionGaps:
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) == []
-            assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) == []
+            assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) is None
 
     @pytest.mark.asyncio
     async def test_fetch_deleted_issues_empty_entities_breaks(self):

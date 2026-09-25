@@ -614,5 +614,5 @@ class TestExecuteListFiles:
             ok, _ = await execute_list_files(state, source_ids=["unknown-id"])
         assert ok is True
         call_kwargs = mock_service.get_nodes.call_args.kwargs
-        assert call_kwargs["connector_ids"] == ["app-1"]
+        assert call_kwargs["connector_ids"] == ["app-1", "kb-1"]
         assert call_kwargs["record_group_ids"] == ["kb-1"]

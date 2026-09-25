@@ -398,6 +398,8 @@ class Redshift:
         try:
             if not schema_name:
                 return self._result(False, {"error": "Missing required parameter: schema_name"})
+            if isinstance(tables, str):
+                tables = [tables]
             if not tables:
                 return self._result(False, {"error": "Missing required parameter: tables"})
 

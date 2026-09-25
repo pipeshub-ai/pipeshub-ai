@@ -492,6 +492,16 @@ export async function streamMessageForSlot(
     });
   }
 
+  /** Land the last throttled chunk so the grace timer commits all of it. */
+  function flushPendingForStop() {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+      flushContentToStore();
+    }
+    cancelPendingStatus();
+  }
+
   function scheduleFlush() {
     const now = Date.now();
     // Check activity on every call — adapts immediately when user switches.
@@ -778,6 +788,12 @@ export async function streamMessageForSlot(
 
       onError: (error) => {
         if (!slotIsOnRun(slotId, streamRunId)) return;
+        // After Stop, `cancelStreamForSlot`'s grace timer commits the partial
+        // answer as stopped; settling here would erase it first.
+        if (useChatStore.getState().slots[slotId]?.stopping) {
+          flushPendingForStop();
+          return;
+        }
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         cancelPendingStatus();
         console.error('[streaming] Stream error for slot', slotId, error);
@@ -963,6 +979,16 @@ export async function streamRegenerateForSlot(
     });
   }
 
+  /** Land the last throttled chunk so the grace timer commits all of it. */
+  function flushPendingForStop() {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+      flushContentToStore();
+    }
+    cancelPendingStatus();
+  }
+
   function scheduleFlush() {
     const now = Date.now();
     const isActive = useChatStore.getState().activeSlotId === slotId;
@@ -1134,6 +1160,11 @@ export async function streamRegenerateForSlot(
 
     onError: (error: Error) => {
       if (!slotIsOnRun(slotId, streamRunId)) return;
+      // See streamMessageForSlot's onError: the grace timer owns a stopped run.
+      if (useChatStore.getState().slots[slotId]?.stopping) {
+        flushPendingForStop();
+        return;
+      }
       if (flushTimer !== null) {
         clearTimeout(flushTimer);
         flushTimer = null;

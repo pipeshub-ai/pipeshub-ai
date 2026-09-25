@@ -1403,6 +1403,8 @@ class TestCreateConnectorInstanceOnConfiguration:
         assert result["type"] == "Gmail"
         assert result["name"] == "My Gmail"
         assert result["authType"] == "OAUTH"
+        # until someone else re-authenticates, the creator is who authenticated it
+        assert result["authenticatedBy"] == result["createdBy"] == "user-1"
 
     @pytest.mark.asyncio
     async def test_unregistered_type_returns_none(self):

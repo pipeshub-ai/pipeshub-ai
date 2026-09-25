@@ -23,6 +23,26 @@ from lingua import LanguageDetector, LanguageDetectorBuilder
 MAX_TEXT_BLOCK_CHARS = 50_000
 
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
+_WHITESPACE_RE = re.compile(r"\s")
+
+
+def _split_between_words(text: str, max_chars: int) -> list[str]:
+    """Cut text that has no sentence boundary into pieces of at most *max_chars*,
+    at the last whitespace in each window so no word is split across blocks.
+    Only a single run of more than *max_chars* non-space characters is cut mid-way."""
+    pieces: list[str] = []
+    while len(text) > max_chars:
+        window = text[: max_chars + 1]
+        last_space = max((m.start() for m in _WHITESPACE_RE.finditer(window)), default=-1)
+        if last_space >= 0:
+            head, text = text[:last_space], text[last_space + 1 :]
+        else:
+            head, text = text[:max_chars], text[max_chars:]
+        if head.strip():
+            pieces.append(head)
+    if text.strip():
+        pieces.append(text)
+    return pieces
 
 
 def split_long_text(
@@ -30,6 +50,8 @@ def split_long_text(
     max_chars: int = MAX_TEXT_BLOCK_CHARS,
 ) -> list[str]:
     """Split *text* into chunks at sentence boundaries, each at most *max_chars*."""
+    if max_chars <= 0:
+        raise ValueError(f"max_chars must be positive, got {max_chars}")
     if not text or len(text) <= max_chars:
         return [text] if text else []
 
@@ -45,8 +67,7 @@ def split_long_text(
             if current:
                 chunks.append(" ".join(current))
                 current, current_len = [], 0
-            for offset in range(0, len(sentence), max_chars):
-                chunks.append(sentence[offset : offset + max_chars])
+            chunks.extend(_split_between_words(sentence, max_chars))
             continue
 
         added_len = len(sentence) + (1 if current else 0)

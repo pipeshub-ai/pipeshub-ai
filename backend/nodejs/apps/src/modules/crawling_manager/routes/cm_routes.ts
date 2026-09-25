@@ -17,9 +17,11 @@ import { AuthMiddleware } from '../../../config';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createCrawlingManagerRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(router, 'connector', 'connectorId');
   const crawlingService = container.get<CrawlingSchedulerService>(
     CrawlingSchedulerService,
   );

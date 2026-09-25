@@ -123,6 +123,7 @@ from app.connectors.services.vector_store_rebuild import (
 from app.edition_containers import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
 from app.models.entities import Record, RecordType
+from app.modules.demo_data.access import is_hidden_demo_record
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import read_platform_feature_flag
@@ -132,6 +133,7 @@ from app.utils.api_call import make_api_call
 from app.utils.chat_helpers import record_to_text
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.user_messages import (
+    EPUB_PREVIEW_UNAVAILABLE,
     action_failed,
     not_found,
     provider_failure,
@@ -268,6 +270,15 @@ def get_pdf_conversion_info(
     )
 
     return needs_conversion, record_name, file_extension
+
+
+def _refuse_epub_pdf_preview(file_extension: str | None) -> None:
+    if (file_extension or "").lower().lstrip(".") == "epub":
+        # LibreOffice can write EPUB but has no filter to open it.
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail=EPUB_PREVIEW_UNAVAILABLE,
+        )
 
 
 async def _recover_artifact_version(
@@ -495,6 +506,10 @@ async def _resolve_record_content_response(
     new agent-facing internal content endpoint, so the routing decision lives
     in exactly one place.
     """
+    if convert_to == MimeTypes.PDF.value:
+        # Before fetching, so a failed fetch cannot hide why there is no preview.
+        _refuse_epub_pdf_preview(get_pdf_conversion_info(record)[2])
+
     if record.record_type == RecordType.ARTIFACT or record.connector_name in (
         Connectors.ATTACHMENTS, Connectors.CODING_SANDBOX,
     ):
@@ -609,6 +624,7 @@ async def get_record_content_internal(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
             )
+        await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
 
         return await _resolve_record_content_response(
             record=record,
@@ -630,6 +646,23 @@ async def get_record_content_internal(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("open this file"),
         ) from e
+
+
+async def _refuse_hidden_demo_record(
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+    org_id: str,
+    user_id: str,
+    connector_id: str | None,
+) -> None:
+    """Opening a switched-off demo record by id answers like a record the user cannot see."""
+    try:
+        hidden = await is_hidden_demo_record(graph_provider, config_service, org_id, user_id, connector_id)
+    except Exception as exc:
+        logger.warning("demo data setting unreadable for user=%s: %s", user_id, exc)
+        return
+    if hidden:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
 
 class ReindexFailedRequest(BaseModel):
@@ -1327,6 +1360,9 @@ async def download_file(
                 )
 
         connector_id = record.connector_id
+        await _refuse_hidden_demo_record(
+            graph_provider, request.app.container.config_service(), org_id, user_id, connector_id
+        )
         # Get connector instance to check scope and existence
         connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
         connector_type = connector_instance.get("type", None) if connector_instance else None
@@ -1407,6 +1443,7 @@ async def stream_record(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record"
             )
+        await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
         is_admin = is_request_admin(request)
         return await _resolve_record_content_response(
             record=record,
@@ -1626,6 +1663,7 @@ async def convert_buffer_to_pdf_stream(
     Raises:
         HTTPException: If conversion fails
     """
+    _refuse_epub_pdf_preview(file_extension)
     with tempfile.TemporaryDirectory() as temp_dir:
         safe_record_name = Path(record_name).name if record_name else "file"
         normalized_extension = (file_extension or "").lower().lstrip(".")
@@ -1834,6 +1872,10 @@ async def get_record_by_id(
         )
         logger.debug(f"🚀 has_access: {has_access}")
         if has_access:
+            doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+            await _refuse_hidden_demo_record(
+                graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
+            )
             return has_access
         else:
             raise HTTPException(
@@ -1874,6 +1916,10 @@ async def get_record_content(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
             )
+        doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+        await _refuse_hidden_demo_record(
+            graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -4706,7 +4752,8 @@ async def update_connector_instance_auth_config(
             ConnectorStateKeys.IS_AUTHENTICATED: False,  # Will be set to True after successful toggle/enable
             ConnectorStateKeys.IS_ACTIVE: False,  # Disable if auth config changed - user must re-enable
             ConnectorStateKeys.UPDATED_AT_TIMESTAMP: get_epoch_timestamp_in_ms(),
-            ConnectorStateKeys.UPDATED_BY: user_id
+            ConnectorStateKeys.UPDATED_BY: user_id,
+            ConnectorStateKeys.AUTHENTICATED_BY: user_id,
         }
         updated_instance = await connector_registry.update_connector_instance(
             connector_id=connector_id,
@@ -5144,7 +5191,8 @@ async def update_connector_instance_config(
                 "isAuthenticated": False,  # Will be set to True after successful toggle/enable
                 "isActive": False,  # Disable if auth config changed - user must re-enable
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedBy": user_id
+                "updatedBy": user_id,
+                ConnectorStateKeys.AUTHENTICATED_BY: user_id,
             }
         else:
             # For filters/sync updates, keep connector active and authenticated
@@ -6131,8 +6179,10 @@ async def handle_oauth_callback(
             logger.error(f"❌ Could not schedule token refresh for {connector_id}: {sched_err}", exc_info=True)
 
         # Update instance authentication status
+        # The user completing the consent is the one whose source account the token belongs to
         updates = {
             "isAuthenticated": True,
+            ConnectorStateKeys.AUTHENTICATED_BY: user_id,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms()
         }
         await connector_registry.update_connector_instance(

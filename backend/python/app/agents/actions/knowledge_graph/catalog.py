@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from app.modules.demo_data.chat import excluded_app_ids
+
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -105,9 +107,10 @@ class ConnectorCatalog:
 
         infos: list[ConnectorInfo] = []
         seen_ids: set[str] = set()
+        excluded = excluded_app_ids(state)
 
         def _add(cid: str, name: str, ctype: str) -> None:
-            if cid and cid not in seen_ids:
+            if cid and cid not in seen_ids and cid not in excluded:
                 seen_ids.add(cid)
                 infos.append(ConnectorInfo(id=cid, name=name or ctype, type=(ctype or "").upper()))
 

@@ -586,7 +586,6 @@ export function createStorageRouter(container: Container): Router {
           });
         res.status(200).json({
           message: 'Storage configuration updated successfully',
-          config: updatedConfig,
         });
         return;
       } catch (error) {

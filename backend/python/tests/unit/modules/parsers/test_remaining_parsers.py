@@ -414,12 +414,11 @@ More text."""
         assert "More text." in decoded
 
     def test_conversion_error_raises(self):
-        """Non-UTF8 content that fails to decode raises an error."""
+        """A failure while converting is wrapped with a clear message."""
         parser = self._make_parser()
-        # Create invalid UTF-8 bytes
-        invalid_utf8 = b"\xff\xfe invalid"
-        with pytest.raises(Exception, match="Error converting MDX"):
-            parser.convert_mdx_to_md(invalid_utf8)
+        with patch("app.modules.parsers.markdown.mdx_parser.re.sub", side_effect=RuntimeError("boom")):
+            with pytest.raises(Exception, match="Error converting MDX"):
+                parser.convert_mdx_to_md(b"# Title")
 
     def test_nested_accordion_with_title(self):
         """Multiple Accordion tags with titles converted correctly."""

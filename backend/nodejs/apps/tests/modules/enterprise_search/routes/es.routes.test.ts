@@ -519,7 +519,8 @@ describe('Enterprise Search Routes', () => {
       expect(mockRes.status.calledWith(200)).to.be.true
       expect(mockRes.json.calledOnce).to.be.true
       const response = mockRes.json.firstCall.args[0]
-      expect(response.message).to.include('updated successfully')
+      // The reloaded config holds every service secret; it must not be echoed back.
+      expect(response).to.deep.equal({ message: 'User configuration updated successfully' })
 
       loadStub.restore()
     })
