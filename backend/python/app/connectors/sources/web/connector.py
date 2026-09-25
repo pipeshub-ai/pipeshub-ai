@@ -125,7 +125,7 @@ class CrawlFetchResult:
 class RetryUrl:
     url: str
     status: str
-    status_code: int
+    status_code: int | None  # None when the site never answered
     retries: int
     last_attempted: int
     depth: int = 0                  # depth at which the URL was first encountered
@@ -1674,7 +1674,8 @@ class WebConnector(BaseConnector):
             self.retry_urls[normalized] = RetryUrl(
                 url=normalized,
                 status=Status.PENDING.value,
-                status_code=existing_entry.status_code if existing_entry else 408,
+                # No status: the site never answered, so none is invented (a 408 read as a real reply).
+                status_code=existing_entry.status_code if existing_entry else None,
                 retries=(existing_entry.retries + 1) if existing_entry else 0,
                 last_attempted=get_epoch_timestamp_in_ms(),
                 depth=depth,
@@ -2048,7 +2049,7 @@ class WebConnector(BaseConnector):
         return links
 
     async def _create_failed_placeholder_record(
-        self, url: str, status_code: int
+        self, url: str, status_code: int | None
     ) -> tuple[FileRecord | None, list[Permission] | None]:
         """Build a FAILED-status placeholder FileRecord for a URL that could not be fetched.
 
@@ -2087,7 +2088,7 @@ class WebConnector(BaseConnector):
 
         self.logger.warning(
             "⚠️ Creating FAILED placeholder for %s — "
-            "failed due to error, status code: %d",
+            "failed due to error, status code: %s",
             url,
             status_code,
         )

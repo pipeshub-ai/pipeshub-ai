@@ -123,7 +123,7 @@ async def test_a_server_that_hangs_up_leaves_a_failed_page_with_a_next_step(
 
     failed = db.pages()[PAGE]
     assert failed.indexing_status == ProgressStatus.FAILED.value
-    assert failed.reason is not None and failed.reason.endswith("sync.")
+    assert failed.reason == "We couldn't reach this page. Check the URL is correct and publicly reachable, then sync again."
     assert "http://site.test/fine" in db.pages()
 
 
