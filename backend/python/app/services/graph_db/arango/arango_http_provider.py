@@ -22837,8 +22837,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         UPDATE { pendingMutations: PUSH(OLD.pendingMutations || [], new_mut) }
         IN CorpusRevision
         """
-        await self.execute_query(query, bind_vars={"org_id": org_id, "mutation_id": mutation_id})
-        return mutation_id
+        for attempt in range(2):
+            try:
+                await self.execute_query(query, bind_vars={"org_id": org_id, "mutation_id": mutation_id})
+                return mutation_id
+            except Exception as exc:
+                if ("1210" in str(exc) or "1200" in str(exc)) and attempt == 0:
+                    continue
+                raise
+        return mutation_id  # unreachable
 
     async def increment_corpus_revision(self, org_id: str, mutation_id: str | None = None) -> str:
         """Atomically increment and return the corpus revision for an organization.

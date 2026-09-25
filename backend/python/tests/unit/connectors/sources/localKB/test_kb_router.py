@@ -947,7 +947,7 @@ class TestUpdateRecord:
             "timestamp": 1234567890,
         })
         gp = app.state.graph_provider
-        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB"})
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB", "org_id": "org1"})
         gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         gp.get_user_kb_permission = AsyncMock(return_value="OWNER")
         gp.get_knowledge_base = AsyncMock(return_value={"id": "kb1", "name": "KB"})
@@ -956,6 +956,16 @@ class TestUpdateRecord:
         client = TestClient(app)
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {"name": "new"}})
         assert resp.status_code == 200
+
+    def test_missing_org_id(self):
+        app, kb_svc, _ = _make_app()
+        gp = app.state.graph_provider
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"}) # No org_id
+        
+        client = TestClient(app)
+        resp = client.put("/api/v1/kb/record/r1", json={"updates": {"name": "new"}})
+        assert resp.status_code == 404
+        assert "Could not resolve record ownership" in resp.json()["detail"]
 
     def test_invalid_body(self):
         app, kb_svc, _ = _make_app()
@@ -2013,7 +2023,7 @@ class TestUpdateRecordFullCoverage:
             "timestamp": 1234567890,
         })
         gp = app.state.graph_provider
-        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB"})
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB", "org_id": "org1"})
         gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         gp.get_user_kb_permission = AsyncMock(return_value="OWNER")
         gp.get_knowledge_base = AsyncMock(return_value={"id": "kb1", "name": "KB"})
@@ -2023,20 +2033,19 @@ class TestUpdateRecordFullCoverage:
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {"name": "new"}})
         assert resp.status_code == 200
 
-    def test_early_no_kb_id_cache_invalidation_pending(self):
+    def test_early_no_kb_id_fails_404(self):
         app, kb_svc, kafka = _make_app()
         kb_svc.update_record = AsyncMock(return_value={
             "success": True, "recordId": "r1",
             "updatedRecord": {"id": "r1", "name": "new"},
-            "timestamp": 1234567890,
-            "cacheInvalidationPending": True
+            "timestamp": 1234567890
         })
         gp = app.state.graph_provider
         gp._get_kb_context_for_record = AsyncMock(return_value=None)
         client = TestClient(app)
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {"name": "new"}})
-        assert resp.status_code == 200
-        assert resp.json()["cacheInvalidationPending"] is True
+        assert resp.status_code == 404
+        assert "Could not resolve record ownership" in resp.json()["detail"]
 
     def test_invalid_body(self):
         app, kb_svc, _ = _make_app()

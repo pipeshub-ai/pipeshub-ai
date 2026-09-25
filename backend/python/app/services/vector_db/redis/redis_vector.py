@@ -485,6 +485,7 @@ class RedisVectorService(IVectorDBService):
             if "already exists" in err or "duplicate field" in err:
                 return
             logger.warning(f"FT.ALTER failed for field '{field_name}': {e}")
+            raise
 
     # ------------------------------------------------------------------
     # Filter construction
@@ -1022,7 +1023,11 @@ class RedisVectorService(IVectorDBService):
         # instead of enumerating all possible metadata_* fields in LOAD.  This
         # avoids brittleness when new metadata fields are added and costs only one
         # extra round-trip (pipelined, so no per-result latency).
-        if getattr(req, "is_semantic_cache_query", False):
+        cfg = self._collection_configs.get(collection_name)
+        is_cosine = cfg.distance_metric == DistanceMetric.COSINE if cfg else True
+        is_semantic_cache = getattr(req, "is_semantic_cache_query", False)
+
+        if is_semantic_cache:
             knn_expr = f"=>[KNN {k} @dense_embedding $vec AS __distance]"
             search_query_with_knn = f"({search_query}){knn_expr}" if search_query and search_query != "*" else f"(*){knn_expr}"
             
@@ -1033,7 +1038,7 @@ class RedisVectorService(IVectorDBService):
                 "LIMIT", "0", str(k),
             ]
             raw = await self.client.execute_command(*cmd_search)  # type: ignore
-            return parse_ft_search_reply(raw)
+            return parse_ft_search_reply(raw, is_cosine=is_cosine, is_semantic_cache=is_semantic_cache)
 
         cmd: List[Any] = [
             "FT.HYBRID", idx,

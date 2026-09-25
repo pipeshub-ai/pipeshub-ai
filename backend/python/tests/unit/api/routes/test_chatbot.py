@@ -552,27 +552,189 @@ class TestAskAIStreamEndpoint:
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot._generate_chat_stream_via_agent_loop")
     @patch("app.api.routes.chatbot.get_model_config")
-    async def test_currentTime_normalized_for_cache(self, mock_get_model_config, mock_generate_stream):
+    @patch("app.services.cache.semantic_cache.hash_filters")
+    async def test_currentTime_normalized_for_cache(self, mock_hash_filters, mock_get_model_config, mock_generate_stream):
+        from fastapi.responses import StreamingResponse
+        from app.api.routes.chatbot import askAIStream
+        
+        mock_get_model_config.return_value = ({"provider": "openai"}, [])
+        mock_hash_filters.return_value = "fake_hash"
+        
+        async def mock_stream_gen():
+            yield "test"
+        mock_generate_stream.return_value = mock_stream_gen()
+        
+        request = MagicMock()
+        request.state.user = {"userId": "u1", "orgId": "org1", "permissionsRevision": "rev1"}
+        request.json = AsyncMock(return_value={
+            "query": "hello",
+            "currentTime": "2024-03-14T15:09:23.123Z",
+        })
+
+        retrieval_service = AsyncMock()
+        retrieval_service.dense_embeddings = AsyncMock()
+        semantic_cache_service = AsyncMock()
+        graph_provider = AsyncMock()
+        graph_provider.get_corpus_revision = AsyncMock(return_value="rev1")
+
+        resp = await askAIStream(
+            request, 
+            retrieval_service, 
+            graph_provider, 
+            AsyncMock(),
+            semantic_cache_service,
+            AsyncMock()
+        )
+        
+        # Verify _generate_chat_stream_via_agent_loop was called with EXACT time for live stream
+        mock_generate_stream.assert_called_once()
+        called_query_info = mock_generate_stream.call_args.kwargs["query_info"]
+        assert called_query_info.currentTime == "2024-03-14T15:09:23.123Z"
+
+        # the response is a generator wrapper, we need to iterate it to run the cache block
+        async for _ in resp.body_iterator:
+            pass
+            
+        # Verify rounded time in cache scope
+        mock_hash_filters.assert_called_once()
+        scope = mock_hash_filters.call_args[0][0]
+        assert scope.requestProfile["currentTime"] == "2024-03-14T15:09:00.000+00:00"
+
+    @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot._generate_chat_stream_via_agent_loop")
+    @patch("app.api.routes.chatbot.get_model_config")
+    @patch("app.api.routes.chatbot._validate_cached_entry")
+    async def test_cache_bypassed_when_corpus_revision_changes(self, mock_validate, mock_get_model_config, mock_generate_stream):
+        from fastapi.responses import StreamingResponse
+        from app.api.routes.chatbot import askAIStream
+        
+        mock_get_model_config.return_value = ({"provider": "openai"}, [])
+        
+        async def mock_stream_gen():
+            yield "test"
+        mock_generate_stream.return_value = mock_stream_gen()
+        
+        request = MagicMock()
+        request.state.user = {"userId": "u1", "orgId": "org1", "permissionsRevision": "rev1"}
+        request.json = AsyncMock(return_value={"query": "hello"})
+
+        retrieval_service = AsyncMock()
+        retrieval_service.dense_embeddings = AsyncMock()
+        retrieval_service.dense_embeddings.aembed_query = AsyncMock(return_value=[0.1, 0.2])
+        
+        semantic_cache_service = AsyncMock()
+        semantic_cache_service.get_cached_response = AsyncMock(return_value={"text": "cached", "citations": []})
+        async def fake_validate(*args, **kwargs):
+            return {"text": "cached", "citations": []}
+        mock_validate.side_effect = fake_validate
+        
+        graph_provider = AsyncMock()
+        # Return "rev1" initially, then "rev2" (drifted)
+        graph_provider.get_corpus_revision = AsyncMock(side_effect=["rev1", "rev2"])
+
+        resp = await askAIStream(
+            request, retrieval_service, graph_provider, AsyncMock(),
+            semantic_cache_service, AsyncMock()
+        )
+        
+        async for _ in resp.body_iterator:
+            pass
+            
+        # Should have fallen back to live stream because revision changed
+        mock_generate_stream.assert_called_once()
+        assert graph_provider.get_corpus_revision.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot._generate_chat_stream_via_agent_loop")
+    @patch("app.api.routes.chatbot.get_model_config")
+    @patch("app.api.routes.chatbot._validate_cached_entry")
+    async def test_cache_bypassed_on_pending_mutation_error(self, mock_validate, mock_get_model_config, mock_generate_stream):
+        from fastapi.responses import StreamingResponse
+        from app.api.routes.chatbot import askAIStream
+        
+        mock_get_model_config.return_value = ({"provider": "openai"}, [])
+        
+        async def mock_stream_gen():
+            yield "test"
+        mock_generate_stream.return_value = mock_stream_gen()
+        
+        request = MagicMock()
+        request.state.user = {"userId": "u1", "orgId": "org1", "permissionsRevision": "rev1"}
+        request.json = AsyncMock(return_value={"query": "hello"})
+
+        retrieval_service = AsyncMock()
+        retrieval_service.dense_embeddings = AsyncMock()
+        retrieval_service.dense_embeddings.aembed_query = AsyncMock(return_value=[0.1, 0.2])
+        
+        semantic_cache_service = AsyncMock()
+        semantic_cache_service.get_cached_response = AsyncMock(return_value={"text": "cached", "citations": []})
+        async def fake_validate(*args, **kwargs):
+            return {"text": "cached", "citations": []}
+        mock_validate.side_effect = fake_validate
+        
+        graph_provider = AsyncMock()
+        # Return "rev1" initially, then raise error on second call (pending mutation)
+        graph_provider.get_corpus_revision = AsyncMock(side_effect=["rev1", Exception("pending mutation")])
+
+        resp = await askAIStream(
+            request, retrieval_service, graph_provider, AsyncMock(),
+            semantic_cache_service, AsyncMock()
+        )
+        
+        async for _ in resp.body_iterator:
+            pass
+            
+        # Should have fallen back to live stream because of error
+        mock_generate_stream.assert_called_once()
+        assert graph_provider.get_corpus_revision.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot._generate_chat_stream_via_agent_loop")
+    @patch("app.api.routes.chatbot.get_model_config")
+    @patch("app.api.routes.chatbot._validate_cached_entry")
+    async def test_cache_hit_race_condition_documented(self, mock_validate, mock_get_model_config, mock_generate_stream):
+        """
+        Documents the remaining race condition: if a mutation starts strictly AFTER 
+        the second read of corpus_revision, we will emit the cache hit. 
+        The recheck dramatically narrows the race window, but does not eliminate it.
+        """
         from fastapi.responses import StreamingResponse
         from app.api.routes.chatbot import askAIStream
         
         mock_get_model_config.return_value = ({"provider": "openai"}, [])
         
         request = MagicMock()
-        request.state.graph_provider = AsyncMock()
-        request.state.graph_provider.get_corpus_revision = AsyncMock(return_value="rev1")
-        request.state.auth_user = {"id": "u1", "org_id": "org1"}
-        request.json = AsyncMock(return_value={
-            "query": "hello",
-            "currentTime": "2024-03-14T15:09:23.123Z",
-        })
+        request.state.user = {"userId": "u1", "orgId": "org1", "permissionsRevision": "rev1"}
+        request.json = AsyncMock(return_value={"query": "hello"})
 
-        await askAIStream(request, AsyncMock(), AsyncMock(), AsyncMock())
+        retrieval_service = AsyncMock()
+        retrieval_service.dense_embeddings = AsyncMock()
+        retrieval_service.dense_embeddings.aembed_query = AsyncMock(return_value=[0.1, 0.2])
         
-        # Verify _generate_chat_stream_via_agent_loop was called with normalized time
+        semantic_cache_service = AsyncMock()
+        semantic_cache_service.get_cached_response = AsyncMock(return_value={"text": "cached", "citations": []})
+        async def fake_validate(*args, **kwargs):
+            return {"text": "cached", "citations": []}
+        mock_validate.side_effect = fake_validate
+        
+        graph_provider = AsyncMock()
+        # Return "rev1" both times (mutation hasn't started yet)
+        graph_provider.get_corpus_revision = AsyncMock(side_effect=["rev1", "rev1"])
+
+        resp = await askAIStream(
+            request, retrieval_service, graph_provider, AsyncMock(),
+            semantic_cache_service, AsyncMock()
+        )
+        
+        events = []
+        async for chunk in resp.body_iterator:
+            events.append(chunk)
+            
+        # Live stream generator is instantiated unconditionally, but not consumed
         mock_generate_stream.assert_called_once()
-        called_query_info = mock_generate_stream.call_args.kwargs["query_info"]
-        assert called_query_info.currentTime == "2024-03-14T15:09:00.000+00:00"
+        assert graph_provider.get_corpus_revision.call_count == 2
+        # Verify cached text is in events
+        assert any("cached" in e for e in events if isinstance(e, str))
 
 
 

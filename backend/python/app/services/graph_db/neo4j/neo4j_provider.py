@@ -19739,7 +19739,7 @@ class Neo4jProvider(IGraphDBProvider):
             raise RuntimeError("Neo4j client not connected")
         query = """
         MATCH (r:CorpusRevision {orgId: $org_id})
-        WITH r, [m IN coalesce(r.pendingMutations, []) WHERE split(m, '|')[1].toInteger() >= timestamp() - 300000] AS activeMutations
+        WITH r, [m IN coalesce(r.pendingMutations, []) WHERE toInteger(split(m, '|')[1]) >= timestamp() - 300000] AS activeMutations
         RETURN toString(r.revision) AS revision, size(activeMutations) AS pendingCount
         """
         results = await self.client.execute_query(query, {"org_id": org_id})
@@ -19775,8 +19775,8 @@ class Neo4jProvider(IGraphDBProvider):
         ON CREATE SET r.revision = 1, r.pendingMutations = []
         ON MATCH SET r.revision = coalesce(r.revision, 0) + 1,
                      r.pendingMutations = CASE WHEN $mutation_id IS NOT NULL 
-                                          THEN [x IN coalesce(r.pendingMutations, []) WHERE split(x, '|')[0] <> $mutation_id AND split(x, '|')[1].toInteger() >= timestamp() - 300000]
-                                          ELSE [x IN coalesce(r.pendingMutations, []) WHERE split(x, '|')[1].toInteger() >= timestamp() - 300000] END
+                                          THEN [x IN coalesce(r.pendingMutations, []) WHERE split(x, '|')[0] <> $mutation_id AND toInteger(split(x, '|')[1]) >= timestamp() - 300000]
+                                          ELSE [x IN coalesce(r.pendingMutations, []) WHERE toInteger(split(x, '|')[1]) >= timestamp() - 300000] END
         RETURN toString(r.revision) AS revision
         """
         results = await self.client.execute_query(query, {"org_id": org_id, "mutation_id": mutation_id})

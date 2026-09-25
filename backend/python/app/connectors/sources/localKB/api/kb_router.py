@@ -1396,33 +1396,34 @@ async def update_record(
         except Exception as e:
             logger.warning(f"Failed to lookup KB context for record {record_id} prior to revision bump: {e}")
 
-        mutation_id = None
-        if _bump_org_id:
-            try:
-                mutation_id = await request.app.state.graph_provider.mark_corpus_mutation_start(_bump_org_id)
-            except Exception as e:
-                logger.error(f"Failed to start corpus mutation: {e}")
-                raise HTTPException(status_code=503, detail="Service unavailable (database error)")
+        if not _bump_org_id:
+            logger.error(f"Could not resolve owning organization for record {record_id}")
+            raise HTTPException(status_code=404, detail="Could not resolve record ownership")
 
-        result = await kb_service.update_record(
-            user_id=user_id,
-            record_id=record_id,
-            updates=body.get("updates"),
-            file_metadata=body.get("fileMetadata"),
-        )
-        if not result or result.get("success") is False:
-            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
-            error_reason = result.get("reason", "Unknown error")
-            raise HTTPException(
-                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+        try:
+            mutation_id = await request.app.state.graph_provider.mark_corpus_mutation_start(_bump_org_id)
+        except Exception as e:
+            logger.error(f"Failed to start corpus mutation: {e}")
+            raise HTTPException(status_code=503, detail="Service unavailable (database error)")
+
+        cache_invalidation_pending = True
+        try:
+            result = await kb_service.update_record(
+                user_id=user_id,
+                record_id=record_id,
+                updates=body.get("updates"),
+                file_metadata=body.get("fileMetadata"),
             )
-
-        cache_invalidation_pending = False
-        if _bump_org_id:
-            cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _bump_org_id, mutation_id)
-        else:
-            cache_invalidation_pending = True
+            if not result or result.get("success") is False:
+                error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
+                error_reason = result.get("reason", "Unknown error")
+                raise HTTPException(
+                    status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
+                    detail=error_reason
+                )
+        finally:
+            if _bump_org_id:
+                cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _bump_org_id, mutation_id)
 
         # Publish update event
         event_data = result.get("eventData")
@@ -1578,21 +1579,21 @@ async def delete_records_in_kb(
                 _log.error(f"Failed to start corpus mutation: {e}")
                 raise HTTPException(status_code=503, detail="Service unavailable (database error)")
 
-        result = await kb_service.delete_records_in_kb(
-            kb_id=kb_id,
-            record_ids=body.get("recordIds"),
-            user_id=user_id,
-        )
-        if not result or result.get("success") is False:
-            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
-            error_reason = result.get("reason", "Unknown error")
-            raise HTTPException(
-                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+        cache_invalidation_pending = True
+        try:
+            result = await kb_service.delete_records_in_kb(
+                kb_id=kb_id,
+                record_ids=body.get("recordIds"),
+                user_id=user_id,
             )
-
-        if result and result.get("success") is True:
-            cache_invalidation_pending = False
+            if not result or result.get("success") is False:
+                error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
+                error_reason = result.get("reason", "Unknown error")
+                raise HTTPException(
+                    status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
+                    detail=error_reason
+                )
+        finally:
             if _kb_org:
                 cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org, mutation_id)
             else:
@@ -1601,7 +1602,8 @@ async def delete_records_in_kb(
                     "skipping corpus revision bump to avoid advancing the wrong org.",
                     kb_id,
                 )
-                cache_invalidation_pending = True
+
+        if result and result.get("success") is True:
             if cache_invalidation_pending:
                 result["cacheInvalidationPending"] = True
 
@@ -1654,22 +1656,22 @@ async def delete_record_in_folder(
                 _log.error(f"Failed to start corpus mutation: {e}")
                 raise HTTPException(status_code=503, detail="Service unavailable (database error)")
 
-        result = await kb_service.delete_records_in_folder(
-            kb_id=kb_id,
-            folder_id=folder_id,
-            record_ids=body.get("recordIds"),
-            user_id=user_id,
-        )
-        if not result or result.get("success") is False:
-            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
-            error_reason = result.get("reason", "Unknown error")
-            raise HTTPException(
-                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
+        cache_invalidation_pending = True
+        try:
+            result = await kb_service.delete_records_in_folder(
+                kb_id=kb_id,
+                folder_id=folder_id,
+                record_ids=body.get("recordIds"),
+                user_id=user_id,
             )
-
-        if result and result.get("success") is True:
-            cache_invalidation_pending = False
+            if not result or result.get("success") is False:
+                error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
+                error_reason = result.get("reason", "Unknown error")
+                raise HTTPException(
+                    status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
+                    detail=error_reason
+                )
+        finally:
             if _kb_org:
                 cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org, mutation_id)
             else:
@@ -1678,7 +1680,8 @@ async def delete_record_in_folder(
                     "skipping corpus revision bump to avoid advancing the wrong org.",
                     kb_id,
                 )
-                cache_invalidation_pending = True
+
+        if result and result.get("success") is True:
             if cache_invalidation_pending:
                 result["cacheInvalidationPending"] = True
 

@@ -501,7 +501,7 @@ def parse_ft_hybrid_reply(reply: Any) -> List[Tuple[str, float]]:
     return pairs
 
 
-def parse_ft_search_reply(reply: Any) -> List[SearchResult]:
+def parse_ft_search_reply(reply: Any, is_cosine: bool = True, is_semantic_cache: bool = False) -> List[SearchResult]:
     """Parse a plain ``FT.SEARCH`` reply (ON HASH, no RETURN clause) into SearchResult objects.
 
     With ON HASH and no RETURN/NOCONTENT, Redis returns all hash fields::
@@ -539,7 +539,11 @@ def parse_ft_search_reply(reply: Any) -> List[SearchResult]:
         distance_raw = doc.get("__distance")
         if distance_raw is not None:
             try:
-                score = 1.0 - float(distance_raw)
+                raw_dist = float(distance_raw)
+                if is_cosine or is_semantic_cache:
+                    score = 1.0 - raw_dist
+                else:
+                    score = raw_dist
             except (ValueError, TypeError):
                 pass
 

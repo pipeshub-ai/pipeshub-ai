@@ -1319,12 +1319,13 @@ async def askAIStream(
     bypass_cache = bool(query_info.previousConversations) or bool(query_info.attachments) or (query_info.retrievalMode and query_info.retrievalMode.upper() != "HYBRID")
     use_cache = chat_mode in ("internal_search", "quick") and not bypass_cache
 
-    if use_cache and query_info.currentTime:
+    normalized_current_time = query_info.currentTime
+    if use_cache and normalized_current_time:
         try:
             from datetime import datetime
-            dt = datetime.fromisoformat(query_info.currentTime)
+            dt = datetime.fromisoformat(normalized_current_time)
             dt = dt.replace(second=0, microsecond=0)
-            query_info.currentTime = dt.isoformat(timespec='milliseconds')
+            normalized_current_time = dt.isoformat(timespec='milliseconds')
         except Exception:
             pass
 
@@ -1412,7 +1413,7 @@ async def askAIStream(
                         "limit": query_info.limit,
                         "projectInstructions": query_info.projectInstructions,
                         "timezone": query_info.timezone,
-                        "currentTime": query_info.currentTime,
+                        "currentTime": normalized_current_time,
                     }
                     cache_scope = SemanticCacheScope(
                         orgId=org_id,
@@ -1436,6 +1437,16 @@ async def askAIStream(
                                 cached_entry = await _validate_cached_entry(
                                     cached_entry, graph_provider, _chat_user, effective_filters
                                 )
+
+                            if cached_entry:
+                                try:
+                                    current_revision = await graph_provider.get_corpus_revision(org_id)
+                                    if current_revision != corpus_revision:
+                                        logger.info("Cache bypassed: Corpus revision changed during lookup.")
+                                        cached_entry = None
+                                except Exception:
+                                    logger.info("Cache bypassed: Failed to re-check corpus revision (likely pending mutation).")
+                                    cached_entry = None
 
                             if cached_entry:
                                 cached_resp = cached_entry["text"]
@@ -1473,7 +1484,9 @@ async def askAIStream(
                                 for e in events:
                                     yield f"event: {e['event']}\ndata: {json.dumps(e['data'])}\n\n"
                                 return
-            except Exception:
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
                 logger.warning("Semantic cache lookup failed", exc_info=True)
 
             # If no cache hit, run the live stream and accumulate text + citations
@@ -1517,7 +1530,7 @@ async def askAIStream(
                             elif event_name not in ["TEXT_MESSAGE_START", "TEXT_MESSAGE_END", "RUN_STARTED", "STATE_SNAPSHOT"]:
                                 has_complex_state = True
                         except Exception:
-                            pass
+                            has_complex_state = True
             except Exception as exc:
                 logger.error("Error generating stream in cached_or_live_stream", exc_info=True)
                 if not run_finished and not run_failed:
