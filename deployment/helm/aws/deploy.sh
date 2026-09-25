@@ -477,12 +477,18 @@ cat >"${STATE_DIR}/s3-policy.json" <<EOF
 EOF
 S3_POLICY_ARN="$(ensure_iam_policy "PipesHub-${CLUSTER}-S3" "${STATE_DIR}/s3-policy.json")"
 # The association can exist before the service account; pods get credentials when they start.
+# Chart fullname is the release name when it contains "pipeshub-ai", otherwise <release>-pipeshub-ai.
+if [[ "$RELEASE" == *pipeshub-ai* ]]; then
+  SA_NAME="$RELEASE"
+else
+  SA_NAME="${RELEASE}-pipeshub-ai"
+fi
 EXISTING_ASSOC="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER" \
-  --namespace "$NAMESPACE" --service-account "$RELEASE" --query 'associations[0].associationId' --output text)"
+  --namespace "$NAMESPACE" --service-account "$SA_NAME" --query 'associations[0].associationId' --output text)"
 if [[ -z "$EXISTING_ASSOC" || "$EXISTING_ASSOC" == None ]]; then
   eksctl create podidentityassociation \
     --cluster "$CLUSTER" --region "$REGION" \
-    --namespace "$NAMESPACE" --service-account-name "$RELEASE" \
+    --namespace "$NAMESPACE" --service-account-name "$SA_NAME" \
     --role-name "PipesHub-${CLUSTER}-S3" \
     --permission-policy-arns "$S3_POLICY_ARN"
 else

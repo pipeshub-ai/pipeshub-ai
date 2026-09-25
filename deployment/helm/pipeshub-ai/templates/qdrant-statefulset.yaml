@@ -55,7 +55,7 @@ metadata:
 spec:
   serviceName: {{ include "pipeshub-ai.fullname" . }}-qdrant-headless
   replicas: {{ .Values.qdrant.replicaCount }}
-  {{- if gt (int .Values.qdrant.replicaCount) 1 }}
+  {{- if and .Values.qdrant.orderedStartup (gt (int .Values.qdrant.replicaCount) 1) }}
   # Ordinal 0 must be up before the others bootstrap from it.
   podManagementPolicy: OrderedReady
   {{- else }}
@@ -182,9 +182,13 @@ spec:
         resources:
           requests:
             storage: {{ .Values.qdrant.persistence.size | quote }}
+        {{- if .Values.global.applyStorageClassToStatefulSets }}
         {{- $qdrantClass := .Values.qdrant.persistence.storageClass | default .Values.global.storageClass }}
         {{- if $qdrantClass }}
         storageClassName: {{ $qdrantClass | quote }}
+        {{- end }}
+        {{- else }}
+        storageClassName: {{ .Values.qdrant.persistence.storageClass | quote }}
         {{- end }}
 
 ---

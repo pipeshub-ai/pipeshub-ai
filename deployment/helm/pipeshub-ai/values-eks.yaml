@@ -71,6 +71,7 @@ tolerations:
 
 global:
   storageClass: gp3
+  applyStorageClassToStatefulSets: true
 
 ingress:
   enabled: true
@@ -189,6 +190,7 @@ redis:
 
 qdrant:
   replicaCount: 3
+  orderedStartup: true
   resources:
     requests:
       cpu: "4"

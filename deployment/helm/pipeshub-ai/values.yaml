@@ -12,6 +12,9 @@ global:
   
   # Storage class for persistent volumes
   storageClass: ""
+  # Existing StatefulSets cannot change volumeClaimTemplates. Only new installs
+  # that set this true render global.storageClass onto those claims.
+  applyStorageClassToStatefulSets: false
 
 # Secret management configuration
 secretManagement:
@@ -710,6 +713,8 @@ kafka:
 
 qdrant:
   replicaCount: 2  # 2 nodes: one can fail while the other keeps serving
+  # Existing releases were created with Parallel. OrderedReady is immutable to change.
+  orderedStartup: false
   image:
     repository: qdrant/qdrant
     tag: v1.15
