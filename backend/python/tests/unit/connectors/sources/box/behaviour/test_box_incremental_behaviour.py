@@ -1,0 +1,278 @@
+"""Box incremental sync over the enterprise event stream, against a fake Box API.
+
+Each test first runs a full sync (which anchors the stream cursor), then stages
+events and runs the connector again, which takes the incremental path because
+the cursor is fresh. The Box SDK underneath is real; its retry waits are recorded.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any
+
+import pytest
+from box_behaviour_fakes import (
+    ROOT_ID,
+    FakeBoxApi,
+    FakeBoxRecordsDb,
+    FakeCheckpointStore,
+    ready_connector,
+)
+
+if TYPE_CHECKING:
+    from app.connectors.sources.box.connector import BoxConnector
+
+ALICE, BOB = "u-alice", "u-bob"
+ALICE_EMAIL, BOB_EMAIL = "alice@acme.test", "bob@acme.test"
+
+
+def enterprise(api: FakeBoxApi, db: FakeBoxRecordsDb) -> None:
+    api.add_user(ALICE, ALICE_EMAIL, "Alice")
+    api.add_user(BOB, BOB_EMAIL, "Bob")
+    db.active_emails.update({ALICE_EMAIL, BOB_EMAIL})
+
+
+def item_event(item_id: str, item_type: str = "file", owner: str = ALICE) -> dict[str, Any]:
+    return {"item_type": item_type, "item_id": item_id, "item_name": item_id, "owned_by": {"type": "user", "id": owner}}
+
+
+def collab_event_source(api: FakeBoxApi, item_id: str, user_id: str, collab_id: str) -> dict[str, Any]:
+    return {
+        "type": "collaboration", "id": collab_id,
+        "item": {"type": api.items[item_id]["type"], "id": item_id},
+        "accessible_by": {"type": "user", "id": user_id, "login": api.users[user_id]["login"]},
+    }
+
+
+def by(user_id: str, api: FakeBoxApi) -> dict[str, Any]:
+    return {"type": "user", "id": user_id, "login": api.users[user_id]["login"]}
+
+
+async def synced_connector(api: FakeBoxApi, db: FakeBoxRecordsDb, checkpoints: FakeCheckpointStore) -> BoxConnector:
+    connector = await ready_connector(db, checkpoints)
+    await connector.run_sync()
+    return connector
+
+
+def full_walks(api: FakeBoxApi) -> int:
+    return len([r for r in api.calls("GET", f"/2.0/folders/{ROOT_ID}/items") if r.as_user == ALICE])
+
+
+class TestCursor:
+    async def test_new_events_are_applied_and_the_cursor_moves_to_the_stream_head(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_file("file-1", "new.pdf", ALICE)
+        box_api.add_event("ITEM_UPLOAD", item_event("file-1"), created_by=by(ALICE, box_api))
+
+        await connector.run_sync()
+
+        assert full_walks(box_api) == 1
+        assert "file-1" in db.records
+        assert box_api.calls("GET", "/2.0/files/file-1")[0].as_user == ALICE
+        assert checkpoints.cursor()["cursor"] == box_api.stream_head == "1"
+
+    async def test_a_cursor_older_than_box_keeps_events_triggers_a_full_sync(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        old = datetime.now(timezone.utc) - timedelta(days=15)
+        checkpoints.cursor()["cursor_updated_at"] = int(old.timestamp() * 1000)
+
+        await connector.run_sync()
+
+        assert full_walks(box_api) == 2
+        assert checkpoints.cursor()["cursor_updated_at"] > int(old.timestamp() * 1000)
+
+
+    async def test_an_event_batch_that_crashes_leaves_the_cursor_where_it_was(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        collab_id = box_api.collaborate("file-1", BOB)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_event("COLLABORATION_REMOVE", collab_event_source(box_api, "file-1", BOB, collab_id))
+        before = checkpoints.cursor()["cursor"]
+        db.fail_lookup_for.add("file-1")
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor()["cursor"] == before
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Left alone: when Box keeps failing to return a changed file, the file is "
+            "skipped and the cursor still moves past its event, so the change is only "
+            "picked up by the next full sync. Holding the cursor instead could stall the "
+            "stream behind one broken file, which is a product decision."
+        ),
+    )
+    async def test_a_changed_file_box_would_not_return_holds_the_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_file("file-1", "new.pdf", ALICE)
+        box_api.add_event("ITEM_UPLOAD", item_event("file-1"), created_by=by(ALICE, box_api))
+        before = checkpoints.cursor()["cursor"]
+        box_api.fail("GET", "/2.0/files/file-1", 503, times=10)
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor()["cursor"] == before
+
+
+
+class TestContentEvents:
+    async def test_an_upload_into_a_new_folder_also_stores_the_folder(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_folder("fold-new", "New", ALICE)
+        box_api.add_file("file-1", "new.pdf", ALICE, parent="fold-new")
+        box_api.add_event("ITEM_UPLOAD", item_event("file-1"), created_by=by(ALICE, box_api))
+
+        await connector.run_sync()
+
+        assert db.records["file-1"].parent_external_record_id == "fold-new"
+        assert "fold-new" in db.records
+
+    async def test_a_moved_file_gets_its_new_parent(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_folder("fold-a", "A", ALICE)
+        box_api.add_folder("fold-b", "B", ALICE)
+        box_api.add_file("file-1", "plan.pdf", ALICE, parent="fold-a")
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.items["file-1"]["parent"] = "fold-b"
+        box_api.add_event("ITEM_MOVE", item_event("file-1"), created_by=by(ALICE, box_api))
+
+        await connector.run_sync()
+
+        assert db.records["file-1"].parent_external_record_id == "fold-b"
+        assert db.records["file-1"].path == "/All Files/B/plan.pdf"
+
+    async def test_a_new_folder_event_syncs_the_folder_and_everything_in_it(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_folder("fold-new", "New", ALICE)
+        box_api.add_folder("fold-sub", "Sub", ALICE, parent="fold-new")
+        box_api.add_file("file-deep", "deep.txt", ALICE, parent="fold-sub")
+        box_api.add_event("ITEM_CREATE", item_event("fold-new", "folder"), created_by=by(ALICE, box_api))
+
+        await connector.run_sync()
+
+        assert {"fold-new", "fold-sub", "file-deep"} <= set(db.records)
+
+    async def test_a_repeated_event_is_applied_once(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_file("file-1", "new.pdf", ALICE)
+        box_api.add_event("ITEM_UPLOAD", item_event("file-1"), created_by=by(ALICE, box_api))
+        box_api.events.append(dict(box_api.events[0]))
+
+        await connector.run_sync()
+
+        assert len(box_api.calls("GET", "/2.0/files/file-1")) == 1
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Left alone: trash and delete events are recognised but never applied "
+            "(_execute_deletions only logs 'Backend support pending'), so a file "
+            "deleted in Box stays searchable. Turning deletion on is a product change."
+        ),
+    )
+    async def test_a_trashed_file_is_deleted(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        connector = await synced_connector(box_api, db, checkpoints)
+        record_id = db.records["file-1"].id
+        box_api.add_event("ITEM_TRASH", item_event("file-1"), created_by=by(ALICE, box_api))
+
+        await connector.run_sync()
+
+        assert db.deleted_records == [record_id]
+
+    async def test_a_delete_followed_by_a_restore_keeps_the_file(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_event("ITEM_TRASH", item_event("file-1"), created_by=by(ALICE, box_api))
+        box_api.add_event("ITEM_UNDELETE_VIA_TRASH", item_event("file-1"), created_by=by(ALICE, box_api))
+
+        await connector.run_sync()
+
+        assert db.deleted_records == []
+        assert len(box_api.calls("GET", "/2.0/files/file-1")) == 1
+
+
+class TestSharingEvents:
+    async def test_an_invite_puts_the_file_in_the_collaborators_shared_with_me(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        connector = await synced_connector(box_api, db, checkpoints)
+        collab_id = box_api.collaborate("file-1", BOB, role="editor")
+        box_api.add_event(
+            "COLLABORATION_INVITE", collab_event_source(box_api, "file-1", BOB, collab_id),
+            created_by=by(ALICE, box_api), additional_details={"collab_id": collab_id},
+        )
+
+        await connector.run_sync()
+
+        assert BOB_EMAIL in db.access("file-1")
+        assert db.records["file-1"].shared_with_me_record_group_ids == [f"0S:{BOB_EMAIL}"]
+        assert {r.as_user for r in box_api.calls("GET", "/2.0/files/file-1")} >= {BOB}
+
+    async def test_a_removed_collaborator_loses_the_file(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        collab_id = box_api.collaborate("file-1", BOB)
+        connector = await synced_connector(box_api, db, checkpoints)
+        assert BOB_EMAIL in db.access("file-1")
+        box_api.collaborations["file-1"].clear()
+        box_api.add_event("COLLABORATION_REMOVE", collab_event_source(box_api, "file-1", BOB, collab_id))
+
+        await connector.run_sync()
+
+        assert BOB_EMAIL not in db.access("file-1")
+
+    async def test_a_removed_folder_collaborator_loses_everything_inside(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_folder("fold-a", "Team", ALICE)
+        box_api.add_file("file-1", "plan.pdf", ALICE, parent="fold-a")
+        collab_id = box_api.collaborate("fold-a", BOB)
+        box_api.collaborate("file-1", BOB)
+        connector = await synced_connector(box_api, db, checkpoints)
+        bob_id = db.app_users[BOB_EMAIL].id
+        box_api.add_event("COLLABORATION_REMOVE", collab_event_source(box_api, "fold-a", BOB, collab_id))
+
+        await connector.run_sync()
+
+        assert set(db.removed_access) == {("fold-a", bob_id), ("file-1", bob_id)}
+        assert BOB_EMAIL not in db.access("file-1")
+
+    async def test_an_invite_revoked_in_the_same_batch_is_not_shared(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        connector = await synced_connector(box_api, db, checkpoints)
+        source = {"type": "collaboration", "id": "collab-x", "item": {"type": "file", "id": "file-1"},
+                  "accessible_by": {"type": "user", "id": BOB, "login": BOB_EMAIL}}
+        details = {"collab_id": "collab-x"}
+        box_api.add_event("COLLABORATION_INVITE", source, created_by=by(ALICE, box_api), additional_details=details)
+        box_api.add_event("COLLABORATION_REMOVE", source, created_by=by(ALICE, box_api), additional_details=details)
+
+        await connector.run_sync()
+
+        assert not [r for r in box_api.calls("GET", "/2.0/files/file-1") if r.as_user == BOB]
+        assert BOB_EMAIL not in db.access("file-1")
+
+    async def test_a_full_sync_replays_shares_made_before_the_connector_existed(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        collab_id = box_api.collaborate("file-1", BOB)
+        box_api.add_event(
+            "COLLABORATION_INVITE", collab_event_source(box_api, "file-1", BOB, collab_id),
+            created_by=by(ALICE, box_api), additional_details={"collab_id": collab_id},
+        )
+
+        await synced_connector(box_api, db, checkpoints)
+
+        history = [r for r in box_api.calls("GET", "/2.0/events") if r.query.get("stream_type") == "admin_logs"]
+        assert history and history[0].query["stream_position"] == "0"
+        assert db.records["file-1"].shared_with_me_record_group_ids == [f"0S:{BOB_EMAIL}"]
