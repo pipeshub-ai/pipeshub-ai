@@ -750,3 +750,27 @@ class TestReplayedShareLookups:
         await connector.run_sync()
 
         assert BOB_EMAIL not in db.access("file-1")
+
+
+class TestShareHistoryLimit:
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Left alone (already on main): the share-history replay reads at most 200 pages, "
+            "oldest first, and then reports success, so the newest shares past the cap are "
+            "never applied and the stream position is saved over them. Fixing it means saving "
+            "and resuming a separate history position, which is new sync state for a follow-up."
+        ),
+    )
+    async def test_shares_past_the_history_page_cap_are_still_applied(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.page_cap["/2.0/events"] = 1
+        for _ in range(200):
+            box_api.add_event("COLLABORATION_INVITE", {})
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        share_history(box_api, "file-1", BOB)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert f"0S:{BOB_EMAIL}" in db.shared_links["file-1"]
