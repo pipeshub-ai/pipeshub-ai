@@ -123,6 +123,31 @@ class TestOpeningAFile:
         assert error.status_code == 409
         assert "Reconnect" in error.detail
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Left alone: syncing a share for a colleague rewrites the owner's record with no "
+            "drive (external_record_group_id=None), and opening or indexing a file uses that "
+            "drive as the As-User. Without it Box answers 404, so a file stops opening for "
+            "everyone as soon as it is shared. How shared records are grouped is a design call."
+        ),
+    )
+    async def test_a_file_shared_with_a_colleague_can_still_be_opened(self, box_api, db, checkpoints) -> None:
+        connector = await synced(box_api, db, checkpoints)
+        box_api.add_user("u-bob", "bob@acme.test", "Bob")
+        db.active_emails.add("bob@acme.test")
+        collab_id = box_api.collaborate("file-1", "u-bob")
+        box_api.add_event(
+            "COLLABORATION_INVITE",
+            {"type": "collaboration", "id": collab_id, "item": {"type": "file", "id": "file-1"},
+             "accessible_by": {"type": "user", "id": "u-bob", "login": "bob@acme.test"}},
+            created_by={"type": "user", "id": ALICE, "login": ALICE_EMAIL},
+            additional_details={"collab_id": collab_id},
+        )
+        await connector.run_sync()
+
+        assert await connector.get_signed_url(db.records["file-1"]) == "https://dl.boxcloud.test/d/file-1"
+
     async def test_a_connector_that_never_initialised_says_it_is_not_connected(self, box_api, db, checkpoints) -> None:
         connector = await synced(box_api, db, checkpoints)
         await connector.cleanup()

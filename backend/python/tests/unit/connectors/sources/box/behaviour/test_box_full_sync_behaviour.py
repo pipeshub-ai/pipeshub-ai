@@ -5,6 +5,7 @@ refresh) are real; every HTTP request is answered by an in-memory Box and our
 databases are in-memory fakes. SDK retry waits are recorded, not slept.
 """
 
+import contextlib
 import logging
 from typing import Any
 
@@ -364,6 +365,25 @@ class TestEventStreamAnchor:
         connector = await ready_connector(db, checkpoints)
 
         with pytest.raises(RuntimeError):
+            await connector.run_sync()
+
+        assert checkpoints.cursor() is None
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Left alone: when Box's user list fails, _sync_users returns the users read so "
+            "far (or none), the full sync 'succeeds' with them and saves the cursor, so the "
+            "missing users' files wait for a full sync that incremental runs never trigger. "
+            "Existing tests pin the return-what-we-have behaviour; changing it is a decision."
+        ),
+    )
+    async def test_a_full_sync_that_could_not_list_users_saves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.fail("GET", "/2.0/users", 503, times=10)
+        connector = await ready_connector(db, checkpoints)
+
+        with contextlib.suppress(Exception):
             await connector.run_sync()
 
         assert checkpoints.cursor() is None
