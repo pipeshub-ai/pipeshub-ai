@@ -1237,7 +1237,11 @@ class WebConnector(BaseConnector):
                             self.visited_urls.add(normalized_url)
 
                         # Links are queued here, before the next batch fetch.
-                        if result is None or not self._keep_crawled_page(normalized_url, current_depth, result, queue):
+                        if (
+                            result is None
+                            or not await self._robots_allows_landing(current_url, result)
+                            or not self._keep_crawled_page(normalized_url, current_depth, result, queue)
+                        ):
                             continue
 
                         yield CrawlFetchResult(
@@ -1301,7 +1305,11 @@ class WebConnector(BaseConnector):
                     if normalized_url not in self.retry_urls:
                         self.visited_urls.add(normalized_url)
 
-                    if result is None or not self._keep_crawled_page(normalized_url, current_depth, result, queue):
+                    if (
+                        result is None
+                        or not await self._robots_allows_landing(current_url, result)
+                        or not self._keep_crawled_page(normalized_url, current_depth, result, queue)
+                    ):
                         continue
 
                     yield CrawlFetchResult(
@@ -1395,6 +1403,12 @@ class WebConnector(BaseConnector):
             # Never fetched, so never retried either: a queued retry would come back here forever.
             self.retry_urls.pop(normalized, None)
         return allowed
+
+    async def _robots_allows_landing(self, requested_url: str, result: FetchResponse) -> bool:
+        """robots.txt applies to where a redirect landed as well; the queued URL was checked before fetching."""
+        if self._normalize_url(result.final_url) == self._normalize_url(requested_url):
+            return True
+        return await self._robots_allows(result.final_url)
 
     async def _read_robots(self, origin: str) -> RobotsRules | None:
         """RFC 9309: a missing or refused robots.txt (4xx) allows everything; one that can't be read (5xx,
@@ -1655,6 +1669,8 @@ class WebConnector(BaseConnector):
         if self._is_document_response(response):
             if self._outside_crawl(response.final_url):
                 return self._out_of_scope_response(response.final_url)
+            if not await self._robots_allows(response.final_url):
+                return self._robots_skip_response(response.final_url)
             return await self._fetch_document(response.final_url)
         if no_answer:
             probed = await self._probe_landing(requested_url)
@@ -1663,6 +1679,8 @@ class WebConnector(BaseConnector):
             landing, status, content_type = probed
             if self._outside_crawl(landing):
                 return self._out_of_scope_response(landing)
+            if landing != requested_url and not await self._robots_allows(landing):
+                return self._robots_skip_response(landing)
             if self._is_document_url(landing) or self._is_document_type(content_type):
                 # A walked, in-scope chain onto a file: fetch it, its own error or size skip included.
                 return await self._fetch_document(landing)
@@ -1752,6 +1770,12 @@ class WebConnector(BaseConnector):
             status_code=0, content_bytes=b"", headers={}, final_url=url,
             strategy="scope_guard", success=False, error_message="outside the crawl's scope",
         )
+
+    @staticmethod
+    def _robots_skip_response(url: str) -> FetchResponse:
+        """Stands in for a redirect target robots.txt disallows: it passes validation empty, so the
+        landing check records the robots skip, and it is never downloaded or browser-retried."""
+        return FetchResponse(status_code=200, content_bytes=b"", headers={}, final_url=url, strategy="robots_guard")
 
     async def _probe_landing(self, url: str) -> tuple[str, int, str | None] | None:
         """Follow ``url``'s redirects one hop at a time, stopping before any hop outside the crawl.
@@ -1955,7 +1979,11 @@ class WebConnector(BaseConnector):
                             if crawl4ai_resp is not None and crawl4ai_resp.success and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
                                 raw = crawl4ai_resp
                 result = await self._validate_fetch_result(url, depth, referer, raw)
-                if result is None or self._excluded_by_extension_filter(result):
+                if (
+                    result is None
+                    or self._excluded_by_extension_filter(result)
+                    or not await self._robots_allows_landing(url, result)
+                ):
                     return None
 
             if result.status_code == HTTPStatus.NOT_MODIFIED:

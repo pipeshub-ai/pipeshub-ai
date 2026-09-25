@@ -197,3 +197,59 @@ async def test_a_group_naming_pipeshub_with_no_rules_allows_everything(
     await (await make_connector()).run_sync()
 
     assert "http://site.test/private/secret" in db.pages()
+
+
+async def test_a_redirect_onto_a_disallowed_page_is_skipped_with_its_links(
+    site: FakeWeb, db: FakeRecordsDb, notifications: RecordingNotifications, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/go")
+    site.redirect("http://site.test/go", "/private/secret")
+    site.html("http://site.test/private/secret", "Secret", "/leaked")
+    site.html("http://site.test/leaked", "Leaked")
+    _robots(site, "User-agent: *\nDisallow: /private/\n")
+
+    await (await make_connector()).run_sync()
+
+    assert set(db.pages()) == {START_URL}
+    assert site.gets("http://site.test/leaked") == 0
+    assert "Skipped 1 pages that the site's robots.txt" in (await notifications.delivered())[-1]["message"]
+
+
+async def test_a_redirect_onto_another_site_follows_that_site_s_robots_txt(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/go")
+    site.redirect("http://site.test/go", "http://other.test/secret")
+    site.html("http://other.test/secret", "Secret")
+    site.add("http://other.test/robots.txt", Page(body=b"User-agent: *\nDisallow: /secret\n", content_type="text/plain"))
+
+    await (await make_connector(follow_external=True)).run_sync()
+
+    assert site.gets("http://other.test/robots.txt") == 1
+    assert "http://other.test/secret" not in db.pages()
+
+
+async def test_robust_mode_never_downloads_a_file_a_redirect_lands_on_when_robots_txt_disallows_it(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home", "/go")
+    browser.redirect("http://site.test/go", "/private/report.pdf")
+    browser.add("http://site.test/private/report.pdf", Page(body=b"%PDF-1.4 secret", content_type="application/pdf"))
+    _robots(browser, "User-agent: *\nDisallow: /private/\n")
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    assert browser.gets("http://site.test/private/report.pdf") == 0
+    assert set(db.pages()) == {START_URL}
+
+
+async def test_a_single_page_that_redirects_onto_a_disallowed_page_is_not_stored(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.redirect("http://site.test/go", "/private/secret")
+    site.html("http://site.test/private/secret", "Secret")
+    _robots(site, "User-agent: *\nDisallow: /private/\n")
+
+    await (await make_connector("http://site.test/go", crawl_type="single")).run_sync()
+
+    assert db.pages() == {}
