@@ -535,7 +535,7 @@ step "Load balancer and DNS"
 note "waiting for the load balancer hostname (up to 10 minutes)"
 ALB_HOST=""
 for attempt in $(seq 1 60); do
-  ALB_HOST="$(kubectl get ingress -n "$NAMESPACE" "$RELEASE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+  ALB_HOST="$(kubectl get ingress -n "$NAMESPACE" "$SA_NAME" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
   [[ -n "$ALB_HOST" ]] && break
   if [[ $(( attempt % 6 )) -eq 0 ]]; then
     note "still waiting for the load balancer"

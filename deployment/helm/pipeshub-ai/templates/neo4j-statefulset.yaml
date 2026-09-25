@@ -159,8 +159,10 @@ spec:
           requests:
             storage: {{ .Values.neo4j.persistence.size }}
         {{- if .Values.global.applyStorageClassToStatefulSets }}
-        storageClassName: {{ .Values.neo4j.persistence.storageClass | default .Values.global.storageClass | quote }}
-        {{- else }}
+        {{- with .Values.neo4j.persistence.storageClass | default .Values.global.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        {{- else if .Values.neo4j.persistence.storageClass }}
         storageClassName: {{ .Values.neo4j.persistence.storageClass | quote }}
         {{- end }}
     - metadata:
@@ -171,8 +173,10 @@ spec:
           requests:
             storage: {{ .Values.neo4j.persistence.logsSize }}
         {{- if .Values.global.applyStorageClassToStatefulSets }}
-        storageClassName: {{ .Values.neo4j.persistence.storageClass | default .Values.global.storageClass | quote }}
-        {{- else }}
+        {{- with .Values.neo4j.persistence.storageClass | default .Values.global.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        {{- else if .Values.neo4j.persistence.storageClass }}
         storageClassName: {{ .Values.neo4j.persistence.storageClass | quote }}
         {{- end }}
 

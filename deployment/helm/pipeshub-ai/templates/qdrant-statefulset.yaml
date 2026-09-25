@@ -187,7 +187,7 @@ spec:
         {{- if $qdrantClass }}
         storageClassName: {{ $qdrantClass | quote }}
         {{- end }}
-        {{- else }}
+        {{- else if .Values.qdrant.persistence.storageClass }}
         storageClassName: {{ .Values.qdrant.persistence.storageClass | quote }}
         {{- end }}
 
