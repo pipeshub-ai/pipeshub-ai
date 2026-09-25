@@ -334,7 +334,8 @@ async def test_robust_mode_takes_the_probe_s_error_for_a_page_instead_of_retryin
 
     assert browser.gets(gone) == 0
     assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
-    assert gone not in db.pages()
+    # The probe's real status, not the browser's silence, is what the failed page reports.
+    assert (db.pages()[gone].reason or "").startswith("The page wasn't found (404 Not Found)")
 
 
 @pytest.mark.parametrize(
