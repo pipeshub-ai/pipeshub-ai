@@ -159,6 +159,7 @@ class SyncLease:
     task: asyncio.Task | None = None
     lost: asyncio.Event = field(default_factory=asyncio.Event)
     stop_requested: asyncio.Event = field(default_factory=asyncio.Event)
+    stop_requested_at_ms: int | None = None
 
     @property
     def lease_key(self) -> str:
@@ -266,6 +267,8 @@ class LocalSyncCoordinator:
         # the finalizer never ran and the lease was held until restart.
         lease = self._held.get(connector_id)
         if lease is not None:
+            if lease.stop_requested_at_ms is None:
+                lease.stop_requested_at_ms = _now_ms()
             lease.stop_requested.set()
             return True
         return self._tasks.request_stop(connector_id)
@@ -290,6 +293,11 @@ class LocalSyncCoordinator:
         """When the sync now holding this connector was admitted, if one is."""
         lease = self._held.get(connector_id)
         return lease.acquired_at_ms if lease is not None else None
+
+    def stopped_at_ms(self, connector_id: str) -> int | None:
+        """When a stop was asked of the sync now holding this connector, if one was."""
+        lease = self._held.get(connector_id)
+        return lease.stop_requested_at_ms if lease is not None else None
 
     async def cancel_all(self) -> None:
         self.shutting_down = True

@@ -29,7 +29,7 @@ from app.connectors.core.sync.sync_coordinator import (
     get_coordinator,
     stop_wait_sec,
 )
-from app.connectors.core.sync.sync_runner import run_sync_task
+from app.connectors.core.sync.sync_runner import drain_queued_syncs, run_sync_task
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.core.base.data_processor.storage_cleanup import (
     StorageCleanupHelper,
@@ -530,6 +530,21 @@ class EventService:
                     "that sync serves it"
                 )
                 return True
+            # Made before the user stopped the running sync, but consumed after
+            # /sync/stop cleared the flags: recording it now would restart what
+            # they just stopped. A request with no timestamp (re-enable) is kept.
+            stopped_at_ms = getattr(coordinator, "stopped_at_ms", None)
+            stopped_at = stopped_at_ms(connector_id) if callable(stopped_at_ms) else None
+            if (
+                isinstance(stopped_at, int)
+                and requested_at is not None
+                and requested_at <= stopped_at
+            ):
+                self.logger.info(
+                    f"Resync for {connector_id} was made before the running sync was "
+                    "stopped; dropping it"
+                )
+                return True
             # The request is carried only by this event, so persist the intent
             # rather than dropping it. Without this a resync asked for while one
             # is running is acked and forgotten, with nothing to tell the caller
@@ -562,6 +577,24 @@ class EventService:
             # live task owns lets another process acquire it and run a second sync.
             if lease.task is None:
                 await coordinator.end(lease)
+                # A slot came free without a sync ending, so no finalizer will
+                # drain: with a limit of 1 or 2, a connector parked behind this
+                # admission would otherwise wait for an unrelated sync to finish.
+                self._schedule_drain()
+
+    def _schedule_drain(self) -> None:
+        async def _drain() -> None:
+            try:
+                await drain_queued_syncs(self.graph_provider, self.logger)
+            except Exception as e:
+                self.logger.error(f"Could not release queued syncs: {e}")
+
+        try:
+            task = asyncio.get_running_loop().create_task(_drain(), name="drain_after_release")
+        except RuntimeError:
+            return
+        _evict_tasks.add(task)
+        task.add_done_callback(_evict_tasks.discard)
 
     async def _start_sync_with_lease(
         self,
@@ -629,8 +662,11 @@ class EventService:
         if lease.stop_requested.is_set():
             # Stopped while _ensure_connector ran. The full-sync prep below is
             # destructive (sync points and edges), and the caller was already
-            # told the sync stopped.
+            # told the sync stopped. A start that came from the drain left the
+            # row QUEUED; /sync/stop saw the lease and did not repair it, so the
+            # drain's stale arm would start it again two minutes later.
             self.logger.info(f"Sync for {connector_id} stopped before it started")
+            await self._drop_queued_intent(connector_id, connector_doc)
             return True, False
 
         if effective_full_sync:
@@ -855,6 +891,14 @@ class EventService:
         updates: dict[str, Any] = {
             ConnectorStateKeys.PENDING_RESYNC: True,
             "status": AppStatus.QUEUED.value,
+            # Arrival order for the drain. Only on entry: a drained connector that
+            # bounced back at capacity keeps its place instead of going to the back.
+            **(
+                {}
+                if isinstance(doc, dict) and doc.get("status") == AppStatus.QUEUED.value
+                and doc.get("queuedAtTimestamp")
+                else {"queuedAtTimestamp": get_epoch_timestamp_in_ms()}
+            ),
             # Stamped so the drain can tell a fresh queue entry from one whose
             # re-issued event never arrived.
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
