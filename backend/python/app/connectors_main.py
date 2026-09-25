@@ -792,10 +792,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         try:
             await initialize_sync_coordinator(app_container, logger)
         except Exception as e:
-            # This runs in a background task, so an unhandled error here is
-            # silent and skips every step below it -- consumers included.
-            logger.error(f"❌ Sync coordinator init failed: {e}", exc_info=True)
-            raise
+            # Without a coordinator nothing below can run safely, consumers
+            # included. This is a background task, so raising only hid it: the
+            # service kept answering /health 200 while consuming nothing.
+            logger.critical(f"❌ Sync coordinator init failed: {e}", exc_info=True)
+            app.state.startup_error = f"sync coordinator init failed: {e}"
+            return
 
         # A resumed sync writes SYNCING as its first act, and this sweep must
         # not clobber that write.
@@ -966,6 +968,16 @@ telemetry = setup_telemetry(app, service_name="connector_service")
 @app.get("/health")
 async def health_check() -> JSONResponse:
     """Basic health check endpoint"""
+    startup_error = getattr(app.state, "startup_error", None)
+    if startup_error:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "fail",
+                "error": startup_error,
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
     try:
         return JSONResponse(
             status_code=200,

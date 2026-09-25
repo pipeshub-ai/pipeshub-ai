@@ -25,6 +25,7 @@ module. Nothing here imports redis.
 
 import asyncio
 import logging
+import math
 import os
 import socket
 import time
@@ -97,6 +98,27 @@ def _safe_limit(logger: logging.Logger) -> int:
             os.getenv("CONNECTOR_SYNC_MAX_CONCURRENT"),
         )
         return 8
+
+
+def stop_wait_sec(logger: logging.Logger | None = None) -> float:
+    """How long a delete or a disable waits for a running sync to stop.
+
+    Parsed per call, never at import: a malformed value used to raise while the
+    module loaded and keep the connector service from starting at all.
+    """
+    raw = os.getenv("CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC", "15")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = math.nan
+    if not math.isfinite(value) or value < 0:
+        if logger is not None:
+            logger.error(
+                "CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC=%r is not a usable number of "
+                "seconds; using 15", raw,
+            )
+        return 15.0
+    return min(value, 600.0)
 
 
 def _now_ms() -> int:
@@ -179,6 +201,9 @@ class LocalSyncCoordinator:
         self.heartbeat_sec = 0
         self._held: dict[str, SyncLease] = {}
         self._tasks = SyncTaskManager(label="Sync")
+        #: Set once shutdown starts cancelling syncs, so their finalizers do not
+        #: hand back requests the next boot's resume will start anyway.
+        self.shutting_down = False
 
     async def begin(
         self,
@@ -234,16 +259,16 @@ class LocalSyncCoordinator:
         return len(self._held)
 
     async def request_stop(self, connector_id: str) -> bool:
-        if self._tasks.request_stop(connector_id):
-            return True
-        # Admitted but not yet spawned: there is no task to cancel, so signal the
-        # lease instead. run_sync_task waits on this and aborts before doing any
-        # work, which is what the user asked for.
+        # Signal the lease rather than cancel the task. run_sync_task watches it,
+        # aborts the sync, and still runs its finalizer -- whether it is mid-run,
+        # admitted but not yet spawned, or spawned but not yet stepped. A task
+        # cancelled before its first step never enters run_sync_task at all, so
+        # the finalizer never ran and the lease was held until restart.
         lease = self._held.get(connector_id)
         if lease is not None:
             lease.stop_requested.set()
             return True
-        return False
+        return self._tasks.request_stop(connector_id)
 
     async def peek_many(self, connector_ids: Iterable[str]) -> set[str]:
         return set()
@@ -253,9 +278,17 @@ class LocalSyncCoordinator:
         return True
 
     def active_keys(self) -> list[str]:
-        return self._tasks.active_keys()
+        # Admitted-but-not-spawned counts: the vector-store rebuild gate reads
+        # this, and a sync in its full-sync prep has a lease but no task yet.
+        return sorted(set(self._held) | set(self._tasks.active_keys()))
+
+    def held_since_ms(self, connector_id: str) -> int | None:
+        """When the sync now holding this connector was admitted, if one is."""
+        lease = self._held.get(connector_id)
+        return lease.acquired_at_ms if lease is not None else None
 
     async def cancel_all(self) -> None:
+        self.shutting_down = True
         await self._tasks.cancel_all()
 
     async def stop(self) -> None:

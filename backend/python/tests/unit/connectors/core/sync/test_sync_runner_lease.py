@@ -283,7 +283,9 @@ class TestDeclinedResyncIsReissued:
                 resync_spec=SyncSpec(connector_id="c1", connector_name="g", org_id="o"),
             )
 
-        gp.update_node.assert_awaited_once()
+        # The first write clears pendingResync as the run starts: a request made
+        # before this run began is served by it.
+        assert gp.update_node.await_count == 2
         assert gp.update_node.call_args[0][2] == {"pendingResync": False}
 
     @pytest.mark.parametrize(
@@ -314,7 +316,8 @@ class TestDeclinedResyncIsReissued:
                 resync_spec=SyncSpec(connector_id="c1", connector_name="g", org_id="o"),
             )
 
-        gp.update_node.assert_not_awaited()
+        # Only the clear at run start; the flag set during the run survives.
+        gp.update_node.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_no_dispatcher_leaves_the_flag_for_the_sweep(self) -> None:
@@ -332,7 +335,8 @@ class TestDeclinedResyncIsReissued:
                 resync_spec=SyncSpec(connector_id="c1", connector_name="g", org_id="o"),
             )
 
-        gp.update_node.assert_not_awaited()
+        # Only the clear at run start; the flag set during the run survives.
+        gp.update_node.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_no_pending_flag_means_no_resubmit(self) -> None:
@@ -352,7 +356,7 @@ class TestDeclinedResyncIsReissued:
             )
 
         dispatcher.submit.assert_not_awaited()
-        gp.update_node.assert_not_awaited()
+        gp.update_node.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_without_a_spec_nothing_is_reissued(self) -> None:
@@ -362,7 +366,7 @@ class TestDeclinedResyncIsReissued:
             _connector(), "c1", gp, logging.getLogger("t"),
             lease=SyncLease("c1", "tok", 1), coordinator=AsyncMock(),
         )
-        gp.update_node.assert_not_awaited()
+        gp.update_node.assert_awaited_once()
 
 
 class TestExternalCancelReachesTheSync:
@@ -410,18 +414,33 @@ class TestExternalCancelReachesTheSync:
         assert observed["finished"] is False
 
     @pytest.mark.asyncio
-    async def test_a_stopped_sync_does_not_reissue_itself(self) -> None:
-        """Otherwise the connector restarts seconds after the user stopped it."""
+    async def test_a_request_made_after_a_stop_is_still_reissued(self) -> None:
+        """/sync/stop clears the flags before it stops anything, so a flag still
+        set when the stopped run finalizes arrived after the stop -- a re-enable,
+        say. Dropping it left the connector enabled and never synced."""
+        dispatcher = await self._cancel_with_pending(shutting_down=False)
+        dispatcher.submit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_reissued_while_shutting_down(self) -> None:
+        """The next boot resumes every connector; a re-issue would run it twice."""
+        dispatcher = await self._cancel_with_pending(shutting_down=True)
+        dispatcher.submit.assert_not_awaited()
+
+    async def _cancel_with_pending(self, *, shutting_down: bool) -> MagicMock:
+        from app.connectors.core.sync.sync_dispatcher import SubmitResult
+
         graph_provider = _graph_provider()
         graph_provider.get_document = AsyncMock(
             return_value={"id": "c1", "pendingResync": True}
         )
         dispatcher = MagicMock()
-        dispatcher.submit = AsyncMock()
+        dispatcher.submit = AsyncMock(return_value=SubmitResult.ACCEPTED)
 
         lease = SyncLease("c1", "tok", 1)
         manager = MagicMock()
         manager.end = AsyncMock()
+        manager.shutting_down = shutting_down
 
         async def _run_sync() -> None:
             await asyncio.sleep(5)
@@ -429,6 +448,9 @@ class TestExternalCancelReachesTheSync:
         with patch(
             "app.connectors.core.sync.sync_dispatcher.get_dispatcher",
             return_value=dispatcher,
+        ), patch(
+            "app.connectors.core.sync.sync_runner.drain_queued_syncs",
+            AsyncMock(return_value=[]),
         ):
             task = asyncio.ensure_future(
                 run_sync_task(
@@ -447,5 +469,4 @@ class TestExternalCancelReachesTheSync:
             with pytest.raises(asyncio.CancelledError):
                 await task
             await asyncio.sleep(0.05)
-
-        dispatcher.submit.assert_not_awaited()
+        return dispatcher

@@ -1860,6 +1860,7 @@ const LOCK_MESSAGES: Record<string, string> = {
   FULL_SYNCING: 'A full sync is in progress. Please wait and try again.',
   SYNCING: 'A sync is already in progress. Please wait and try again.',
   QUEUED: 'A sync is already queued for this connector and will start shortly.',
+  DELETING: 'This connector is being deleted.',
 };
 
 const assertConnectorNotLocked = (
@@ -1874,7 +1875,8 @@ const assertConnectorNotLocked = (
     !instance?.isLocked &&
     status !== 'SYNCING' &&
     status !== 'FULL_SYNCING' &&
-    status !== 'QUEUED'
+    status !== 'QUEUED' &&
+    status !== 'DELETING'
   ) {
     return;
   }
