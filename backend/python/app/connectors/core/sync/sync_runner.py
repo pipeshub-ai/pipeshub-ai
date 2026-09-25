@@ -152,9 +152,17 @@ async def _finalize(
         if await _deleting_or_gone(graph_provider, logger, connector_id):
             logger.info(f"Not writing IDLE for {connector_id}: it is being deleted")
         else:
-            await write_app_status(
-                graph_provider, logger, connector_id, AppStatus.IDLE.value
-            )
+            # An update, not the upsert write_app_status does: it cannot create
+            # the node if the read above failed or a delete landed since.
+            try:
+                await graph_provider.update_node(
+                    connector_id,
+                    CollectionNames.APPS.value,
+                    {"status": AppStatus.IDLE.value,
+                     "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+                )
+            except Exception as e:
+                logger.error(f"❌ Failed to write status=IDLE for connector {connector_id}: {e}")
     if lease is not None and coordinator is not None:
         await coordinator.end(lease)
     if connector is not None:
@@ -267,7 +275,7 @@ async def _drain_once(
             "status",
             [AppStatus.QUEUED.value],
             [
-                "id", ConnectorStateKeys.PENDING_RESYNC, "updatedAtTimestamp",
+                "id", ConnectorStateKeys.PENDING_RESYNC, "updatedAtTimestamp", "queuedAtTimestamp",
                 ConnectorStateKeys.IS_ACTIVE, ConnectorStateKeys.IS_AUTHENTICATED,
             ],
         )
@@ -309,12 +317,14 @@ async def _drain_once(
     # arrive late is harmless: the start path drops a request older than the sync
     # already running for it.
     stale_before = _now_ms() - _QUEUE_GRACE_MS
-    # Oldest first: the queue timestamp is when a connector was parked, so this
-    # is arrival order. Unordered, whoever the org traversal met first won every
-    # freed slot.
+    # Oldest first, by when each connector entered the queue. Unordered, whoever
+    # the org traversal met first won every freed slot.
+    def arrived(d: dict) -> int:
+        return int(d.get("queuedAtTimestamp") or d.get("updatedAtTimestamp") or 0)
+
     ids = [
         doc["id"]
-        for doc in sorted(queued or [], key=lambda d: int(d.get("updatedAtTimestamp") or 0))
+        for doc in sorted(queued or [], key=arrived)
         if doc.get("id")
         and (
             doc.get(ConnectorStateKeys.PENDING_RESYNC)
@@ -487,13 +497,20 @@ async def run_sync_task(
         await write_app_status(graph_provider, logger, connector_id, start_status)
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
-        # the connector synced twice back to back.
+        # the connector synced twice back to back. Except a full sync owed to an
+        # incremental run: then the flag must survive so the finalizer re-issues
+        # it (the re-issue merges pendingFullSync and runs full).
         try:
-            await graph_provider.update_node(
-                connector_id,
-                CollectionNames.APPS.value,
-                {ConnectorStateKeys.PENDING_RESYNC: False},
+            doc = await graph_provider.get_document(
+                document_key=connector_id, collection=CollectionNames.APPS.value
             )
+            full_owed = bool((doc or {}).get(ConnectorStateKeys.PENDING_FULL_SYNC))
+            if start_status == AppStatus.FULL_SYNCING.value or not full_owed:
+                await graph_provider.update_node(
+                    connector_id,
+                    CollectionNames.APPS.value,
+                    {ConnectorStateKeys.PENDING_RESYNC: False},
+                )
         except Exception as e:
             logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
         if lease is None:

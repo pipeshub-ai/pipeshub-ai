@@ -831,6 +831,18 @@ class TestHandleStartSync:
 # ===========================================================================
 
 
+def _written_statuses(gp) -> list:
+    """Status writes in order: the start status is an upsert, the final IDLE a
+    non-creating update, so it cannot resurrect a connector deleted meanwhile."""
+    out = []
+    for name, args, _kwargs in gp.mock_calls:
+        if name == "batch_upsert_nodes":
+            out.append(args[0][0]["status"])
+        elif name == "update_node" and isinstance(args[2], dict) and "status" in args[2]:
+            out.append(args[2]["status"])
+    return out
+
+
 class TestRunSyncTask:
     """run_sync_task replaced EventService._run_sync_and_clear_status.
 
@@ -851,7 +863,7 @@ class TestRunSyncTask:
         await run_sync_task(conn, "c1", gp, logger)
 
         conn.run_sync.assert_awaited_once()
-        written = [c.args[0][0]["status"] for c in gp.batch_upsert_nodes.await_args_list]
+        written = _written_statuses(gp)
         assert written == [AppStatus.SYNCING.value, AppStatus.IDLE.value]
 
     @pytest.mark.asyncio
@@ -882,7 +894,7 @@ class TestRunSyncTask:
         with pytest.raises(RuntimeError, match="sync fail"):
             await run_sync_task(conn, "c1", gp, logger)
 
-        written = [c.args[0][0]["status"] for c in gp.batch_upsert_nodes.await_args_list]
+        written = _written_statuses(gp)
         assert written[-1] == AppStatus.IDLE.value
 
     @pytest.mark.asyncio
@@ -923,7 +935,7 @@ class TestRunSyncTask:
             await task
 
         await asyncio.sleep(0.05)  # let the detached cleanup land
-        written = [c.args[0][0]["status"] for c in gp.batch_upsert_nodes.await_args_list]
+        written = _written_statuses(gp)
         assert AppStatus.IDLE.value in written
 
     @pytest.mark.asyncio
@@ -947,8 +959,7 @@ class TestRunSyncTask:
         # are the status transitions. Presence is read live by the UI.
         await run_sync_task(conn, "c1", gp, logger)
 
-        written = [c.args[0][0] for c in gp.batch_upsert_nodes.await_args_list]
-        assert [w["status"] for w in written] == [
+        assert _written_statuses(gp) == [
             AppStatus.SYNCING.value,
             AppStatus.IDLE.value,
         ]

@@ -30,6 +30,9 @@ class _Coordinator:
     def held_since_ms(self, connector_id):
         return self.held_since
 
+    def stopped_at_ms(self, connector_id):
+        return getattr(self, "stopped_at", None)
+
 
 def _service(doc: dict | None) -> EventService:
     graph = AsyncMock()
@@ -135,3 +138,86 @@ class TestAStopDuringConnectorInit:
         svc.graph_provider.delete_connector_sync_edges.assert_not_awaited()
         coordinator.spawn.assert_not_awaited()
         coordinator.end.assert_awaited_once()
+
+
+class TestARequestMadeBeforeAStop:
+    """Consumed after /sync/stop cleared the flags, a request made before the stop
+    was recorded and re-issued -- restarting what the user had just stopped."""
+
+    async def _handle(self, created_at, *, stopped_at=5_000):
+        svc = _service({"id": "c1", "isActive": True})
+        coordinator = _Coordinator(Admission.HELD_ELSEWHERE, held_since=1_000)
+        coordinator.stopped_at = stopped_at
+        payload = {"orgId": "o1", "connectorId": "c1"}
+        if created_at is not None:
+            payload["createdAtTimestamp"] = str(created_at)
+        with patch("app.connectors.services.event_service.get_coordinator", return_value=coordinator):
+            await svc._handle_start_sync("gmail", payload)
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_is_dropped(self) -> None:
+        svc = await self._handle(4_000)
+        assert not any(u.get(ConnectorStateKeys.PENDING_RESYNC) for u in _updates(svc))
+
+    @pytest.mark.asyncio
+    async def test_one_made_after_the_stop_is_kept(self) -> None:
+        svc = await self._handle(6_000)
+        assert {ConnectorStateKeys.PENDING_RESYNC: True} in _updates(svc)
+
+    @pytest.mark.asyncio
+    async def test_one_without_a_timestamp_is_kept(self) -> None:
+        """The inline start on re-enable carries none, and must still run."""
+        svc = await self._handle(None)
+        assert {ConnectorStateKeys.PENDING_RESYNC: True} in _updates(svc)
+
+
+class TestStopDuringInitOnADrainedConnector:
+    @pytest.mark.asyncio
+    async def test_the_queue_entry_is_cleared(self) -> None:
+        """/sync/stop saw the lease and repaired nothing, so the drain's stale arm
+        restarted the stopped connector two minutes later."""
+        svc = _service({"id": "c1", ConnectorStateKeys.IS_ACTIVE: True,
+                        "status": AppStatus.QUEUED.value})
+        coordinator = _Coordinator(Admission.GRANTED)
+
+        async def ensure(*_a, **_k):
+            coordinator.lease.stop_requested.set()
+            return MagicMock()
+
+        with patch("app.connectors.services.event_service.get_coordinator", return_value=coordinator),                 patch.object(svc, "_ensure_connector", AsyncMock(side_effect=ensure)),                 patch("app.connectors.services.event_service.drain_queued_syncs", AsyncMock(return_value=[])):
+            await svc._handle_start_sync("gmail", {"orgId": "o1", "connectorId": "c1"})
+
+        assert _updates(svc)[-1]["status"] == AppStatus.IDLE.value
+
+
+class TestQueueOrderIsArrivalOrder:
+    @pytest.mark.asyncio
+    async def test_entering_the_queue_stamps_it(self) -> None:
+        svc = _service({"id": "c1", "status": AppStatus.IDLE.value})
+        await svc._mark_queued("c1")
+        assert isinstance(_updates(svc)[-1].get("queuedAtTimestamp"), int)
+
+    @pytest.mark.asyncio
+    async def test_bouncing_back_keeps_the_place(self) -> None:
+        """A drained connector answered AT_CAPACITY again must not go to the back."""
+        svc = _service({"id": "c1", "status": AppStatus.QUEUED.value, "queuedAtTimestamp": 42})
+        await svc._mark_queued("c1")
+        assert "queuedAtTimestamp" not in _updates(svc)[-1]
+
+
+class TestAReleasedAdmissionDrains:
+    @pytest.mark.asyncio
+    async def test_a_lease_given_back_without_a_sync_drains_the_queue(self) -> None:
+        """No finalizer runs for it, so at a limit of 1 a connector parked behind
+        it waited for an unrelated sync to end."""
+        import asyncio as _asyncio
+
+        svc = _service({"id": "c1", ConnectorStateKeys.IS_ACTIVE: False})
+        coordinator = _Coordinator(Admission.GRANTED)
+        drain = AsyncMock(return_value=[])
+        with patch("app.connectors.services.event_service.get_coordinator", return_value=coordinator),                 patch("app.connectors.services.event_service.drain_queued_syncs", drain):
+            await svc._handle_start_sync("gmail", {"orgId": "o1", "connectorId": "c1"})
+            await _asyncio.sleep(0)
+            await _asyncio.sleep(0)
+        drain.assert_awaited_once()

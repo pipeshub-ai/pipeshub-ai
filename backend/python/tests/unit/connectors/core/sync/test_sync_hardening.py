@@ -166,16 +166,17 @@ class TestFinalize:
         with patch.object(sync_runner, "drain_queued_syncs", AsyncMock(return_value=[])):
             await sync_runner._finalize(graph, LOG, "c1", None, None)
         graph.batch_upsert_nodes.assert_not_awaited()
+        graph.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_idle_is_written_normally(self) -> None:
         graph = AsyncMock()
         graph.get_document = AsyncMock(return_value={"id": "c1", "status": "SYNCING"})
-        graph.batch_upsert_nodes = AsyncMock()
         with patch.object(sync_runner, "drain_queued_syncs", AsyncMock(return_value=[])):
             await sync_runner._finalize(graph, LOG, "c1", None, None)
-        payload = graph.batch_upsert_nodes.await_args.args[0][0]
-        assert payload["status"] == AppStatus.IDLE.value
+        # An update, not an upsert: it cannot create the node if a delete won.
+        graph.batch_upsert_nodes.assert_not_awaited()
+        assert graph.update_node.await_args.args[2]["status"] == AppStatus.IDLE.value
 
     @pytest.mark.asyncio
     async def test_the_queue_is_drained_before_a_self_reissue(self) -> None:
@@ -241,3 +242,27 @@ class TestDrainOrderAndBudget:
         coordinator = LocalSyncCoordinator(LOG)
         await coordinator.begin("x")
         assert coordinator.drain_budget() == 2
+
+
+class TestAFullSyncOwedToAnIncrementalRun:
+    @pytest.mark.asyncio
+    async def test_keeps_the_flag_so_the_finalizer_reissues_it(self) -> None:
+        """A fullSync request declined before this incremental run began was
+        cleared at run start: pendingFullSync then waited for an unrelated sync."""
+        from app.connectors.core.sync.sync_coordinator import SyncLease
+
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(return_value={
+            "id": "c1", ConnectorStateKeys.PENDING_RESYNC: True,
+            ConnectorStateKeys.PENDING_FULL_SYNC: True, "status": "SYNCING"})
+        connector = MagicMock()
+        connector.run_sync = AsyncMock()
+        reissue = AsyncMock()
+        with patch.object(sync_runner, "drain_queued_syncs", AsyncMock(return_value=[])),                 patch.object(sync_runner, "_reissue_pending_resync", reissue):
+            await sync_runner.run_sync_task(connector, "c1", graph, LOG,
+                                            lease=SyncLease("c1", "t", 1), coordinator=AsyncMock(),
+                                            resync_spec=MagicMock())
+        clears = [c for c in graph.update_node.await_args_list
+                  if c.args[2] == {ConnectorStateKeys.PENDING_RESYNC: False}]
+        assert clears == []
+        reissue.assert_awaited_once()

@@ -23,10 +23,23 @@ def _graph_provider() -> AsyncMock:
 
 
 def _statuses(graph_provider: AsyncMock) -> list[str]:
-    return [
-        call.args[0][0]["status"]
-        for call in graph_provider.batch_upsert_nodes.call_args_list
-    ]
+    """Status writes in order: the start status is an upsert, the final IDLE a
+    non-creating update (so it cannot resurrect a deleted connector)."""
+    out = []
+    for name, args, _kwargs in graph_provider.mock_calls:
+        if name == "batch_upsert_nodes":
+            out.append(args[0][0]["status"])
+        elif name == "update_node" and "status" in args[2]:
+            out.append(args[2]["status"])
+    return out
+
+
+def _resync_clears(graph_provider: AsyncMock) -> int:
+    """update_node calls that clear pendingResync (the IDLE write is one too)."""
+    return sum(
+        1 for c in graph_provider.update_node.await_args_list
+        if c.args[2] == {"pendingResync": False}
+    )
 
 
 def _connector(run_sync=None) -> MagicMock:
@@ -53,6 +66,10 @@ class TestReleaseOrdering:
         gp.batch_upsert_nodes = AsyncMock(
             side_effect=lambda *a, **k: order.append(f"status:{a[0][0]['status']}")
         )
+        gp.update_node = AsyncMock(
+            side_effect=lambda *a, **k: order.append(f"status:{a[2]['status']}")
+            if "status" in a[2] else None
+        )
         manager = AsyncMock()
         manager.end = AsyncMock(side_effect=lambda _l: order.append("end"))
         lease = SyncLease("c1", "tok", 1)
@@ -73,6 +90,7 @@ class TestReleaseOrdering:
         """
         gp = _graph_provider()
         gp.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("db down"))
+        gp.update_node = AsyncMock(side_effect=RuntimeError("db down"))
         manager = AsyncMock()
         lease = SyncLease("c1", "tok", 1)
 
@@ -98,13 +116,13 @@ class TestSecondCancel:
 
         in_finalize = asyncio.Event()
 
-        async def slow_upsert(payloads, *_a, **_k) -> None:
-            if payloads[0]["status"] != AppStatus.IDLE.value:
+        async def slow_idle(_cid, _collection, updates, *_a, **_k) -> None:
+            if updates.get("status") != AppStatus.IDLE.value:
                 return
             in_finalize.set()
             await asyncio.sleep(0.05)
 
-        gp.batch_upsert_nodes = AsyncMock(side_effect=slow_upsert)
+        gp.update_node = AsyncMock(side_effect=slow_idle)
 
         manager = AsyncMock()
 
@@ -285,8 +303,7 @@ class TestDeclinedResyncIsReissued:
 
         # The first write clears pendingResync as the run starts: a request made
         # before this run began is served by it.
-        assert gp.update_node.await_count == 2
-        assert gp.update_node.call_args[0][2] == {"pendingResync": False}
+        assert _resync_clears(gp) == 2
 
     @pytest.mark.parametrize(
         "result", ["DECLINED_RUNNING", "FAILED"],
@@ -317,7 +334,7 @@ class TestDeclinedResyncIsReissued:
             )
 
         # Only the clear at run start; the flag set during the run survives.
-        gp.update_node.assert_awaited_once()
+        assert _resync_clears(gp) == 1
 
     @pytest.mark.asyncio
     async def test_no_dispatcher_leaves_the_flag_for_the_sweep(self) -> None:
@@ -336,7 +353,7 @@ class TestDeclinedResyncIsReissued:
             )
 
         # Only the clear at run start; the flag set during the run survives.
-        gp.update_node.assert_awaited_once()
+        assert _resync_clears(gp) == 1
 
     @pytest.mark.asyncio
     async def test_no_pending_flag_means_no_resubmit(self) -> None:
@@ -356,7 +373,7 @@ class TestDeclinedResyncIsReissued:
             )
 
         dispatcher.submit.assert_not_awaited()
-        gp.update_node.assert_awaited_once()
+        assert _resync_clears(gp) == 1
 
     @pytest.mark.asyncio
     async def test_without_a_spec_nothing_is_reissued(self) -> None:
@@ -366,7 +383,7 @@ class TestDeclinedResyncIsReissued:
             _connector(), "c1", gp, logging.getLogger("t"),
             lease=SyncLease("c1", "tok", 1), coordinator=AsyncMock(),
         )
-        gp.update_node.assert_awaited_once()
+        assert _resync_clears(gp) == 1
 
 
 class TestExternalCancelReachesTheSync:
