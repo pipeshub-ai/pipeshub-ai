@@ -111,26 +111,62 @@ class TestCursor:
 
         assert checkpoints.cursor()["cursor"] == before
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Left alone: when Box keeps failing to return a changed file, the file is "
-            "skipped and the cursor still moves past its event, so the change is only "
-            "picked up by the next full sync. Holding the cursor instead could stall the "
-            "stream behind one broken file, which is a product decision."
-        ),
-    )
-    async def test_a_changed_file_box_would_not_return_holds_the_cursor(self, box_api, db, checkpoints) -> None:
+    async def test_a_changed_file_box_would_not_return_holds_the_cursor_for_a_retry(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
         connector = await synced_connector(box_api, db, checkpoints)
         box_api.add_file("file-1", "new.pdf", ALICE)
         box_api.add_event("ITEM_UPLOAD", item_event("file-1"), created_by=by(ALICE, box_api))
         before = checkpoints.cursor()["cursor"]
-        box_api.fail("GET", "/2.0/files/file-1", 503, times=10)
+        box_api.fail("GET", "/2.0/files/file-1", 503, times=5)
 
         await connector.run_sync()
 
         assert checkpoints.cursor()["cursor"] == before
+        assert checkpoints.cursor()["held_attempts"] == 1
+
+        await connector.run_sync()
+
+        assert "file-1" in db.records
+        assert checkpoints.cursor()["cursor"] == box_api.stream_head
+        assert "held_attempts" not in checkpoints.cursor()
+
+    async def test_a_batch_that_keeps_failing_is_passed_over_after_five_attempts(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_file("file-1", "stuck.pdf", ALICE)
+        box_api.add_event("ITEM_UPLOAD", item_event("file-1"), created_by=by(ALICE, box_api))
+        before = checkpoints.cursor()["cursor"]
+        box_api.fail("GET", "/2.0/files/file-1", 503, times=1000)
+
+        for _ in range(4):
+            await connector.run_sync()
+            assert checkpoints.cursor()["cursor"] == before
+        await connector.run_sync()
+
+        assert checkpoints.cursor()["cursor"] == box_api.stream_head
+        assert "held_attempts" not in checkpoints.cursor()
+
+    async def test_an_upload_whose_second_collaborator_page_fails_is_granted_on_the_retry(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.default_page = box_api.max_page = 2
+        for n in range(3):
+            box_api.add_user(f"u-{n}", f"user{n}@acme.test")
+        box_api.add_file("file-1", "new.pdf", ALICE)
+        for n in range(3):
+            box_api.collaborate("file-1", f"u-{n}")
+        box_api.add_event("ITEM_UPLOAD", item_event("file-1"), created_by=by(ALICE, box_api))
+        before = checkpoints.cursor()["cursor"]
+        box_api.fail("GET", "/2.0/files/file-1/collaborations", 503, times=5, query={"marker": "2"})
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor()["cursor"] == before
+
+        await connector.run_sync()
+
+        assert db.access("file-1") == {"user0@acme.test", "user1@acme.test", "user2@acme.test"}
+        assert checkpoints.cursor()["cursor"] == box_api.stream_head
 
     async def test_a_box_error_is_logged_without_the_access_token(self, box_api, db, checkpoints, caplog) -> None:
         enterprise(box_api, db)

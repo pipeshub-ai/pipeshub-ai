@@ -210,8 +210,11 @@ class BoxConnector(BaseConnector):
     # Box only retains admin_logs_streaming events for 2 weeks. If last sync was longer ago, do full sync.
     BOX_EVENT_STREAM_RETENTION_DAYS = 14
 
-    # Cleared when a full sync fails to read part of Box, so it does not save the stream position.
-    _full_sync_complete: bool = True
+    # Cleared when part of Box could not be read, so the stream position is not moved past it:
+    # a full sync then skips saving its anchor, and an incremental batch is held and retried.
+    _read_complete: bool = True
+    # An incremental batch that keeps failing is retried this many times, then passed over.
+    MAX_EVENT_BATCH_ATTEMPTS = 5
 
     def __init__(
         self,
@@ -303,9 +306,9 @@ class BoxConnector(BaseConnector):
         """403 and 404 are Box's settled answer; anything else may succeed on a later try."""
         return str(error).startswith(("403", "404"))
 
-    def _mark_full_sync_incomplete(self, error: object) -> None:
+    def _mark_read_incomplete(self, error: object) -> None:
         if not self._is_final_answer(error):
-            self._full_sync_complete = False
+            self._read_complete = False
 
     def _parse_box_timestamp(self, ts_str: Optional[str], field_name: str, entry_name: str) -> int:
         """Helper to parse Box timestamps safely."""
@@ -520,7 +523,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error processing Box entry {entry.get('id')}: {e}", exc_info=True)
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
             return None
 
     async def _get_permissions(self, item_id: str, item_type: str) -> list[Permission] | None:
@@ -543,7 +546,7 @@ class BoxConnector(BaseConnector):
                         self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id}: {response.error}")
                         break
                     self.logger.warning(f"Could not read collaborators of {item_type} {item_id}: {response.error}")
-                    self._mark_full_sync_incomplete(response.error)
+                    self._mark_read_incomplete(response.error)
                     return None
 
                 data = self._to_dict(response.data)
@@ -583,7 +586,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.warning(f"Error fetching permissions for {item_type} {item_id}: {e}")
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
             return None
 
         return permissions
@@ -635,7 +638,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error handling record update: {e}", exc_info=True)
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
 
     async def _sync_users(self) -> List[AppUser]:
         """
@@ -653,7 +656,7 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.error(f"Failed to fetch users: {response.error}")
-                    self._mark_full_sync_incomplete(response.error)
+                    self._mark_read_incomplete(response.error)
                     break
 
                 data = self._to_dict(response.data)
@@ -686,7 +689,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing Box users: {e}", exc_info=True)
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
             return []
 
     async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
@@ -715,7 +718,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get users by emails: {e}", exc_info=True)
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
             return []
 
     async def _remove_user_access_from_folder_recursively(
@@ -756,7 +759,7 @@ class BoxConnector(BaseConnector):
                     )
                 except Exception as e:
                     self.logger.warning(f"⚠️ Failed to remove access from {current_external_id}: {e}")
-                    self._mark_full_sync_incomplete(e)
+                    self._mark_read_incomplete(e)
 
                 # Get children of this item
                 try:
@@ -772,13 +775,13 @@ class BoxConnector(BaseConnector):
                                 items_to_process.append(child.external_record_id)
                 except Exception as e:
                     self.logger.debug(f"No children found for {current_external_id} or error: {e}")
-                    self._mark_full_sync_incomplete(e)
+                    self._mark_read_incomplete(e)
 
             self.logger.info(f"✅ Removed user access from folder and {len(processed_items) - 1} descendants")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to remove folder access recursively: {e}", exc_info=True)
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
 
     async def _sync_user_groups(self) -> None:
         """
@@ -811,7 +814,7 @@ class BoxConnector(BaseConnector):
                 if not response.success:
                     self.logger.error(f"Failed to fetch groups: {response.error}")
                     self.logger.warning("Skipping removal of deleted groups because the group list from Box is incomplete.")
-                    self._mark_full_sync_incomplete(response.error)
+                    self._mark_read_incomplete(response.error)
                     return
 
                 data = self._to_dict(response.data)
@@ -869,7 +872,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing Box groups: {e}", exc_info=True)
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
 
     async def _get_group_memberships(self, group_id: str) -> list[dict] | None:
         """Every membership of a group, or None when a page of them could not be read."""
@@ -882,7 +885,7 @@ class BoxConnector(BaseConnector):
             )
             if not response.success:
                 self.logger.warning(f"Failed to fetch members of group {group_id}: {response.error}")
-                self._mark_full_sync_incomplete(response.error)
+                self._mark_read_incomplete(response.error)
                 return None
             data = self._to_dict(response.data)
             entries = data.get('entries', [])
@@ -942,7 +945,7 @@ class BoxConnector(BaseConnector):
                     await self.data_source.set_as_user_context(user.source_user_id)
                 except Exception as e:
                     self.logger.warning(f"Could not set As-User for {user.email}: {e}")
-                    self._mark_full_sync_incomplete(e)
+                    self._mark_read_incomplete(e)
                     continue
 
                 try:
@@ -952,7 +955,7 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.warning(f"Could not fetch root folder for user {user.email}: {response.error}")
-                    self._mark_full_sync_incomplete(response.error)
+                    self._mark_read_incomplete(response.error)
                     continue
 
                 root_folder = self._to_dict(response.data)
@@ -998,7 +1001,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing Box record groups: {e}", exc_info=True)
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
 
     async def _run_sync_for_user(self, user: AppUser) -> None:
         """
@@ -1023,7 +1026,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing for user {user.email}: {e}", exc_info=True)
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
         finally:
             # Once per user: clearing inside the recursion left the parent folder's later pages listed without As-User.
             try:
@@ -1055,7 +1058,7 @@ class BoxConnector(BaseConnector):
             if not self.current_user_id:
                 # Without it the walk below lists as the service account, which reads an empty root.
                 self.logger.warning("Could not identify the Box service account; this user's files are not listed.")
-                self._full_sync_complete = False
+                self._read_complete = False
 
         # Set As-User context if syncing for a different user
         try:
@@ -1068,7 +1071,7 @@ class BoxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to set As-User context: {e}")
             # Listing without impersonation reads the service account's own files, not this user's.
-            self._full_sync_complete = False
+            self._read_complete = False
 
         while True:
 
@@ -1082,7 +1085,7 @@ class BoxConnector(BaseConnector):
 
             if not response.success:
                 self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
-                self._mark_full_sync_incomplete(response.error)
+                self._mark_read_incomplete(response.error)
                 break
 
             data = self._to_dict(response.data)
@@ -1146,7 +1149,7 @@ class BoxConnector(BaseConnector):
                     await self._run_sync_for_user(user)
                 except Exception as e:
                     self.logger.error(f"Error syncing user {user.email}: {e}")
-                    self._mark_full_sync_incomplete(e)
+                    self._mark_read_incomplete(e)
                     # Continue to next user even if one fails
                     continue
 
@@ -1192,7 +1195,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Failed to create virtual groups: {e}")
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
 
     async def run_sync(self) -> None:
         """
@@ -1266,7 +1269,7 @@ class BoxConnector(BaseConnector):
                 self.logger.warning(f"❌ [Smart Sync] Failed to anchor event stream: {e}", exc_info=True)
 
             # SYNC RESOURCES (Full Scan)
-            self._full_sync_complete = True
+            self._read_complete = True
             self.logger.info("📦 [Full Sync] Syncing users...")
             users = await self._sync_users()
             await self.data_entities_processor.on_new_app_users(users)
@@ -1290,7 +1293,7 @@ class BoxConnector(BaseConnector):
             }
             await self._backfill_shared_with_me_history(our_org_box_user_ids)
 
-            if anchor and self._full_sync_complete:
+            if anchor and self._read_complete:
                 await self.box_cursor_sync_point.update_sync_point(key, anchor)
             elif anchor:
                 self.logger.warning(
@@ -1332,7 +1335,7 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.warning(f"⚠️ [Backfill] Failed to fetch historical collaboration events: {response.error}")
-                    self._mark_full_sync_incomplete(response.error)
+                    self._mark_read_incomplete(response.error)
                     break
 
                 data = self._to_dict(response.data)
@@ -1351,7 +1354,7 @@ class BoxConnector(BaseConnector):
             self.logger.info(f"✅ [Backfill] Completed. Replayed {total_events} historical collaboration event(s).")
         except Exception as e:
             self.logger.error(f"❌ [Backfill] Error backfilling historical collaborations: {e}", exc_info=True)
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
 
     async def run_incremental_sync(self) -> None:
         """
@@ -1387,10 +1390,14 @@ class BoxConnector(BaseConnector):
 
         # 1. Load Cursor (Box guarantees events after cursor are new; duplicates only within that stream)
         stream_position = 'now'
+        held_attempts = 0
+        cursor_updated_at: Optional[int] = None
         try:
             data = await self.box_cursor_sync_point.read_sync_point(key)
             if data and isinstance(data, dict):
                 stream_position = data.get("cursor") or 'now'
+                held_attempts = int(data.get("held_attempts") or 0)
+                cursor_updated_at = data.get("cursor_updated_at")
             self.logger.info(f"📍 [Incremental] Loaded Cursor: {stream_position}")
         except Exception as e:
             self.logger.error(f"❌ [Incremental] Could not read the saved event-stream position; skipping this run: {e}")
@@ -1423,7 +1430,26 @@ class BoxConnector(BaseConnector):
 
                 if events:
                     self.logger.info(f"📥 [Incremental] Fetched {len(events)} new events from Box.")
+                    self._read_complete = True
                     await self._process_event_batch(events, our_org_box_user_ids=our_org_box_user_ids)
+                    if not self._read_complete:
+                        held_attempts += 1
+                        if held_attempts < self.MAX_EVENT_BATCH_ATTEMPTS:
+                            self.logger.warning(
+                                f"⚠️ [Incremental] Part of this batch of Box changes could not be read "
+                                f"(attempt {held_attempts} of {self.MAX_EVENT_BATCH_ATTEMPTS}); "
+                                "it will be read again on the next sync."
+                            )
+                            await self.box_cursor_sync_point.update_sync_point(
+                                key,
+                                {"cursor": stream_position, "cursor_updated_at": cursor_updated_at, "held_attempts": held_attempts},
+                            )
+                            break
+                        self.logger.error(
+                            f"❌ [Incremental] Part of this batch of Box changes still could not be read after "
+                            f"{held_attempts} attempts; moving on so later changes are not held up. Items that failed are "
+                            "read again when they next change in Box, or at the next full sync."
+                        )
                 else:
                     self.logger.info("ℹ️ [Incremental] Box says: No new events yet.")
                     has_more = False
@@ -1431,6 +1457,8 @@ class BoxConnector(BaseConnector):
                 if next_stream_position:
                     stream_position = next_stream_position
                     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                    cursor_updated_at = now_ms
+                    held_attempts = 0
                     await self.box_cursor_sync_point.update_sync_point(
                         key,
                         {"cursor": stream_position, "cursor_updated_at": now_ms}
@@ -1647,10 +1675,10 @@ class BoxConnector(BaseConnector):
                                 granted_email = user_data.get('login')
                             else:
                                 self.logger.warning(f"⚠️ Failed to fetch user details for ID {granted_user_box_id}: {user_response.error}")
-                                self._mark_full_sync_incomplete(user_response.error)
+                                self._mark_read_incomplete(user_response.error)
                         except Exception as e:
                             self.logger.error(f"❌ Failed to resolve Box ID {granted_user_box_id}: {e}")
-                            self._mark_full_sync_incomplete(e)
+                            self._mark_read_incomplete(e)
 
                 # EXECUTE GRANT - Queue item for sync to update permissions
                 if item_id:
@@ -1674,10 +1702,10 @@ class BoxConnector(BaseConnector):
                                 owned_by = item_data.get('owned_by', {})
                                 owner_id = owned_by.get('id')
                             else:
-                                self._mark_full_sync_incomplete(item_response.error)
+                                self._mark_read_incomplete(item_response.error)
                         except Exception as e:
                             self.logger.warning(f"⚠️ Failed to fetch owner for {item_type} {item_id}: {e}")
-                            self._mark_full_sync_incomplete(e)
+                            self._mark_read_incomplete(e)
 
                     if owner_id:
                         # Queue for sync to refresh permissions (owner's drive)
@@ -1754,10 +1782,10 @@ class BoxConnector(BaseConnector):
                                 file_id = item.get('id')
                                 self.logger.debug(f"Found item ID {file_id} from collaboration lookup")
                         elif not collab_response.success:
-                            self._mark_full_sync_incomplete(collab_response.error)
+                            self._mark_read_incomplete(collab_response.error)
                     except Exception as e:
                         self.logger.debug(f"Could not fetch collaboration details for {collaboration_id}: {e}")
-                        self._mark_full_sync_incomplete(e)
+                        self._mark_read_incomplete(e)
 
                 # Log what we found for debugging
                 self.logger.debug(f"Revocation event - file_id={file_id}, email={removed_email}, user_box_id={removed_user_box_id}, collab_id={collaboration_id}")
@@ -1790,10 +1818,10 @@ class BoxConnector(BaseConnector):
                                 removed_email = user_data.get('login')
                             else:
                                 self.logger.warning(f"⚠️ Failed to fetch user details for ID {removed_user_box_id}: {user_response.error}")
-                                self._mark_full_sync_incomplete(user_response.error)
+                                self._mark_read_incomplete(user_response.error)
                         except Exception as e:
                             self.logger.error(f"❌ Failed to resolve Box ID {removed_user_box_id}: {e}")
-                            self._mark_full_sync_incomplete(e)
+                            self._mark_read_incomplete(e)
 
                 # EXECUTE REMOVAL
                 if file_id and removed_email:
@@ -1944,14 +1972,14 @@ class BoxConnector(BaseConnector):
                             folder_response = await self.data_source.folders_get_folder_by_id(item_id)
                             if not folder_response.success:
                                 self.logger.warning(f"Failed to fetch folder {item_id} as shared-with-me: {folder_response.error}")
-                                self._mark_full_sync_incomplete(folder_response.error)
+                                self._mark_read_incomplete(folder_response.error)
                                 continue
                             entry = self._to_dict(folder_response.data)
                         else:
                             file_response = await self.data_source.files_get_file_by_id(item_id)
                             if not file_response.success:
                                 self.logger.warning(f"Failed to fetch file {item_id} as shared-with-me: {file_response.error}")
-                                self._mark_full_sync_incomplete(file_response.error)
+                                self._mark_read_incomplete(file_response.error)
                                 continue
                             entry = self._to_dict(file_response.data)
                         if not entry:
@@ -1976,12 +2004,12 @@ class BoxConnector(BaseConnector):
                                     await self.data_entities_processor.on_new_records(batch_records)
                     except Exception as e:
                         self.logger.warning(f"Error syncing shared-with-me item {item_id} for {collab_email}: {e}")
-                        self._mark_full_sync_incomplete(e)
+                        self._mark_read_incomplete(e)
                 if updates_to_push:
                     await self.data_entities_processor.on_new_records(updates_to_push)
             except Exception as e:
                 self.logger.error(f"Error syncing shared-with-me for collaborator {collab_email}: {e}")
-                self._mark_full_sync_incomplete(e)
+                self._mark_read_incomplete(e)
             finally:
                 await self.data_source.clear_as_user_context()
 
@@ -2005,7 +2033,7 @@ class BoxConnector(BaseConnector):
                 if entry is None:
                     failure = res if isinstance(res, Exception) else res.error
                     self.logger.warning(f"Failed to fetch file {file_id} for owner {owner_id}: {failure}")
-                    self._mark_full_sync_incomplete(failure)
+                    self._mark_read_incomplete(failure)
                 file_entries.append(entry)
 
             updates_to_push = []
@@ -2050,7 +2078,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing files for owner {owner_id}: {e}")
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
         finally:
             # 7. ALWAYS Clear Context
             await self.data_source.clear_as_user_context()
@@ -2077,7 +2105,7 @@ class BoxConnector(BaseConnector):
 
                 if not folder_response.success:
                     self.logger.warning(f"Failed to fetch parent folder {folder_id}: {folder_response.error}")
-                    self._mark_full_sync_incomplete(folder_response.error)
+                    self._mark_read_incomplete(folder_response.error)
                     continue
 
                 folder_entry = self._to_dict(folder_response.data)
@@ -2107,7 +2135,7 @@ class BoxConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error(f"Error ensuring parent folder {folder_id} exists: {e}", exc_info=True)
-                self._mark_full_sync_incomplete(e)
+                self._mark_read_incomplete(e)
 
     async def _fetch_and_sync_folders_for_owner(self, owner_id: str, folder_ids: List[str]) -> None:
         """
@@ -2127,7 +2155,7 @@ class BoxConnector(BaseConnector):
 
                     if not folder_response.success:
                         self.logger.warning(f"Failed to fetch folder {folder_id}: {folder_response.error}")
-                        self._mark_full_sync_incomplete(folder_response.error)
+                        self._mark_read_incomplete(folder_response.error)
                         continue
 
                     folder_entry = self._to_dict(folder_response.data)
@@ -2156,7 +2184,7 @@ class BoxConnector(BaseConnector):
 
                 except Exception as e:
                     self.logger.error(f"Error processing folder {folder_id}: {e}", exc_info=True)
-                    self._mark_full_sync_incomplete(e)
+                    self._mark_read_incomplete(e)
 
             # 5. Commit any remaining records
             if batch_records:
@@ -2165,7 +2193,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing folders for owner {owner_id}: {e}", exc_info=True)
-            self._mark_full_sync_incomplete(e)
+            self._mark_read_incomplete(e)
         finally:
             # 6. ALWAYS Clear Context
             await self.data_source.clear_as_user_context()
@@ -2198,7 +2226,7 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
-                    self._mark_full_sync_incomplete(response.error)
+                    self._mark_read_incomplete(response.error)
                     break
 
                 data = self._to_dict(response.data)
@@ -2236,7 +2264,7 @@ class BoxConnector(BaseConnector):
 
                     except Exception as e:
                         self.logger.error(f"Error processing item in folder {folder_id}: {e}", exc_info=True)
-                        self._mark_full_sync_incomplete(e)
+                        self._mark_read_incomplete(e)
 
                 # Recursively process subfolders
                 for sub_folder_id in sub_folders_to_traverse:
@@ -2250,7 +2278,7 @@ class BoxConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error(f"Error in _sync_folder_contents_recursively for folder {folder_id}: {e}", exc_info=True)
-                self._mark_full_sync_incomplete(e)
+                self._mark_read_incomplete(e)
                 break
 
     async def _execute_deletions(self, file_ids: List[str]) -> None:
