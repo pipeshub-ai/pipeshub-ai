@@ -181,7 +181,29 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=None)
 
         assert await tx_store.get_record_by_external_id("conn-1", "log.1") is None
-        assert await tx_store.get_record_by_external_id("conn-1", "log.2") is moved
+
+    @pytest.mark.asyncio
+    async def test_an_upserted_record_is_reread_not_served_from_the_callers_object(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """The upsert merges into the stored vertex and never writes
+        virtualRecordId, so the caller's object is not what the store holds.
+
+        Serving it made a move onto an occupied path retire the occupant without
+        its VRID -- no deleteRecord event, so its vectors were orphaned.
+        """
+        mock_graph_provider.batch_upsert_records = AsyncMock()
+        written = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="z",
+                            virtual_record_id=None)
+        await tx_store.batch_upsert_records([written])
+
+        stored = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="z",
+                           virtual_record_id="vr-x")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        assert await tx_store.get_record_by_external_id("conn-1", "z") is stored
+        assert await tx_store.get_record_by_external_id("conn-1", "z") is stored
+        assert mock_graph_provider.get_record_by_external_id.await_count == 1
 
     @pytest.mark.asyncio
     async def test_deleting_by_key_drops_it_from_the_cache(
