@@ -439,6 +439,7 @@ class OpenSearchService(IVectorDBService):
                                 # _source without building any inverted index term.
                                 "query_text": {"type": "text", "index": False},
                                 "response_text": {"type": "text", "index": False},
+                                "citations": {"type": "object", "enabled": False},
                             },
                         },
                     },

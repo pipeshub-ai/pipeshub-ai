@@ -364,7 +364,7 @@ class AccessibleRecordsInvalidator:
         # Orgs that received a new indexing event while a bump was already
         # in-flight.  The in-flight task checks this flag on completion and
         # schedules a follow-up bump when set.
-        self._pending_dirty: set[str] = {}
+        self._pending_dirty: set[str] = set()
 
     async def close(self) -> None:
         """Flush all pending corpus-revision increments and cancel their timers.

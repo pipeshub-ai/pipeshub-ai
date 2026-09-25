@@ -1025,6 +1025,19 @@ class RedisVectorService(IVectorDBService):
         # instead of enumerating all possible metadata_* fields in LOAD.  This
         # avoids brittleness when new metadata fields are added and costs only one
         # extra round-trip (pipelined, so no per-result latency).
+        if getattr(req, "is_semantic_cache_query", False):
+            knn_expr = f"=>[KNN {k} @dense_embedding $vec AS __distance]"
+            search_query_with_knn = f"({search_query}){knn_expr}" if search_query and search_query != "*" else f"(*){knn_expr}"
+            
+            cmd_search: List[Any] = [
+                "FT.SEARCH", idx, search_query_with_knn,
+                "PARAMS", "2", "vec", vec_bytes,
+                "DIALECT", "2",
+                "LIMIT", "0", str(k),
+            ]
+            raw = await self.client.execute_command(*cmd_search)  # type: ignore
+            return parse_ft_search_reply(raw)
+
         cmd: List[Any] = [
             "FT.HYBRID", idx,
             "SEARCH", search_query,

@@ -1295,7 +1295,7 @@ async def askAIStream(
                     if query_info.strictScope:
                         effective_filters["strictScope"] = True
 
-                    permissions_revision = _chat_user.get("permissionsRevision", "0")
+                    permissions_revision = str(_chat_user.get("permissionsRevision", "0"))
 
                     # Guard: only use the cache when permissionsRevision is a
                     # real, application-issued revision.  The default "0" means
@@ -1366,6 +1366,29 @@ async def askAIStream(
                                     cached_entry = None
                                 elif not isinstance(cached_entry, dict) or not cached_entry.get("text"):
                                     cached_entry = None
+
+                            if cached_entry:
+                                cached_citations = cached_entry.get("citations") or []
+                                if cached_citations:
+                                    virtual_ids_to_check = set()
+                                    for c in cached_citations:
+                                        meta = c.get("metadata") or {}
+                                        vrid = meta.get("virtualRecordId")
+                                        if not vrid:
+                                            logger.warning("Cache bypassed: Cached citation missing virtualRecordId.")
+                                            cached_entry = None
+                                            break
+                                        virtual_ids_to_check.add(vrid)
+
+                                    if cached_entry:
+                                        accessible_map = await graph_provider.filter_accessible_virtual_record_ids(
+                                            virtual_record_ids=list(virtual_ids_to_check),
+                                            user_id=_chat_user.get("userId"),
+                                            org_id=_chat_user.get("orgId"),
+                                        )
+                                        if len(accessible_map) != len(virtual_ids_to_check):
+                                            logger.info("Cache bypassed: User lost access to one or more source records.")
+                                            cached_entry = None
 
                             if cached_entry:
                                 cached_resp = cached_entry["text"]

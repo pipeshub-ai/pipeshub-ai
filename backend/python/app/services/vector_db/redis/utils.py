@@ -510,11 +510,21 @@ def parse_ft_search_reply(reply: Any) -> List[SearchResult]:
         if not isinstance(fields_list, (list, tuple)):
             continue
 
-        doc = decode_hash_doc(_parse_fields_list(fields_list))
+        parsed_fields = _parse_fields_list(fields_list)
+        doc = decode_hash_doc(parsed_fields)
         payload = hash_doc_to_payload(doc)
 
         key_str = _decode(raw_key)
         point_id = key_str.rsplit(":", 1)[-1] if ":" in key_str else key_str
-        results.append(SearchResult(id=point_id, score=0.0, payload=payload))
+
+        score = 0.0
+        distance_raw = doc.get("__distance")
+        if distance_raw is not None:
+            try:
+                score = 1.0 - float(distance_raw)
+            except (ValueError, TypeError):
+                pass
+
+        results.append(SearchResult(id=point_id, score=score, payload=payload))
 
     return results
