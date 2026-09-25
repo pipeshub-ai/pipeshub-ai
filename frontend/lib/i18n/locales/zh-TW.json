@@ -540,6 +540,7 @@
     "heyUser": "嗨，{{name}} 👋",
     "heyUserDefaultName": "您好",
     "askAnything": "隨時提問...",
+    "sendMessage": "傳送訊息",
     "quick": "快速",
     "listening": "聆聽中...",
     "voiceInputNotSupported": "此瀏覽器不支援語音輸入",
@@ -697,7 +698,8 @@
       "editComingSoonTitle": "即將推出",
       "editComingSoonDescription": "我們正在開發編輯功能",
       "deprecatedTools": "此代理包含已不再提供的工具。請開啟代理建構器將其移除。",
-      "openAgentBuilder": "開啟代理建構器"
+      "openAgentBuilder": "開啟代理建構器",
+      "loadConversationFailed": "無法開啟此對話。請重新整理頁面後再試一次。"
     },
     "queryModes": {
       "chat": {

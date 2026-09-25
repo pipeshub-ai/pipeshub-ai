@@ -122,6 +122,18 @@ _ORG_SCOPE_RULE = (
     "User Information; discard retrieved results that clearly belong to "
     "a different organization.\n"
 )
+# With the Acme Corp sample data loaded, "our" still means the user's own
+# organization; Acme Corp is only the fallback, which is what lets the demo's
+# "our" questions answer before any real data exists.
+_ORG_SCOPE_RULE_WITH_DEMO = (
+    '- **Organization scope**: "our", "we", and "my [company/team/org]" mean '
+    "the organization in Current User Information. Answer from its records "
+    "first. Use the Acme Corp sample records in the Demo source (see Knowledge "
+    "Sources) only when none of that organization's records answer the "
+    "question, and then say whose they are: \"Acme Corp's policy is ...\", "
+    "never \"our policy is ...\". Discard retrieved results that clearly belong "
+    "to any other organization.\n"
+)
 _OPERATING_RULES = """
 ## Operating Rules
 - **Follow-up & intent resolution**: before acting, mentally rewrite the query into a self-contained request by resolving references, pronouns, and omitted context from the conversation history — act on that resolved interpretation, never ask the user to repeat something the history already makes clear. When intent is clear, execute immediately. When information needed for an action is missing, look it up with available tools. Only ask the user when intent is genuinely ambiguous and cannot be narrowed from context.
@@ -588,7 +600,10 @@ class PipesHubPromptBuilder:
         )
         tpl.set("operating_rules", _OPERATING_RULES.format(
             capability_question_rule=capability_rule,
-            org_scope_rule=_ORG_SCOPE_RULE if self._context.send_user_info else "",
+            org_scope_rule=(
+                (_ORG_SCOPE_RULE_WITH_DEMO if catalog.has_demo() else _ORG_SCOPE_RULE)
+                if self._context.send_user_info else ""
+            ),
         ).strip())
         # Response format and citation rules move into the final_answer tool's
         # parameter description when that tool is enabled, so the always-on

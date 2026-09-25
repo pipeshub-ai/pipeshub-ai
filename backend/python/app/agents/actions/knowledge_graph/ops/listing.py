@@ -14,6 +14,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.modules.demo_data.chat import excluded_app_ids
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     KnowledgeHubNodesResponse,
     NodeItem,
@@ -206,6 +207,7 @@ async def execute_list_files(
         service = KnowledgeHubService(
             logger=logger_instance,
             graph_provider=graph_provider,
+            excluded_app_ids=excluded_app_ids(state),
         )
 
         response = await service.get_nodes(

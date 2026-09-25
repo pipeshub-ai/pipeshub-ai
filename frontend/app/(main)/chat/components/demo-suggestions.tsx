@@ -7,6 +7,7 @@ import { SuggestionChip } from './suggestion-chip';
 import { ChatSuggestion } from '@/chat/types';
 import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useRestrictedQuestionAccess } from '@/app/(main)/workspace/connectors/demo-data/use-restricted-question';
+import { useDemoSwitch } from '@/app/(main)/workspace/connectors/demo-data/use-demo-switch';
 
 const EMAIL_SLOT = '\u2063';
 
@@ -24,6 +25,7 @@ interface DemoSuggestionsProps {
 export function DemoSuggestions({ isAdmin, isMobile, onPick }: DemoSuggestionsProps) {
   const { t } = useTranslation();
   const access = useRestrictedQuestionAccess();
+  const { hideWithUndo, busy: switchBusy } = useDemoSwitch();
   const map = t('chat.demoSuggestions', { returnObjects: true }) as Record<
     string,
     { text: string; icons: ChatSuggestion['icons']; restricted?: boolean }
@@ -56,6 +58,17 @@ export function DemoSuggestions({ isAdmin, isMobile, onPick }: DemoSuggestionsPr
         {t('chat.demoBanner')}{' '}
         <Link href={buildConnectorsUrl(isAdmin)} size="1" weight="medium">
           {t('chat.demoConnectYourOwn')}
+        </Link>
+        {' · '}
+        <Link asChild size="1" weight="medium">
+          <button
+            type="button"
+            disabled={switchBusy}
+            onClick={() => void hideWithUndo()}
+            style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer' }}
+          >
+            {t('chat.demoHide')}
+          </button>
         </Link>
       </Text>
       <Flex

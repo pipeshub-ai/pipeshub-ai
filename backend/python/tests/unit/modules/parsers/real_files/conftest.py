@@ -28,6 +28,7 @@ REAL_LIBRARIES = (
     "reportlab.pdfgen.canvas",
     "PIL.Image",
     "bs4",
+    "lxml.etree",
     "selectolax.lexbor",
     "markdown_it",
     "docling.document_converter",

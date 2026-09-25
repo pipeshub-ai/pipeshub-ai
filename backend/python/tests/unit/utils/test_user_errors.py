@@ -69,6 +69,28 @@ class TestSpecificCauses:
     def test_scanned_document(self) -> None:
         assert ue.to_user_reason(IndexingError(ue.SCANNED_DOCUMENT_NEEDS_OCR)) == ue.SCANNED_DOCUMENT_NEEDS_OCR
 
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            ue.EPUB_UNREADABLE,
+            ue.EPUB_COPY_PROTECTED,
+            ue.EPUB_TOO_LARGE,
+            ue.EPUB_UNSAFE_PATHS,
+            ue.EPUB_NO_READABLE_CHAPTERS,
+        ],
+    )
+    def test_an_epub_reason_is_stored_as_written(self, reason: str) -> None:
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseError, ParseErrorCode
+
+        indexed_in_process = _wrapped(DocumentProcessingError(reason), ParseError(ParseErrorCode.PARSE_FAILED, reason))
+        via_parsing_service = ParsingClientError(ParseErrorCode.PARSE_FAILED, reason)
+        assert ue.to_user_reason(indexed_in_process) == reason
+        assert ue.to_user_reason(via_parsing_service) == reason
+
+    def test_a_non_text_first_argument_is_not_mistaken_for_a_reason(self) -> None:
+        assert ue.to_user_reason(DocumentProcessingError({"not": "hashable"})) == ue.UNREADABLE_FILE
+
     def test_no_embedding_model(self) -> None:
         exc = _wrapped(
             IndexingError("Failed to get embedding model instance"),

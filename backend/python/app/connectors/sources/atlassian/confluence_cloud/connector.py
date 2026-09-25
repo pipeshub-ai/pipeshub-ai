@@ -787,6 +787,8 @@ class ConfluenceConnector(BaseConnector):
             return None
 
         permissions = await self._fetch_page_permissions(folder_id)
+        if permissions is None:
+            return None
         # Mirror _sync_folders: only drop space inheritance when READ restrictions exist.
         read_permissions = [p for p in permissions if p.type == PermissionType.READ]
         if len(read_permissions) > 0:
@@ -1341,6 +1343,7 @@ class ConfluenceConnector(BaseConnector):
             pagination_token: Optional[str] = None
             total_synced = 0
             total_permissions_synced = 0
+            listing_complete = True
 
             # Paginate through all folders
             while True:
@@ -1366,6 +1369,7 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch folders: {response.status if response else 'No response'}")
+                    listing_complete = False
                     break
 
                 response_data = response.json()
@@ -1394,6 +1398,11 @@ class ConfluenceConnector(BaseConnector):
 
                         # Fetch folder permissions
                         permissions = await self._fetch_page_permissions(item_id)
+                        if permissions is None:
+                            # Saving it without its restrictions would open it to the whole space.
+                            self.logger.warning(f"Skipping folder {item_id} this run: its restrictions could not be read")
+                            listing_complete = False
+                            continue
                         total_permissions_synced += len(permissions)
 
                         # Transform to FileRecord
@@ -1434,7 +1443,12 @@ class ConfluenceConnector(BaseConnector):
                     break
 
             # Update sync checkpoint with current time (only if we synced something)
-            if total_synced > 0:
+            if not listing_complete:
+                self.logger.warning(
+                    f"Keeping the folders checkpoint for space {space_key}: not everything in "
+                    "this window could be read, so the next sync reads it again"
+                )
+            elif total_synced > 0:
                 current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
                 self.logger.info(f"Updated folders sync checkpoint to {current_sync_time}")
@@ -1537,6 +1551,7 @@ class ConfluenceConnector(BaseConnector):
             total_synced = 0
             total_attachments_synced = 0
             total_permissions_synced = 0
+            listing_complete = True
 
             # Paginate through all content items
             while True:
@@ -1584,6 +1599,7 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch {content_type}s: {response.status if response else 'No response'}")
+                    listing_complete = False
                     break
 
                 response_data = response.json()
@@ -1613,6 +1629,11 @@ class ConfluenceConnector(BaseConnector):
 
                         # Fetch page permissions
                         permissions = await self._fetch_page_permissions(item_id)
+                        if permissions is None:
+                            # Saving it without its restrictions would open it to the whole space.
+                            self.logger.warning(f"Skipping {content_type} {item_id} this run: its restrictions could not be read")
+                            listing_complete = False
+                            continue
                         total_permissions_synced += len(permissions)
 
                         # Transform to WebpageRecord with update tracking
@@ -1847,7 +1868,12 @@ class ConfluenceConnector(BaseConnector):
 
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
-            if total_synced > 0:
+            if not listing_complete:
+                self.logger.warning(
+                    f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
+                    "this window could be read, so the next sync reads it again"
+                )
+            elif total_synced > 0:
                 current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
                 self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
@@ -2119,6 +2145,10 @@ class ConfluenceConnector(BaseConnector):
 
                         # Fetch current permissions
                         permissions = await self._fetch_page_permissions(item_id)
+                        if permissions is None:
+                            self.logger.warning(f"Restrictions for {item_id} could not be read; keeping what is stored")
+                            has_failures = True
+                            continue
                         total_permissions += len(permissions)
 
                         # Only set inherit_permissions to False if there are READ restrictions
@@ -2218,7 +2248,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch permissions for space {space_name}: {e}")
             return []  # Return empty list on error, space will be created without permissions
 
-    async def _fetch_page_permissions(self, page_id: str) -> list[Permission]:
+    async def _fetch_page_permissions(self, page_id: str) -> Optional[list[Permission]]:
         """
         Fetch permissions for a Confluence page using v1 API.
 
@@ -2226,7 +2256,8 @@ class ConfluenceConnector(BaseConnector):
             page_id: The page ID
 
         Returns:
-            List of Permission objects
+            List of Permission objects, or None when the restrictions could not be
+            read (callers must not treat that as unrestricted).
         """
         permissions = []
 
@@ -2242,7 +2273,7 @@ class ConfluenceConnector(BaseConnector):
             # Check response
             if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_id}: {response.status if response else 'No response'}")
-                return []
+                return None
 
             response_data = response.json()
             restrictions = response_data.get("results", [])
@@ -2257,7 +2288,7 @@ class ConfluenceConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch permissions for page {page_id}: {e}")
-            return []  # Return empty list on error, page will be created without permissions
+            return None
 
     def _construct_web_url(self, links: dict[str, Any], base_url: str | None = None) -> str | None:
         """
@@ -5124,6 +5155,9 @@ class ConfluenceConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(page_id)
+            if permissions is None:
+                self.logger.warning(f"Restrictions for {page_id} could not be read; reindexing what is stored")
+                return None
             # Only set inherit_permissions to False if there are READ restrictions
             # EDIT-only restrictions should still inherit from space for READ access
             read_permissions = [p for p in permissions if p.type == PermissionType.READ]
@@ -5179,6 +5213,9 @@ class ConfluenceConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(blogpost_id)
+            if permissions is None:
+                self.logger.warning(f"Restrictions for {blogpost_id} could not be read; reindexing what is stored")
+                return None
             # Only set inherit_permissions to False if there are READ restrictions
             # EDIT-only restrictions should still inherit from space for READ access
             read_permissions = [p for p in permissions if p.type == PermissionType.READ]
@@ -5256,7 +5293,8 @@ class ConfluenceConnector(BaseConnector):
                 return None
 
             # Attachments inherit permissions from parent page - fetch page permissions
-            permissions = await self._fetch_page_permissions(parent_page_id)
+            # An unread parent leaves the stored permissions untouched (empty list = no update).
+            permissions = await self._fetch_page_permissions(parent_page_id) or []
 
             return (attachment_record, permissions)
 
@@ -5761,7 +5799,7 @@ class ConfluenceConnector(BaseConnector):
             permissions = []
             if record.parent_external_record_id:
                 try:
-                    permissions = await self._fetch_page_permissions(record.parent_external_record_id)
+                    permissions = await self._fetch_page_permissions(record.parent_external_record_id) or []
                 except Exception as e:
                     self.logger.warning(f"Failed to fetch parent page permissions for comment: {e}")
             

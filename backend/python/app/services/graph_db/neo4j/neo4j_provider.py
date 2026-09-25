@@ -5392,6 +5392,7 @@ class Neo4jProvider(IGraphDBProvider):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -5446,7 +5447,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if not app_doc:
                     continue
                 app_id = app_doc.get('id') or app_doc.get('_key')
-                if not app_id:
+                if not app_id or app_id in exclude_app_ids:
                     continue
                 user_apps_ids.append(app_id)
                 app_type_map[app_id] = app_doc.get('type', '')
@@ -14107,6 +14108,7 @@ class Neo4jProvider(IGraphDBProvider):
         record_group_ids: list[str] | None = None,
         depth: int | None = None,
         transaction: str | None = None,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """
         Unified search for knowledge hub nodes with permission-first traversal.
@@ -14215,7 +14217,9 @@ class Neo4jProvider(IGraphDBProvider):
 
             owned_app_ids = await self.get_user_app_ids(user_key, transaction=transaction)
             shared_app_ids = await self.get_user_permission_app_ids(user_key, org_id, transaction=transaction)
-            user_accessible_app_ids = list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))
+            user_accessible_app_ids = [
+                a for a in dict.fromkeys([*owned_app_ids, *shared_app_ids]) if a not in exclude_app_ids
+            ]
             params["user_accessible_app_ids"] = user_accessible_app_ids
 
             # Build children intersection cypher (only for kb/recordGroup/record/folder parents)

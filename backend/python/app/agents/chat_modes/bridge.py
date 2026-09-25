@@ -62,6 +62,11 @@ from app.agents.chat_modes.policy import (
 )
 from app.agents.chat_modes.prefetch import prefetch_retrieval
 from app.config.constants.service import config_node_constants
+from app.modules.demo_data.chat import (
+    demo_exclusions_for_run,
+    exclude_from_query,
+    exclude_from_state,
+)
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.streaming import create_sse_event, handle_simple_mode
@@ -373,7 +378,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         # of it sits before the first streamed byte -- run it as one wave. The
         # SQL and Slack checks used to issue the SAME `get_user_connector_
         # instances` query twice; they now share one result.
-        connector_instances, web_search_config, resolved_attachments, available_connectors = (
+        connector_instances, web_search_config, resolved_attachments, available_connectors, demo_excluded = (
             await asyncio.gather(
                 fetch_user_connector_instances(
                     graph_provider, user_info["userId"], user_info["orgId"], log,
@@ -393,6 +398,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     org_id=user_info.get("orgId", ""),
                     log=log,
                 ) if policy.has_knowledge else _none(),
+                demo_exclusions_for_run(graph_provider, config_service, user_info, log),
             )
         )
         has_sql_connector = connector_instances_have_sql(connector_instances)
@@ -405,6 +411,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             existing_kb = list(filters.get("kb") or [])
             filters["kb"] = list({*existing_kb, *resolved_attachments.virtual_record_ids})
         query_info = {**query_info, "filters": filters, "chatMode": policy.loop_chat_mode}
+        query_info = exclude_from_query(query_info, demo_excluded)
 
         chat_state = build_initial_state(
             query_info, user_info, llm, log, retrieval_service, graph_provider,
@@ -420,6 +427,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         # when this key is present.
         if available_connectors is not None:
             chat_state["available_connectors"] = available_connectors
+        exclude_from_state(chat_state, demo_excluded)
     except Exception as exc:
         log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_exception(exc)

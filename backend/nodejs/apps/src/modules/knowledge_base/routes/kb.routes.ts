@@ -23,6 +23,8 @@ import {
   createFolder,
   getKnowledgeHubNodes,
   moveRecord,
+  getDemoDataStatus,
+  setDemoDataPreference,
 } from '../controllers/kb_controllers';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -45,6 +47,7 @@ import {
   listKnowledgeBasesSchema,
   reindexRecordSchema,
   moveRecordSchema,
+  demoDataPreferenceSchema,
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -187,6 +190,22 @@ export function createKnowledgeBaseRouter(
     requireScopes(OAuthScopeNames.KB_READ),
     ValidationMiddleware.validate(listKnowledgeBasesSchema),
     listKnowledgeBases(appConfig),
+  );
+
+  // Each person's switch for the Acme Corp demo data
+  router.get(
+    '/demo-data/status',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
+    getDemoDataStatus(appConfig),
+  );
+
+  router.put(
+    '/demo-data/preference',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
+    ValidationMiddleware.validate(demoDataPreferenceSchema),
+    setDemoDataPreference(appConfig),
   );
 
   // Knowledge Hub unified browse API - Root

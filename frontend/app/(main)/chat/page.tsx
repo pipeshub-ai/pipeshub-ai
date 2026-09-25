@@ -4,7 +4,7 @@ import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useSta
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
-import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
+import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
@@ -48,6 +48,7 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import {
@@ -798,6 +799,10 @@ function ChatContent() {
           useChatStore.getState().updateSlot(activeSlotId, {
             isInitialized: true,
           });
+          // The API client already explains HTTP failures in its own toast.
+          if (!isProcessedError(error) && useServicesHealthStore.getState().apiServerReachable) {
+            toast.error(t('chat.toasts.loadConversationFailed'));
+          }
         }
       }
     };
@@ -807,7 +812,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId]);
+  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
 
   // When sidebar/list rows arrive after the URL+slot are ready, backfill
   // `modelInfo` from GET /conversations (before history fetch completes)
@@ -1021,6 +1026,8 @@ function ChatContent() {
   const profile = useUserStore((s) => s.profile);
   const isAdmin = useUserStore(selectIsAdmin);
   const demoDataActive = useDemoDataActive();
+  // Unknown reads as shown, as before the switch existed.
+  const demoHidden = useDemoDataStatus()?.include === false;
   const greetingName = useMemo(() => {
     if (!profile) return '';
     const full = profile.fullName?.trim();
@@ -1410,12 +1417,13 @@ function ChatContent() {
                     <ChatInputWrapper />
                   </Box>
                 )}
-                {showChatInput && (
+                {showChatInput && !demoHidden && (
                   // Shows itself only when it applies, including for a disabled demo
-                  // whose records are still searchable.
+                  // whose records are still searchable. Not while this admin has it hidden:
+                  // it would say their answers include it.
                   <DemoDataRemovalNotice isAdmin={isAdmin} style={{ marginTop: 'var(--space-5)' }} />
                 )}
-                {demoDataActive && showChatInput && (
+                {demoDataActive && showChatInput && !demoHidden && (
                   <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />
                 )}
               </Flex>

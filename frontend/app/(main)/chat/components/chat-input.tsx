@@ -843,10 +843,10 @@ export function ChatInput({
     // (otherwise the send button would be stuck), but the user has
     // already seen a toast per failed upload and the chip exposes a
     // retry icon if they want to recover.
-    if ((message.trim() || uploadedFiles.length > 0) && onSend) {
-      const refs = uploadedFiles
-        .filter((f) => f.status === 'uploaded' && f.ref)
-        .map((f) => f.ref!);
+    const refs = uploadedFiles
+      .filter((f) => f.status === 'uploaded' && f.ref)
+      .map((f) => f.ref!);
+    if ((message.trim() || refs.length > 0) && onSend) {
       onSend(message, refs.length > 0 ? refs : undefined);
       setMessage('');
       setUploadedFiles([]);
@@ -1264,7 +1264,8 @@ export function ChatInput({
     setShowUploadArea(next);
   };
 
-  const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
+  const hasContent =
+    message.trim() || uploadedFiles.some((f) => f.status === 'uploaded') || isListening;
   const hasUploadingAttachments = uploadedFiles.some((f) => f.status === 'uploading');
   const canSubmit =
     (hasContent || activeMessageAction !== null) &&
@@ -1425,6 +1426,7 @@ export function ChatInput({
               size="2"
               onClick={handleSubmit}
               disabled={!canSubmit}
+              aria-label={t('chat.sendMessage', { defaultValue: 'Send message' })}
               style={{
                 margin: 0,
                 backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',
@@ -2445,6 +2447,7 @@ export function ChatInput({
               size="2"
               onClick={handleSubmit}
               disabled={!canSubmit}
+              aria-label={t('chat.sendMessage', { defaultValue: 'Send message' })}
               style={{
                 margin: 0,
                 backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',

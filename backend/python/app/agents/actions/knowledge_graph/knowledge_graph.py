@@ -21,6 +21,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder
@@ -450,6 +451,7 @@ class KnowledgeGraph:
                     folder_mime_types=FOLDER_MIME_TYPES,
                     agent_connector_ids=connector_ids,
                     frontend_url=frontend_url,
+                    excluded_app_ids=excluded_app_ids(state),
                 )
                 result = await resolver.resolve_many([node_id])
                 if result.matches:
@@ -461,6 +463,7 @@ class KnowledgeGraph:
             user_key=user_key,
             org_id=org_id,
             frontend_url=frontend_url,
+            excluded_app_ids=excluded_app_ids(state),
         )
 
         app_names = {c.id: c.name for c in catalog.connectors}
@@ -599,6 +602,7 @@ class KnowledgeGraph:
             agent_connector_ids=connector_ids,
             connector_name_hint=connector_name,
             frontend_url=await resolve_frontend_url(state.get("config_service")),
+            excluded_app_ids=excluded_app_ids(state),
         )
 
         try:

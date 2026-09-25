@@ -2985,6 +2985,7 @@ class IGraphDBProvider(ABC):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -3014,6 +3015,8 @@ class IGraphDBProvider(ABC):
             raise_on_error: raise when any part of the permission read fails,
                 instead of leaving that part out. Without it, a failed read and a
                 user who can reach nothing both return {}.
+            exclude_app_ids: apps to leave out even where the user has access,
+                e.g. the Acme Corp demo for someone who switched it off.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
@@ -4294,6 +4297,7 @@ class IGraphDBProvider(ABC):
         record_group_ids: list[str] | None = None,
         depth: int | None = None,
         transaction: str | None = None,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """
         Unified search for knowledge hub nodes with permission-first traversal.

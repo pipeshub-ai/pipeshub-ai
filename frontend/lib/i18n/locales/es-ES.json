@@ -522,6 +522,7 @@
     "heyUser": "Hola, {{name}} 👋",
     "heyUserDefaultName": "amigo",
     "askAnything": "Pregunta lo que quieras...",
+    "sendMessage": "Enviar mensaje",
     "quick": "Rápido",
     "listening": "Escuchando...",
     "voiceInputNotSupported": "La entrada de voz no es compatible con este navegador",
@@ -655,7 +656,8 @@
       "editComingSoonTitle": "Próximamente",
       "editComingSoonDescription": "Estamos desarrollando soporte para editar",
       "deprecatedTools": "Este agente tiene herramientas que ya no están disponibles. Abre el Agent Builder para eliminarlas.",
-      "openAgentBuilder": "Abrir Agent Builder"
+      "openAgentBuilder": "Abrir Agent Builder",
+      "loadConversationFailed": "No pudimos abrir esta conversación. Recarga la página para intentarlo de nuevo."
     },
     "queryModes": {
       "chat": {

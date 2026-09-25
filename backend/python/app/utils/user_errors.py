@@ -88,6 +88,38 @@ STORED_CONTENT_DAMAGED = (
     "This file's processed contents are missing or damaged. Try Reindex; if that fails, "
     "upload the file again."
 )
+EPUB_UNREADABLE = (
+    "We couldn't open this e-book. It may be damaged or not really an EPUB file. "
+    "Check that it opens in an e-book reader, save a fresh copy from there, and upload it again."
+)
+EPUB_COPY_PROTECTED = (
+    "This book is copy-protected (DRM), so it can't be indexed. Upload a copy without "
+    "copy protection, such as one from the publisher or author."
+)
+EPUB_TOO_LARGE = (
+    "This e-book is too large to index: it unpacks to more data or more files than PipesHub "
+    "reads from one book. Split it into smaller books, or remove large pictures, and upload it again."
+)
+EPUB_UNSAFE_PATHS = (
+    "This e-book contains files stored outside the book's own folder, so PipesHub didn't open it. "
+    "Save a fresh copy from an e-book app and upload that."
+)
+EPUB_NO_READABLE_CHAPTERS = (
+    "This e-book has no chapters we could read. Check that it opens in an e-book reader, "
+    "save a fresh copy from there, and upload it again."
+)
+
+
+# Written for people by the code that raised them, and more specific than any
+# reason derived from the exception type, so they are stored as they are.
+_STORED_AS_WRITTEN = frozenset({
+    SCANNED_DOCUMENT_NEEDS_OCR,
+    EPUB_UNREADABLE,
+    EPUB_COPY_PROTECTED,
+    EPUB_TOO_LARGE,
+    EPUB_UNSAFE_PATHS,
+    EPUB_NO_READABLE_CHAPTERS,
+})
 
 
 def unsupported_file_type(extension: str | None) -> str:
@@ -298,8 +330,8 @@ def to_user_reason(exc: BaseException | None) -> str:
             return unsupported_file_type(details.get("extension"))
         if _llm_not_configured(e):
             return str(e)
-        if e.args and e.args[0] == SCANNED_DOCUMENT_NEEDS_OCR:
-            return SCANNED_DOCUMENT_NEEDS_OCR
+        if e.args and isinstance(e.args[0], str) and e.args[0] in _STORED_AS_WRITTEN:
+            return e.args[0]
         if isinstance(e, EmbeddingNotConfiguredError):
             return EMBEDDING_NOT_CONFIGURED
 

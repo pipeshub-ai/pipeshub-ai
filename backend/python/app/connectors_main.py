@@ -21,6 +21,7 @@ from app.edition_config import (
     sharing_router,
 )
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.modules.demo_data.router import demo_data_router
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
@@ -880,6 +881,7 @@ app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
+app.include_router(demo_data_router)
 app.include_router(connector_router)
 if oauth_apps_router is not None:
     app.include_router(oauth_apps_router)

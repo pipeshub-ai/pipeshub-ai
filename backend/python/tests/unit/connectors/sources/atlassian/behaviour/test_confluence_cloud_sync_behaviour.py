@@ -282,14 +282,6 @@ class TestPageSync:
         assert edit_only.inherit_permissions is True, "an edit-only restriction does not hide the page from space members"
         assert {p.type for p in db.record_permissions["11"]} == {PermissionType.WRITE}
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when the page-restriction "
-            "lookup fails (rate limit or server error) the page is saved with no restrictions and "
-            "so becomes visible to everyone who can see the space."
-        ),
-    )
     async def test_a_failed_restriction_lookup_never_opens_a_page_to_the_whole_space(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10")])
         api.on("GET", f"{V1}/content/10/restriction", json_response({"message": "rate limited"}, status=429))
@@ -309,14 +301,6 @@ class TestPageSync:
 
         assert {"10", "12"} <= set(db.records) and "11" not in db.records
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when a later page of the "
-            "listing fails, the checkpoint still moves to 'now', so the pages never fetched are "
-            "skipped by every later incremental sync."
-        ),
-    )
     async def test_a_failed_listing_page_does_not_move_the_checkpoint(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10")], cursor="C2")
         search.by_cursor["C2"] = json_response({"message": "Service Unavailable"}, status=503)
@@ -325,6 +309,17 @@ class TestPageSync:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         assert checkpoints.values_for("confluence_pages/ENG") is None
+
+    async def test_a_failed_folder_listing_page_does_not_move_the_folder_checkpoint(self, api, db, checkpoints, search) -> None:
+        folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
+        search.by_cursor[None] = search_page([folder], cursor="C2")
+        search.by_cursor["C2"] = json_response({"message": "Service Unavailable"}, status=503)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_folders("ENG")
+
+        assert "500" in db.records
+        assert checkpoints.values_for("confluence_folders/ENG") is None
 
     @pytest.mark.xfail(
         strict=True,

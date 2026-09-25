@@ -15076,6 +15076,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_group_ids: list[str] | None = None,
         depth: int | None = None,
         transaction: str | None = None,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """
         Unified search for knowledge hub nodes with permission-first traversal.
@@ -15175,7 +15176,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         owned_app_ids = await self.get_user_app_ids(user_key, transaction)
         shared_app_ids = await self.get_user_permission_app_ids(user_key, org_id, transaction)
-        bind_vars["user_accessible_apps"] = list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))
+        bind_vars["user_accessible_apps"] = [
+            a for a in dict.fromkeys([*owned_app_ids, *shared_app_ids]) if a not in exclude_app_ids
+        ]
 
         children_intersection_aql = self._build_children_intersection_aql(
             parent_id, parent_type, depth=depth
@@ -19879,6 +19882,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -19917,6 +19921,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         try:
             user_apps_ids = await self._get_user_app_ids(user_id, org_id, raise_on_error=raise_on_error)
+            if exclude_app_ids:
+                user_apps_ids = [aid for aid in user_apps_ids if aid not in exclude_app_ids]
 
             if not user_apps_ids:
                 self.logger.warning(f"User {user_id} has no accessible apps")

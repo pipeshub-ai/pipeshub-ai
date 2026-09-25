@@ -460,14 +460,6 @@ def acl_summary(permissions: list[Any]) -> list[tuple[str, str, Optional[str], O
 
 
 class TestAccessControlSafety:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a temporary error while "
-            "reading a group's members saves the group with no members, which removes everyone's "
-            "access through that group until a later sync succeeds."
-        ),
-    )
     async def test_a_failed_member_lookup_does_not_empty_the_group(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         connector, _ = await make_connector(db, store)
@@ -480,14 +472,19 @@ class TestAccessControlSafety:
 
         assert sorted(m.email for m in db.groups_saved["devs"]) == before
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a temporary error while "
-            "reading a project's permission scheme saves the project with an empty access list, "
-            "which hides all its issues from every user until a later sync succeeds."
-        ),
-    )
+    async def test_a_failed_member_lookup_keeps_the_roles_that_include_the_group(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, notes = await make_connector(db, store)
+        await connector.run_sync()
+        before = sorted(m.email for m in db.app_roles["ENG_10002"])
+        assert "alice@example.com" in before, "alice is in the role only through the devs group"
+
+        jira.on("GET", f"{API}/group/member", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == before
+        assert any("couldn't sync project roles" in t for t in notes.titles())
+
     async def test_a_failed_permission_scheme_read_does_not_wipe_the_project_acl(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         connector, _ = await make_connector(db, store)
@@ -499,6 +496,17 @@ class TestAccessControlSafety:
         await connector.run_sync()
 
         assert acl_summary(db.record_group_permissions["10000"]) == before
+
+    async def test_an_unreadable_permission_scheme_still_syncs_the_projects_issues(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert "10000" not in db.record_group_permissions, "no empty access list is written"
+        assert "1001" in db.records
 
     async def test_forbidden_permission_scheme_falls_back_to_the_configuring_user(self, jira, db, store, search) -> None:
         stub_site(jira, search)
@@ -640,14 +648,6 @@ class TestDeletions:
         assert "1002" in db.records
         assert any("audit log permission" in t for t in notes.titles())
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when reading the audit log "
-            "fails (for example a 500 or a 429), the deletion checkpoint still moves forward, so "
-            "issues deleted in that window stay searchable forever."
-        ),
-    )
     async def test_a_failed_audit_read_does_not_skip_past_those_deletions(self, jira, db, store, search, monkeypatch) -> None:
         connector, before = await self._synced_with_audit_checkpoint(jira, db, store, search, monkeypatch)
         jira.on("GET", "/rest/auditing/1.0/events", json_response({}, status=500))
@@ -656,14 +656,6 @@ class TestDeletions:
 
         assert store.values_for("issues_audit_deletions") == before
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when the Jira account may not "
-            "read the audit log (403), the owner is warned but the deletion checkpoint still moves "
-            "forward, so deletions in that window are never applied even after the permission is granted."
-        ),
-    )
     async def test_a_forbidden_audit_read_does_not_skip_past_those_deletions(self, jira, db, store, search, monkeypatch) -> None:
         connector, before = await self._synced_with_audit_checkpoint(jira, db, store, search, monkeypatch)
         jira.on("GET", "/rest/auditing/1.0/events", json_response({}, status=403))
@@ -888,14 +880,6 @@ class TestRoleActors:
 
 
 class TestGroupMemberPaging:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: reading a group's members stops "
-            "at the first page shorter than the requested size even when Jira says more pages follow "
-            "(isLast is false), so members on later pages lose the access the group gives them."
-        ),
-    )
     async def test_members_on_later_pages_are_read_when_jira_says_more_follow(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         pages = {

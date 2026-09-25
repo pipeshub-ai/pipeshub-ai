@@ -474,14 +474,6 @@ class TestPartialFailures:
 
         assert "p1" in records_db.records
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when a later page of the "
-            "listing fails, the checkpoint still moves to 'now', so the pages that were never "
-            "fetched are skipped by every later incremental sync."
-        ),
-    )
     async def test_a_failed_listing_page_does_not_move_the_checkpoint_past_unfetched_pages(
         self, atlassian_api, records_db, checkpoints, search
     ) -> None:

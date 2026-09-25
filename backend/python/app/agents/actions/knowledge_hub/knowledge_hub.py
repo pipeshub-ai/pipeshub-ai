@@ -11,6 +11,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.agents.actions.util.tool_summaries import bullet_list, parse_json_maybe
@@ -270,6 +271,7 @@ class KnowledgeHub:
             service = KnowledgeHubService(
                 logger=logger_instance,
                 graph_provider=graph_provider,
+                excluded_app_ids=excluded_app_ids(self.state),
             )
 
             # ── Security boundary: ALWAYS restrict to agent's configured sources ──

@@ -5096,6 +5096,27 @@ components:
         eventPublished:
           type: boolean
 
+    DemoDataStatus:
+      type: object
+      required: [hasDemo, include, chosen, realData, demoConnectorIds]
+      properties:
+        hasDemo:
+          type: boolean
+          description: Whether the organization has the Acme Corp demo connector.
+        include:
+          type: boolean
+          description: Whether the demo reaches the caller's answers, search and listings.
+        chosen:
+          type: boolean
+          nullable: true
+          description: The caller's own choice; null while they use the default.
+        realData:
+          type: boolean
+          description: Whether any source other than the demo has indexed records.
+        demoConnectorIds:
+          type: array
+          items:
+            type: string
     UploadLimitsResponseSchema:
       type: object
       additionalProperties: false
@@ -24860,6 +24881,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UploadLimitsResponseSchema'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/demo-data/status:
+    get:
+      tags:
+        - Knowledge Base
+      summary: Get your Acme Corp demo data setting
+      description: |
+        Whether the bundled Acme Corp demo data reaches the caller's answers,
+        search and record listings. Each person chooses for themselves; until
+        they do, the demo is on while the organization has no indexed data of
+        its own and off once it has.
+      operationId: getDemoDataStatus
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      responses:
+        '200':
+          description: The caller's demo data setting
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoDataStatus'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/demo-data/preference:
+    put:
+      tags:
+        - Knowledge Base
+      summary: Show or hide the Acme Corp demo data for yourself
+      description: |
+        Sets the caller's own choice. `include: null` goes back to the default.
+        Affects only the caller; nothing is deleted.
+      operationId: setDemoDataPreference
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [include]
+              properties:
+                include:
+                  type: boolean
+                  nullable: true
+      responses:
+        '200':
+          description: The caller's setting after the change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoDataStatus'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
           content:

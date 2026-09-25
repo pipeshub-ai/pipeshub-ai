@@ -540,6 +540,7 @@
     "heyUser": "你好，{{name}} 👋",
     "heyUserDefaultName": "朋友",
     "askAnything": "随便问点什么…",
+    "sendMessage": "发送消息",
     "quick": "快速",
     "listening": "正在聆听…",
     "voiceInputNotSupported": "此浏览器不支持语音输入",
@@ -697,7 +698,8 @@
       "editComingSoonTitle": "即将推出",
       "editComingSoonDescription": "我们正在开发编辑功能",
       "deprecatedTools": "此智能体包含已不可用的工具。请打开智能体构建器将其移除。",
-      "openAgentBuilder": "打开智能体构建器"
+      "openAgentBuilder": "打开智能体构建器",
+      "loadConversationFailed": "无法打开此对话。请刷新页面后重试。"
     },
     "queryModes": {
       "chat": {

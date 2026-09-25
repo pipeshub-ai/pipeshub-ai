@@ -25,6 +25,11 @@ vi.mock('@/app/(main)/workspace/connectors/demo-data/use-restricted-question', (
   useRestrictedQuestionAccess: vi.fn(),
 }));
 
+const hideDemo = vi.fn();
+vi.mock('@/app/(main)/workspace/connectors/demo-data/use-demo-switch', () => ({
+  useDemoSwitch: () => ({ hideWithUndo: hideDemo, busy: false }),
+}));
+
 const access = vi.mocked(useRestrictedQuestionAccess);
 const questions = Object.values(en.chat.demoSuggestions).map((q) => q.text);
 const pricing = en.chat.demoSuggestions['5'].text;
@@ -99,5 +104,14 @@ describe('DemoSuggestions', () => {
     fireEvent.click(screen.getByText(pricing));
 
     expect(onPick).toHaveBeenCalledWith({ id: '5', text: pricing, icons: en.chat.demoSuggestions['5'].icons });
+  });
+
+  it('lets the person hide the demo from the landing itself', () => {
+    access.mockReturnValue(null);
+    renderSuggestions();
+
+    fireEvent.click(screen.getByRole('button', { name: en.chat.demoHide }));
+
+    expect(hideDemo).toHaveBeenCalledTimes(1);
   });
 });

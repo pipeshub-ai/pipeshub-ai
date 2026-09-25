@@ -1,28 +1,42 @@
+import asyncio
 from typing import Any
 
+from app.modules.parsers.epub.epub_reader import read_epub
 from app.services.parsing.interface import (
     IParser,
+    ParseError,
+    ParseErrorCode,
     ParseResult,
-    UnsupportedFormatError,
 )
-from app.utils.user_errors import unsupported_file_type
 
 
 class EPUBParser:
-    """Parser for EPUB e-books: reports every book as an unsupported format.
+    """Parser for EPUB e-books.
 
-    EPUB used to be converted to PDF with LibreOffice, but LibreOffice cannot
-    open EPUB in any release (its only EPUB filter exports). That failure came
-    back as a server error, which the indexer retried and counted against the
-    parsing circuit breaker, so a few books could stall every other file.
-    Until EPUB is read directly, each book fails once with a plain reason.
+    Reads the book's chapters in reading order into one HTML document (see
+    :mod:`app.modules.parsers.epub.epub_reader`) and hands it to the configured
+    HTML parser, so an EPUB produces the same blocks as the equivalent HTML
+    file. LibreOffice is not involved: it can write EPUB but cannot open it.
     """
 
-    def __init__(self, pdf_parser: IParser | None = None) -> None:
-        # Kept so the parsing service's registration is unchanged.
-        self.pdf_parser = pdf_parser
+    def __init__(self, html_parser: IParser | None = None) -> None:
+        self.html_parser = html_parser
 
     async def parse(
         self, content: bytes, record_name: str, config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        raise UnsupportedFormatError("epub", unsupported_file_type("epub"))
+        if self.html_parser is None:
+            raise ParseError(
+                ParseErrorCode.PROVIDER_UNAVAILABLE,
+                "EPUB parsing requires an html_parser; none was configured",
+            )
+        book = await asyncio.to_thread(read_epub, content)
+        result = await self.html_parser.parse(book.to_html().encode("utf-8"), record_name, config)
+        result.metadata.update({
+            "title": book.metadata.title,
+            "authors": book.metadata.authors,
+            "language": book.metadata.language,
+            "epub_version": book.version,
+            "chapter_count": len(book.chapter_bodies),
+        })
+        return result

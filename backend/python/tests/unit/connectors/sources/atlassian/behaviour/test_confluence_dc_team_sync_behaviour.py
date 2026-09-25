@@ -308,14 +308,6 @@ class TestUsersAndGroups:
 
         assert {g.name for g, _ in db.user_groups} == {f"g{i}" for i in range(51)}
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when Confluence fails to "
-            "return a group's member list, the group is saved with no members, which removes "
-            "everyone's access through that group until a later sync succeeds."
-        ),
-    )
     async def test_a_failed_member_listing_does_not_empty_the_group(self, atlassian_api, db, store) -> None:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {"eng": [user("alice", "alice@example.com")]})
@@ -414,14 +406,6 @@ class TestPageRestrictions:
         assert db.records["open"].inherit_permissions is True
         assert db.record_permissions["open"] == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: if Confluence fails to "
-            "answer the page-restriction lookup, the page is saved as open to the whole space, "
-            "so a restricted page becomes visible to everyone in that space."
-        ),
-    )
     async def test_a_failed_restriction_lookup_does_not_open_up_a_restricted_page(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
@@ -436,14 +420,32 @@ class TestPageRestrictions:
 
         assert db.records["p1"].inherit_permissions is False
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: attachments and comments "
-            "of a restricted page still inherit access from the space, so everyone in the space "
-            "can find a restricted page's files and comments."
-        ),
-    )
+    async def test_a_new_page_with_unreadable_restrictions_waits_for_the_next_sync(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1", attachments=[attachment("att1")]), content("open")]))
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", json_response({"message": "busy"}, status=503))
+
+        await connector.run_sync()
+
+        assert "p1" not in db.records and "att1" not in db.records
+        assert "open" in db.records
+        assert store.values_for("confluence_pages/ENG") is None, "the window is read again next time"
+
+    async def test_reindex_with_unreadable_restrictions_keeps_the_stored_access(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
+        search.add("page", 0, listing([content("p1")]))
+        restriction = f"{API}/content/p1/restriction/relevantViewRestrictions"
+        atlassian_api.on("GET", restriction, restricted_to(users=[{"userKey": "alice"}]))
+        await connector.run_sync()
+        atlassian_api.on("GET", f"{API}/content/p1", content("p1", version=2))
+        atlassian_api.on("GET", restriction, json_response({"message": "busy"}, status=503))
+
+        await connector.reindex_records([db.records["p1"]])
+
+        assert db.content_updates == [] and db.permission_updates == []
+        assert [r.external_record_id for r in db.reindexed] == ["p1"]
+
     async def test_files_and_comments_of_a_restricted_page_stay_restricted(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
@@ -457,14 +459,6 @@ class TestPageRestrictions:
         assert db.records["att1"].inherit_permissions is False
         assert db.records["c1"].inherit_permissions is False
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a page restricted to a "
-            "group that Data Center identifies only by name loses that restriction and is "
-            "saved as open to the whole space."
-        ),
-    )
     async def test_page_restricted_to_a_group_named_only_by_name_stays_restricted(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [], {"finance": []})
@@ -505,14 +499,6 @@ class TestContentSync:
         assert {k: r.id for k, r in db.records.items()} == ids_before, "updated in place, no duplicates"
         assert db.records["p1"].external_revision_id == "2"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when a later page of the "
-            "listing fails, the checkpoint still moves to 'now', so the pages that were never "
-            "fetched are skipped by every later incremental sync."
-        ),
-    )
     async def test_a_failed_listing_page_does_not_move_the_checkpoint(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         search.add("page", 0, listing([content("p1")], next_start=1))
@@ -624,14 +610,6 @@ class TestAuditLogRestrictionChanges:
 
         assert audit_key(store)["last_sync_time_ms"] == clock
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: if the audit log itself "
-            "cannot be read, the connector treats it as 'no changes' and moves its clock "
-            "forward, so restriction changes made in that window are never applied."
-        ),
-    )
     async def test_an_unreadable_audit_log_does_not_move_the_audit_clock(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         await connector.run_sync()
@@ -679,6 +657,9 @@ class TestReindex:
         assert (updated["c2file"].parent_external_record_id, updated["c2file"].parent_record_type) == ("c2", RecordType.COMMENT)
         restricted = {r.external_record_id for r, perms in db.permission_updates if [p.email for p in perms] == ["alice@example.com"]}
         assert restricted == {"p1", "c2", "att1", "c2file"}
+        assert all(updated[k].inherit_permissions is False for k in ("c2", "att1", "c2file")), (
+            "a restricted page's files and comments do not pick up the space's access on reindex"
+        )
         assert [r.external_record_id for r in db.reindexed] == ["b1"]
 
     async def test_comment_attachment_resolves_its_page_through_the_comment(self, atlassian_api, db, store, search) -> None:
@@ -900,14 +881,6 @@ class TestCommentsDeep:
 
 
 class TestSpaceGrantFailures:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a failed space-permission "
-            "lookup saves the space with no grants, and saving a space replaces its old grants, "
-            "so everyone loses access to the whole space until a later sync succeeds."
-        ),
-    )
     async def test_a_failed_space_permission_lookup_keeps_existing_access(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {})

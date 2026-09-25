@@ -814,6 +814,44 @@ class TestGetPdfConversionInfo:
         assert name == "My Book"
         assert ext == "epub"
 
+    @pytest.mark.asyncio
+    async def test_epub_preview_is_refused_plainly_without_starting_libreoffice(self) -> None:
+        from app.connectors.api.router import convert_buffer_to_pdf_stream
+        from app.utils.user_messages import EPUB_PREVIEW_UNAVAILABLE
+        with patch("asyncio.create_subprocess_exec", AsyncMock()) as spawn:
+            with pytest.raises(HTTPException) as caught:
+                await convert_buffer_to_pdf_stream(b"PK\x03\x04 a book", "My Book", "epub")
+        assert caught.value.status_code == 422
+        assert caught.value.detail == EPUB_PREVIEW_UNAVAILABLE
+        spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored_in_blob_storage", [True, False])
+    async def test_epub_preview_is_refused_before_fetching_the_file(self, stored_in_blob_storage: bool) -> None:
+        from app.connectors.api import router as router_module
+        from app.models.entities import RecordType
+        from app.utils.user_messages import EPUB_PREVIEW_UNAVAILABLE
+        record = MagicMock()
+        record.record_name = "book.epub"
+        record.mime_type = "application/epub+zip"
+        record.record_type = RecordType.ARTIFACT if stored_in_blob_storage else RecordType.FILE
+        record.connector_name = "DRIVE"
+        graph_provider = AsyncMock()
+        graph_provider.get_document.side_effect = HTTPException(status_code=502, detail="graph down")
+        failed_fetch = AsyncMock(side_effect=HTTPException(status_code=502, detail="storage down"))
+        with patch.object(router_module, "_stream_artifact_from_storage", failed_fetch), \
+             patch.object(router_module, "_invoke_connector_stream", failed_fetch):
+            with pytest.raises(HTTPException) as caught:
+                await router_module._resolve_record_content_response(
+                    record=record, org_id="o", user_id="u", is_admin=False,
+                    convert_to="application/pdf", version=None, request=MagicMock(),
+                    config_service=MagicMock(), graph_provider=graph_provider,
+                )
+        assert caught.value.status_code == 422
+        assert caught.value.detail == EPUB_PREVIEW_UNAVAILABLE
+        failed_fetch.assert_not_called()
+        graph_provider.get_document.assert_not_called()
+
 
 # ============================================================================
 # get_all_oauth_configs — lines 6825-6826
