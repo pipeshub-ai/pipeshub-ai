@@ -27,6 +27,7 @@ from app.connectors.core.sync.sync_coordinator import (
     SyncLease,
     _safe_limit,
     get_coordinator,
+    stop_wait_sec,
 )
 from app.connectors.core.sync.sync_runner import run_sync_task
 from app.connectors.core.sync.task_manager import reindex_task_manager
@@ -47,7 +48,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Bounded because this runs inline in the sync consumer loop: a longer wait
 # stalls every other connector's events behind one delete.
-_REMOTE_STOP_WAIT_SEC = float(os.getenv("CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC", "15"))
 
 
 def _message_timestamp_ms(payload: dict[str, Any]) -> int | None:
@@ -504,6 +504,25 @@ class EventService:
             return True
 
         if admission is Admission.HELD_ELSEWHERE:
+            # A request made before the running sync was admitted is served by
+            # it. Recording it anyway turned every duplicate of an event already
+            # consumed -- two drains publishing the same queued connector, a
+            # re-publish of a request that was merely slow to arrive -- into a
+            # second, back-to-back sync.
+            held_since_ms = getattr(coordinator, "held_since_ms", None)
+            held_since = held_since_ms(connector_id) if callable(held_since_ms) else None
+            requested_at = _message_timestamp_ms(payload)
+            if (
+                not full_sync
+                and isinstance(held_since, int)
+                and requested_at is not None
+                and requested_at <= held_since
+            ):
+                self.logger.info(
+                    f"Resync for {connector_id} predates the sync already running; "
+                    "that sync serves it"
+                )
+                return True
             # The request is carried only by this event, so persist the intent
             # rather than dropping it. Without this a resync asked for while one
             # is running is acked and forgotten, with nothing to tell the caller
@@ -561,11 +580,15 @@ class EventService:
         if connector_doc and (
             connector_doc.get(ConnectorStateKeys.IS_ACTIVE) is False
             or connector_doc.get(ConnectorStateKeys.IS_AUTHENTICATED) is False
+            or connector_doc.get("status") == "DELETING"
         ):
             self.logger.warning(
                 f"Skipping {connector_name} sync for {connector_id}: connector is "
-                "disabled or requires re-authentication"
+                "disabled, being deleted, or requires re-authentication"
             )
+            # A queue entry for it is owed nothing now; left QUEUED, every drain
+            # would publish it again.
+            await self._drop_queued_intent(connector_id, connector_doc)
             # Acked, not retried: this is a deliberate state, so redelivering
             # would stall the partition behind a connector that will never run.
             # Re-enabling publishes a fresh event.
@@ -595,6 +618,13 @@ class EventService:
             self.logger.info(f"Connector {connector_id} has pendingFullSync flag set, will perform full sync")
 
         self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {effective_full_sync} (payload: {full_sync}, pending: {pending_full_sync})")
+
+        if lease.stop_requested.is_set():
+            # Stopped while _ensure_connector ran. The full-sync prep below is
+            # destructive (sync points and edges), and the caller was already
+            # told the sync stopped.
+            self.logger.info(f"Sync for {connector_id} stopped before it started")
+            return True, False
 
         if effective_full_sync:
             # No "is one already running" check here: begin() above already
@@ -770,7 +800,8 @@ class EventService:
             self.logger.error(f"Could not request stop for {connector_id}: {e}")
             return True
 
-        deadline = time.monotonic() + _REMOTE_STOP_WAIT_SEC
+        wait_sec = stop_wait_sec(self.logger)
+        deadline = time.monotonic() + wait_sec
         while time.monotonic() < deadline:
             await asyncio.sleep(0.5)
             try:
@@ -782,7 +813,7 @@ class EventService:
         self.logger.warning(
             "Connector %s was still syncing on another process after %ss; "
             "continuing anyway",
-            connector_id, _REMOTE_STOP_WAIT_SEC,
+            connector_id, wait_sec,
         )
         return False
 
@@ -796,6 +827,24 @@ class EventService:
         frees. Without the status the connector would sit showing IDLE with a
         sync pending, which reads as the request having been dropped.
         """
+        # A disabled, signed-out or deleting connector must not be parked: no
+        # start would ever run it, and every drain would publish it again.
+        try:
+            doc = await self.graph_provider.get_document(
+                document_key=connector_id, collection=CollectionNames.APPS.value
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not read {connector_id} before queueing it: {e}")
+            doc = None
+        if isinstance(doc, dict) and (
+            doc.get(ConnectorStateKeys.IS_ACTIVE) is False
+            or doc.get(ConnectorStateKeys.IS_AUTHENTICATED) is False
+            or doc.get("status") == "DELETING"
+        ):
+            self.logger.info(f"Not queueing {connector_id}: it is disabled, deleting or signed out")
+            await self._drop_queued_intent(connector_id, doc)
+            return
+
         updates: dict[str, Any] = {
             ConnectorStateKeys.PENDING_RESYNC: True,
             "status": AppStatus.QUEUED.value,
@@ -815,6 +864,26 @@ class EventService:
             )
         except Exception as e:
             self.logger.error(f"Failed to mark {connector_id} queued: {e}")
+
+    async def _drop_queued_intent(self, connector_id: str, doc: dict[str, Any]) -> None:
+        """Clear a queue entry or a pending request that must no longer run."""
+        if not isinstance(doc, dict):
+            return
+        queued = doc.get("status") == AppStatus.QUEUED.value
+        if not queued and not doc.get(ConnectorStateKeys.PENDING_RESYNC):
+            return
+        updates: dict[str, Any] = {
+            ConnectorStateKeys.PENDING_RESYNC: False,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+        if queued:
+            updates["status"] = AppStatus.IDLE.value
+        try:
+            await self.graph_provider.update_node(
+                connector_id, CollectionNames.APPS.value, updates
+            )
+        except Exception as e:
+            self.logger.error(f"Could not clear the queued intent of {connector_id}: {e}")
 
     async def _persist_pending_resync(
         self, connector_id: str, *, full_sync: bool = False

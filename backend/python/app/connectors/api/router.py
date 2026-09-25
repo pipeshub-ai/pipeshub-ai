@@ -4540,14 +4540,13 @@ async def stop_connector_sync(
         await graph_provider.update_node(
             connector_id,
             CollectionNames.APPS.value,
-            {
-                ConnectorStateKeys.PENDING_RESYNC: False,
-                # pendingFullSync as well: _mark_queued sets both, and clearing
-                # only the first left the flag to be merged into the NEXT plain
-                # Sync, which then silently ran a full sync -- deleting sync
-                # points and re-reading the entire source.
-                ConnectorStateKeys.PENDING_FULL_SYNC: False,
-            },
+            # pendingFullSync is deliberately kept. A filter change sets it, and
+            # the sync that changes a connector's scope is owed until one runs:
+            # clearing it here made the next sync incremental, so content the
+            # new filter includes was never fetched and content it excludes
+            # stayed searchable. The cost is that a stopped full-sync request
+            # runs as a full sync next time.
+            {ConnectorStateKeys.PENDING_RESYNC: False},
         )
     except Exception as e:
         logger.warning(

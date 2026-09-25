@@ -107,6 +107,19 @@ async def _run_until_aborted(connector: "BaseConnector", lease: SyncLease) -> No
                 await sync
 
 
+async def _deleting_or_gone(
+    graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str
+) -> bool:
+    try:
+        doc = await graph_provider.get_document(
+            document_key=connector_id, collection=CollectionNames.APPS.value
+        )
+    except Exception as e:
+        logger.warning(f"Could not read {connector_id} before its IDLE write: {e}")
+        return False
+    return not doc or doc.get("status") == "DELETING"
+
+
 async def _finalize(
     graph_provider: IGraphDBProvider,
     logger: logging.Logger,
@@ -132,9 +145,15 @@ async def _finalize(
     tidy.
     """
     if lease is None or not lease.lost.is_set():
-        await write_app_status(
-            graph_provider, logger, connector_id, AppStatus.IDLE.value
-        )
+        # Not over a delete: the status is an upsert, so writing it after the
+        # delete removed the doc resurrected a ghost App node, and writing it
+        # during one let a second DELETE through the "already deleting" guard.
+        if await _deleting_or_gone(graph_provider, logger, connector_id):
+            logger.info(f"Not writing IDLE for {connector_id}: it is being deleted")
+        else:
+            await write_app_status(
+                graph_provider, logger, connector_id, AppStatus.IDLE.value
+            )
     if lease is not None and coordinator is not None:
         await coordinator.end(lease)
     if connector is not None:
@@ -155,12 +174,6 @@ async def _finalize(
     except Exception as e:
         logger.warning(f"Cache invalidation failed for {connector_id}: {e}")
 
-    # Re-issue any resync that was declined while this one held the lease.
-    # Deliberately after the release, so the re-issued request can actually
-    # take the lease instead of being declined all over again.
-    if resync_spec is not None:
-        await _reissue_pending_resync(graph_provider, logger, connector_id, resync_spec)
-
     # A slot just freed, so anything parked at the limit can go. Failures here
     # must not escape: this runs in a detached finalizer whose real job is the
     # status write and the lease release above.
@@ -168,6 +181,15 @@ async def _finalize(
         await drain_queued_syncs(graph_provider, logger)
     except Exception as e:
         logger.error(f"Could not release queued syncs: {e}")
+
+    # Re-issue any resync that was declined while this one held the lease.
+    # After the release, so it can take the lease; after the drain, so it
+    # queues behind connectors that were already waiting instead of taking the
+    # slot it just gave up -- a connector whose schedule is shorter than its
+    # sync would otherwise hold a slot for ever. Not during shutdown: the next
+    # boot resumes every connector anyway.
+    if resync_spec is not None and getattr(coordinator, "shutting_down", False) is not True:
+        await _reissue_pending_resync(graph_provider, logger, connector_id, resync_spec)
 
 
 # How long a queued connector may sit with its request already submitted before
@@ -190,7 +212,7 @@ async def drain_queued_syncs(
     is actually accepted.
     """
     from app.connectors.core.sync.sync_coordinator import get_coordinator
-    from app.connectors.core.sync.sync_dispatcher import SubmitResult, get_dispatcher
+    from app.connectors.core.sync.sync_dispatcher import get_dispatcher
 
     dispatcher = get_dispatcher()
     coordinator = get_coordinator()
@@ -218,16 +240,62 @@ async def drain_queued_syncs(
     if manager is not None and not await manager.try_claim_once("drain", 5_000):
         return []
 
+    # try_claim_once only separates processes. Finalizers in one process run
+    # concurrently too (a shutdown fires them all at once), and two passes over
+    # the same rows each published every queued connector.
+    async with _drain_lock():
+        return await _drain_once(graph_provider, logger, dispatcher)
+
+
+_DRAIN_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _drain_lock() -> asyncio.Lock:
+    return _DRAIN_LOCKS.setdefault("drain", asyncio.Lock())
+
+
+async def _drain_once(
+    graph_provider: IGraphDBProvider, logger: logging.Logger, dispatcher: "SyncEventDispatcher"
+) -> list[str]:
+    from app.connectors.core.sync.sync_dispatcher import SubmitResult
+
     try:
         queued = await graph_provider.get_nodes_by_field_in(
             CollectionNames.APPS.value,
             "status",
             [AppStatus.QUEUED.value],
-            ["id", ConnectorStateKeys.PENDING_RESYNC, "updatedAtTimestamp"],
+            [
+                "id", ConnectorStateKeys.PENDING_RESYNC, "updatedAtTimestamp",
+                ConnectorStateKeys.IS_ACTIVE, ConnectorStateKeys.IS_AUTHENTICATED,
+            ],
         )
     except Exception as e:
         logger.error(f"Could not read the queued syncs: {e}")
         return []
+
+    # A connector disabled or signed out while it waited is owed nothing: the
+    # start path would skip it, so publishing it only repeats on every pass.
+    runnable = []
+    for doc in queued or []:
+        if doc.get(ConnectorStateKeys.IS_ACTIVE) is False or doc.get(
+            ConnectorStateKeys.IS_AUTHENTICATED
+        ) is False:
+            try:
+                await graph_provider.update_node(
+                    doc["id"],
+                    CollectionNames.APPS.value,
+                    {
+                        "status": AppStatus.IDLE.value,
+                        ConnectorStateKeys.PENDING_RESYNC: False,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+                logger.info(f"Dropped queued sync of inactive connector {doc['id']}")
+            except Exception as e:
+                logger.error(f"Could not clear queued inactive connector {doc.get('id')}: {e}")
+            continue
+        runnable.append(doc)
+    queued = runnable
 
     # pendingResync marks not-yet-submitted, so the next drain does not re-issue
     # a connector whose event is already in flight. Status stays QUEUED until the
@@ -235,9 +303,9 @@ async def drain_queued_syncs(
     #
     # A submitted request whose event never arrives would otherwise strand the
     # connector: QUEUED, unflagged, and invisible to every later drain. After the
-    # grace window it is treated as owed again — re-issuing is cheap and idempotent
-    # (the lease declines a duplicate, record ids are deterministic), whereas a
-    # lost request never comes back.
+    # grace window it is treated as owed again. A duplicate of an event that did
+    # arrive late is harmless: the start path drops a request older than the sync
+    # already running for it.
     stale_before = _now_ms() - _QUEUE_GRACE_MS
     ids = [
         doc["id"]
@@ -394,14 +462,22 @@ async def run_sync_task(
     skipped_code: str | None = None
     try:
         await write_app_status(graph_provider, logger, connector_id, start_status)
+        # A resync asked for before this run began is served by it. Left set, the
+        # flag handed the finalizer a request that was already satisfied, and
+        # the connector synced twice back to back.
+        try:
+            await graph_provider.update_node(
+                connector_id,
+                CollectionNames.APPS.value,
+                {ConnectorStateKeys.PENDING_RESYNC: False},
+            )
+        except Exception as e:
+            logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
         if lease is None:
             await connector.run_sync()
         else:
             await _run_until_aborted(connector, lease)
     except asyncio.CancelledError:
-        # Stopped on request, or shutting down. Either way a resync queued
-        # behind this run must not be handed straight back, or a stop that
-        # the user asked for undoes itself.
         stopped = True
         raise
     except ConnectorSyncSkippedError as exc:
@@ -441,7 +517,11 @@ async def run_sync_task(
                 lease,
                 coordinator,
                 connector if close_connector else None,
-                None if stopped else resync_spec,
+                # Re-issued even after a stop: /sync/stop clears the flags before
+                # it stops anything, so a request still flagged now arrived after
+                # the stop -- a re-enable, say -- and dropping it left the
+                # connector enabled and never synced.
+                resync_spec,
                 # Derived here, not in _finalize: that only receives the
                 # connector when it is also responsible for closing it.
                 getattr(

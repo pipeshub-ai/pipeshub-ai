@@ -1132,6 +1132,19 @@ class TestConnectorHealthCheck:
 
         assert result.status_code == 500
 
+    async def test_a_failed_startup_is_unhealthy(self):
+        """Coordinator init failing in the background startup task used to leave
+        the service answering 200 while it consumed no events at all."""
+        from app.connectors_main import app, health_check
+
+        app.state.startup_error = "sync coordinator init failed: boom"
+        try:
+            result = await health_check()
+        finally:
+            app.state.startup_error = None
+
+        assert result.status_code == 503
+
 
 # ---------------------------------------------------------------------------
 # global_exception_handler

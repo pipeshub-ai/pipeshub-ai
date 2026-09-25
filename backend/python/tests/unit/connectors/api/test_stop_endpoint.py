@@ -76,12 +76,16 @@ class TestTheQueuedRequestIsAlwaysCleared:
         first = gp.update_node.await_args_list[0]
         assert first.args[0] == "c1"
         assert first.args[1] == CollectionNames.APPS.value
-        # Both flags: a surviving pendingFullSync merged into the next PLAIN
-        # sync and silently ran a full one, deleting sync points.
-        assert first.args[2] == {
-            ConnectorStateKeys.PENDING_RESYNC: False,
-            ConnectorStateKeys.PENDING_FULL_SYNC: False,
-        }
+        assert first.args[2] == {ConnectorStateKeys.PENDING_RESYNC: False}
+
+    @pytest.mark.asyncio
+    async def test_a_full_sync_owed_by_a_filter_change_survives_the_stop(self) -> None:
+        """Only a full sync applies a new filter's scope, so a stop that cleared
+        pendingFullSync left the index reflecting the old filter."""
+        gp = _graph()
+        await _call(gp, running=False)
+        for call in gp.update_node.await_args_list:
+            assert ConnectorStateKeys.PENDING_FULL_SYNC not in call.args[2]
 
     @pytest.mark.asyncio
     async def test_a_failed_clear_does_not_fail_the_stop(self) -> None:

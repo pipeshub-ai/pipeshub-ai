@@ -159,6 +159,12 @@ describe('tokens_manager/controllers connector stop + busy guard', () => {
       expect(String(err?.message ?? '').toLowerCase()).to.contain('queued');
     });
 
+    it('refuses one while the connector is being deleted', async () => {
+      // A sync started now would recreate records the delete is removing.
+      const err = await refuses('DELETING');
+      expect(String(err?.message ?? '').toLowerCase()).to.contain('deleted');
+    });
+
     it('refuses one while the connector is locked', async () => {
       await refuses('IDLE', true);
     });
