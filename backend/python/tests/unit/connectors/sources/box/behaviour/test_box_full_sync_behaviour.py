@@ -111,6 +111,7 @@ class TestFullSyncWalk:
         assert {f"file-{n}" for n in range(5)} <= set(db.records)
 
 
+
     async def test_an_inactive_user_is_not_walked(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
         db.active_emails.discard(BOB_EMAIL)
@@ -279,6 +280,18 @@ class TestGroups:
 
         assert db.group_members["g-eng"] == [ALICE_EMAIL, BOB_EMAIL]
 
+    async def test_a_failed_group_listing_deletes_no_stored_group(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_group("g-eng", "Engineering", (ALICE,))
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        box_api.fail("GET", "/2.0/groups", 503, times=10)
+        checkpoints.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert db.deleted_groups == []
+        assert "g-eng" in db.user_groups
 
     async def test_a_group_removed_in_box_is_deleted(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

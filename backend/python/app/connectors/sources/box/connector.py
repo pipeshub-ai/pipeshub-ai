@@ -781,7 +781,8 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.error(f"Failed to fetch groups: {response.error}")
-                    break
+                    self.logger.warning("Skipping removal of deleted groups because the group list from Box is incomplete.")
+                    return
 
                 data = self._to_dict(response.data)
                 groups_data = data.get('entries', [])
