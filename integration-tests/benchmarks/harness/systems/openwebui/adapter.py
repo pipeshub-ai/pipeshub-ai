@@ -4,10 +4,10 @@ retrieval and RAG prompt, answering through the shared model.
 One non-streaming `/api/chat/completions` call per question with the corpus
 knowledge base attached. No `chat_id` or `session_id` is sent, so every call
 is a fresh chat and Open WebUI runs none of its background tasks (title,
-tags, follow-ups) or tool loop. Retrieval query generation is checked, and
-set when it drifted, around every question: Open WebUI reloads it from its
-environment on restart, so a restart mid-run would otherwise answer the rest
-of the run under the other setting.
+tags, follow-ups) or tool loop. The instance-wide settings a run chooses
+(query generation, RAG template) are checked, and set when they drifted,
+around every question: Open WebUI reloads them from its environment on
+restart, and keeps whatever the previous run set until then.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from benchmarks.harness.models import AskItem, CallUsage, Prediction, RetrievedChunk, SystemFailure
 from benchmarks.harness.systems.base import AdapterCapabilities, PreparedCorpus, no_context_failure
 from benchmarks.harness.systems.baselines.answering import usage_fields
+from benchmarks.harness.systems.openwebui.client import InstanceSettings
 
 if TYPE_CHECKING:
     from benchmarks.harness.llm.client import ResolvedModel
@@ -110,7 +111,7 @@ class OpenWebUIAdapter:
         reasoning_effort: str | None,
         current_time: datetime,
         price: ModelPrice | None,
-        query_generation: bool = False,
+        settings: InstanceSettings | None = None,
     ) -> None:
         self.system_id = system_id
         self._client = client
@@ -120,13 +121,13 @@ class OpenWebUIAdapter:
         self._current_time = current_time
         self._price = price
         self._url_of_file: dict[str, str] | None = None
-        self._query_generation = query_generation
+        self._settings = settings or InstanceSettings()
 
-    def _ensure_query_generation(self) -> None:
-        if self._client.query_generation() != self._query_generation:
-            held = self._client.set_query_generation(self._query_generation)
-            if held != self._query_generation:
-                raise RuntimeError(f"Open WebUI kept query generation {held}, wanted {self._query_generation}")
+    def _ensure_settings(self) -> None:
+        if self._client.instance_settings() != self._settings:
+            held = self._client.apply_settings(self._settings)
+            if held != self._settings:
+                raise RuntimeError(f"Open WebUI kept {held}, wanted {self._settings}")
 
     def _file_urls(self, prepared: PreparedCorpus) -> dict[str, str]:
         if self._url_of_file is None:
@@ -145,9 +146,9 @@ class OpenWebUIAdapter:
         )
         base = Prediction(system=self.system_id, question_id=item.question_id, repeat=repeat, started_at=started_at)
         try:
-            self._ensure_query_generation()
+            self._ensure_settings()
             response = self._client.chat(body)
-            setting_held = self._client.query_generation() == self._query_generation
+            settings_held = self._client.instance_settings() == self._settings
         except Exception as exc:  # noqa: BLE001 — recorded on the prediction and scored FALSE
             logger.warning("%s q%s failed: %s", self.system_id, item.question_id, exc)
             return base.model_copy(update={
@@ -155,9 +156,9 @@ class OpenWebUIAdapter:
                 "error": SystemFailure(kind="http", message=str(exc)[:1000]),
             })
         chunks = retrieved_chunks(response, self._file_urls(prepared))
-        error = no_context_failure(chunks) or (None if setting_held else SystemFailure(
+        error = no_context_failure(chunks) or (None if settings_held else SystemFailure(
             kind="run_error", code="setting_lost",
-            message="query generation changed during the answer (Open WebUI restarted)",
+            message="instance settings changed during the answer (Open WebUI restarted)",
         ))
         return base.model_copy(update={
             "answer": answer_text(response),

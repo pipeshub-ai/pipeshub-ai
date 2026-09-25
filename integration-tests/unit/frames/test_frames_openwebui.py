@@ -21,7 +21,7 @@ from benchmarks.harness.systems.openwebui.adapter import (
     call_usage_of,
     retrieved_chunks,
 )
-from benchmarks.harness.systems.openwebui.client import FILE_DONE, FILE_FAILED
+from benchmarks.harness.systems.openwebui.client import FILE_DONE, FILE_FAILED, InstanceSettings
 from benchmarks.harness.systems.openwebui.ingest import OpenWebUIIngestor, knowledge_name
 
 _SNAPSHOT = datetime(2024, 10, 15, tzinfo=UTC)
@@ -56,9 +56,9 @@ class _FakeClient:
         self.linked: dict[str, list[str]] = {}
         self.status_calls: list[str] = []
         self.updated_at: dict[str, float] = {}
-        self.set_calls: list[bool] = []
-        self.server_value = False
-        self.server_keeps: bool | None = None
+        self.applied: list[InstanceSettings] = []
+        self.server = InstanceSettings(rag_template="<built-in default>")
+        self.server_ignores_writes = False
         self.restart_during_chat = False
 
     def knowledge_id(self, name: str) -> str | None:
@@ -87,18 +87,19 @@ class _FakeClient:
     def file_state(self, file_id: str) -> tuple[str, float]:
         return self.file_status(file_id), self.updated_at.get(file_id, time.time())
 
-    def query_generation(self) -> bool:
-        return self.server_value
+    def instance_settings(self) -> InstanceSettings:
+        return self.server
 
-    def set_query_generation(self, enabled: bool) -> bool:
-        self.set_calls.append(enabled)
-        self.server_value = enabled if self.server_keeps is None else self.server_keeps
-        return self.server_value
+    def apply_settings(self, wanted: InstanceSettings) -> InstanceSettings:
+        self.applied.append(wanted)
+        if not self.server_ignores_writes:
+            self.server = wanted
+        return self.server
 
     def chat(self, body: dict[str, Any]) -> dict[str, Any]:
         self.chats.append(body)
         if self.restart_during_chat:
-            self.server_value = False  # a restart reloads the environment's setting
+            self.server = InstanceSettings(rag_template="<built-in default>")  # reloaded from the environment
         if isinstance(self.reply, Exception):
             raise self.reply
         return self.reply
@@ -314,12 +315,12 @@ class TestResponse:
 
 
 class TestAnswer:
-    def _adapter(self, client: _FakeClient, *, query_generation: bool = False) -> OpenWebUIAdapter:
+    def _adapter(self, client: _FakeClient, settings: InstanceSettings | None = None) -> OpenWebUIAdapter:
         model = ResolvedModel(model_key="answerer", provider="azureOpenAI", model_name="gpt-5.6-luna",
                               reasoning_effort="high")
         return OpenWebUIAdapter("openwebui", client, None, model,  # type: ignore[arg-type]
                                 reasoning_effort="high", current_time=_SNAPSHOT, price=None,
-                                query_generation=query_generation)
+                                settings=settings)
 
     def _prepared(self, tmp_path: Path) -> PreparedCorpus:
         docs = [_doc(0), _doc(1)]
@@ -352,55 +353,52 @@ class TestAnswer:
         assert prediction.error is not None and prediction.error.kind == "http"
         assert prediction.answer == ""
 
-    def test_query_generation_is_set_only_when_the_server_drifted(self, tmp_path: Path) -> None:
+    _GROUNDED = InstanceSettings(query_generation=True, rag_template="Answer ONLY from {{CONTEXT}}")
+    _REPLY = {"choices": [{"message": {"content": "x"}}], "sources": [{"metadata": [{"file_id": "file-Article_1.html"}]}]}
+
+    def test_settings_are_applied_only_when_the_server_drifted(self, tmp_path: Path) -> None:
         prepared = self._prepared(tmp_path)
         client = _FakeClient()
-        client.reply = {"choices": [{"message": {"content": "x"}}],
-                        "sources": [{"metadata": [{"file_id": "file-Article_1.html"}]}]}
-        adapter = self._adapter(client, query_generation=True)
+        client.reply = self._REPLY
+        adapter = self._adapter(client, self._GROUNDED)
 
         adapter.answer(AskItem(question_id="1", prompt="Which?"), prepared, 0)
         adapter.answer(AskItem(question_id="2", prompt="Which?"), prepared, 0)
-        client.server_value = False  # restarted between questions
+        client.server = InstanceSettings()  # restarted between questions
         prediction = adapter.answer(AskItem(question_id="3", prompt="Which?"), prepared, 0)
 
-        assert client.set_calls == [True, True]
+        assert client.applied == [self._GROUNDED, self._GROUNDED]
         assert prediction.error is None
 
-    def test_a_default_run_switches_off_what_a_best_run_left_on(self, tmp_path: Path) -> None:
+    def test_a_default_run_restores_what_an_earlier_run_left_set(self, tmp_path: Path) -> None:
+        """Instance-wide settings outlive the run that set them."""
         prepared = self._prepared(tmp_path)
         client = _FakeClient()
-        client.server_value = True
-        client.reply = {"choices": [{"message": {"content": "x"}}],
-                        "sources": [{"metadata": [{"file_id": "file-Article_1.html"}]}]}
+        client.server = self._GROUNDED
+        client.reply = self._REPLY
 
-        self._adapter(client, query_generation=False).answer(AskItem(question_id="1", prompt="Which?"), prepared, 0)
+        self._adapter(client).answer(AskItem(question_id="1", prompt="Which?"), prepared, 0)
 
-        assert client.set_calls == [False]
+        assert client.applied == [InstanceSettings(query_generation=False, rag_template="")]
 
     def test_a_restart_during_the_answer_fails_the_question(self, tmp_path: Path) -> None:
-        """The answer may have been retrieved under either setting; it is
+        """The answer may have been produced under either settings; it is
         re-asked rather than scored as the configured one."""
         prepared = self._prepared(tmp_path)
         client = _FakeClient()
         client.restart_during_chat = True
-        client.reply = {"choices": [{"message": {"content": "x"}}],
-                        "sources": [{"metadata": [{"file_id": "file-Article_1.html"}]}]}
+        client.reply = self._REPLY
 
-        prediction = self._adapter(client, query_generation=True).answer(
-            AskItem(question_id="1", prompt="Which?"), prepared, 0,
-        )
+        prediction = self._adapter(client, self._GROUNDED).answer(AskItem(question_id="1", prompt="Which?"), prepared, 0)
 
         assert prediction.error is not None and prediction.error.code == "setting_lost"
 
-    def test_a_server_that_ignores_the_switch_fails_the_question(self, tmp_path: Path) -> None:
+    def test_a_server_that_ignores_the_settings_fails_the_question(self, tmp_path: Path) -> None:
         prepared = self._prepared(tmp_path)
         client = _FakeClient()
-        client.server_keeps = False
+        client.server_ignores_writes = True
 
-        prediction = self._adapter(client, query_generation=True).answer(
-            AskItem(question_id="7", prompt="Which?"), prepared, 0,
-        )
+        prediction = self._adapter(client, self._GROUNDED).answer(AskItem(question_id="7", prompt="Which?"), prepared, 0)
 
         assert prediction.error is not None and client.chats == []
 

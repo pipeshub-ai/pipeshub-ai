@@ -22,7 +22,7 @@ from benchmarks.harness.systems.baselines.bm25 import DEFAULT_N_DOCS, Bm25Answer
 from benchmarks.harness.systems.baselines.closed_book import ClosedBookAnswerer
 from benchmarks.harness.systems.baselines.oracle import OracleAnswerer
 from benchmarks.harness.systems.openwebui.adapter import OpenWebUIAdapter
-from benchmarks.harness.systems.openwebui.client import OpenWebUIClient
+from benchmarks.harness.systems.openwebui.client import InstanceSettings, OpenWebUIClient
 from benchmarks.harness.systems.openwebui.ingest import OpenWebUIIngestor
 from benchmarks.harness.systems.pipeshub.adapter import PipesHubAdapter
 from benchmarks.harness.systems.pipeshub.indexing import IndexWaiter
@@ -186,13 +186,15 @@ def _advanced_rag(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
     return _rag(options, system, deps)
 
 
-_OPENWEBUI_OPTIONS = frozenset({"base_url", "api_key_env", "upload_workers", "request_timeout_s", "query_generation"})
+_OPENWEBUI_OPTIONS = frozenset({
+    "base_url", "api_key_env", "upload_workers", "request_timeout_s", "query_generation", "rag_template",
+})
 
 
 def _openwebui(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
     """Open WebUI's own pipeline. Its retrieval settings live in the
     instance's environment (see the run config's header); `query_generation`
-    is the one switched per run, since it is instance-wide."""
+    and `rag_template` are set per run, since they are instance-wide."""
     import os
 
     unknown = set(system.options) - _OPENWEBUI_OPTIONS
@@ -212,7 +214,11 @@ def _openwebui(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
     return OpenWebUIAdapter(
         system.id, client, ingestor, model,
         reasoning_effort=model.reasoning_effort, current_time=deps.config.corpus.snapshot,
-        price=_answerer_kwargs(deps)["price"], query_generation=bool(system.options.get("query_generation", False)),
+        price=_answerer_kwargs(deps)["price"],
+        settings=InstanceSettings(
+            query_generation=bool(system.options.get("query_generation", False)),
+            rag_template=str(system.options.get("rag_template") or ""),
+        ),
     )
 
 

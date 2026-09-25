@@ -20,6 +20,16 @@ FILE_FAILED = "failed"
 
 
 @dataclass(frozen=True)
+class InstanceSettings:
+    """The answer-shaping settings Open WebUI holds instance-wide, in memory:
+    a restart reloads them from the environment. An empty template means
+    Open WebUI's built-in default."""
+
+    query_generation: bool = False
+    rag_template: str = ""
+
+
+@dataclass(frozen=True)
 class ChatResult:
     body: dict[str, Any]
     elapsed_ms: int
@@ -93,17 +103,27 @@ class OpenWebUIClient:
         return str((body.get("data") or {}).get("status", "")), float(body.get("updated_at") or 0)
 
     @http_retry()
-    def query_generation(self) -> bool:
-        return bool(self._request("GET", "/api/v1/tasks/config").json().get("ENABLE_RETRIEVAL_QUERY_GENERATION"))
+    def instance_settings(self) -> InstanceSettings:
+        tasks = self._request("GET", "/api/v1/tasks/config").json()
+        retrieval = self._request("GET", "/api/v1/retrieval/config").json()
+        return InstanceSettings(
+            query_generation=bool(tasks.get("ENABLE_RETRIEVAL_QUERY_GENERATION")),
+            rag_template=str(retrieval.get("RAG_TEMPLATE") or ""),
+        )
 
     @http_retry()
-    def set_query_generation(self, enabled: bool) -> bool:
-        """Switch LLM query generation for knowledge retrieval; returns the
-        value the server now holds. The update takes the whole task config."""
-        config = self._request("GET", "/api/v1/tasks/config").json()
-        config["ENABLE_RETRIEVAL_QUERY_GENERATION"] = enabled
-        updated = self._request("POST", "/api/v1/tasks/config/update", json=config).json()
-        return bool(updated.get("ENABLE_RETRIEVAL_QUERY_GENERATION"))
+    def apply_settings(self, wanted: InstanceSettings) -> InstanceSettings:
+        """Writes only what differs and returns what the server then holds.
+        The task update takes the whole task config; the retrieval update
+        keeps every field it is not sent."""
+        held = self.instance_settings()
+        if held.query_generation != wanted.query_generation:
+            tasks = self._request("GET", "/api/v1/tasks/config").json()
+            tasks["ENABLE_RETRIEVAL_QUERY_GENERATION"] = wanted.query_generation
+            self._request("POST", "/api/v1/tasks/config/update", json=tasks)
+        if held.rag_template != wanted.rag_template:
+            self._request("POST", "/api/v1/retrieval/config/update", json={"RAG_TEMPLATE": wanted.rag_template})
+        return self.instance_settings()
 
     @http_retry(attempts=3)
     def retrieval_config(self) -> dict[str, Any]:
