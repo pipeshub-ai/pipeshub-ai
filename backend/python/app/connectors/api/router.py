@@ -2197,14 +2197,16 @@ async def delete_record(
             # Retry up to 3 times: a single failure here would leave semantic-
             # cache entries valid for the now-deleted record until their TTL
             # expires. The warning is still emitted after the final attempt.
+            cache_invalidation_pending = False
             org_id = result.get("orgId")
             if org_id:
-                await increment_org_corpus_revision_with_retry(graph_provider, org_id)
+                cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(graph_provider, org_id)
             else:
                 logger.warning(
                     f"Skipped corpus revision bump for record {record_id}: "
                     f"delete_record returned no orgId."
                 )
+                cache_invalidation_pending = True
 
             # Publish deletion event. The graph deletion above has already
             # committed, so a publish failure here cannot be undone by failing
@@ -2261,6 +2263,8 @@ async def delete_record(
             if vector_cleanup_pending:
                 response["vectorCleanupPending"] = True
                 response["vectorCleanupFailedRecordIds"] = [record_id]
+            if cache_invalidation_pending:
+                response["cacheInvalidationPending"] = True
             return response
         else:
             logger.error("❌ Failed to delete record %s: %s", record_id, result.get("reason"))

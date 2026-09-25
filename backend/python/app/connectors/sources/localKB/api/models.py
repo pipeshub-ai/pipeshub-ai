@@ -293,6 +293,7 @@ class UpdateRecordResponse(BaseModel):
     location: str = Field(..., description="The location of the record, e.g., 'kb_root' or 'folder'.")
     folderId: Optional[str] = Field(None, description="The ID of the parent folder, if the record is in a folder.")
     kb: Dict[str, Any] = Field(..., description="Information about the knowledge base containing the record.")
+    cacheInvalidationPending: Optional[bool] = Field(None, description="Whether cache invalidation is pending due to a failed revision bump")
     userPermission: str = Field(..., description="The permission role of the user who performed the update.")
 
 class DeleteRecordResponse(BaseModel):
@@ -300,6 +301,7 @@ class DeleteRecordResponse(BaseModel):
     success: bool = Field(..., description="Success status")
     message: str = Field(..., description="Response message")
     deleteType: str = Field(..., description="Type of deletion")
+    cacheInvalidationPending: Optional[bool] = Field(None, description="Whether cache invalidation is pending due to a failed revision bump")
 
 
 class CreatePermissionsResponse(BaseModel):

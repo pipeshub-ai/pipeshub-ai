@@ -1408,6 +1408,7 @@ async def update_record(
         # Only call the helper when a non-empty org_id was resolved; passing
         # None would silently fall back to the requester's org, which is wrong
         # for cross-org access.
+        cache_invalidation_pending = False
         try:
             kb_context = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
             _bump_org_id = kb_context.get("org_id") if kb_context else None
@@ -1416,7 +1417,9 @@ async def update_record(
             _bump_org_id = None
 
         if _bump_org_id:
-            await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _bump_org_id)
+            cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _bump_org_id)
+        else:
+            cache_invalidation_pending = True
 
         # Publish update event
         event_data = result.get("eventData")
@@ -1502,6 +1505,8 @@ async def update_record(
                 "kb": kb_info,
                 "userPermission": user_permission,
             }
+            if cache_invalidation_pending:
+                enriched_result["cacheInvalidationPending"] = True
 
             return enriched_result
 
@@ -1510,7 +1515,7 @@ async def update_record(
         except Exception as e:
             logger.error(f"❌ Failed to enrich update record response: {str(e)}")
             # Return with required fields even if enrichment fails
-            return {
+            fallback_result = {
                 **result,
                 "fileUpdated": body.get("fileMetadata") is not None,
                 "timestamp": get_epoch_timestamp_in_ms(),
@@ -1518,6 +1523,9 @@ async def update_record(
                 "kb": {},
                 "userPermission": "NONE",
             }
+            if cache_invalidation_pending:
+                fallback_result["cacheInvalidationPending"] = True
+            return fallback_result
 
     except HTTPException as he:
         raise he
@@ -1570,14 +1578,18 @@ async def delete_records_in_kb(
             )
 
         if result and result.get("success") is True:
+            cache_invalidation_pending = False
             if _kb_org:
-                await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org)
+                cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org)
             else:
                 _log.warning(
                     "delete_records_in_kb: KB owner org unresolved for kb_id=%s; "
                     "skipping corpus revision bump to avoid advancing the wrong org.",
                     kb_id,
                 )
+                cache_invalidation_pending = True
+            if cache_invalidation_pending:
+                result["cacheInvalidationPending"] = True
 
         return result
 
@@ -1635,14 +1647,18 @@ async def delete_record_in_folder(
             )
 
         if result and result.get("success") is True:
+            cache_invalidation_pending = False
             if _kb_org:
-                await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org)
+                cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org)
             else:
                 _log.warning(
                     "delete_record_in_folder: KB owner org unresolved for kb_id=%s; "
                     "skipping corpus revision bump to avoid advancing the wrong org.",
                     kb_id,
                 )
+                cache_invalidation_pending = True
+            if cache_invalidation_pending:
+                result["cacheInvalidationPending"] = True
 
         return result
 
