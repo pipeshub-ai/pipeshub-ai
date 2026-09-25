@@ -1589,6 +1589,8 @@ class WebConnector(BaseConnector):
         landing, _status, _content_type = probed
         if self._outside_crawl(landing):
             return self._out_of_scope_response(landing)
+        if landing != url and not await self._robots_allows(landing):
+            return self._robots_skip_response(landing)
         return await self._fetch_document(landing)
 
     async def _fetch_document(self, url: str) -> FetchResponse | None:
@@ -1779,11 +1781,12 @@ class WebConnector(BaseConnector):
         return FetchResponse(status_code=200, content_bytes=b"", headers={}, final_url=url, strategy="robots_guard")
 
     async def _probe_landing(self, url: str) -> tuple[str, int, str | None] | None:
-        """Follow ``url``'s redirects one hop at a time, stopping before any hop outside the crawl.
+        """Follow ``url``'s redirects one hop at a time, stopping before any hop outside the crawl
+        or disallowed by robots.txt.
 
         Each hop is asked with HEAD, or with GET (body left unread) when HEAD is refused or fails.
-        Returns the landing URL, its status and Content-Type, or the first out-of-scope hop,
-        unrequested, with status 0. Returns None if the site doesn't answer or the chain doesn't end.
+        Returns the landing URL, its status and Content-Type, or the first out-of-scope or
+        disallowed hop, unrequested, with status 0. Returns None if the site doesn't answer or the chain doesn't end.
         """
         if self.session is None:
             return None
@@ -1800,8 +1803,8 @@ class WebConnector(BaseConnector):
             if not (status in REDIRECT_STATUS_CODES and location):
                 return url, status, content_type
             url = urljoin(url, location)
-            if self._outside_crawl(url):
-                return url, 0, None
+            if self._outside_crawl(url) or not await self._robots_allows(url):
+                return url, 0, None  # not requested at all: outside the crawl, or robots.txt disallows it
         return None
 
     async def _probe_hop(self, method: str, url: str) -> tuple[int, str | None, str | None]:

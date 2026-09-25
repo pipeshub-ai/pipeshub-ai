@@ -269,3 +269,33 @@ async def test_a_redirect_that_only_adds_a_trailing_slash_is_still_checked(
     await (await make_connector()).run_sync()
 
     assert set(db.pages()) == {START_URL}
+
+
+async def test_an_aborted_redirect_onto_a_disallowed_path_sends_it_no_request_at_all(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    target = "http://site.test/private/report.pdf"
+    browser.html(START_URL, "Home", "/go")
+    browser.redirect("http://site.test/go", "/private/report.pdf")
+    browser.add(target, Page(body=b"%PDF-1.4 secret", content_type="application/pdf", browser_aborts=True))
+    _robots(browser, "User-agent: *\nDisallow: /private/\n")
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    assert [method for method, url in browser.requests if url == target] == []
+    assert set(db.pages()) == {START_URL}
+
+
+async def test_robust_mode_sends_no_request_to_a_disallowed_file_a_linked_file_redirects_to(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    target = "http://site.test/private/report.pdf"
+    browser.html(START_URL, "Home", "/docs/report.pdf")
+    browser.redirect("http://site.test/docs/report.pdf", "/private/report.pdf")
+    browser.add(target, Page(body=b"%PDF-1.4 secret", content_type="application/pdf"))
+    _robots(browser, "User-agent: *\nDisallow: /private/\n")
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    assert [method for method, url in browser.requests if url == target] == []
+    assert set(db.pages()) == {START_URL}
