@@ -473,3 +473,106 @@ class TestEventStreamAnchor:
 
         assert checkpoints.cursor() == saved
 
+
+
+def fail_as_user(connector: BoxConnector, user_id: str, nth: int) -> None:
+    """Make the nth attempt to act as ``user_id`` raise, as a broken SDK client would."""
+    real = connector.data_source.set_as_user_context
+    calls = {"n": 0}
+
+    async def wrapped(uid: str) -> None:
+        if uid == user_id:
+            calls["n"] += 1
+            if calls["n"] == nth:
+                raise RuntimeError("Failed to set As-User context: client unavailable")
+        await real(uid)
+
+    connector.data_source.set_as_user_context = wrapped
+
+
+def share_history(api: FakeBoxApi, item_id: str, user_id: str) -> None:
+    collab_id = api.collaborate(item_id, user_id)
+    api.add_event(
+        "COLLABORATION_INVITE",
+        {"type": "collaboration", "id": collab_id, "item": {"type": api.items[item_id]["type"], "id": item_id},
+         "accessible_by": {"type": "user", "id": user_id, "login": api.users[user_id]["login"]}},
+        created_by={"type": "user", "id": ALICE, "login": ALICE_EMAIL},
+        additional_details={"collab_id": collab_id},
+    )
+
+
+class TestActingAsEachUser:
+    async def test_an_unknown_service_account_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-a", "a.txt", ALICE)
+        box_api.fail("GET", "/2.0/users/me", 503, times=100)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert "file-a" not in db.records
+        assert checkpoints.cursor() is None
+
+        box_api.faults.clear()
+        await connector.run_sync()
+
+        assert "file-a" in db.records
+
+    async def test_a_walk_that_cannot_act_as_the_user_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-a", "a.txt", ALICE)
+        connector = await ready_connector(db, checkpoints)
+        fail_as_user(connector, ALICE, nth=2)
+
+        await connector.run_sync()
+
+        assert "file-a" not in db.records
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert "file-a" in db.records
+
+    async def test_an_unread_root_leaves_no_cursor_and_the_next_run_links_shared_files(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        share_history(box_api, "file-1", BOB)
+        box_api.fail("GET", "/2.0/folders/0", 503, times=5, as_user=BOB)
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert f"0S:{BOB_EMAIL}" not in db.shared_links["file-1"]
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert f"0S:{BOB_EMAIL}" in db.record_groups
+        assert f"0S:{BOB_EMAIL}" in db.shared_links["file-1"]
+
+    async def test_a_drive_that_cannot_act_as_the_user_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        share_history(box_api, "file-1", BOB)
+        connector = await ready_connector(db, checkpoints)
+        fail_as_user(connector, BOB, nth=1)
+
+        await connector.run_sync()
+
+        assert f"0S:{BOB_EMAIL}" not in db.record_groups
+        assert checkpoints.cursor() is None
+
+    async def test_a_drive_that_cannot_be_saved_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        db.failing.add("on_new_record_groups")
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor() is None
+
+        db.failing.clear()
+        await connector.run_sync()
+
+        assert {ALICE, f"0S:{ALICE_EMAIL}"} <= set(db.record_groups)

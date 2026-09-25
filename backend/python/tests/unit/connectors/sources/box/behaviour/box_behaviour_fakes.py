@@ -354,9 +354,10 @@ class FakeBoxRecordsDb:
 
     Mirrors the real processor's write semantics where they matter: record
     permissions are added to what is stored (``on_new_records`` never removes an
-    edge) and a group permission is dropped when that group is not stored yet,
-    while ``on_new_user_groups`` replaces a stored group's members with the list
-    it is given. Only the methods the Box connector calls are implemented.
+    edge), a group permission or a "Shared with me" link is dropped when that
+    group is not stored yet, and ``on_new_user_groups`` replaces a stored group's
+    members with the list it is given. Only the methods the Box connector calls
+    are implemented; ``failing`` names methods that raise as if the database were down.
     """
 
     def __init__(self, org_id: str = "org-1") -> None:
@@ -375,6 +376,14 @@ class FakeBoxRecordsDb:
         self.reindexed: list[Any] = []
         self.fail_lookup_for: set[str] = set()
         self.fail_active_users = False
+        self.failing: set[str] = set()
+        self.fail_write_for: set[str] = set()
+        self.fail_group_write_for: set[str] = set()
+        self.shared_links: dict[str, set[str]] = {}
+
+    def _check(self, method: str) -> None:
+        if method in self.failing:
+            raise RuntimeError(f"database unavailable ({method})")
 
     def access(self, external_id: str) -> set[str]:
         """Who can reach a record directly: user emails and group ids."""
@@ -386,12 +395,17 @@ class FakeBoxRecordsDb:
         return self.records.get(external_record_id)
 
     async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str) -> list[Any]:
+        self._check("get_records_by_parent")
         return [r for r in self.records.values() if r.parent_external_record_id == parent_external_record_id]
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+        if any(rec.external_record_id in self.fail_write_for for rec, _ in records_with_permissions):
+            raise RuntimeError("database unavailable (on_new_records)")
         self.record_batches.append([rec for rec, _ in records_with_permissions])
         for record, permissions in records_with_permissions:
             self.records[record.external_record_id] = record
+            links = self.shared_links.setdefault(record.external_record_id, set())
+            links.update(g for g in record.shared_with_me_record_group_ids or [] if g in self.record_groups)
             stored = self.permissions.setdefault(record.external_record_id, {})
             for p in permissions or []:
                 if p.entity_type.value == "GROUP" and p.external_id not in self.user_groups:
@@ -399,6 +413,7 @@ class FakeBoxRecordsDb:
                 stored[f"{p.entity_type.value}:{p.external_id}"] = p
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+        self._check("on_new_record_groups")
         for group, _ in groups:
             self.record_groups[group.external_group_id] = group
 
@@ -411,6 +426,7 @@ class FakeBoxRecordsDb:
         return list(self.app_users.values())
 
     async def get_app_user_by_email(self, email: str, connector_id: str) -> AppUser | None:
+        self._check("get_app_user_by_email")
         return self.app_users.get(email.lower())
 
     async def get_all_active_users(self) -> list[Any]:
@@ -419,6 +435,8 @@ class FakeBoxRecordsDb:
         return [u for e, u in self.app_users.items() if e in self.active_emails]
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+        if any(g.source_user_group_id in self.fail_group_write_for for g, _ in groups):
+            raise RuntimeError("database unavailable (on_new_user_groups)")
         for group, members in groups:
             self.user_groups[group.source_user_group_id] = group
             self.group_members[group.source_user_group_id] = sorted(m.email for m in members)
@@ -432,6 +450,7 @@ class FakeBoxRecordsDb:
         self.group_members.pop(external_group_id, None)
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
+        self._check("remove_user_access_to_record")
         self.removed_access.append((external_id, user_id))
         user = next((u for u in self.app_users.values() if u.id == user_id), None)
         if user:

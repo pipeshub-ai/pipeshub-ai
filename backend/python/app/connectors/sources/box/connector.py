@@ -936,6 +936,7 @@ class BoxConnector(BaseConnector):
                     await self.data_source.set_as_user_context(user.source_user_id)
                 except Exception as e:
                     self.logger.warning(f"Could not set As-User for {user.email}: {e}")
+                    self._mark_full_sync_incomplete(e)
                     continue
 
                 try:
@@ -945,6 +946,7 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.warning(f"Could not fetch root folder for user {user.email}: {response.error}")
+                    self._mark_full_sync_incomplete(response.error)
                     continue
 
                 root_folder = self._to_dict(response.data)
@@ -990,6 +992,7 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing Box record groups: {e}", exc_info=True)
+            self._mark_full_sync_incomplete(e)
 
     async def _run_sync_for_user(self, user: AppUser) -> None:
         """
@@ -1043,6 +1046,10 @@ class BoxConnector(BaseConnector):
                         self.logger.info(f"🔍 Current Token Owner ID: {self.current_user_id}")
             except Exception as e:
                 self.logger.warning(f"Could not fetch current user ID: {e}")
+            if not self.current_user_id:
+                # Without it the walk below lists as the service account, which reads an empty root.
+                self.logger.warning("Could not identify the Box service account; this user's files are not listed.")
+                self._full_sync_complete = False
 
         # Set As-User context if syncing for a different user
         try:
@@ -1054,8 +1061,8 @@ class BoxConnector(BaseConnector):
                 await self.data_source.clear_as_user_context()
         except Exception as e:
             self.logger.error(f"Failed to set As-User context: {e}")
-            # Continue without impersonation
-            pass
+            # Listing without impersonation reads the service account's own files, not this user's.
+            self._full_sync_complete = False
 
         while True:
 
