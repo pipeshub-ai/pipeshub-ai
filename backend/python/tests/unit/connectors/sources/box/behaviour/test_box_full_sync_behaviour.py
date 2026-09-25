@@ -387,6 +387,18 @@ class TestGroups:
         assert db.group_members["g-eng"] == [BOB_EMAIL]
         assert "g-eng" in db.access("file-1")
 
+    async def test_a_missing_group_scope_is_explained_and_does_not_force_full_syncs(self, box_api, db, checkpoints, caplog) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        box_api.fail("GET", "/2.0/groups", 403, times=10)
+        connector = await ready_connector(db, checkpoints)
+
+        with caplog.at_level(logging.ERROR, logger="test.box"):
+            await connector.run_sync()
+
+        assert "'Manage groups' scope" in caplog.text and "re-authorize" in caplog.text
+        assert checkpoints.cursor() is not None
+
     async def test_a_group_removed_in_box_is_deleted(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
         box_api.add_group("g-eng", "Engineering", (ALICE,))

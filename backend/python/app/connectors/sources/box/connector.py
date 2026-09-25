@@ -306,6 +306,14 @@ class BoxConnector(BaseConnector):
         """403 and 404 are Box's settled answer; anything else may succeed on a later try."""
         return str(error).startswith(("403", "404"))
 
+    def _explain_missing_group_scope(self, error: object) -> None:
+        if str(error).startswith("403"):
+            self.logger.error(
+                "Box refused to list groups (403), so group access in PipesHub is not being updated. "
+                "In the Box Developer Console, turn on the app's 'Manage groups' scope, then have a Box "
+                "admin re-authorize the app in the Box Admin Console."
+            )
+
     def _mark_read_incomplete(self, error: object) -> None:
         if not self._is_final_answer(error):
             self._read_complete = False
@@ -813,6 +821,7 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.error(f"Failed to fetch groups: {response.error}")
+                    self._explain_missing_group_scope(response.error)
                     self.logger.warning("Skipping removal of deleted groups because the group list from Box is incomplete.")
                     self._mark_read_incomplete(response.error)
                     return
@@ -885,6 +894,7 @@ class BoxConnector(BaseConnector):
             )
             if not response.success:
                 self.logger.warning(f"Failed to fetch members of group {group_id}: {response.error}")
+                self._explain_missing_group_scope(response.error)
                 self._mark_read_incomplete(response.error)
                 return None
             data = self._to_dict(response.data)
@@ -1391,7 +1401,7 @@ class BoxConnector(BaseConnector):
         # 1. Load Cursor (Box guarantees events after cursor are new; duplicates only within that stream)
         stream_position = 'now'
         held_attempts = 0
-        cursor_updated_at: Optional[int] = None
+        cursor_updated_at: int | None = None
         try:
             data = await self.box_cursor_sync_point.read_sync_point(key)
             if data and isinstance(data, dict):
