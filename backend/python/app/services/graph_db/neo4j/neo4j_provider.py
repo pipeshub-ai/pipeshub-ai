@@ -241,7 +241,9 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def _initialize_schema(self) -> None:
         """Initialize Neo4j schema (delegates to ensure_schema)."""
-        await self.ensure_schema()
+        success = await self.ensure_schema()
+        if not success:
+            raise RuntimeError("Failed to ensure Neo4j schema (CorpusRevision constraint creation failed).")
 
     async def _initialize_departments(self) -> None:
         """Initialize departments collection with predefined department types"""
@@ -661,7 +663,8 @@ class Neo4jProvider(IGraphDBProvider):
                 await self.client.execute_query("CREATE CONSTRAINT corpus_revision_org_id IF NOT EXISTS FOR (r:CorpusRevision) REQUIRE r.orgId IS UNIQUE")
                 self.logger.debug("Created unique constraint on CorpusRevision.orgId")
             except Exception as e:
-                self.logger.debug(f"CorpusRevision constraint creation failed: {e}")
+                self.logger.error(f"CorpusRevision constraint creation failed: {e}")
+                return False
 
             # Create property existence constraints for required fields from schemas
             property_constraints = self._generate_required_field_constraints()
@@ -19736,14 +19739,29 @@ class Neo4jProvider(IGraphDBProvider):
             raise RuntimeError("Neo4j client not connected")
         query = """
         MATCH (r:CorpusRevision {orgId: $org_id})
-        RETURN toString(r.revision) AS revision
+        RETURN toString(r.revision) AS revision, size(coalesce(r.pendingMutations, [])) AS pendingCount
         """
         results = await self.client.execute_query(query, {"org_id": org_id})
-        if results and results[0].get("revision") is not None:
-            return str(results[0]["revision"])
+        if results:
+            if results[0].get("pendingCount", 0) > 0:
+                raise RuntimeError("Corpus revision transition pending")
+            if results[0].get("revision") is not None:
+                return str(results[0]["revision"])
         return "0"
 
-    async def increment_corpus_revision(self, org_id: str) -> str:
+    async def mark_corpus_mutation_start(self, org_id: str) -> str:
+        if not self.client:
+            raise RuntimeError("Neo4j client not connected")
+        mutation_id = str(uuid.uuid4())
+        query = """
+        MERGE (r:CorpusRevision {orgId: $org_id})
+        ON CREATE SET r.revision = 0, r.pendingMutations = [$mutation_id]
+        ON MATCH SET r.pendingMutations = coalesce(r.pendingMutations, []) + $mutation_id
+        """
+        await self.client.execute_query(query, {"org_id": org_id, "mutation_id": mutation_id})
+        return mutation_id
+
+    async def increment_corpus_revision(self, org_id: str, mutation_id: str | None = None) -> str:
         """Atomically increment and return the corpus revision for an organization.
 
         Raises RuntimeError when the Neo4j client is not connected.
@@ -19752,11 +19770,14 @@ class Neo4jProvider(IGraphDBProvider):
             raise RuntimeError("Neo4j client not connected")
         query = """
         MERGE (r:CorpusRevision {orgId: $org_id})
-        ON CREATE SET r.revision = 1
-        ON MATCH SET r.revision = coalesce(r.revision, 0) + 1
+        ON CREATE SET r.revision = 1, r.pendingMutations = []
+        ON MATCH SET r.revision = coalesce(r.revision, 0) + 1,
+                     r.pendingMutations = CASE WHEN $mutation_id IS NOT NULL 
+                                          THEN [x IN coalesce(r.pendingMutations, []) WHERE x <> $mutation_id]
+                                          ELSE coalesce(r.pendingMutations, []) END
         RETURN toString(r.revision) AS revision
         """
-        results = await self.client.execute_query(query, {"org_id": org_id})
+        results = await self.client.execute_query(query, {"org_id": org_id, "mutation_id": mutation_id})
         if results and results[0].get("revision") is not None:
             return str(results[0]["revision"])
         return "0"

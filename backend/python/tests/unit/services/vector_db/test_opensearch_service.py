@@ -86,6 +86,7 @@ def connected_service(service):
             }
         }
     })
+    client.indices.get_mapping = AsyncMock(return_value={})
     client.transport = AsyncMock()
     client.transport.perform_request = AsyncMock(return_value={"acknowledged": True})
     client.search = AsyncMock(return_value={"hits": {"hits": []}})

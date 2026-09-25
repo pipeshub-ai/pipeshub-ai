@@ -1387,6 +1387,23 @@ async def update_record(
                 detail="Invalid request body"
             )
         user_id = request.state.user.get("userId")
+
+        kb_context = None
+        _bump_org_id = None
+        try:
+            kb_context = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
+            _bump_org_id = kb_context.get("org_id") if kb_context else None
+        except Exception as e:
+            logger.warning(f"Failed to lookup KB context for record {record_id} prior to revision bump: {e}")
+
+        mutation_id = None
+        if _bump_org_id:
+            try:
+                mutation_id = await request.app.state.graph_provider.mark_corpus_mutation_start(_bump_org_id)
+            except Exception as e:
+                logger.error(f"Failed to start corpus mutation: {e}")
+                raise HTTPException(status_code=503, detail="Service unavailable (database error)")
+
         result = await kb_service.update_record(
             user_id=user_id,
             record_id=record_id,
@@ -1401,24 +1418,9 @@ async def update_record(
                 detail=error_reason
             )
 
-        # Increment corpus revision on the KB-owning org (not the requester).
-        # The enrichment block below already fetches kb_context, but we need
-        # the org_id before that to match the resource — re-fetch here so the
-        # bump uses the authoritative value even if enrichment is skipped.
-        # Only call the helper when a non-empty org_id was resolved; passing
-        # None would silently fall back to the requester's org, which is wrong
-        # for cross-org access.
         cache_invalidation_pending = False
-        kb_context = None
-        try:
-            kb_context = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
-            _bump_org_id = kb_context.get("org_id") if kb_context else None
-        except Exception as e:
-            logger.warning(f"Failed to lookup KB context for record {record_id} prior to revision bump: {e}")
-            _bump_org_id = None
-
         if _bump_org_id:
-            cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _bump_org_id)
+            cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _bump_org_id, mutation_id)
         else:
             cache_invalidation_pending = True
 
@@ -1450,7 +1452,7 @@ async def update_record(
                 kb_id = kb_context.get("kb_id") if kb_context else None
             if not kb_id:
                 logger.warning(f"⚠️ KB context unavailable for updated record {record_id}; returning un-enriched response")
-                return {
+                response = {
                     **result,
                     "fileUpdated": body.get("fileMetadata") is not None,
                     "timestamp": get_epoch_timestamp_in_ms(),
@@ -1458,6 +1460,9 @@ async def update_record(
                     "kb": {},
                     "userPermission": "NONE",
                 }
+                if cache_invalidation_pending:
+                    response["cacheInvalidationPending"] = True
+                return response
 
             # Get user permission
             user_key = user_id
@@ -1565,6 +1570,14 @@ async def delete_records_in_kb(
 
         _kb_org = await _resolve_kb_owner_before_deletion(request, kb_id, "delete_records_in_kb")
 
+        mutation_id = None
+        if _kb_org:
+            try:
+                mutation_id = await request.app.state.graph_provider.mark_corpus_mutation_start(_kb_org)
+            except Exception as e:
+                _log.error(f"Failed to start corpus mutation: {e}")
+                raise HTTPException(status_code=503, detail="Service unavailable (database error)")
+
         result = await kb_service.delete_records_in_kb(
             kb_id=kb_id,
             record_ids=body.get("recordIds"),
@@ -1581,7 +1594,7 @@ async def delete_records_in_kb(
         if result and result.get("success") is True:
             cache_invalidation_pending = False
             if _kb_org:
-                cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org)
+                cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org, mutation_id)
             else:
                 _log.warning(
                     "delete_records_in_kb: KB owner org unresolved for kb_id=%s; "
@@ -1633,6 +1646,14 @@ async def delete_record_in_folder(
 
         _kb_org = await _resolve_kb_owner_before_deletion(request, kb_id, "delete_record_in_folder")
 
+        mutation_id = None
+        if _kb_org:
+            try:
+                mutation_id = await request.app.state.graph_provider.mark_corpus_mutation_start(_kb_org)
+            except Exception as e:
+                _log.error(f"Failed to start corpus mutation: {e}")
+                raise HTTPException(status_code=503, detail="Service unavailable (database error)")
+
         result = await kb_service.delete_records_in_folder(
             kb_id=kb_id,
             folder_id=folder_id,
@@ -1650,7 +1671,7 @@ async def delete_record_in_folder(
         if result and result.get("success") is True:
             cache_invalidation_pending = False
             if _kb_org:
-                cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org)
+                cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org, mutation_id)
             else:
                 _log.warning(
                     "delete_record_in_folder: KB owner org unresolved for kb_id=%s; "

@@ -5,7 +5,8 @@ _log = logging.getLogger(__name__)
 
 async def increment_org_corpus_revision_with_retry(
     graph_provider,
-    org_id: str | None
+    org_id: str | None,
+    mutation_id: str | None = None
 ) -> bool:
     """Bump the corpus revision for *org_id*.
 
@@ -29,7 +30,7 @@ async def increment_org_corpus_revision_with_retry(
     
     for attempt in range(1, max_attempts + 1):
         try:
-            await graph_provider.increment_corpus_revision(org_id)
+            await graph_provider.increment_corpus_revision(org_id, mutation_id)
             return True  # success
         except Exception as exc:
             last_exc = exc

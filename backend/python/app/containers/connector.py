@@ -145,7 +145,9 @@ async def initialize_container(container) -> bool:
         logger.info("✅ Data store initialized")
 
         # Schema init: collections, graph, departments seed
-        await data_store.graph_provider.ensure_schema()
+        schema_ok = await data_store.graph_provider.ensure_schema()
+        if not schema_ok:
+            raise Exception("Failed to ensure database schema")
         logger.info("✅ Schema ensured")
 
         logger.info("✅ Container initialization completed successfully")

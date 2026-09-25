@@ -448,6 +448,62 @@ class TestLifespan:
             async with lifespan(mock_app):
                 pass
 
+    async def test_cache_purge_retry_on_service_resolution_failure(self):
+        from app.query_main import lifespan
+        mock_container = _make_container()
+        mock_container._graph_provider = AsyncMock()
+        mock_container._graph_provider.get_all_orgs.return_value = []
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+
+        call_count = 0
+        async def mock_semantic_cache_service():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("Provider resolution failed")
+            svc = AsyncMock()
+            svc._initialized = True
+            return svc
+            
+        mock_container.semantic_cache_service = mock_semantic_cache_service
+
+        sleep_calls = 0
+        async def mock_sleep(delay, *args, **kwargs):
+            if delay == 600:
+                nonlocal sleep_calls
+                sleep_calls += 1
+                if sleep_calls >= 3:
+                    raise asyncio.CancelledError()
+            return
+
+        with (
+            patch("app.query_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.query_main.container", mock_container),
+            patch("app.query_main.asyncio.sleep", new_callable=AsyncMock, side_effect=mock_sleep),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=MagicMock()),
+            patch("app.agents.mcp.registry.get_mcp_registry", return_value=MagicMock()),
+        ):
+            mock_container.config_service.return_value = mock_config_service
+            mock_container.retrieval_service = AsyncMock()
+            
+            try:
+                async with lifespan(mock_app):
+                    task = mock_app.state.semantic_cache_purge_task
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+            except asyncio.CancelledError:
+                pass
+            
+            assert call_count == 2
+
+
             # retrieval_service should NOT have been awaited (no orgs)
             mock_container.retrieval_service.assert_not_awaited()
 

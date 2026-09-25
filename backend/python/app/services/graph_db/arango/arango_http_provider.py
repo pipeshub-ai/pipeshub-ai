@@ -22809,14 +22809,31 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Get the current corpus revision for an organization."""
         query = """
         LET r = DOCUMENT("CorpusRevision", @org_id)
-        RETURN r != null ? TO_STRING(r.revision) : "0"
+        RETURN {
+            revision: r != null ? TO_STRING(r.revision) : "0",
+            pendingCount: r != null ? LENGTH(r.pendingMutations || []) : 0
+        }
         """
         results = await self.execute_query(query, bind_vars={"org_id": org_id})
-        if results and results[0] is not None:
-            return str(results[0])
+        if results and results[0]:
+            if results[0].get("pendingCount", 0) > 0:
+                raise RuntimeError("Corpus revision transition pending")
+            if results[0].get("revision") is not None:
+                return str(results[0]["revision"])
         return "0"
 
-    async def increment_corpus_revision(self, org_id: str) -> str:
+    async def mark_corpus_mutation_start(self, org_id: str) -> str:
+        mutation_id = str(uuid.uuid4())
+        query = """
+        UPSERT { _key: @org_id }
+        INSERT { _key: @org_id, orgId: @org_id, revision: 0, pendingMutations: [@mutation_id] }
+        UPDATE { pendingMutations: PUSH(OLD.pendingMutations || [], @mutation_id) }
+        IN CorpusRevision
+        """
+        await self.execute_query(query, bind_vars={"org_id": org_id, "mutation_id": mutation_id})
+        return mutation_id
+
+    async def increment_corpus_revision(self, org_id: str, mutation_id: str | None = None) -> str:
         """Atomically increment and return the corpus revision for an organization.
 
         Retries the UPSERT exactly once when ArangoDB raises unique-constraint
@@ -22825,14 +22842,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         query = """
         UPSERT { _key: @org_id }
-        INSERT { _key: @org_id, orgId: @org_id, revision: 1 }
-        UPDATE { revision: OLD.revision + 1 }
+        INSERT { _key: @org_id, orgId: @org_id, revision: 1, pendingMutations: [] }
+        UPDATE { 
+            revision: OLD.revision + 1,
+            pendingMutations: @mutation_id != null ? REMOVE_VALUE(OLD.pendingMutations || [], @mutation_id) : (OLD.pendingMutations || [])
+        }
         IN CorpusRevision
         RETURN TO_STRING(NEW.revision)
         """
         for attempt in range(2):
             try:
-                results = await self.execute_query(query, bind_vars={"org_id": org_id})
+                results = await self.execute_query(query, bind_vars={"org_id": org_id, "mutation_id": mutation_id})
                 if results and results[0] is not None:
                     return str(results[0])
                 return "0"

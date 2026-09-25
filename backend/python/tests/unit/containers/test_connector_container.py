@@ -212,6 +212,21 @@ class TestInitializeContainerFailures:
         with pytest.raises(Exception, match="Failed to initialize data store"):
             await initialize_container(container)
 
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
+    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
+    async def test_schema_ensure_failure_raises(self, mock_health):
+        container, _, _ = _make_mock_container()
+        mock_data_store = MagicMock()
+        mock_gp = AsyncMock()
+        mock_gp.ensure_schema.return_value = False
+        mock_data_store.graph_provider = mock_gp
+        container.data_store = AsyncMock(return_value=mock_data_store)
+
+        with pytest.raises(Exception, match="Failed to ensure database schema"):
+            await initialize_container(container)
+
+
 
 # ===========================================================================
 # initialize_container — deployment config edge cases

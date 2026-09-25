@@ -549,6 +549,33 @@ class TestAskAIStreamEndpoint:
         assert isinstance(result, StreamingResponse)
         assert result.media_type == "text/event-stream"
 
+    @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot._generate_chat_stream_via_agent_loop")
+    @patch("app.api.routes.chatbot.get_model_config")
+    async def test_currentTime_normalized_for_cache(self, mock_get_model_config, mock_generate_stream):
+        from fastapi.responses import StreamingResponse
+        from app.api.routes.chatbot import askAIStream
+        
+        mock_get_model_config.return_value = ({"provider": "openai"}, [])
+        
+        request = MagicMock()
+        request.state.graph_provider = AsyncMock()
+        request.state.graph_provider.get_corpus_revision = AsyncMock(return_value="rev1")
+        request.state.auth_user = {"id": "u1", "org_id": "org1"}
+        request.json = AsyncMock(return_value={
+            "query": "hello",
+            "currentTime": "2024-03-14T15:09:23.123Z",
+        })
+
+        await askAIStream(request, AsyncMock(), AsyncMock(), AsyncMock())
+        
+        # Verify _generate_chat_stream_via_agent_loop was called with normalized time
+        mock_generate_stream.assert_called_once()
+        called_query_info = mock_generate_stream.call_args.kwargs["query_info"]
+        assert called_query_info.currentTime == "2024-03-14T15:09:00.000Z"
+
+
+
 
 # ---------------------------------------------------------------------------
 # Additional get_model_config coverage

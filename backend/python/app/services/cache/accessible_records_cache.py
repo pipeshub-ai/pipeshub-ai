@@ -378,20 +378,25 @@ class AccessibleRecordsInvalidator:
         lose any outstanding bump, but that is acceptable under the TTL backstop.
         """
         orgs = list(self._scheduled_bumps.keys())
-        for org_id in orgs:
-            task = self._scheduled_bumps.pop(org_id, None)
-            if task is not None:
-                task.cancel()
-            try:
-                await self.graph_provider.increment_corpus_revision(org_id)
-                self.logger.info(
-                    "Flushed pending corpus revision bump for org %s on shutdown", org_id
-                )
-            except Exception as e:
-                self.logger.warning(
-                    "Failed to flush corpus revision bump for org %s on shutdown: %s",
-                    org_id, str(e),
-                )
+        try:
+            async with asyncio.timeout(5.0):
+                for org_id in orgs:
+                    task_info = self._scheduled_bumps.pop(org_id, None)
+                    if task_info is not None:
+                        task, m_id = task_info
+                        task.cancel()
+                        try:
+                            await self.graph_provider.increment_corpus_revision(org_id, m_id)
+                            self.logger.info(
+                                "Flushed pending corpus revision bump for org %s on shutdown", org_id
+                            )
+                        except Exception as e:
+                            self.logger.warning(
+                                "Failed to flush corpus revision bump for org %s on shutdown: %s",
+                                org_id, str(e),
+                            )
+        except TimeoutError:
+            self.logger.warning("Shutdown flush timed out, some corpus revision bumps may have been lost")
 
     async def on_connector_sync_completed(
         self, connector_id: str, org_id: str | None = None
@@ -409,8 +414,9 @@ class AccessibleRecordsInvalidator:
                     connector_id,
                 )
                 return
+            mutation_id = await self.graph_provider.mark_corpus_mutation_start(org_id)
             await self.cache.invalidate_connector(org_id, connector_id)
-            await self.graph_provider.increment_corpus_revision(org_id)
+            await self.graph_provider.increment_corpus_revision(org_id, mutation_id)
         except Exception as e:
             self.logger.warning(
                 "Could not invalidate accessible-records cache for connector %s: %s",
@@ -434,8 +440,9 @@ class AccessibleRecordsInvalidator:
             org_id = org_id or app.get("orgId")
             if not org_id:
                 return
+            mutation_id = await self.graph_provider.mark_corpus_mutation_start(org_id)
             await self.cache.invalidate_kb(org_id, kb_id)
-            await self.graph_provider.increment_corpus_revision(org_id)
+            await self.graph_provider.increment_corpus_revision(org_id, mutation_id)
         except Exception as e:
             self.logger.warning(
                 "Could not invalidate accessible-records cache for KB %s: %s", kb_id, str(e)
@@ -476,21 +483,22 @@ class AccessibleRecordsInvalidator:
             # no longer in-flight and its finally-block cleanup has already
             # run, so marking dirty would leave the org waiting for a
             # follow-up that will never be triggered.
-            existing_task = self._scheduled_bumps.get(org_id)
-            task_is_running = existing_task is not None and not existing_task.done()
+            existing_task_info = self._scheduled_bumps.get(org_id)
+            task_is_running = existing_task_info is not None and not existing_task_info[0].done()
             if task_is_running:
                 self._pending_dirty.add(org_id)
             else:
                 # Remove stale done-task entry before creating the new one.
                 self._scheduled_bumps.pop(org_id, None)
+                mutation_id = await self.graph_provider.mark_corpus_mutation_start(org_id)
 
-                async def _trailing_bump(target_org: str) -> None:
+                async def _trailing_bump(target_org: str, m_id: str) -> None:
                     success = False
                     try:
                         for attempt in range(1, 4):
                             await asyncio.sleep(2.0 * attempt)
                             try:
-                                await self.graph_provider.increment_corpus_revision(target_org)
+                                await self.graph_provider.increment_corpus_revision(target_org, m_id)
                                 success = True
                                 break
                             except Exception as bump_exc:
@@ -508,13 +516,15 @@ class AccessibleRecordsInvalidator:
                             if target_org in self._pending_dirty:
                                 self._pending_dirty.discard(target_org)
                                 try:
-                                    self._scheduled_bumps[target_org] = asyncio.create_task(
-                                        _trailing_bump(target_org)
+                                    next_m_id = await self.graph_provider.mark_corpus_mutation_start(target_org)
+                                    self._scheduled_bumps[target_org] = (
+                                        asyncio.create_task(_trailing_bump(target_org, next_m_id)),
+                                        next_m_id
                                     )
                                 except Exception:
                                     pass
 
-                self._scheduled_bumps[org_id] = asyncio.create_task(_trailing_bump(org_id))
+                self._scheduled_bumps[org_id] = (asyncio.create_task(_trailing_bump(org_id, mutation_id)), mutation_id)
         except Exception as e:
             self.logger.warning(
                 "Could not invalidate accessible-records cache after indexing: %s", str(e)

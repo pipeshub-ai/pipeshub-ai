@@ -5180,9 +5180,25 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def increment_corpus_revision(self, org_id: str) -> str:
-        """Atomically increment and return the corpus revision for an organization.
+    async def mark_corpus_mutation_start(self, org_id: str) -> str:
+        """Register a pending corpus mutation to suppress cache hits until completion.
+
+        Writes a unique mutation ID to the organization's ``pendingMutations`` array.
+        If this write fails, the caller MUST NOT proceed with the corpus mutation.
+
+        Returns:
+            A unique string (e.g. UUID) identifying this mutation, to be passed
+            to `increment_corpus_revision` on completion.
+        """
+        pass
+
+    @abstractmethod
+    async def increment_corpus_revision(self, org_id: str, mutation_id: str | None = None) -> str:
+        """Atomically increment the corpus revision for an organization.
         
+        If ``mutation_id`` is provided, it is removed from the organization's
+        ``pendingMutations`` array in the same transaction.
+
         Returns the new revision string.
         """
         pass

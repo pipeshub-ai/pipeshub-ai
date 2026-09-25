@@ -247,3 +247,42 @@ def test_hash_filters():
     assert hash_filters(scope5) == hash_filters(scope6), (
         "None filters and absent filters must produce the same hash"
     )
+
+
+@pytest.mark.asyncio
+async def test_initialize_fails_dimension_verify():
+    mock_vector_db = AsyncMock()
+    mock_vector_db.collection_exists.return_value = True
+    mock_vector_db.get_collection_info.side_effect = Exception("db error")
+    
+    svc = SemanticCacheService(mock_vector_db)
+    await svc.initialize(1024)
+    
+    assert not svc._initialized
+
+
+@pytest.mark.asyncio
+async def test_initialize_fails_delete_mismatch():
+    mock_vector_db = AsyncMock()
+    mock_vector_db.collection_exists.return_value = True
+    info = MagicMock()
+    info.dense_dimension = 512
+    mock_vector_db.get_collection_info.return_value = info
+    mock_vector_db.delete_collection.side_effect = Exception("delete error")
+    
+    svc = SemanticCacheService(mock_vector_db)
+    await svc.initialize(1024)
+    
+    assert not svc._initialized
+
+
+@pytest.mark.asyncio
+async def test_initialize_fails_collection_create():
+    mock_vector_db = AsyncMock()
+    mock_vector_db.collection_exists.return_value = False
+    mock_vector_db.create_collection.side_effect = Exception("create error")
+    
+    svc = SemanticCacheService(mock_vector_db)
+    await svc.initialize(1024)
+    
+    assert not svc._initialized

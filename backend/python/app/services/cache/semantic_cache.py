@@ -59,19 +59,22 @@ class SemanticCacheService:
                         await self.vector_db.delete_collection(self.collection_name)
                         exists = False
                     except Exception as e:
-                        self.logger.warning(
+                        logger.warning(
                             "Failed to delete mismatched semantic cache collection. "
                             f"Another instance may be recreating it: {e}"
                         )
+                        return
             except Exception as e:
-                self.logger.warning(f"Failed to verify semantic cache dimension: {e}")
+                logger.warning(f"Failed to verify semantic cache dimension: {e}")
+                return
 
         if not exists:
             try:
                 config = CollectionConfig(embedding_size=embedding_dimension)
                 await self.vector_db.create_collection(self.collection_name, config)
             except Exception as e:
-                self.logger.warning(f"Failed to create semantic cache collection: {e}")
+                logger.warning(f"Failed to create semantic cache collection: {e}")
+                return
 
         # Index on the nested metadata field so filters survive OpenSearch
         # document conversion (top-level payload fields are discarded by the

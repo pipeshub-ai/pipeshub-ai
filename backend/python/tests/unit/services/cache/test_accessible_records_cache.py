@@ -596,3 +596,31 @@ class TestClose:
         cache = _cache(FakeRedis())
         await cache.close()
         await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_flush_timeout():
+    from app.services.cache.accessible_records_cache import AccessibleRecordsInvalidator
+    
+    redis = FakeRedis()
+    graph = AsyncMock()
+    
+    async def slow_increment(*args, **kwargs):
+        await asyncio.sleep(10.0)
+        
+    graph.increment_corpus_revision.side_effect = slow_increment
+    cache = _cache(redis)
+    invalidator = AccessibleRecordsInvalidator(MagicMock(), cache, graph)
+    
+    # Schedule a fake bump
+    mock_task = MagicMock()
+    invalidator._scheduled_bumps["org-123"] = (mock_task, "test-m-id")
+    
+    # Run close; it should timeout after 5 seconds but not crash the application
+    start_time = asyncio.get_running_loop().time()
+    await invalidator.close()
+    end_time = asyncio.get_running_loop().time()
+    
+    assert end_time - start_time < 6.0
+    mock_task.cancel.assert_called_once()
+

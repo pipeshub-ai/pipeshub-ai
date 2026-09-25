@@ -1107,114 +1107,138 @@ async def _generate_chat_stream_via_agent_loop(
             yield create_sse_event("error", {"error": user_message})
         return
 
-    system_prompts_config: dict[str, Any] = await prompts_task
-
-    policy = resolve_chat_mode_policy(query_info.chatMode)
-    is_multimodal_llm = bool(model_config.get("isMultimodal"))
-    context_length = model_config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
-
-    # When the request carries agentCapabilities and we're in agent mode,
-    # build a capabilities-aware policy instead of the static AGENT_POLICY.
-    chat_mode_str = (query_info.chatMode or "").strip().lower()
-    if chat_mode_str == "agent" or chat_mode_str.startswith("agent:"):
-        raw_caps = query_info.agentCapabilities
-        if raw_caps and isinstance(raw_caps, dict):
-            caps = AgentCapabilities(
-                internal_search=bool(raw_caps.get("internalSearch", True)),
-                web_search=bool(raw_caps.get("webSearch", True)),
-                deep_search=bool(raw_caps.get("deepSearch", False)),
-            )
-            policy = resolve_agent_policy(caps)
-
-    # strictScope rides along inside `filters` (not a separate top-level key)
-    # so every downstream consumer that already forwards `filters` straight
-    # into `get_accessible_virtual_record_ids` picks it up for free.
-    effective_filters: dict[str, Any] = dict(query_info.filters or {})
-    if query_info.strictScope:
-        effective_filters["strictScope"] = True
-
-    query_dict = {
-        "query": query_info.query,
-        "limit": query_info.limit,
-        "previous_conversations": query_info.previousConversations,
-        "filters": effective_filters,
-        "retrievalMode": query_info.retrievalMode,
-        "quickMode": query_info.quickMode,
-        "chatMode": query_info.chatMode,
-        "timezone": query_info.timezone,
-        "currentTime": query_info.currentTime,
-        "conversationId": query_info.conversationId,
-        "projectInstructions": query_info.projectInstructions,
-        "attachments": query_info.attachments,
-        "enableRecordIdShortening": query_info.enableRecordIdShortening,
-        "runId": query_info.runId,
-    }
-    user_info = {
-        "userId": user_id,
-        "orgId": org_id,
-        "userEmail": user.get("email") or "",
-        "sendUserInfo": request.query_params.get("sendUserInfo", True),
-    }
-
-    org_info: dict[str, Any] | None = None
-    user_doc, org_doc, user_context_flag = await asyncio.gather(
-        user_doc_task, org_doc_task, user_context_flag_task, return_exceptions=True,
-    )
-    if isinstance(user_doc, BaseException):
-        logger_.debug("Failed to load user doc for prompt enrichment", exc_info=user_doc)
-    elif user_doc and isinstance(user_doc, dict):
-        for field in ("fullName", "firstName", "lastName", "displayName"):
-            if user_doc.get(field):
-                user_info[field] = user_doc[field]
-        # Reused by `_fetch_available_connectors` (chat_modes/bridge.py) so
-        # the same user lookup is not repeated further down the request.
-        user_key = user_doc.get("_key") or user_doc.get("id")
-        if user_key:
-            user_info["userKey"] = user_key
-    if isinstance(org_doc, BaseException):
-        logger_.debug("Failed to load org doc for prompt enrichment", exc_info=org_doc)
-    elif org_doc and isinstance(org_doc, dict):
-        raw_account_type = str(org_doc.get("accountType", "")).lower()
-        org_info = {
-            "orgId": org_id,
-            "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
-            "name": org_doc.get("name") or "",
-        }
-
-    if isinstance(user_context_flag, BaseException):
-        logger_.debug(
-            "Failed to read ENABLE_USER_CONTEXT; defaulting to enabled",
-            exc_info=user_context_flag,
-        )
-        user_context_enabled = True
-    else:
-        user_context_enabled = bool(user_context_flag)
-    if not user_context_enabled:
-        user_info["sendUserInfo"] = False
-
-    client_name = request.headers.get("client-name")
-
-    run_stream = run_chat_stream(
-        query_dict, user_info, llm, policy, logger_,
-        retrieval_service=retrieval_service, graph_provider=graph_provider,
-        reranker_service=None, config_service=config_service,
-        org_info=org_info,
-        model_name=query_info.modelName, model_key=query_info.modelKey,
-        is_multimodal_llm=is_multimodal_llm, context_length=context_length,
-        llm_provider=model_config.get("provider") or "",
-        system_prompts_config=system_prompts_config, protocol=protocol,
-        client_name=client_name,
-        cancellation_registry=cancellation_registry,
-    )
+    emitted_terminal_event = False
     try:
-        async for event in run_stream:
-            yield event
-    finally:
-        await run_stream.aclose()
+        system_prompts_config: dict[str, Any] = await prompts_task
+
+        policy = resolve_chat_mode_policy(query_info.chatMode)
+        is_multimodal_llm = bool(model_config.get("isMultimodal"))
+        context_length = model_config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+    
+        # When the request carries agentCapabilities and we're in agent mode,
+        # build a capabilities-aware policy instead of the static AGENT_POLICY.
+        chat_mode_str = (query_info.chatMode or "").strip().lower()
+        if chat_mode_str == "agent" or chat_mode_str.startswith("agent:"):
+            raw_caps = query_info.agentCapabilities
+            if raw_caps and isinstance(raw_caps, dict):
+                caps = AgentCapabilities(
+                    internal_search=bool(raw_caps.get("internalSearch", True)),
+                    web_search=bool(raw_caps.get("webSearch", True)),
+                    deep_search=bool(raw_caps.get("deepSearch", False)),
+                )
+                policy = resolve_agent_policy(caps)
+    
+        # strictScope rides along inside `filters` (not a separate top-level key)
+        # so every downstream consumer that already forwards `filters` straight
+        # into `get_accessible_virtual_record_ids` picks it up for free.
+        effective_filters: dict[str, Any] = dict(query_info.filters or {})
+        if query_info.strictScope:
+            effective_filters["strictScope"] = True
+    
+        query_dict = {
+            "query": query_info.query,
+            "limit": query_info.limit,
+            "previous_conversations": query_info.previousConversations,
+            "filters": effective_filters,
+            "retrievalMode": query_info.retrievalMode,
+            "quickMode": query_info.quickMode,
+            "chatMode": query_info.chatMode,
+            "timezone": query_info.timezone,
+            "currentTime": query_info.currentTime,
+            "conversationId": query_info.conversationId,
+            "projectInstructions": query_info.projectInstructions,
+            "attachments": query_info.attachments,
+            "enableRecordIdShortening": query_info.enableRecordIdShortening,
+            "runId": query_info.runId,
+        }
+        user_info = {
+            "userId": user_id,
+            "orgId": org_id,
+            "userEmail": user.get("email") or "",
+            "sendUserInfo": request.query_params.get("sendUserInfo", True),
+        }
+    
+        org_info: dict[str, Any] | None = None
+        user_doc, org_doc, user_context_flag = await asyncio.gather(
+            user_doc_task, org_doc_task, user_context_flag_task, return_exceptions=True,
+        )
+        if isinstance(user_doc, BaseException):
+            logger_.debug("Failed to load user doc for prompt enrichment", exc_info=user_doc)
+        elif user_doc and isinstance(user_doc, dict):
+            for field in ("fullName", "firstName", "lastName", "displayName"):
+                if user_doc.get(field):
+                    user_info[field] = user_doc[field]
+            # Reused by `_fetch_available_connectors` (chat_modes/bridge.py) so
+            # the same user lookup is not repeated further down the request.
+            user_key = user_doc.get("_key") or user_doc.get("id")
+            if user_key:
+                user_info["userKey"] = user_key
+        if isinstance(org_doc, BaseException):
+            logger_.debug("Failed to load org doc for prompt enrichment", exc_info=org_doc)
+        elif org_doc and isinstance(org_doc, dict):
+            raw_account_type = str(org_doc.get("accountType", "")).lower()
+            org_info = {
+                "orgId": org_id,
+                "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
+                "name": org_doc.get("name") or "",
+            }
+    
+        if isinstance(user_context_flag, BaseException):
+            logger_.debug(
+                "Failed to read ENABLE_USER_CONTEXT; defaulting to enabled",
+                exc_info=user_context_flag,
+            )
+            user_context_enabled = True
+        else:
+            user_context_enabled = bool(user_context_flag)
+        if not user_context_enabled:
+            user_info["sendUserInfo"] = False
+    
+        client_name = request.headers.get("client-name")
+
+        run_stream = run_chat_stream(
+            query_dict, user_info, llm, policy, logger_,
+            retrieval_service=retrieval_service, graph_provider=graph_provider,
+            reranker_service=None, config_service=config_service,
+            org_info=org_info,
+            model_name=query_info.modelName, model_key=query_info.modelKey,
+            is_multimodal_llm=is_multimodal_llm, context_length=context_length,
+            llm_provider=model_config.get("provider") or "",
+            system_prompts_config=system_prompts_config, protocol=protocol,
+            client_name=client_name,
+            cancellation_registry=cancellation_registry,
+        )
+        try:
+            async for event in run_stream:
+                yield event
+                if protocol == "agui" and "event: RUN_ERROR" in event or "event: RUN_FINISHED" in event:
+                    emitted_terminal_event = True
+                elif protocol != "agui" and '"error"' in event:
+                    emitted_terminal_event = True
+        finally:
+            await run_stream.aclose()
+    except Exception as exc:
+        logger_.error("Unhandled exception in chat stream setup/generation", exc_info=True)
+        if not emitted_terminal_event:
+            error_code, user_message = classify_exception(exc)
+            if error_code == "unknown":
+                user_message = "An internal error occurred while generating the response."
+            if protocol == "agui":
+                evt = frame(AGUIEventType.RUN_ERROR, message=user_message, code="internal_error")
+                yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+            else:
+                yield create_sse_event("error", {"error": user_message})
 
 
-async def _validate_cached_entry(cached_entry: dict | str | None, graph_provider: IGraphDBProvider, chat_user: dict) -> dict | None:
-    """Validate a cached entry's citations against current record access."""
+from app.services.graph_db.interface.graph_db_provider import requested_scope_ids
+
+async def _validate_cached_entry(
+    cached_entry: dict | str | None,
+    graph_provider: IGraphDBProvider,
+    chat_user: dict,
+    effective_filters: dict | None = None
+) -> dict | None:
+    """Validate a cached entry's citations against current record access and connector scope."""
     if cached_entry:
         if isinstance(cached_entry, str):
             cached_entry = None
@@ -1238,13 +1262,22 @@ async def _validate_cached_entry(cached_entry: dict | str | None, graph_provider
                 virtual_ids_to_check.add(vrid)
 
             if cached_entry:
+                req_ids = requested_scope_ids(effective_filters)
+                if req_ids is not None:
+                    scope_connector_ids = frozenset(req_ids)
+                elif effective_filters and effective_filters.get("strictScope"):
+                    scope_connector_ids = frozenset()
+                else:
+                    scope_connector_ids = None
+
                 accessible_map = await graph_provider.filter_accessible_virtual_record_ids(
                     virtual_record_ids=list(virtual_ids_to_check),
                     user_id=chat_user.get("userId"),
                     org_id=chat_user.get("orgId"),
+                    scope_connector_ids=scope_connector_ids,
                 )
                 if len(accessible_map) != len(virtual_ids_to_check):
-                    logger.info("Cache bypassed: User lost access to one or more source records.")
+                    logger.info("Cache bypassed: User lost access to one or more source records or they are outside the requested scope.")
                     cached_entry = None
 
     return cached_entry
@@ -1281,6 +1314,19 @@ async def askAIStream(
     # committed the response to 200. See `RunCancellationRegistry.is_active`.
     if query_info.runId and await cancellation_registry.is_active(query_info.runId):
         raise HTTPException(status_code=409, detail=f"runId '{query_info.runId}' is already active")
+
+    # Normalize currentTime to the minute to improve cache hit rates.
+    # This ensures the exact same time string is used in the cache key
+    # and the LLM prompt, satisfying the requirement that the agent
+    # receives the same time it is cached against.
+    if query_info.currentTime:
+        try:
+            # e.g. "2024-03-14T15:09:23.123Z" -> "2024-03-14T15:09:00.000Z"
+            # Fast string slicing for standard ISO format:
+            if len(query_info.currentTime) >= 16 and query_info.currentTime[10] == 'T':
+                query_info.currentTime = query_info.currentTime[:16] + ":00.000Z"
+        except Exception:
+            pass
 
 
     _chat_user = getattr(request.state, "user", {}) or {}
@@ -1393,7 +1439,7 @@ async def askAIStream(
                             )
                             if cached_entry:
                                 cached_entry = await _validate_cached_entry(
-                                    cached_entry, graph_provider, _chat_user
+                                    cached_entry, graph_provider, _chat_user, effective_filters
                                 )
 
                             if cached_entry:
@@ -1477,6 +1523,16 @@ async def askAIStream(
                                 has_complex_state = True
                         except Exception:
                             pass
+            except Exception as exc:
+                logger.error("Error generating stream in cached_or_live_stream", exc_info=True)
+                run_failed = True
+                if not run_finished and not run_failed:  # Actually run_failed is just set to True, but if RUN_ERROR was not yet seen
+                    pass # Wait, if it didn't emit RUN_ERROR from the base stream, we emit it here?
+                    # No, _generate_chat_stream_via_agent_loop will emit the RUN_ERROR if it handles it.
+                    # If it bubbles all the way here, _generate_chat_stream_via_agent_loop didn't handle it.
+                # Just to be safe, emit RUN_ERROR
+                evt = frame(AGUIEventType.RUN_ERROR, message="An internal error occurred while generating the response.", code="internal_error", runId=query_info.runId)
+                yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
             finally:
                 await base_stream.aclose()
 

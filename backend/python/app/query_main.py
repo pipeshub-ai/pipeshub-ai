@@ -345,11 +345,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
     async def _scheduled_semantic_cache_purge() -> None:
-        semantic_cache_svc = await app_container.semantic_cache_service()
-            
         while True:
             try:
                 await asyncio.sleep(600)  # every 10 minutes
+                
+                semantic_cache_svc = await app_container.semantic_cache_service()
                 
                 if getattr(semantic_cache_svc, "_initialized", False) is False:
                     # Defer purge runs until a chat request initializes the cache dimension
