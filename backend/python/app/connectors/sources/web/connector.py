@@ -1535,11 +1535,12 @@ class WebConnector(BaseConnector):
             fetch_result.error,
         ) or 0
 
+        headers = {"Content-Type": fetch_result.content_type} if fetch_result.content_type else {}
         if not fetch_result.success or not (fetch_result.html or "").strip():
             return FetchResponse(
                 status_code=status_code,
                 content_bytes=b"",
-                headers={},
+                headers=headers,
                 final_url=fetch_result.url or url,
                 strategy="crawl4ai",
                 success=False,
@@ -1548,7 +1549,7 @@ class WebConnector(BaseConnector):
         return FetchResponse(
             status_code=status_code,
             content_bytes=fetch_result.html.encode("utf-8"),
-            headers={},
+            headers=headers,
             final_url=fetch_result.url,
             strategy="crawl4ai",
         )
@@ -1564,7 +1565,7 @@ class WebConnector(BaseConnector):
         probed = await self._probe_landing(url)
         if probed is None:
             return None  # the site answered neither HEAD nor GET; recorded as unreachable
-        landing, _ = probed
+        landing, _status, _content_type = probed
         if self._outside_crawl(landing):
             return self._out_of_scope_response(landing)
         return await self._fetch_document(landing)
@@ -1645,7 +1646,7 @@ class WebConnector(BaseConnector):
         """
         if response is None:
             return response
-        if self._is_document_url(response.final_url):
+        if self._is_document_response(response):
             if self._outside_crawl(response.final_url):
                 return self._out_of_scope_response(response.final_url)
             return await self._fetch_document(response.final_url)
@@ -1653,10 +1654,10 @@ class WebConnector(BaseConnector):
             probed = await self._probe_landing(requested_url)
             if probed is None:
                 return response  # the site didn't answer the probe either; the browser retry stands
-            landing, status = probed
+            landing, status, content_type = probed
             if self._outside_crawl(landing):
                 return self._out_of_scope_response(landing)
-            if self._is_document_url(landing):
+            if self._is_document_url(landing) or self._is_document_type(content_type):
                 # A walked, in-scope chain onto a file: fetch it, its own error or size skip included.
                 return await self._fetch_document(landing)
             if status >= HttpStatusCode.BAD_REQUEST.value:
@@ -1664,6 +1665,17 @@ class WebConnector(BaseConnector):
                 return FetchResponse(status_code=status, content_bytes=b"", headers={}, final_url=landing,
                                      strategy="probe", success=False, error_message=response.error_message)
         return response
+
+    def _is_document_response(self, response: FetchResponse) -> bool:
+        """A document by its URL, by the type the browser saw, or because the browser turned it into a download."""
+        if self._is_document_url(response.final_url):
+            return True
+        if self._is_document_type(self._header(response.headers, "Content-Type")):
+            return True
+        return not response.success and "download" in (response.error_message or "").lower()
+
+    def _is_document_type(self, content_type: str | None) -> bool:
+        return bool(content_type) and self._determine_mime_type("", content_type)[0] != MimeTypes.HTML
 
     def _is_browser_rate_limited(self, response: FetchResponse | None) -> bool:
         """Only a browser block is worth this retry; a document's plain-HTTP answer already had its own backoff."""
@@ -1733,38 +1745,38 @@ class WebConnector(BaseConnector):
             strategy="scope_guard", success=False, error_message="outside the crawl's scope",
         )
 
-    async def _probe_landing(self, url: str) -> tuple[str, int] | None:
+    async def _probe_landing(self, url: str) -> tuple[str, int, str | None] | None:
         """Follow ``url``'s redirects one hop at a time, stopping before any hop outside the crawl.
 
         Each hop is asked with HEAD, or with GET (body left unread) when HEAD is refused or fails.
-        Returns the landing URL and its status, or the first out-of-scope hop, unrequested, with
-        status 0. Returns None if the site doesn't answer or the chain doesn't end.
+        Returns the landing URL, its status and Content-Type, or the first out-of-scope hop,
+        unrequested, with status 0. Returns None if the site doesn't answer or the chain doesn't end.
         """
         if self.session is None:
             return None
         for _ in range(MAX_PROBE_REDIRECTS):
             try:
-                status, location = await self._probe_hop("HEAD", url)
+                status, location, content_type = await self._probe_hop("HEAD", url)
             except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
-                status, location = None, None  # some servers mishandle HEAD; GET may still answer
+                status, location, content_type = None, None, None  # some servers mishandle HEAD; GET may still answer
             if status is None or status in HEAD_NOT_SUPPORTED:
                 try:
-                    status, location = await self._probe_hop("GET", url)
+                    status, location, content_type = await self._probe_hop("GET", url)
                 except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
                     return None
             if not (status in REDIRECT_STATUS_CODES and location):
-                return url, status
+                return url, status, content_type
             url = urljoin(url, location)
             if self._outside_crawl(url):
-                return url, 0
+                return url, 0, None
         return None
 
-    async def _probe_hop(self, method: str, url: str) -> tuple[int, str | None]:
+    async def _probe_hop(self, method: str, url: str) -> tuple[int, str | None, str | None]:
         async with self.session.request(  # type: ignore[union-attr]
             method, url, headers=build_stealth_headers(url), allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=PROBE_TIMEOUT_SECONDS),
         ) as response:
-            return response.status, response.headers.get("Location")
+            return response.status, response.headers.get("Location"), response.headers.get("Content-Type")
 
     def _excluded_by_url_should_contain(self, url: str) -> bool:
         """Fails the URL Should Contain setting; the start page is always crawled."""

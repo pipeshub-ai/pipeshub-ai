@@ -57,6 +57,13 @@ class FetchResult:
     status_code: Optional[int] = None
     error: Optional[str] = None
     js_execution_result: Optional[dict[str, Any]] = None
+    content_type: Optional[str] = None  # of the response the browser loaded, when it reports one
+
+
+def _content_type(response_headers: Any) -> Optional[str]:
+    if not isinstance(response_headers, dict):
+        return None
+    return next((str(v) for k, v in response_headers.items() if str(k).lower() == "content-type"), None)
 
 
 def resolve_fetch_status_code(
@@ -408,6 +415,7 @@ for (const p of __panels) {
                 ),
                 error=result.error_message,
                 js_execution_result=js_result,
+                content_type=_content_type(getattr(result, "response_headers", None)),
             )
         except asyncio.TimeoutError:
             return FetchResult(url=url, error=f"Timed out after {timeout:.0f}s", success=False)
@@ -467,6 +475,7 @@ for (const p of __panels) {
                             r.crawl_stats,
                         ),
                         error=r.error_message,
+                        content_type=_content_type(getattr(r, "response_headers", None)),
                     ))
             return out
         except asyncio.TimeoutError:

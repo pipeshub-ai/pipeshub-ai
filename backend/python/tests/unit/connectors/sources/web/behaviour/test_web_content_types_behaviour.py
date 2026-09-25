@@ -307,3 +307,18 @@ async def test_an_svg_is_stored_as_an_svg_not_as_xml(
     await (await make_connector(diagram, crawl_type="single")).run_sync()
 
     assert (db.pages()[diagram].mime_type, db.pages()[diagram].extension) == (MimeTypes.SVG.value, "svg")
+
+
+@pytest.mark.parametrize("downloads", [False, True], ids=["shown-in-viewer", "turned-into-a-download"])
+async def test_robust_mode_fetches_a_document_served_from_a_url_without_an_extension(
+    downloads: bool, browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    url = "http://site.test/download?id=7"
+    browser.html(START_URL, "Home", "/download?id=7")
+    browser.add(url, Page(body=b"%PDF-1.4 report", content_type="application/pdf", browser_downloads=downloads))
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    record = db.pages()[url]
+    assert record.mime_type == MimeTypes.PDF.value
+    assert site_bytes(browser, db, url) == b"%PDF-1.4 report"
