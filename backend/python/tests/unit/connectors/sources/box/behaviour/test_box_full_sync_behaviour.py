@@ -15,6 +15,7 @@ from box_behaviour_fakes import (
     SERVICE_ACCOUNT_ID,
     FakeBoxApi,
     FakeBoxRecordsDb,
+    FakeCheckpointStore,
     FakeConfigService,
     ccg_config,
     ready_connector,
@@ -802,17 +803,19 @@ class TestReplayedShareLookups:
         assert BOB_EMAIL not in db.access("file-1")
 
 
+def history_calls(api: FakeBoxApi) -> list[str]:
+    return [r.query["stream_position"] for r in api.calls("GET", "/2.0/events") if r.query.get("stream_type") == "admin_logs"]
+
+
+def history_position(checkpoints: FakeCheckpointStore) -> str | None:
+    for key, value in checkpoints.sync_points.items():
+        if key.endswith("/records/share_history_position"):
+            return value.get("position")
+    return None
+
+
 class TestShareHistoryLimit:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Left alone (already on main): the share-history replay reads at most 200 pages, "
-            "oldest first, and then reports success, so the newest shares past the cap are "
-            "never applied and the stream position is saved over them. Fixing it means saving "
-            "and resuming a separate history position, which is new sync state for a follow-up."
-        ),
-    )
-    async def test_shares_past_the_history_page_cap_are_still_applied(self, box_api, db, checkpoints) -> None:
+    async def test_shares_past_the_history_page_cap_are_applied_on_the_next_run(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
         box_api.page_cap["/2.0/events"] = 1
         for _ in range(200):
@@ -823,4 +826,48 @@ class TestShareHistoryLimit:
 
         await connector.run_sync()
 
+        assert f"0S:{BOB_EMAIL}" not in db.shared_links.get("file-1", set())
+        assert history_position(checkpoints) == "200"
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert history_calls(box_api)[200] == "200"
         assert f"0S:{BOB_EMAIL}" in db.shared_links["file-1"]
+        assert checkpoints.cursor() is not None
+
+    async def test_a_later_full_sync_resumes_the_history_instead_of_starting_over(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        share_history(box_api, "file-1", BOB)
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        first_run = len(history_calls(box_api))
+        box_api.add_file("file-2", "later.pdf", ALICE)
+        share_history(box_api, "file-2", BOB)
+        checkpoints.cursor()["cursor_updated_at"] = 0
+
+        await connector.run_sync()
+
+        assert history_calls(box_api)[first_run] == "1"
+        assert f"0S:{BOB_EMAIL}" in db.shared_links["file-2"]
+
+    async def test_a_failed_history_page_is_read_again_from_where_it_stopped(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.page_cap["/2.0/events"] = 1
+        box_api.add_file("file-1", "one.pdf", ALICE)
+        box_api.add_file("file-2", "two.pdf", ALICE)
+        share_history(box_api, "file-1", BOB)
+        share_history(box_api, "file-2", BOB)
+        box_api.fail("GET", "/2.0/events", 503, times=5, query={"stream_type": "admin_logs", "stream_position": "1"})
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert history_position(checkpoints) == "1"
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert history_calls(box_api)[-2:] == ["1", "2"]
+        assert f"0S:{BOB_EMAIL}" in db.shared_links["file-2"]

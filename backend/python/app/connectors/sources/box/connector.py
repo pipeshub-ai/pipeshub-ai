@@ -215,6 +215,8 @@ class BoxConnector(BaseConnector):
     _read_complete: bool = True
     # An incremental batch that keeps failing is retried this many times, then passed over.
     MAX_EVENT_BATCH_ATTEMPTS = 5
+    # Sync-point key for where the share-history replay stopped.
+    SHARE_HISTORY_KEY = "share_history_position"
 
     def __init__(
         self,
@@ -1338,10 +1340,21 @@ class BoxConnector(BaseConnector):
         was later unshared doesn't get incorrectly resurrected by replaying only its grant event.
         """
         COLLAB_HISTORY_EVENT_TYPES = ['COLLABORATION_INVITE', 'COLLABORATION_ACCEPT', 'COLLABORATION_REMOVE']
-        stream_position = '0'
         limit = 500
-        max_pages = 200  # safety cap (~100k events) to bound worst-case full-sync duration
+        max_pages = 200  # per run, to bound one full sync; the saved position lets the next run continue
         total_events = 0
+
+        # The replay resumes where the last one stopped instead of starting at 0 each full sync:
+        # replayed shares stay applied, so only newer history needs reading. The position only moves
+        # in a run that has read everything so far, since a share can depend on earlier steps (a
+        # colleague's "Shared with me" group, say) and must be replayed again if those failed.
+        try:
+            saved = await self.box_cursor_sync_point.read_sync_point(self.SHARE_HISTORY_KEY)
+        except Exception as e:
+            self.logger.error(f"❌ [Backfill] Could not read where the share history replay stopped; skipping it this run: {e}")
+            self._read_complete = False
+            return
+        stream_position = (saved or {}).get("position") or '0'
 
         try:
             for _ in range(max_pages):
@@ -1364,13 +1377,27 @@ class BoxConnector(BaseConnector):
                 if events:
                     total_events += len(events)
                     self.logger.info(f"📥 [Backfill] Fetched {len(events)} collaboration event(s) from Box.")
+                    run_complete = self._read_complete
+                    self._read_complete = True
                     await self._process_event_batch(events, our_org_box_user_ids=our_org_box_user_ids)
+                    page_complete = self._read_complete
+                    self._read_complete = run_complete and page_complete
+                    if not page_complete:
+                        # Stay before this page so the next run replays it again.
+                        break
 
                 if not next_stream_position or next_stream_position == stream_position or not events:
                     break
                 stream_position = next_stream_position
+                if self._read_complete:
+                    await self.box_cursor_sync_point.update_sync_point(self.SHARE_HISTORY_KEY, {"position": stream_position})
+            else:
+                self.logger.info(
+                    f"ℹ️ [Backfill] Share history has more than {max_pages} pages; the next sync continues from here."
+                )
+                self._read_complete = False
 
-            self.logger.info(f"✅ [Backfill] Completed. Replayed {total_events} historical collaboration event(s).")
+            self.logger.info(f"✅ [Backfill] Replayed {total_events} historical collaboration event(s).")
         except Exception as e:
             self.logger.error(f"❌ [Backfill] Error backfilling historical collaborations: {e}", exc_info=True)
             self._mark_read_incomplete(e)
