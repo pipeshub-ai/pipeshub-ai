@@ -2200,6 +2200,11 @@ async def delete_record(
             org_id = result.get("orgId")
             if org_id:
                 await increment_org_corpus_revision_with_retry(graph_provider, org_id)
+            else:
+                logger.warning(
+                    f"Skipped corpus revision bump for record {record_id}: "
+                    f"delete_record returned no orgId."
+                )
 
             # Publish deletion event. The graph deletion above has already
             # committed, so a publish failure here cannot be undone by failing

@@ -345,7 +345,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
     async def _scheduled_semantic_cache_purge() -> None:
-        semantic_cache_svc = app_container.semantic_cache_service()
+        semantic_cache_svc = await app_container.semantic_cache_service()
         # Initialize early so index mappings exist before the first chat request
         try:
             await semantic_cache_svc.initialize()

@@ -1213,6 +1213,43 @@ async def _generate_chat_stream_via_agent_loop(
         await run_stream.aclose()
 
 
+async def _validate_cached_entry(cached_entry: dict | str | None, graph_provider: IGraphDBProvider, chat_user: dict) -> dict | None:
+    """Validate a cached entry's citations against current record access."""
+    if cached_entry:
+        if isinstance(cached_entry, str):
+            cached_entry = None
+        elif not isinstance(cached_entry, dict) or not cached_entry.get("text"):
+            cached_entry = None
+
+    if cached_entry:
+        cached_citations = cached_entry.get("citations") or []
+        if not cached_citations:
+            logger.info("Cache bypassed: Cached entry has no citations.")
+            cached_entry = None
+        else:
+            virtual_ids_to_check = set()
+            for c in cached_citations:
+                meta = c.get("metadata") or {}
+                vrid = meta.get("virtualRecordId")
+                if not vrid:
+                    logger.warning("Cache bypassed: Cached citation missing virtualRecordId.")
+                    cached_entry = None
+                    break
+                virtual_ids_to_check.add(vrid)
+
+            if cached_entry:
+                accessible_map = await graph_provider.filter_accessible_virtual_record_ids(
+                    virtual_record_ids=list(virtual_ids_to_check),
+                    user_id=chat_user.get("userId"),
+                    org_id=chat_user.get("orgId"),
+                )
+                if len(accessible_map) != len(virtual_ids_to_check):
+                    logger.info("Cache bypassed: User lost access to one or more source records.")
+                    cached_entry = None
+
+    return cached_entry
+
+
 @router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def askAIStream(
@@ -1354,44 +1391,9 @@ async def askAIStream(
                                 query_info.query, query_vector, filters_hash_val
                             )
                             if cached_entry:
-                                # cached_entry may be a plain str (legacy) or a
-                                # dict with {"text": ..., "citations": [...]}.  
-                                # Entries that lack source-record identity (plain
-                                # str) cannot be permission-validated and must
-                                # bypass the cache so the live path can enforce
-                                # document ACLs correctly.
-                                if isinstance(cached_entry, str):
-                                    # Legacy plain-text entry — no record ids to
-                                    # validate against, skip and let live run handle it.
-                                    cached_entry = None
-                                elif not isinstance(cached_entry, dict) or not cached_entry.get("text"):
-                                    cached_entry = None
-
-                            if cached_entry:
-                                cached_citations = cached_entry.get("citations") or []
-                                if not cached_citations:
-                                    logger.info("Cache bypassed: Cached entry has no citations.")
-                                    cached_entry = None
-                                else:
-                                    virtual_ids_to_check = set()
-                                    for c in cached_citations:
-                                        meta = c.get("metadata") or {}
-                                        vrid = meta.get("virtualRecordId")
-                                        if not vrid:
-                                            logger.warning("Cache bypassed: Cached citation missing virtualRecordId.")
-                                            cached_entry = None
-                                            break
-                                        virtual_ids_to_check.add(vrid)
-
-                                    if cached_entry:
-                                        accessible_map = await graph_provider.filter_accessible_virtual_record_ids(
-                                            virtual_record_ids=list(virtual_ids_to_check),
-                                            user_id=_chat_user.get("userId"),
-                                            org_id=_chat_user.get("orgId"),
-                                        )
-                                        if len(accessible_map) != len(virtual_ids_to_check):
-                                            logger.info("Cache bypassed: User lost access to one or more source records.")
-                                            cached_entry = None
+                                cached_entry = await _validate_cached_entry(
+                                    cached_entry, graph_provider, _chat_user
+                                )
 
                             if cached_entry:
                                 cached_resp = cached_entry["text"]
