@@ -1,8 +1,11 @@
 """Unit tests for org-scoped indexing queue backlog / ETA snapshot."""
 
-from unittest.mock import AsyncMock
+from collections.abc import AsyncIterator, Callable
+from unittest.mock import AsyncMock, MagicMock
 
+import fakeredis
 import pytest
+from redis.commands.cluster import AsyncClusterDataAccessCommands
 
 from app.connectors.services import indexing_queue as indexing_queue_mod
 from app.connectors.services.indexing_queue import (
@@ -45,6 +48,16 @@ def _run_hash(
     }
 
 
+def _scan_iter(keys_for: Callable[[str], list[str]]) -> MagicMock:
+    """Stand-in for ``redis.scan_iter``: an async iterator over the matching keys."""
+
+    async def _iter(match: str = "", count: int = 100) -> AsyncIterator[str]:
+        for key in keys_for(match):
+            yield key
+
+    return MagicMock(side_effect=_iter)
+
+
 @pytest.mark.asyncio
 async def test_snapshot_sums_org_backlog_across_connectors() -> None:
     keys = [
@@ -60,15 +73,12 @@ async def test_snapshot_sums_org_backlog_across_connectors() -> None:
     }
     redis = AsyncMock()
 
-    async def scan(cursor, match=None, count=100):  # noqa: ARG001
-        return 0, keys
-
     async def hgetall(key: str):
         if key.startswith("indexing_queue:throughput_sample:"):
             return {}
         return run_data.get(key, {})
 
-    redis.scan = AsyncMock(side_effect=scan)
+    redis.scan_iter = _scan_iter(lambda _match: keys)
     redis.hgetall = AsyncMock(side_effect=hgetall)
     redis.hset = AsyncMock()
     redis.expire = AsyncMock()
@@ -88,15 +98,12 @@ async def test_snapshot_estimates_eta_from_org_drain_rate() -> None:
     keys = [f"connector_sync_progress:{ORG_ID}:c1"]
     redis = AsyncMock()
 
-    async def scan(cursor, match=None, count=100):  # noqa: ARG001
-        return 0, keys
-
     async def hgetall(key: str):
         if key.startswith("indexing_queue:throughput_sample:"):
             return {"lag": "2000", "at": str(time.time() - 10)}
         return _run_hash(phase="INDEXING", total=1000, indexed=0)
 
-    redis.scan = AsyncMock(side_effect=scan)
+    redis.scan_iter = _scan_iter(lambda _match: keys)
     redis.hgetall = AsyncMock(side_effect=hgetall)
     redis.hset = AsyncMock()
     redis.expire = AsyncMock()
@@ -117,7 +124,7 @@ async def test_snapshot_returns_none_without_client_or_org() -> None:
 @pytest.mark.asyncio
 async def test_snapshot_returns_none_when_scan_fails() -> None:
     redis = AsyncMock()
-    redis.scan = AsyncMock(side_effect=RuntimeError("redis down"))
+    redis.scan_iter = MagicMock(side_effect=RuntimeError("redis down"))
     assert await fetch_indexing_queue_snapshot(redis, ORG_ID) is None
 
 
@@ -125,8 +132,8 @@ async def test_snapshot_returns_none_when_scan_fails() -> None:
 async def test_snapshot_reuses_cache_within_ttl() -> None:
     keys = [f"connector_sync_progress:{ORG_ID}:c1"]
     redis = AsyncMock()
-    scan_mock = AsyncMock(side_effect=lambda *a, **k: (0, keys))
-    redis.scan = scan_mock
+    scan_mock = _scan_iter(lambda _match: keys)
+    redis.scan_iter = scan_mock
 
     async def hgetall(key: str):
         if key.startswith("indexing_queue:throughput_sample:"):
@@ -140,16 +147,12 @@ async def test_snapshot_reuses_cache_within_ttl() -> None:
     first = await fetch_indexing_queue_snapshot(redis, ORG_ID)
     second = await fetch_indexing_queue_snapshot(redis, ORG_ID)
     assert first == second
-    assert scan_mock.await_count == 1
+    assert scan_mock.call_count == 1
 
 
 @pytest.mark.asyncio
 async def test_snapshot_cache_is_org_scoped() -> None:
     redis = AsyncMock()
-
-    async def scan(cursor, match=None, count=100):  # noqa: ARG001
-        org = (match or "").split(":")[1]
-        return 0, [f"connector_sync_progress:{org}:c1"]
 
     async def hgetall(key: str):
         if key.startswith("indexing_queue:throughput_sample:"):
@@ -158,7 +161,9 @@ async def test_snapshot_cache_is_org_scoped() -> None:
             return _run_hash(phase="INDEXING", total=10, indexed=0)
         return _run_hash(phase="INDEXING", total=99, indexed=0)
 
-    redis.scan = AsyncMock(side_effect=scan)
+    redis.scan_iter = _scan_iter(
+        lambda match: [f"connector_sync_progress:{match.split(':')[1]}:c1"]
+    )
     redis.hgetall = AsyncMock(side_effect=hgetall)
     redis.hset = AsyncMock()
     redis.expire = AsyncMock()
@@ -177,9 +182,6 @@ async def test_stale_runs_do_not_count_toward_backlog() -> None:
     keys = [f"connector_sync_progress:{ORG_ID}:c1"]
     redis = AsyncMock()
 
-    async def scan(cursor, match=None, count=100):  # noqa: ARG001
-        return 0, keys
-
     async def hgetall(key: str):
         if key.startswith("indexing_queue:throughput_sample:"):
             return {}
@@ -191,7 +193,7 @@ async def test_stale_runs_do_not_count_toward_backlog() -> None:
             heartbeat_offset_ms=31 * 60 * 1000,
         )
 
-    redis.scan = AsyncMock(side_effect=scan)
+    redis.scan_iter = _scan_iter(lambda _match: keys)
     redis.hgetall = AsyncMock(side_effect=hgetall)
     redis.hset = AsyncMock()
     redis.expire = AsyncMock()
@@ -199,3 +201,88 @@ async def test_stale_runs_do_not_count_toward_backlog() -> None:
     snap = await fetch_indexing_queue_snapshot(redis, ORG_ID)
     assert snap is not None
     assert snap["lag"] == 0
+
+
+@pytest.mark.asyncio
+async def test_standalone_redis_scan_covers_every_page() -> None:
+    """Enough keys that SCAN needs several cursor round-trips."""
+    redis = fakeredis.FakeAsyncRedis(decode_responses=True)
+    for i in range(250):
+        await redis.hset(
+            f"connector_sync_progress:{ORG_ID}:c{i}",
+            mapping=_run_hash(phase="INDEXING", total=2, indexed=0),
+        )
+    await redis.sadd(f"connector_sync_progress:{ORG_ID}:c0:outcomes:run-a", "r1")
+    await redis.hset(
+        "connector_sync_progress:other-org:c1",
+        mapping=_run_hash(phase="INDEXING", total=1000, indexed=0),
+    )
+
+    snap = await fetch_indexing_queue_snapshot(redis, ORG_ID)
+
+    assert snap is not None
+    assert snap["lag"] == 500
+    await redis.aclose()
+
+
+class _ClusterShapedRedis(AsyncClusterDataAccessCommands):
+    """Mimics redis-py's async RedisCluster SCAN contract.
+
+    ``scan()`` without ``target_nodes`` fans out to every primary and returns
+    ``({node_name: cursor}, keys)``; a follow-up call targets one node. The
+    real ``scan_iter`` from redis-py is inherited, not faked.
+    """
+
+    def __init__(self, pages_by_node: dict[str, list[list[str]]], hashes: dict[str, dict[str, str]]) -> None:
+        self._pages = pages_by_node
+        self._hashes = hashes
+
+    def get_node(self, node_name: str) -> str:
+        return node_name
+
+    async def scan(
+        self,
+        cursor: int = 0,
+        match: str | None = None,
+        count: int | None = None,
+        _type: str | None = None,
+        target_nodes: str | None = None,
+        **kwargs: object,
+    ) -> tuple[dict[str, int], list[str]]:
+        if not isinstance(cursor, int):
+            # Real RedisCluster cannot encode a dict of per-node cursors.
+            raise TypeError(f"Invalid input of type: '{type(cursor).__name__}'")
+        nodes = [target_nodes] if target_nodes is not None else list(self._pages)
+        cursors: dict[str, int] = {}
+        keys: list[str] = []
+        for node in nodes:
+            pages = self._pages[node]
+            keys.extend(pages[cursor])
+            cursors[node] = cursor + 1 if cursor + 1 < len(pages) else 0
+        return cursors, keys
+
+    async def hgetall(self, key: str) -> dict[str, str]:
+        return self._hashes.get(key, {})
+
+    async def hset(self, key: str, mapping: dict[str, object]) -> None:
+        return None
+
+    async def expire(self, key: str, seconds: int) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_cluster_redis_scan_merges_per_node_cursors() -> None:
+    k = [f"connector_sync_progress:{ORG_ID}:c{i}" for i in range(3)]
+    redis = _ClusterShapedRedis(
+        pages_by_node={
+            "node-a:6379": [[k[0]], [k[1], f"{k[1]}:outcomes:run-a"]],
+            "node-b:6379": [[k[2]]],
+        },
+        hashes={key: _run_hash(phase="INDEXING", total=10, indexed=4) for key in k},
+    )
+
+    snap = await fetch_indexing_queue_snapshot(redis, ORG_ID)
+
+    assert snap is not None
+    assert snap["lag"] == 18

@@ -75,17 +75,14 @@ def _remaining_for_run(run: dict[str, Any]) -> int:
 async def _scan_org_progress_keys(redis_client: Any, org_id: str) -> list[str]:
     pattern = f"{_PROGRESS_KEY_PREFIX}{org_id}:*"
     keys: list[str] = []
-    cursor: int | bytes = 0
-    while True:
-        cursor, batch = await redis_client.scan(cursor, match=pattern, count=100)
-        for key in batch or []:
-            key_str = _decode(key)
-            # Outcomes sets are sibling keys; they are not run hashes.
-            if ":outcomes:" in key_str:
-                continue
-            keys.append(key_str)
-        if cursor == 0 or cursor == b"0" or cursor == "0":
-            break
+    # scan_iter, not a scan() cursor loop: on RedisCluster, scan() returns one
+    # cursor per primary node, and scan_iter is what merges them.
+    async for key in redis_client.scan_iter(match=pattern, count=100):
+        key_str = _decode(key)
+        # Outcomes sets are sibling keys; they are not run hashes.
+        if ":outcomes:" in key_str:
+            continue
+        keys.append(key_str)
     return keys
 
 
