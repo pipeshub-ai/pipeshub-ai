@@ -31,10 +31,21 @@ export const handleMCPRequest =
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
+    // Client-minted correlation id (the CLI prints this in its transcript).
+    // Header names are lower-cased by Express/Node. Logged in addition to
+    // any `x-request-id` — never generated here, only echoed.
+    const rawRequestId = req.headers['x-pipeshub-request-id'];
+    const pipeshubRequestId = Array.isArray(rawRequestId)
+      ? rawRequestId[0]
+      : rawRequestId;
     try {
       // Extract the raw Bearer token from the Authorization header for the MCP SDK
       const token = req.headers.authorization?.replace('Bearer ', '') || '';
       const serverURL = `${appConfig.oauthBackendUrl}/api/v1`;
+
+      if (pipeshubRequestId) {
+        res.setHeader('X-Pipeshub-Request-Id', pipeshubRequestId);
+      }
 
       const { createMCPServer } = await mcpServerModule;
       const { PipeshubCore } = await coreModule;
@@ -62,11 +73,17 @@ export const handleMCPRequest =
 
       await mcpServer.connect(transport);
       await transport.handleRequest(req, res, req.body);
+      logger.debug('MCP request completed', {
+        method: req.method,
+        userId: req.user?.userId,
+        pipeshubRequestId,
+      });
     } catch (error: any) {
       logger.error('MCP request failed', {
         error: error.message,
         method: req.method,
         userId: req.user?.userId,
+        pipeshubRequestId,
       });
       next(error);
     }
