@@ -213,6 +213,25 @@ class TestAnyTable:
         assert columns == ["A", "B", "C"]
         assert rows == ["A: 1, B: 2, C: 3"]
 
+    def test_a_title_row_is_kept_beside_a_caption(self) -> None:
+        _columns, captions, rows = _parse(
+            "<table><caption>Awards</caption><tr><th colspan=2>2010s</th></tr>"
+            "<tr><th>Year</th><th>Film</th></tr><tr><td>2010</td><td>X</td></tr></table>",
+        )
+
+        assert captions == ["Awards", "2010s"]
+        assert rows == ["Year: 2010, Film: X"]
+
+    def test_a_nested_table_keeps_its_title_row(self) -> None:
+        _columns, _captions, rows = _parse(
+            "<table><tr><th>Club</th><th>History</th></tr><tr><td>FC</td><td>"
+            "<table><tr><td colspan=2>Former names</td></tr><tr><td>1900</td><td>Old FC</td></tr></table>"
+            "</td></tr></table>",
+        )
+
+        assert rows[0].startswith("Club: FC, History: Former names /")
+        assert "| 1900 | Old FC |" in rows[0]
+
     def test_a_lone_full_width_row_stays_a_row(self) -> None:
         _columns, captions, rows = _parse("<table><tr><td colspan=2>Only row</td></tr></table>")
 

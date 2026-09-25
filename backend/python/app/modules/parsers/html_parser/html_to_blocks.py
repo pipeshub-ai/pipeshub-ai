@@ -1073,13 +1073,19 @@ def normalized_table_to_markdown(
     *,
     caption: str = "",
 ) -> str:
-    """Render a normalized table as markdown, optionally prefixing a caption on its own line."""
+    """Render a normalized table as markdown, prefixed by its caption and title row."""
     table_md = _render_table_markdown(table)
+    heading = "\n".join(_distinct_lines(caption, table.title))
     if not table_md:
-        return caption.strip()
-    if caption.strip():
-        return f"{caption.strip()}\n\n{table_md}"
+        return heading
+    if heading:
+        return f"{heading}\n\n{table_md}"
     return table_md
+
+
+def _distinct_lines(*texts: str) -> list[str]:
+    """The non-empty stripped ``texts``, each once, in order."""
+    return list(dict.fromkeys(stripped for text in texts if (stripped := text.strip())))
 
 
 def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
@@ -2204,7 +2210,8 @@ class _DomWalker:
             _strip_inline_images_from_markdown(header)
             for header in normalized.column_headers
         ]
-        caption = _table_caption(table_node) or normalized.title
+        # The title row was taken out of the grid, so it is kept even beside a <caption>.
+        captions = _distinct_lines(_table_caption(table_node), normalized.title)
         body_rows = normalized.body_rows
 
         row_block_indices: list[int] = []
@@ -2253,9 +2260,9 @@ class _DomWalker:
             num_of_cells=sum(len(row) for row in body_rows),
             has_header=normalized.has_header,
             column_names=headers or None,
-            captions=[caption] if caption else [],
+            captions=captions,
         )
-        group.data = {"table_summary": caption, "column_headers": headers}
+        group.data = {"table_summary": "\n".join(captions), "column_headers": headers}
         group.children = BlockGroupChildren.from_indices(
             block_indices=row_block_indices,
             block_group_indices=open_group.child_group_indices,
