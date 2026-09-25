@@ -81,8 +81,6 @@ class Page:
     # Validators: sent with the page, and a matching If-None-Match / If-Modified-Since gets a 304.
     etag: str | None = None
     last_modified: str | None = None
-    # A real browser turns some files into a download instead of showing them.
-    browser_downloads: bool = False
 
 
 def _key(url: str) -> str:
@@ -262,10 +260,6 @@ def browser_crawler_class(site: FakeWeb) -> type:
                                        error_message="net::ERR_EMPTY_RESPONSE", crawl_stats=None,
                                        js_execution_result=None)
             browser_headers = {"content-type": page.content_type} if page.content_type else {}
-            if page.browser_downloads:
-                return SimpleNamespace(url=url, redirected_url=final_url, html="", success=False, status_code=None,
-                                       error_message="Page.goto: Download is starting", crawl_stats=None,
-                                       js_execution_result=None, response_headers={})
             status = page.rendered_status if page.rendered_status is not None else page.status
             if page.rendered is not None:
                 html = page.rendered.decode("utf-8", "replace")

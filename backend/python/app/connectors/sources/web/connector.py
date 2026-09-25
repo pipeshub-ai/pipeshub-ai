@@ -1673,12 +1673,14 @@ class WebConnector(BaseConnector):
         return response
 
     def _is_document_response(self, response: FetchResponse) -> bool:
-        """A document by its URL, by the type the browser saw, or because the browser turned it into a download."""
+        """A document by its URL or by the type the response reports.
+
+        A browser that aborts a file as a download reports no status; ``_fetch_document_behind_render``
+        then walks the redirects itself and uses the type the last hop reports.
+        """
         if self._is_document_url(response.final_url):
             return True
-        if self._is_document_type(self._header(response.headers, "Content-Type")):
-            return True
-        return not response.success and "download" in (response.error_message or "").lower()
+        return self._is_document_type(self._header(response.headers, "Content-Type"))
 
     def _is_document_type(self, content_type: str | None) -> bool:
         return bool(content_type) and self._determine_mime_type("", content_type)[0] != MimeTypes.HTML
