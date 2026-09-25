@@ -446,6 +446,23 @@ class TestEventStreamAnchor:
 
         assert checkpoints.cursor() is None
 
+    async def test_a_refused_user_list_is_explained_and_leaves_no_cursor(self, box_api, db, checkpoints, caplog) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-a", "a.txt", ALICE)
+        box_api.fail("GET", "/2.0/users", 403, times=1)
+        connector = await ready_connector(db, checkpoints)
+
+        with caplog.at_level(logging.ERROR, logger="test.box"):
+            await connector.run_sync()
+
+        assert "'Manage users' scope" in caplog.text
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert "file-a" in db.records
+        assert checkpoints.cursor() is not None
+
     async def test_a_user_whose_files_could_not_be_listed_leaves_no_cursor(self, box_api, db, checkpoints, sdk_sleeps) -> None:
         enterprise(box_api, db)
         box_api.add_file("file-a", "a.txt", ALICE)

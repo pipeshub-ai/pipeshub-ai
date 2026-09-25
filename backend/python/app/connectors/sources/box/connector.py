@@ -664,7 +664,14 @@ class BoxConnector(BaseConnector):
 
                 if not response.success:
                     self.logger.error(f"Failed to fetch users: {response.error}")
-                    self._mark_read_incomplete(response.error)
+                    if str(response.error).startswith("403"):
+                        self.logger.error(
+                            "Box refused to list users (403), so no one's files can be synced. In the Box "
+                            "Developer Console, turn on the app's 'Manage users' scope, then have a Box admin "
+                            "re-authorize the app in the Box Admin Console."
+                        )
+                    # Even a 403 counts: users not listed here are never walked, and incremental runs can't catch up.
+                    self._read_complete = False
                     break
 
                 data = self._to_dict(response.data)
