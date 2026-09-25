@@ -195,6 +195,26 @@ class TestSharingAndPermissions:
 
         assert db.access("file-1") == {"user0@acme.test", "user1@acme.test", "user2@acme.test"}
 
+    async def test_a_failed_second_page_of_collaborators_is_read_again_on_the_next_run(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.default_page = box_api.max_page = 2
+        for n in range(3):
+            box_api.add_user(f"u-{n}", f"user{n}@acme.test")
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        for n in range(3):
+            box_api.collaborate("file-1", f"u-{n}")
+        box_api.fail("GET", "/2.0/files/file-1/collaborations", 503, times=5, query={"marker": "2"})
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert "file-1" in db.records
+        assert checkpoints.cursor() is None
+
+        await connector.run_sync()
+
+        assert db.access("file-1") == {"user0@acme.test", "user1@acme.test", "user2@acme.test"}
+
     async def test_a_failed_collaborator_read_keeps_the_access_already_stored(self, box_api, db, checkpoints, sdk_sleeps) -> None:
         enterprise(box_api, db)
         box_api.add_file("file-1", "plan.pdf", ALICE)

@@ -460,12 +460,13 @@ class TestBoxGetPermissions:
         assert len(perms) == 1
         assert perms[0].type == PermissionType.WRITE
 
-    async def test_failed_response_returns_empty(self, box_connector):
+    async def test_failed_response_returns_none(self, box_connector):
+        # None, not []: an unread list must not be applied as "no collaborators".
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
-            return_value=MagicMock(success=False, error="Access denied")
+            return_value=MagicMock(success=False, error="503 Service Unavailable")
         )
         perms = await box_connector._get_permissions("f1", "file")
-        assert perms == []
+        assert perms is None
 
     async def test_404_returns_empty(self, box_connector):
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
@@ -486,12 +487,12 @@ class TestBoxGetPermissions:
         perms = await box_connector._get_permissions("f1", "file")
         assert perms == []
 
-    async def test_exception_returns_empty(self, box_connector):
+    async def test_exception_returns_none(self, box_connector):
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
             side_effect=Exception("API error")
         )
         perms = await box_connector._get_permissions("f1", "file")
-        assert perms == []
+        assert perms is None
 
 
 # ===========================================================================

@@ -298,9 +298,13 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"Failed to initialize Box CCG client: {e}", exc_info=True)
             return False
 
+    @staticmethod
+    def _is_final_answer(error: object) -> bool:
+        """403 and 404 are Box's settled answer; anything else may succeed on a later try."""
+        return str(error).startswith(("403", "404"))
+
     def _mark_full_sync_incomplete(self, error: object) -> None:
-        """Record a read that did not finish; 403 and 404 are Box's final answer, so they don't count."""
-        if not str(error).startswith(("403", "404")):
+        if not self._is_final_answer(error):
             self._full_sync_complete = False
 
     def _parse_box_timestamp(self, ts_str: Optional[str], field_name: str, entry_name: str) -> int:
@@ -439,7 +443,8 @@ class BoxConnector(BaseConnector):
 
             # 1. Fetch explicit API permissions (Collaborators only)
             api_permissions = await self._get_permissions(entry_id, entry_type)
-            final_permissions_map = {p.external_id: p for p in api_permissions}
+            # None means the collaborator list was only partly read: apply none of it, so stored access stays.
+            final_permissions_map = {p.external_id: p for p in api_permissions or []}
 
             # 2. Inject Shared Link Permissions (Organization/Public)
             # This handles files that are "Shared with Company" but users aren't invited explicitly
@@ -496,7 +501,7 @@ class BoxConnector(BaseConnector):
                     is_deleted=False,
                     metadata_changed=is_content_modified,
                     content_changed=is_content_modified,
-                    permissions_changed=True,
+                    permissions_changed=api_permissions is not None,
                     new_permissions=permissions,
                     external_record_id=entry_id
                 )
@@ -517,9 +522,10 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"Error processing Box entry {entry.get('id')}: {e}", exc_info=True)
             return None
 
-    async def _get_permissions(self, item_id: str, item_type: str) -> List[Permission]:
+    async def _get_permissions(self, item_id: str, item_type: str) -> list[Permission] | None:
         """
         Fetch permissions for a Box item (file or folder).
+        Returns None when a page could not be read, so a short list is never taken as the whole one.
         """
         permissions = []
         collaborations = []
@@ -532,12 +538,12 @@ class BoxConnector(BaseConnector):
                     response = await self.data_source.collaborations_get_folder_collaborations(folder_id=item_id, marker=marker)
 
                 if not response.success:
-                    # 404 or no permission to view collabs (BoxResponse has no status_code; check error string)
-                    if response.error and "404" in str(response.error):
-                        self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id} (404).")
-                    else:
-                        self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
-                    break
+                    if self._is_final_answer(response.error):
+                        self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id}: {response.error}")
+                        break
+                    self.logger.warning(f"Could not read collaborators of {item_type} {item_id}: {response.error}")
+                    self._mark_full_sync_incomplete(response.error)
+                    return None
 
                 data = self._to_dict(response.data)
                 collaborations.extend(data.get('entries', []))
@@ -575,7 +581,9 @@ class BoxConnector(BaseConnector):
                 ))
 
         except Exception as e:
-            self.logger.debug(f"Error fetching permissions for {item_type} {item_id}: {e}")
+            self.logger.warning(f"Error fetching permissions for {item_type} {item_id}: {e}")
+            self._mark_full_sync_incomplete(e)
+            return None
 
         return permissions
 
