@@ -24,6 +24,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from app.connectors.core.base.connector.connector_service import BaseConnector
+    from app.connectors.core.sync.sync_dispatcher import SyncEventDispatcher
 
 # Strong refs to detached cleanup tasks; the loop holds only weak ones.
 _cleanup_tasks: set[asyncio.Task] = set()
@@ -257,6 +258,7 @@ def _drain_lock() -> asyncio.Lock:
 async def _drain_once(
     graph_provider: IGraphDBProvider, logger: logging.Logger, dispatcher: "SyncEventDispatcher"
 ) -> list[str]:
+    from app.connectors.core.sync.sync_coordinator import get_coordinator
     from app.connectors.core.sync.sync_dispatcher import SubmitResult
 
     try:
@@ -307,9 +309,12 @@ async def _drain_once(
     # arrive late is harmless: the start path drops a request older than the sync
     # already running for it.
     stale_before = _now_ms() - _QUEUE_GRACE_MS
+    # Oldest first: the queue timestamp is when a connector was parked, so this
+    # is arrival order. Unordered, whoever the org traversal met first won every
+    # freed slot.
     ids = [
         doc["id"]
-        for doc in (queued or [])
+        for doc in sorted(queued or [], key=lambda d: int(d.get("updatedAtTimestamp") or 0))
         if doc.get("id")
         and (
             doc.get(ConnectorStateKeys.PENDING_RESYNC)
@@ -319,8 +324,26 @@ async def _drain_once(
     if not ids:
         return []
 
+    # A coordinator that can count free slots exactly (one process) gets only as
+    # many releases as it can admit. Publishing the whole queue on every
+    # completion made each of those events bounce back to QUEUED -- a read and a
+    # write per queued connector per completion. One that cannot (a fleet, where
+    # another worker may have room) keeps publishing everything.
+    budget_fn = getattr(get_coordinator(), "drain_budget", None)
+    budget = budget_fn() if callable(budget_fn) else None
+    budget = budget if isinstance(budget, int) else None
+    if budget is not None and budget <= 0:
+        return []
+
+    order = {cid: i for i, cid in enumerate(ids)}
+    specs = sorted(
+        await resolve_resync_specs(graph_provider, ids, logger),
+        key=lambda spec: order.get(spec.connector_id, len(order)),
+    )
     started: list[str] = []
-    for spec in await resolve_resync_specs(graph_provider, ids, logger):
+    for spec in specs:
+        if budget is not None and len(started) >= budget:
+            break
         if len(started) >= _DRAIN_MAX_PER_PASS:
             logger.warning(
                 "Drain hit its %d-per-pass cap with %d still queued; the next "

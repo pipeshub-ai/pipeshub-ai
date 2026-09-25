@@ -282,6 +282,10 @@ class LocalSyncCoordinator:
         # this, and a sync in its full-sync prep has a lease but no task yet.
         return sorted(set(self._held) | set(self._tasks.active_keys()))
 
+    def drain_budget(self) -> int:
+        """Free slots here, which in one process is exactly how many can start."""
+        return max(0, _safe_limit(self.logger) - len(self._held))
+
     def held_since_ms(self, connector_id: str) -> int | None:
         """When the sync now holding this connector was admitted, if one is."""
         lease = self._held.get(connector_id)
