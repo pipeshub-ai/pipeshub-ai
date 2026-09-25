@@ -550,10 +550,16 @@ class TestIsJwtTokenValid:
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
     @patch("app.api.middlewares.auth.jwt.decode")
-    async def test_oauth_client_credentials_resolves_owner_from_created_by(
+    async def test_oauth_client_credentials_resolves_identity_from_created_by(
         self, mock_jwt_decode, mock_get_config
     ):
-        """client_credentials tokens act on behalf of the app owner (createdBy claim)."""
+        """client_credentials tokens act as the identity in the createdBy claim.
+
+        The claim keeps its original name for tokens already in circulation,
+        but it carries whoever the application acts as, which Node resolves
+        when minting: the application's service account where one has been
+        set, its creator otherwise.
+        """
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "jwtSecret": "regular-secret",
@@ -573,6 +579,40 @@ class TestIsJwtTokenValid:
         result = await isJwtTokenValid(request)
         assert result["isOAuth"] is True
         assert result["userId"] == "app-owner-id"
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.get_config_service")
+    @patch("app.api.middlewares.auth.jwt.decode")
+    async def test_oauth_client_credentials_acts_as_the_apps_service_account(
+        self, mock_jwt_decode, mock_get_config
+    ):
+        """An application pointed at a service account acts as it here too.
+
+        This is the case the whole feature exists for. Retrieval keys on the
+        userId this returns, so if it came back as the person who created the
+        application, search and the connectors would go on reading as them
+        while the Node routes read as the service account.
+        """
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config.return_value = {
+            "jwtSecret": "regular-secret",
+            "scopedJwtSecret": "scoped-secret",
+        }
+        mock_get_config.return_value = mock_config_service
+
+        mock_jwt_decode.return_value = {
+            "userId": "client-xyz",
+            "tokenType": "oauth",
+            "scope": "kb:read",
+            "client_id": "client-xyz",
+            # Minted after the application was pointed at a service account,
+            # so the claim carries the service account rather than the person.
+            "createdBy": "service-account-id",
+        }
+
+        request = _make_fake_request(authorization="Bearer oauth.jwt.token")
+        result = await isJwtTokenValid(request)
+        assert result["userId"] == "service-account-id"
 
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
@@ -888,6 +928,11 @@ class TestAuthMiddleware:
             await authMiddleware(request)
 
         assert exc_info.value.status_code == 503
+        assert exc_info.value.headers == {"Retry-After": "5"}
+        # Shown to the person as-is: plain words and when to retry, no "access token".
+        assert exc_info.value.detail == (
+            "We couldn't confirm your sign-in just now. Please try again in a few seconds."
+        )
         assert not hasattr(request.state, "user")
 
     @pytest.mark.asyncio

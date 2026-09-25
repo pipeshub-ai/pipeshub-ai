@@ -192,6 +192,7 @@ class TestAbstractMethodInventory:
         "batch_upsert_nodes",
         "delete_nodes",
         "update_node",
+        "update_node_if_match",
         # Edge operations
         "batch_create_edges",
         "batch_create_entity_relations",
@@ -401,6 +402,9 @@ class TestAbstractMethodInventory:
         "add_user_to_all_team",
         "ensure_all_team_with_users",
         "ensure_team_app_edge",
+        # Authenticated-as (creator -> source account)
+        "upsert_authenticated_as",
+        "remove_authenticated_as",
         # User operations
         "get_organization_users",
         # Agent permission operations
@@ -412,6 +416,7 @@ class TestAbstractMethodInventory:
         "validate_folder_for_upload",
         # Record location / permission-aware trails
         "filter_nodes_with_permission_role",
+        "filter_accessible_virtual_record_ids",
         "get_record_parent_adjacency",
     ]
 

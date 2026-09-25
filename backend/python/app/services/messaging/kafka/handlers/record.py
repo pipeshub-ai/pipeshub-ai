@@ -52,6 +52,17 @@ from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import (
+    CONNECTOR_OFF,
+    FOLDER_NOTHING_TO_INDEX,
+    RETRIES_EXHAUSTED,
+    RETRY_SCHEDULED,
+    STORED_CONTENT_DAMAGED,
+    STORED_CONTENT_MISSING,
+    duplicate_failed,
+    to_user_reason,
+    unsupported_file_type,
+)
 
 
 class RecordEventHandler(BaseEventService):
@@ -126,7 +137,16 @@ class RecordEventHandler(BaseEventService):
         record_id = str(record_id)
         try:
             record = await self.event_processor.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id,
+                CollectionNames.RECORDS.value,
+                # Not for retry -- the consumer has already given up by the
+                # time this runs, and the `except` below keeps this method to
+                # its contract of never raising. It is so the log is true: an
+                # unreadable graph answers None, and the line below would call
+                # that "record no longer exists". Chasing a log line saying
+                # exactly that, in a service whose graph was restarting, is
+                # what this whole change came out of.
+                raise_on_error=True,
             )
             if record is None:
                 self.logger.warning(
@@ -180,7 +200,7 @@ class RecordEventHandler(BaseEventService):
                 record_id=record_id,
                 indexing_status=ProgressStatus.FAILED.value,
                 extraction_status=ProgressStatus.FAILED.value,
-                reason=f"Message discarded after {attempts} attempt(s): {reason}",
+                reason=RETRIES_EXHAUSTED,
             )
             if updated is None:
                 # The status write is the only trace this record will ever get,
@@ -223,11 +243,7 @@ class RecordEventHandler(BaseEventService):
         would usually repeat the same failure (e.g. rate limits) and waste resources.
         """
         try:
-            propagated_reason = (
-                f"Primary duplicate indexing failed: {reason}"
-                if reason
-                else "Primary duplicate indexing failed"
-            )
+            propagated_reason = duplicate_failed(reason)
             updated = await self.event_processor.graph_provider.update_queued_duplicates_status(
                 record_id,
                 ProgressStatus.FAILED.value,
@@ -266,7 +282,15 @@ class RecordEventHandler(BaseEventService):
         try:
             self.logger.info(f"🔍 Looking for next queued duplicate for record {record_id}")
 
-            next_queued_record = await self.event_processor.graph_provider.find_next_queued_duplicate(record_id)
+            # None means "nothing is waiting behind this record", and the
+            # method returns without publishing anything. A failed read gave
+            # the same answer, and nothing else ever looks again: the queued
+            # duplicates keep that status with no event left to move them.
+            # Raising reaches the handler below, which marks them FAILED --
+            # visible, and recoverable by a reindex.
+            next_queued_record = await self.event_processor.graph_provider.find_next_queued_duplicate(
+                record_id, raise_on_error=True
+            )
 
             if not next_queued_record:
                 self.logger.info(f"✅ No queued duplicates found for record {record_id}")
@@ -439,12 +463,12 @@ class RecordEventHandler(BaseEventService):
                 == MessageErrorType.TRANSIENT
             ):
                 raise
-            async for event in _fail("Failed to retrieve record from blob storage"):
+            async for event in _fail(STORED_CONTENT_MISSING):
                 yield event
             return
 
         if not blob or not self._blob_has_blocks(blob):
-            async for event in _fail("Blob has no parsed blocks"):
+            async for event in _fail(STORED_CONTENT_DAMAGED):
                 yield event
             return
 
@@ -475,7 +499,7 @@ class RecordEventHandler(BaseEventService):
             self.logger.exception(
                 "Vector-only reindex could not build blocks for record %s", record_id
             )
-            async for event in _fail("Blob blocks are malformed"):
+            async for event in _fail(STORED_CONTENT_DAMAGED):
                 yield event
             return
 
@@ -543,7 +567,49 @@ class RecordEventHandler(BaseEventService):
                     details={"payload_keys": sorted(payload.keys())},
                 )
 
-            # Handle bulk delete event FIRST - for connector instance deletion (doesn't have record_id)
+            # Both vector-cleanup events come first: neither carries a record_id.
+            # They are told apart by eventType and never by which payload keys
+            # happen to be present — an event whose meaning flips on a missing
+            # key is one serialisation quirk away from purging a whole connector.
+            if event_type == EventTypes.DELETE_CONNECTOR_EMBEDDINGS.value:
+                connector_id = payload.get("connectorId")
+                if not connector_id:
+                    # A producer bug no retry can fix: TERMINAL, so it reaches the
+                    # dead-letter queue in one attempt rather than three.
+                    raise ProcessingError(
+                        "deleteConnectorEmbeddings carries no connectorId",
+                        details={"payload_keys": sorted(payload.keys())},
+                    )
+                self.logger.info(f"🗑️ Deleting embeddings for connector {connector_id}")
+                indexing_pipeline = self.event_processor.processor.indexing_pipeline
+                result = await indexing_pipeline.purge_connector(
+                    DeleteContext(
+                        org_id=payload.get("orgId", ""),
+                        connector_id=connector_id,
+                        connector_name=payload.get("connectorName"),
+                    ),
+                    payload.get("recordGroupIds") or [],
+                )
+                # Report the passes separately. The exclusive delete does the
+                # overwhelming majority of the work and returns no count, so
+                # collapsing this to one number logs 0 on a fully successful
+                # cleanup — indistinguishable from a no-op.
+                self.logger.info(
+                    f"✅ Connector {connector_id} cleanup complete: "
+                    f"exclusive points deleted="
+                    f"{result.get('exclusive_points_deleted', False)}, "
+                    f"shared rewritten={result.get('virtual_record_ids_rewritten', 0)}, "
+                    f"orphans resolved={result.get('virtual_record_ids_deleted', 0)}"
+                )
+                if result.get("success") is False:
+                    raise IndexingError(
+                        "Connector embedding cleanup did not complete",
+                        details={"result": result},
+                    )
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="connector_purge", count=0))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="connector_purge", count=0))
+                return
+
             if event_type == EventTypes.BULK_DELETE_RECORDS.value:
                 virtual_record_ids = payload.get("virtualRecordIds", [])
                 connector_id = payload.get("connectorId")
@@ -562,7 +628,7 @@ class RecordEventHandler(BaseEventService):
                         connector_id=connector_id,
                         connector_name=payload.get("connectorName"),
                     )
-                    result = await indexing_pipeline.purge_connector(
+                    result = await indexing_pipeline.purge_connector_by_virtual_record_ids(
                         delete_ctx, virtual_record_ids
                     )
                 else:
@@ -578,8 +644,8 @@ class RecordEventHandler(BaseEventService):
                 # the only handle a later run has on those points. Raise so the
                 # consumer redelivers; IndexingError classifies as transient,
                 # and the refusal leaves nothing half-applied to retry over.
-                # `is False` deliberately: purge_connector's drop and noop
-                # results carry no success key at all.
+                # `is False` deliberately: the drop and noop results carry no
+                # success key at all.
                 if result.get("success") is False:
                     raise IndexingError(
                         "Bulk deletion did not complete; no managed collection "
@@ -625,11 +691,7 @@ class RecordEventHandler(BaseEventService):
                     details={"event_type": event_type},
                 )
 
-        
 
-            record = await self.event_processor.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
 
             self.logger.debug(
                 f"Processing record {record_id} with event type: {event_type}. "
@@ -644,6 +706,20 @@ class RecordEventHandler(BaseEventService):
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
+
+            # Below the delete branch, which does not use `record`: a delete
+            # should still drop the embeddings when the graph is unreadable
+            # rather than exhaust its retries and leave them behind.
+            record = await self.event_processor.graph_provider.get_document(
+                record_id,
+                CollectionNames.RECORDS.value,
+                # None below drains the message -- the record is treated as
+                # deleted and the event is gone. Without this an unreadable
+                # graph gives the same answer as a deletion, so every record
+                # in flight during a restart is discarded and left at QUEUED
+                # with nothing to retry it.
+                raise_on_error=True,
+            )
 
             if record is None:
                 # Legitimately reachable: the record can be deleted between the
@@ -721,7 +797,13 @@ class RecordEventHandler(BaseEventService):
                 origin = record.get("origin")
                 if connector_id and origin == OriginTypes.CONNECTOR.value:
                     connector_instance = await self.event_processor.graph_provider.get_document(
-                        connector_id, CollectionNames.APPS.value
+                        connector_id,
+                        CollectionNames.APPS.value,
+                        # Same reason as the record read above: the two yields
+                        # below ack the message and leave the record QUEUED, so
+                        # an unreadable graph must not reach them by looking
+                        # like a deleted connector.
+                        raise_on_error=True,
                     )
                     if not connector_instance:
                         self.logger.info(
@@ -741,7 +823,7 @@ class RecordEventHandler(BaseEventService):
                             record_id=record_id,
                             indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                             extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
-                            reason="Connector is inactive"
+                            reason=CONNECTOR_OFF,
                         )
                         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -800,7 +882,7 @@ class RecordEventHandler(BaseEventService):
                     record_id=record_id,
                     indexing_status=ProgressStatus.COMPLETED.value,
                     extraction_status=ProgressStatus.COMPLETED.value,
-                    reason="Folder record — no content to index",
+                    reason=FOLDER_NOTHING_TO_INDEX,
                 )
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
@@ -962,7 +1044,7 @@ class RecordEventHandler(BaseEventService):
                     record_id=record_id,
                     indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                     extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    reason=f"Unsupported file type: {mime_type} ({judged_extension})",
+                    reason=unsupported_file_type(judged_extension),
                 )
 
                 # Yield both events for unsupported file types
@@ -1141,6 +1223,7 @@ class RecordEventHandler(BaseEventService):
                 elif is_final:
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
+                    user_reason = to_user_reason(last_exception)
                     self.logger.error(
                         f"Final failure for record {record_id}: {error_msg}",
                         exc_info=last_exception,
@@ -1150,7 +1233,7 @@ class RecordEventHandler(BaseEventService):
                             record_id=record_id,
                             indexing_status=ProgressStatus.FAILED.value,
                             extraction_status=ProgressStatus.FAILED.value,
-                            reason=error_msg,
+                            reason=user_reason,
                         )
                     except Exception as status_exc:
                         # A status-write failure here must not replace the
@@ -1177,7 +1260,7 @@ class RecordEventHandler(BaseEventService):
                                 f"propagating failure to all queued duplicates"
                             )
                             await self._propagate_primary_failure_to_queued_duplicates(
-                                record_id, virtual_record_id, error_msg
+                                record_id, virtual_record_id, user_reason
                             )
                         else:
                             # Transient error exhausted retries → try next duplicate
@@ -1210,7 +1293,7 @@ class RecordEventHandler(BaseEventService):
                                 if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
                                     updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
                         if updates:
-                            updates["reason"] = f"Transient failure, retry scheduled: {error_msg}"
+                            updates["reason"] = RETRY_SCHEDULED
                             updates["processingStartedAt"] = None
                             updated = await self.event_processor.graph_provider.update_node(
                                 record_id, CollectionNames.RECORDS.value, updates

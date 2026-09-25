@@ -202,6 +202,8 @@ export interface AgentDetail {
   can_view: boolean;
   /** Agent-level fallback used when a chat request omits its own reasoningEffort. */
   defaultReasoningEffort?: ReasoningEffort | null;
+  /** When false, the agent system prompt omits user name/email/org. Defaults to true. */
+  sendUserContext?: boolean;
 }
 
 // ── Builder catalog rows (tool list + KB) ───────────────────────
@@ -228,6 +230,8 @@ export interface SkillForBuilder {
   name: string;
   description: string;
   category: string | null;
+  /** `skill.source === 'builtin'` — mirrors `skill-card.tsx`'s check, used to pick the palette row icon. */
+  isBuiltin: boolean;
 }
 
 /** Skill entry as embedded on `AgentDetail.skills` (GET /agents/:id enrichment). */
@@ -238,6 +242,8 @@ export interface AgentSkillReference {
   subcategory?: string | null;
   version?: string;
   status?: string;
+  deprecatedReason?: string | null;
+  replacedBy?: string | null;
 }
 
 // ── Knowledge Hub App Nodes (for agent builder apps palette) ─────

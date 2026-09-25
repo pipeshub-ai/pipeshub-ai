@@ -1,0 +1,6 @@
+{
+  "placeholder": true,
+  "benchmark": "indexing",
+  "label": "ci-neo4j-4cpu",
+  "note": "Placeholder: no real CI run has been recorded yet. Replace this file with the indexing.json artifact of a trusted scheduled run on main (4-CPU runner, Neo4j, Redis broker, test OpenAI models, 500 files, seed 1337, all kinds). A 50-file run on a developer laptop was tried first, but a local CPU LLM on a busy machine left half the records unfinished after an hour, so its numbers say nothing about CI."
+}

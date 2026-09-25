@@ -1,0 +1,181 @@
+name: E2E Smoke
+
+# The few most important browser tests (tagged @smoke), on every pull request.
+#
+# Runs on pull_request, not pull_request_target: the pull request's own code is
+# built and run here, so the job gets no repository secrets, a read-only token,
+# and no deployment environment. Nothing it needs is secret. The stack is a
+# throwaway one on this runner, so its encryption key and the admin login are
+# generated fresh for each run, and the chat test uses a mocked answer, so no
+# AI provider key is needed either. Pull requests from forks are skipped, because
+# the runner is self-hosted.
+on:
+  pull_request:
+    branches:
+      - 'main'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-smoke-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  PIPESHUB_BASE_URL: http://localhost:3000
+
+jobs:
+  e2e-smoke:
+    name: E2E smoke (browser)
+    # Self-hosted runner: never run a fork's code on it (same guard as published-hub-smoke.yml).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Generate throwaway credentials for this run
+        run: |
+          # Random, never stored anywhere but this runner's environment.
+          SECRET_KEY=$(openssl rand -hex 32)
+          PASSWORD="Smoke-$(openssl rand -hex 12)!1a"
+          echo "::add-mask::${SECRET_KEY}"
+          echo "::add-mask::${PASSWORD}"
+          {
+            echo "SECRET_KEY=${SECRET_KEY}"
+            echo "PIPESHUB_TEST_USER_EMAIL=smoke-admin-${GITHUB_RUN_ID}@e2etest.pipeshub.local"
+            echo "PIPESHUB_TEST_USER_PASSWORD=${PASSWORD}"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend deps and Playwright browsers
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install chromium --with-deps
+
+      - name: Pull pre-built base images
+        run: |
+          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
+          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+
+      - name: Build stack images
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml build
+
+      - name: Start services
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml up -d
+
+      # Core services first (API, Mongo, Redis, the graph), then the Python
+      # services; the second health endpoint answers 200 even while some of
+      # the first are still starting.
+      - name: Wait for core services
+        run: |
+          deadline=$((SECONDS + 300))
+          delay=1
+          until curl -sf "${PIPESHUB_BASE_URL}/api/v1/health" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "/api/v1/health not healthy after 300s"; exit 1; fi
+            echo "Not ready, retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+            if [ "$delay" -gt 64 ]; then delay=64; fi
+          done
+
+      - name: Wait for Python microservices
+        run: |
+          deadline=$((SECONDS + 300))
+          delay=1
+          until curl -sf "${PIPESHUB_BASE_URL}/api/v1/health/services" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "/api/v1/health/services not healthy after 300s"; exit 1; fi
+            echo "Not ready, retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+            if [ "$delay" -gt 64 ]; then delay=64; fi
+          done
+
+      - name: Create organization and admin user
+        run: |
+          # jq reads the credentials from the environment, so quotes or backslashes
+          # in a secret stay valid JSON and never appear on a command line.
+          jq -n --arg name "Smoke Test" --arg short "SMOKE" '{
+              accountType: "business",
+              adminFullName: "\($name) Admin",
+              contactEmail: $ENV.PIPESHUB_TEST_USER_EMAIL,
+              password: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              confirmPassword: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              registeredName: "\($name) Org",
+              shortName: $short
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
+            -H "Content-Type: application/json" \
+            --data-binary @- > /dev/null
+
+      - name: Skip onboarding
+        run: |
+          HEADERS=$(mktemp)
+          jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+            -H "Content-Type: application/json" \
+            --data-binary @- \
+            -D "${HEADERS}" -o /dev/null
+          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
+          rm -f "${HEADERS}"
+
+          ACCESS_TOKEN=$(jq -n '{
+              method: "password",
+              credentials: {password: $ENV.PIPESHUB_TEST_USER_PASSWORD},
+              email: $ENV.PIPESHUB_TEST_USER_EMAIL
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+            -H "Content-Type: application/json" \
+            -H "x-session-token: ${SESSION_TOKEN}" \
+            --data-binary @- \
+            | jq -r '.accessToken')
+
+          curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d '{"status": "configured"}' > /dev/null
+
+      - name: Run smoke browser tests
+        working-directory: frontend
+        env:
+          CI: 'true'
+          PLAYWRIGHT_NO_SERVER: 'true'
+          BASE_URL: http://localhost:3000
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
+          TEST_USER_EMAIL: ${{ env.PIPESHUB_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
+          # The stack's Mailpit catches invite emails; the invite test reads them back.
+          SMTP_HOST: mailpit
+          SMTP_PORT: '1025'
+        run: npm run test:e2e:smoke 2>&1
+
+      - name: Dump docker logs
+        if: failure()
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps > ../../frontend/docker-logs.txt 2>&1 || true
+
+      - name: Upload smoke report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+            frontend/docker-logs.txt
+          retention-days: 7
+
+      - name: Tear down services
+        if: always()
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml down -v

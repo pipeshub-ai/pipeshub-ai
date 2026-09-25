@@ -3,6 +3,8 @@
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from pathlib import Path
+
 import pytest
 from langchain_core.documents import Document
 from qdrant_client import models
@@ -11,6 +13,7 @@ from app.exceptions.fastapi_responses import Status
 from app.modules.retrieval.retrieval_service import (
     ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE,
     DEFAULT_SEARCH_LIMIT,
+    PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
 )
 
 # ---------------------------------------------------------------------------
@@ -939,6 +942,46 @@ class TestSearchWithFilters:
         assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
         assert result["status_code"] == 404
         assert result["message"] == ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE
+
+    @pytest.mark.asyncio
+    async def test_a_failed_permission_read_shows_nothing_and_says_why(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """A graph outage used to arrive here as {} and be reported as "no
+        documents are available, upload some", which is wrong and unactionable."""
+        mock_graph_provider.get_accessible_virtual_record_ids.side_effect = RuntimeError("graph down")
+        retrieval_service._execute_parallel_searches = AsyncMock()
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+
+        assert result["status"] == Status.PERMISSION_CHECK_UNAVAILABLE.value
+        assert result["status_code"] == 503
+        assert result["message"] == PERMISSION_CHECK_UNAVAILABLE_MESSAGE
+        assert result["searchResults"] == []
+        retrieval_service._execute_parallel_searches.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_search_asks_for_the_strict_permission_read(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+
+        kwargs = mock_graph_provider.get_accessible_virtual_record_ids.await_args.kwargs
+        assert kwargs.get("raise_on_error") is True
+
+    def test_the_gateway_lets_the_permission_message_through(self):
+        """Node repeats a 503's message only when it is on its allowlist, and
+        shows "briefly unavailable" otherwise. The two copies must match."""
+        gateway = (
+            Path(__file__).resolve().parents[6]
+            / "backend/nodejs/apps/src/libs/errors/reader-friendly.ts"
+        )
+        if not gateway.exists():
+            pytest.skip("the Node sources are not in this checkout")
+        assert PERMISSION_CHECK_UNAVAILABLE_MESSAGE in gateway.read_text(encoding="utf-8")
 
     @pytest.mark.asyncio
     async def test_explicit_none_limit_falls_back_to_the_default(
@@ -2217,3 +2260,65 @@ class TestSearchWithFiltersTimeRange:
         )
         assert "time_range" not in filters_passed
         assert result.get("appliedFilters") == {"kb": ["kb-123"], "kb_count": 1}
+
+
+# ============================================================================
+# search_with_filters strictScope key-casing
+# ============================================================================
+
+
+class TestSearchWithFiltersStrictScope:
+    """`strictScope` is a control flag (see `ChatQuery.strictScope` in
+    `chatbot.py`/`agent.py`), not a metadata filter key. The generic
+    `key.lower()` normalization loop below would otherwise turn it into
+    "strictscope" before it reaches `get_accessible_virtual_record_ids`,
+    silently breaking `filters.get("strictScope")` in both graph providers
+    and re-opening Scenario 3's "search everything" fallback for an
+    empty project scope."""
+
+    @pytest.mark.asyncio
+    async def test_strict_scope_key_survives_unlowercased(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(
+            queries=["test"],
+            user_id="u1",
+            org_id="o1",
+            filter_groups={"apps": [], "kb": [], "strictScope": True},
+        )
+        filters_passed = (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs["filters"]
+        )
+        assert filters_passed.get("strictScope") is True
+        assert "strictscope" not in filters_passed
+
+    @pytest.mark.asyncio
+    async def test_other_keys_still_lowercased_alongside_strict_scope(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(
+            queries=["test"],
+            user_id="u1",
+            org_id="o1",
+            filter_groups={"Departments": ["eng"], "strictScope": True},
+        )
+        filters_passed = (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs["filters"]
+        )
+        assert filters_passed.get("departments") == ["eng"]
+        assert filters_passed.get("strictScope") is True
+
+    @pytest.mark.asyncio
+    async def test_absent_strict_scope_key_is_not_introduced(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1", filter_groups={"kb": ["kb-1"]},
+        )
+        filters_passed = (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs["filters"]
+        )
+        assert "strictScope" not in filters_passed

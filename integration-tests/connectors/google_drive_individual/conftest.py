@@ -18,6 +18,8 @@ from typing import Any, AsyncGenerator
 import pytest
 import pytest_asyncio
 
+from helper.source_credentials import source_unavailable
+
 from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
 from helper.clients.users_client import UsersClient  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
@@ -47,6 +49,7 @@ from connectors.google_drive_individual.drive_individual_test_utils import (  # 
 from connectors.google_drive_workspace.drive_workspace_test_utils import (  # type: ignore[import-not-found]
     delete_drive_folder,
     ensure_pipeshub_user_exists,
+    wait_until_drive_files_listed,
 )
 
 logger = logging.getLogger("drive-individual-conftest")
@@ -62,7 +65,7 @@ async def drive_individual_datasource() -> GoogleDriveDataSource:
     try:
         client_id, client_secret, refresh_token, _test_user = require_drive_individual_env()
     except ValueError as e:
-        pytest.skip(str(e))
+        source_unavailable(f"The Google Drive account this suite syncs from is not configured. {e}")
 
     try:
         return await build_drive_datasource_from_refresh_token(
@@ -183,15 +186,23 @@ async def drive_individual_connector(
         except Exception as e:
             pytest.fail(f"Failed to authenticate connector with refresh token: {e}")
 
+        child_file_id = fixtures["child_file_id"]
+
+        # My Drive is enumerated through the user-corpus files.list, whose index lags the
+        # fixture creates above; sync before it settles and the tree is simply absent.
+        await wait_until_drive_files_listed(
+            drive_individual_datasource,
+            [seed_folder_id, fixtures["nested_folder_id"], child_file_id],
+        )
+
         pipeshub_client.toggle_sync(connector_id, enable=True)
         await wait_for_sync_completion(
             pipeshub_client,
             graph_provider,
             connector_id,
+            min_records=1,
             timeout=_SYNC_TIMEOUT_SEC,
         )
-
-        child_file_id = fixtures["child_file_id"]
 
         async def _seed_and_child_present() -> bool:
             seed = await graph_provider.get_record_by_external_id(

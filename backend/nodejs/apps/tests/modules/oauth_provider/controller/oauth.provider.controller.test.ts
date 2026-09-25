@@ -19,6 +19,7 @@ describe('OAuthProviderController', () => {
   let mockOAuthTokenService: any
   let mockAuthCodeService: any
   let mockScopeValidatorService: any
+  let mockOAuthDeviceService: any
   let mockRes: any
   let mockNext: any
 
@@ -45,12 +46,20 @@ describe('OAuthProviderController', () => {
       validateScopesForApp: sinon.stub(),
       getScopeDefinitions: sinon.stub().returns([{ name: 'org:read', description: 'Read org', category: 'Organization' }]),
     }
+    mockOAuthDeviceService = {
+      poll: sinon.stub(),
+      createAuthorization: sinon.stub(),
+      getConsentData: sinon.stub(),
+      approve: sinon.stub(),
+    }
     controller = new OAuthProviderController(
       mockLogger,
       mockOAuthAppService,
       mockOAuthTokenService,
       mockAuthCodeService,
       mockScopeValidatorService,
+      { register: sinon.stub() } as any,
+      mockOAuthDeviceService,
     )
     mockRes = {
       json: sinon.stub(),
@@ -208,6 +217,56 @@ describe('OAuthProviderController', () => {
       expect(mockRes.setHeader.calledWith('Cache-Control', 'no-store')).to.be.true
     })
 
+    it('refuses a client_credentials grant when the identity is disabled', async () => {
+      // These tokens are stored with no userId, so they are invisible to the
+      // revocation that runs when a service account is disabled or restored.
+      // Issuing one now would outlive that decision instead of being cleaned
+      // up by it, so the grant declines rather than minting it.
+      const req = {
+        body: { grant_type: 'client_credentials', client_id: 'cid', client_secret: 'secret' },
+        headers: {},
+      } as any
+      mockOAuthAppService.verifyClientCredentials.resolves({
+        clientId: 'cid',
+        orgId: { toString: () => 'org-1' },
+        allowedScopes: ['org:read'],
+        isConfidential: true,
+        createdBy: { toString: () => 'owner-1' },
+      })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      const identity = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves({ fullName: 'Nightly sync', isDisabled: true }) }
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(identity as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token(req, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.generateTokens.called).to.be.false
+    })
+
+    it('refuses a client_credentials grant while the identity is being restored', async () => {
+      const req = {
+        body: { grant_type: 'client_credentials', client_id: 'cid', client_secret: 'secret' },
+        headers: {},
+      } as any
+      mockOAuthAppService.verifyClientCredentials.resolves({
+        clientId: 'cid',
+        orgId: { toString: () => 'org-1' },
+        allowedScopes: ['org:read'],
+        isConfidential: true,
+        createdBy: { toString: () => 'owner-1' },
+      })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      const identity = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves({ fullName: 'Nightly sync', restoreOpId: 'op-1' }) }
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(identity as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token(req, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.generateTokens.called).to.be.false
+    })
+
     it('should set cache control headers on success', async () => {
       const req = {
         body: {
@@ -231,9 +290,13 @@ describe('OAuthProviderController', () => {
         accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read',
       })
 
-      // Stub mongoose models to prevent DB access
+      // Stub mongoose models to prevent DB access. The identity the grant
+      // would act as has to resolve: it now refuses rather than issuing a
+      // bearer for an account that is missing, deleted, disabled or being
+      // restored.
+      const identity = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves({ fullName: 'Owner' }) }
       const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
-      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Users, 'findOne').returns(identity as any)
       sinon.stub(Org, 'findOne').returns(chainable as any)
 
       await controller.token(req, mockRes, mockNext)
@@ -641,8 +704,10 @@ describe('OAuthProviderController', () => {
         accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read',
       })
 
+      // The identity the grant acts as has to resolve; it is refused otherwise.
+      const identity = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves({ fullName: 'Owner' }) }
       const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
-      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Users, 'findOne').returns(identity as any)
       sinon.stub(Org, 'findOne').returns(chainable as any)
 
       const req = {
@@ -754,6 +819,124 @@ describe('OAuthProviderController', () => {
 
       await controller.introspect(req, mockRes, mockNext)
       expect(mockRes.status.calledWith(401)).to.be.true
+    })
+  })
+
+  describe('deviceAuthorization', () => {
+    it('should return 200 with the device payload', async () => {
+      const payload = {
+        device_code: 'dc',
+        user_code: 'ABCD-EFGH',
+        verification_uri: 'http://localhost:3000/oauth/device',
+        verification_uri_complete:
+          'http://localhost:3000/oauth/device?user_code=ABCD-EFGH',
+        expires_in: 600,
+        interval: 5,
+      }
+      mockOAuthDeviceService.createAuthorization.resolves(payload)
+      const req = {
+        body: { client_id: 'pipeshub-agent', scope: 'user:read' },
+        oauthFrontendUrl: 'http://localhost:3000',
+      } as any
+
+      await controller.deviceAuthorization(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(200)).to.be.true
+      expect(mockRes.json.firstCall.args[0]).to.deep.equal(payload)
+      expect(
+        mockOAuthDeviceService.createAuthorization.calledWith(
+          'pipeshub-agent',
+          'user:read',
+          'http://localhost:3000',
+        ),
+      ).to.be.true
+    })
+
+    it('should return 400 when frontendUrl is not configured', async () => {
+      const req = { body: { client_id: 'cid' } } as any
+      await controller.deviceAuthorization(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(400)).to.be.true
+      expect(mockRes.json.firstCall.args[0].error).to.equal('server_error')
+      expect(mockOAuthDeviceService.createAuthorization.called).to.be.false
+    })
+  })
+
+  describe('deviceConsent', () => {
+    it('should reject consent values other than granted or denied', async () => {
+      const req = {
+        body: { user_code: 'ABCD-EFGH', consent: 'maybe' },
+        user: { userId: 'u1', orgId: 'o1' },
+      } as any
+      await controller.deviceConsent(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(400)).to.be.true
+      expect(mockOAuthDeviceService.approve.called).to.be.false
+    })
+
+    it('should approve with the authenticated user identity', async () => {
+      mockOAuthDeviceService.approve.resolves()
+      const req = {
+        body: { user_code: 'ABCD-EFGH', consent: 'granted' },
+        user: { userId: 'u1', orgId: 'o1', email: 'u@e.com' },
+      } as any
+      await controller.deviceConsent(req, mockRes, mockNext)
+      expect(
+        mockOAuthDeviceService.approve.calledWith(
+          'ABCD-EFGH',
+          'u1',
+          'o1',
+          'granted',
+        ),
+      ).to.be.true
+      expect(mockRes.json.firstCall.args[0]).to.deep.equal({
+        ok: true,
+        consent: 'granted',
+      })
+    })
+  })
+
+  describe('deviceVerify', () => {
+    it('should attach the signed-in user onto consent data', async () => {
+      mockOAuthDeviceService.getConsentData.resolves({
+        app: { name: 'CLI', isDynamic: false },
+        scopes: [{ name: 'user:read' }],
+        user: { email: '', name: undefined },
+        redirectUri: '',
+        state: '',
+      })
+      const req = {
+        body: { user_code: 'ABCD-EFGH' },
+        user: { userId: 'u1', orgId: 'o1', email: 'u@e.com', fullName: 'Test' },
+      } as any
+      await controller.deviceVerify(req, mockRes, mockNext)
+      const body = mockRes.json.firstCall.args[0]
+      expect(body.requiresConsent).to.equal(true)
+      expect(body.consentData.user).to.deep.equal({
+        email: 'u@e.com',
+        name: 'Test',
+      })
+    })
+  })
+
+  describe('token - device_code grant', () => {
+    it('should poll the device service', async () => {
+      mockOAuthDeviceService.poll.resolves({
+        access_token: 'at',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        refresh_token: 'rt',
+        scope: 'user:read',
+      })
+      const req = {
+        body: {
+          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+          client_id: 'cid',
+          device_code: 'dc',
+        },
+        headers: {},
+      } as any
+      await controller.token(req, mockRes, mockNext)
+      expect(mockOAuthDeviceService.poll.calledWith('cid', undefined, 'dc')).to
+        .be.true
+      expect(mockRes.json.firstCall.args[0].access_token).to.equal('at')
     })
   })
 })

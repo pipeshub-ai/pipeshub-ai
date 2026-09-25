@@ -9066,7 +9066,9 @@ class ConfluenceDataSource:
         content_type: Optional[str] = None,
         expand: str = "version,space,history.lastUpdated,ancestors",
         limit: int = 200,
-        headers: Optional[Dict[str, Any]] = None
+        headers: Optional[Dict[str, Any]] = None,
+        start: Optional[int] = None,
+        cursor: Optional[str] = None,
     ) -> HTTPResponse:
         """Search for content (pages/blogs) by their titles using CQL.
 
@@ -9081,6 +9083,8 @@ class ConfluenceDataSource:
             expand: Comma-separated properties to expand
             limit: Max results to return (default: 200)
             headers: Additional headers
+            start: Offset of the page to read, from the previous page's ``_links.next``
+            cursor: Cursor of the page to read, from the previous page's ``_links.next``
 
         Returns:
             HTTPResponse with matching content items
@@ -9116,6 +9120,10 @@ class ConfluenceDataSource:
 
         if expand:
             _query['expand'] = expand
+        if start is not None:
+            _query['start'] = start
+        if cursor:
+            _query['cursor'] = cursor
 
         # v1 content search (Cloud + DC)
         url = f"{self._v1_rest_api_base()}/content/search"

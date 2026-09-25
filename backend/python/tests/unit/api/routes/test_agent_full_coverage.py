@@ -302,8 +302,8 @@ class TestCreateKnowledgeEdges:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(return_value=False)
         knowledge = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -324,8 +324,8 @@ class TestCreateKnowledgeEdges:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("err"))
         knowledge = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
-        assert result == []
+        with pytest.raises(Exception, match="err"):
+            await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
 
 
 

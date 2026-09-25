@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.services.base_client import parse_retry_after
 
 # ---------------------------------------------------------------------------
 # Unified response wrapper
@@ -445,12 +446,12 @@ async def fetch_url_with_fallback(
                     exp_delay = 2 ** (_rl_attempt + 1)  # 2s, 4s, 8s, 16s, …
 
                     retry_after_hdr = result.headers.get("Retry-After") or result.headers.get("retry-after")
-                    server_delay: float | None = None
-                    if retry_after_hdr:
-                        try:
-                            server_delay = float(retry_after_hdr)
-                        except ValueError:
-                            pass
+                    server_delay = parse_retry_after(retry_after_hdr)
+                    # A header of 0, or a date already in the past, asks for no wait
+                    # at all. Hammering the site immediately is what the backoff
+                    # exists to prevent, so treat it as no signal.
+                    if server_delay is not None and server_delay <= 0:
+                        server_delay = None
 
                     delay = server_delay if server_delay is not None else exp_delay
 
@@ -490,16 +491,12 @@ async def fetch_url_with_fallback(
                         strategy_name, status, url, attempt + 1, max_retries_per_strategy
                     )
                     retry_after = result.headers.get("Retry-After") or result.headers.get("retry-after")
-                    if retry_after:
-                        try:
-                            delay = float(retry_after)
-                        except ValueError:
-                            delay = 2.0
-                        if delay > MAX_RATE_LIMIT_BACKOFF:
-                            last_failed_result = result
-                            break
-                    else:
-                        delay = 2.0
+                    server_delay = parse_retry_after(retry_after)
+                    delay = server_delay if server_delay else 2.0
+                    if delay > MAX_RATE_LIMIT_BACKOFF:
+                        result.retry_after = delay
+                        last_failed_result = result
+                        break
                     await asyncio.sleep(delay)
                     last_failed_result = result
                     break  # break backoff loop, go to next strategy attempt

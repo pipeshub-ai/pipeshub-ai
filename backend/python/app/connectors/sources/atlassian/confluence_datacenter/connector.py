@@ -60,6 +60,11 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterApp
+from app.connectors.sources.atlassian.core.confluence_access import (
+    apply_page_access_to_dependents,
+    unresolved_principal_permission,
+    v1_next_start,
+)
 from app.connectors.sources.atlassian.core.confluence_html import prepare_streaming_html
 from app.sources.client.http.http_retry import call_with_retry
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -442,6 +447,30 @@ class ConfluenceDataCenterConnector(BaseConnector):
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
             return False
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        if not self.data_source:
+            return
+        email, source_user_id = "", None
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_current_user_v1()
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                return
+            data = response.json() or {}
+            source_user_id = data.get("userKey") or data.get("key")
+            email = (data.get("email") or "").strip()
+            if not email and data.get("username"):
+                # Data Center usually omits email on /user/current; the profile call carries it
+                detail = await datasource.get_user_v1(username=data["username"])
+                if detail and detail.status == HttpStatusCode.SUCCESS.value:
+                    email = ((detail.json() or {}).get("email") or "").strip()
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated Confluence account: %s", e)
+            return
+        await self.register_authenticated_source_user(email or None, source_user_id)
+
     async def run_sync(self) -> None:
         """
         Run full synchronization of Confluence Data Center data.
@@ -466,6 +495,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
             # Ensure client is initialized
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
+
+            await self._register_authenticated_identity()
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -660,6 +691,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             group_name=group_name,
                             group_id=group_id
                         )
+                        if member_emails is None:
+                            # Saving the group now would replace its members with an empty list.
+                            self.logger.warning(
+                                f"Keeping the stored members of group {group_name}: its member list could not be read"
+                            )
+                            continue
 
                         # Create user group
                         user_group = self._transform_to_user_group(group_data)
@@ -679,12 +716,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         self.logger.error(f"❌ Failed to process group {group_data.get('name')}: {group_error}")
                         continue
 
-                # Move to next page
-                start += batch_size
-
-                # Check if we have more groups
-                if len(groups_data) < batch_size:
+                next_start = v1_next_start(response_data, start, len(groups_data), batch_size, use_link_offset=False)
+                if next_start is None:
                     break
+                start = next_start
 
             self.logger.info(f"✅ Group sync complete. Groups: {total_groups_synced}, Memberships: {total_memberships_synced}")
 
@@ -784,17 +819,23 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             space_name=str(space_name),
                             space_id=str(space_id)
                         )
-                        total_permissions_synced += len(permissions)
 
                         # Create RecordGroup for space
                         record_group = self._transform_to_space_record_group(space_data, base_url)
                         if not record_group:
                             continue
 
-                        # Add to batch
-                        record_groups_with_permissions.append((record_group, permissions))
                         record_groups.append(record_group)
                         total_spaces_synced += 1
+                        if permissions is None:
+                            # Saving the space replaces its grants; keep them and still sync its content.
+                            self.logger.warning(
+                                f"Keeping the stored access of space {space_name}: its permissions could not be read"
+                            )
+                            continue
+
+                        total_permissions_synced += len(permissions)
+                        record_groups_with_permissions.append((record_group, permissions))
                         self.logger.debug(f"Space {space_name}: {len(permissions)} permissions")
 
                     except Exception as space_error:
@@ -899,6 +940,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 external_record_id=item_id,
             )
             permissions = await self._fetch_page_permissions(item_id)
+            if permissions is None:
+                self.logger.warning("Skipping space homepage %s: its restrictions could not be read", item_id)
+                return 0
             webpage_record_update = await self._process_webpage_with_update(
                 item_data, record_type, existing_record, permissions
             )
@@ -1032,6 +1076,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             total_attachments_synced = 0
             total_comments_synced = 0
             total_permissions_synced = 0
+            listing_complete = True
 
             if record_type == RecordType.CONFLUENCE_PAGE and space_homepage_id:
                 homepage_in_db = await self.data_entities_processor.get_record_by_external_id(
@@ -1095,6 +1140,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch {content_type}s: {response.status if response else 'No response'}")
+                    listing_complete = False
                     break
 
                 response_data = response.json()
@@ -1134,6 +1180,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
                         # Fetch page permissions
                         permissions = await self._fetch_page_permissions(item_id)
+                        if permissions is None:
+                            # Saving it without its restrictions would open it to the whole space.
+                            self.logger.warning(f"Skipping {content_type} {item_id} this run: its restrictions could not be read")
+                            listing_complete = False
+                            continue
                         total_permissions_synced += len(permissions)
 
                         # Transform to WebpageRecord with update tracking
@@ -1218,7 +1269,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                                         # Set indexing status based on filter
                                         if not content_attachments_indexing_enabled:
                                             attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                        # Attachments inherit permissions from parent
+                                        # Attachments get the page's grants; the space's only if the page is open.
+                                        attachment_record.inherit_permissions = webpage_record.inherit_permissions
                                         records_with_permissions.append((attachment_record, permissions))
                                         total_attachments_synced += 1
                                         self.logger.debug(f"Attachment: {attachment_record.record_name}")
@@ -1246,6 +1298,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             # Comments already have indexing status set; just count them
                             # (Note: comments now includes attachment records too)
                             comment_count = sum(1 for rec, _ in comments if rec.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT])
+                            for comment_record, _ in comments:
+                                comment_record.inherit_permissions = webpage_record.inherit_permissions
                             records_with_permissions.extend(comments)
                             total_comments_synced += comment_count
 
@@ -1292,7 +1346,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
-            if total_synced > 0:
+            if not listing_complete:
+                self.logger.warning(
+                    f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
+                    "this window could be read, so the next sync reads it again"
+                )
+            elif total_synced > 0:
                 current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
                 self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
@@ -1355,6 +1414,13 @@ class ConfluenceDataCenterConnector(BaseConnector):
             # Fetch audit events and extract content IDs that had permission changes
             content_ids = await self._fetch_permission_audit_content_ids(last_sync_time_ms, current_time_ms)
 
+            if content_ids is None:
+                self.logger.warning(
+                    "Keeping the audit log checkpoint: the audit log could not be read in full, "
+                    "so the next sync reads this window again"
+                )
+                return
+
             if not content_ids:
                 self.logger.info("✅ No permission changes found in audit log")
                 # Update sync point even if no changes
@@ -1385,7 +1451,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
         self,
         start_date_ms: int,
         end_date_ms: int
-    ) -> list[str]:
+    ) -> Optional[list[str]]:
         """
         Fetch audit events from DC Auditing API and extract content IDs with permission changes.
 
@@ -1399,7 +1465,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
             end_date_ms: End timestamp in milliseconds (Unix epoch * 1000)
 
         Returns:
-            List of unique content IDs (pages/blogs) that had permission changes
+            List of unique content IDs (pages/blogs) that had permission changes, or None
+            when a page of the audit log could not be read.
         """
         content_ids_set: set[str] = set()
         batch_size = 100
@@ -1421,7 +1488,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"⚠️ Failed to fetch audit events: {response.status if response else 'No response'}")
-                break
+                return None
 
             response_data = response.json()
             audit_records = response_data.get("entities", [])
@@ -1671,6 +1738,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
                         # Fetch current permissions
                         permissions = await self._fetch_page_permissions(item_id)
+                        if permissions is None:
+                            self.logger.warning(f"Restrictions for {item_id} could not be read; keeping what is stored")
+                            has_failures = True
+                            continue
                         total_permissions += len(permissions)
 
                         # Only set inherit_permissions to False if there are READ restrictions
@@ -1794,6 +1865,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
                 # Fetch current permissions
                 permissions = await self._fetch_page_permissions(content_id)
+                if permissions is None:
+                    self.logger.warning(f"Restrictions for {content_id} could not be read; keeping what is stored")
+                    has_failures = True
+                    continue
                 total_permissions += len(permissions)
 
                 # Only set inherit_permissions to False if there are READ restrictions
@@ -1803,6 +1878,14 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
                 # Update in database
                 await self.data_entities_processor.on_new_records([(webpage_record, permissions)])
+                # Its stored files and comments would otherwise keep the page's old access.
+                await apply_page_access_to_dependents(
+                    self.data_entities_processor,
+                    self.connector_id,
+                    content_id,
+                    permissions,
+                    inherits_space=webpage_record.inherit_permissions,
+                )
                 total_synced += 1
 
             except Exception as item_error:
@@ -1818,7 +1901,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
         self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
 
-    async def _fetch_page_permissions(self, page_id: str) -> list[Permission]:
+    async def _fetch_page_permissions(self, page_id: str) -> Optional[list[Permission]]:
         """
         Fetch read (view) permissions for a Confluence page using DC v1 API.
 
@@ -1829,7 +1912,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
             page_id: The page ID
 
         Returns:
-            List of Permission objects with READ type only
+            List of Permission objects with READ type only, or None when the
+            restrictions could not be read (callers must not treat that as unrestricted).
         """
         permissions = []
 
@@ -1846,7 +1930,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     f"⚠️ Failed to fetch view permissions for page {page_id}: "
                     f"{response.status if response else 'No response'}"
                 )
-                return []
+                return None
 
             response_data = response.json()
             view_restrictions = response_data.get("viewContentRestrictions", {})
@@ -1869,7 +1953,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             self.logger.error(
                 f"❌ Failed to fetch view permissions for page {page_id}: {e}"
             )
-            return []
+            return None
 
     async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """
@@ -2814,7 +2898,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
     async def _fetch_space_permissions(
         self, space_key_or_id: str, space_name: str, space_id: Optional[str] = None
-    ) -> list[Permission]:
+    ) -> Optional[list[Permission]]:
         """Fetch space permissions using v1 (DC) or v2 (Cloud) API based on USE_DATA_CENTER_APIS.
 
         When USE_DATA_CENTER_APIS = True (Data Center mode):
@@ -2834,6 +2918,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
             space_key_or_id: Space key (for v1) or space ID (for v2)
             space_name: Space name for logging
             space_id: Optional numeric space ID (required for v2 Cloud mode)
+
+        Returns:
+            The space's permissions, or None when they could not be read.
         """
         try:
             permissions: list[Permission] = []
@@ -2850,10 +2937,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         f"Space '{space_name}' will have no permissions. "
                         f"Upgrade DC to 9.1+ or implement JSON-RPC fallback."
                     )
-                    # Raise exception instead of silent empty return to make the issue visible
-                    raise Exception(
-                        f"DC version {version_str} < 9.1 does not support space permissions REST endpoint"
-                    )
+                    # A permanent limit of this server, not a failed read: there are no grants to keep.
+                    return []
 
                 # DC v1: GET /rest/api/space/{key}/permissions (no pagination)
                 response = await datasource.get_space_permissions_v1(space_key=space_key_or_id)
@@ -2864,7 +2949,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         space_name,
                         response.status if response else "no response",
                     )
-                    return []
+                    return None
 
                 perm_entries = response.json()
                 if not isinstance(perm_entries, list):
@@ -2913,7 +2998,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             space_name,
                             response.status if response else "no response",
                         )
-                        break
+                        return None
 
                     response_data = response.json()
                     permissions_data = response_data.get("results", [])
@@ -2943,7 +3028,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 e,
                 exc_info=True,
             )
-            return []
+            return None
 
     def _extract_cursor_from_next_link(self, next_url: str) -> Optional[str]:
         """
@@ -3359,7 +3444,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     # "results": [{"type": "known", "userKey": "...", "username": "...", "displayName": "..."}]
                 },
                 "group": {
-                    # Both Cloud and DC: id + name present
+                    # Cloud: id + name present; DC: often name only
                     "results": [{"type": "group", "name": "...", "id": "..."}]
                 }
             }
@@ -3404,15 +3489,15 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         permission_type,
                         create_pseudo_group_if_missing=True  # Enable pseudo-group creation for record-level permissions
                     )
-                    if permission:
-                        permissions.append(permission)
+                    permissions.append(permission or unresolved_principal_permission(principal_id, permission_type))
 
             # Process group restrictions
             group_restrictions = restrictions.get("group", {})
             group_results = group_restrictions.get("results", [])
 
             for group_data in group_results:
-                principal_id = group_data.get("id")
+                # Data Center often identifies a group by name only; the lookup falls back to name.
+                principal_id = group_data.get("id") or group_data.get("name")
                 if principal_id:
                     permission = await self._create_permission_from_principal(
                         "group",
@@ -3420,8 +3505,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         permission_type,
                         create_pseudo_group_if_missing=False  # Groups don't need pseudo-groups
                     )
-                    if permission:
-                        permissions.append(permission)
+                    permissions.append(permission or unresolved_principal_permission(principal_id, permission_type))
 
         except Exception as e:
             self.logger.error(f"❌ Failed to transform page restriction: {e}")
@@ -3882,7 +3966,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
     async def _fetch_group_members(
         self, group_name: str, group_id: Optional[str] = None
-    ) -> list[str]:
+    ) -> Optional[list[str]]:
         """Fetch all members of a group and return their email addresses.
 
         When USE_DATA_CENTER_APIS = True (Data Center mode):
@@ -3908,7 +3992,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
             group_id: Optional group ID (required for ID-based endpoint in Cloud mode)
 
         Returns:
-            List of resolved email addresses for group members
+            List of resolved email addresses for group members, or None when the
+            member list could not be read in full.
         """
         try:
             member_emails = []
@@ -3931,12 +4016,17 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         self.logger.warning(
                             "Cannot fetch Cloud group members: group_id missing for %s", group_name
                         )
-                        return []
+                        return None
                     response = await datasource.get_group_members(
                         group_id=group_id,
                         start=start,
                         limit=batch_size
                     )
+
+                if response and response.status == HttpStatusCode.NOT_FOUND.value:
+                    # The group no longer exists, so it has no members to keep (not even earlier pages).
+                    self.logger.warning("Group %s was not found while reading its members", group_name)
+                    return []
 
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.warning(
@@ -3944,7 +4034,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         group_name,
                         response.status if response else "no response",
                     )
-                    break
+                    return None
 
                 response_data = response.json()
                 members_data = response_data.get("results", [])
@@ -3981,6 +4071,14 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             email = await self._resolve_user_email(
                                 user_identifier, datasource, lookup_as=lookup_as
                             )
+                            if email is None:
+                                # Dropping this member would take away their access through the group.
+                                self.logger.warning(
+                                    "Keeping the stored members of group %s: the email of member %s could not be looked up",
+                                    group_name,
+                                    user_identifier,
+                                )
+                                return None
 
                     if email:
                         member_emails.append(email)
@@ -3991,15 +4089,16 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             group_name,
                         )
 
-                start += batch_size
-                if len(members_data) < batch_size:
+                next_start = v1_next_start(response_data, start, len(members_data), batch_size, use_link_offset=False)
+                if next_start is None:
                     break
+                start = next_start
 
             return member_emails
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
-            return []
+            return None
 
     async def _resolve_user_email(
         self,
@@ -4007,7 +4106,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
         datasource: Any,
         *,
         lookup_as: Literal["key", "accountId"] = "key",
-    ) -> str:
+    ) -> Optional[str]:
         """Resolve a user's email via ``GET /rest/api/user``.
 
         ``lookup_as`` must match how Confluence identifies the user:
@@ -4018,19 +4117,29 @@ class ConfluenceDataCenterConnector(BaseConnector):
         ``lookup_as="accountId"`` whenever the identifier is a Cloud ``accountId``;
         using ``?key=`` with an ``accountId`` value returns HTTP 400 on Cloud.
 
-        Returns empty string if the lookup fails or email is still absent.
+        Returns an empty string when the user has no email or is not visible to us
+        (a 4xx other than 401 or 429), and None when the lookup itself failed (no response,
+        401, 429, 5xx or a network error), so the caller can keep what is stored.
         """
         try:
             response = await datasource.get_user_by_key(
                 user_identifier, lookup_as=lookup_as
             )
-            if response and response.status == HttpStatusCode.SUCCESS.value:
-                user_data = response.json()
-                return user_data.get("email", "").strip()
         except Exception as e:
-            self.logger.debug(
-                "Email resolution failed (%s=%s): %s", lookup_as, user_identifier, e
+            self.logger.warning(
+                "Email lookup failed (%s=%s): %s", lookup_as, user_identifier, e
             )
+            return None
+        if not response:
+            return None
+        if response.status == HttpStatusCode.SUCCESS.value:
+            user_data = response.json()
+            return (user_data.get("email") or "").strip() if isinstance(user_data, dict) else ""
+        if (
+            response.status in (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.TOO_MANY_REQUESTS.value)
+            or response.status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
+        ):
+            return None
         return ""
 
     async def _get_app_users_by_emails(self, emails: list[str]) -> list[AppUser]:
@@ -4597,6 +4706,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(page_id)
+            if permissions is None:
+                self.logger.warning(f"Restrictions for {page_id} could not be read; reindexing what is stored")
+                return None
             # Only set inherit_permissions to False if there are READ restrictions
             # EDIT-only restrictions should still inherit from space for READ access
             read_permissions = [p for p in permissions if p.type == PermissionType.READ]
@@ -4652,6 +4764,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(blogpost_id)
+            if permissions is None:
+                self.logger.warning(f"Restrictions for {blogpost_id} could not be read; reindexing what is stored")
+                return None
             # Only set inherit_permissions to False if there are READ restrictions
             # EDIT-only restrictions should still inherit from space for READ access
             read_permissions = [p for p in permissions if p.type == PermissionType.READ]
@@ -4750,6 +4865,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             # Comments inherit permissions from parent page - fetch page permissions
             permissions = await self._fetch_page_permissions(page_id)
+            if permissions is None:
+                self.logger.warning(f"Restrictions for {page_id} could not be read; reindexing what is stored")
+                return None
+            comment_record.inherit_permissions = not any(p.type == PermissionType.READ for p in permissions)
 
             return (comment_record, permissions)
 
@@ -4820,6 +4939,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             # Attachments inherit permissions from parent page - fetch page permissions
             permissions = await self._fetch_page_permissions(page_id_for_permissions)
+            if permissions is None:
+                self.logger.warning(f"Restrictions for {page_id_for_permissions} could not be read; reindexing what is stored")
+                return None
+            attachment_record.inherit_permissions = not any(p.type == PermissionType.READ for p in permissions)
 
             return (attachment_record, permissions)
 

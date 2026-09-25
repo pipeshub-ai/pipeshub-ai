@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from fastapi import HTTPException
@@ -1527,6 +1528,38 @@ class TestEntitiesProcessor:
         assert result.is_internal is True
         assert result.hide_weburl is True
 
+    def test_forwards_record_group_kwargs_to_base(self, mock_logger_fullcov, mock_provider, mock_config):
+        proc = AzureBlobDataSourceEntitiesProcessor(
+            logger=mock_logger_fullcov,
+            data_store_provider=mock_provider,
+            config_service=mock_config,
+            account_name="myaccount",
+        )
+        proc.org_id = "org-1"
+        child = MagicMock()
+        child.connector_name = Connectors.AZURE_BLOB
+        child.connector_id = "c1"
+        child.org_id = "org-1"
+
+        result = proc._create_placeholder_parent_record(
+            "c/folder",
+            RecordType.FILE,
+            child,
+            record_name="folder",
+            record_group_type=RecordGroupType.BUCKET.value,
+            external_record_group_id="c",
+        )
+        assert isinstance(result, FileRecord)
+        assert result.record_name == "folder"
+        assert result.record_group_type == RecordGroupType.BUCKET.value
+        assert result.external_record_group_id == "c"
+        assert result.is_internal is True
+        assert result.hide_weburl is True
+        parsed = urlparse(result.weburl)
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "myaccount.blob.core.windows.net"
+        assert result.path == "folder/"
+
 
 class TestGetAppUsers:
     def test_skips_no_email(self, connector):
@@ -2589,3 +2622,226 @@ class TestGenerateWebUrl:
         connector.account_name = None
         url = connector._generate_parent_web_url("c/dir")
         assert ".blob.core.windows.net" in url
+
+
+def _folder_filter(values, exclude=False):
+    from app.connectors.core.registry.filters import Filter, FilterType, ListOperator
+
+    operator = ListOperator.NOT_IN if exclude else ListOperator.IN
+    return FilterCollection(filters=[Filter(key="folder_paths", value=values, type=FilterType.LIST, operator=operator)])
+
+
+def _in_memory_sync_points():
+    saved = {}
+    sync_points = MagicMock()
+    sync_points.saved = saved
+    sync_points.read_sync_point = AsyncMock(side_effect=lambda key: saved.get(key))
+    sync_points.update_sync_point = AsyncMock(side_effect=lambda key, data: saved.setdefault(key, {}).update(data))
+    return sync_points
+
+
+def _out_of_scope_record():
+    return MagicMock(id="r1", external_record_id="c1/other/x.pdf", mime_type="application/pdf")
+
+
+class TestFolderFilter:
+    """The "Folders" sync filter: only the chosen folders are listed and synced."""
+
+    @staticmethod
+    def _prepare(connector, names_by_prefix):
+        prefixes = []
+
+        async def list_blobs(**kwargs):
+            prefixes.append(kwargs.get("prefix"))
+
+            async def blobs():
+                for name in names_by_prefix.get(kwargs.get("prefix"), []):
+                    yield {"name": name}
+
+            return _make_response(True, blobs())
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_blobs = list_blobs
+        connector._blob_properties_to_dict = lambda blob: blob
+        connector.record_sync_point = _in_memory_sync_points()
+        connector._process_azure_blob = AsyncMock(return_value=(None, []))
+        connector._ensure_parent_folders_exist = AsyncMock()
+        connector.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+        return prefixes
+
+    @pytest.mark.asyncio
+    async def test_include_lists_only_the_chosen_folder(self, azure_blob_connector):
+        c = azure_blob_connector
+        c.sync_filters = _folder_filter(["reports"])
+        prefixes = self._prepare(c, {"reports/": ["reports/a.pdf"]})
+
+        await c._sync_container("c1")
+
+        assert prefixes == ["reports/"]
+        assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["reports/a.pdf"]
+        c.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_already_cleaned_scope_is_not_scanned_again(self, azure_blob_connector):
+        c = azure_blob_connector
+        c.sync_filters = _folder_filter(["reports"])
+        self._prepare(c, {"reports/": []})
+
+        await c._sync_container("c1")
+        await c._sync_container("c1")
+
+        c.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_cleanup_is_retried_next_sync(self, azure_blob_connector):
+        c = azure_blob_connector
+        c.sync_filters = _folder_filter(["reports"])
+        self._prepare(c, {"reports/": []})
+        processor = c.data_entities_processor
+        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a: [_out_of_scope_record()])
+        processor.on_record_deleted = AsyncMock(side_effect=[Exception("graph down"), None])
+
+        await c._sync_container("c1")
+        await c._sync_container("c1")
+
+        assert processor.on_record_deleted.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_listing_that_breaks_off_saves_no_checkpoint(self, azure_blob_connector):
+        # Blobs are listed by name, not time: a checkpoint after a partial
+        # listing would skip the older blobs it never reached.
+        c = azure_blob_connector
+        c.sync_filters = FilterCollection()
+        self._prepare(c, {})
+
+        async def listing(**kwargs):
+            async def blobs():
+                yield {"name": "b.pdf", "last_modified": datetime(2026, 1, 2, tzinfo=timezone.utc)}
+                raise RuntimeError("connection reset")
+
+            return _make_response(True, blobs())
+
+        c.data_source.list_blobs = listing
+
+        await c._sync_container("c1")
+
+        assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["b.pdf"]
+        assert not any("last_sync_time" in v for v in c.record_sync_point.saved.values())
+
+    @pytest.mark.asyncio
+    async def test_exclude_skips_the_folder(self, azure_blob_connector):
+        c = azure_blob_connector
+        c.sync_filters = _folder_filter(["tmp"], exclude=True)
+        prefixes = self._prepare(c, {None: ["a.pdf", "tmp/cache.bin"]})
+
+        await c._sync_container("c1")
+
+        assert prefixes == [None]
+        assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["a.pdf"]
+
+
+_JAN = [datetime(2026, 1, day, tzinfo=timezone.utc) for day in (1, 2, 3)]
+
+
+def _ms(moment):
+    return int(moment.timestamp() * 1000)
+
+
+class TestFailedBlobCheckpoint:
+    """A blob that fails to process holds the checkpoint back, so the next sync retries it."""
+
+    @staticmethod
+    def _sync_points():
+        saved = {}
+        sync_points = MagicMock()
+        sync_points.saved = saved
+        sync_points.read_sync_point = AsyncMock(side_effect=lambda key: saved.get(key))
+        sync_points.update_sync_point = AsyncMock(side_effect=lambda key, data: saved.setdefault(key, {}).update(data))
+        return sync_points
+
+    def _prepare(self, connector, blobs, failing=(), raising=()):
+        async def list_blobs(**kwargs):
+            async def listing():
+                for name, at in blobs:
+                    yield {"name": name, "last_modified": at}
+
+            return _make_response(True, listing())
+
+        async def process(blob, container_name):
+            if blob["name"] in raising:
+                raise RuntimeError("boom")
+            return (None, []) if blob["name"] in failing else (MagicMock(), [])
+
+        connector.sync_filters = FilterCollection()
+        connector.data_source = MagicMock()
+        connector.data_source.list_blobs = list_blobs
+        connector._blob_properties_to_dict = lambda blob: blob
+        connector.record_sync_point = self._sync_points()
+        connector._ensure_parent_folders_exist = AsyncMock()
+        connector._process_azure_blob = AsyncMock(side_effect=process)
+        connector.data_entities_processor.on_new_records = AsyncMock()
+
+    @staticmethod
+    def _saved_time(connector):
+        return connector.record_sync_point.saved.get("FILE/container/c1", {}).get("last_sync_time")
+
+    @staticmethod
+    async def _sync(connector):
+        from app.connectors.core.registry.folder_scope import FolderScope
+
+        await connector._sync_container_prefix("c1", "", FolderScope())
+
+    @pytest.mark.asyncio
+    async def test_a_failed_blob_holds_the_checkpoint_before_it(self, azure_blob_connector):
+        c = azure_blob_connector
+        self._prepare(c, [("a.pdf", _JAN[0]), ("b.pdf", _JAN[1]), ("c.pdf", _JAN[2])], failing={"b.pdf"})
+
+        await self._sync(c)
+
+        assert self._saved_time(c) == _ms(_JAN[1]) - 1
+
+    @pytest.mark.asyncio
+    async def test_a_blob_that_raises_holds_the_checkpoint_too(self, azure_blob_connector):
+        c = azure_blob_connector
+        self._prepare(c, [("a.pdf", _JAN[0]), ("b.pdf", _JAN[1]), ("c.pdf", _JAN[2])], raising={"b.pdf"})
+
+        await self._sync(c)
+
+        assert self._saved_time(c) == _ms(_JAN[1]) - 1
+
+    @pytest.mark.asyncio
+    async def test_the_next_sync_retries_it_and_then_advances(self, azure_blob_connector):
+        c = azure_blob_connector
+        blobs = [("a.pdf", _JAN[0]), ("b.pdf", _JAN[1]), ("c.pdf", _JAN[2])]
+        self._prepare(c, blobs, failing={"b.pdf"})
+        await self._sync(c)
+        saved = c.record_sync_point
+
+        self._prepare(c, blobs)
+        c.record_sync_point = saved
+        await self._sync(c)
+
+        retried = [call.args[0]["name"] for call in c._process_azure_blob.await_args_list]
+        assert retried == ["b.pdf", "c.pdf"]
+        assert self._saved_time(c) == _ms(_JAN[2])
+
+    @pytest.mark.asyncio
+    async def test_an_old_failed_folder_marker_does_not_rewind_the_checkpoint(self, azure_blob_connector):
+        # A folder marker passes the date cutoff every run, so it is retried anyway.
+        c = azure_blob_connector
+        self._prepare(c, [("dir/", _JAN[0])], failing={"dir/"})
+        c.record_sync_point.saved["FILE/container/c1"] = {"last_sync_time": _ms(_JAN[2])}
+
+        await self._sync(c)
+
+        assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["dir/"]
+        assert self._saved_time(c) == _ms(_JAN[2])
+
+    @pytest.mark.asyncio
+    async def test_a_failure_with_no_time_does_not_hold_the_checkpoint(self, azure_blob_connector):
+        c = azure_blob_connector
+        self._prepare(c, [("a.pdf", _JAN[0]), ("b.pdf", None)], failing={"b.pdf"})
+
+        await self._sync(c)
+
+        assert self._saved_time(c) == _ms(_JAN[0])

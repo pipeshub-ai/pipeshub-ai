@@ -48,6 +48,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
 )
+from app.connectors.core.registry.folder_scope import FolderScope
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -183,10 +184,18 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         parent_external_id: str,
         parent_record_type: RecordType,
         record: Record,
+        record_name: str | None = None,
+        record_group_type: str | None = None,
+        external_record_group_id: str | None = None,
     ) -> Record:
         """Create a placeholder parent record with Azure Files-specific handling."""
         parent_record = super()._create_placeholder_parent_record(
-            parent_external_id, parent_record_type, record
+            parent_external_id,
+            parent_record_type,
+            record,
+            record_name=record_name,
+            record_group_type=record_group_type,
+            external_record_group_id=external_record_group_id,
         )
 
         if parent_record_type == RecordType.FILE and isinstance(parent_record, FileRecord):
@@ -274,6 +283,7 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
+        .add_filter_field(CommonFields.folder_paths_filter("share"))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
@@ -527,22 +537,56 @@ class AzureFilesConnector(BaseConnector):
             await self._create_record_groups_for_shares(shares_to_sync, share_ts_ms)
 
             # Sync each share
+            seen: set[str] = set()
+            complete = True
             for share_name in shares_to_sync:
                 if not share_name:
                     continue
                 try:
                     self.logger.info(f"Syncing share: {share_name}")
-                    await self._sync_share(share_name)
+                    share_seen, share_complete = await self._sync_share(share_name)
+                    seen |= share_seen
+                    complete = complete and share_complete
                 except Exception as e:
+                    complete = False
                     self.logger.error(
                         f"Error syncing share {share_name}: {e}", exc_info=True
                     )
                     continue
 
+            if complete:
+                await self._remove_records_not_seen(seen)
+            else:
+                self.logger.warning(
+                    "Some listings failed; not removing records of files that "
+                    "were not seen this sync"
+                )
+
             self.logger.info("Azure Files full sync completed.")
         except Exception as ex:
             self.logger.error(f"Error in Azure Files connector run: {ex}", exc_info=True)
             raise
+
+    async def _remove_records_not_seen(self, seen: set[str]) -> None:
+        """Delete records of files and directories this sync did not find.
+
+        Covers deletions, shares no longer synced, items now excluded by the
+        sync filters, and a file edited and then renamed between two syncs,
+        which is found at its new path under a new revision rather than moved.
+        Only called after every listing succeeded.
+        """
+        records = await self.data_entities_processor.get_records_by_record_type(
+            self.connector_id, RecordType.FILE
+        )
+        stale = [r for r in records if r.external_record_id not in seen]
+        if not stale:
+            return
+        self.logger.info(f"Removing {len(stale)} records of items no longer in the synced shares")
+        for record in stale:
+            try:
+                await self.data_entities_processor.on_record_deleted(record.id)
+            except Exception as e:
+                self.logger.warning(f"Failed to delete record {record.external_record_id}: {e}")
 
     async def _create_record_groups_for_shares(
         self,
@@ -793,7 +837,7 @@ class AzureFilesConnector(BaseConnector):
         # Unknown operator, default to allowing the file
         return True
 
-    async def _sync_share(self, share_name: str) -> None:
+    async def _sync_share(self, share_name: str) -> tuple[set[str], bool]:
         """Sync files and directories from a specific share with recursive traversal."""
         if not self.data_source:
             raise ConnectionError("Azure Files connector is not initialized.")
@@ -827,20 +871,25 @@ class AzureFilesConnector(BaseConnector):
         )
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
+        # last_sync_time is not used to skip items modified before it: a rename
+        # keeps the file's timestamps, so skipping would hide moves, and removing
+        # records of deleted files needs every item seen on every sync.
 
-        if last_sync_time:
-            user_modified_after_ms = modified_after_ms
-            if user_modified_after_ms:
-                modified_after_ms = max(user_modified_after_ms, last_sync_time)
-            else:
-                modified_after_ms = last_sync_time
+        # The share itself is the parent of its top-level items (a placeholder
+        # record may exist for it), and no listing returns it.
+        seen: set[str] = {share_name}
+        complete = True
 
+        scope = FolderScope.from_filters(sync_filters)
+        if not scope.is_everything:
+            self.logger.info(f"Folder filter for share {share_name}: {scope.describe()}")
+        chosen_folders = {p.rstrip("/") for p in scope.list_prefixes if p}
         batch_records: list[tuple[FileRecord, list[Permission]]] = []
         max_timestamp = last_sync_time if last_sync_time else 0
 
         # Recursive directory traversal
         async def traverse_directory(directory_path: str) -> None:
-            nonlocal batch_records, max_timestamp
+            nonlocal batch_records, max_timestamp, complete
 
             try:
                 async with self.rate_limiter:
@@ -851,10 +900,27 @@ class AzureFilesConnector(BaseConnector):
 
                     if not response.success:
                         error_msg = response.error or "Unknown error"
+                        if directory_path in chosen_folders and "not found" in error_msg.lower():
+                            # A chosen folder that doesn't exist has nothing to sync;
+                            # a typo must not block removal for the whole share.
+                            self.logger.warning(
+                                f"Folder {share_name}/{directory_path} named in the folder filter does not exist"
+                            )
+                            return
+                        complete = False
                         self.logger.error(
                             f"Failed to list items in {share_name}/{directory_path}: {error_msg}"
                         )
                         return
+
+                    if directory_path in chosen_folders:
+                        # With Include the walk starts inside each chosen folder, so that
+                        # folder and those above it are never listed. Only once it is known
+                        # to exist do they count as part of the tree.
+                        parts = directory_path.split("/")
+                        seen.update(
+                            f"{share_name}/{'/'.join(parts[:i])}" for i in range(1, len(parts) + 1)
+                        )
 
                     items = response.data or []
                     self.logger.debug(
@@ -866,6 +932,13 @@ class AzureFilesConnector(BaseConnector):
                             item_name = item.get("name", "")
                             is_directory = item.get("is_directory", False)
                             item_path = item.get("path", item_name)
+
+                            in_scope = (
+                                scope.includes_folder(item_path) if is_directory
+                                else scope.includes_file(item_path)
+                            )
+                            if not in_scope:
+                                continue
 
                             # Check extension filter
                             if not self._pass_extension_filter(item_path, is_directory=is_directory):
@@ -882,6 +955,11 @@ class AzureFilesConnector(BaseConnector):
                                 created_before_ms,
                             ):
                                 continue
+
+                            # Seen before processing: an item that fails to
+                            # process still exists and must not be removed.
+                            normalized_path = (item_path or item_name).strip().strip("/")
+                            seen.add(f"{share_name}/{normalized_path}")
 
                             # Track max timestamp for incremental sync
                             last_modified = item.get("last_modified")
@@ -929,13 +1007,15 @@ class AzureFilesConnector(BaseConnector):
                             continue
 
             except Exception as e:
+                complete = False
                 self.logger.error(
                     f"Error during directory traversal for {share_name}/{directory_path}: {e}",
                     exc_info=True,
                 )
 
         # Start traversal from root
-        await traverse_directory("")
+        for prefix in scope.list_prefixes:
+            await traverse_directory(prefix.rstrip("/"))
 
         # Process remaining records
         if batch_records:
@@ -946,12 +1026,19 @@ class AzureFilesConnector(BaseConnector):
                 sync_point_key, {"last_sync_time": max_timestamp}
             )
 
+        return seen, complete
+
     def _get_azure_files_revision_id(self, item: dict) -> str:
         """
         Determines a stable revision ID for an Azure Files item.
 
         Prefers file_id (SMB FileId from list API) when available, as it is stable
         across renames. Then content_md5 (stable across renames), then etag.
+
+        The FileId names the file, not its contents: an edit leaves it unchanged,
+        so on its own it hid every content change. For a file it is combined with
+        the size and last-write time, which change when the contents do and, like
+        the FileId, survive a rename.
 
         Note: Azure Files etag changes on every modification including metadata changes
         and renames. Therefore file_id or content_md5 must be used for reliable
@@ -961,11 +1048,18 @@ class AzureFilesConnector(BaseConnector):
             item: Azure Files item metadata dictionary
 
         Returns:
-            Revision ID string (file_id, content_md5, or etag)
+            Revision ID string (file_id[:size:last_write_time], content_md5, or etag)
         """
         file_id = item.get("file_id")
         if file_id is not None:
-            return str(file_id)
+            if item.get("is_directory"):
+                return str(file_id)
+            written = item.get("last_write_time") or item.get("last_modified") or item.get("etag")
+            if not written:
+                return str(file_id)
+            if isinstance(written, datetime):
+                written = written.isoformat()
+            return f"{file_id}:{item.get('size')}:{str(written).strip(chr(34))}"
 
         content_md5 = item.get("content_md5")
         if content_md5:
@@ -1609,21 +1703,24 @@ class AzureFilesConnector(BaseConnector):
             if not item_metadata:
                 return None
 
-            # Check etag
+            # Same revision the sync writes; comparing with the etag instead made
+            # this path and the sync overwrite each other's value every run.
             current_etag = (
                 item_metadata.get("etag", "").strip('"')
                 if item_metadata.get("etag")
                 else ""
             )
-            stored_etag = record.external_revision_id
+            current_revision = self._get_azure_files_revision_id(
+                {**item_metadata, "is_directory": not is_file}
+            )
 
-            if current_etag == stored_etag:
+            if current_revision == record.external_revision_id:
                 self.logger.debug(
-                    f"Record {record.id}: etag unchanged ({current_etag})"
+                    f"Record {record.id}: revision unchanged ({current_revision})"
                 )
                 return None
 
-            self.logger.debug(f"Record {record.id}: etag changed")
+            self.logger.debug(f"Record {record.id}: revision changed")
 
             # Parse timestamps
             last_modified = item_metadata.get("last_modified")
@@ -1683,7 +1780,7 @@ class AzureFilesConnector(BaseConnector):
                 record_group_type=RecordGroupType.FILE_SHARE.value,
                 external_record_group_id=share_name,
                 external_record_id=updated_external_record_id,
-                external_revision_id=current_etag,
+                external_revision_id=current_revision,
                 version=record.version + 1,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,

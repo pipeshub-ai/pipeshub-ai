@@ -261,6 +261,10 @@ dependencies = [
     "snowflake-connector-python",
     "clickhouse-connect",
     "msgraph-sdk==1.16.0",
+    # msgraph-core 1.5.1 runs its middleware (including 429/503 retries) only when a
+    # request has `request.options`, which kiota-http 1.13 stopped setting. Remove this
+    # pin once a msgraph-core release supports kiota-http 1.13.
+    "microsoft-kiota-http<1.13",
     "nats-py==2.1.0",
     "notion-client==2.2.1",
     "nltk==3.10.3",

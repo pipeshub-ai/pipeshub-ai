@@ -63,6 +63,7 @@ class Connectors(Enum):
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
+    DRUPAL_WIKI = "DRUPAL WIKI"
     GITHUB = "GITHUB"
     GITHUB_TEAMS = "GITHUB TEAMS"
     SERVICENOW = "SERVICENOW"
@@ -86,6 +87,7 @@ class Connectors(Enum):
 
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
+    DEMO = "DEMO"
 
     CODING_SANDBOX = "CODING_SANDBOX"
     DATABASE_SANDBOX = "DATABASE_SANDBOX"
@@ -94,19 +96,24 @@ class Connectors(Enum):
 
 
 class PermissionModel(Enum):
-    """How a connector's records derive their per-user visibility.
+    """How a record derives its per-user visibility, declared on its container.
 
-    ``APP_LEVEL`` means access to the connector app implies access to every
-    record it syncs — the source has no per-record ACLs, so each connector
-    writes one blanket ORG (or single creator-USER) permission. ``RECORD_LEVEL``
-    means the source syncs real per-record ACLs and visibility must be resolved
-    per user. Declared per connector via ``ConnectorBuilder.configure(...)``;
-    ``RECORD_LEVEL`` is the default because assuming per-record ACLs can only
-    under-share, never over-share.
+    ``APP_LEVEL``: reaching the app implies reaching every record it syncs.
+    ``RECORD_LEVEL``: the source has real per-record ACLs. Both are declared per
+    connector; ``RECORD_LEVEL`` is the default, since assuming per-record ACLs
+    can only under-share.
+
+    ``RECORD_GROUP_LEVEL`` is set on a RecordGroup, not a connector, and lets
+    search skip the per-record check for records in that group. Only safe when
+    every record under the group really inherits from it: ``recordGroupIds`` is
+    built from ``belongsTo`` (always written) while inheritance follows
+    ``INHERIT_PERMISSIONS`` (conditional), so one ``inherit_permissions=False``
+    record in the group makes it over-share. Leave unset to verify each record.
     """
 
     APP_LEVEL = "APP_LEVEL"
     RECORD_LEVEL = "RECORD_LEVEL"
+    RECORD_GROUP_LEVEL = "RECORD_GROUP_LEVEL"
 
 
 class AppGroups(Enum):
@@ -121,6 +128,7 @@ class AppGroups(Enum):
     NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    DRUPAL_WIKI = "Drupal Wiki"
     GITHUB = "Github"
     S3 = "S3"
     MINIO = "MinIO"
@@ -131,6 +139,7 @@ class AppGroups(Enum):
     ZAMMAD = "Zammad"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
+    DEMO = "Demo"
     RSS = "RSS"
     GITLAB = "GitLab"
 
@@ -228,6 +237,7 @@ class CollectionNames(Enum):
     APPS = "apps"
     ORG_APP_RELATION = "orgAppRelation"
     USER_APP_RELATION = "userAppRelation"
+    AUTHENTICATED_AS = "authenticatedAs"  # User -> User: connector creator -> source account it authenticated as, per connectorId
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
     PROSPECT = "prospect"  # Org -> Org: prospect/account relationship
     CUSTOMER = "customer"  # Org -> Org: customer relationship
@@ -647,6 +657,7 @@ class EventTypes(Enum):
     REINDEX_RECORD = "reindexRecord"
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
+    DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
 

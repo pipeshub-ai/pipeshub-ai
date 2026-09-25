@@ -126,10 +126,9 @@ class ContainerUtils:
                 f"does not support multiple collections."
             )
 
-        def collection_config_factory(embedding_size: int, sparse_idf: bool) -> CollectionConfig:
+        def collection_config_factory(embedding_size: int) -> CollectionConfig:
             return CollectionConfig(
                 embedding_size=embedding_size,
-                sparse_idf=sparse_idf,
                 enable_sparse=capabilities.supports_sparse_vectors,
             )
 

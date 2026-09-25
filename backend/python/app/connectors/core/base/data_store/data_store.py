@@ -144,10 +144,13 @@ class BaseDataStore(ABC):
         exclude_statuses: Optional[list[str]] = None,
     ) -> list[Record]:
         """Get records by their indexing status with pagination support. Returns typed Record instances.
-        
+
         Optionally scope to a record group and/or filter on the placeholder flag.
         Pass after_key for keyset pagination instead of offset when the result set
         mutates while being iterated.
+
+        An empty list means no record matched. A listing that could not be read
+        raises GraphQueryError - callers must not read that as "nothing found".
         """
         pass
 
@@ -190,11 +193,15 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
+    async def get_user_group_by_external_id(
+        self, connector_id: str, external_id: str, *, raise_on_error: bool = False
+    ) -> Optional[AppUserGroup]:
         pass
 
     @abstractmethod
-    async def get_app_role_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppRole]:
+    async def get_app_role_by_external_id(
+        self, connector_id: str, external_id: str, *, raise_on_error: bool = False
+    ) -> Optional[AppRole]:
         pass
 
     @abstractmethod
@@ -397,6 +404,17 @@ class BaseDataStore(ABC):
         Ensure the org's "All" team has an edge to the app in userAppRelation.
         Idempotent. Used by TEAM-scope connectors.
         """
+        pass
+
+    @abstractmethod
+    async def upsert_authenticated_as(
+        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str
+    ) -> None:
+        """Link the connector creator to the source-account user it authenticated as (one per connector)."""
+        pass
+
+    @abstractmethod
+    async def remove_authenticated_as(self, connector_id: str) -> bool:
         pass
 
     @abstractmethod

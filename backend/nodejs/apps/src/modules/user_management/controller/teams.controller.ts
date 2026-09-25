@@ -3,12 +3,8 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
-  ConflictError,
-  ForbiddenError,
   InternalServerError,
   NotFoundError,
-  ServiceUnavailableError,
-  UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
   AICommandOptions,
@@ -26,65 +22,8 @@ import type {
   TeamsListResponse,
 } from '../types/user_management.types';
 
-const AI_SERVICE_UNAVAILABLE_MESSAGE =
-  'AI Service is currently unavailable. Please check your network connection or try again later.';
 
-/**
- * Handle backend errors from AI service responses
- * Extracts error messages from response data and creates appropriate HTTP errors
- */
-const handleBackendError = (error: any, operation: string): Error => {
-  if (error) {
-    if (
-      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
-      (typeof error?.message === 'string' &&
-        error.message.includes('fetch failed'))
-    ) {
-      return new ServiceUnavailableError(
-        AI_SERVICE_UNAVAILABLE_MESSAGE,
-        error,
-      );
-    }
-
-    const { statusCode, data, message } = error;
-    const errorDetail =
-      data?.detail ||
-      data?.reason ||
-      data?.message ||
-      message ||
-      'Unknown error';
-
-    if (errorDetail === 'ECONNREFUSED') {
-      return new ServiceUnavailableError(
-        AI_SERVICE_UNAVAILABLE_MESSAGE,
-        error,
-      );
-    }
-
-    switch (statusCode) {
-      case 400:
-        return new BadRequestError(errorDetail);
-      case 401:
-        return new UnauthorizedError(errorDetail);
-      case 403:
-        return new ForbiddenError(errorDetail);
-      case 404:
-        return new NotFoundError(errorDetail);
-      case 409:
-        return new ConflictError(errorDetail);
-      case 500:
-        return new InternalServerError(errorDetail);
-      default:
-        return new InternalServerError(`Backend error: ${errorDetail}`);
-    }
-  }
-
-  if (error.request) {
-    return new InternalServerError('Backend service unavailable');
-  }
-
-  return new InternalServerError(`${operation} failed: ${error.message}`);
-};
+import { handleBackendError } from '../../../libs/errors/backend-error';
 
 /**
  * Handle AI service response
@@ -110,15 +49,29 @@ const handleAIServiceResponse = (
   res.status(successStatus).json(responseData);
 };
 
+// The team service wraps the team it returns: `{ data: team }` from create,
+// `{ team }` from get, update and the member list.
+const teamIn = (body: unknown): TeamResponse | undefined => {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const { team, data } = body as { team?: unknown; data?: unknown };
+  const inner: unknown = team ?? data ?? body;
+  return typeof inner === 'object' && inner !== null
+    ? (inner as TeamResponse)
+    : undefined;
+};
+
+// Pictures are decoration: a failed lookup must not turn a create the team
+// service already committed into an error the client would retry.
 async function enrichTeamsProfilePictures(
   orgId: string,
   teams: TeamResponse[],
+  logger: Logger,
 ): Promise<void> {
   const userIds: string[] = [];
   for (const team of teams) {
     if (team.members) {
       for (const member of team.members) {
-        if (member.userId) userIds.push(member.userId);
+        if (member?.userId) userIds.push(member.userId);
       }
     }
     const createdByUser = team.createdByUser as TeamCreatedByUser | null | undefined;
@@ -129,11 +82,22 @@ async function enrichTeamsProfilePictures(
   if (userIds.length === 0) return;
 
   const uniqueIds = [...new Set(userIds)];
-  const dpDocs = await UserDisplayPicture.find({
-    orgId,
-    userId: { $in: uniqueIds },
-    pic: { $ne: null },
-  }).lean().exec();
+  let dpDocs;
+  try {
+    dpDocs = await UserDisplayPicture.find({
+      orgId,
+      userId: { $in: uniqueIds },
+      pic: { $ne: null },
+    })
+      .lean()
+      .exec();
+  } catch (error) {
+    logger.warn('Could not look up team profile pictures', {
+      orgId,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+    return;
+  }
 
   const dpMap = new Map<string, string>();
   for (const dp of dpDocs) {
@@ -146,7 +110,7 @@ async function enrichTeamsProfilePictures(
   for (const team of teams) {
     if (team.members) {
       for (const member of team.members) {
-        if (member.userId && dpMap.has(member.userId)) {
+        if (member?.userId && dpMap.has(member.userId)) {
           member.profilePicture = dpMap.get(member.userId);
         }
       }
@@ -209,7 +173,10 @@ export class TeamsController {
       if (!teamData) {
         throw new NotFoundError('Creating team failed: Team not found');
       }
-      await enrichTeamsProfilePictures(orgId, [teamData]);
+      const created = teamIn(teamData);
+      if (created !== undefined) {
+        await enrichTeamsProfilePictures(orgId, [created], this.logger);
+      }
       res.status(HTTP_STATUS.CREATED).json(teamData);
     } catch (error: any) {
       this.logger.error('Error creating team', {
@@ -258,7 +225,10 @@ export class TeamsController {
       if (!teamData) {
         throw new NotFoundError('Getting team failed: Team not found');
       }
-      await enrichTeamsProfilePictures(orgId, [teamData]);
+      const found = teamIn(teamData);
+      if (found !== undefined) {
+        await enrichTeamsProfilePictures(orgId, [found], this.logger);
+      }
       res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
       this.logger.error('Error getting team', {
@@ -308,7 +278,10 @@ export class TeamsController {
       if (!teamData) {
         throw new NotFoundError('Updating team failed: Team not found');
       }
-      await enrichTeamsProfilePictures(orgId, [teamData]);
+      const updated = teamIn(teamData);
+      if (updated !== undefined) {
+        await enrichTeamsProfilePictures(orgId, [updated], this.logger);
+      }
       res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
       this.logger.error('Error updating team', {
@@ -404,11 +377,11 @@ export class TeamsController {
         throw handleBackendError(aiResponse, 'get team users');
       }
 
-      const data = aiResponse.data as any;
-      const teamData = data?.team ?? data;
+      const data = aiResponse.data;
+      const teamData = teamIn(data);
 
-      if (teamData) {
-        await enrichTeamsProfilePictures(orgId, [teamData as TeamResponse]);
+      if (teamData !== undefined) {
+        await enrichTeamsProfilePictures(orgId, [teamData], this.logger);
       }
 
       res.status(HTTP_STATUS.OK).json(data);
@@ -477,7 +450,7 @@ export class TeamsController {
 
       const teams = teamsData.teams ?? [];
       if (teams.length > 0) {
-        await enrichTeamsProfilePictures(orgId, teams);
+        await enrichTeamsProfilePictures(orgId, teams, this.logger);
       }
 
       res.status(HTTP_STATUS.OK).json(teamsData);

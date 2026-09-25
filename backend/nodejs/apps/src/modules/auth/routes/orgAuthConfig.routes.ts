@@ -32,6 +32,9 @@ const authStepSchema = z.object({
     }),
 });
 
+export const SAML_IN_MULTI_STEP_POLICY =
+  "SAML single sign-on can't be combined with other sign-in steps yet. Use SAML on its own as a one-step sign-in, or remove it from the policy.";
+
 // Custom validation for authSteps
 const authStepsSchema = z
   .array(authStepSchema)
@@ -61,6 +64,15 @@ const authStepsSchema = z
         }
         globalMethodSet.add(method.type);
       }
+    }
+
+    // The SAML callback completes sign-in on its own and cannot hand off to a
+    // further step, so SAML inside a multi-step policy would skip the others.
+    if (steps.length > 1 && globalMethodSet.has(AuthMethodType.SAML_SSO)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: SAML_IN_MULTI_STEP_POLICY,
+      });
     }
   });
 const authMethodValidationBody = z.object({

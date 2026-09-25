@@ -189,7 +189,9 @@ class TestGetRecordStream:
             with pytest.raises(HTTPException) as exc:
                 await get_record_stream(req, file)
             assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-            assert "timed out" in exc.value.detail.lower()
+            # the person is told what failed and what to do, not the exception text
+            assert exc.value.detail.lower() == "we couldn't open this file. please try again; if it keeps failing, contact your admin."
+            assert "timed out" not in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_pdf_conversion_nonzero_returncode(self):

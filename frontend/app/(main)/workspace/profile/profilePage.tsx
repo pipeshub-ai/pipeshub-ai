@@ -10,9 +10,11 @@ import {
   GeneralSection,
   RolesPermissionsSection,
   PasswordSecuritySection,
+  DemoDataSection,
 } from "./components";
 import { LottieLoader } from "@/app/components/ui/lottie-loader";
 import { useProfilePage } from "./hooks/use-profile-page";
+import { USER_ROLES } from "../constants";
 
 // ========================================
 // Main Page
@@ -111,6 +113,9 @@ export default function ProfilePage() {
         <Box style={{ marginBottom: 'var(--space-5)' }}>
           <RolesPermissionsSection role={role} />
         </Box>
+
+        {/* ── Demo data section (only while the Acme Corp demo exists) ── */}
+        <DemoDataSection isAdmin={role === USER_ROLES.ADMIN} />
 
         {/* ── Password & Security section ── */}
         {/* Extra bottom padding so save bar doesn't overlap last section */}

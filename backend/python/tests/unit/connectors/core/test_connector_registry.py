@@ -625,6 +625,39 @@ class TestBuildConnectorInfo:
 
         assert result["isLocked"] is True
 
+    def test_instance_data_owner_device_fields(self):
+        """Local FS owner device reaches the API response.
+
+        Node reads these off this payload to route a pull and to decide whether
+        the caller may enable sync; dropping them turns every Local FS
+        connector into a permanent DESKTOP_UNCLAIMED refusal.
+        """
+        registry, _ = _make_registry()
+        metadata = {"appGroup": "G", "config": {}, "connectorScopes": []}
+        instance_data = {
+            "_key": "i1",
+            "name": "N",
+            "ownerDeviceId": "dev-a",
+            "ownerDeviceName": "Work Laptop",
+            "scope": ConnectorScope.PERSONAL.value,
+        }
+
+        result = registry._build_connector_info("X", metadata, instance_data)
+
+        assert result["ownerDeviceId"] == "dev-a"
+        assert result["ownerDeviceName"] == "Work Laptop"
+
+    def test_instance_data_owner_device_absent_is_null_not_missing(self):
+        """An unclaimed connector answers with explicit nulls, not absent keys."""
+        registry, _ = _make_registry()
+        metadata = {"appGroup": "G", "config": {}, "connectorScopes": []}
+        instance_data = {"_key": "i1", "name": "N", "scope": ConnectorScope.PERSONAL.value}
+
+        result = registry._build_connector_info("X", metadata, instance_data)
+
+        assert result["ownerDeviceId"] is None
+        assert result["ownerDeviceName"] is None
+
     def test_no_instance_data_no_key(self):
         """Without instance_data, '_key' is not in result."""
         registry, _ = _make_registry()
@@ -1370,6 +1403,8 @@ class TestCreateConnectorInstanceOnConfiguration:
         assert result["type"] == "Gmail"
         assert result["name"] == "My Gmail"
         assert result["authType"] == "OAUTH"
+        # until someone else re-authenticates, the creator is who authenticated it
+        assert result["authenticatedBy"] == result["createdBy"] == "user-1"
 
     @pytest.mark.asyncio
     async def test_unregistered_type_returns_none(self):

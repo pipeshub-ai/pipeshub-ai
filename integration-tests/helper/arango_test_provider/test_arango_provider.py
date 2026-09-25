@@ -127,6 +127,30 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return len(result) if result else 0
 
+    async def fetch_record_group_names(
+        self, connector_id: str, group_type: str | None = None
+    ) -> List[str]:
+        """Names of a connector's RecordGroups, optionally of one type.
+
+        See the Neo4j provider for why a test wants group names rather than a
+        substring search over record names.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        bind: Dict[str, Any] = {"cid": connector_id}
+        type_filter = ""
+        if group_type:
+            type_filter = "FILTER g.groupType == @gtype"
+            bind["gtype"] = group_type
+        query = f"""
+            FOR g IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER g.connectorId == @cid
+                {type_filter}
+                RETURN g.name != null ? g.name : g.groupName
+        """
+        rows = await self.http_client.execute_aql(query, bind)
+        return [str(name) for name in (rows or []) if name]
+
     async def count_user_groups(self, connector_id: str) -> int:
         """Count user-group documents for this connector (Jira site ``groups`` collection)."""
         if not self.http_client:

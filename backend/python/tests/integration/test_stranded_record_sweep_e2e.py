@@ -17,9 +17,9 @@ are declared there: an undeclared field is rejected and nothing is recovered.
 
 Needs Docker services, and skips cleanly when they are not reachable:
 
-  docker compose -f deployment/docker-compose/docker-compose.integration.messaging.yml up -d redis
-  docker run -d --name neo4j-it -p 17687:7687 -e NEO4J_AUTH=neo4j/ensure-it-pass neo4j:5.26.0
-  docker run -d --name arango-it -p 18529:8529 -e ARANGO_ROOT_PASSWORD=ensure-it-pass arangodb:3.12
+  docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
+    -f deployment/docker-compose/docker-compose.integration.messaging.yml \
+    up -d --wait neo4j-graph-it arango-graph-it redis-messaging-it
   cd backend/python && pytest tests/integration/test_stranded_record_sweep_e2e.py -m integration
 
 Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD,
@@ -317,10 +317,14 @@ async def test_a_metadata_refresh_does_not_postpone_recovering_a_lost_event(env:
 
 
 async def test_a_record_on_default_timestamps_is_not_aged_to_process_start(env: _Env) -> None:
+    # Read before the record is built, not after: dropping the explicit clocks
+    # makes the model stamp its own `created_at` at construction, so a reference
+    # point taken afterwards is already later than the record and the comparison
+    # below fails whenever the two land in different milliseconds.
+    before = get_epoch_timestamp_in_ms()
     issue = _jira_issue(env.connector_id)
     # Rebuilt without explicit clocks, as most connectors build their records.
     issue = TicketRecord(**issue.model_dump(exclude={"created_at", "updated_at"}))
-    before = get_epoch_timestamp_in_ms()
 
     await env.processor.on_new_records([(issue, [])])
 

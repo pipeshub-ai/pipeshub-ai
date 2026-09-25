@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from app.agent_loop_lib.core.types import Goal, Todo
+from app.agent_loop_lib.modules.providers.skills.bundle import SKILLS_MOUNT_ROOT
 from app.agent_loop_lib.roles.prompt_template import MODE_GUIDANCE, PromptTemplate
 
 if TYPE_CHECKING:
@@ -161,6 +162,28 @@ def _render_toolset_tree(entries: list[dict], lines: list[str], *, indent: int) 
             _render_toolset_tree(children, lines, indent=indent + 1)
 
 
+_SKILL_USAGE_RULES = (
+    "- If a skill below clearly matches the user's request, call `load_skill(name)` "
+    "before attempting the task — its instructions are the prerequisite for doing "
+    "the task correctly. When unsure, proceed with other tools first and call "
+    "`load_skill` or `skill_search` when needed.\n"
+    "- Do NOT load skills unrelated to the current query.\n"
+    f"- Loaded skills are staged into the coding sandbox under "
+    f"`{SKILLS_MOUNT_ROOT}/<name>/`. Prefix relative paths with "
+    f"`{SKILLS_MOUNT_ROOT}/<name>/` or `cd` there first."
+)
+
+
+def _first_sentence(desc: str, cap: int = 200) -> str:
+    """Extract the first sentence of a description, capped at `cap` chars."""
+    end = len(desc)
+    for sep in (". ", ".\n"):
+        idx = desc.find(sep)
+        if 0 < idx < end:
+            end = idx
+    return desc[: min(end, cap)].rstrip(".")
+
+
 def render_skills_overview(runtime: "AgentRuntime") -> str:
     """Level-1 progressive disclosure (agentskills.io spec): only name +
     description (or, above `catalog_render_limit`, just a category tree)
@@ -182,36 +205,24 @@ def render_skills_overview(runtime: "AgentRuntime") -> str:
     limit = manager.config.catalog_render_limit
     if len(catalog) <= limit:
         lines = [
-            "Skills available via load_skill(name). IMPORTANT: do NOT load skills "
-            "upfront or at the start of a conversation. Only call load_skill immediately "
-            "before you execute the specific step the skill covers — after all prerequisite "
-            "work (data gathering, tool calls, analysis) is complete. Think about what "
-            "the task requires, do all the preparatory steps first, then load the skill "
-            "right before the step that needs it. "
+            "## Skills\n",
+            f"{len(catalog)} skill(s) available via `load_skill(name)`.\n",
+            _SKILL_USAGE_RULES,
+            "",
         ]
         for m in sorted(catalog, key=lambda m: m.name):
-            desc = m.description or ""
-            # First sentence, capped at 140 chars — the full body is fetched
-            # on demand via load_skill; inlining paragraphs here is redundant
-            # with the SKILL.md body and bloats the prompt on every turn.
-            cap = 200
-            end = len(desc)
-            for sep in (". ", ".\n"):
-                idx = desc.find(sep)
-                if 0 < idx < end:
-                    end = idx
-            end = min(end, cap)
-            lines.append(f"- {m.name}: {desc[:end].rstrip('.')}")
+            lines.append(f"- **{m.name}**: {_first_sentence(m.description or '')}")
         return "\n".join(lines)
 
     categories: dict[str, int] = {}
     for m in catalog:
         categories[m.category or "uncategorized"] = categories.get(m.category or "uncategorized", 0) + 1
     lines = [
-        f"{len(catalog)} skills are available, grouped by category — use skill_search(query) or "
-        "skills_list(category=...) to find one. Do NOT load skills upfront or at the start of a "
-        "conversation; call load_skill(name) only immediately before the step that needs it, "
-        "after all prerequisite work is done:",
+        "## Skills\n",
+        f"{len(catalog)} skills available, grouped by category. "
+        "Use `skill_search(query)` or `skills_list(category=...)` to find one.\n",
+        _SKILL_USAGE_RULES,
+        "\n**Categories:**",
     ]
     for category, count in sorted(categories.items()):
         lines.append(f"- {category} ({count})")

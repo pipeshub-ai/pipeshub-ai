@@ -26,7 +26,20 @@ from docling.document_converter import DocumentConverter
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
+from app.modules.parsers.text_decoding import decode_text
 from app.utils.converters.caption_map import apply_caption_map
+
+# CommonMark's grammar for an HTML open tag, so an <img> is rewritten exactly when
+# markdown-it would treat it as a tag. Quoted values are single units, so a ">"
+# inside alt text does not end the tag, and an unclosed "<img" followed by prose
+# does not match at all.
+_HTML_IMG_TAG_RE = re.compile(
+    r"""<img"""
+    r"""(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*"""
+    r"""(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*"""
+    r"""\s*/?>""",
+    re.IGNORECASE,
+)
 
 
 class DoclingMarkdownParser:
@@ -59,10 +72,7 @@ class DoclingMarkdownParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        if isinstance(content, bytes):
-            md_content = content.decode("utf-8")
-        else:
-            md_content = content
+        md_content = decode_text(content)
 
         markdown = md_content.strip()
 
@@ -243,24 +253,33 @@ def _extract_and_replace_images(
         image_counter += 1
         return f"![{new_alt}]({url})"
 
-    def process_html_images(content: str) -> str:
+    def replace_html_image(match: re.Match[str]) -> str:
         nonlocal image_counter
-        soup = BeautifulSoup(content, "html.parser")
-        for img_tag in soup.find_all("img"):
-            src = img_tag.get("src", "")
-            original_alt = img_tag.get("alt", "")
-            original_text = str(img_tag)
-            new_alt = f"Image_{image_counter}"
-            img_tag["alt"] = new_alt
-            images.append({
-                "original_text": original_text,
-                "url": src,
-                "alt_text": original_alt,
-                "new_alt_text": new_alt,
-                "image_type": "html",
-            })
-            image_counter += 1
-        return str(soup)
+        fragment = BeautifulSoup(match.group(0), "html.parser")
+        tags = fragment.find_all(True)
+        if len(tags) != 1 or tags[0].name != "img" or fragment.get_text():
+            return match.group(0)
+        img_tag = tags[0]
+        src = img_tag.get("src", "")
+        original_alt = img_tag.get("alt", "")
+        original_text = str(img_tag)
+        new_alt = f"Image_{image_counter}"
+        img_tag["alt"] = new_alt
+        images.append({
+            "original_text": original_text,
+            "url": src,
+            "alt_text": original_alt,
+            "new_alt_text": new_alt,
+            "image_type": "html",
+        })
+        image_counter += 1
+        return str(img_tag)
+
+    # Only the <img> tags are re-serialised: running the whole document through
+    # an HTML parser escapes "&", "<" and ">" and closes anything that looks like
+    # a tag, which corrupts code, autolinks and blockquotes.
+    def process_html_images(content: str) -> str:
+        return _HTML_IMG_TAG_RE.sub(replace_html_image, content)
 
     modified = re.sub(reference_usage_pattern, replace_reference_image, md_content)
     modified = re.sub(markdown_img_pattern, replace_markdown_image, modified)

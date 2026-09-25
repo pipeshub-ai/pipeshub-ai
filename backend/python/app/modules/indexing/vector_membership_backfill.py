@@ -300,6 +300,11 @@ async def run_vector_membership_backfill_tick(
                 CollectionNames.APPS.value,
                 {
                     ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILLED: True,
+                    # Exhausted too: this is a give-up, not a completion. Points
+                    # beyond the cursor were never tagged, and the delete-time
+                    # gate reads both flags precisely so it does not send an
+                    # untagged connector down the membership path and orphan it.
+                    ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_EXHAUSTED: True,
                     ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_AFTER_KEY: None,
                 },
             )

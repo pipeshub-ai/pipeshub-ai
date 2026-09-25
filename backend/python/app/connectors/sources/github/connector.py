@@ -212,10 +212,11 @@ class GitHubPersonalProjectsSync(ProjectsSync):
         .with_sync_support(True)
         .add_filter_field(FilterField(
             name=SyncFilterKey.REPO_IDS.value,
-            display_name="Repositories",
-            description="Limit sync to specific repositories (full_name, e.g. my-username/my-repo)",
-            filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
+            display_name="Repository",
+            description="Select the repository to sync.",
+            filter_type=FilterType.SELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
+            required=True,
         ))
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,

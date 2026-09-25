@@ -49,22 +49,47 @@ ANCESTOR_FETCH_CONCURRENCY = 5
 # something is wrong.
 PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
 
-# Drive surfaces rate limiting as HTTP 403 with one of these reasons, not a distinct
-# status code, so a blanket "403 = permanently inaccessible" check on shared-folder
-# expansion would wrongly discard a folder subtree that just needs to be retried.
-RETRYABLE_403_REASONS = {"rateLimitExceeded", "userRateLimitExceeded"}
+# 403 reasons that mean this user genuinely may not see the item. Anything else,
+# including a 403 with no reason or one not listed here, must not be read as
+# "invisible": that would drop a subtree from scope while the checkpoint advances.
+PERMISSION_DENIED_403_REASONS = {
+    "insufficientFilePermissions",
+    "appNotAuthorizedToFile",
+    "domainPolicy",
+    "teamDriveMembershipRequired",
+}
+
+
+def _403_reasons(error: HttpError) -> set:
+    if error.resp.status != HttpStatusCode.FORBIDDEN.value:
+        return set()
+    error_details = getattr(error, "error_details", None) or []
+    if not isinstance(error_details, list):
+        return set()
+    return {d.get("reason") for d in error_details if isinstance(d, dict)}
 
 
 def is_retryable_403(error: HttpError) -> bool:
-    """True if `error` is Drive-side rate limiting rather than a permission loss.
+    """True for any 403 that is not a known, permanent permission refusal.
 
-    Both surface as HTTP 403; only the `reason` in `error_details` tells them apart.
+    Drive reports quota and rate limits as 403 too, and callers skip a folder for good
+    when this is False, so the default must be "retry": quota and rate-limit reasons, a
+    403 with no reason, details that are not a list of reasons, and reasons Drive adds
+    later are all retryable.
     """
     if error.resp.status != HttpStatusCode.FORBIDDEN.value:
         return False
-    error_details = getattr(error, "error_details", None) or []
-    reasons = {d.get("reason") for d in error_details if isinstance(d, dict)}
-    return bool(reasons & RETRYABLE_403_REASONS)
+    return not is_permission_denied_403(error)
+
+
+def is_permission_denied_403(error: HttpError) -> bool:
+    """True only for a 403 whose every reported reason is a known, permanent denial.
+
+    Google can report several reasons at once; a refusal alongside a quota or
+    unknown reason is not permanent, so it must be retried rather than skipped.
+    """
+    reasons = _403_reasons(error)
+    return bool(reasons) and reasons <= PERMISSION_DENIED_403_REASONS
 
 
 class FolderScopeExpansion(NamedTuple):
@@ -253,6 +278,12 @@ async def probe_can_list_children(
     Returns None when the folder is invisible to this user, which files_list
     cannot distinguish from an empty folder — both come back with zero children.
     On success also returns driveId when the folder lives on a shared drive.
+
+    Only a 404 or a 403 with a known permission-denial reason means invisible.
+    Any other failure (a quota or rate-limit 403, a 403 with an unknown reason, a
+    5xx, a network error) is raised: reading it as "invisible" would drop the
+    folder's subtree from this run's scope while the sync still saves its
+    checkpoint, so files under it would be skipped for good.
     """
     try:
         data_source = await get_data_source()
@@ -262,13 +293,14 @@ async def probe_can_list_children(
             supportsAllDrives=True,
         )
     except HttpError as e:
-        logger.debug(
-            f"Folder {folder_id} is not visible to this user (HTTP {e.resp.status})"
-        )
-        return None
-    except Exception as e:
-        logger.warning(f"Failed to probe folder {folder_id}: {e}")
-        return None
+        status = e.resp.status
+        if status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
+            logger.debug(
+                f"Folder {folder_id} is not visible to this user (HTTP {status})"
+            )
+            return None
+        logger.warning(f"Failed to probe folder {folder_id} (HTTP {status}): {e}")
+        raise
 
     response = response or {}
     return FolderListProbe(

@@ -104,6 +104,20 @@ class IVectorDBService(ABC):
         """
         return None
 
+    async def reconcile_lexical_scoring(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Bring an existing collection's keyword scoring in line with ``config``.
+
+        Unlike ``reconcile_storage_layout`` this must be cheap enough to run on
+        every startup: it may change how stored data is scored, never rewrite
+        it. Returns the setting that was changed, or None when nothing was.
+        Concrete for the same reason as ``reconcile_storage_layout``.
+        """
+        return None
+
     @abstractmethod
     async def get_collections(self) -> object:
         raise NotImplementedError
@@ -147,8 +161,15 @@ class IVectorDBService(ABC):
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
+        max_values: Optional[Dict[str, int]] = None,
         **filters: FilterValue,
     ) -> FilterExpression:
+        """Build a provider-native filter.
+
+        ``max_values`` bounds an array field's length (``{"connectorIds": 1}``
+        matches a point whose only owner is the one named in ``must``). It is
+        always ANDed, never an alternative to a value match.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -162,7 +183,16 @@ class IVectorDBService(ABC):
         scroll_filter: FilterExpression,
         limit: int,
         offset: Optional[str] = None,
+        with_payload: Optional[List[str]] = None,
     ) -> ScrollResult:
+        """Page through matching points.
+
+        ``with_payload`` restricts which payload fields come back (dotted paths
+        such as ``metadata.virtualRecordId``). Callers that need a couple of
+        fields should pass it: the default pulls the whole payload including
+        ``page_content``, which on a large scan is megabytes of chunk text
+        transferred and discarded.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -186,7 +216,16 @@ class IVectorDBService(ABC):
         self,
         collection_name: str,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
+        """Delete matching points.
+
+        ``refresh=True`` asks the provider to make the write immediately
+        visible to a subsequent read. Only pass it when the caller re-reads the
+        matched set to decide whether it is done — on OpenSearch it forces a
+        shard refresh, creating a Lucene segment per call, which is exactly the
+        segment proliferation the 30s ``refresh_interval`` exists to avoid.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -204,8 +243,11 @@ class IVectorDBService(ABC):
         collection_name: str,
         payload: dict,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         """Merge ``payload`` into matching points without replacing the rest.
+
+        See ``delete_points`` for ``refresh``.
 
         Must not use Qdrant ``overwrite_payload`` (that drops ``page_content``).
         Rejects an empty filter — the same safety rule as ``delete_points``.

@@ -2833,3 +2833,82 @@ class TestNewRecordsAreStoredNotStarted:
             ProgressStatus.NOT_STARTED.value,
             ProgressStatus.QUEUED.value,
         )
+
+
+# ===========================================================================
+# A failed lookup must not create a second group or role
+# ===========================================================================
+
+
+class TestUpsertDoesNotDuplicateOnAFailedLookup:
+    """on_new_user_groups and on_new_app_roles read by external id and, on
+    None, create with a fresh id. The providers answered a failed read with
+    None, so a graph that could not be read produced a second group (or role)
+    for the same external id, splitting members and permission edges across
+    the two. Pseudo-groups for users without an email reach the same code.
+
+    Everything is real except the Neo4j client: the processor, the transaction
+    store it is handed, and Neo4jProvider. The flag has to survive every hop,
+    and a stand-in at any layer could quietly drop it.
+    """
+
+    @staticmethod
+    def _processor_over_a_flapping_graph():
+        from app.connectors.core.base.data_store.graph_data_store import GraphTransactionStore
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        provider.client = AsyncMock()
+        calls = []
+
+        async def flapping(query, *args, **kwargs):
+            # The lookup is the first query and fails. Anything after it --
+            # the write that would create the duplicate -- succeeds.
+            calls.append(query)
+            if len(calls) == 1:
+                raise RuntimeError("graph is restarting")
+            return []
+
+        provider.client.execute_query = AsyncMock(side_effect=flapping)
+        tx_store = GraphTransactionStore(graph_provider=provider, txn="txn-1")
+
+        proc = _make_processor()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+        return proc, calls
+
+    @pytest.mark.asyncio
+    async def test_a_failed_group_lookup_does_not_create_a_second_group(self):
+        from app.models.entities import AppUserGroup, Connectors
+
+        proc, calls = self._processor_over_a_flapping_graph()
+        group = AppUserGroup(
+            app_name=Connectors.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_user_group_id="sg-1",
+            name="Engineering",
+        )
+
+        with pytest.raises(RuntimeError):
+            await proc.on_new_user_groups([(group, [])])
+
+        assert len(calls) == 1, f"a write followed the failed lookup: {calls[1:]}"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_role_lookup_does_not_create_a_second_role(self):
+        from app.models.entities import AppRole, Connectors
+
+        proc, calls = self._processor_over_a_flapping_graph()
+        role = AppRole(
+            app_name=Connectors.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_role_id="role-1",
+            name="Admin",
+        )
+
+        with pytest.raises(RuntimeError):
+            await proc.on_new_app_roles([(role, [])])
+
+        assert len(calls) == 1, f"a write followed the failed lookup: {calls[1:]}"

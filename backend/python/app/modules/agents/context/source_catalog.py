@@ -26,6 +26,23 @@ from app.modules.agents.capability_summary import (
 from app.modules.agents.context.retrieval_routing import build_routing_guidance
 
 
+# Connector type of the bundled Acme Corp sample data.
+DEMO_APP = "demo"
+
+# Mirrors the chat landing ("Acme Corp, a small fictional company loaded as
+# demo data"), so answers and UI describe the same thing.
+DEMO_SOURCE_NOTE = (
+    "**Demo data.** The Demo source holds sample records for Acme Corp, a small "
+    "fictional company loaded into this workspace so people can try it out; its "
+    "records carry GitHub, Jira, Slack, Google Drive and ServiceNow labels. Only "
+    "records from the Demo source are Acme Corp's: never call a record from any "
+    "other source (a Collection, another connector) Acme Corp's, and never present "
+    "an Acme Corp fact as the user's organization's. When you answer from Acme Corp "
+    "records, name Acme Corp (\"Acme Corp's on-call policy is ...\"). Do not decline "
+    "or discard them only because this workspace's organization has a different name."
+)
+
+
 class SourceKind(StrEnum):
     KB = "kb"
     APP = "app"
@@ -151,6 +168,10 @@ class SourceCatalog:
         )
         return tuple(sorted(toolset_apps - indexed_apps))
 
+    def has_demo(self) -> bool:
+        """Whether the Acme Corp sample data is one of the sources."""
+        return any(s.kind == SourceKind.APP and s.app == DEMO_APP for s in self.sources)
+
     def kb_sources(self) -> tuple[KnowledgeSource, ...]:
         return tuple(s for s in self.sources if s.kind == SourceKind.KB)
 
@@ -262,6 +283,10 @@ class SourceCatalog:
                     line += " — " + "; ".join(s.scope_lines)
 
             lines.append(line)
+
+        if self.has_demo():
+            lines.append("")
+            lines.append(DEMO_SOURCE_NOTE)
 
         routing = build_routing_guidance(self)
         if routing:

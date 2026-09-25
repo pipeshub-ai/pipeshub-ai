@@ -11,7 +11,6 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 from io import BytesIO
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -35,6 +34,7 @@ from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.events.dedup import DedupDecision, select_duplicate
 from app.services.base_client import ServiceUnavailableError
+from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
@@ -52,8 +52,8 @@ from app.services.vector_db.strategy import (
 )
 from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
-from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import ENRICHMENT_FAILED
 
 
 def _get_pdf_ocr_detection_worker_count() -> int:
@@ -231,10 +231,7 @@ class EventProcessor:
         prev_virtual_record_id: str | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
-        existing PDF pipeline would pick for a native PDF. Shared by the native
-        PDF branch and the EPUB branch (EPUB is converted to PDF via LibreOffice
-        before reaching here) so both stay on the identical Docling/pdfplumber
-        selection logic.
+        existing PDF pipeline would pick for a native PDF.
         """
         self.logger.info("🔍 Checking if PDF needs OCR processing")
         try:
@@ -375,7 +372,11 @@ class EventProcessor:
         )
 
         record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
+            record_id,
+            CollectionNames.RECORDS.value,
+            # Otherwise a graph that cannot be read raises "not found after
+            # parsing", which sends whoever reads it looking for a deletion.
+            raise_on_error=True,
         )
         if record_doc is None:
             raise RuntimeError(f"Record {record_id} not found after parsing")
@@ -483,12 +484,13 @@ class EventProcessor:
                     "❌ Enrichment failed for record %s (document remains searchable): %s",
                     record_id,
                     enrich_exc,
+                    exc_info=True,
                 )
                 await self.update_record_fields(
                     record_doc,
                     {
                         "extractionStatus": ProgressStatus.FAILED.value,
-                        "reason": f"Enrichment failed: {enrich_exc}",
+                        "reason": ENRICHMENT_FAILED,
                     },
                 )
 
@@ -888,7 +890,14 @@ class EventProcessor:
                 )
 
             record = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id,
+                CollectionNames.RECORDS.value,
+                # None below drains the message, so it has to mean "deleted" and
+                # nothing else. Without this a graph that is restarting answers
+                # None for every record in flight, each one is drained as though
+                # it had been deleted, and they sit at QUEUED until the stranded
+                # sweep notices an hour later.
+                raise_on_error=True,
             )
 
             if record is None:
@@ -957,6 +966,12 @@ class EventProcessor:
                 dedup_decision = await self._check_duplicate_by_md5(file_content, doc)
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
+                    await notify_record_indexed(
+                        connector_name=doc.get("connectorName"),
+                        connector_id=doc.get("connectorId"),
+                        external_record_group_id=doc.get("externalGroupId"),
+                        org_id=doc.get("orgId"),
+                    )
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
@@ -1273,16 +1288,13 @@ class EventProcessor:
                     yield event
 
             elif extension == ExtensionTypes.EPUB.value or mime_type == MimeTypes.EPUB.value:
-                self.logger.info("📚 Converting EPUB to PDF via LibreOffice for record: %s", record_name)
-                pdf_binary = await convert_with_libreoffice(file_content, "epub", "pdf")
-                pdf_record_name = f"{Path(record_name).stem}.pdf" if record_name else "converted.pdf"
-                async for event in self._dispatch_pdf_binary(
-                    record_name=pdf_record_name,
-                    record_id=record_id,
-                    record_version=record_version,
-                    connector=connector,
-                    org_id=org_id,
-                    pdf_binary=pdf_binary,
+                async for event in self.processor.process_epub_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    epub_binary=file_content,
                     virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,

@@ -212,10 +212,9 @@ export function FolderTreeItem({
   const hasDeleteAction = canDelete && !!onDelete;
   const shouldShowActionMenu = hasRenameAction || hasDeleteAction || showReindexMenu;
 
-  const showNestedChildrenLoadMore =
-    isExpanded &&
-    enhancedNode.nodeType !== 'app' &&
-    nestedChildrenPageMeta?.hasNext === true;
+  // A collection in the Collections tree pages its children like any folder;
+  // All Records apps keep their cursor elsewhere, so this stays off for them.
+  const showNestedChildrenLoadMore = isExpanded && nestedChildrenPageMeta?.hasNext === true;
 
   return (
     <>

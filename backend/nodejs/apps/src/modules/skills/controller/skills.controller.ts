@@ -143,6 +143,8 @@ export const createSkill = forwardJson(HttpMethod.POST, () => `${SKILLS_BASE}/`,
 export const updateSkill = forwardJson(HttpMethod.PUT, (req) => `${SKILLS_BASE}/${encName(req)}`, 'Update Skill');
 export const patchSkillBody = forwardJson(HttpMethod.PATCH, (req) => `${SKILLS_BASE}/${encName(req)}/body`, 'Patch Skill Body');
 export const deprecateSkill = forwardJson(HttpMethod.POST, (req) => `${SKILLS_BASE}/${encName(req)}/deprecate`, 'Deprecate Skill');
+export const disableSkill = forwardJson(HttpMethod.POST, (req) => `${SKILLS_BASE}/${encName(req)}/disable`, 'Disable Skill');
+export const enableSkill = forwardJson(HttpMethod.POST, (req) => `${SKILLS_BASE}/${encName(req)}/enable`, 'Enable Skill');
 export const getSkillUsage = forwardJson(HttpMethod.GET, (req) => `${SKILLS_BASE}/${encName(req)}/usage`, 'Get Skill Usage');
 export const deleteSkill = forwardJson(HttpMethod.DELETE, (req) => `${SKILLS_BASE}/${encName(req)}`, 'Delete Skill');
 

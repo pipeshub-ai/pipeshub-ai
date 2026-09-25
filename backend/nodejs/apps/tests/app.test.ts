@@ -59,6 +59,8 @@ import * as oidcRoutes from '../src/modules/oauth_provider/routes/oid.provider.r
 import * as apiDocsRoutes from '../src/modules/api-docs/docs.routes';
 import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes';
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
+import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
+import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -176,6 +178,8 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
   sandbox.stub(toolsetsRoutes, 'createToolsetsRouter').returns(dummyRouter);
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
+  sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
+  sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
 }
 
 /**
@@ -213,6 +217,30 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     containers[name] = c;
     sandbox.stub(cls, 'initialize').resolves(c);
   }
+
+  // initialize() builds the outbox dispatcher, which takes the message
+  // producer from the user-manager container. Unlike the routers, that is not
+  // behind a factory the harness can stub, so the binding has to resolve here
+  // as it does in production.
+  containers.userManager!.bind('MessageProducer').toConstantValue({
+    isConnected: () => true,
+    connect: sandbox.stub().resolves(),
+    disconnect: sandbox.stub().resolves(),
+    publish: sandbox.stub().resolves(),
+    publishBatch: sandbox.stub().resolves(),
+    healthCheck: sandbox.stub().resolves(true),
+  } as any);
+
+  // configureRoutes joins the service-account and service-token services, which
+  // live in different containers, so both have to resolve here as they do in
+  // production. Unlike the routers, this wiring is not behind a factory the
+  // harness can stub.
+  containers.userManager!.bind('ServiceAccountsService').toConstantValue({
+    setTokenRevoker: sandbox.stub(),
+  } as any);
+  containers.oauth!.bind('ServiceTokenService').toConstantValue({
+    revokeAllForServiceAccount: sandbox.stub().resolves(),
+  } as any);
 
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {

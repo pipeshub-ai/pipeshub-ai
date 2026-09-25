@@ -242,6 +242,21 @@ def _pending_storage_patches(
     return pending
 
 
+def _sparse_modifier(config: CollectionConfig) -> Optional[Modifier]:
+    return Modifier.IDF if config.sparse_idf else None
+
+
+def _missing_sparse_idf(info: object, config: CollectionConfig) -> bool:
+    """True when ``config`` wants IDF on the sparse vector and the collection lacks it."""
+    if not (config.enable_sparse and config.sparse_idf):
+        return False
+    params = getattr(getattr(info, "config", None), "params", None)
+    sparse = _named(getattr(params, "sparse_vectors", None), "sparse")
+    if sparse is None:
+        return False
+    return getattr(sparse, "modifier", None) != Modifier.IDF
+
+
 class QdrantService(IVectorDBService):
     """Fully-async Qdrant provider implementing IVectorDBService."""
 
@@ -471,7 +486,7 @@ class QdrantService(IVectorDBService):
             {
                 "sparse": SparseVectorParams(
                     index=SparseIndexParams(on_disk=config.on_disk_sparse),
-                    modifier=Modifier.IDF if config.sparse_idf else None,
+                    modifier=_sparse_modifier(config),
                 )
             }
             if config.enable_sparse
@@ -542,6 +557,35 @@ class QdrantService(IVectorDBService):
             "change(s) still pending."
         )
         return pending_patch.field
+
+    async def reconcile_lexical_scoring(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Switch an existing collection's sparse vector to server-side IDF.
+
+        Qdrant computes IDF from the inverted index at query time, so this is a
+        config change only: no segment is rewritten and no point re-embedded,
+        which is why it runs unconditionally rather than behind the opt-in
+        storage reconcile.
+        """
+        self._assert_connected()
+        if config is None:
+            config = CollectionConfig()
+
+        info = await self.client.get_collection(collection_name)  # type: ignore
+        if not _missing_sparse_idf(info, config):
+            return None
+
+        await self.client.update_collection(  # type: ignore
+            collection_name=collection_name,
+            sparse_vectors_config={
+                "sparse": SparseVectorParams(modifier=_sparse_modifier(config))
+            },
+        )
+        logger.info(f"Enabled IDF scoring on sparse vectors of '{collection_name}'")
+        return "sparse.modifier"
 
     async def get_collections(self) -> object:
         self._assert_connected()
@@ -629,6 +673,7 @@ class QdrantService(IVectorDBService):
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
+        max_values: Optional[Dict[str, int]] = None,
         **kwargs: FilterValue,
     ) -> FilterExpression:
         from app.services.vector_db.filters import build_filter_expression
@@ -639,6 +684,7 @@ class QdrantService(IVectorDBService):
             should=should,
             must_not=must_not,
             min_should_match=min_should_match,
+            max_values=max_values,
             extra_kwargs=kwargs or None,
             build_conditions=QdrantUtils.build_conditions_generic,
         )
@@ -653,6 +699,7 @@ class QdrantService(IVectorDBService):
         scroll_filter: FilterExpression,
         limit: int,
         offset: Optional[str] = None,
+        with_payload: Optional[List[str]] = None,
     ) -> ScrollResult:
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(scroll_filter)
@@ -660,7 +707,7 @@ class QdrantService(IVectorDBService):
             collection_name=collection_name,
             scroll_filter=qdrant_filter,
             limit=limit,
-            with_payload=True,
+            with_payload=list(with_payload) if with_payload else True,
             offset=offset,
         )
         points = [
@@ -732,17 +779,29 @@ class QdrantService(IVectorDBService):
         self,
         collection_name: str,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
                 "delete_points called with an empty filter — this would wipe the entire "
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        if not filter.has_positive_match():
+            raise ValueError(
+                "delete_points called with only array-length conditions — a point "
+                "whose field is absent satisfies those too, so this would delete "
+                "most of the collection. Pair it with a value match "
+                "(e.g. connectorIds)."
+            )
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
+        # wait=True: callers sequence work after a delete (the connector cleanup
+        # re-reads what survived, and mapping rows are dropped next), so an
+        # unacknowledged delete would let them act on points still present.
         await self.client.delete(  # type: ignore
             collection_name=collection_name,
             points_selector=FilterSelector(filter=qdrant_filter),
+            wait=True,
         )
         logger.debug(f"Deleted points from Qdrant collection '{collection_name}'")
 
@@ -751,6 +810,7 @@ class QdrantService(IVectorDBService):
         collection_name: str,
         payload: dict,
         points: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if points.is_empty():
             raise ValueError(
@@ -772,6 +832,7 @@ class QdrantService(IVectorDBService):
         collection_name: str,
         payload: dict,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
@@ -780,10 +841,13 @@ class QdrantService(IVectorDBService):
             )
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
+        # wait=True for the same reason as delete_points: the connector cleanup
+        # re-reads the matched set after each write to decide when it is done.
         await self.client.set_payload(  # type: ignore
             collection_name=collection_name,
             payload=payload,
             points=FilterSelector(filter=qdrant_filter),
+            wait=True,
         )
 
     # ------------------------------------------------------------------

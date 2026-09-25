@@ -14,6 +14,7 @@ import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
 import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
 import { pruneInactiveFilterValues } from './utils/prune-inactive-filter-values';
+import { isDesktopOfflineError } from './utils/local-fs-helpers';
 const BASE_URL = '/api/v1/connectors';
 
 /** Normalized DELETE /connectors/:id body for optimistic UI merge. */
@@ -88,10 +89,12 @@ export const ConnectorsApi = {
   async getActiveConnectors(
     scope: ConnectorScope,
     page = 1,
-    limit = 100
+    limit = 100,
+    options?: { suppressErrorToast?: boolean }
   ): Promise<ConnectorListResponse> {
     const { data } = await apiClient.get<ConnectorListResponse>(BASE_URL, {
       params: { scope, page, limit },
+      ...options,
     });
     return data;
   },
@@ -318,11 +321,22 @@ export const ConnectorsApi = {
 
   // ── Toggle ──
 
-  /** Toggle sync or agent for a connector instance */
-  async toggleConnector(connectorId: string, type: 'sync' | 'agent') {
+  /**
+   * Toggle sync or agent for a connector instance. Only the Local FS
+   * desktop-offline refusal is suppressed, because callers render that as an
+   * info toast; every other failure keeps the generic error toast and its
+   * backend message. `device` is the desktop enabling a Local FS connector;
+   * the backend claims it as owner on first enable and refuses any other.
+   */
+  async toggleConnector(
+    connectorId: string,
+    type: 'sync' | 'agent',
+    device?: { deviceId: string; deviceName: string }
+  ) {
     const { data } = await apiClient.post(
       `${BASE_URL}/${connectorId}/toggle`,
-      { type }
+      { type, ...device },
+      { suppressErrorToast: isDesktopOfflineError }
     );
     return data;
   },
@@ -355,7 +369,9 @@ export const ConnectorsApi = {
       {
         connectorName: connectorType,
         ...(fullSync !== undefined ? { fullSync } : {}),
-      }
+      },
+      // See toggleConnector: suppresses only the desktop-offline refusal.
+      { suppressErrorToast: isDesktopOfflineError }
     );
     return data;
   },
@@ -371,22 +387,6 @@ export const ConnectorsApi = {
       {
         ...(statusFilters?.length ? { statusFilters } : {}),
       }
-    );
-    return data;
-  },
-
-  /** Submit local filesystem file-event batches for incremental sync */
-  async submitFileEvents(
-    connectorId: string,
-    payload: {
-      batchId: string;
-      timestamp: number;
-      events: ConnectorFileEvent[];
-    }
-  ) {
-    const { data } = await apiClient.post(
-      `${BASE_URL}/${connectorId}/file-events`,
-      payload
     );
     return data;
   },

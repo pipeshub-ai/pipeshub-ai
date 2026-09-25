@@ -9,6 +9,7 @@ export const TokenScopes = Object.freeze({
   VALIDATE_EMAIL: 'email:validate',
   ORG_EMAIL_VERIFY: 'org:email:verify',
   EMAIL_VERIFIED: 'email:verified',
+  DESKTOP_COMMAND: 'desktop:command',
 } as const);
 
 // Create a type for the TokenScopes keys

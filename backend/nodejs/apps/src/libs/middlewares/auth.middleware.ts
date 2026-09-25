@@ -17,7 +17,7 @@ import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
-import { PAT_TOKEN_PREFIX } from '../../modules/oauth_provider/constants/constants';
+import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
@@ -104,6 +104,21 @@ export class AuthMiddleware {
       throw new UnauthorizedError('User not found, please login again');
     }
 
+    // Sessions already handed out have to be stopped too, not only the next
+    // sign-in. generateAuthToken refuses to issue one for a disabled account,
+    // but a session minted before it was disabled would otherwise keep working
+    // until it expired — which for the account an administrator has just
+    // switched off is the whole point of switching it off.
+    if (user.isDisabled) {
+      throw new UnauthorizedError('This account is disabled');
+    }
+
+    // A service account has no way to obtain a session in the first place, so
+    // one turning up here means something is wrong rather than merely stale.
+    if (user.kind === 'service') {
+      throw new UnauthorizedError('Service accounts cannot sign in');
+    }
+
     if (userId && orgId) {
       let userActivity: IUserActivity | null = null;
       try {
@@ -152,32 +167,64 @@ export class AuthMiddleware {
     const orgId = payload.orgId;
     let { fullName, accountType } = payload;
 
-    // for client_credentials tokens (userId === client_id), resolve the app owner
+    // for client_credentials tokens (userId === client_id), resolve the
+    // identity the token acts as.
+    //
+    // Read from the app record every time, rather than trusting the
+    // `createdBy` the token was minted with. An administrator can point an
+    // app at a service account, and that has to take effect for tokens
+    // already issued: the whole reason to do it is to stop those tokens
+    // acting as a person, and a change that waits for every outstanding token
+    // to be re-minted would not stop anything.
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
-      if (payload.createdBy) {
-        userId = payload.createdBy;
-      } else {
-        try {
-          const app = await OAuthApp.findOne({
-            clientId: payload.client_id,
-            isDeleted: false,
-          })
-            .select('createdBy')
-            .lean()
-            .exec();
-          if (app) {
-            userId = app.createdBy.toString();
-          } else {
-            throw new UnauthorizedError('OAuth app not found or revoked');
+      try {
+        const app = await OAuthApp.findOne({
+          clientId: payload.client_id,
+          isDeleted: false,
+        })
+          .select('createdBy tokenIdentityUserId')
+          .lean()
+          .exec();
+        if (app) {
+          // Absent means the creator, which is how every app behaves until
+          // someone points it at a service account.
+          const resolved = (app.tokenIdentityUserId ?? app.createdBy).toString();
+
+          // The token carries the identity it was minted for. If the
+          // application has been pointed somewhere else since, this token is
+          // not one of its current credentials and is refused.
+          //
+          // Substituting the live identity instead would leave the two halves
+          // of the product disagreeing: Node would authorise the request as
+          // the new identity while the Python services, which read the claim
+          // rather than the record, would go on reading as the previous one.
+          // Refusing fails both closed, because their role check comes back
+          // through here.
+          //
+          // Revoking on change does not make this unnecessary. A grant that
+          // had already loaded the application can insert its row after the
+          // revocation has run, and a revocation that throws leaves every
+          // existing token carrying the old claim.
+          if (
+            typeof payload.createdBy === 'string' &&
+            payload.createdBy !== resolved
+          ) {
+            throw new UnauthorizedError(
+              'This token was issued for an identity the application no longer acts as',
+            );
           }
-        } catch (err) {
-          if (err instanceof UnauthorizedError) {
-            throw err;
-          }
-          this.logger.error('Failed to look up OAuth app owner', err);
-          throw new UnauthorizedError('Failed to look up OAuth app owner');
+
+          userId = resolved;
+        } else {
+          throw new UnauthorizedError('OAuth app not found or revoked');
         }
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          throw err;
+        }
+        this.logger.error('Failed to look up OAuth app owner', err);
+        throw new UnauthorizedError('Failed to look up OAuth app owner');
       }
     }
 
@@ -192,7 +239,7 @@ export class AuthMiddleware {
       orgId: orgId,
       isDeleted: false,
     })
-      .select('email fullName role')
+      .select('email fullName role isDisabled kind')
       .lean()
       .exec();
 
@@ -203,13 +250,28 @@ export class AuthMiddleware {
       throw new UnauthorizedError('User not found, please login again');
     }
 
+    // Disabling an account has to reach the tokens already issued from it,
+    // or it only stops the next sign-in and leaves every outstanding token
+    // working. That matters most for a service account, whose whole purpose
+    // is to be used by long-lived automation holding a long-lived token.
+    if (user.isDisabled) {
+      throw new UnauthorizedError('This account is disabled');
+    }
+
     email = user.email;
     if (!fullName) {
       fullName = user.fullName;
     }
     // Attach role so Node-side isUserAdmin matches session-JWT behavior
     // (OAuth access tokens do not carry a role claim).
-    role = user.role === 'admin' ? 'admin' : 'member';
+    //
+    // A service account is never an admin, whatever its record says. The
+    // schema refuses to store that combination, so this is the backstop for a
+    // row that predates the rule or was written straight to the database:
+    // the guarantee is worth holding at the point the role is actually read,
+    // not only at the points it is written.
+    role =
+      user.role === 'admin' && user.kind !== 'service' ? 'admin' : 'member';
 
     if (!accountType && isClientCredentials) {
       try {
@@ -311,14 +373,13 @@ export class AuthMiddleware {
     const [bearer, token] = authHeader.split(' ');
     if (bearer !== 'Bearer' || !token) return null;
 
-    // Personal access tokens carry a display-only phpat_ prefix ahead of the
-    // underlying JWT. Strip it here, at the single entry point, so the
-    // token-type peek in authenticate() and every downstream verifier see a
-    // bare JWT — every other token type never has this prefix, so this is a
-    // no-op for them.
-    if (!token.startsWith(PAT_TOKEN_PREFIX)) return token;
-
-    const bare = token.slice(PAT_TOKEN_PREFIX.length);
+    // Personal access tokens and service tokens carry a display-only prefix
+    // ahead of the underlying JWT. Strip it here, at the single entry point,
+    // so the token-type peek in authenticate() and every downstream verifier
+    // see a bare JWT — every other token type never has a prefix, so this is
+    // a no-op for them.
+    const bare = stripTokenDisplayPrefix(token);
+    if (bare === token) return token;
     // Normalise the header too, not just the return value. Several controllers
     // forward req.headers.authorization verbatim to the Python services, which
     // have no notion of the prefix and fail JWT decode on it. Rewriting it here

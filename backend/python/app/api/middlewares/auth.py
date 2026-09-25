@@ -88,6 +88,15 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
         payload["isOAuth"] = True
         payload["oauthScopes"] = payload.get("scope", "").split(" ")
         payload["oauthClientId"] = payload.get("client_id")
+        # A client_credentials token has no caller of its own: its userId is
+        # the client id. The `createdBy` claim carries the identity it acts
+        # as, which Node resolves when minting the token — the application's
+        # chosen service account where one has been set, and its creator
+        # otherwise. The claim keeps its original name for tokens already in
+        # circulation; it means "the identity", not "who made the app".
+        #
+        # Pointing an application at a different identity revokes the tokens
+        # it has already issued, so a claim reaching here is never stale.
         if payload.get("userId") == payload.get("client_id") and payload.get("createdBy"):
             payload["userId"] = payload["createdBy"]
 
@@ -278,7 +287,8 @@ async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str
         # Without Node's answer a revoked token looks exactly like a valid one.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not verify the access token; try again shortly",
+            detail="We couldn't confirm your sign-in just now. Please try again in a few seconds.",
+            headers={"Retry-After": "5"},
         )
     return caller.role
 
@@ -289,14 +299,20 @@ class AuthPolicy:
 
     kind: Literal["scopes", "service", "deny_service"]
     service_scopes: frozenset[str] = frozenset()
+    oauth_scopes: frozenset[str] = frozenset()
 
 
 def _tag_auth_policy(
     dependency: Callable[..., Any],
     kind: Literal["scopes", "service", "deny_service"],
     service_scopes: Iterable[ScopeLike] = (),
+    oauth_scopes: Iterable[ScopeLike] = (),
 ) -> Callable[..., Any]:
-    policy = AuthPolicy(kind, frozenset(scope_value(scope) for scope in service_scopes))
+    policy = AuthPolicy(
+        kind,
+        frozenset(scope_value(scope) for scope in service_scopes),
+        frozenset(scope_value(scope) for scope in oauth_scopes),
+    )
     setattr(dependency, AUTH_POLICY_ATTR, policy)
     return dependency
 
@@ -348,7 +364,7 @@ def require_scopes(
                 detail=f"Insufficient scope. Required: {' or '.join(required_scopes)}",
             )
 
-    return _tag_auth_policy(_check_scopes, "scopes", admitted_service_scopes)
+    return _tag_auth_policy(_check_scopes, "scopes", admitted_service_scopes, required_scopes)
 
 
 def require_service_token(*scopes: ScopeLike) -> Callable[..., Coroutine[Any, Any, Mapping[str, Any]]]:

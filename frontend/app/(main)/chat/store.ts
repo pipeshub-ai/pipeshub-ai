@@ -19,6 +19,7 @@ import {
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
 import type { AgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
+import type { ProjectSummary } from './project-types';
 
 // ── localStorage helpers for agent capabilities ──────────────────────
 
@@ -82,6 +83,28 @@ function lsSetReasoningEffort(
   } catch {
     // Storage unavailable — silently ignore
   }
+}
+
+/** Row shape for the Actions / MCP tabs of the scoped resources panel (agent or project). */
+export interface ScopedToolGroupRow {
+  label: string;
+  fullNames: string[];
+  toolDescriptions?: Record<string, string>;
+  toolsetSlug: string;
+  instanceId?: string;
+  iconPath?: string;
+}
+
+/** Composer allow-list derived from a project's settings (see `useProjectScopeHydration`). */
+export interface ProjectChatScope {
+  projectId: string;
+  connectors: Array<{ id: string; label: string; connectorKind: string }>;
+  knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
+  knowledgeDefaults: { apps: string[]; kb: string[] };
+  toolGroups: ScopedToolGroupRow[];
+  mcpGroups: ScopedToolGroupRow[];
+  /** Every selectable tool key (`instanceId:fullName`), across toolsets and MCP. */
+  toolCatalogFullNames: string[];
 }
 
 /**
@@ -201,15 +224,19 @@ export function selectPendingForSidebar(
   pendingBySlotId: Record<string, PendingConversation>,
   slots: Record<string, ChatSlot>,
   resolvedConvIds: ReadonlySet<string>,
-  scope: 'global' | { agentId: string },
+  scope: 'global' | { agentId: string } | { projectId: string },
 ): PendingConversation[] {
   return Object.values(pendingBySlotId).filter((p) => {
     if (!p.isGenerating) return false;
     const slot = slots[p.slotId];
     if (!slot) return false;
     if (scope === 'global') {
-      if (slot.threadAgentId) return false;
-    } else if (slot.threadAgentId !== scope.agentId) {
+      // Project-linked new chats surface in the project's own sidebar, not
+      // the main "Your Chats" list.
+      if (slot.threadAgentId || slot.projectId) return false;
+    } else if ('agentId' in scope) {
+      if (slot.threadAgentId !== scope.agentId) return false;
+    } else if (slot.projectId !== scope.projectId) {
       return false;
     }
     if (slot.convId && resolvedConvIds.has(slot.convId)) return false;
@@ -242,6 +269,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     convId,
     threadAgentId: null,
     agentStreamTools: null,
+    projectId: null,
     isTemp: isNew,
     isInitialized: isNew,      // new chats have nothing to load
     hasLoaded: false,
@@ -306,6 +334,15 @@ interface ChatState {
   /** Bumped after a mutation (rename/delete/archive) to trigger sidebar refetch */
   conversationsVersion: number;
 
+  // ── Projects (sidebar list + active workspace) ──
+  projects: ProjectSummary[];
+  isProjectsLoading: boolean;
+  projectsError: string | null;
+  /** Bumped after create/update/delete/archive to trigger a sidebar refetch. */
+  projectsVersion: number;
+  /** `projectId` currently open in the workspace (`/chat?projectId=…`), or null. */
+  activeProjectId: string | null;
+
   /** When set, agent sidebar lists + streaming prepends apply to this agent */
   agentSidebarAgentId: string | null;
   agentConversations: Conversation[];
@@ -364,6 +401,18 @@ interface ChatState {
   agentContextAccess: AgentSidebarRowMenuAccess | null;
   /** Tool display names marked deprecated on the last GET /agents/:id for the URL agent context. */
   agentDeprecatedToolNames: string[];
+
+  // ── Project-scoped chat (`/chat?projectId=` or the /projects workspace composer) ──
+  /**
+   * Allow-list the composer may narrow within. `null` outside project context. Mirrors the
+   * agent* fields above so `AgentScopedResourcesPanel` can render either source. The linked
+   * hidden project KB is not listed — the server always includes it.
+   */
+  projectScope: ProjectChatScope | null;
+  /** Per-turn narrowing of `projectScope.knowledgeDefaults`; `null` = whole project scope. */
+  projectKnowledgeScope: { apps: string[]; kb: string[] } | null;
+  /** Per-turn narrowing of `projectScope.toolCatalogFullNames`; `null` = all project tools. */
+  projectStreamTools: string[] | null;
 
   // ── Universal agent mode (main chat, queryMode === 'agent', no agentId) ──
   /**
@@ -488,6 +537,23 @@ interface ChatState {
   /** Bump the version counter to trigger a sidebar refetch */
   bumpConversationsVersion: () => void;
 
+  // ── Project actions ──
+  setProjects: (projects: ProjectSummary[]) => void;
+  setIsProjectsLoading: (loading: boolean) => void;
+  setProjectsError: (error: string | null) => void;
+  /** Insert-or-replace by `_id` (used after create/update/archive/pin). */
+  upsertProjectInList: (project: ProjectSummary) => void;
+  removeProjectFromList: (projectId: string) => void;
+  bumpProjectsVersion: () => void;
+  setActiveProjectId: (projectId: string | null) => void;
+  /**
+   * Optimistically reflects a project link/unlink in the sidebar conversation
+   * lists (`conversations` / `agentConversations`) after
+   * `ProjectApi.setConversationProject` succeeds, so the row moves without a
+   * full refetch.
+   */
+  moveConversationToProject: (conversationId: string, projectId: string | null) => void;
+
   setAgentSidebarAgentId: (id: string | null) => void;
   setAgentConversations: (conversations: Conversation[]) => void;
   setAgentConversationsPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
@@ -528,6 +594,13 @@ interface ChatState {
     hasWebSearch?: boolean;
   } | null) => void;
   setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
+  /**
+   * Replace the project allow-list (or clear with null). Resets per-turn narrowing and seeds
+   * the collection name/meta caches so pills and `appliedFilters` resolve labels.
+   */
+  setProjectScope: (scope: ProjectChatScope | null) => void;
+  setProjectKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
+  setProjectStreamTools: (tools: string[] | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
   setAgentContextCreatedBy: (mongoUserId: string | null) => void;
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
@@ -651,6 +724,12 @@ const initialState = {
   moreChatsPagination: null as { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null,
   conversationsVersion: 0,
 
+  projects: [] as ProjectSummary[],
+  isProjectsLoading: false,
+  projectsError: null as string | null,
+  projectsVersion: 0,
+  activeProjectId: null as string | null,
+
   agentSidebarAgentId: null as string | null,
   agentConversations: [] as Conversation[],
   agentConversationsPagination: null as ConversationsListResponse['pagination'] | null,
@@ -686,6 +765,10 @@ const initialState = {
   agentContextCreatedBy: null as string | null,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
   agentDeprecatedToolNames: [] as string[],
+
+  projectScope: null as ProjectChatScope | null,
+  projectKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
+  projectStreamTools: null as string[] | null,
 
   universalAgentStreamTools: null as string[] | null,
   universalAgentToolCatalogFullNames: [] as string[],
@@ -1083,6 +1166,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setAgentKnowledgeScope: (scope) => set({ agentKnowledgeScope: scope }),
 
+  setProjectScope: (scope) =>
+    set((state) => {
+      if (!scope) {
+        return { projectScope: null, projectKnowledgeScope: null, projectStreamTools: null };
+      }
+      const names: Record<string, string> = {};
+      const meta: Record<string, { name: string; nodeType: string; connector: string }> = {};
+      for (const c of scope.connectors) {
+        names[c.id] = c.label;
+        meta[c.id] = { name: c.label, nodeType: 'app', connector: c.connectorKind };
+      }
+      for (const r of scope.knowledgeCollectionRows) {
+        names[r.id] = r.name;
+        meta[r.id] = { name: r.name, nodeType: 'recordGroup', connector: r.sourceType ?? 'KB' };
+      }
+      // Same project re-hydrated (settings saved, catalog arrived): keep the user's per-turn
+      // narrowing, minus anything no longer in the allow-list. A different project starts clean.
+      const sameProject = state.projectScope?.projectId === scope.projectId;
+      let projectKnowledgeScope: { apps: string[]; kb: string[] } | null = null;
+      let projectStreamTools: string[] | null = null;
+      if (sameProject && state.projectKnowledgeScope) {
+        const apps = new Set(scope.knowledgeDefaults.apps);
+        const kb = new Set(scope.knowledgeDefaults.kb);
+        projectKnowledgeScope = {
+          apps: state.projectKnowledgeScope.apps.filter((id) => apps.has(id)),
+          kb: state.projectKnowledgeScope.kb.filter((id) => kb.has(id)),
+        };
+      }
+      if (sameProject && state.projectStreamTools) {
+        const catalog = new Set(scope.toolCatalogFullNames);
+        projectStreamTools = state.projectStreamTools.filter((fn) => catalog.has(fn));
+      }
+      return {
+        projectScope: scope,
+        projectKnowledgeScope,
+        projectStreamTools,
+        collectionNamesCache: { ...state.collectionNamesCache, ...names },
+        collectionMetaCache: { ...state.collectionMetaCache, ...meta },
+      };
+    }),
+
+  setProjectKnowledgeScope: (scope) => set({ projectKnowledgeScope: scope }),
+
+  setProjectStreamTools: (tools) => set({ projectStreamTools: tools }),
+
   setAgentContextDisplayName: (name) => set({ agentContextDisplayName: name }),
 
   setAgentContextCreatedBy: (mongoUserId) => set({ agentContextCreatedBy: mongoUserId }),
@@ -1202,6 +1330,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
   bumpConversationsVersion: () =>
     set((state) => ({ conversationsVersion: state.conversationsVersion + 1 })),
 
+  // ── Project actions ──────────────────────────────────────────────
+
+  setProjects: (projects) => set({ projects }),
+  setIsProjectsLoading: (loading) => set({ isProjectsLoading: loading }),
+  setProjectsError: (error) => set({ projectsError: error }),
+
+  upsertProjectInList: (project) =>
+    set((state) => {
+      const exists = state.projects.some((p) => p._id === project._id);
+      return {
+        projects: exists
+          ? state.projects.map((p) => (p._id === project._id ? project : p))
+          : [project, ...state.projects],
+      };
+    }),
+
+  removeProjectFromList: (projectId) =>
+    set((state) => ({
+      projects: state.projects.filter((p) => p._id !== projectId),
+    })),
+
+  bumpProjectsVersion: () =>
+    set((state) => ({ projectsVersion: state.projectsVersion + 1 })),
+
+  setActiveProjectId: (projectId) => set({ activeProjectId: projectId }),
+
+  moveConversationToProject: (conversationId, projectId) =>
+    set((state) => {
+      const patch = (c: Conversation): Conversation =>
+        c.id === conversationId ? { ...c, projectId: projectId ?? undefined } : c;
+      return {
+        conversations: state.conversations.map(patch),
+        agentConversations: state.agentConversations.map(patch),
+      };
+    }),
+
   addPendingConversation: (slotId) =>
     set((state) => ({
       pendingConversations: {
@@ -1234,9 +1398,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const isAgentStream =
         options?.isAgentStream ??
         Boolean(slotForPending?.threadAgentId);
-      const nextMain = isAgentStream
-        ? state.conversations
-        : [conversation, ...state.conversations.filter((c) => c.id !== conversation.id)];
+      const isProjectScoped =
+        Boolean(slotForPending?.projectId) || Boolean(conversation.projectId);
+
+      const nextMain =
+        isAgentStream || isProjectScoped
+          ? state.conversations
+          : [conversation, ...state.conversations.filter((c) => c.id !== conversation.id)];
       const nextAgent = isAgentStream
         ? [conversation, ...state.agentConversations.filter((c) => c.id !== conversation.id)]
         : state.agentConversations;
@@ -1247,6 +1415,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         conversations: nextMain,
         agentConversations: nextAgent,
         newlyResolvedIds: nextNewlyResolved,
+        ...(isProjectScoped ? { projectsVersion: state.projectsVersion + 1 } : {}),
       };
     }),
 
@@ -1511,6 +1680,9 @@ if (typeof window !== 'undefined') {
     'agentContextDisplayName',
     'agentContextCreatedBy',
     'agentContextAccess',
+    'projectScope',
+    'projectKnowledgeScope',
+    'projectStreamTools',
     'universalAgentStreamTools',
     'universalAgentToolCatalogFullNames',
     'universalAgentToolGroups',

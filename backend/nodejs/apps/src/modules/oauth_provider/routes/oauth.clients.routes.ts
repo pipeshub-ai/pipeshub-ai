@@ -5,9 +5,14 @@ import { AuthMiddleware } from '../../../config'
 import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
 import { Logger } from '../../../libs/services/logger.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
+import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
+import { refuseServiceAccountCaller } from '../../user_management/middlewares/refuseServiceAccountCaller'
+import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware'
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum'
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
   appIdParamsSchema,
+  setAppTokenIdentitySchema,
   createAppSchema,
   updateAppSchema,
   listAppsQuerySchema,
@@ -27,6 +32,11 @@ export function createOAuthClientsRouter(container: Container): Router {
   router.use(authMiddleware.authenticate.bind(authMiddleware))
   // All routes are rate limited
   router.use(oauthClientRateLimiter)
+  // And none of them are for service accounts. Registering an app is another
+  // way to obtain a credential: `agent:execute` is not admin-only and members
+  // may ask for `client_credentials`, so a read-only service token could
+  // otherwise register its way to a write-capable one.
+  router.use(refuseServiceAccountCaller)
 
   /**
    * GET /oauth-clients
@@ -40,13 +50,36 @@ export function createOAuthClientsRouter(container: Container): Router {
 
   /**
    * POST /oauth-clients
-   * Create a new OAuth app
-   * Admin only, rate limited
+   * Create a new OAuth app.
+   * Not admin-only: any authenticated member of the org may create an
+   * app. Being an admin widens the scopes on offer rather than gating
+   * the route — see getAllowedScopeNamesForRole in OAuthAppService.
+   * Rate limited along with every route on this router.
    */
   router.post(
     '/',
     ValidationMiddleware.validate(createAppSchema),
     (req, res, next) => controller.createApp(req, res, next),
+  )
+
+  /**
+   * PUT /oauth-clients/:appId/token-identity
+   * Point this app's client_credentials tokens at a service account, or pass
+   * serviceAccountId: null to put them back to acting as the app's creator.
+   *
+   * Admin-only: it decides whose documents the app's tokens can reach.
+   */
+  router.put(
+    '/:appId/token-identity',
+    // Both gates, as on /service-accounts: the admin check asks about the
+    // person, the scope check asks what the credential may do, and neither
+    // covers the other. Without the second, an administrator's narrowly
+    // scoped token could change whose documents this application's tokens
+    // reach — including passing null to point them back at the administrator.
+    requireScopes(OAuthScopeNames.USER_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(setAppTokenIdentitySchema),
+    (req, res, next) => controller.setTokenIdentity(req, res, next),
   )
 
   /**

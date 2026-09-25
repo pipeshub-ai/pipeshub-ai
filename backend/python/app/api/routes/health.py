@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import ipaddress
 import os
+import re
 import shutil
 from logging import Logger
 from typing import Any
@@ -32,8 +33,6 @@ from app.utils.aimodels import (
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter(dependencies=[Depends(deny_service_tokens)])
-
-SPARSE_IDF = False
 
 # Cloud LLM health checks call external APIs; local runtimes do not need egress.
 _LOCAL_LLM_PROVIDERS = frozenset({"ollama", "lmStudio"})
@@ -197,6 +196,48 @@ def _extract_error_message(e: Exception) -> str:
             return msg
 
     return str(e)
+
+# Provider text that is really our own exception leaking, not something a person can act on.
+_TECHNICAL_REASON = re.compile(
+    r"Traceback|object has no attribute|NoneType|<[\w.]+ object at 0x|^'[^']*'$|^\w+(Error|Exception)\b",
+)
+_SETUP_NEXT_STEP = "Check the API key, model name and endpoint, then try again."
+
+
+def _provider_display_name(provider: str | None) -> str:
+    from app.config.ai_models.providers import ai_model_registry
+
+    meta = ai_model_registry.get_provider(provider) if provider else None
+    return (meta or {}).get("name") or provider or "the provider"
+
+
+def _short_provider_reason(e: Exception) -> str:
+    """The provider's own one-line reason when it is readable (e.g. "Incorrect API key provided")."""
+    lines = _extract_error_message(e).strip().splitlines()
+    reason = lines[0].strip().rstrip(". ") if lines else ""
+    if not reason or _TECHNICAL_REASON.search(reason):
+        return ""
+    return reason if len(reason) <= 200 else reason[:197].rstrip() + "..."
+
+
+_WEB_SEARCH_NAMES = {"duckduckgo": "DuckDuckGo", "serper": "Serper", "tavily": "Tavily", "exa": "Exa"}
+
+
+def _web_search_name(provider: str | None) -> str:
+    return _WEB_SEARCH_NAMES.get(provider or "", provider or "The web search provider")
+
+
+def _embedding_unavailable_message(e: Exception | None) -> str:
+    reason = _short_provider_reason(e) if e is not None else ""
+    lead = f"The embedding model couldn't start: {reason}." if reason else "The embedding model couldn't start."
+    return f"{lead} Check it in Workspace > AI Models, then try again."
+
+
+def _model_setup_failed_message(kind: str, provider: str | None, e: Exception) -> str:
+    lead = f"Couldn't connect to {_provider_display_name(provider)} with these {kind} settings"
+    reason = _short_provider_reason(e)
+    return f"{lead}: {reason}. {_SETUP_NEXT_STEP}" if reason else f"{lead}. {_SETUP_NEXT_STEP}"
+
 
 # HTTP statuses that mean "ask again later", never "this model cannot do it".
 _TRANSIENT_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
@@ -372,7 +413,7 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
             status_code=408,
             content={
                 "status": "not healthy",
-                "error": f"Web search health check timed out for provider '{provider}'",
+                "error": f"{_web_search_name(provider)} didn't answer in time. Check your network, then try again.",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -388,11 +429,11 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
     except httpx.HTTPStatusError as e:
         status = e.response.status_code
         if status in (401, 403):
-            error_msg = f"Invalid API key for provider '{provider}'"
+            error_msg = f"{_web_search_name(provider)} didn't accept the API key. Check the key in the web search settings, then try again."
         elif status == 429:
-            error_msg = f"Rate limit exceeded for provider '{provider}'"
+            error_msg = f"{_web_search_name(provider)} is limiting requests right now. Wait a minute, then try again."
         else:
-            error_msg = f"Provider '{provider}' returned HTTP {status}"
+            error_msg = f"{_web_search_name(provider)} returned an error ({status}). Try again in a minute; if it keeps failing, check the web search settings."
         return JSONResponse(
             status_code=400,
             content={
@@ -402,11 +443,15 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
             },
         )
     except Exception as e:
+        request.app.container.logger().error(f"Web search health check failed for {provider}: {e}")
         return JSONResponse(
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"Web search health check failed: {str(e)}",
+                "error": (
+                    f"Couldn't reach {_web_search_name(provider)} for web search. Check its API key in the web search "
+                    "settings, then try again."
+                ),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -482,7 +527,7 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
             status_code=500,
             detail={
                 "status": "not healthy",
-                "error": f"Failed to initialize embedding model: {str(e)}",
+                "error": _embedding_unavailable_message(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
             }
         )
@@ -492,7 +537,7 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
             status_code=500,
             detail={
                 "status": "not healthy",
-                "error": "Failed to initialize embedding model",
+                "error": _embedding_unavailable_message(None),
                 "details": {
                     "embedding_model": "initialization_failed",
                     "vector_store": "unknown",
@@ -608,9 +653,7 @@ async def recreate_collection(retrieval_service, embedding_size, logger) -> None
     """
     registry = retrieval_service.collection_registry
     try:
-        recreated = await registry.recreate_all_collections(
-            embedding_size, sparse_idf=SPARSE_IDF
-        )
+        recreated = await registry.recreate_all_collections(embedding_size)
         if not recreated:
             # Nothing managed yet. There is no collection to rebuild, and
             # creating one here would have to invent a context — which under a
@@ -765,7 +808,7 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
     except Exception as e:
         if logger:
             logger.error(f"Embedding health check failed: {str(e)}", exc_info=True)
-        error_msg = f"Embedding model health check failed: {str(e)}"
+        error_msg = _embedding_unavailable_message(e)
         return JSONResponse(
             status_code=500,
             content={
@@ -1072,12 +1115,11 @@ async def perform_llm_health_check(
             and not await _probe_outbound_connectivity()
         ):
             return _outbound_connectivity_error_response(provider, model_name or model_string)
-        clean_msg = _extract_error_message(e)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"LLM health check failed: {clean_msg}",
+                "message": _model_setup_failed_message("chat model", provider, e),
                 "details": {
                     "provider": provider,
                     "model": model_name or model_string,
@@ -1394,12 +1436,13 @@ async def perform_embedding_health_check(
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
         logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with model {embedding_config.get('configuration', {}).get('model', '')} ({embedding_config.get('modelFriendlyName', '')}): {str(e)}", exc_info=True)
-        clean_msg = _extract_error_message(e)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"Embedding health check failed: {clean_msg}",
+                "message": _model_setup_failed_message(
+                    "embedding model", embedding_config.get("provider"), e
+                ),
                 "details": {
                     "provider": embedding_config.get("provider"),
                     "model": embedding_config.get("configuration", {}).get("model"),
@@ -1454,7 +1497,7 @@ async def perform_image_generation_health_check(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"Image generation health check failed: {_extract_error_message(e)}",
+                "message": _model_setup_failed_message("image model", provider, e),
                 "details": {
                     "provider": provider,
                     "model": model_name,
@@ -1533,7 +1576,7 @@ async def perform_image_generation_health_check(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"Image generation health check failed: {_extract_error_message(e)}",
+                "message": _model_setup_failed_message("image model", provider, e),
                 "details": {
                     "provider": provider,
                     "model": model_name,
@@ -1583,7 +1626,7 @@ async def perform_tts_health_check(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"TTS health check failed: {_extract_error_message(e)}",
+                "message": _model_setup_failed_message("speech model", provider, e),
                 "details": {
                     "provider": provider,
                     "model": model_name,
@@ -1656,7 +1699,7 @@ async def perform_tts_health_check(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"TTS health check failed: {_extract_error_message(e)}",
+                "message": _model_setup_failed_message("speech model", provider, e),
                 "details": {
                     "provider": provider,
                     "model": model_name,
@@ -1709,7 +1752,7 @@ async def perform_stt_health_check(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"STT health check failed: {_extract_error_message(e)}",
+                "message": _model_setup_failed_message("speech-to-text model", provider, e),
                 "details": {
                     "provider": provider,
                     "model": model_name,
@@ -1828,7 +1871,7 @@ async def perform_stt_health_check(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"STT health check failed: {_extract_error_message(e)}",
+                "message": _model_setup_failed_message("speech-to-text model", provider, e),
                 "details": {
                     "provider": provider,
                     "model": model_name,

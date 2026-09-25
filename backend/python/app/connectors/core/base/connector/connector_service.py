@@ -43,6 +43,15 @@ class ConnectorInitError(Exception):
     as a failure, so raising it there is safe."""
 
 
+class ConnectorSyncSkippedError(Exception):
+    """Sync could not run now. Callers log ``code`` and treat the task as
+    skipped, not crashed; nothing is persisted."""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
 class BaseConnector(ABC):
     """Base abstract class for all connectors"""
     logger: Logger
@@ -447,6 +456,39 @@ class BaseConnector(ABC):
             self.creator_email,
         )
         return self._connector_group_permission
+
+    async def register_authenticated_source_user(
+        self, email: str | None, source_user_id: str | None
+    ) -> None:
+        """Record which source account this connector is authenticated as, so the user who
+        authenticated it resolves that account's permissions for this connector instance.
+        Connectors call this at the start of ``run_sync`` with the email and id of the
+        source "me" account; the id must be the one their user sync stores as sourceUserId.
+        Never aborts the sync."""
+        if not self.created_by:
+            return
+        if not email or not source_user_id:
+            self.logger.warning(
+                "Connector %s: the authenticated source account's email or id could not be read "
+                "(email=%s, id=%s); the user who authenticated it will only see what their own "
+                "email is granted",
+                self.connector_id, email, source_user_id,
+            )
+            return
+        try:
+            app_name = (
+                self.connector_name
+                if isinstance(self.connector_name, Connectors)
+                else Connectors(self.connector_name)
+            )
+            await self.data_entities_processor.link_authenticator_to_source_user(
+                self.connector_id, self.created_by, email, source_user_id, app_name
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not link the user who authenticated connector %s to source account %s: %s",
+                self.connector_id, email, e,
+            )
 
     async def notify(
         self,

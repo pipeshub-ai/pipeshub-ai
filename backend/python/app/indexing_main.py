@@ -50,6 +50,12 @@ from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import (
+    CONNECTOR_OFF,
+    CONNECTOR_REMOVED,
+    RECOVERY_REQUEUED,
+    RECOVERY_RETRY,
+)
 
 _T = TypeVar("_T")
 
@@ -256,7 +262,7 @@ async def recover_in_progress_records(
                                     "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "processingStartedAt": None,
-                                    "reason": "Connector no longer exists",
+                                    "reason": CONNECTOR_REMOVED,
                                 },
                             )
                             results["skipped"] += 1
@@ -274,7 +280,7 @@ async def recover_in_progress_records(
                                     "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "processingStartedAt": None,
-                                    "reason": "Connector is inactive",
+                                    "reason": CONNECTOR_OFF,
                                 },
                             )
                             results["skipped"] += 1
@@ -313,7 +319,7 @@ async def recover_in_progress_records(
                         "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
                         "processingStartedAt": None,
-                        "reason": "Recovered after restart; re-queued for indexing",
+                        "reason": RECOVERY_REQUEUED,
                     }
 
                     async def publish_recovery_event() -> None:
@@ -366,10 +372,7 @@ async def recover_in_progress_records(
                                         ProgressStatus.NOT_STARTED.value,
                                     ),
                                     "processingStartedAt": 0,
-                                    "reason": (
-                                        "Stale-record recovery publish failed; "
-                                        "will retry"
-                                    ),
+                                    "reason": RECOVERY_RETRY,
                                 },
                             )
                         except Exception as restore_exc:
@@ -620,7 +623,12 @@ async def _sweep_orphaned_virtual_record_mappings(
             if not isinstance(vrid, str) or not vrid:
                 continue
             try:
-                records = await graph_provider.get_records_by_virtual_record_id(vrid)
+                # The handler below was written for this and could not fire:
+                # the read swallowed its own failure and answered [], which
+                # this loop reads as "no records reference it" and cleans up.
+                records = await graph_provider.get_records_by_virtual_record_id(
+                    vrid, raise_on_error=True
+                )
             except Exception as exc:
                 logger.warning(
                     "Could not check virtual record %s for orphaned vectors: %s",
@@ -686,22 +694,43 @@ async def _sweep_queued_records_for_inactive_connectors(
     interval is enough to be sure no worker still owns the row.
     """
     swept = 0
-    connector_active: dict[str, bool] = {}
+    # None means "could not read this pass" -- recorded so the lookup is not
+    # repeated, but never mistaken for "gone". Rebuilt on the next tick.
+    connector_active: dict[str, bool | None] = {}
     in_progress_cutoff_ms = get_epoch_timestamp_in_ms() - int(
         messaging_env.concurrency_lease_seconds * 1000
     )
 
     async def _is_inactive(connector_id: str) -> bool:
         if connector_id not in connector_active:
-            instance = await graph_provider.get_document(
-                connector_id, CollectionNames.APPS.value
-            )
-            # A missing instance counts as inactive: its records can never be
-            # indexed again.
-            connector_active[connector_id] = bool(
-                instance and instance.get("isActive", False)
-            )
-        return not connector_active[connector_id]
+            try:
+                # `raise_on_error`, because saying yes here parks the record as
+                # AUTO_INDEX_OFF. Without it an unreadable graph answers None,
+                # which is the same answer a deleted connector gives -- so a
+                # restart would take healthy records out of indexing for good,
+                # under a status that reads as somebody's deliberate setting.
+                instance = await graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                )
+            except Exception as e:
+                # Remembered as unreadable for the rest of this pass, not
+                # retried per record: on Neo4j a restart surfaces only after the
+                # 30s connection-acquisition timeout, so asking again for each
+                # of a hundred records would hold recovery for the best part of
+                # an hour while hammering the database trying to come back.
+                logger.warning(
+                    "Could not read connector %s, so leaving its records alone "
+                    "this pass rather than parking them: %s", connector_id, e
+                )
+                connector_active[connector_id] = None
+            else:
+                # A missing instance counts as inactive: its records can never
+                # be indexed again.
+                connector_active[connector_id] = bool(
+                    instance and instance.get("isActive", False)
+                )
+        # Unreadable is not inactive, so nothing is parked on a failed read.
+        return connector_active[connector_id] is False
 
     for status_value in (
         ProgressStatus.QUEUED.value,
@@ -754,7 +783,7 @@ async def _sweep_queued_records_for_inactive_connectors(
                         {
                             "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                             "processingStartedAt": None,
-                            "reason": "Connector is inactive",
+                            "reason": CONNECTOR_OFF,
                         },
                     )
                     swept += 1
@@ -816,18 +845,30 @@ async def _republish_stranded_records(
         return 0
 
     cutoff_ms = get_epoch_timestamp_in_ms() - int(after_seconds * 1000)
-    connector_active: dict[str, bool] = {}
+    # None means "could not read this pass": see the sibling sweep above.
+    connector_active: dict[str, bool | None] = {}
     republished = 0
 
     async def _is_active(connector_id: str) -> bool:
         if connector_id not in connector_active:
-            instance = await graph_provider.get_document(
-                connector_id, CollectionNames.APPS.value
-            )
-            connector_active[connector_id] = bool(
-                instance and instance.get("isActive", False)
-            )
-        return connector_active[connector_id]
+            try:
+                instance = await graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                )
+            except Exception as e:
+                # Remembered for this pass rather than retried per record, for
+                # the same reason as the sweep above.
+                logger.warning(
+                    "Could not read connector %s, so leaving its records for the "
+                    "next pass: %s", connector_id, e
+                )
+                connector_active[connector_id] = None
+            else:
+                connector_active[connector_id] = bool(
+                    instance and instance.get("isActive", False)
+                )
+        # Unreadable is not active either: the record waits for the next pass.
+        return connector_active[connector_id] is True
 
     for status_value in (
         ProgressStatus.QUEUED.value,

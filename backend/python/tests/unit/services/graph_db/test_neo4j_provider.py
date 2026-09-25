@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 
@@ -9,6 +10,9 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 def neo4j_provider() -> Neo4jProvider:
     provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
     provider.client = AsyncMock()
+    provider.get_authenticated_as = AsyncMock(return_value=[])
+    provider._resolve_acting_user_key_for_node = AsyncMock(side_effect=lambda user_key, *_: user_key)
+    provider._authenticated_as_apps = AsyncMock(return_value=[])
     return provider
 
 
@@ -293,7 +297,8 @@ class TestGetAgent:
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
                 [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
                 [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
-                  "subcategory": None, "version": "1.0.0", "status": "active"}],  # skills
+                  "subcategory": None, "version": "1.0.0", "status": "active",
+                  "deprecatedReason": None, "replacedBy": None}],  # skills
                 [],  # mcp servers projection
                 [{"share_with_org": True}],  # org share query
             ]
@@ -312,6 +317,7 @@ class TestGetAgent:
         assert result["skills"] == [{
             "name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
             "subcategory": None, "version": "1.0.0", "status": "active",
+            "deprecatedReason": None, "replacedBy": None,
         }]
         assert result["shareWithOrg"] is True
 
@@ -397,6 +403,7 @@ class TestProjectAgentSkills:
                     "name": "csv-cleaner", "description": "Cleans CSV data",
                     "category": "docs", "subcategory": None,
                     "version": "2.0.0", "status": "deprecated",
+                    "deprecatedReason": "superseded", "replacedBy": "csv-cleaner-v2",
                 },
             ]
         )
@@ -408,14 +415,19 @@ class TestProjectAgentSkills:
                 "name": "pdf-extractor", "description": "Extracts tables",
                 "category": "docs", "subcategory": "tables",
                 "version": "1.2.0", "status": "active",
+                "deprecatedReason": None, "replacedBy": None,
             },
             {
                 "name": "csv-cleaner", "description": "Cleans CSV data",
                 "category": "docs", "subcategory": None,
                 "version": "2.0.0", "status": "deprecated",
+                "deprecatedReason": "superseded", "replacedBy": "csv-cleaner-v2",
             },
         ]
         call_args = neo4j_provider.client.execute_query.await_args
+        query = call_args.args[0]
+        assert "skill.deprecatedReason AS deprecatedReason" in query
+        assert "skill.replacedBy AS replacedBy" in query
         assert call_args.kwargs["parameters"] == {"agent_id": "agent-1"}
         assert call_args.kwargs["txn_id"] == "txn-1"
 
@@ -879,6 +891,21 @@ class TestDocumentOperations:
         result = await neo4j_provider.get_document("doc1", "apps")
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_raises_when_the_caller_asks(self, neo4j_provider: Neo4jProvider):
+        """None reads as "no such document", so callers acting on that need the truth."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("db fail"))
+
+        with pytest.raises(RuntimeError, match="db fail"):
+            await neo4j_provider.get_document("doc1", "apps", raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_a_missing_document_is_still_none_when_raising(self, neo4j_provider: Neo4jProvider):
+        """Asking for failures to be raised must not turn absence into one."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        assert await neo4j_provider.get_document("missing", "apps", raise_on_error=True) is None
 
     @pytest.mark.asyncio
     async def test_get_all_documents_returns_transformed_list(self, neo4j_provider: Neo4jProvider):
@@ -1590,12 +1617,30 @@ class TestTraversalAndRecordLookups:
         mock_from_base.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_get_record_by_external_id_none_and_exception(self, neo4j_provider: Neo4jProvider):
+    async def test_get_record_by_external_id_none_and_failure(self, neo4j_provider: Neo4jProvider):
+        """None means no such record, and callers create one when told that."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         assert await neo4j_provider.get_record_by_external_id("conn-1", "ext-1") is None
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("ext fail"))
-        assert await neo4j_provider.get_record_by_external_id("conn-1", "ext-1") is None
+        with pytest.raises(GraphQueryError):
+            await neo4j_provider.get_record_by_external_id("conn-1", "ext-1")
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_will_not_rebuild_raises_the_same_way(self, neo4j_provider: Neo4jProvider):
+        """A stored record the model rejects leaves the caller as unable to answer
+        "does this exist?" as an unreachable database does, so it has to raise the
+        same error -- and on both backends, not one."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"r": {"id": "r1"}}]  # nothing else the model needs
+        )
+
+        with pytest.raises(GraphQueryError):
+            await neo4j_provider.get_record_by_external_id("conn-1", "ext-1")
 
     @pytest.mark.asyncio
     async def test_get_record_key_by_external_id(self, neo4j_provider: Neo4jProvider):
@@ -1661,12 +1706,36 @@ class TestTraversalAndRecordLookups:
         assert result == [{"typed": "file"}, {"typed": "mail"}]
 
     @pytest.mark.asyncio
-    async def test_get_records_by_status_returns_empty_on_exception(self, neo4j_provider: Neo4jProvider):
+    async def test_get_records_by_status_raises_on_query_failure(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("status2 fail"))
 
-        result = await neo4j_provider.get_records_by_status("org-1", "conn-1", ["FAILED"])
+        with pytest.raises(GraphQueryError):
+            await neo4j_provider.get_records_by_status("org-1", "conn-1", ["FAILED"])
 
-        assert result == []
+    @pytest.mark.asyncio
+    async def test_a_broken_row_is_not_reported_as_an_unreadable_listing(self, neo4j_provider: Neo4jProvider):
+        """A bug converting a row is a bug, not a database that could not be read.
+
+        Callers treat GraphQueryError as "try again later" - the rebuild turns it
+        into a 409 - which would bury a crash in our own conversion code.
+        """
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"r": object()}])
+
+        with pytest.raises(TypeError):
+            await neo4j_provider.get_records_by_status("org-1", "conn-1", ["FAILED"])
+
+    @pytest.mark.asyncio
+    async def test_record_group_lookup_raises_on_query_failure(self, neo4j_provider: Neo4jProvider):
+        """None means no such group, so a failure must not answer None.
+
+        Callers create a record group when they are told None; on a database
+        blip that quietly makes a duplicate, and the folder-scope cleanup reads
+        it as an empty bucket and marks the scope clean.
+        """
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("connection refused"))
+
+        with pytest.raises(GraphQueryError):
+            await neo4j_provider.get_record_group_by_external_id("conn-1", "bucket-a")
 
     @pytest.mark.asyncio
     async def test_get_records_by_parent_success_and_record_type_filter(self, neo4j_provider: Neo4jProvider):
@@ -2555,6 +2624,33 @@ class TestDuplicateAndSyncOperations:
         with pytest.raises(RuntimeError):
             await neo4j_provider.remove_sync_point("k1", "syncPoints")
 
+    @pytest.mark.asyncio
+    async def test_upsert_does_not_create_a_second_sync_point_when_its_read_fails(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """The read that decides insert-or-update failing must not look like
+        "no row here". Nothing makes syncPointKey unique and the CREATE sets no
+        id, so the duplicate would land, and reads that LIMIT 1 would then race
+        between two checkpoints for one key.
+
+        get_sync_point is deliberately not stubbed: the fix is the flag it is
+        called with, and a stub would answer the same either way.
+        """
+        queries: list[str] = []
+
+        async def graph_flapping(query, *_args, **_kwargs):
+            queries.append(query)
+            if "MATCH" in query:
+                raise RuntimeError("graph is restarting")
+            return []  # the write that would create the duplicate succeeds
+
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=graph_flapping)
+
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.upsert_sync_point("k1", {"cursor": "c1"}, "syncPoints")
+
+        assert not any("CREATE" in q for q in queries), queries
+
 
 class TestVirtualAccessAndRecordLookup:
     @pytest.mark.asyncio
@@ -2623,6 +2719,47 @@ class TestVirtualAccessAndRecordLookup:
     async def test_get_kb_virtual_ids_returns_empty_on_exception(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("kb fail"))
         assert await neo4j_provider._get_kb_virtual_ids("user-1", "org-1") == {}
+
+    @pytest.mark.asyncio
+    async def test_get_kb_virtual_ids_excludes_hidden_when_unfiltered(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """The 'all accessible KBs' scenario (no kb_ids) must never surface a
+        hidden KB (e.g. a project's linked file collection)."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider._get_kb_virtual_ids("user-1", "org-1", kb_ids=None)
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert query.count("coalesce(kb.isHidden, false) = false") == 2
+
+    @pytest.mark.asyncio
+    async def test_get_kb_virtual_ids_explicit_filter_skips_hidden_exclusion(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """An explicit kb_ids list (a project chat reaching its own hidden KB)
+        is honoured as-is, without the hidden predicate."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider._get_kb_virtual_ids("user-1", "org-1", kb_ids=["hidden-kb"])
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "kb.id IN $kb_ids" in query
+        assert "coalesce(kb.isHidden, false) = false" not in query
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_kb_ids_excludes_hidden_by_default(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider._get_accessible_kb_ids("user-1")
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert params["includeHidden"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_kb_ids_includes_hidden_when_flagged(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider._get_accessible_kb_ids("user-1", include_hidden=True)
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert params["includeHidden"] is True
 
     @pytest.mark.asyncio
     async def test_get_accessible_virtual_record_ids_returns_empty_when_user_missing(
@@ -2708,18 +2845,166 @@ class TestVirtualAccessAndRecordLookup:
         neo4j_provider._get_kb_virtual_ids.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_get_accessible_virtual_record_ids_no_tasks_returns_empty(
+    async def test_get_accessible_virtual_record_ids_strict_scope_empty_filters_short_circuits(
         self, neo4j_provider: Neo4jProvider
     ):
+        """strictScope with no apps/kb must never fall back to Scenario 3's
+        'search everything the user can access'."""
         neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
-        neo4j_provider._get_user_app_ids = AsyncMock(return_value=["conn-1"])  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "conn-1", "type": "google"}]
+        )
         neo4j_provider._get_virtual_ids_for_connector = AsyncMock()  # type: ignore[method-assign]
         neo4j_provider._get_kb_virtual_ids = AsyncMock()  # type: ignore[method-assign]
 
         result = await neo4j_provider.get_accessible_virtual_record_ids(
             "user-1",
             "org-1",
+            filters={"strictScope": True},
+        )
+
+        assert result == {}
+        neo4j_provider._get_virtual_ids_for_connector.assert_not_called()
+        neo4j_provider._get_kb_virtual_ids.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_strict_scope_with_filters_still_queries(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """strictScope only short-circuits an *empty* effective scope — an
+        explicit kb/apps selection (e.g. a project's own hidden KB) still runs."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "hidden-kb", "type": "KB"}]
+        )
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={"v1": "r1"})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1",
+            "org-1",
+            filters={"strictScope": True, "kb": ["hidden-kb"]},
+        )
+
+        assert result == {"v1": "r1"}
+        neo4j_provider._get_kb_virtual_ids.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_unreachable_app_is_only_offered_to_the_kb_query(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """An id that is not one of the user's connectors may still be a
+        Collection shared with them, so the KB query — which checks its own
+        permission edges — decides. It is never queried as a connector."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider._get_user_app_ids = AsyncMock(return_value=["conn-1"])  # type: ignore[method-assign]
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1",
+            "org-1",
             filters={"apps": ["not-accessible"]},
+        )
+
+        assert result == {}
+        neo4j_provider._get_virtual_ids_for_connector.assert_not_called()
+        assert neo4j_provider._get_kb_virtual_ids.await_args.args[2] == ["not-accessible"]
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_honours_a_collection_id_under_apps(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """Collection-page chat sends `apps: [collectionId], kb: []`. `apps` and
+        `kb` are one scope, so the Collection is searched rather than dropped."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "conn-1", "type": "google"}, {"id": "kb-1", "type": "KB"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={"vk": "rk"})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1", "org-1", filters={"apps": ["kb-1"], "kb": []}
+        )
+
+        assert result == {"vk": "rk"}
+        neo4j_provider._get_virtual_ids_for_connector.assert_not_called()
+        assert neo4j_provider._get_kb_virtual_ids.await_args.args[2] == ["kb-1"]
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_honours_a_connector_id_under_kb(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "conn-1", "type": "google"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock(return_value={"v1": "r1"})  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1", "org-1", filters={"kb": ["conn-1"]}
+        )
+
+        assert result == {"v1": "r1"}
+        assert neo4j_provider._get_virtual_ids_for_connector.await_args.args[2] == "conn-1"
+        # Still offered to the KB query, which matches nothing for a connector
+        # id: an id named under `kb` is only known to be a Collection by that
+        # query, so skipping it would lose a Collection whose app type could
+        # not be read.
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_agent_sentinel_alone_searches_nothing(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """Reading NO_KB_SELECTED as "no scope" would search the whole corpus."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "conn-1", "type": "google"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock(return_value={"v1": "r1"})  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1", "org-1", filters={"apps": [], "kb": ["NO_KB_SELECTED"]}
+        )
+
+        assert result == {}
+        neo4j_provider._get_virtual_ids_for_connector.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_connector_scope_runs_no_kb_query(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """Every id is a connector, so there is nothing for the KB query to find."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "conn-1", "type": "google"}, {"id": "conn-2", "type": "jira"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock(return_value={})  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock()  # type: ignore[method-assign]
+
+        await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1", "org-1", filters={"apps": ["conn-2", "conn-1"]}
+        )
+
+        neo4j_provider._get_kb_virtual_ids.assert_not_called()
+        queried = [c.args[2] for c in neo4j_provider._get_virtual_ids_for_connector.await_args_list]
+        assert queried == ["conn-2", "conn-1"], "scope order decides which copy wins"
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_bare_string_scope_is_not_iterated(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"id": "a", "type": "google"}]
+        )
+        neo4j_provider._get_virtual_ids_for_connector = AsyncMock(return_value={"v1": "r1"})  # type: ignore[method-assign]
+        neo4j_provider._get_kb_virtual_ids = AsyncMock(return_value={"v2": "r2"})  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_accessible_virtual_record_ids(
+            "user-1", "org-1", filters={"apps": "a"}
         )
 
         assert result == {}
@@ -3984,6 +4269,25 @@ class TestListUserKnowledgeBases:
         main_query = neo4j_provider.client.execute_query.call_args_list[0][0][0]
         # With new KB architecture, id field is projected (not connectorId)
         assert "id: kb.id" in main_query
+
+    @pytest.mark.asyncio
+    async def test_query_excludes_hidden_kbs(self, neo4j_provider: Neo4jProvider):
+        """Hidden KBs (e.g. a project's linked file collection) must never
+        surface in the Collections listing."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[[], [{"total": 0}], []]
+        )
+
+        await neo4j_provider.list_user_knowledge_bases(
+            "user1", "org1", skip=0, limit=10
+        )
+
+        main_query = neo4j_provider.client.execute_query.call_args_list[0][0][0]
+        count_query = neo4j_provider.client.execute_query.call_args_list[1][0][0]
+        assert main_query.count("coalesce(kb.isHidden, false) = false") == 1
+        assert main_query.count("coalesce(kb2.isHidden, false) = false") == 1
+        assert count_query.count("coalesce(kb.isHidden, false) = false") == 1
+        assert count_query.count("coalesce(kb2.isHidden, false) = false") == 1
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self, neo4j_provider: Neo4jProvider):

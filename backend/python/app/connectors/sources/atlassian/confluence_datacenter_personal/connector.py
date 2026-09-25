@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -133,6 +134,7 @@ CONTENT_V1_ATTACHMENT_EXPAND = "version,history,metadata,extensions"
     .with_description("Sync pages, spaces visible to your account into your personal workspace")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
             AuthField(
@@ -864,6 +866,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             total_synced = 0
             total_attachments_synced = 0
             total_comments_synced = 0
+            listing_complete = True
 
             if record_type == RecordType.CONFLUENCE_PAGE and space_homepage_id:
                 homepage_in_db = await self.data_entities_processor.get_record_by_external_id(
@@ -927,6 +930,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch {content_type}s: {response.status if response else 'No response'}")
+                    listing_complete = False
                     break
 
                 response_data = response.json()
@@ -1116,7 +1120,12 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
 
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
-            if total_synced > 0:
+            if not listing_complete:
+                self.logger.warning(
+                    f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
+                    "this window could be read, so the next sync reads it again"
+                )
+            elif total_synced > 0:
                 current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
                 self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")

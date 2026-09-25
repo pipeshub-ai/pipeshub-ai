@@ -25,6 +25,7 @@ import { createMarkdownComponents } from './answer-content';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import {
   extractToolsetLabel,
+  isSkillTool,
   toolActivityLabel as toolActivityLabelUtil,
 } from '../../utils/tool-display';
 
@@ -174,17 +175,22 @@ function timelineIconForStatus(status: NonNullable<MessagePart['status']>, iconN
 
 /** One consistent glyph per activity type for the rail node — Claude-style,
  * so the "thinking -> search -> thinking -> ..." order reads at a glance
- * from the icons alone, without opening any card. Search-flavored tool
- * calls (individual or grouped) get the magnifying-glass icon instead of
- * the generic status icon, mirroring how search steps read visually
- * distinct from other tool use. */
+ * from the icons alone, without opening any card. Skill tool calls
+ * (`load_skill`/`skill_search`/...) get the skill icon FIRST — checked
+ * ahead of the search heuristic below so `skill_search` reads as a skill
+ * lookup, not a web/knowledge search. Search-flavored tool calls
+ * (individual or grouped) get the magnifying-glass icon instead of the
+ * generic status icon, mirroring how search steps read visually distinct
+ * from other tool use. */
 function getTimelineIcon(item: RenderItem): TimelineIconSpec {
   if (item.kind === 'toolGroup') {
-    const allSearches = item.parts.every((p) => isSearchLike(p.toolName));
+    const allSkills = item.parts.every((p) => isSkillTool(p.toolName));
+    const allSearches = !allSkills && item.parts.every((p) => isSearchLike(p.toolName));
     const anyRunning = item.parts.some((p) => (p.status ?? 'running') === 'running');
     const anyFailed = item.parts.some((p) => p.status === 'failed');
     const status: NonNullable<MessagePart['status']> = anyRunning ? 'running' : anyFailed ? 'failed' : 'completed';
-    return timelineIconForStatus(status, allSearches ? 'travel_explore' : TOOL_STATUS_ICON[status]);
+    const iconName = allSkills ? 'auto_stories' : allSearches ? 'travel_explore' : TOOL_STATUS_ICON[status];
+    return timelineIconForStatus(status, iconName);
   }
   const { part } = item;
   switch (part.type) {
@@ -197,7 +203,12 @@ function getTimelineIcon(item: RenderItem): TimelineIconSpec {
       };
     case 'tool_call': {
       const status = part.status ?? 'running';
-      return timelineIconForStatus(status, isSearchLike(part.toolName) ? 'travel_explore' : TOOL_STATUS_ICON[status]);
+      const iconName = isSkillTool(part.toolName)
+        ? 'auto_stories'
+        : isSearchLike(part.toolName)
+          ? 'travel_explore'
+          : TOOL_STATUS_ICON[status];
+      return timelineIconForStatus(status, iconName);
     }
     case 'sub_agent':
       return timelineIconForStatus(part.status ?? 'completed', 'smart_toy');
@@ -679,7 +690,13 @@ export function ToolCallCard({ part, showIcon = true }: { part: MessagePart; sho
               )}
             </Box>
           )}
-          {(part.resultSummary || part.resultPreview) && (
+          {/* A skill tool's raw `resultPreview` is a truncated SKILL.md body
+              or bundled-file content (see `LoadSkillTool`/
+              `LoadSkillResourceTool.summarize_result`'s docstrings) — never
+              worth showing without the summary that replaces it. Chats
+              persisted before summaries existed just show nothing here
+              instead of a wall of instructions/file text. */}
+          {(part.resultSummary || (part.resultPreview && !isSkillTool(part.toolName))) && (
             <Box>
               <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
                 {status === 'failed' ? 'Error' : status === 'blocked' ? 'Blocked' : 'Result'}
@@ -712,8 +729,16 @@ export function ToolCallCard({ part, showIcon = true }: { part: MessagePart; sho
  * individual `ToolCallCard`s (which stay collapsed themselves). */
 function ToolCallGroup({ parts }: { parts: MessagePart[] }) {
   const [expanded, setExpanded] = useState(false);
-  const allSearches = parts.every((part) => isSearchLike(part.toolName));
-  const label = allSearches ? `Explored ${parts.length} searches` : `Ran ${parts.length} tools`;
+  // Skill-tool check takes precedence over the search heuristic — a burst
+  // of `skill_search`/`load_skill` calls reads as "Used N skills", not
+  // "Explored N searches" (see `getTimelineIcon`'s icon precedence above).
+  const allSkills = parts.every((part) => isSkillTool(part.toolName));
+  const allSearches = !allSkills && parts.every((part) => isSearchLike(part.toolName));
+  const label = allSkills
+    ? `Used ${parts.length} skills`
+    : allSearches
+      ? `Explored ${parts.length} searches`
+      : `Ran ${parts.length} tools`;
 
   const toolsetLabels = [...new Set(parts.map((p) => extractToolsetLabel(p.toolName)).filter(Boolean))] as string[];
   const groupToolsetLabel = toolsetLabels.length === 1 ? toolsetLabels[0] : undefined;

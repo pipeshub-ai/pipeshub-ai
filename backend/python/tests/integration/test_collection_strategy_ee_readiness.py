@@ -130,7 +130,7 @@ def _registry(vdb: FakeVectorDB) -> CollectionRegistry:
     return CollectionRegistry(
         vector_db_service=vdb,
         strategy=PerOrgStrategy(),
-        collection_config_factory=lambda size, sparse=False: CollectionConfig(
+        collection_config_factory=lambda size: CollectionConfig(
             embedding_size=size
         ),
         manifest_store=CollectionManifestStore(make_config_service(), MagicMock()),
@@ -268,7 +268,7 @@ class TestDeleteIsOrgScoped:
         graph = _graph({"vr-a": [_record("rec-a", ORG_A)]})
         pipeline = _pipeline(vdb, registry, graph)
 
-        result = await pipeline.purge_connector(
+        result = await pipeline.purge_connector_by_virtual_record_ids(
             DeleteContext(org_id=ORG_A, connector_id="conn-1"), ["vr-a"]
         )
 

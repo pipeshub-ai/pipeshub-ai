@@ -91,6 +91,7 @@ class ChatState(TypedDict):
     system_prompt: str | None  # User-defined system prompt
     instructions: str | None  # Agent-specific instructions for the LLM
     custom_instructions: str | None  # Org-level Chat Assistant / Universal Agent Mode instructions
+    project_instructions: str | None  # Author-set instructions from a linked Project (Node ProjectService)
     timezone: str | None  # User's timezone (e.g., "America/New_York")
     current_time: str | None  # Current time in user's timezone (ISO 8601)
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
@@ -464,6 +465,11 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     # Org-level Custom Instructions (Chat Assistant / Universal Agent Mode only).
     # Real Agent Builder agents leave this unset.
     custom_instructions = chat_query.get("custom_instructions")
+    # Additive per-conversation instructions from a linked Project — see
+    # ProjectService.buildContext (Node) / applyProjectContext. Rendered as
+    # its own prompt section, never merged into system_prompt/instructions,
+    # so it never touches a real Agent Builder agent's identity.
+    project_instructions = chat_query.get("projectInstructions")
     timezone = chat_query.get("timezone")
     current_time = chat_query.get("currentTime")
     output_file_path = chat_query.get("outputFilePath")
@@ -552,6 +558,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "system_prompt": system_prompt,
         "instructions": instructions,
         "custom_instructions": custom_instructions,
+        "project_instructions": project_instructions,
         "timezone": timezone,
         "current_time": current_time,
         "apps": apps,  # Extracted from knowledge connector IDs

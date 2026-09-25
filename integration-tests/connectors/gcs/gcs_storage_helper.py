@@ -9,6 +9,8 @@ from typing import List
 from google.cloud import storage as gcs_storage  # type: ignore[import-not-found]
 from google.oauth2 import service_account  # type: ignore[import-not-found]
 
+from helper.run_folder import require_run_folder
+
 
 def _iter_files(root: Path):
     for path in root.rglob("*"):
@@ -40,16 +42,16 @@ class GCSStorageHelper:
                 "GCS_SERVICE_ACCOUNT_JSON must be a valid file path or a JSON string."
             ) from e
 
-    def list_objects(self, bucket: str) -> List[str]:
+    def list_objects(self, bucket: str, prefix: str = "") -> List[str]:
         bkt = self._client.bucket(bucket)
-        return [blob.name for blob in bkt.list_blobs()]
+        return [blob.name for blob in bkt.list_blobs(prefix=prefix or None)]
 
-    def upload_directory(self, bucket: str, root: Path) -> int:
+    def upload_directory(self, bucket: str, root: Path, prefix: str = "") -> int:
         root = root.resolve()
         bkt = self._client.bucket(bucket)
         count = 0
         for file_path in _iter_files(root):
-            key = str(file_path.relative_to(root).as_posix())
+            key = prefix + str(file_path.relative_to(root).as_posix())
             blob = bkt.blob(key)
             blob.upload_from_filename(str(file_path))
             count += 1
@@ -84,7 +86,9 @@ class GCSStorageHelper:
     def move_object(self, bucket: str, old_key: str, new_key: str) -> None:
         self.rename_object(bucket, old_key, new_key)
 
-    def clear_objects(self, bucket: str) -> None:
+    def clear_objects(self, bucket: str, prefix: str) -> None:
+        """Delete everything under this run's folder, and nothing else."""
+        prefix = require_run_folder(prefix)
         bkt = self._client.bucket(bucket)
-        for blob in bkt.list_blobs():
+        for blob in bkt.list_blobs(prefix=prefix):
             blob.delete()

@@ -2,12 +2,15 @@
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 
 from app.connectors.sources.web.fetch_strategy import (
+    MAX_RATE_LIMIT_BACKOFF,
     FetchResponse,
     _BOT_DETECTION_CODES,
     _NON_RETRYABLE_CLIENT_ERRORS,
@@ -19,6 +22,7 @@ from app.connectors.sources.web.fetch_strategy import (
     build_stealth_headers,
     fetch_url_with_fallback,
 )
+from app.services.base_client import parse_retry_after
 
 
 @pytest.fixture
@@ -1054,6 +1058,95 @@ class TestFetchUrlWithFallback:
                 mock_sleep.assert_called_once_with(2)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "header",
+        ["0", "Wed, 21 Oct 2015 07:28:00 GMT"],
+        ids=["zero-seconds", "date-already-past"],
+    )
+    async def test_429_retry_after_asking_for_no_wait_still_backs_off(self, log, header):
+        """A Retry-After of 0, or a date already past, must not retry instantly."""
+        mock_session = AsyncMock()
+        rate_limited_resp = FetchResponse(
+            429, b"", {"Retry-After": header}, "https://example.com", "curl_cffi"
+        )
+        success_resp = FetchResponse(200, b"ok", {}, "https://example.com", "curl_cffi")
+
+        call_count = 0
+
+        async def mock_curl(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return rate_limited_resp if call_count <= 1 else success_resp
+
+        with patch(
+            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            side_effect=mock_curl,
+        ):
+            with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                result = await fetch_url_with_fallback(
+                    "https://example.com", mock_session, log, max_retries_per_strategy=1
+                )
+                assert result is not None
+                assert result.status_code == 200
+                # Exponential backoff, not the zero the header asked for.
+                mock_sleep.assert_called_once_with(2)
+
+    @pytest.mark.asyncio
+    async def test_429_retry_after_as_a_future_date_is_honoured(self, log):
+        """A date inside the cap is waited out, like a number of seconds would be."""
+        mock_session = AsyncMock()
+        when = datetime.now(timezone.utc) + timedelta(seconds=45)
+        rate_limited_resp = FetchResponse(
+            429, b"", {"Retry-After": format_datetime(when, usegmt=True)},
+            "https://example.com", "curl_cffi",
+        )
+        success_resp = FetchResponse(200, b"ok", {}, "https://example.com", "curl_cffi")
+
+        call_count = 0
+
+        async def mock_curl(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return rate_limited_resp if call_count <= 1 else success_resp
+
+        with patch(
+            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            side_effect=mock_curl,
+        ):
+            with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                result = await fetch_url_with_fallback(
+                    "https://example.com", mock_session, log, max_retries_per_strategy=1
+                )
+                assert result is not None
+                slept = mock_sleep.call_args[0][0]
+                assert 35 <= slept <= 50, f"waited {slept}s for a 45s date"
+
+    @pytest.mark.asyncio
+    async def test_429_retry_after_date_beyond_the_cap_is_handed_back(self, log):
+        """A date further out than the cap returns to the caller instead of sleeping."""
+        mock_session = AsyncMock()
+        when = datetime.now(timezone.utc) + timedelta(hours=1)
+        rate_limited_resp = FetchResponse(
+            429, b"", {"Retry-After": format_datetime(when, usegmt=True)},
+            "https://example.com", "curl_cffi",
+        )
+
+        with patch(
+            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            new_callable=AsyncMock,
+            return_value=rate_limited_resp,
+        ):
+            with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                result = await fetch_url_with_fallback(
+                    "https://example.com", mock_session, log, max_retries_per_strategy=1
+                )
+                assert result is not None
+                assert result.status_code == 429
+                assert result.retry_after is not None
+                assert result.retry_after > MAX_RATE_LIMIT_BACKOFF
+                mock_sleep.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_429_retry_without_retry_after_header(self, log):
         """429 without Retry-After uses exponential backoff."""
         mock_session = AsyncMock()
@@ -1567,3 +1660,37 @@ class TestConstants:
     def test_non_retryable_not_overlapping_bot(self):
         """Non-retryable codes should not be in bot detection set."""
         assert _NON_RETRYABLE_CLIENT_ERRORS.isdisjoint(_BOT_DETECTION_CODES)
+
+
+class TestParseRetryAfter:
+    """The shared Retry-After parser, as the web fetch relies on it.
+
+    Retry-After is either a number of seconds or an HTTP date (RFC 9110).
+    """
+
+    def test_seconds(self):
+        assert parse_retry_after("120") == 120.0
+        assert parse_retry_after("  30 ") == 30.0
+
+    def test_negative_seconds_read_as_now(self):
+        assert parse_retry_after("-5") == 0.0
+
+    def test_http_date_in_the_future(self):
+        when = datetime.now(timezone.utc) + timedelta(seconds=90)
+        seconds = parse_retry_after(format_datetime(when, usegmt=True))
+        assert seconds is not None
+        assert 80 <= seconds <= 95
+
+    def test_http_date_in_the_past_reads_as_now(self):
+        when = datetime.now(timezone.utc) - timedelta(hours=1)
+        assert parse_retry_after(format_datetime(when, usegmt=True)) == 0.0
+
+    def test_a_long_http_date_is_over_the_cap(self):
+        when = datetime.now(timezone.utc) + timedelta(hours=1)
+        seconds = parse_retry_after(format_datetime(when, usegmt=True))
+        assert seconds is not None and seconds > MAX_RATE_LIMIT_BACKOFF
+
+    def test_missing_or_unreadable(self):
+        assert parse_retry_after(None) is None
+        assert parse_retry_after("") is None
+        assert parse_retry_after("soon") is None

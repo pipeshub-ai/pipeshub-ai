@@ -19,6 +19,11 @@ const BASE_URL = '/api/v1/knowledgeBase';
 
 const pendingGetNodeChildren = new Map<string, Promise<KnowledgeHubApiResponse>>();
 
+/** Stops later callers sharing a request made for the previous session (sign-out). */
+export function forgetPendingNodeChildrenRequests(): void {
+  pendingGetNodeChildren.clear();
+}
+
 function getNodeChildrenCacheKey(
   nodeType: NodeType,
   nodeId: string,
@@ -179,7 +184,7 @@ export const KnowledgeHubApi = {
    * @param params - Search query, filters, sorting, pagination
    * @returns Filtered results across all sources
    */
-  async searchAllRecords(params: KnowledgeHubQueryParams) {
+  async searchAllRecords(params: KnowledgeHubQueryParams, options?: { suppressErrorToast?: boolean }) {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
       {
@@ -190,6 +195,7 @@ export const KnowledgeHubApi = {
           // Data area: Never use onlyContainers (we need all record types)
           ...params,
         },
+        ...options,
       }
     );
     return data;

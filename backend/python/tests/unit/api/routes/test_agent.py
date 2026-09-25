@@ -69,6 +69,21 @@ class TestChatQueryModel:
         q = ChatQuery(query="q", attachments=att)
         assert q.attachments == att
 
+    def test_project_instructions_defaults_to_none(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q")
+        assert q.projectInstructions is None
+
+    def test_project_instructions_accepts_value(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q", projectInstructions="Cite the Q3 report.")
+        assert q.projectInstructions == "Cite the Q3 report."
+
+    def test_project_instructions_rejects_over_max_length(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        with pytest.raises(ValidationError):
+            ChatQuery(query="q", projectInstructions="x" * 8001)
+
 
 class TestMergeEndUserServiceAccountUserInfo:
     def _creator_like(self) -> dict:
@@ -1377,6 +1392,22 @@ class TestGetUserContextExtended:
         assert ctx["userId"] == "u1"
 
 
+class TestApplyUserContextGate:
+    def test_disabled_sets_send_user_info_false(self) -> None:
+        from app.api.routes.agent import _apply_user_context_gate
+
+        info = {"userId": "u1", "sendUserInfo": True}
+        _apply_user_context_gate(info, enabled=False)
+        assert info["sendUserInfo"] is False
+
+    def test_enabled_leaves_existing_value(self) -> None:
+        from app.api.routes.agent import _apply_user_context_gate
+
+        info = {"userId": "u1", "sendUserInfo": True}
+        _apply_user_context_gate(info, enabled=True)
+        assert info["sendUserInfo"] is True
+
+
 # ---------------------------------------------------------------------------
 # _filter_knowledge_by_enabled_sources (extended)
 # ---------------------------------------------------------------------------
@@ -1986,10 +2017,10 @@ class TestCreateKnowledgeEdges:
         graph_provider = AsyncMock()
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=None)
         sources = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges(
-            "agent1", sources, "uk1", graph_provider, logging.getLogger("test")
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await _create_knowledge_edges(
+                "agent1", sources, "uk1", graph_provider, logging.getLogger("test")
+            )
 
     @pytest.mark.asyncio
     async def test_successful_creation(self) -> None:
@@ -2301,11 +2332,14 @@ class TestCloneAgentTemplate:
         from app.api.routes.agent import clone_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_template = AsyncMock(return_value={"name": "T1"})
         services["graph_provider"].clone_agent_template = AsyncMock(return_value="cloned-id")
 
         request = MagicMock()
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
             result = await clone_agent_template(request, "t1")
             assert result.status_code == 200
 
@@ -2316,11 +2350,14 @@ class TestCloneAgentTemplate:
         from app.api.routes.agent import clone_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_template = AsyncMock(return_value={"name": "T1"})
         services["graph_provider"].clone_agent_template = AsyncMock(return_value=None)
 
         request = MagicMock()
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
             with pytest.raises(HTTPException) as exc:
                 await clone_agent_template(request, "t1")
             assert exc.value.status_code == 500
@@ -3507,7 +3544,7 @@ class TestChatStream:
             body = await _drain(await chat_stream(request, "a1"))
 
         assert "RUN_ERROR" in body or "event: error" in body
-        assert "Failed to initialize LLM service" in body
+        assert "An admin can add one in Workspace" in body
 
 
 # ===========================================================================
@@ -3655,8 +3692,8 @@ class TestKnowledgeEdgeFailures2:
         from app.api.routes.agent import _create_knowledge_edges
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("fail"))
-        result = await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
 
     @pytest.mark.asyncio
     async def test_batch_create_edges_exception(self) -> None:
@@ -3664,8 +3701,8 @@ class TestKnowledgeEdgeFailures2:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(return_value=True)
         gp.batch_create_edges = AsyncMock(side_effect=Exception("fail"))
-        result = await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
-        assert len(result) == 1
+        with pytest.raises(Exception, match="fail"):
+            await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
 
 class TestAllErrorPaths:
     @pytest.mark.asyncio
@@ -3981,8 +4018,8 @@ class TestCreateKnowledgeEdgesFullCoverage:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(return_value=False)
         knowledge = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
 
     @pytest.mark.asyncio
     async def test_success(self) -> None:
@@ -4003,8 +4040,8 @@ class TestCreateKnowledgeEdgesFullCoverage:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("err"))
         knowledge = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
-        assert result == []
+        with pytest.raises(Exception, match="err"):
+            await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
 
 
 class TestServiceAccountAgentRoutes:

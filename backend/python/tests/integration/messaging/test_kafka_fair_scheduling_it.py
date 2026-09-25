@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 import pytest
 
@@ -39,6 +40,8 @@ from tests.integration.messaging.conftest import (
     committed_offsets,
     create_kafka_topic,
     delete_kafka_topic,
+    held_handler,
+    stop_mid_flight,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -314,28 +317,13 @@ class TestCrashRecoveryOnARealBroker:
         group = f"it-crash-{unique_suffix}"
         seen: list[str] = []
 
-        first_completions: list[str] = []
+        gate = threading.Event()
+        parked: list[str] = []
         consumer = _consumer(kafka_available, topic, group)
-        await consumer.start(_handler(first_completions, seen))
-        try:
-            # Interrupt partway through rather than after a clean drain.
-            deadline = asyncio.get_running_loop().time() + DRAIN_TIMEOUT_SECONDS
-            while len(seen) < total // 3:
-                if asyncio.get_running_loop().time() > deadline:
-                    raise AssertionError("consumer never made progress")
-                await asyncio.sleep(0.05)
-            # Captured before stop(): draining in-flight tasks keeps adding
-            # to `seen`, so a bound read after shutdown is a moving target.
-            first_run = len(seen)
-        finally:
-            await consumer.stop()
+        await consumer.start(held_handler(seen, total // 3, gate, parked))
+        await stop_mid_flight(consumer, gate, parked)
 
-        assert first_run > 0, "the first run never made progress"
-        if len(seen) >= total:
-            pytest.skip(
-                "the broker drained the whole backlog before shutdown, so "
-                "there is no partial state left to recover from"
-            )
+        assert len(set(seen)) < total, "the first run was meant to stop partway"
 
         consumer = _consumer(kafka_available, topic, group)
         await consumer.start(_handler([], seen))

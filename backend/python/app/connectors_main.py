@@ -21,6 +21,7 @@ from app.edition_config import (
     sharing_router,
 )
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.modules.demo_data.router import demo_data_router
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
@@ -63,6 +64,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import SOMETHING_WENT_WRONG
 
 container = ConnectorAppContainer.init("connector_service")
 
@@ -879,6 +881,7 @@ app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
+app.include_router(demo_data_router)
 app.include_router(connector_router)
 if oauth_apps_router is not None:
     app.include_router(oauth_apps_router)
@@ -896,7 +899,11 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     logger.error("Global error: %s", str(exc), exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"status": "error", "message": str(exc), "path": request.url.path},
+        content={
+            "status": "error",
+            "message": SOMETHING_WENT_WRONG,
+            "path": request.url.path,
+        },
     )
 
 

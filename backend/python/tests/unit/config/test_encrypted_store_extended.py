@@ -244,14 +244,34 @@ class TestWatchKeyDelegation:
 
     @pytest.mark.asyncio
     async def test_watch_key_delegates(self):
-        """watch_key delegates to underlying store (line 300)."""
+        """The inner store gets a callback that decrypts before the caller sees it."""
         ekv, mock_store, _ = _build_encrypted_store()
         callback = MagicMock()
         error_callback = MagicMock()
+        mock_store.watch_key = AsyncMock(return_value="w1")
+
+        assert await ekv.watch_key("/test/key", callback, error_callback) == "w1"
+        key, on_change, forwarded_error_callback = mock_store.watch_key.await_args.args
+        assert key == "/test/key"
+        assert forwarded_error_callback is error_callback
+
+        on_change('enc:{"v": 1}')
+        callback.assert_called_once_with({"v": 1})
+
+    @pytest.mark.asyncio
+    async def test_an_undecodable_value_without_error_callback_is_raised(self) -> None:
+        """With nowhere to deliver it, the error goes back to the inner store,
+        which logs it, rather than reaching the watcher as a value."""
+        ekv, mock_store, _ = _build_encrypted_store()
+        callback = MagicMock()
         mock_store.watch_key = AsyncMock()
 
-        await ekv.watch_key("/test/key", callback, error_callback)
-        mock_store.watch_key.assert_awaited_once_with("/test/key", callback, error_callback)
+        await ekv.watch_key("/test/key", callback)
+        on_change = mock_store.watch_key.await_args.args[1]
+
+        with pytest.raises(json.JSONDecodeError):
+            on_change("enc:not json")
+        callback.assert_not_called()
 
 
 # ============================================================================

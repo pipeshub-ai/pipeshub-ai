@@ -1729,10 +1729,23 @@ class TestHandleRecordUpdates:
             permissions_changed=False,
             external_record_id="ext-del-1",
         )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
-            record_id="ext-del-1"
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(connector.connector_id, "ext-del-1")
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
+
+    @pytest.mark.asyncio
+    async def test_deleted_record_never_indexed(self):
+        connector = _make_connector()
+        update = RecordUpdate(
+            record=None, is_new=False, is_updated=False, is_deleted=True,
+            metadata_changed=False, content_changed=False, permissions_changed=False,
+            external_record_id="ext-404",
         )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.on_record_deleted = AsyncMock()
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_handles_content_change(self):
@@ -6930,6 +6943,7 @@ class TestHandleRecordUpdatesRemaining:
     @pytest.mark.asyncio
     async def test_logs_and_swallows_processing_errors(self):
         connector = _make_connector()
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         connector.data_entities_processor.on_record_deleted = AsyncMock(
             side_effect=RuntimeError("delete failed"),
         )
@@ -6944,6 +6958,7 @@ class TestHandleRecordUpdatesRemaining:
             external_record_id="006000000000001AAA",
         )
         await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 class TestBuildTaskRecordRemaining:

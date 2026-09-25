@@ -162,6 +162,20 @@ _OPTIONAL_PACKAGES = [
 _MOCK_PACKAGE_NAMES.add("docling_parse")
 _mock_finder.load_module("docling_parse")
 
+# talon imports cchardet, which has no Python 3.12 build and is excluded from installs
+# ([tool.uv] in pyproject.toml). Production aliases it to chardet before importing talon
+# (gmail/talon_utils.py); without the same alias here the talon probe below fails and
+# every Gmail test silently runs against a MagicMock talon.
+try:
+    import cchardet  # noqa: F401
+except ImportError:
+    try:
+        import chardet as _chardet
+    except ImportError:
+        _chardet = None
+    if _chardet is not None:
+        sys.modules["cchardet"] = _chardet
+
 for _pkg in _OPTIONAL_PACKAGES:
     _ensure_module(_pkg)
 
@@ -248,11 +262,21 @@ def logger():
 @pytest.fixture
 def mock_graph_provider():
     """Mock IGraphDBProvider with common async methods."""
+    from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+
     provider = AsyncMock()
     provider.get_accessible_virtual_record_ids = AsyncMock(return_value={})
     provider.get_user_by_user_id = AsyncMock(return_value={"email": "test@example.com"})
     provider.get_records_by_record_ids = AsyncMock(return_value=[])
     provider.get_document = AsyncMock(return_value={})
+    # Stubbed explicitly rather than left to AsyncMock's auto-children: those
+    # return a MagicMock, whose `fallback_reason` is truthy and whose sets are
+    # empty, so the container path would take an arbitrary branch instead of an
+    # obviously-unstubbed one. A test that wants containers overrides these.
+    provider.get_accessible_containers = AsyncMock(
+        return_value=AccessibleContainers(fallback_reason="not stubbed in this test")
+    )
+    provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
     return provider
 
 

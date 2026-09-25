@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.html_parser.html_to_blocks import HtmlToBlocksConverter
 from app.modules.parsers.html_parser.url_utils import replace_relative_image_urls
+from app.modules.parsers.text_decoding import decode_text
 
 
 class SelectolaxHtmlParser:
@@ -53,10 +54,7 @@ class SelectolaxHtmlParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        if isinstance(content, bytes):
-            html_content = content.decode("utf-8")
-        else:
-            html_content = content
+        html_content = decode_text(content, html=True)
 
         html_content = html_content.strip()
 

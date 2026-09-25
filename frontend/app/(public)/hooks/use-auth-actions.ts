@@ -407,7 +407,8 @@ export function useAuthActions({
     try {
       await AuthApi.generateLoginOtp(email.trim());
       toast.success('Check your email', {
-        description: 'We sent a verification code to your inbox.',
+        description:
+          'If that email can sign in with a code, one is being sent. If nothing arrives in a few minutes, check your spam folder or try again later.',
       });
       return true;
     } catch (err: unknown) {

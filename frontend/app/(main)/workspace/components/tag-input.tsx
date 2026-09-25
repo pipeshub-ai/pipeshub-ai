@@ -29,6 +29,8 @@ interface TagInputProps {
   error?: string;
   /** When true, tags are read-only — no adding, removing, or editing */
   disabled?: boolean;
+  /** Single-line-ish field for forms that stack several tag inputs (vs. the tall email-invite box). */
+  compact?: boolean;
 }
 
 // ========================================
@@ -42,6 +44,7 @@ export function TagInput({
   validate,
   error,
   disabled = false,
+  compact = false,
 }: TagInputProps) {
   // No-op fallback when disabled or no handler provided
   const handleTagsChange = onTagsChange ?? (() => {});
@@ -201,8 +204,8 @@ export function TagInput({
           border: `${borderWidth}px solid ${borderColor}`,
           borderRadius: 'var(--radius-2)',
           padding: paddingCompensation,
-          minHeight: disabled ? undefined : 136,
-          maxHeight: disabled ? undefined : 164,
+          minHeight: disabled ? undefined : compact ? 40 : 136,
+          maxHeight: disabled ? undefined : compact ? 88 : 164,
           overflowX: 'hidden',
           overflowY: 'auto',
           cursor: disabled ? 'default' : 'text',

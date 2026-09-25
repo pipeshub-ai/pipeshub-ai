@@ -173,6 +173,7 @@ from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.mcp.service import is_mcp_enabled
+from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.image_policy import resolve_image_policy
 
 
@@ -471,14 +472,17 @@ class PipesHubAgentFactory:
                 "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
             )
 
-        # Skills subsystem (env-gated, off by default — see skills_wiring.py's
-        # module docstring for the full rollout/ordering rationale). Built
-        # and its tools registered BEFORE `plan_domain_agents()` runs below
-        # so `skill_search`/`load_skill`/`skill_manage`/... land in that
-        # call's registered-tool snapshot and fall into the residual (never
-        # domain-claimed) top-level grant.
+        # Skills subsystem, gated by two layers that must BOTH be true:
+        # `skills_enabled()` is the deployment-level env kill-switch
+        # (default ON); `is_skills_enabled()` is the org-level `ENABLE_SKILLS`
+        # platform feature flag toggled from Labs (also default ON — see
+        # skills_wiring.py's module docstring for the full rollout/ordering
+        # rationale). Built and its tools registered BEFORE
+        # `plan_domain_agents()` runs below so `skill_search`/`load_skill`/
+        # `skill_manage`/... land in that call's registered-tool snapshot and
+        # fall into the residual (never domain-claimed) top-level grant.
         skill_manager = None
-        if skills_enabled():
+        if skills_enabled() and await is_skills_enabled(context.config_service):
             _mark("f:sandbox")
             skill_manager = await build_skill_manager(context, transport_registry)
             if skill_manager is not None:

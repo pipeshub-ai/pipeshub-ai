@@ -114,6 +114,42 @@ class TestGetConfig:
         assert result == 42
 
     @pytest.mark.asyncio
+    async def test_store_exception_raises_when_asked(self):
+        """For a caller that acts on absence, "could not read the store" and
+        "the key is not set" must not be the same answer."""
+        store = AsyncMock()
+        store.get_key = AsyncMock(side_effect=RuntimeError("connection lost"))
+        svc = _build_service(store)
+
+        with pytest.raises(RuntimeError):
+            await svc.get_config("/bad/key", default={}, raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_raise_on_error_still_answers_default_for_a_missing_key(self):
+        """Only a failed read raises. A key that is simply not set is a real
+        answer, and stays the default."""
+        store = AsyncMock()
+        store.get_key = AsyncMock(return_value=None)
+        svc = _build_service(store)
+
+        with patch.object(svc, "_get_env_fallback", return_value=None):
+            result = await svc.get_config("/unset/key", default={}, raise_on_error=True)
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_raise_on_error_does_not_substitute_an_env_fallback(self):
+        """An environment fallback stands in for the stored value; answering
+        with it after a failed read would still hide the failure."""
+        store = AsyncMock()
+        store.get_key = AsyncMock(side_effect=RuntimeError("boom"))
+        svc = _build_service(store)
+
+        with patch.object(svc, "_get_env_fallback", return_value={"env": "value"}):
+            with pytest.raises(RuntimeError):
+                await svc.get_config("/services/kafka", default=None, raise_on_error=True)
+
+    @pytest.mark.asyncio
     async def test_store_exception_tries_env_fallback(self):
         """When the store raises, _get_env_fallback is tried before default."""
         store = AsyncMock()

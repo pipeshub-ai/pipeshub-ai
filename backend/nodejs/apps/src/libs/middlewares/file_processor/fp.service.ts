@@ -1,4 +1,5 @@
 import multer from 'multer';
+import { createMulter } from '../../utils/multer.utils';
 import {
   CustomMulterFile,
   FileBufferInfo,
@@ -6,7 +7,7 @@ import {
   IFileUploadService,
   RejectedFileInfo,
 } from './fp.interface';
-import { BadRequestError, NotImplementedError } from '../../errors/http.errors';
+import { BadRequestError, HttpError, NotImplementedError } from '../../errors/http.errors';
 import { NextFunction, RequestHandler, Request, Response } from 'express';
 import { FileProcessingType, FileRejectionReason } from './fp.constant';
 import { Logger } from '../../services/logger.service';
@@ -89,9 +90,9 @@ function createCappedMemoryStorage(
           // Whole-request budget blown → abort (multer fails the request).
           fail(
             new BadRequestError(
-              `Upload request exceeds the maximum total size of ${Math.round(
+              `This upload is larger than the ${Math.round(
                 maxRequestBytes / (1024 * 1024),
-              )} MB`,
+              )} MB total limit. Upload fewer files at a time.`,
             ),
           );
           return;
@@ -157,7 +158,7 @@ export class FileProcessorService implements IFileUploadService {
       ? createCappedMemoryStorage(this.configuration.maxFileSize, maxRequestBytes)
       : multer.memoryStorage();
 
-    this.multerUpload = multer({
+    this.multerUpload = createMulter({
       storage,
       limits,
       fileFilter: (_req, file, callback) => {
@@ -217,6 +218,27 @@ export class FileProcessorService implements IFileUploadService {
     return holder[REJECTED_FILES_KEY];
   }
 
+  /** What to tell the person when multer (or our storage) refuses the whole upload. */
+  uploadErrorMessage(err: { code?: string; message?: string } | null | undefined): string {
+    if (err instanceof HttpError) return err.message;
+    const mb = Math.round(this.configuration.maxFileSize / (1024 * 1024));
+    switch (err?.code) {
+      case 'LIMIT_FILE_SIZE':
+        return `One of the files is larger than the ${mb} MB limit. Remove it or make it smaller, then upload again.`;
+      case 'LIMIT_FILE_COUNT':
+        return `You can upload up to ${this.configuration.maxFilesAllowed} files at a time. Upload the rest in another batch.`;
+      case 'LIMIT_PART_COUNT':
+      case 'LIMIT_FIELD_COUNT':
+      case 'LIMIT_FIELD_KEY':
+      case 'LIMIT_FIELD_VALUE':
+        return 'This upload has too many parts. Upload fewer files at a time.';
+      case 'LIMIT_UNEXPECTED_FILE':
+        return "The files weren't sent the way this page expects. Refresh the page and try again.";
+      default:
+        return "The upload didn't complete. Check your connection and try again.";
+    }
+  }
+
   private rejectionMessage(
     reason: FileRejectionReason,
     extension: string | null,
@@ -224,14 +246,14 @@ export class FileProcessorService implements IFileUploadService {
     switch (reason) {
       case FileRejectionReason.EXCEEDS_SIZE_LIMIT: {
         const mb = Math.round(this.configuration.maxFileSize / (1024 * 1024));
-        return `File exceeds the ${mb} MB size limit`;
+        return `This file is larger than the ${mb} MB limit. Make it smaller or split it, then upload it again.`;
       }
       case FileRejectionReason.UNSUPPORTED_TYPE:
         return extension
-          ? `Unsupported file type ".${extension}"`
-          : 'Unsupported file type';
+          ? `PipesHub can't read .${extension} files. Convert it to a supported format such as PDF, DOCX or TXT and upload it again.`
+          : "PipesHub can't read this type of file. Convert it to a supported format such as PDF, DOCX or TXT and upload it again.";
       default:
-        return 'File rejected';
+        return "This file couldn't be uploaded. Try uploading it again.";
     }
   }
 
@@ -299,11 +321,7 @@ export class FileProcessorService implements IFileUploadService {
       uploadHandler(req, res, (err: any) => {
         if (err) {
           logger.error('upload middleware failed with error: ', err.message);
-          return next(
-            new BadRequestError(
-              `File upload failed: ${err.message || 'Unknown error'}`,
-            ),
-          );
+          return next(new BadRequestError(this.uploadErrorMessage(err)));
         }
 
         // Now check if files were actually uploaded

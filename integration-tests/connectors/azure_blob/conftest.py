@@ -11,6 +11,7 @@ import pytest_asyncio
 from connector_lifecycle import constructor, destructor
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol
+from helper.source_credentials import source_unavailable
 
 from connectors.azure_blob.azure_blob_storage_helper import AzureBlobStorageHelper
 
@@ -19,7 +20,10 @@ from connectors.azure_blob.azure_blob_storage_helper import AzureBlobStorageHelp
 def azure_blob_storage():
     conn_str = os.getenv("AZURE_BLOB_CONNECTION_STRING")
     if not conn_str:
-        pytest.skip("AZURE_BLOB_CONNECTION_STRING not set.")
+        source_unavailable(
+            "The Azure Blob container this suite syncs from is not configured.",
+            secrets=["AZURE_BLOB_CONNECTION_STRING"],
+        )
     return AzureBlobStorageHelper(connection_string=conn_str)
 
 

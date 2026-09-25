@@ -1220,3 +1220,304 @@ class TestEntitiesProcessorEdge:
         )
         url = proc.parent_url_generator("mybucket/folder")
         assert "s3.console.aws.amazon.com" in url
+
+
+def _folder_filter(values, exclude=False):
+    from app.connectors.core.registry.filters import Filter, FilterType, ListOperator
+
+    operator = ListOperator.NOT_IN if exclude else ListOperator.IN
+    return FilterCollection(filters=[Filter(key="folder_paths", value=values, type=FilterType.LIST, operator=operator)])
+
+
+def _in_memory_sync_points():
+    saved = {}
+    sync_points = MagicMock()
+    sync_points.saved = saved
+    sync_points.read_sync_point = AsyncMock(side_effect=lambda key: saved.get(key))
+    sync_points.update_sync_point = AsyncMock(side_effect=lambda key, data: saved.setdefault(key, {}).update(data))
+    return sync_points
+
+
+def _out_of_scope_record():
+    return MagicMock(id="r1", external_record_id="b1/other/x.pdf", mime_type="application/pdf")
+
+
+class TestFolderFilter:
+    """The "Folders" sync filter: only the chosen folders are listed and synced."""
+
+    @staticmethod
+    def _prepare(connector, objects_by_prefix):
+        prefixes = []
+
+        async def list_objects_v2(**kwargs):
+            prefixes.append(kwargs.get("Prefix"))
+            contents = objects_by_prefix.get(kwargs.get("Prefix"), [])
+            return _resp(True, {"Contents": [{"Key": k} for k in contents], "IsTruncated": False})
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_objects_v2 = list_objects_v2
+        connector.record_sync_point = _in_memory_sync_points()
+        connector._process_s3_object = AsyncMock(return_value=(None, []))
+        connector._ensure_parent_folders_exist = AsyncMock()
+        connector.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+        return prefixes
+
+    @staticmethod
+    def _processed(connector):
+        return [c.args[0]["Key"] for c in connector._process_s3_object.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_include_lists_only_the_chosen_folder(self, connector):
+        connector.sync_filters = _folder_filter(["reports"])
+        prefixes = self._prepare(connector, {"reports/": ["reports/a.pdf", "reports/2026/b.pdf"]})
+
+        await connector._sync_bucket("b1")
+
+        assert prefixes == ["reports/"]
+        assert self._processed(connector) == ["reports/a.pdf", "reports/2026/b.pdf"]
+        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once_with(
+            connector.connector_id, "b1", 500, None
+        )
+
+    @pytest.mark.asyncio
+    async def test_exclude_lists_everything_and_skips_the_folder(self, connector):
+        connector.sync_filters = _folder_filter(["tmp"], exclude=True)
+        prefixes = self._prepare(connector, {None: ["a.pdf", "tmp/cache.bin", "tmpfile.txt"]})
+
+        await connector._sync_bucket("b1")
+
+        assert prefixes == [None]
+        assert self._processed(connector) == ["a.pdf", "tmpfile.txt"]
+
+    @pytest.mark.asyncio
+    async def test_a_listing_error_still_cleans_up_but_saves_no_checkpoint(self, connector):
+        # Keys are listed by name, not time: a checkpoint after a partial listing
+        # would skip the older keys it never reached.
+        self._page_then_listing_error(connector, (MagicMock(), []))
+
+        await connector._sync_bucket("b1")
+
+        assert self._processed(connector) == ["b.pdf"]
+        saved = connector.record_sync_point.saved
+        assert not any("last_sync_time" in v for v in saved.values())
+        assert {"continuation_token": "t1"} in saved.values()
+        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_object_clears_the_resume_token(self, connector):
+        # Resuming from the token would skip page one, where the failed object is.
+        self._page_then_listing_error(connector, (None, []))
+
+        await connector._sync_bucket("b1")
+
+        assert connector.record_sync_point.saved["FILE/bucket/b1"] == {"continuation_token": None}
+
+    def _page_then_listing_error(self, connector, processed):
+        connector.sync_filters = _folder_filter(["tmp"], exclude=True)
+        self._prepare(connector, {})
+        connector._process_s3_object = AsyncMock(return_value=processed)
+        connector.data_entities_processor.on_new_records = AsyncMock()
+        pages = iter([
+            _resp(True, {
+                "Contents": [{"Key": "b.pdf", "LastModified": datetime(2026, 1, 2, tzinfo=timezone.utc)}],
+                "IsTruncated": True,
+                "NextContinuationToken": "t1",
+            }),
+            RuntimeError("network"),
+        ])
+
+        async def listing(**kwargs):
+            page = next(pages)
+            if isinstance(page, Exception):
+                raise page
+            return page
+
+        connector.data_source.list_objects_v2 = listing
+
+    @pytest.mark.asyncio
+    async def test_an_already_cleaned_scope_is_not_scanned_again(self, connector):
+        connector.sync_filters = _folder_filter(["reports"])
+        self._prepare(connector, {"reports/": []})
+
+        await connector._sync_bucket("b1")
+        await connector._sync_bucket("b1")
+
+        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_cleanup_is_retried_next_sync(self, connector):
+        connector.sync_filters = _folder_filter(["reports"])
+        self._prepare(connector, {"reports/": []})
+        processor = connector.data_entities_processor
+        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a: [_out_of_scope_record()])
+        processor.on_record_deleted = AsyncMock(side_effect=[Exception("graph down"), None])
+
+        await connector._sync_bucket("b1")
+        await connector._sync_bucket("b1")
+        await connector._sync_bucket("b1")
+
+        assert processor.on_record_deleted.await_count == 2
+        assert processor.get_records_in_record_group.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_changed_scope_is_cleaned_again(self, connector):
+        self._prepare(connector, {"reports/": [], "docs/": []})
+        connector.sync_filters = _folder_filter(["reports"])
+        await connector._sync_bucket("b1")
+        connector.sync_filters = _folder_filter(["docs"])
+        await connector._sync_bucket("b1")
+
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_filter_syncs_everything_and_removes_nothing(self, connector):
+        connector.sync_filters = FilterCollection()
+        prefixes = self._prepare(connector, {None: ["a.pdf"]})
+
+        await connector._sync_bucket("b1")
+
+        assert prefixes == [None]
+        connector.data_entities_processor.get_records_in_record_group.assert_not_awaited()
+
+
+_JAN = [datetime(2026, 1, day, tzinfo=timezone.utc) for day in (1, 2, 3)]
+
+
+def _ms(moment):
+    return int(moment.timestamp() * 1000)
+
+
+def _extension_filter(extensions):
+    from app.connectors.core.registry.filters import Filter, FilterType, ListOperator
+
+    return FilterCollection(
+        filters=[Filter(key="file_extensions", value=extensions, type=FilterType.LIST, operator=ListOperator.IN)]
+    )
+
+
+class TestFailedObjectCheckpoint:
+    """An object that fails to process holds the checkpoint back, so the next sync retries it."""
+
+    @staticmethod
+    def _prepare(connector, objects, failing=(), raising=()):
+        async def list_objects_v2(**kwargs):
+            contents = [{"Key": key, **({"LastModified": at} if at else {})} for key, at in objects]
+            return _resp(True, {"Contents": contents, "IsTruncated": False})
+
+        async def process(obj, bucket_name):
+            if obj["Key"] in raising:
+                raise RuntimeError("boom")
+            return (None, []) if obj["Key"] in failing else (MagicMock(), [])
+
+        connector.sync_filters = FilterCollection()
+        connector.data_source = MagicMock()
+        connector.data_source.list_objects_v2 = list_objects_v2
+        connector.record_sync_point = _in_memory_sync_points()
+        connector._ensure_parent_folders_exist = AsyncMock()
+        connector._process_s3_object = AsyncMock(side_effect=process)
+        connector.data_entities_processor.on_new_records = AsyncMock()
+
+    @staticmethod
+    def _saved_time(connector):
+        return connector.record_sync_point.saved.get("FILE/bucket/b1", {}).get("last_sync_time")
+
+    @staticmethod
+    async def _sync(connector):
+        from app.connectors.core.registry.folder_scope import FolderScope
+
+        await connector._sync_bucket_prefix("b1", "", FolderScope())
+
+    @pytest.mark.asyncio
+    async def test_a_failed_object_holds_the_checkpoint_before_it(self, connector):
+        self._prepare(connector, [("a.pdf", _JAN[0]), ("b.pdf", _JAN[1]), ("c.pdf", _JAN[2])], failing={"b.pdf"})
+
+        await self._sync(connector)
+
+        assert self._saved_time(connector) == _ms(_JAN[1]) - 1
+
+    @pytest.mark.asyncio
+    async def test_an_object_that_raises_holds_the_checkpoint_too(self, connector):
+        self._prepare(connector, [("a.pdf", _JAN[0]), ("b.pdf", _JAN[1]), ("c.pdf", _JAN[2])], raising={"b.pdf"})
+
+        await self._sync(connector)
+
+        assert self._saved_time(connector) == _ms(_JAN[1]) - 1
+
+    @pytest.mark.asyncio
+    async def test_the_next_sync_retries_it_and_then_advances(self, connector):
+        objects = [("a.pdf", _JAN[0]), ("b.pdf", _JAN[1]), ("c.pdf", _JAN[2])]
+        self._prepare(connector, objects, failing={"b.pdf"})
+        await self._sync(connector)
+        saved = connector.record_sync_point
+
+        self._prepare(connector, objects)
+        connector.record_sync_point = saved
+        await self._sync(connector)
+
+        retried = [c.args[0]["Key"] for c in connector._process_s3_object.await_args_list]
+        assert retried == ["b.pdf", "c.pdf"]
+        assert self._saved_time(connector) == _ms(_JAN[2])
+
+    @pytest.mark.asyncio
+    async def test_a_filtered_out_object_does_not_hold_the_checkpoint(self, connector):
+        self._prepare(connector, [("a.pdf", _JAN[0]), ("b.txt", _JAN[1]), ("c.pdf", _JAN[2])])
+        connector.sync_filters = _extension_filter(["pdf"])
+
+        await self._sync(connector)
+
+        assert self._saved_time(connector) == _ms(_JAN[2])
+
+    @pytest.mark.asyncio
+    async def test_a_failure_with_no_time_does_not_hold_the_checkpoint(self, connector):
+        # An object with no time passes the date cutoff every run, so it is retried anyway.
+        self._prepare(connector, [("a.pdf", _JAN[0]), ("b.pdf", None)], failing={"b.pdf"})
+
+        await self._sync(connector)
+
+        assert self._saved_time(connector) == _ms(_JAN[0])
+
+    @pytest.mark.asyncio
+    async def test_an_old_failed_folder_does_not_rewind_the_checkpoint(self, connector):
+        self._prepare(connector, [("dir/", _JAN[0])], failing={"dir/"})
+        connector.record_sync_point.saved["FILE/bucket/b1"] = {"last_sync_time": _ms(_JAN[2])}
+
+        await self._sync(connector)
+
+        assert [c.args[0]["Key"] for c in connector._process_s3_object.await_args_list] == ["dir/"]
+        assert self._saved_time(connector) == _ms(_JAN[2])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing", [{"b.pdf"}, set()])
+    async def test_a_failed_final_save_clears_the_token_and_fails_the_sync(self, connector, failing):
+        # The unsaved records sit on pages the resume token would skip.
+        self._prepare(connector, [], failing=failing)
+        connector.batch_size = 100
+        pages = iter([
+            _resp(True, {
+                "Contents": [{"Key": k, "LastModified": at} for k, at in zip(("a.pdf", "b.pdf", "c.pdf"), _JAN)],
+                "IsTruncated": True,
+                "NextContinuationToken": "t1",
+            }),
+            _resp(True, {"Contents": [], "IsTruncated": False}),
+        ])
+
+        async def listing(**kwargs):
+            return next(pages)
+
+        connector.data_source.list_objects_v2 = listing
+        connector.data_entities_processor.on_new_records = AsyncMock(side_effect=RuntimeError("db"))
+
+        with pytest.raises(RuntimeError, match="db"):
+            await self._sync(connector)
+
+        assert connector.record_sync_point.saved["FILE/bucket/b1"] == {"continuation_token": None}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_token_clear_does_not_hide_the_save_error(self, connector):
+        self._prepare(connector, [("a.pdf", _JAN[0])])
+        connector.batch_size = 100
+        connector.data_entities_processor.on_new_records = AsyncMock(side_effect=RuntimeError("db"))
+        connector.record_sync_point.update_sync_point = AsyncMock(side_effect=OSError("kv down"))
+
+        with pytest.raises(RuntimeError, match="db"):
+            await self._sync(connector)

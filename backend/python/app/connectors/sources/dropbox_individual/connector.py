@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 # Base connector and service imports
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -165,6 +166,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
     .with_description("Sync files and folders from Dropbox Personal account")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Dropbox Personal",
@@ -972,9 +974,12 @@ class DropboxIndividualConnector(BaseConnector):
         """Handle different types of record updates (new, updated, deleted)."""
         try:
             if record_update.is_deleted:
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
+                # The update carries the source's id; records are deleted by their key.
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
                 )
+                if existing_record:
+                    await self.data_entities_processor.on_record_deleted(record_id=existing_record.id)
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
             elif record_update.is_updated:

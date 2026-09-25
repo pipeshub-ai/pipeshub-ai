@@ -93,3 +93,17 @@ export const ALL_ROLE_OPTIONS: RoleOptionDef[] = [
 export const INVITE_ROLE_OPTIONS: RoleOptionDef[] = ALL_ROLE_OPTIONS.filter(
   (r) => r.value !== USER_ROLES.GUEST
 );
+
+export const MAX_ORG_ADMINS_API_MESSAGE =
+  'An organization can have at most 5 admins.';
+
+export function isMaxOrgAdminsErrorMessage(message: string | undefined): boolean {
+  if (!message) return false;
+  return (
+    message === MAX_ORG_ADMINS_API_MESSAGE ||
+    message.includes('already 5 admins') ||
+    message.includes('at most 5 admins') ||
+    message.includes('would exceed the limit of 5 admins') ||
+    message.includes('maximum of 5 admins')
+  );
+}

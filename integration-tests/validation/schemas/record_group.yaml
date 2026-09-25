@@ -43,6 +43,9 @@ fields:
   parent_record_group_id:
     required: false
     type: string
+  permission_model:
+    required: false
+    type: string
   short_name:
     required: false
     type: string

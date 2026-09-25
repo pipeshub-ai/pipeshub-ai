@@ -760,55 +760,49 @@ class TestOnEventEdgeCases:
 
 
 class TestEpubDispatch:
-    """EPUB must be converted to PDF then routed through the identical PDF
-    decision logic used for native PDFs — never through PyMuPDF/fitz."""
+    """EPUB is read by the processor's EPUB reader, never converted to PDF."""
 
+    @pytest.mark.parametrize(
+        ("extension", "mime_type"),
+        [(ExtensionTypes.EPUB.value, "unknown"), ("unknown", MimeTypes.EPUB.value)],
+    )
     @pytest.mark.asyncio
-    async def test_epub_converts_then_routes_to_docling_by_default(self):
+    async def test_epub_routes_to_the_epub_processor(self, extension: str, mime_type: str) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
-        processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_epub_document = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
-             patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
-             patch(
-                 "app.events.events.convert_with_libreoffice",
-                 new_callable=AsyncMock,
-                 return_value=b"pdf bytes",
-             ) as mock_convert:
+             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
             event_data = _make_event_payload(
-                extension=ExtensionTypes.EPUB.value, record_name="book.epub"
+                extension=extension, mime_type=mime_type, record_name="book.epub"
             )
             events = await _drain(ep.on_event(event_data))
 
-        mock_convert.assert_called_once_with(b"hello", "epub", "pdf")
-        processor.process_pdf_with_docling.assert_called_once()
-        assert processor.process_pdf_with_docling.call_args.kwargs["recordName"] == "book.pdf"
-        assert processor.process_pdf_with_docling.call_args.kwargs["pdf_binary"] == b"pdf bytes"
+        processor.process_epub_document.assert_called_once()
+        kwargs = processor.process_epub_document.call_args.kwargs
+        assert kwargs["epub_binary"] == b"hello"
+        assert kwargs["recordName"] == "book.epub"
+        processor.process_pdf_with_docling.assert_not_called()
+        processor.process_pdf_document_with_ocr.assert_not_called()
+        spawn.assert_not_called()
         assert len(events) == 3
 
     @pytest.mark.asyncio
-    async def test_libreoffice_conversion_failure_bubbles_up(self):
-        """A LibreOffice failure (e.g. missing binary, corrupt EPUB) surfaces
-        as an indexing error rather than being silently swallowed."""
+    async def test_an_epub_failure_bubbles_up(self) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
+        processor.process_epub_document = MagicMock(side_effect=RuntimeError("book could not be read"))
+
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch(
-                 "app.events.events.convert_with_libreoffice",
-                 new_callable=AsyncMock,
-                 side_effect=RuntimeError("LibreOffice is not installed"),
-             ):
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.EPUB.value)
-            with pytest.raises(RuntimeError, match="LibreOffice is not installed"):
+            with pytest.raises(RuntimeError, match="book could not be read"):
                 await _drain(ep.on_event(event_data))
 
         processor.process_pdf_with_docling.assert_not_called()
-        processor.process_pdf_document_with_ocr.assert_not_called()
 
 
 # ===========================================================================
@@ -1509,6 +1503,38 @@ class TestOnEventEarlyReturns:
         ]
 
     @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_not_drained_as_a_deletion(self):
+        """The graph being unreachable must not read as "this record is gone".
+
+        Draining is permanent: the message is acknowledged and the record sits
+        at QUEUED until the stranded sweep republishes it an hour later. During
+        a graph restart every record in flight took that path.
+        """
+        ep, _logger, _, gp = _make_event_processor()
+
+        async def unreachable_graph(*_args, raise_on_error: bool = False, **_kwargs):
+            # What both providers do: swallow and answer None unless asked not to.
+            # A double that raised either way would pass without the fix.
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return None
+
+        gp.get_document.side_effect = unreachable_graph
+
+        with pytest.raises(RuntimeError):
+            await _drain(ep.on_event(_make_event_payload()))
+
+    @pytest.mark.asyncio
+    async def test_the_record_lookup_asks_for_failures_to_be_raised(self):
+        """`raise_on_error` is what makes the None above mean "deleted"."""
+        ep, _logger, _, gp = _make_event_processor()
+        gp.get_document.return_value = None
+
+        await _drain(ep.on_event(_make_event_payload()))
+
+        assert gp.get_document.await_args.kwargs.get("raise_on_error") is True
+
+    @pytest.mark.asyncio
     async def test_no_buffer_proceeds_with_none_content(self):
         """None buffer proceeds (no early return), duplicate check runs with None content."""
         ep, logger, processor, gp = _make_event_processor()
@@ -1546,6 +1572,41 @@ class TestOnEventDuplicate:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_skip_invalidates_accessible_records_cache(self):
+        """When dedup skips indexing, the accessible-records cache must still
+        be invalidated so the newly attached record is searchable immediately.
+
+        Without this, a KB file re-uploaded with identical content (matched by
+        MD5 to an existing record) would be marked COMPLETED but invisible to
+        search until the cache TTL expires.
+        """
+        ep, _, _, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "FILE",
+            "connectorName": "KB",
+            "connectorId": "hidden-kb-1",
+            "orgId": "org-1",
+        }
+
+        with patch.object(
+            ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+            return_value=DedupDecision(virtual_record_id=None, skip_indexing=True),
+        ), patch(
+            "app.events.events.notify_record_indexed", new_callable=AsyncMock,
+        ) as mock_notify:
+            event_data = _make_event_payload(
+                connector_name="KB",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        mock_notify.assert_awaited_once()
+        call_kwargs = mock_notify.call_args[1]
+        assert call_kwargs["connector_name"] == "KB"
+        assert call_kwargs["connector_id"] == "hidden-kb-1"
+        assert call_kwargs["org_id"] == "org-1"
 
     @pytest.mark.asyncio
     async def test_check_duplicate_in_progress_handling(self):

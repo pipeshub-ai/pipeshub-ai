@@ -112,7 +112,7 @@ class CollectionRegistry:
         self,
         vector_db_service: IVectorDBService,
         strategy: CollectionStrategy,
-        collection_config_factory: Callable[[int, bool], CollectionConfig],
+        collection_config_factory: Callable[[int], CollectionConfig],
         manifest_store: CollectionManifestStore,
         logger,
         liveness_probe: LivenessProbe | None = None,
@@ -128,6 +128,9 @@ class CollectionRegistry:
         # no other reason to know what the provider supports.
         self._max_collections_advisory = max_collections_advisory
         self._existence = _ExistenceCache()
+        # Collections whose lexical scoring this process has already brought up
+        # to date, so the write path asks the vector DB once, not every TTL.
+        self._lexically_reconciled: set[str] = set()
 
     @property
     def strategy(self) -> CollectionStrategy:
@@ -157,7 +160,7 @@ class CollectionRegistry:
     # ------------------------------------------------------------------
 
     async def list_managed_collections(
-        self, *, fresh: bool = False
+        self, *, fresh: bool = False, strict: bool = False
     ) -> list[ManagedCollection]:
         """Every collection this registry manages.
 
@@ -168,17 +171,28 @@ class CollectionRegistry:
 
         Pass ``fresh=True`` from anything that drops or recreates collections:
         acting on a stale view there destroys data.
+
+        Pass ``strict=True`` from a delete path. Adoption failing and the
+        deployment genuinely having no collections both end in an empty list,
+        and a delete has to tell them apart: one is a no-op to be acked, the
+        other must be retried. ``strict`` re-raises instead of degrading.
         """
-        managed = await self._manifest_store.list(fresh=fresh)
+        # strict reaches the manifest read too, not only the adoption probe:
+        # the manifest lives in the KV store, whose reads answer a failure as
+        # "empty", so an unreadable store would otherwise reach callers as a
+        # deployment with nothing in it.
+        managed = await self._manifest_store.list(fresh=fresh, strict=strict)
         if managed:
             return managed
         try:
             await self._adopt_untracked_collections()
         except Exception as e:
+            if strict:
+                raise
             # Enumeration must not become a hard dependency on vector DB
             # reachability; callers degrade to "nothing managed".
             self._logger.warning("Could not probe for untracked collections: %s", e)
-        return await self._manifest_store.list(fresh=True)
+        return await self._manifest_store.list(fresh=True, strict=strict)
 
     async def _adopt_untracked_collections(self) -> None:
         """Bring pre-manifest collections under management, once.
@@ -228,20 +242,16 @@ class CollectionRegistry:
     # Write-path lifecycle
     # ------------------------------------------------------------------
 
-    def build_collection_config(
-        self, embedding_size: int, sparse_idf: bool = False
-    ) -> CollectionConfig:
+    def build_collection_config(self, embedding_size: int) -> CollectionConfig:
         """The exact config this registry creates collections with.
 
         Public so a caller that reconciles an existing collection toward the
         managed layout describes the same target the registry would create,
         instead of assembling a second, drifting copy of it.
         """
-        return self._collection_config_factory(embedding_size, sparse_idf)
+        return self._collection_config_factory(embedding_size)
 
-    async def ensure_collection(
-        self, ctx: RecordContext, embedding_size: int, sparse_idf: bool = False
-    ) -> str:
+    async def ensure_collection(self, ctx: RecordContext, embedding_size: int) -> str:
         """Resolve ``ctx`` to a collection name, creating it on first use.
 
         Byte-identical to the pre-strategy behaviour under
@@ -256,13 +266,18 @@ class CollectionRegistry:
         if existing_dim is not None:
             self._assert_dimension(name, existing_dim, embedding_size)
             await self._ensure_payload_indexes(name)
-            self._existence.mark(name, dimension=existing_dim)
+            await self._reconcile_lexical(name, existing_dim)
+            # Manifest first, cache second: a record() that raises leaves the
+            # name unmarked, so the retry re-enters here and records it. Marked
+            # first, the retry would hit matches_dimension above and store
+            # points in a collection the manifest does not list.
             await self._record_in_manifest(name, ctx, embedding_size)
+            self._existence.mark(name, dimension=existing_dim)
             return name
 
         await self._warn_if_over_advisory_ceiling(name)
 
-        config = self._collection_config_factory(embedding_size, sparse_idf)
+        config = self._collection_config_factory(embedding_size)
         try:
             await self._vector_db_service.create_collection(
                 collection_name=name, config=config
@@ -283,9 +298,11 @@ class CollectionRegistry:
             if concurrent_dim is not None:
                 self._assert_dimension(name, concurrent_dim, embedding_size)
             await self._ensure_payload_indexes(name)
+            await self._reconcile_lexical(name, embedding_size)
 
-        self._existence.mark(name, dimension=embedding_size)
+        # Manifest first, for the same reason as the branch above.
         await self._record_in_manifest(name, ctx, embedding_size)
+        self._existence.mark(name, dimension=embedding_size)
         return name
 
     def _assert_dimension(self, name: str, existing: int, required: int) -> None:
@@ -361,6 +378,40 @@ class CollectionRegistry:
                 self._logger.warning(
                     "Failed to create payload index %s on %s: %s", field_name, name, e
                 )
+
+    async def reconcile_lexical_scoring(self) -> list[str]:
+        """Bring every managed collection's keyword scoring up to date.
+
+        Meant for service startup, so a deployment that is only serving search
+        (no new writes reaching ``ensure_collection``) is fixed too. Returns
+        the collections that changed; one that fails is logged and skipped.
+        """
+        managed = await self.list_managed_collections(fresh=True)
+        return [
+            entry.name
+            for entry in managed
+            if await self._reconcile_lexical(entry.name, entry.embedding_dimension)
+        ]
+
+    async def _reconcile_lexical(self, name: str, dimension: int) -> bool:
+        """Reconcile one collection at most once per process; never raises.
+
+        A collection that cannot be checked keeps serving with the scoring it
+        has, and is retried the next time it is seen.
+        """
+        if name in self._lexically_reconciled:
+            return False
+        try:
+            changed = await self._vector_db_service.reconcile_lexical_scoring(
+                collection_name=name, config=self.build_collection_config(dimension)
+            )
+        except Exception as e:
+            self._logger.warning(
+                "Could not reconcile keyword scoring on '%s': %s", name, e
+            )
+            return False
+        self._lexically_reconciled.add(name)
+        return changed is not None
 
     def invalidate(self, name: str) -> None:
         """Force the next resolution for ``name`` to re-check the vector DB.
@@ -494,9 +545,7 @@ class CollectionRegistry:
     # Model-change rebuild
     # ------------------------------------------------------------------
 
-    async def recreate_all_collections(
-        self, records_dimension: int, sparse_idf: bool = False
-    ) -> list[str]:
+    async def recreate_all_collections(self, records_dimension: int) -> list[str]:
         """Drop and recreate every managed collection for a new embedding model.
 
         Used by the ``deleteVectorCollection`` rebuild flow. Recreates each
@@ -527,10 +576,9 @@ class CollectionRegistry:
             await self._drop(entry.name)
             await self._vector_db_service.create_collection(
                 collection_name=entry.name,
-                config=self._collection_config_factory(dimension, sparse_idf),
+                config=self._collection_config_factory(dimension),
             )
             await self._ensure_payload_indexes(entry.name)
-            self._existence.mark(entry.name, dimension=dimension)
             await self._manifest_store.record(
                 ManagedCollection(
                     name=entry.name,
@@ -540,6 +588,8 @@ class CollectionRegistry:
                     embedding_model=entry.embedding_model,
                 )
             )
+            # Marked only once the manifest holds it, as in ensure_collection.
+            self._existence.mark(entry.name, dimension=dimension)
             recreated.append(entry.name)
         return recreated
 

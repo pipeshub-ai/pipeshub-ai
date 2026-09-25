@@ -1,7 +1,8 @@
 """OpenSearch vector database provider.
 
 Fully async — uses AsyncOpenSearch everywhere.
-Hybrid search: BM25 ``match`` (text_query) + k-NN dense, fused via
+Hybrid search: BM25 ``multi_match`` over exact and English-stemmed
+``page_content`` (text_query) + k-NN dense, fused via
 OpenSearch RRF ``score-ranker-processor`` pipeline (requires OpenSearch >= 2.19).
 
 Key design decisions
@@ -52,9 +53,15 @@ from typing import Any, Dict, List, Optional, Union
 
 from opensearchpy import AsyncOpenSearch  # type: ignore
 from opensearchpy import helpers as os_helpers
+from opensearchpy.exceptions import NotFoundError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -75,7 +82,13 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 from app.services.vector_db.opensearch.config import OpenSearchConfig
-from app.services.vector_db.opensearch.utils import OpenSearchUtils
+from app.services.vector_db.opensearch.utils import (
+    PAGE_CONTENT_FIELD,
+    PAGE_CONTENT_MAPPING,
+    STEMMED_PAGE_CONTENT_FIELD,
+    STEMMED_SUBFIELD,
+    OpenSearchUtils,
+)
 from app.utils.logger import create_logger
 
 logger = create_logger("opensearch_service")
@@ -105,6 +118,22 @@ _DEFAULT_SEGMENTS_PER_TIER = 4
 _DEFAULT_MAX_CONCURRENT_SEARCHES = 8
 _DEFAULT_CONFIDENCE_INTERVAL = 0.99
 _DEFAULT_RRF_RANK_CONSTANT = 60
+
+# Progress of the stemmed-field backfill, kept in the index's own ``_meta`` so
+# every replica reads the same state: {"task": <id>} while it runs, {"done":
+# true} once it succeeded.
+_STEMMED_BACKFILL_META_KEY = "pipeshub_stemmed_backfill"
+# The backfill rewrites every older document; throttling keeps it from
+# competing with live indexing and search for I/O.
+_STEMMED_BACKFILL_DOCS_PER_SECOND = 500
+_MISSING_STEMMED_QUERY: Dict[str, Any] = {
+    "bool": {"must_not": {"exists": {"field": STEMMED_PAGE_CONTENT_FIELD}}}
+}
+
+
+def _has_stemmed_page_content(mappings: Dict[str, Any]) -> bool:
+    page_content = (mappings.get("properties") or {}).get(PAGE_CONTENT_FIELD) or {}
+    return STEMMED_SUBFIELD in (page_content.get("fields") or {})
 
 
 class OpenSearchService(IVectorDBService):
@@ -409,12 +438,13 @@ class OpenSearchService(IVectorDBService):
                                 "parameters": hnsw_params,
                             },
                         },
-                        "page_content": {"type": "text"},
+                        PAGE_CONTENT_FIELD: PAGE_CONTENT_MAPPING,
                         # Sortable stand-in for _id so scroll can page with
                         # search_after; _id itself requires fielddata.
                         "point_id": {"type": "keyword"},
                         "connectorIds": {"type": "keyword"},
                         "recordGroupIds": {"type": "keyword"},
+                        "rootRecordGroupIds": {"type": "keyword"},
                         # Keep explicit keyword declarations for the two most-used
                         # filter fields so the mapping is readable without introspection.
                         "metadata": {
@@ -477,6 +507,102 @@ class OpenSearchService(IVectorDBService):
             body=pipeline_body,
         )
         logger.info(f"Created RRF pipeline '{pipeline_name}' (rank_constant={rank_constant})")
+
+    async def reconcile_lexical_scoring(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Add the English-stemmed ``page_content`` sub-field to an older index.
+
+        A new sub-field is a mapping change only: documents written from now on
+        carry it and nothing stored is touched. Documents indexed before it are
+        filled in by ``reconcile_storage_layout``, which rewrites them and so
+        stays behind the operator's opt-in.
+        """
+        await self._assert_connected()
+        if _has_stemmed_page_content(await self._index_mappings(collection_name)):
+            return None
+        await self.client.indices.put_mapping(  # type: ignore
+            index=collection_name,
+            body={"properties": {PAGE_CONTENT_FIELD: PAGE_CONTENT_MAPPING}},
+        )
+        logger.info(f"Added {STEMMED_PAGE_CONTENT_FIELD} to OpenSearch index '{collection_name}'")
+        return STEMMED_PAGE_CONTENT_FIELD
+
+    async def reconcile_storage_layout(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Backfill the stemmed sub-field on documents indexed before it existed.
+
+        Runs as one throttled background ``_update_by_query`` per index. Each
+        call advances it one step: start the task, wait while it runs, then
+        record success, or forget a failed or lost task so the next call
+        retries it. Only documents still missing the field are rewritten.
+        """
+        await self._assert_connected()
+        mappings = await self._index_mappings(collection_name)
+        if not _has_stemmed_page_content(mappings):
+            return None
+
+        meta = dict(mappings.get("_meta") or {})
+        state = meta.get(_STEMMED_BACKFILL_META_KEY) or {}
+        if state.get("done"):
+            return None
+
+        task_id = state.get("task")
+        if task_id:
+            try:
+                task = await self.client.tasks.get(task_id=task_id)  # type: ignore
+            except NotFoundError:
+                task = {"completed": True, "error": "task not found"}
+            if not task.get("completed"):
+                return None
+            failed = task.get("error") or (task.get("response") or {}).get("failures")
+            if failed:
+                logger.warning(
+                    f"Stemmed-field backfill on '{collection_name}' did not finish "
+                    f"({failed}); it will be retried"
+                )
+            await self._set_stemmed_backfill_state(
+                collection_name, meta, {} if failed else {"done": True}
+            )
+            return None
+
+        response = await self.client.update_by_query(  # type: ignore
+            index=collection_name,
+            body={"query": _MISSING_STEMMED_QUERY},
+            params={
+                "conflicts": "proceed",
+                "wait_for_completion": "false",
+                "requests_per_second": _STEMMED_BACKFILL_DOCS_PER_SECOND,
+                "slices": "auto",
+            },
+        )
+        await self._set_stemmed_backfill_state(
+            collection_name, meta, {"task": response["task"]}
+        )
+        logger.info(
+            f"Started {STEMMED_PAGE_CONTENT_FIELD} backfill on '{collection_name}' "
+            f"(task {response['task']})"
+        )
+        return f"{STEMMED_PAGE_CONTENT_FIELD}.backfill"
+
+    async def _index_mappings(self, collection_name: str) -> Dict[str, Any]:
+        response = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
+        index_body = response.get(collection_name) or next(iter(response.values()), {})
+        return index_body.get("mappings") or {}
+
+    async def _set_stemmed_backfill_state(
+        self, collection_name: str, meta: Dict[str, Any], state: Dict[str, Any]
+    ) -> None:
+        # ``_meta`` is replaced wholesale on update, so keep whatever else is in it.
+        await self.client.indices.put_mapping(  # type: ignore
+            index=collection_name,
+            body={"_meta": {**meta, _STEMMED_BACKFILL_META_KEY: state}},
+        )
 
     async def get_collections(self) -> object:
         await self._assert_connected()
@@ -583,6 +709,7 @@ class OpenSearchService(IVectorDBService):
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
+        max_values: Optional[Dict[str, int]] = None,
         **kwargs: FilterValue,
     ) -> FilterExpression:
         from app.services.vector_db.filters import build_filter_expression
@@ -593,6 +720,7 @@ class OpenSearchService(IVectorDBService):
             should=should,
             must_not=must_not,
             min_should_match=min_should_match,
+            max_values=max_values,
             extra_kwargs=kwargs or None,
             build_conditions=OpenSearchUtils.build_conditions,
         )
@@ -607,19 +735,28 @@ class OpenSearchService(IVectorDBService):
         scroll_filter: FilterExpression,
         limit: int,
         offset: Optional[str] = None,
+        with_payload: Optional[List[str]] = None,
     ) -> ScrollResult:
         """Scroll a page of points.
 
         ``offset`` is the opaque cursor returned in ``ScrollResult.next_offset``
         from the previous call.  It is the OpenSearch ``search_after`` value
         serialised as a JSON string.  Pass ``None`` for the first page.
+
+        ``with_payload`` maps to ``_source`` includes, so a caller that needs
+        two fields does not transfer every chunk's text.
         """
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(scroll_filter)
+        source: Dict[str, Any] = (
+            {"includes": list(with_payload)}
+            if with_payload
+            else {"exclude": ["dense_embedding"]}
+        )
         body: Dict[str, Any] = {
             "query": bool_query,
             "size": min(limit, 10000),
-            "_source": {"exclude": ["dense_embedding"]},
+            "_source": source,
             "sort": [{"point_id": "asc"}],
         }
 
@@ -639,8 +776,15 @@ class OpenSearchService(IVectorDBService):
                 payload={
                     "metadata": hit.get("_source", {}).get("metadata", {}),
                     "page_content": hit.get("_source", {}).get("page_content", ""),
-                    "connectorIds": list(hit.get("_source", {}).get("connectorIds") or []),
-                    "recordGroupIds": list(hit.get("_source", {}).get("recordGroupIds") or []),
+                    CONNECTOR_IDS_FIELD: list(
+                        hit.get("_source", {}).get(CONNECTOR_IDS_FIELD) or []
+                    ),
+                    RECORD_GROUP_IDS_FIELD: list(
+                        hit.get("_source", {}).get(RECORD_GROUP_IDS_FIELD) or []
+                    ),
+                    ROOT_RECORD_GROUP_IDS_FIELD: list(
+                        hit.get("_source", {}).get(ROOT_RECORD_GROUP_IDS_FIELD) or []
+                    ),
                 },
             )
             for hit in hits
@@ -777,20 +921,32 @@ class OpenSearchService(IVectorDBService):
         self,
         collection_name: str,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
                 "delete_points called with an empty filter — this would wipe the entire "
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        if not filter.has_positive_match():
+            raise ValueError(
+                "delete_points called with only array-length conditions — a point "
+                "whose field is absent satisfies those too, so this would delete "
+                "most of the index. Pair it with a value match (e.g. connectorIds)."
+            )
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(filter)
+        # Opt-in only: the index runs a 30s refresh_interval on purpose, and
+        # forcing a refresh per call creates a Lucene segment per call. The
+        # connector cleanup asks for it because it re-reads the matched set to
+        # decide when it is done; per-record deletes must not.
         await self.client.delete_by_query(  # type: ignore
             index=collection_name,
             body={"query": bool_query},
             conflicts="proceed",
             slices="auto",
             wait_for_completion=True,
+            refresh=refresh,
         )
         logger.info(f"Deleted points from OpenSearch index '{collection_name}'")
 
@@ -799,6 +955,7 @@ class OpenSearchService(IVectorDBService):
         collection_name: str,
         payload: dict,
         points: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         """Update fields in matched documents via a Painless script.
 
@@ -837,6 +994,8 @@ class OpenSearchService(IVectorDBService):
             # current arrays. Default "abort" would fail the whole update for the
             # rest of the matched documents over a doc that is already correct.
             conflicts="proceed",
+            # Opt-in, same reason as delete_points.
+            refresh=refresh,
             body={
                 "query": bool_query,
                 "script": {
@@ -852,13 +1011,14 @@ class OpenSearchService(IVectorDBService):
         collection_name: str,
         payload: dict,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
                 "set_payload called with an empty filter — this would update the entire "
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
-        await self.overwrite_payload(collection_name, payload, filter)
+        await self.overwrite_payload(collection_name, payload, filter, refresh=refresh)
 
     # ------------------------------------------------------------------
     # Performance utilities
@@ -894,6 +1054,9 @@ class OpenSearchService(IVectorDBService):
             max_num_segments=max_segments,
             request_timeout=600,
         )
+        # Searches keep reading the pre-merge segments until the next refresh,
+        # up to the index's 30s refresh_interval, so publish the merge now.
+        await self.client.indices.refresh(index=collection_name)  # type: ignore
         logger.info(
             f"Force-merged '{collection_name}' to {max_segments} segment(s)"
         )

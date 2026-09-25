@@ -74,7 +74,7 @@ class ConfigurationService:
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    async def get_config(self, key: str, default: str | int | float | bool | dict | list | None = None, use_cache: bool = False) -> str | int | float | bool | dict | list | None:
+    async def get_config(self, key: str, default: str | int | float | bool | dict | list | None = None, use_cache: bool = False, *, raise_on_error: bool = False) -> str | int | float | bool | dict | list | None:
         """Get configuration value with LRU cache and environment variable fallback.
 
         `use_cache=True` is safe for org-level config: writes from any process
@@ -82,6 +82,11 @@ class ConfigurationService:
         owns most of these blobs — publishes to the same channel with the same
         key string (`keyValueStore.service.ts::publishCacheInvalidation`). Do
         NOT cache credential paths whose tokens are refreshed out of band.
+
+        `raise_on_error=True` re-raises a store failure instead of answering
+        `default`. By default "could not read the store" and "the key is not
+        set" give the same answer, which is wrong for a caller that acts on
+        absence -- a delete that reads an empty list as "nothing to delete".
         """
         try:
             # Check cache first
@@ -89,7 +94,13 @@ class ConfigurationService:
                 self.logger.debug("📦 Cache hit for key: %s", key)
                 return self.cache[key]
 
-            value = await self.store.get_key(key)
+            # Only passed when set, so the default call is unchanged for every
+            # store and test double; the encrypted stores swallow a failed read
+            # into None unless asked, which reads here as a missing key.
+            if raise_on_error:
+                value = await self.store.get_key(key, raise_on_error=True)
+            else:
+                value = await self.store.get_key(key)
             if value is None:
                 # Try environment variable fallback for specific services
                 env_fallback = self._get_env_fallback(key)
@@ -104,6 +115,8 @@ class ConfigurationService:
             return value
         except Exception as e:
             self.logger.error("❌ Failed to get config %s: %s", key, str(e))
+            if raise_on_error:
+                raise
             # Try environment variable fallback on error
             env_fallback = self._get_env_fallback(key)
             if env_fallback is not None:

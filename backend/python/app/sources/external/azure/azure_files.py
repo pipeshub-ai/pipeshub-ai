@@ -135,8 +135,11 @@ class AzureFilesDataSource:
             directory_client = share_client.get_directory_client(directory_path)
 
             items: List[Dict[str, Any]] = []
+            # Without "timestamps" and "Etag" the service returns only name,
+            # size and FileId, so every item's last_modified and etag are None.
             async for item in directory_client.list_directories_and_files(
-                name_starts_with=name_starts_with
+                name_starts_with=name_starts_with,
+                include=["timestamps", "Etag"],
             ):
                 content_settings = getattr(item, "content_settings", None)
                 item_info = {
@@ -144,6 +147,8 @@ class AzureFilesDataSource:
                     "is_directory": item.is_directory,
                     "size": getattr(item, "size", None),
                     "last_modified": getattr(item, "last_modified", None),
+                    "last_write_time": getattr(item, "last_write_time", None),
+                    "creation_time": getattr(item, "creation_time", None),
                     "etag": getattr(item, "etag", None),
                     "content_length": getattr(item, "content_length", None),
                     "file_id": getattr(item, "file_id", None),
@@ -203,6 +208,7 @@ class AzureFilesDataSource:
                 if properties.content_settings
                 else None,
                 "etag": properties.etag,
+                "file_id": getattr(properties, "file_id", None),
                 "last_modified": properties.last_modified,
                 "creation_time": properties.creation_time,
                 "last_write_time": properties.last_write_time,
@@ -245,6 +251,7 @@ class AzureFilesDataSource:
                 "name": properties.name,
                 "path": directory_path,
                 "etag": properties.etag,
+                "file_id": getattr(properties, "file_id", None),
                 "last_modified": properties.last_modified,
                 "creation_time": properties.creation_time,
                 "last_write_time": properties.last_write_time,

@@ -69,6 +69,9 @@ describe('notification/notification-recipient.resolver', () => {
         orgId,
         role: 'admin',
         isDeleted: { $ne: true },
+        // "Notify the administrators" means people. A service account has no
+        // mailbox and nobody reads its notifications.
+        kind: { $ne: 'service' },
       });
     });
 

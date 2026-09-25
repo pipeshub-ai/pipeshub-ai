@@ -16,6 +16,7 @@ import re
 import pytest
 
 from app.modules.agents.context.source_catalog import (
+    DEMO_SOURCE_NOTE,
     SourceCatalog,
     SourceKind,
 )
@@ -343,3 +344,45 @@ class TestRenderEmbedsRoutingGuidance:
         catalog = _catalog_from_knowledge([_make_app_entry("Jira", "jira", JIRA_ID)])
         rendered = catalog.render()
         assert "Multiple connectors of the same type" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Demo data note
+# ---------------------------------------------------------------------------
+
+DEMO_ID = "aabbccdd-7777-7777-7777-aabbccdd0007"
+
+
+class TestDemoSourceNote:
+    """The sample data describes Acme Corp, whatever the workspace's organization is called.
+
+    The prompt names the workspace's organization, and a model can decline to
+    answer from records about a differently named company.
+    """
+
+    def test_agent_route_explains_the_demo_source(self) -> None:
+        cat = _catalog_from_knowledge([
+            _make_app_entry("Acme Corp demo data: GitHub, Jira, Slack, Google Drive and ServiceNow", "Demo", DEMO_ID),
+            _make_app_entry("Engineering Jira", "JIRA", JIRA_ID),
+        ])
+        text = cat.render()
+        assert DEMO_SOURCE_NOTE in text
+        assert text.count(DEMO_SOURCE_NOTE) == 1
+
+    def test_chat_route_explains_it_too(self) -> None:
+        cat = SourceCatalog.from_state({"available_connectors": [{"type": "Demo"}, {"type": "SLACK"}]})
+        assert DEMO_SOURCE_NOTE in cat.render()
+
+    def test_no_note_without_the_demo(self) -> None:
+        cat = _catalog_from_knowledge([_make_app_entry("Engineering Jira", "JIRA", JIRA_ID)])
+        assert "Acme Corp" not in cat.render()
+
+    def test_only_demo_records_are_acme_corps(self) -> None:
+        # Asked about Acme Corp, a model labelled the user's own uploaded policy as Acme's.
+        assert "Only records from the Demo source are Acme Corp's" in DEMO_SOURCE_NOTE
+        assert "never call a record from any other source" in DEMO_SOURCE_NOTE
+
+    def test_the_note_sits_with_the_sources_not_in_place_of_them(self) -> None:
+        cat = _catalog_from_knowledge([_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID)])
+        text = cat.render()
+        assert text.index(DEMO_ID) < text.index(DEMO_SOURCE_NOTE)

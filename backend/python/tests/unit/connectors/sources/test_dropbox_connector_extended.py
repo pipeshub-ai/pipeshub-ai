@@ -333,8 +333,10 @@ class TestHandleRecordUpdates:
         update.record.record_name = "deleted"
         update.is_new = False
         update.is_updated = False
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await c._handle_record_updates(update)
-        c.data_entities_processor.on_record_deleted.assert_called_once()
+        c.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(c.connector_id, "ext-1")
+        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
     @pytest.mark.asyncio
     async def test_new_record(self):
@@ -397,6 +399,7 @@ class TestHandleRecordUpdates:
     @pytest.mark.asyncio
     async def test_error_handling(self):
         c = _make_connector()
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         c.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("fail"))
         update = MagicMock()
         update.is_deleted = True
@@ -407,6 +410,7 @@ class TestHandleRecordUpdates:
         update.is_updated = False
         # Should not raise
         await c._handle_record_updates(update)
+        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ===========================================================================

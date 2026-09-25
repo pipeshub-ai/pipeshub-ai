@@ -5,6 +5,7 @@ import { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import { EncryptionService } from '../../../libs/encryptor/encryptor'
 import { ScopeValidatorService } from './scope.validator.service'
+import { OAuthTokenService } from './oauth_token.service'
 import {
   OAuthApp,
   IOAuthApp,
@@ -16,6 +17,7 @@ import {
   InvalidRedirectUriError,
 } from '../../../libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../libs/errors/http.errors'
+import { Users } from '../../user_management/schema/users.schema'
 import {
   CreateOAuthAppRequest,
   UpdateOAuthAppRequest,
@@ -26,7 +28,9 @@ import {
 } from '../types/oauth.types'
 import {
   ALLOWED_CUSTOM_REDIRECT_URIS,
+  FIRST_PARTY_DEVICE_CLIENT_ID,
   PAT_APP_CLIENT_ID_PREFIX,
+  SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
 } from '../constants/constants'
 
 const CLIENT_SECRET_LENGTH = 32
@@ -38,6 +42,8 @@ export class OAuthAppService {
     @inject('EncryptionService') private encryptionService: EncryptionService,
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
+    @inject('OAuthTokenService')
+    private oauthTokenService: OAuthTokenService,
   ) {}
 
   /**
@@ -45,16 +51,23 @@ export class OAuthAppService {
    * Matches compound index `{ orgId, createdBy, isDeleted, createdAt }` on `OAuthApp` for list queries.
    *
    * Excludes the per-org synthetic PAT app (`pat-system:<orgId>`, see
-   * {@link PatService}) — it's an internal pseudo-client, not something
-   * its creator should be able to view, edit, suspend, delete, or pull a
-   * working secret for through this CRUD surface.
+   * {@link PatService}) and the instance-wide first-party device app
+   * (`pipeshub-agent`) — internal clients, not something their creator
+   * should be able to view, edit, suspend, delete, or pull a working
+   * secret for through this CRUD surface.
    */
   private buildAppFilter(orgId: string, userId: string): Record<string, unknown> {
     return {
       orgId: new Types.ObjectId(orgId),
       isDeleted: false,
       createdBy: new Types.ObjectId(userId),
-      clientId: { $not: new RegExp(`^${PAT_APP_CLIENT_ID_PREFIX}`) },
+      clientId: {
+        $nin: [FIRST_PARTY_DEVICE_CLIENT_ID],
+        $not: new RegExp(
+          `^(?:${PAT_APP_CLIENT_ID_PREFIX}|${SERVICE_TOKEN_APP_CLIENT_ID_PREFIX})`,
+        ),
+      },
+      isDynamic: { $ne: true },
     }
   }
 
@@ -111,6 +124,172 @@ export class OAuthAppService {
       clientId,
       orgId,
       name: data.name,
+    })
+
+    return {
+      ...this.toAppResponse(app),
+      clientSecret,
+    }
+  }
+
+  /**
+   * Point an app's `client_credentials` tokens at a service account, or put
+   * them back to acting as the app's creator.
+   *
+   * This is the way out of the problem the grant has: without it, a token
+   * minted from an app acts as whoever created that app, carrying their
+   * document access and their role, and stops working when they leave. Aimed
+   * at a service account instead, it acts as an identity that exists for the
+   * job, holds only what someone granted it, and survives any one person
+   * leaving.
+   *
+   * Takes effect for tokens already issued, because the middleware reads this
+   * field per request rather than trusting what the token was minted with. A
+   * change that waited for every outstanding token to expire would not stop
+   * those tokens acting as a person, which is the entire point of making it.
+   *
+   * The app's `createdBy` is untouched: that is who manages the app, and it
+   * is what Developer Settings filters on. Moving it would leave the app
+   * visible to nobody, since no person can sign in as a service account.
+   */
+  async setTokenIdentity(
+    appId: string,
+    orgId: string,
+    userId: string,
+    serviceAccountId: string | null,
+  ): Promise<OAuthAppResponse> {
+    if (!Types.ObjectId.isValid(appId)) {
+      throw new NotFoundError('OAuth app not found')
+    }
+    const app = await OAuthApp.findOne({
+      _id: new Types.ObjectId(appId),
+      ...this.buildAppFilter(orgId, userId),
+    })
+    if (!app) {
+      throw new NotFoundError('OAuth app not found')
+    }
+
+    // Captured before anything is changed, so a failed revocation can put it
+    // back rather than restoring the value it was just set to.
+    const previousIdentity = app.tokenIdentityUserId
+
+    if (serviceAccountId === null) {
+      app.tokenIdentityUserId = undefined
+    } else {
+      if (!Types.ObjectId.isValid(serviceAccountId)) {
+        throw new NotFoundError('Service account not found')
+      }
+      // `kind` is part of the query, so a colleague's user id cannot be used
+      // here to make an app's tokens act as them.
+      const serviceAccount = await Users.findOne({
+        _id: serviceAccountId,
+        orgId,
+        kind: 'service',
+        isDeleted: false,
+      })
+        .select('isDisabled')
+        .lean()
+        .exec()
+
+      if (!serviceAccount) {
+        throw new NotFoundError('Service account not found')
+      }
+      if (serviceAccount.isDisabled === true) {
+        throw new BadRequestError(
+          'That service account is disabled. Enable it before pointing an application at it.',
+        )
+      }
+      app.tokenIdentityUserId = new Types.ObjectId(serviceAccountId)
+    }
+
+    await app.save()
+
+    // Every token this app has already issued was minted carrying the old
+    // identity, and that claim is what the Python services read to decide
+    // whose documents a request may reach. Leaving them alive would mean the
+    // application went on acting as the previous identity until they expired
+    // — the very situation an administrator makes this change to end.
+    //
+    // It is also the honest reading of what just happened: the application is
+    // no longer the same principal, so its credentials should not be either.
+    // Whatever uses it needs a new token.
+    try {
+      await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
+    } catch (error) {
+      // The new identity is already committed, and every outstanding token
+      // still carries the old one. Putting the identity back leaves the
+      // application as it was rather than half-changed, and the caller is
+      // told the change did not happen.
+      app.tokenIdentityUserId = previousIdentity
+      await app.save()
+      throw error
+    }
+
+    this.logger.info('OAuth app token identity changed', {
+      appId,
+      orgId,
+      changedBy: userId,
+      serviceAccountId,
+    })
+    return this.toAppResponse(app)
+  }
+
+  /**
+   * RFC 7591 Dynamic Client Registration.
+   * Never accepts `client_credentials`. The grant carries no identity of
+   * its own, so AuthMiddleware resolves its tokens to the app's
+   * `createdBy` — they act as the person who registered the client, with
+   * that person's documents and role. That is not an identity a client
+   * registered dynamically, without review, should be able to obtain.
+   */
+  async createDynamicClient(params: {
+    orgId: string
+    createdBy: string
+    name: string
+    redirectUris: string[]
+    allowedGrantTypes: OAuthGrantType[]
+    allowedScopes: string[]
+    isConfidential: boolean
+    homepageUrl?: string
+    privacyPolicyUrl?: string
+    termsOfServiceUrl?: string
+    logoUrl?: string
+  }): Promise<OAuthAppWithSecret> {
+    if (params.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS)) {
+      throw new BadRequestError(
+        'client_credentials is not allowed for dynamically registered clients',
+      )
+    }
+    this.validateGrantTypes(params.allowedGrantTypes)
+    this.validateDcrRedirectUris(params.redirectUris)
+
+    const clientId = randomUUID()
+    const clientSecret = this.generateClientSecret()
+    const clientSecretEncrypted = this.encryptionService.encrypt(clientSecret)
+
+    const app = await OAuthApp.create({
+      clientId,
+      clientSecretEncrypted,
+      name: params.name,
+      orgId: new Types.ObjectId(params.orgId),
+      createdBy: new Types.ObjectId(params.createdBy),
+      redirectUris: params.redirectUris,
+      allowedGrantTypes: params.allowedGrantTypes,
+      allowedScopes: params.allowedScopes,
+      homepageUrl: params.homepageUrl,
+      privacyPolicyUrl: params.privacyPolicyUrl,
+      termsOfServiceUrl: params.termsOfServiceUrl,
+      logoUrl: params.logoUrl,
+      isConfidential: params.isConfidential,
+      isDynamic: true,
+      accessTokenLifetime: 3600,
+      refreshTokenLifetime: 2592000,
+    })
+
+    this.logger.info('Dynamically registered OAuth client', {
+      clientId,
+      orgId: params.orgId,
+      isConfidential: params.isConfidential,
     })
 
     return {
@@ -486,6 +665,40 @@ export class OAuthAppService {
       } catch (error) {
         if (error instanceof InvalidRedirectUriError) throw error
         throw new InvalidRedirectUriError(`Invalid redirect URI: ${uri}`)
+      }
+    }
+  }
+
+  /**
+   * DCR redirect URIs: HTTPS, loopback HTTP, or private-use schemes (RFC 8252).
+   * `javascript:` / `data:` / `file:` / `vbscript:` are rejected.
+   */
+  validateDcrRedirectUris(uris: string[]): void {
+    const blocked = new Set(['javascript:', 'data:', 'file:', 'vbscript:'])
+    for (const uri of uris) {
+      let parsed: URL
+      try {
+        parsed = new URL(uri)
+      } catch {
+        throw new InvalidRedirectUriError(`Invalid redirect URI: ${uri}`)
+      }
+      if (parsed.hash) {
+        throw new InvalidRedirectUriError(
+          `Redirect URI must not contain a fragment: ${uri}`,
+        )
+      }
+      if (blocked.has(parsed.protocol)) {
+        throw new InvalidRedirectUriError(
+          `Redirect URI scheme is not allowed: ${uri}`,
+        )
+      }
+      if (parsed.protocol === 'http:') {
+        const host = parsed.hostname.toLowerCase()
+        if (host !== 'localhost' && host !== '127.0.0.1' && host !== '[::1]' && host !== '::1') {
+          throw new InvalidRedirectUriError(
+            `http redirect URIs are only allowed on loopback: ${uri}`,
+          )
+        }
       }
     }
   }

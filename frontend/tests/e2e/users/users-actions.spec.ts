@@ -1,47 +1,46 @@
 import { test, expect } from '../fixtures/base.fixture';
+import { getRows, waitForTableLoaded } from '../helpers/entity-table.helper';
 
 test.describe('Users Actions', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/workspace/users/');
-    await page.waitForTimeout(3_000);
+    // The logged-in admin is always a user, so an empty table is a failure, not a skip.
+    await waitForTableLoaded(page, 15_000);
   });
 
   test('clicking a row opens user detail', async ({ page }) => {
-    const rows = page.locator('[role="row"]');
-    const rowCount = await rows.count();
-    if (rowCount === 0) {
-      test.skip();
-      return;
-    }
+    await getRows(page).first().click();
 
-    await rows.first().click();
-    await page.waitForTimeout(1_000);
-
-    // Detail panel or URL change should happen
-    const urlChanged = page.url().includes('panel=detail') || page.url().includes('userId=');
-    const panelVisible = await page.locator('[data-side-panel], [role="complementary"]')
-      .first().isVisible().catch(() => false);
-
-    expect(urlChanged || panelVisible).toBeTruthy();
+    await expect
+      .poll(
+        async () =>
+          page.url().includes('panel=detail') ||
+          page.url().includes('userId=') ||
+          (await page
+            .locator('[data-side-panel], [role="complementary"]')
+            .first()
+            .isVisible()
+            .catch(() => false)),
+        { timeout: 5_000 },
+      )
+      .toBe(true);
   });
 
-  test('row hover shows action menu', async ({ page }) => {
-    const rows = page.locator('[role="row"]');
-    const rowCount = await rows.count();
-    if (rowCount === 0) {
-      test.skip();
-      return;
-    }
+  test('row hover shows the actions menu, which opens', async ({ page }) => {
+    const row = getRows(page).first();
+    await row.hover();
 
-    await rows.first().hover();
-    await page.waitForTimeout(300);
-
-    // Look for action buttons (more_vert icon or similar)
-    const actionIcon = rows.first().locator('span.material-icons-outlined').filter({
-      hasText: /more_vert|more_horiz/,
+    const actionsButton = row
+      .locator('button')
+      .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'more_horiz' }) })
+      .first();
+    await expect(actionsButton, 'each user row should offer an actions menu').toBeVisible({
+      timeout: 5_000,
     });
-    const hasActions = await actionIcon.first().isVisible().catch(() => false);
-    // Actions may or may not be visible depending on implementation
-    expect(true).toBeTruthy();
+
+    await actionsButton.click();
+    await expect(page.locator('[data-radix-popper-content-wrapper]').first()).toBeVisible({
+      timeout: 5_000,
+    });
   });
 });

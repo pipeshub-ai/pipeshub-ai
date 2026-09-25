@@ -44,10 +44,8 @@ import type {
   Breadcrumb,
 } from './types';
 import {
-  categorizeNodes,
   effectiveHasChildrenAfterSidebarExpand,
-  mergeChildrenIntoTree,
-  categorizeNode,
+  mergeChildrenIntoSections,
   buildConnectorAppSidebarTree,
   treeHasNodeWithId,
 } from './utils/tree-builder';
@@ -76,6 +74,15 @@ import { createSizeBatches } from './utils/batch-files';
 import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import {
+  loadRootAppListFirstPage,
+  restoreOpenFoldersInSidebar,
+  showCollectionsInSidebar,
+} from './utils/root-app-list';
+import { openFolderChildren, storeChildrenList } from './utils/folder-children';
+import { kbSessionToken } from './utils/kb-session';
+// Registers the sign-out reset for the knowledge base's cached state.
+import './utils/sidebar-session';
+import {
   getPrimaryReindexMenuLabelKey,
   getReindexLoadingTitle,
   getReindexNodeFromHubItem,
@@ -102,7 +109,7 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
-import { ErrorType, isProcessedError } from '@/lib/api/api-error';
+import { ErrorType, getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
 import { useUserPermission } from '@/config';
 
 function KnowledgeBasePageContent() {
@@ -133,7 +140,6 @@ function KnowledgeBasePageContent() {
     categorizedNodes,
     addNodes,
     setCategorizedNodes,
-    cacheNodeChildren,
     clearNodeCacheEntries,
     purgeDeletedIdsFromSidebarChildrenCaches,
     tableData,
@@ -505,29 +511,7 @@ function KnowledgeBasePageContent() {
     async function fetchAppNodesAllRecords() {
       try {
         setLoadingFlatCollections(true);
-        const response = await KnowledgeHubApi.getNavigationNodes({
-          page: 1,
-          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-          include: 'counts',
-          sortBy: 'updatedAt',
-          sortOrder: 'desc',
-        });
-
-        // Filter to app-type nodes only (root can return other node types)
-        const appItems = response.items.filter((n) => n.nodeType === 'app');
-        const kbApps = appItems.filter((n) => isKbCollectionsHubApp(n));
-        const connectorApps = appItems.filter((n) => !isKbCollectionsHubApp(n));
-        setAppNodes([...kbApps, ...connectorApps]);
-
-        const p = response.pagination;
-        setAppRootListPagination(
-          p
-            ? {
-                hasNext: p.hasNext,
-                nextPage: p.hasNext ? p.page + 1 : p.page,
-              }
-            : null
-        );
+        await loadRootAppListFirstPage();
       } catch (error) {
         console.error('Error fetching app nodes:', error);
         toast.error('Failed to load sidebar', {
@@ -541,27 +525,7 @@ function KnowledgeBasePageContent() {
     async function fetchAppNodesCollections() {
       try {
         setLoadingFlatCollections(true);
-        const response = await KnowledgeHubApi.getNavigationNodes({
-          page: 1,
-          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-          include: 'counts',
-          sortBy: 'updatedAt',
-          sortOrder: 'desc',
-        });
-        const appItems = response.items.filter((n) => n.nodeType === 'app');
-        const kbApps = appItems.filter((n) => isKbCollectionsHubApp(n));
-        const connectorApps = appItems.filter((n) => !isKbCollectionsHubApp(n));
-        setAppNodes([...kbApps, ...connectorApps]);
-
-        const p = response.pagination;
-        setAppRootListPagination(
-          p
-            ? {
-                hasNext: p.hasNext,
-                nextPage: p.hasNext ? p.page + 1 : p.page,
-              }
-            : null
-        );
+        await loadRootAppListFirstPage();
       } catch (error) {
         console.error('Error fetching KB app nodes:', error);
         toast.error('Failed to load Collections', {
@@ -591,16 +555,15 @@ function KnowledgeBasePageContent() {
   useEffect(() => {
     if (appNodes.length === 0 || isAllRecordsMode) return;
 
-    const { setNodes, setCategorizedNodes } = useKnowledgeBaseStore.getState();
     const kbApps = appNodes.filter((n) => isKbCollectionsHubApp(n));
     if (kbApps.length > 0) {
-      setNodes(kbApps);
-      setCategorizedNodes(categorizeNodes(kbApps, null));
+      showCollectionsInSidebar(kbApps);
     }
   }, [appNodes, isAllRecordsMode]);
 
   // All Records mode: Fetch table data (reusable callback)
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {
+    const stillSignedIn = kbSessionToken();
     try {
       setIsLoadingAllRecordsTable(true);
       setAllRecordsTableError(null);
@@ -633,6 +596,7 @@ function KnowledgeBasePageContent() {
         // Root level - fetch all records
         data = await KnowledgeHubApi.getAllRootItems(params);
       }
+      if (!stillSignedIn()) return;
       setAllRecordsTableData(data);
       // Sync derived pagination metadata (totalItems, totalPages, hasNext, hasPrev)
       // without overwriting user-controlled page/limit to avoid triggering effect loops
@@ -640,10 +604,11 @@ function KnowledgeBasePageContent() {
         syncAllRecordsPaginationMeta(data.pagination);
       }
     } catch (error) {
+      if (!stillSignedIn()) return;
       console.error('Error fetching all records:', error);
       setAllRecordsTableError('Failed to load records');
     } finally {
-      setIsLoadingAllRecordsTable(false);
+      if (stillSignedIn()) setIsLoadingAllRecordsTable(false);
     }
   }, [
     // filter/sort are read from getState() inside the function to avoid stale closure on initial load.
@@ -740,6 +705,7 @@ function KnowledgeBasePageContent() {
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
     async (nodeType: string, nodeId: string) => {
+      const stillSignedIn = kbSessionToken();
       setIsLoadingTableData(true);
       setTableDataError(null);
 
@@ -775,6 +741,7 @@ function KnowledgeBasePageContent() {
           params,
           { suppressErrorToast: suppressNotFoundToast }
         );
+        if (!stillSignedIn()) return;
 
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
@@ -805,102 +772,39 @@ function KnowledgeBasePageContent() {
             // Set the current folder to the target nodeId so sidebar highlights it
             setCurrentFolderId(nodeId);
 
-            // Expand the KB in the sidebar tree (exclusive: collapse sibling KBs)
-            expandFolderExclusive(kbBreadcrumb.id);
-
+            // Open the collection and each folder down to the target in the
+            // sidebar. Each list is read far enough to show the next folder on
+            // the path, so the path never breaks at a folder past page one.
             const kbNodeType = (kbTreeNode?.nodeType ?? kbBreadcrumb.nodeType ?? 'kb') as NodeType;
-
-            // Check if KB children are already cached
-            if (!freshState.nodeChildrenCache.has(kbBreadcrumb.id)) {
-              // Fetch KB children to populate sidebar
-              try {
-                const kbChildren = await KnowledgeHubApi.getNodeChildren(kbNodeType, kbBreadcrumb.id, {
-                  onlyContainers: true,
-                  page: 1,
-                  limit: 50,
-                });
-                const kbEffectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(
-                  kbChildren.items,
-                );
-
-                cacheNodeChildren(kbBreadcrumb.id, kbChildren.items);
-                addNodes(kbChildren.items);
-
-                // Update categorized tree with fresh state
-                const latestState = useKnowledgeBaseStore.getState();
-                if (latestState.categorizedNodes) {
-                  const kbNode = latestState.nodes.find(n => n.id === kbBreadcrumb.id);
-                  if (kbNode) {
-                    const section = categorizeNode(kbNode);
-                    const updatedTree = mergeChildrenIntoTree(
-                      latestState.categorizedNodes[section],
-                      kbBreadcrumb.id,
-                      kbChildren.items,
-                      kbEffectiveHasChildFolders
-                    );
-                    setCategorizedNodes({
-                      ...latestState.categorizedNodes,
-                      [section]: updatedTree,
-                    });
-                  }
-                }
-              } catch (error) {
-                console.error('Failed to fetch KB children for sidebar expansion', error);
-              }
-            }
-
-            // Expand each intermediate folder ancestor (between KB root and target)
             const kbIndex = data.breadcrumbs.findIndex((b) => b.id === kbBreadcrumb.id);
-            const pathAfterKb = data.breadcrumbs.slice(kbIndex + 1);
-            const intermediates = pathAfterKb.filter((b) => b.id !== nodeId);
+            const intermediates = data.breadcrumbs.slice(kbIndex + 1).filter((b) => b.id !== nodeId);
+            const path = [
+              { id: kbBreadcrumb.id, nodeType: kbNodeType },
+              ...intermediates.map((b) => ({ id: b.id, nodeType: b.nodeType as NodeType })),
+            ];
 
-            for (const breadcrumb of intermediates) {
-              expandFolderExclusive(breadcrumb.id);
-
-              const iterState = useKnowledgeBaseStore.getState();
-
-              if (!iterState.nodeChildrenCache.has(breadcrumb.id)) {
-                try {
-                  const folderChildren = await KnowledgeHubApi.getNodeChildren(
-                    breadcrumb.nodeType as NodeType,
-                    breadcrumb.id,
-                    { onlyContainers: true, page: 1, limit: 50 }
-                  );
-                  const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(
-                    folderChildren.items,
-                  );
-
-                  cacheNodeChildren(breadcrumb.id, folderChildren.items);
-                  addNodes(folderChildren.items);
-
-                  const mergeState = useKnowledgeBaseStore.getState();
-                  if (mergeState.categorizedNodes) {
-                    const parentNode = mergeState.nodes.find((n) => n.id === breadcrumb.id);
-                    if (parentNode) {
-                      const section = categorizeNode(parentNode);
-                      const updatedTree = mergeChildrenIntoTree(
-                        mergeState.categorizedNodes[section],
-                        breadcrumb.id,
-                        folderChildren.items,
-                        effectiveHasChildFolders
-                      );
-                      setCategorizedNodes({
-                        ...mergeState.categorizedNodes,
-                        [section]: updatedTree,
-                      });
-                    }
-                  }
-                } catch (error) {
-                  console.error('Failed to fetch folder children for sidebar expansion', error);
-                }
+            for (let i = 0; i < path.length; i += 1) {
+              if (!stillSignedIn()) return;
+              const { id, nodeType: pathNodeType } = path[i];
+              const nextId = path[i + 1]?.id ?? (nodeId !== id ? nodeId : undefined);
+              expandFolderExclusive(id);
+              try {
+                await openFolderChildren(
+                  id,
+                  pathNodeType,
+                  nextId ? { until: (children) => children.some((child) => child.id === nextId) } : {},
+                );
+              } catch (error) {
+                console.error('Failed to open a folder on the path in the sidebar', { id, error });
               }
             }
           }
         }
 
-        useKnowledgeBaseStore.getState().reMergeCachedChildrenIntoTree();
+        if (stillSignedIn()) restoreOpenFoldersInSidebar();
 
       } catch (error) {
+        if (!stillSignedIn()) return;
         const status = isProcessedError(error) ? error.statusCode : (error as { statusCode?: number })?.statusCode;
         const isNotFound =
           status === 404 || (isProcessedError(error) && error.type === ErrorType.NOT_FOUND);
@@ -944,7 +848,7 @@ function KnowledgeBasePageContent() {
           setTableData(null);
         }
       } finally {
-        setIsLoadingTableData(false);
+        if (stillSignedIn()) setIsLoadingTableData(false);
       }
     },
     [
@@ -955,7 +859,6 @@ function KnowledgeBasePageContent() {
       setCollectionsPagination,
       setCurrentFolderId,
       expandFolderExclusive,
-      cacheNodeChildren,
       addNodes,
       setCategorizedNodes,
       handleAccessRevoked,
@@ -985,6 +888,7 @@ function KnowledgeBasePageContent() {
   // (flattened=false) so the API returns app-level collection nodes; with
   // filters, omit flattened and let the backend use search mode.
   const fetchAllCollectionsData = useCallback(async () => {
+    const stillSignedIn = kbSessionToken();
     setIsLoadingTableData(true);
     setTableDataError(null);
     try {
@@ -1020,6 +924,7 @@ function KnowledgeBasePageContent() {
               flattened: false,
             }
       );
+      if (!stillSignedIn()) return;
 
       setTableData(data);
       setSelectedNode(null);
@@ -1027,10 +932,15 @@ function KnowledgeBasePageContent() {
         setCollectionsPagination(data.pagination);
       }
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
-      setTableDataError(err?.response?.data?.message || err?.message || 'Failed to load collections');
+      if (!stillSignedIn()) return;
+      setTableDataError(
+        getUserFacingErrorMessage(
+          error,
+          "We couldn't load your collections. Check your connection, then select Retry.",
+        ),
+      );
     } finally {
-      setIsLoadingTableData(false);
+      if (stillSignedIn()) setIsLoadingTableData(false);
     }
   }, [setIsLoadingTableData, setTableDataError, setTableData, setSelectedNode, setCollectionsPagination]);
 
@@ -1238,6 +1148,7 @@ function KnowledgeBasePageContent() {
     const nodeId = searchParams.get('nodeId');
     if (!nodeType || !nodeId) return;
 
+    const stillSignedIn = kbSessionToken();
     try {
       const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
         onlyContainers: true,
@@ -1247,6 +1158,7 @@ function KnowledgeBasePageContent() {
         sortBy: 'name',
         sortOrder: 'asc',
       });
+      if (!stillSignedIn()) return;
 
       const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
       const state = useKnowledgeBaseStore.getState();
@@ -1275,9 +1187,9 @@ function KnowledgeBasePageContent() {
         return;
       }
 
-      state.cacheNodeChildren(nodeId, response.items);
-      state.setNodeChildrenPagination(
+      storeChildrenList(
         nodeId,
+        response.items,
         sidebarNodeChildrenMetaFromResponse(
           response.pagination,
           response.items.length,
@@ -1289,17 +1201,9 @@ function KnowledgeBasePageContent() {
 
       const latest = useKnowledgeBaseStore.getState();
       if (latest.categorizedNodes) {
-        const parentNode = latest.nodes.find((n) => n.id === nodeId);
-        if (parentNode) {
-          const section = categorizeNode(parentNode);
-          const updatedTree = mergeChildrenIntoTree(
-            latest.categorizedNodes[section],
-            nodeId,
-            response.items,
-            effectiveHasChildFolders
-          );
-          latest.setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
-        }
+        latest.setCategorizedNodes(
+          mergeChildrenIntoSections(latest.categorizedNodes, nodeId, response.items, effectiveHasChildFolders)
+        );
       }
 
       for (const [appId, tree] of Array.from(latest.connectorAppTrees.entries())) {
@@ -1390,6 +1294,24 @@ function KnowledgeBasePageContent() {
       // Needed here for direct-API callers (e.g. handleSidebarDeleteConfirm) that do NOT
       // go through store.deleteNode.
       purgeDeletedIdsFromSidebarChildrenCaches(deletedIds);
+      // Collections are root apps, which the child-cache purge above does not
+      // reach. Drop them from the app list and the tree now, so the sidebar is
+      // right even if the reload below is slow or fails.
+      const kbState = useKnowledgeBaseStore.getState();
+      const deletedIdSet = new Set(deletedIds);
+      if (kbState.appNodes.some((n) => deletedIdSet.has(n.id))) {
+        kbState.setAppNodes(kbState.appNodes.filter((n) => !deletedIdSet.has(n.id)));
+      }
+      if (kbState.nodes.some((n) => deletedIdSet.has(n.id))) {
+        kbState.setNodes(kbState.nodes.filter((n) => !deletedIdSet.has(n.id)));
+      }
+      const tree = kbState.categorizedNodes;
+      if (tree && [...tree.shared, ...tree.private].some((n) => deletedIdSet.has(n.id))) {
+        kbState.setCategorizedNodes({
+          shared: tree.shared.filter((n) => !deletedIdSet.has(n.id)),
+          private: tree.private.filter((n) => !deletedIdSet.has(n.id)),
+        });
+      }
 
       const snapshot = useKnowledgeBaseStore.getState().tableData;
       const urlNodeId = searchParams.get('nodeId') ?? searchParams.get('folderId');
@@ -1533,10 +1455,11 @@ function KnowledgeBasePageContent() {
         console.error('Failed to create folder:', error);
         setIsCreatingFolder(false);
 
-        // Show error toast
-        const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to create folder', {
-          description: err?.response?.data?.message || err?.message || 'An error occurred',
+          description: getUserFacingErrorMessage(
+            error,
+            "We couldn't create it. Check the name and try again.",
+          ),
         });
         // Keep dialog open so user can retry
       }
@@ -1660,7 +1583,7 @@ function KnowledgeBasePageContent() {
       for (const entry of oversized) {
         failUpload(
           entry.storeId,
-          `File exceeds the ${maxFileSizeMB} MB size limit`,
+          `This file is larger than the ${maxFileSizeMB} MB limit. Make it smaller or split it, then upload it again.`,
           [FileRejectionReason.EXCEEDS_SIZE_LIMIT],
         );
       }
@@ -1980,17 +1903,14 @@ function KnowledgeBasePageContent() {
     });
   }, [canManageSelectedKbSharing, handleAccessRevoked, shareAdapter]);
 
-  const getPreviewErrorMessage = useCallback((err: unknown): string => {
-    if (err instanceof Error && err.message) return err.message;
-
-    const maybeMessage = (err as { message?: unknown })?.message;
-    if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage;
-
-    const maybeStatusText = (err as { statusText?: unknown })?.statusText;
-    if (typeof maybeStatusText === 'string' && maybeStatusText.trim()) return maybeStatusText;
-
-    return 'Failed to load file';
-  }, []);
+  const getPreviewErrorMessage = useCallback(
+    (err: unknown): string =>
+      getUserFacingErrorMessage(
+        err,
+        "We couldn't open a preview of this file. Try downloading it instead, or try again in a moment.",
+      ),
+    [],
+  );
 
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
@@ -2281,9 +2201,8 @@ function KnowledgeBasePageContent() {
 
       await refreshData();
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
       toast.error('Failed to rename', {
-        description: err?.response?.data?.message || err?.message || 'An error occurred',
+        description: getUserFacingErrorMessage(error, "We couldn't rename it. Please try again in a moment."),
       });
       throw error;
     }
@@ -2319,9 +2238,8 @@ function KnowledgeBasePageContent() {
 
       await refreshData();
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
       toast.error('Failed to rename', {
-        description: err?.response?.data?.message || err?.message || 'An error occurred',
+        description: getUserFacingErrorMessage(error, "We couldn't rename it. Please try again in a moment."),
       });
       throw error;
     }
@@ -2378,11 +2296,10 @@ function KnowledgeBasePageContent() {
 
         await refreshData();
       } catch (error: unknown) {
-        let errorMessage = 'Failed to start reindexing';
-
-        if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
-          errorMessage = error.message;
-        }
+        const errorMessage = getUserFacingErrorMessage(
+          error,
+          "We couldn't start reindexing. Please try again in a moment.",
+        );
 
         toast.update(toastId, {
           variant: 'error',
@@ -2539,103 +2456,25 @@ function KnowledgeBasePageContent() {
   }, []);
 
   // Handle node expansion in move dialog - lazy load folder children
-  const handleMoveDialogExpand = useCallback(
-    async (nodeId: string) => {
-      const {
-        categorizedNodes: freshCategorized,
-        nodeChildrenCache: freshCache,
-        nodes: storeNodes,
-      } = useKnowledgeBaseStore.getState();
-
-      // Helper to check if node already has children loaded in tree
-      const hasChildrenInTree = (tree: EnhancedFolderTreeNode[], targetId: string): boolean => {
-        for (const node of tree) {
-          if (node.id === targetId) return (node.children?.length ?? 0) > 0;
-          if (node.children?.length && hasChildrenInTree(node.children as EnhancedFolderTreeNode[], targetId)) {
-            return true;
-          }
-        }
-        return false;
-      };
-
-      // Check if children already loaded in categorizedNodes
-      if (freshCategorized) {
-        const alreadyLoaded =
-          hasChildrenInTree(freshCategorized.shared, nodeId) ||
-          hasChildrenInTree(freshCategorized.private, nodeId);
-        if (alreadyLoaded) return;
-      }
-
-      // Check cache first
-      const cachedChildren = freshCache.get(nodeId);
-      if (cachedChildren !== undefined) {
-        const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(cachedChildren);
-
-        if (cachedChildren.length > 0) {
-          addNodes(cachedChildren);
-        }
-
-        const latest = useKnowledgeBaseStore.getState();
-        if (latest.categorizedNodes) {
-          const parentNode = latest.nodes.find((n) => n.id === nodeId);
-          if (parentNode) {
-            const section = categorizeNode(parentNode);
-            const updatedTree = mergeChildrenIntoTree(
-              latest.categorizedNodes[section],
-              nodeId,
-              cachedChildren,
-              effectiveHasChildFolders
-            );
-            setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
-          }
-        }
-        return;
-      }
-
-      // Not cached - fetch from API
-      try {
-        setMoveDialogLoadingIds((prev) => new Set(prev).add(nodeId));
-
-        const nodeInStore = storeNodes.find((n) => n.id === nodeId);
-        const resolvedNodeType = (nodeInStore?.nodeType ?? 'folder') as NodeType;
-
-        const response = await KnowledgeHubApi.getNodeChildren(resolvedNodeType, nodeId, {
-          onlyContainers: true,
-          sortBy: 'name',
-          sortOrder: 'asc',
-        });
-
-        cacheNodeChildren(nodeId, response.items);
-        addNodes(response.items);
-
-        const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
-
-        const latest = useKnowledgeBaseStore.getState();
-        if (latest.categorizedNodes) {
-          const parentNode = latest.nodes.find((n) => n.id === nodeId);
-          if (parentNode) {
-            const section = categorizeNode(parentNode);
-            const updatedTree = mergeChildrenIntoTree(
-              latest.categorizedNodes[section],
-              nodeId,
-              response.items,
-              effectiveHasChildFolders
-            );
-            setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
-          }
-        }
-      } catch (error) {
-        console.error('Failed to expand node in move dialog', { nodeId, error });
-      } finally {
-        setMoveDialogLoadingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(nodeId);
-          return next;
-        });
-      }
-    },
-    [addNodes, cacheNodeChildren, setCategorizedNodes]
-  );
+  // The move dialog has no "load more", so it reads every page of a folder's
+  // children (up to the loader's bound) through the same loader the sidebar
+  // uses; the sidebar tree and this dialog share that list.
+  const handleMoveDialogExpand = useCallback(async (nodeId: string) => {
+    const nodeType = (useKnowledgeBaseStore.getState().nodes.find((n) => n.id === nodeId)?.nodeType ??
+      'folder') as NodeType;
+    try {
+      setMoveDialogLoadingIds((prev) => new Set(prev).add(nodeId));
+      await openFolderChildren(nodeId, nodeType, { until: () => false });
+    } catch (error) {
+      console.error('Failed to expand node in move dialog', { nodeId, error });
+    } finally {
+      setMoveDialogLoadingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(nodeId);
+        return next;
+      });
+    }
+  }, []);
 
   // Handle move confirmation
   const handleMoveConfirm = useCallback(
@@ -2667,10 +2506,8 @@ function KnowledgeBasePageContent() {
       } catch (error: unknown) {
         console.error('Failed to move item:', error);
 
-        // Show error toast
-        const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to move item', {
-          description: err?.response?.data?.message || err?.message || 'An error occurred',
+          description: getUserFacingErrorMessage(error, "We couldn't move it. Please try again in a moment."),
         });
       } finally {
         setIsMoving(false);
@@ -2715,10 +2552,11 @@ function KnowledgeBasePageContent() {
       } catch (error: unknown) {
         console.error('Failed to replace file:', error);
 
-        // Show error toast
-        const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to replace file', {
-          description: err?.response?.data?.message || err?.message || 'An error occurred',
+          description: getUserFacingErrorMessage(
+            error,
+            "We couldn't replace the file. Please try again in a moment.",
+          ),
         });
       } finally {
         setIsReplacing(false);
@@ -2732,9 +2570,11 @@ function KnowledgeBasePageContent() {
     try {
       await KnowledgeBaseApi.streamDownloadRecord(item.id, item.name);
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
       toast.error('Failed to download', {
-        description: err?.response?.data?.message || err?.message || 'An error occurred',
+        description: getUserFacingErrorMessage(
+          error,
+          "We couldn't download the file. Check your connection and try again.",
+        ),
       });
     }
   }, []);
@@ -2772,6 +2612,8 @@ function KnowledgeBasePageContent() {
     if (!itemToDelete) return;
     const deletedId = itemToDelete.id;
     const deletedNodeType = itemToDelete.nodeType;
+    const kind =
+      deletedNodeType === 'folder' ? 'folder' : deletedNodeType === 'record' ? 'file' : 'collection';
     setIsDeleting(true);
     try {
       await KnowledgeBaseApi.deleteNode({
@@ -2779,16 +2621,22 @@ function KnowledgeBasePageContent() {
         nodeType: deletedNodeType,
         rootKbId: itemToDelete.rootKbId,
       });
-      toast.success(`"${itemToDelete.name}" deleted successfully`);
-      setIsDeleteDialogOpen(false);
-      setItemToDelete(null);
-      await refreshDataAfterDelete([deletedId]);
     } catch (error: unknown) {
       const err = error as { response?: { data?: { message?: string } }; message?: string };
-      toast.error(
-        err?.response?.data?.message ||
-          `Failed to delete ${deletedNodeType === 'folder' ? 'folder' : 'collection'}`
-      );
+      toast.error(err?.response?.data?.message || `Failed to delete ${kind}`);
+      setIsDeleting(false);
+      return;
+    }
+    toast.success(`"${itemToDelete.name}" deleted successfully`);
+    setIsDeleteDialogOpen(false);
+    setItemToDelete(null);
+    try {
+      await refreshDataAfterDelete([deletedId]);
+    } catch (error: unknown) {
+      console.error('Failed to refresh after delete:', error);
+      toast.warning("Couldn't update the list", {
+        description: `The ${kind} was deleted, but the list didn't refresh. Refresh the page to see the latest list.`,
+      });
     } finally {
       setIsDeleting(false);
     }

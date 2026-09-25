@@ -37,14 +37,25 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
+from dataclasses import dataclass, field
+from typing import (
+    Any,
+    AsyncIterator,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    runtime_checkable,
+)
 
 from app.config.constants.arangodb import CollectionNames
+from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
 )
 
 
@@ -68,11 +79,15 @@ class CollectionLocator(Protocol):
         """
         ...
 
-    async def all_collections(self, *, fresh: bool = False) -> Sequence[str]:
+    async def all_collections(
+        self, *, fresh: bool = False, strict: bool = False
+    ) -> Sequence[str]:
         """Every managed collection.
 
         ``fresh=True`` asks for an uncached view; delete paths use it, because
         acting on a stale enumeration leaves points in collections it missed.
+        ``strict=True`` makes a failed enumeration raise rather than come back
+        empty, so a delete can tell "nothing managed" from "could not tell".
 
         The only correct target when a VRID has no graph record left to
         resolve from — which is exactly when deleting everywhere is safe: a
@@ -88,23 +103,32 @@ _cv_connector_ids: ContextVar[tuple[str, ...]] = ContextVar(
 _cv_record_group_ids: ContextVar[tuple[str, ...]] = ContextVar(
     "vector_record_group_ids", default=()
 )
+_cv_root_record_group_ids: ContextVar[tuple[str, ...]] = ContextVar(
+    "vector_root_record_group_ids", default=()
+)
 
 _RECORD_GROUPS_PREFIX = f"{CollectionNames.RECORD_GROUPS.value}/"
+
+_MAX_GROUP_ROOT_DEPTH = 20  # cycle guard; real hierarchies are 1-2 deep
 
 
 def set_membership_context(
     connector_ids: Sequence[str],
     record_group_ids: Sequence[str],
-) -> tuple[Token, Token]:
+    root_record_group_ids: Sequence[str] = (),
+) -> tuple[Token, Token, Token]:
     return (
         _cv_connector_ids.set(tuple(connector_ids)),
         _cv_record_group_ids.set(tuple(record_group_ids)),
+        _cv_root_record_group_ids.set(tuple(root_record_group_ids)),
     )
 
 
-def reset_membership_context(tokens: tuple[Token, Token]) -> None:
+def reset_membership_context(tokens: tuple[Token, ...]) -> None:
     _cv_connector_ids.reset(tokens[0])
     _cv_record_group_ids.reset(tokens[1])
+    if len(tokens) > 2:
+        _cv_root_record_group_ids.reset(tokens[2])
 
 
 def vector_point_payload(metadata: dict, page_content: str) -> dict[str, Any]:
@@ -114,6 +138,7 @@ def vector_point_payload(metadata: dict, page_content: str) -> dict[str, Any]:
         "metadata": metadata,
         CONNECTOR_IDS_FIELD: list(_cv_connector_ids.get()),
         RECORD_GROUP_IDS_FIELD: list(_cv_record_group_ids.get()),
+        ROOT_RECORD_GROUP_IDS_FIELD: list(_cv_root_record_group_ids.get()),
     }
 
 
@@ -134,6 +159,11 @@ _vrid_locks: "weakref.WeakValueDictionary[tuple[int, str], asyncio.Lock]" = (
 MEMBERSHIP_RESOLVE_CONCURRENCY = 32
 
 MEMBERSHIP_LOCK_TIMEOUT_SECONDS = 120
+
+# Ceiling on VRIDs rewritten by a single batched membership write. Bounds how
+# many locks one writer holds at once, and keeps the id list in the filter well
+# inside any provider's query-size limits.
+MEMBERSHIP_WRITE_BATCH_SIZE = 200
 
 # Deleting points is irreversible, and "no records remain" can be a stale read on
 # a cluster whose followers lag the commit that published this event. One
@@ -216,6 +246,49 @@ def _record_group_id_from_record(record: Any) -> Optional[str]:
     )
 
 
+def record_group_id_from_edge(edge: dict) -> Optional[str]:
+    """Group id for a ``belongsTo`` edge, or None if it points somewhere else.
+
+    Collections (connector type "KB") deliberately yield None. Their records
+    carry no ``recordGroupId`` and their ``belongsTo`` edge targets
+    ``apps/<kbId>`` rather than a record group, because a Collection has no
+    container below itself — the Collection *is* the container, and its id is
+    already in ``connectorIds``.
+
+    So an all-Collection VRID ends up with an empty ``recordGroupIds``, and that
+    is the intended state, not a backfill that missed it. Anything filtering by
+    container has to read ``connectorIds`` for Collections. Do not widen this to
+    accept ``apps/`` targets without changing that contract first.
+    """
+    to_id = edge.get("_to") or ""
+    if isinstance(to_id, str) and to_id.startswith(_RECORD_GROUPS_PREFIX):
+        return to_id[len(_RECORD_GROUPS_PREFIX):]
+    return None
+
+
+def _is_root_scoped(record: Any) -> bool:
+    """Whether this record's connector filters by group root rather than by
+    every descendant group. Read off the record so it costs no extra query."""
+    if record is None:
+        return False
+    if isinstance(record, dict):
+        name = record.get("connectorName") or record.get("connector_name")
+    else:
+        name = getattr(record, "connector_name", None)
+        name = getattr(name, "value", name)
+    return bool(name) and str(name).upper() in ROOT_SCOPED_CONNECTOR_TYPES
+
+
+def _root_record_group_id_from_record(record: Any) -> Optional[str]:
+    if record is None:
+        return None
+    if isinstance(record, dict):
+        return record.get("rootRecordGroupId") or record.get("root_record_group_id")
+    return getattr(record, "root_record_group_id", None) or getattr(
+        record, "rootRecordGroupId", None
+    )
+
+
 def _record_group_id_from_edge(edge: dict) -> Optional[str]:
     """Group id for a ``belongsTo`` edge, or None if it points somewhere else.
 
@@ -234,6 +307,73 @@ def _record_group_id_from_edge(edge: dict) -> Optional[str]:
     if isinstance(to_id, str) and to_id.startswith(_RECORD_GROUPS_PREFIX):
         return to_id[len(_RECORD_GROUPS_PREFIX):]
     return None
+
+
+async def _derive_group_root(
+    graph_provider, group_id: str, cache: dict[str, Optional[str]]
+) -> Optional[str]:
+    """Walk a group's ``belongsTo`` chain up to the group with no parent.
+
+    Records written before ``rootRecordGroupId`` existed have no stored value,
+    so the backfill derives it from the edges rather than needing a re-sync.
+    """
+    if not group_id:
+        return None
+    if group_id in cache:
+        return cache[group_id]
+
+    current = group_id
+    seen = {current}
+    reached_root = False
+    for _ in range(_MAX_GROUP_ROOT_DEPTH):
+        try:
+            edges = await graph_provider.get_edges_from_node(
+                f"{_RECORD_GROUPS_PREFIX}{current}", CollectionNames.BELONGS_TO.value
+            )
+        except Exception:
+            # Abort, not "arrived": on the first hop `current` is still the
+            # group we started from, and returning it would publish a thread
+            # group as its own root. Container filtering drops a root-scoped
+            # connector's descendants, so such a value matches nothing and the
+            # record disappears from search with nothing to notice it. None
+            # tells the caller the walk failed, so it leaves the stored root
+            # alone rather than overwriting it.
+            return None
+        parent = None
+        if isinstance(edges, (list, tuple)):
+            for edge in edges:
+                if isinstance(edge, dict):
+                    candidate = _record_group_id_from_edge(edge)
+                    if candidate and candidate not in seen:
+                        parent = candidate
+                        break
+        if parent is None:
+            # No unseen parent: either a genuine root, or a cycle. A cycle means
+            # the hierarchy is malformed, and guessing a root from it is the
+            # same silent-loss risk as above.
+            reached_root = not _has_parent_edge(edges, seen)
+            break
+        seen.add(parent)
+        current = parent
+
+    if not reached_root:
+        return None
+    cache[group_id] = current
+    return current
+
+
+def _has_parent_edge(edges: Any, seen: set) -> bool:
+    """Whether the node had a parent at all, as opposed to none to follow.
+
+    Distinguishes a genuine root (no parent edge) from a cycle (a parent edge
+    pointing back into the path already walked).
+    """
+    if not isinstance(edges, (list, tuple)):
+        return False
+    return any(
+        isinstance(edge, dict) and _record_group_id_from_edge(edge) in seen
+        for edge in edges
+    )
 
 
 @dataclass(frozen=True)
@@ -256,6 +396,13 @@ class VirtualRecordState:
     #: ``records`` list makes a collection look abandoned when it is not.
     #: Destructive callers must refuse to act on an incomplete read.
     complete: bool = True
+    #: Root of each record's group chain; empty for connectors that don't set it.
+    root_record_group_ids: list[str] = field(default_factory=list)
+    #: False when a root had to be derived from the graph and that walk failed.
+    #: Separate from ``complete``, which gates the destructive path: here the
+    #: records read fine, only the root is missing, and writing the array anyway
+    #: would replace a good root with an empty one on a transient graph error.
+    roots_resolved: bool = True
 
 
 async def resolve_vector_membership(
@@ -286,13 +433,23 @@ async def resolve_virtual_record_state(
     """
     connector_ids: list[str] = []
     record_group_ids: list[str] = []
+    root_record_group_ids: list[str] = []
     seen_connectors: set[str] = set()
     seen_groups: set[str] = set()
+    seen_roots: set[str] = set()
+    root_cache: dict[str, Optional[str]] = {}
+    roots_resolved = True
 
     record_keys: list[str] = []
     docs: list[Any] = []
     if virtual_record_id:
-        raw = await graph_provider.get_records_by_virtual_record_id(virtual_record_id)
+        # Raising: `complete` below compares what resolved against
+        # `record_keys`, so a failed read here makes it 0 == 0 -- true, on the
+        # one failure it exists to catch. Every fail-closed check downstream
+        # reads that flag.
+        raw = await graph_provider.get_records_by_virtual_record_id(
+            virtual_record_id, raise_on_error=True
+        )
         record_keys = remaining_record_keys(raw)
 
     if record_keys:
@@ -326,22 +483,36 @@ async def resolve_virtual_record_state(
 
         for rec, edges in zip(docs, edge_lists):
             _add_unique(connector_ids, seen_connectors, _connector_id_from_record(rec))
-            _add_unique(record_group_ids, seen_groups, _record_group_id_from_record(rec))
+            own_group = _record_group_id_from_record(rec)
+            _add_unique(record_group_ids, seen_groups, own_group)
+            root = _root_record_group_id_from_record(rec)
+            if not root and own_group and _is_root_scoped(rec):
+                root = await _derive_group_root(graph_provider, own_group, root_cache)
+                if root is None:
+                    roots_resolved = False
+            _add_unique(root_record_group_ids, seen_roots, root)
             if not isinstance(edges, (list, tuple)):
                 continue
             for edge in edges:
                 if isinstance(edge, dict):
                     _add_unique(
-                        record_group_ids, seen_groups, _record_group_id_from_edge(edge)
+                        record_group_ids, seen_groups, record_group_id_from_edge(edge)
                     )
 
     if not connector_ids and current_record is not None:
         _add_unique(
             connector_ids, seen_connectors, _connector_id_from_record(current_record)
         )
-        _add_unique(
-            record_group_ids, seen_groups, _record_group_id_from_record(current_record)
-        )
+        current_group = _record_group_id_from_record(current_record)
+        _add_unique(record_group_ids, seen_groups, current_group)
+        current_root = _root_record_group_id_from_record(current_record)
+        if not current_root and current_group and _is_root_scoped(current_record):
+            current_root = await _derive_group_root(
+                graph_provider, current_group, root_cache
+            )
+            if current_root is None:
+                roots_resolved = False
+        _add_unique(root_record_group_ids, seen_roots, current_root)
 
     # Only documents the graph actually returned: a None from a failed
     # get_document must not reach a strategy as if it were a record.
@@ -349,12 +520,98 @@ async def resolve_virtual_record_state(
     return VirtualRecordState(
         connector_ids=connector_ids,
         record_group_ids=record_group_ids,
+        root_record_group_ids=root_record_group_ids,
+        roots_resolved=roots_resolved,
         records=resolved,
         # A key that resolved to nothing is either a read that failed or a
         # record deleted mid-flight. Neither is safe to read as "no record
         # here" on a destructive path, so both count as incomplete.
         complete=len(resolved) == len(record_keys),
     )
+
+
+@asynccontextmanager
+async def vrid_write_locks(
+    virtual_record_ids: Sequence[str],
+) -> AsyncIterator[list[str]]:
+    """Hold every one of these VRIDs' write locks across the whole block.
+
+    Yields the deduplicated ids actually locked.
+
+    Recompute-then-write is only atomic if the *read* is inside the lock too.
+    This exists so a caller can re-read, recompute and write as one critical
+    section; :func:`write_membership_batch_locked` is only the write half, and a
+    caller that computed from a snapshot taken before entering has closed
+    nothing.
+
+    Sorted, for the reason AB/BA deadlocks exist: two overlapping batches taking
+    {A,B} and {B,A} in arrival order wedge each other until the timeout expires.
+
+    The timeout covers the whole block rather than acquisition alone: a caller
+    that hangs mid-read would otherwise hold every lock in the batch until its
+    own network timeout, and each of those VRIDs' per-record writes queues
+    behind it.
+
+    Not reentrant. :func:`sync_vector_membership` and
+    :func:`rewrite_or_delete_virtual_record` both take a VRID's lock, so calling
+    either from inside this block deadlocks until the timeout expires — resolve
+    orphans after it.
+    """
+    ordered = sorted({v for v in virtual_record_ids if v})
+    async with asyncio.timeout(MEMBERSHIP_LOCK_TIMEOUT_SECONDS):
+        async with AsyncExitStack() as stack:
+            for virtual_record_id in ordered:
+                await stack.enter_async_context(_vrid_lock(virtual_record_id))
+            yield ordered
+
+
+async def write_membership_batch_locked(
+    vector_db,
+    collection_name: str,
+    virtual_record_ids: Sequence[str],
+    remaining_connector_ids: Sequence[str],
+    remaining_record_group_ids: Optional[Sequence[str]],
+    logger,
+) -> None:
+    """Write one membership pair onto every point of many VRIDs, in one call.
+
+    The caller must already hold each VRID's lock via :func:`vrid_write_locks`,
+    and must have read the values being written inside that same block. This
+    half does not lock: it cannot, because the read it has to protect happened
+    before it was called.
+
+    Connector deletion strips the same ids from every shared VRID, so the VRIDs
+    whose arrays reduce to the same value can be rewritten together. One call
+    per *distinct resulting pair* instead of one per VRID is the difference
+    between a round trip per deduplicated record and a handful for the pass.
+
+    ``remaining_record_group_ids`` is ``None`` when the caller has nothing to
+    say about groups, which leaves that field untouched rather than blanking it.
+    """
+    ordered = sorted({v for v in virtual_record_ids if v})
+    if not ordered or vector_db is None or not collection_name:
+        return
+
+    payload: dict[str, Any] = {CONNECTOR_IDS_FIELD: list(remaining_connector_ids)}
+    if remaining_record_group_ids is not None:
+        payload[RECORD_GROUP_IDS_FIELD] = list(remaining_record_group_ids)
+
+    filt = await vector_db.filter_collection(must={"virtualRecordId": ordered})
+    # refresh: the connector purge re-reads the matched set after each write to
+    # decide when it is done, so a rewritten point must stop matching
+    # immediately. Per-record membership writes do not pass it.
+    await vector_db.set_payload(collection_name, payload, filt, refresh=True)
+
+    if logger is not None:
+        logger.debug(
+            "Rewrote membership for %d virtual record(s) in %s "
+            "(%d connectorIds, %s recordGroupIds)",
+            len(ordered),
+            collection_name,
+            len(remaining_connector_ids),
+            "unchanged" if remaining_record_group_ids is None
+            else len(remaining_record_group_ids),
+        )
 
 
 async def sync_vector_membership(
@@ -422,15 +679,24 @@ async def _sync_vector_membership_locked(
     filt = await vector_db.filter_collection(
         must={"virtualRecordId": virtual_record_id}
     )
-    for collection_name in collections:
-        await vector_db.set_payload(
-            collection_name,
-            {
-                CONNECTOR_IDS_FIELD: connector_ids,
-                RECORD_GROUP_IDS_FIELD: record_group_ids,
-            },
-            filt,
+    payload: dict[str, Any] = {
+        CONNECTOR_IDS_FIELD: connector_ids,
+        RECORD_GROUP_IDS_FIELD: record_group_ids,
+    }
+    # set_payload merges, so omitting the key leaves whatever root is already
+    # there. Writing the array we resolved would replace a good root with an
+    # empty one, and a root-scoped connector's records are then matched by
+    # nothing — invisible in search, with no signal that it happened.
+    if state.roots_resolved:
+        payload[ROOT_RECORD_GROUP_IDS_FIELD] = state.root_record_group_ids
+    elif logger is not None:
+        logger.warning(
+            "Leaving rootRecordGroupIds untouched for %s: a group root could "
+            "not be derived from the graph",
+            virtual_record_id,
         )
+    for collection_name in collections:
+        await vector_db.set_payload(collection_name, payload, filt)
     if logger is not None:
         # Counts at info, contents at debug: the backfill runs this for every
         # VRID in the corpus, and full arrays at info would drown the log.
@@ -567,12 +833,22 @@ async def _rewrite_or_delete_locked(
     virtual_record_id: str,
     logger,
 ) -> str:
-    raw = await graph_provider.get_records_by_virtual_record_id(virtual_record_id)
+    # Raising on both: an empty answer here deletes this virtual record's
+    # points from every managed collection, and then the mapping that is the
+    # only way to find orphaned points again. The re-read below guards a
+    # record written concurrently; it cannot guard a graph that is down, since
+    # half a second later the same call fails the same way and answers empty
+    # again -- with more confidence.
+    raw = await graph_provider.get_records_by_virtual_record_id(
+        virtual_record_id, raise_on_error=True
+    )
     remaining = remaining_record_keys(raw)
 
     if not remaining:
         await asyncio.sleep(EMPTY_CONFIRM_DELAY_SECONDS)
-        raw = await graph_provider.get_records_by_virtual_record_id(virtual_record_id)
+        raw = await graph_provider.get_records_by_virtual_record_id(
+            virtual_record_id, raise_on_error=True
+        )
         remaining = remaining_record_keys(raw)
         if remaining and logger is not None:
             logger.warning(
@@ -602,7 +878,13 @@ async def _rewrite_or_delete_locked(
     # points. A VRID shared with a live record would have taken the rewrite
     # branch above, which is what makes deleting across every managed
     # collection the correct scope here rather than an overreach.
-    collections = await locator.all_collections(fresh=True)
+    # strict: a listing that failed and a deployment that genuinely holds
+    # nothing both come back as [], and they want opposite outcomes. The
+    # failure raises here, so its mapping row -- the orphan sweeper's only
+    # handle on these points -- survives to be retried. Genuinely empty still
+    # falls through and drops the mapping: there are no points to orphan, and
+    # keeping it would have the sweeper find it again on every pass.
+    collections = await locator.all_collections(fresh=True, strict=True)
 
     # Points first: the mapping is how an orphaned point set is found again, so it
     # must outlive the delete it describes. Dropping it first would strand the

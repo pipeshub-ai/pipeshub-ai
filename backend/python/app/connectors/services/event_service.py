@@ -11,15 +11,22 @@ from app.config.constants.arangodb import (
     AppStatus,
     CollectionNames,
     Connectors,
-    EventTypes,
     ProgressStatus,
 )
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorSyncSkippedError,
+)
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.services.vector_cleanup_events import (
+    build_connector_vector_cleanup_events,
+    log_cleanup_publish_failure,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 from app.edition_services import get_data_entities_processor_cls
@@ -444,7 +451,10 @@ class EventService:
         else:
             # --- Normal sync: set status only, no lock ---
             try:
-                await self._update_app_status(connector_id, status=AppStatus.SYNCING.value)
+                await self._update_app_status(
+                    connector_id,
+                    status=AppStatus.SYNCING.value,
+                )
                 self.logger.info(f"Set status=SYNCING for connector {connector_id}")
             except Exception as status_err:
                 self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
@@ -480,6 +490,8 @@ class EventService:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         start = time.monotonic()
         cancelled = False
+        failed = False
+        skipped_code: str | None = None
         try:
             await connector.run_sync()
         except asyncio.CancelledError:
@@ -487,6 +499,13 @@ class EventService:
             # so a pre-empted sync used to read in the logs exactly like one that
             # finished its work.
             cancelled = True
+            raise
+        except ConnectorSyncSkippedError as exc:
+            # Not a crash: the connector declined to run (e.g. Local FS with no
+            # desktop connected). Logged only; the UI reads live presence.
+            skipped_code = exc.code
+        except Exception:
+            failed = True
             raise
         finally:
             elapsed = time.monotonic() - start
@@ -496,12 +515,24 @@ class EventService:
                 self.logger.warning(
                     f"⚠️ Sync cancelled for connector {connector_id} after {elapsed_str}"
                 )
+            elif failed:
+                self.logger.error(
+                    f"❌ Sync failed for connector {connector_id} after {elapsed_str}"
+                )
+            elif skipped_code:
+                self.logger.info(
+                    f"Sync skipped for connector {connector_id} "
+                    f"({skipped_code}, {elapsed_str})"
+                )
             else:
                 self.logger.info(
                     f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
                 )
             try:
-                await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
+                await self._update_app_status(
+                    connector_id,
+                    status=AppStatus.IDLE.value,
+                )
                 self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")
             except Exception as clear_err:
                 self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")
@@ -766,34 +797,43 @@ class EventService:
                 f"Records: {result.get('deleted_records_count', 0)}"
             )
 
-            # Publish bulkDeleteRecords so the indexing service cleans up Qdrant embeddings.
-            # connectorName lets the consumer resolve which collection(s) this
-            # connector's data lives in under a per-connector-type strategy; it is
-            # read with .get() there so a redelivered message from an older
-            # producer still degrades to today's single-collection behaviour.
-            virtual_record_ids = result.get("virtual_record_ids", [])
-            if virtual_record_ids:
+            # Tell the indexing service to clean up this connector's embeddings.
+            # Normally one connector-scoped event that ships no record ids at
+            # all; a connector whose points predate the membership arrays falls
+            # back to chunked id lists. connectorName lets the consumer resolve
+            # which collection(s) the data lives in under a per-connector-type
+            # strategy.
+            events = build_connector_vector_cleanup_events(
+                org_id=org_id,
+                connector_id=connector_id,
+                vector_membership_backfilled=result.get(
+                    "vector_membership_backfilled", False
+                ),
+                vector_membership_backfill_exhausted=result.get(
+                    "vector_membership_backfill_exhausted", False
+                ),
+                connector_name=result.get("connector_name"),
+                record_group_ids=result.get("record_group_ids", []),
+                virtual_record_ids=result.get("virtual_record_ids", []),
+            )
+            published = 0
+            for event in events:
                 try:
                     await self.app_container.messaging_producer.send_message(
                         topic="record-events",
-                        message={
-                            "eventType": EventTypes.BULK_DELETE_RECORDS.value,
-                            "payload": {
-                                "orgId": org_id,
-                                "connectorId": connector_id,
-                                "connectorName": result.get("connector_name"),
-                                "virtualRecordIds": virtual_record_ids,
-                                "totalRecords": len(virtual_record_ids),
-                            },
-                            "timestamp": get_epoch_timestamp_in_ms(),
-                        },
+                        message=event,
                     )
-                    self.logger.info(f"✅ Published bulkDeleteRecords for {len(virtual_record_ids)} records")
+                    published += 1
                 except Exception as kafka_err:
-                    self.logger.error(
-                        f"❌ Failed to publish bulkDeleteRecords for connector {connector_id}: {kafka_err}. "
-                        f"Embeddings may persist in Qdrant — manual cleanup may be required."
+                    log_cleanup_publish_failure(
+                        self.logger, event, f"connector {connector_id}", kafka_err
                     )
+            if events:
+                level = self.logger.info if published == len(events) else self.logger.error
+                level(
+                    f"Published {published}/{len(events)} vector-cleanup event(s) "
+                    f"for connector {connector_id}"
+                )
 
             # Delete connector credentials from etcd/config store
             try:

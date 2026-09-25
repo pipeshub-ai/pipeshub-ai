@@ -140,7 +140,31 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
                 ],
                 app_description="OAuth application for accessing Gitlab services",
                 app_categories=["Knowledge Management"],
-            )
+            ),
+            # A GitLab personal access token as an alternative to OAuth. The field
+            # is named "token" because GitLabClient.build_from_services reads the
+            # API_TOKEN value from auth.token. The instance URL is repeated so a
+            # self-managed GitLab can be reached with a token as it can with OAuth.
+            AuthBuilder.type(AuthType.API_TOKEN).fields(
+                [
+                    CommonFields.api_token(
+                        token_name="Personal Access Token",
+                        placeholder="Enter a GitLab personal access token",
+                        field_name="token",
+                    ),
+                    AuthField(
+                        name="instanceUrl",
+                        display_name="GitLab Instance URL",
+                        placeholder="https://gitlab.com",
+                        description=(
+                            "Base URL of your GitLab instance. "
+                            "Leave blank or set to https://gitlab.com for GitLab.com (cloud). "
+                            "Set to your self-managed host (e.g. https://gitlab.mycompany.com) for GitLab EE."
+                        ),
+                        required=False,
+                    ),
+                ]
+            ),
         ]
     )
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)
@@ -161,10 +185,11 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.PROJECT_IDS.value,
-            display_name="Repositories",
-            description="Limit sync to specific repositories (path_with_namespace, e.g. my-org/my-repo)",
-            filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
+            display_name="Repository",
+            description="Select the repository to sync.",
+            filter_type=FilterType.SELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
+            required=True,
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.MODIFIED.value,
@@ -353,11 +378,33 @@ class GitLabConnector(BaseConnector):
     # Sync
     # ------------------------------------------------------------------
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        if not self.data_source:
+            return
+        email, source_user_id = None, None
+        try:
+            me_res = await self.runtime.ds_call(self.data_source.get_user)
+            if me_res.success and me_res.data is not None:
+                # `email` is the account's own address; `public_email` is all a
+                # restricted token sees.
+                email = getattr(me_res.data, "email", None) or getattr(me_res.data, "public_email", None)
+                source_user_id = getattr(me_res.data, "id", None)
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated GitLab account: %s", e)
+            return
+        await self.register_authenticated_source_user(
+            email.strip() if isinstance(email, str) else None,
+            str(source_user_id) if source_user_id is not None else None,
+        )
+
     async def run_sync(self) -> None:
         """Run a full GitLab sync (users → projects → issues/MRs/repos)."""
         try:
             await self.repos.cancel_timestamp_backfill()
             await self.runtime.refresh_token_if_needed()
+            await self._register_authenticated_identity()
             self.logger.info("Starting GitLab sync")
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "gitlab", self.connector_id, self.logger

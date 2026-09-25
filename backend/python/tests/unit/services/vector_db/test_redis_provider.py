@@ -312,11 +312,9 @@ class TestRedisHybridQuery:
 
         assert "coll_idx" in args
         assert "SEARCH" in args
-        # Spaces are word separators, not operators — they must NOT be escaped,
-        # otherwise multi-word queries fuse into a single non-matching token.
-        assert any("hello world" in str(a) for a in args), (
-            "multi-word text_query must keep its spaces unescaped"
-        )
+        # Each word is its own term, unioned: escaping the space would fuse them
+        # into one token, and a bare space would require every word to match.
+        assert args[args.index("SEARCH") + 1] == "(hello | world)"
         assert "VSIM" in args
         assert "@dense_embedding" in args
         assert "COMBINE" in args
@@ -1076,12 +1074,19 @@ class TestRedisFailuresAreLoud:
             await service.get_collection_info("records")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "Unknown index name",
+            "records_idx: no such index",
+            # Redis 8.8+: without this, creating any new collection raised.
+            "SEARCH_INDEX_NOT_FOUND Index not found: records_idx",
+        ],
+    )
     async def test_collection_info_returns_missing_for_unknown_index(
-        self, service, mock_redis_client
+        self, service, mock_redis_client, reply
     ):
-        mock_redis_client.execute_command = AsyncMock(
-            side_effect=Exception("Unknown index name")
-        )
+        mock_redis_client.execute_command = AsyncMock(side_effect=Exception(reply))
         info = await service.get_collection_info("records")
         assert info.exists is False
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.core.types import AgentResult, AgentTurn, Goal
 from app.agent_loop_lib.modules.providers.skills.base import (
@@ -12,7 +14,7 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     SkillFilter,
     SkillMatch,
     SkillMetadata,
-    SkillSource,
+    SkillReferentialUsage,
     SkillStatus,
     SkillVersionInfo,
 )
@@ -41,6 +43,14 @@ def _skill(name: str, *, status: SkillStatus = SkillStatus.ACTIVE) -> Skill:
     return Skill(metadata=_metadata(name, status=status), body=f"# {name}\n\ndo it")
 
 
+def _resource_listing(resources: dict[str, str]) -> dict[str, list[str]]:
+    listing: dict[str, list[str]] = {}
+    for path in sorted(resources):
+        kind = path.split("/", 1)[0] if "/" in path else "files"
+        listing.setdefault(kind, []).append(path)
+    return listing
+
+
 def _candidate(candidate_id: str = "cand-1", name: str = "new-skill") -> SkillCandidate:
     return SkillCandidate(
         candidate_id=candidate_id,
@@ -57,9 +67,12 @@ class FakeStore(SkillStore):
 
     def __init__(self, skills: dict[str, Skill] | None = None) -> None:
         self._skills: dict[str, Skill] = dict(skills or {})
+        self._resources: dict[str, dict[str, str]] = {}
         self.refresh_called = False
         self.write_resource_calls: list[tuple[str, str, str]] = []
         self.remove_resource_calls: list[tuple[str, str]] = []
+        self.referential_usage = SkillReferentialUsage()
+        self.detach_calls: list[str] = []
 
     def refresh(self) -> None:
         self.refresh_called = True
@@ -71,28 +84,47 @@ class FakeStore(SkillStore):
         return self._skills.get(name)
 
     async def get_resource(self, skill_name: str, resource_path: str) -> str | None:
-        return None
+        return self._resources.get(skill_name, {}).get(resource_path)
+
+    async def get_resources(self, skill_name: str) -> dict[str, str]:
+        return dict(self._resources.get(skill_name, {}))
 
     async def exists(self, name: str) -> bool:
         return name in self._skills
 
     async def create_skill(
         self, name: str, content: str, category: str | None = None, subcategory: str | None = None,
+        resources: dict[str, str] | None = None,
     ) -> SkillMetadata:
         if name in self._skills:
             raise RegistryError(f"Skill {name!r} already exists")
         metadata = SkillMetadata(name=name, description="created", category=category, subcategory=subcategory)
-        self._skills[name] = Skill(metadata=metadata, body=content)
+        self._skills[name] = Skill(metadata=metadata, body=content, resources=_resource_listing(resources or {}))
+        self._resources[name] = dict(resources or {})
         return metadata
 
-    async def update_skill(self, name: str, content: str) -> SkillMetadata:
+    async def update_skill(
+        self,
+        name: str,
+        content: str,
+        resources: dict[str, str] | None = None,
+        expected_updated_at: int | None = None,
+    ) -> SkillMetadata:
         if name not in self._skills:
             raise RegistryError(f"Skill {name!r} not found")
         metadata = self._skills[name].metadata.model_copy(update={"description": "updated"})
-        self._skills[name] = Skill(metadata=metadata, body=content)
+        resolved = self._resources.get(name, {}) if resources is None else resources
+        self._skills[name] = Skill(metadata=metadata, body=content, resources=_resource_listing(resolved))
+        self._resources[name] = dict(resolved)
         return metadata
 
-    async def patch_skill(self, name: str, old_string: str, new_string: str) -> bool:
+    async def patch_skill(
+        self,
+        name: str,
+        old_string: str,
+        new_string: str,
+        expected_updated_at: int | None = None,
+    ) -> bool:
         skill = self._skills.get(name)
         if skill is None or old_string not in skill.body:
             return False
@@ -118,6 +150,23 @@ class FakeStore(SkillStore):
         self._skills[name] = skill.model_copy(update={"metadata": updated})
         return True
 
+    async def set_skill_status(
+        self, name: str, status: SkillStatus, from_status: SkillStatus | None = None,
+    ) -> bool:
+        skill = self._skills.get(name)
+        if skill is None:
+            return False
+        if from_status is not None and skill.metadata.status != from_status:
+            return False
+        self._skills[name] = skill.model_copy(update={"metadata": skill.metadata.model_copy(update={"status": status})})
+        return True
+
+    async def get_referential_usage(self, name: str) -> SkillReferentialUsage:
+        return self.referential_usage
+
+    async def detach_from_agents(self, name: str) -> None:
+        self.detach_calls.append(name)
+
 
 class _NoRefreshStore(SkillStore):
     """A `SkillStore` that never opted into the optional `refresh()` hook —
@@ -142,10 +191,10 @@ class _NoRefreshStore(SkillStore):
     async def create_skill(self, name, content, category=None, subcategory=None) -> SkillMetadata:
         raise NotImplementedError
 
-    async def update_skill(self, name, content) -> SkillMetadata:
+    async def update_skill(self, name, content, resources=None, expected_updated_at=None) -> SkillMetadata:
         raise NotImplementedError
 
-    async def patch_skill(self, name, old_string, new_string) -> bool:
+    async def patch_skill(self, name, old_string, new_string, expected_updated_at=None) -> bool:
         raise NotImplementedError
 
     async def delete_skill(self, name) -> bool:
@@ -158,6 +207,9 @@ class _NoRefreshStore(SkillStore):
         raise NotImplementedError
 
     async def deprecate_skill(self, name, reason, replaced_by=None) -> bool:
+        raise NotImplementedError
+
+    async def set_skill_status(self, name, status, from_status=None) -> bool:
         raise NotImplementedError
 
 
@@ -407,6 +459,29 @@ class TestActivateAndLoadResource:
         else:
             raise AssertionError("expected RegistryError")
 
+    async def test_get_skill_returns_disabled_without_recording_activation(self) -> None:
+        store = FakeStore({"s": _skill("s", status=SkillStatus.DISABLED)})
+        tracker = FakeTracker()
+        manager = _manager(store, tracker=tracker)
+
+        skill = await manager.get_skill("s")
+
+        assert skill.metadata.status == SkillStatus.DISABLED
+        assert tracker.activations == []
+
+    async def test_activate_skill_rejects_disabled_before_recording_activation(self) -> None:
+        store = FakeStore({"s": _skill("s", status=SkillStatus.DISABLED)})
+        tracker = FakeTracker()
+        manager = _manager(store, tracker=tracker)
+
+        try:
+            await manager.activate_skill("s", session_id="sess-1")
+        except RegistryError as e:
+            assert "disabled" in str(e)
+        else:
+            raise AssertionError("expected RegistryError")
+        assert tracker.activations == []
+
     async def test_load_resource_returns_content(self) -> None:
         class _ResourceStore(FakeStore):
             async def get_resource(self, skill_name: str, resource_path: str) -> str | None:
@@ -535,6 +610,39 @@ class TestCrud:
         assert ok is False
         assert index.removed == []
 
+    async def test_delete_raises_when_required_by_other_skills(self) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillInUseError
+
+        store = FakeStore({"base": _skill("base")})
+        store.referential_usage = SkillReferentialUsage(required_by_skills=["dependent"])
+        manager = _manager(store)
+        with pytest.raises(SkillInUseError) as exc:
+            await manager.delete("base", detach=True)
+        assert exc.value.required_by_skills == ["dependent"]
+        assert "base" in store._skills
+
+    async def test_delete_raises_when_used_by_agents_without_detach(self) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillInUseError
+
+        store = FakeStore({"s": _skill("s")})
+        store.referential_usage = SkillReferentialUsage(used_by_agents=[{"id": "a1", "name": "Bot"}])
+        manager = _manager(store)
+        with pytest.raises(SkillInUseError):
+            await manager.delete("s")
+        assert "s" in store._skills
+
+    async def test_delete_with_detach_unassigns_then_deletes(self) -> None:
+        store = FakeStore({"s": _skill("s")})
+        store.referential_usage = SkillReferentialUsage(used_by_agents=[{"id": "a1", "name": "Bot"}])
+        index = FakeIndex()
+        manager = _manager(store, index=index)
+        await manager.start()
+        ok = await manager.delete("s", detach=True)
+        assert ok is True
+        assert store.detach_calls == ["s"]
+        assert "s" not in store._skills
+        assert index.removed == ["s"]
+
     async def test_deprecate_success_resyncs_and_notifies_governor(self) -> None:
         store = FakeStore({"s": _skill("s")})
         governor = FakeGovernor()
@@ -564,6 +672,80 @@ class TestCrud:
         assert await manager.remove_resource("s", "a.txt") is True
         assert store.write_resource_calls == [("s", "a.txt", "content")]
         assert store.remove_resource_calls == [("s", "a.txt")]
+
+
+class TestEnableDisable:
+    """Reversible mute — distinct from `deprecate` (one-way, still
+    advertised... no, excluded too, but never un-deprecated by `enable`)."""
+
+    async def test_disable_then_enable_round_trips_and_resyncs_catalog(self) -> None:
+        store = FakeStore({"s": _skill("s")})
+        manager = _manager(store)
+        await manager.start()
+
+        disabled = await manager.disable("s")
+        assert disabled.status == SkillStatus.DISABLED
+        assert manager.catalog_snapshot() == []  # disabled is hidden, same as deprecated
+
+        enabled = await manager.enable("s")
+        assert enabled.status == SkillStatus.ACTIVE
+        assert {m.name for m in manager.catalog_snapshot()} == {"s"}
+
+    async def test_disable_unknown_skill_raises_registry_error(self) -> None:
+        manager = _manager(FakeStore())
+        with pytest.raises(RegistryError):
+            await manager.disable("nope")
+
+    async def test_enable_unknown_skill_raises_registry_error(self) -> None:
+        manager = _manager(FakeStore())
+        with pytest.raises(RegistryError):
+            await manager.enable("nope")
+
+    async def test_disable_an_already_disabled_skill_raises(self) -> None:
+        store = FakeStore({"s": _skill("s", status=SkillStatus.DISABLED)})
+        manager = _manager(store)
+        with pytest.raises(RegistryError):
+            await manager.disable("s")
+
+    async def test_enable_an_already_active_skill_raises(self) -> None:
+        store = FakeStore({"s": _skill("s")})
+        manager = _manager(store)
+        with pytest.raises(RegistryError):
+            await manager.enable("s")
+
+    async def test_disable_a_deprecated_skill_raises_deprecate_is_one_way(self) -> None:
+        store = FakeStore({"s": _skill("s", status=SkillStatus.DEPRECATED)})
+        manager = _manager(store)
+        with pytest.raises(RegistryError):
+            await manager.disable("s")
+
+    async def test_enable_never_undeprecates(self) -> None:
+        store = FakeStore({"s": _skill("s", status=SkillStatus.DEPRECATED)})
+        manager = _manager(store)
+        with pytest.raises(RegistryError):
+            await manager.enable("s")
+        # Still deprecated — the failed `enable` must not have mutated anything.
+        assert (await store.get_skill("s")).metadata.status == SkillStatus.DEPRECATED
+
+    async def test_disable_loses_to_concurrent_deprecate(self) -> None:
+        """`set_skill_status` must not overwrite a newer lifecycle state
+        that landed between the manager's source-status check and the write."""
+
+        class RacingStore(FakeStore):
+            async def set_skill_status(
+                self, name: str, status: SkillStatus, from_status: SkillStatus | None = None,
+            ) -> bool:
+                skill = self._skills[name]
+                self._skills[name] = skill.model_copy(update={
+                    "metadata": skill.metadata.model_copy(update={"status": SkillStatus.DEPRECATED}),
+                })
+                return await super().set_skill_status(name, status, from_status=from_status)
+
+        store = RacingStore({"s": _skill("s")})
+        manager = _manager(store)
+        with pytest.raises(RegistryError, match="deprecated"):
+            await manager.disable("s")
+        assert (await store.get_skill("s")).metadata.status == SkillStatus.DEPRECATED
 
 
 class TestVersionHistory:
@@ -884,7 +1066,9 @@ class TestCandidateToSkillMd:
             AutoApproveGovernor,
             ManualReviewGovernor,
         )
-        from app.agent_loop_lib.modules.providers.skills.manager import _default_governor
+        from app.agent_loop_lib.modules.providers.skills.manager import (
+            _default_governor,
+        )
 
         assert isinstance(_default_governor(SkillManagerConfig()), ManualReviewGovernor)
         assert isinstance(_default_governor(SkillManagerConfig(auto_approve=True)), AutoApproveGovernor)

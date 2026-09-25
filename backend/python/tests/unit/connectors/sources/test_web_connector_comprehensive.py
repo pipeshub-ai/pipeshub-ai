@@ -30,7 +30,7 @@ from app.connectors.sources.web.connector import (
     WebConnector,
     _bytes_async_gen,
 )
-from app.connectors.sources.web.fetch_strategy import FetchResponse
+from app.connectors.sources.web.fetch_strategy import MAX_RATE_LIMIT_BACKOFF, FetchResponse
 from app.models.entities import RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from PIL import Image as PILImage
@@ -1113,6 +1113,151 @@ class TestRecursiveCrawlOrchestration:
         )
 
     @pytest.mark.asyncio
+    async def test_retry_after_beyond_the_fetch_cap_does_not_stall_the_crawl(self):
+        c = _make_connector()
+        c.url = "https://example.com"
+        c.base_domain = "https://example.com"
+        c.max_depth = 2
+        c.max_pages = 10
+        c.max_size_mb = 10
+        c.follow_external = False
+        c.url_should_contain = []
+        c.session = MagicMock()
+        c.visited_urls = set()
+        c.retry_urls = {}
+        c.processed_urls = 0
+        rate_limited = FetchResponse(
+            status_code=429, content_bytes=b"", headers={"Retry-After": "3600"},
+            final_url="https://example.com/start", strategy="aiohttp", retry_after=3600.0,
+        )
+        clock = {"now": 1000.0}
+        slept: list[float] = []
+
+        async def advance_sleep(secs):
+            slept.append(secs)
+            clock["now"] += secs
+
+        mock_loop = MagicMock()
+        mock_loop.time.side_effect = lambda: clock["now"]
+
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            return_value=rate_limited,
+        ), patch(
+            "app.connectors.sources.web.connector.asyncio.sleep",
+            side_effect=advance_sleep,
+        ), patch(
+            "app.connectors.sources.web.connector.asyncio.get_event_loop",
+            return_value=mock_loop,
+        ), patch.object(
+            c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None
+        ):
+            async for _ in c._crawl_recursive_generator("https://example.com/start", 0):
+                pass
+
+        assert not slept, f"the crawl waited {slept} seconds for a site asking longer than the cap"
+        entry = c.retry_urls[c._normalize_url("https://example.com/start")]
+        assert entry.deferred, "the page should be left for the next sync"
+        assert max(slept, default=0) <= MAX_RATE_LIMIT_BACKOFF
+
+    @pytest.mark.asyncio
+    async def test_retry_after_within_the_cap_is_honoured(self):
+        c = _make_connector()
+        c.url = "https://example.com"
+        c.base_domain = "https://example.com"
+        c.max_depth = 2
+        c.max_pages = 10
+        c.max_size_mb = 10
+        c.follow_external = False
+        c.url_should_contain = []
+        c.session = MagicMock()
+        c.visited_urls = set()
+        c.retry_urls = {}
+        c.processed_urls = 0
+        rate_limited = FetchResponse(
+            status_code=429, content_bytes=b"", headers={"Retry-After": "30"},
+            final_url="https://example.com/start", strategy="aiohttp", retry_after=30.0,
+        )
+        clock = {"now": 1000.0}
+        slept: list[float] = []
+
+        async def advance_sleep(secs):
+            slept.append(secs)
+            clock["now"] += secs
+
+        mock_loop = MagicMock()
+        mock_loop.time.side_effect = lambda: clock["now"]
+
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            return_value=rate_limited,
+        ), patch(
+            "app.connectors.sources.web.connector.asyncio.sleep",
+            side_effect=advance_sleep,
+        ), patch(
+            "app.connectors.sources.web.connector.asyncio.get_event_loop",
+            return_value=mock_loop,
+        ), patch.object(
+            c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None
+        ):
+            async for _ in c._crawl_recursive_generator("https://example.com/start", 0):
+                pass
+
+        assert slept, "a wait the site asked for, within the cap, should be honoured"
+        assert set(slept) == {30.0}, f"expected 30s waits, got {slept}"
+        entry = c.retry_urls[c._normalize_url("https://example.com/start")]
+        assert not entry.deferred
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_page_is_still_kept_for_the_next_sync(self):
+        c = _make_connector()
+        c.url = "https://example.com"
+        c.base_domain = "https://example.com"
+        c.max_depth = 2
+        c.max_pages = 10
+        c.max_size_mb = 10
+        c.follow_external = False
+        c.url_should_contain = []
+        c.session = MagicMock()
+        c.visited_urls = set()
+        c.retry_urls = {}
+        c.processed_urls = 0
+        rate_limited = FetchResponse(
+            status_code=429, content_bytes=b"", headers={"Retry-After": "3600"},
+            final_url="https://example.com/start", strategy="aiohttp", retry_after=3600.0,
+        )
+        clock = {"now": 1000.0}
+
+        async def advance_sleep(secs):
+            clock["now"] += secs
+
+        mock_loop = MagicMock()
+        mock_loop.time.side_effect = lambda: clock["now"]
+
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            return_value=rate_limited,
+        ), patch(
+            "app.connectors.sources.web.connector.asyncio.sleep",
+            side_effect=advance_sleep,
+        ), patch(
+            "app.connectors.sources.web.connector.asyncio.get_event_loop",
+            return_value=mock_loop,
+        ), patch.object(
+            c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None
+        ):
+            async for _ in c._crawl_recursive_generator("https://example.com/start", 0):
+                pass
+
+        # Left in retry_urls, so the end-of-sync pass records it as a failed page
+        # that the next sync fetches again. Nothing is deleted or forgotten.
+        assert list(c.retry_urls) == [c._normalize_url("https://example.com/start")]
+        assert c.retry_urls[c._normalize_url("https://example.com/start")].status_code == 429
+
+    @pytest.mark.asyncio
     async def test_enqueues_discovered_links(self):
         c = _make_connector()
         c.url = "https://example.com"
@@ -1399,6 +1544,106 @@ class TestFetchAndProcessUrlOrchestration:
             result = await c._fetch_and_process_url("https://example.com/page", 0)
         assert result is not None
         assert result.is_new is True
+
+    @pytest.mark.asyncio
+    async def test_ancestor_placeholders_keep_their_stored_version(self):
+        """These placeholders are re-upserted on every crawl and never change.
+
+        Bumping them here would turn `version` into a count of crawls, and writing
+        0 would discard the version of an ancestor since crawled as a page.
+        """
+        c = _make_connector()
+        c.url = "https://example.com"
+        existing = MagicMock()
+        existing.id = "ancestor-1"
+        existing.version = 5
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+
+        await c._create_ancestor_placeholder_records("https://example.com/docs/web/page")
+
+        c.data_entities_processor.on_new_records.assert_awaited_once()
+        records = [record for record, _permissions in
+                   c.data_entities_processor.on_new_records.call_args[0][0]]
+        assert records, "expected at least one ancestor placeholder"
+        assert [r.version for r in records] == [5] * len(records)
+
+    @pytest.mark.asyncio
+    async def test_version_advances_only_when_the_page_changed(self):
+        """`version` marks a change, so a re-crawl that finds nothing new must not bump it."""
+        html = b"<html><head><title>Same</title></head><body>same body</body></html>"
+
+        async def crawl(existing=None, lookup=None):
+            c = _make_connector()
+            c.url = "https://example.com"
+            c.base_domain = "https://example.com"
+            c.session = MagicMock()
+            c.max_size_mb = 10
+            c.follow_external = False
+            c.retry_urls = {}
+            c.url_should_contain = []
+            c._normalize_url = MagicMock(return_value="https://example.com/page")
+            c._ensure_parent_records_exist = AsyncMock()
+            c._pass_extension_filter = MagicMock(return_value=True)
+            c.data_entities_processor.get_record_by_external_id = (
+                AsyncMock(side_effect=lookup) if lookup else AsyncMock(return_value=existing)
+            )
+            with patch(
+                "app.connectors.sources.web.connector.fetch_url_with_fallback",
+                new_callable=AsyncMock,
+            ) as mock_fetch:
+                mock_fetch.return_value = FetchResponse(
+                    status_code=200,
+                    content_bytes=html,
+                    headers={"Content-Type": "text/html"},
+                    final_url="https://example.com/page",
+                    strategy="aiohttp",
+                )
+                return await c._fetch_and_process_url("https://example.com/page", 0)
+
+        first = await crawl(None)
+        assert first.record.version == 0
+
+        # Re-crawled unchanged: same name, parent and content hash as what was stored.
+        unchanged = MagicMock()
+        unchanged.id = "rec-1"
+        unchanged.version = 7
+        unchanged.record_name = first.record.record_name
+        unchanged.parent_external_record_id = first.record.parent_external_record_id
+        unchanged.external_revision_id = first.record.external_revision_id
+        unchanged.indexing_status = ProgressStatus.COMPLETED.value
+        unchanged.extraction_status = "COMPLETED"
+        # Nothing changed, so no update is produced at all — there is no write,
+        # and therefore no version to advance.
+        assert await crawl(unchanged) is None
+
+        # Content changed: the stored hash no longer matches what was fetched.
+        changed = MagicMock()
+        changed.id = "rec-1"
+        changed.version = 7
+        changed.record_name = first.record.record_name
+        changed.parent_external_record_id = first.record.parent_external_record_id
+        changed.external_revision_id = "a-different-hash"
+        changed.indexing_status = ProgressStatus.COMPLETED.value
+        changed.extraction_status = "COMPLETED"
+        assert (await crawl(changed)).record.version == 8
+
+        # A record found only under its legacy id is re-emitted to migrate the id.
+        # That is a rewrite, not a change to the page, so the version is carried over.
+        legacy = MagicMock()
+        legacy.id = "rec-1"
+        legacy.version = 7
+        legacy.record_name = first.record.record_name
+        legacy.parent_external_record_id = first.record.parent_external_record_id
+        legacy.external_revision_id = first.record.external_revision_id
+        legacy.indexing_status = ProgressStatus.COMPLETED.value
+        legacy.extraction_status = "COMPLETED"
+
+        async def only_legacy_id(connector_id, external_record_id):
+            return None if external_record_id.endswith("/") else legacy
+
+        migrated = await crawl(lookup=only_legacy_id)
+        assert migrated.is_new is True
+        assert migrated.record.version == 7
 
     @pytest.mark.asyncio
     async def test_existing_record_metadata_and_content_changes(self):

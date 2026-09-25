@@ -42,12 +42,14 @@ const SETUP_VALUE_COLOR: Record<
 const SETUP_I18N: Record<InstanceSetupStatusKey, string> = {
   not_configured: 'workspace.connectors.instanceStatus.setup.notConfigured',
   needs_authentication: 'workspace.connectors.instanceStatus.setup.needsAuth',
+  desktop_offline: 'workspace.connectors.instanceStatus.setup.desktopOffline',
   ready: 'workspace.connectors.instanceStatus.setup.ready',
 };
 
 const SETUP_TOOLTIP_I18N: Record<InstanceSetupStatusKey, string> = {
   not_configured: 'workspace.connectors.instanceStatus.setup.notConfiguredTooltip',
   needs_authentication: 'workspace.connectors.instanceStatus.setup.needsAuthTooltip',
+  desktop_offline: 'workspace.connectors.instanceStatus.setup.desktopOfflineTooltip',
   ready: 'workspace.connectors.instanceStatus.setup.readyTooltip',
 };
 

@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Dict, List, NamedTuple
+from typing import Any, Dict, List, NamedTuple, Sequence
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
@@ -14,7 +14,10 @@ from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     EMPTY_CONFIRM_DELAY_SECONDS,
+    MEMBERSHIP_WRITE_BATCH_SIZE,
     remaining_record_keys,
+    vrid_write_locks,
+    write_membership_batch_locked,
 )
 from app.services.vector_db.membership import (
     rewrite_or_delete_virtual_record as _rewrite_or_delete_virtual_record,
@@ -22,7 +25,12 @@ from app.services.vector_db.membership import (
 from app.services.vector_db.membership import (
     sync_vector_membership as _sync_vector_membership,
 )
-from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+    VIRTUAL_RECORD_ID_FIELD,
+)
+from app.services.vector_db.models import VectorChunkPayload
 from app.services.vector_db.strategy import (
     DeleteAction,
     DeleteContext,
@@ -43,6 +51,15 @@ QDRANT_BULK_DELETE_BATCH_SIZE = 100
 # Recovery scan bounds for a purge whose producer sent no VRID list.
 PURGE_SCAN_PAGE_SIZE = 500
 PURGE_SCAN_MAX_POINTS = 100_000
+
+# How many points one page of the connector-delete rewrite pass pulls back.
+CONNECTOR_DELETE_SCROLL_PAGE_SIZE = 500
+
+# Bound on the confirming re-read inside the membership lock. It stops as soon
+# as every VRID in the batch has been seen, so this only bites when a batch's
+# points are spread very thin; past it the unseen ids are left unproven and
+# retried rather than written from a read that proved nothing.
+MEMBERSHIP_REREAD_MAX_POINTS = 10_000
 
 
 class ScanResult(NamedTuple):
@@ -90,6 +107,10 @@ class IndexingPipeline:
                 strategy=collection_registry.strategy,
                 manifest_store=collection_registry.manifest_store,
                 logger=logger,
+                # Deletes run here, and they are the one caller for which an
+                # un-adopted pre-manifest collection is destructive: the points
+                # survive while their mapping rows are dropped.
+                list_managed=collection_registry.list_managed_collections,
             )
 
         except (IndexingError, VectorStoreError):
@@ -160,9 +181,696 @@ class IndexingPipeline:
         )
 
     async def purge_connector(
+        self,
+        ctx: DeleteContext,
+        record_group_ids: Sequence[str] | None = None,
+    ) -> Dict[str, Any]:
+        """Remove a connector's vector data using only what the points carry.
+
+        Two passes over the membership arrays, in this order:
+
+        1. Delete every point whose ``connectorIds`` holds nothing but this
+           connector. The array contains it, so "at most one value" means
+           "exactly this one" — those points have no other owner left. This is
+           the overwhelming majority of a connector's points.
+        2. Whatever still matches is shared with another connector *by
+           construction*, so no length test is needed: the new arrays are the
+           old ones minus this connector and minus its record groups, both of
+           which the point itself already tells us.
+
+        No graph lookup in either pass. That is the whole point: the previous
+        design shipped every VRID on the event because a point could not be
+        told apart from a live connector's copy without asking the graph.
+
+        Safe to re-run: pass 1 finds nothing the second time and pass 2 is a
+        no-op once the ids are gone, so the caller may retry the whole event.
+
+        ``record_group_ids`` are the connector's own groups, which the graph
+        delete removed. Without them a surviving shared point keeps pointing at
+        groups that no longer exist. Omitted, the group array is left untouched
+        rather than blanked.
+        """
+        scope = await self.collection_registry.resolve_delete_scope(ctx)
+        # strict: a failed enumeration and a genuinely empty one both arrive as
+        # [], and they want opposite outcomes — retry versus ack.
+        collections = list(
+            await self.collection_locator.all_collections(fresh=True, strict=True)
+        )
+
+        dropped: List[str] = []
+        if scope.action == DeleteAction.DROP_COLLECTION:
+            dropped = await self._drop_scope_collections(ctx, scope)
+            # Shared points in the collections that survive still carry this
+            # connector, so the passes below still have work to do.
+            collections = [c for c in collections if c not in dropped]
+
+        if not collections:
+            self.logger.info(
+                "Nothing left to purge for connector %s%s",
+                ctx.connector_id,
+                f" after dropping {dropped}" if dropped else ": no managed collections",
+            )
+            return {
+                "action": "drop_collection" if dropped else "noop",
+                "collections": dropped,
+                "success": True,
+            }
+
+        dead_group_ids = {g for g in (record_group_ids or []) if g}
+
+        # Before pass 1, not after: once those points are gone there is nothing
+        # left to read their VRIDs from, and pass 3 needs them to reclaim the
+        # mapping rows.
+        exclusive = await self._scan_exclusively_owned_vrids(
+            collections, ctx.connector_id
+        )
+
+        exclusive_filter = await self.vector_db_service.filter_collection(
+            must={CONNECTOR_IDS_FIELD: ctx.connector_id},
+            max_values={CONNECTOR_IDS_FIELD: 1},
+        )
+        for name in collections:
+            # refresh: the strip pass below re-reads the matched set to decide
+            # when it is done, so it must not see points this loop deleted.
+            await self.vector_db_service.delete_points(
+                collection_name=name, filter=exclusive_filter, refresh=True
+            )
+
+        # Strictly after the delete above — these rows are the only handle the
+        # orphan sweeper has on a point set, so they must outlive it — and
+        # strictly *before* the strip pass, which can raise: pass A cannot be
+        # re-run once B has deleted the points it reads, so a later failure
+        # would leak every one of these rows permanently.
+        #
+        # Confirmed, not assumed: A classifies from a payload snapshot while B
+        # re-evaluates server-side at delete time. A live connector that
+        # deduplicates onto one of these VRIDs in between leaves the points
+        # alive under its own id, and forgetting the row then strands a record
+        # that is still searchable.
+        reclaimable = await self._vrids_without_surviving_points(
+            collections, exclusive.ids
+        )
+        await self._forget_virtual_record_mappings(reclaimable)
+
+        rewritten, orphans, complete = await self._strip_connector_from_shared_points(
+            collections, ctx.connector_id, dead_group_ids
+        )
+
+        if not exclusive.complete:
+            self.logger.warning(
+                "Scan of %s hit its bound before enumerating every exclusively "
+                "owned virtual record id for connector %s; %d mapping row(s) "
+                "reclaimed here and the rest left to the orphan sweeper",
+                collections,
+                ctx.connector_id,
+                len(exclusive.ids),
+            )
+
+        if not complete:
+            # The caller acks on success, so reporting True here would retire the
+            # only event that can finish the job while points still carry the
+            # deleted connector.
+            raise EmbeddingDeletionError(
+                "Connector vector cleanup could not strip the connector from "
+                "every shared point",
+                record_id=ctx.connector_id,
+                details={
+                    "connector_id": ctx.connector_id,
+                    "virtual_record_ids_rewritten": rewritten,
+                },
+            )
+
+        self.logger.info(
+            "Purged connector %s across %s: exclusive points deleted, %d shared "
+            "virtual record(s) rewritten, %d orphan(s) resolved",
+            ctx.connector_id,
+            collections,
+            rewritten,
+            orphans,
+        )
+        return {
+            "action": "drop_collection" if dropped else "membership_delete",
+            "collections": dropped or list(collections),
+            "exclusive_points_deleted": True,
+            "virtual_record_ids_rewritten": rewritten,
+            "virtual_record_ids_deleted": orphans,
+            "success": True,
+        }
+
+    async def _drop_scope_collections(
+        self, ctx: DeleteContext, scope: DeleteScope
+    ) -> List[str]:
+        """Drop the collections a proven ``DROP_COLLECTION`` scope names.
+
+        Enumerates the VRIDs first: afterwards there is nothing left to read
+        them from, and their mapping rows would look like orphans to the
+        sweeper for as long as they survive.
+        """
+        # Exclusively-owned only, the same predicate the delete pass uses. A
+        # plain connectorIds scan would also return VRIDs shared with a live
+        # connector, whose points survive in the collections that are *not*
+        # dropped — forgetting their rows would strand them.
+        scan = await self._scan_exclusively_owned_vrids(
+            scope.collection_names, ctx.connector_id
+        )
+        if not scan.complete:
+            # The drop still goes ahead: refusing it would leave the whole
+            # collection behind, and the cap is reached exactly on the large
+            # collections a drop exists to handle.
+            self.logger.warning(
+                "Scan of %s hit its bound before enumerating every virtual record "
+                "id for connector %s; dropping anyway and leaving %d mapping "
+                "row(s) beyond that point for the orphan sweeper",
+                scope.collection_names,
+                ctx.connector_id,
+                len(scan.ids),
+            )
+        for name in scope.collection_names:
+            await self.collection_registry.delete_collection(name)
+        await self._forget_virtual_record_mappings(scan.ids)
+        self.logger.info(
+            "Dropped collection(s) %s for connector %s",
+            scope.collection_names,
+            ctx.connector_id,
+        )
+        return list(scope.collection_names)
+
+    async def _scan_exclusively_owned_vrids(
+        self, collections: Sequence[str], connector_id: str
+    ) -> ScanResult:
+        """VRIDs whose points name this connector and no other.
+
+        Classifies on the payload rather than pushing an array-length bound
+        into the query: Redis cannot express one in ``FT.SEARCH`` at all, and
+        the projection makes a page cheap enough that filtering here costs
+        nothing worth saving.
+        """
+        found: List[str] = []
+        seen: set = set()
+        complete = True
+
+        for name in collections:
+            try:
+                filter_dict = await self.vector_db_service.filter_collection(
+                    must={CONNECTOR_IDS_FIELD: connector_id}
+                )
+                offset = None
+                scanned = 0
+                while scanned < PURGE_SCAN_MAX_POINTS:
+                    page = await self.vector_db_service.scroll(
+                        collection_name=name,
+                        scroll_filter=filter_dict,
+                        limit=PURGE_SCAN_PAGE_SIZE,
+                        offset=offset,
+                        with_payload=[VIRTUAL_RECORD_ID_FIELD, CONNECTOR_IDS_FIELD],
+                    )
+                    points = list(getattr(page, "points", None) or [])
+                    if not points:
+                        break
+                    for point in points:
+                        parsed = VectorChunkPayload.from_dict(point.payload or {})
+                        vrid = parsed.metadata.virtualRecordId
+                        if not vrid or vrid in seen:
+                            continue
+                        if len(parsed.connectorIds) <= 1:
+                            seen.add(vrid)
+                            found.append(vrid)
+                    scanned += len(points)
+                    next_offset = getattr(page, "next_offset", None)
+                    if next_offset is None or next_offset == offset:
+                        break
+                    offset = next_offset
+                else:
+                    complete = False
+            except Exception as e:
+                complete = False
+                self.logger.error(
+                    "Could not scan %s for exclusively owned virtual record ids: %s",
+                    name,
+                    e,
+                )
+        return ScanResult(found, complete)
+
+    async def _vrids_without_surviving_points(
+        self, collections: Sequence[str], virtual_record_ids: Sequence[str]
+    ) -> List[str]:
+        """Of ``virtual_record_ids``, those with no points left anywhere.
+
+        Only these may have their mapping row forgotten. Anything still holding
+        points is live under another connector and needs the row to stay
+        resolvable.
+        """
+        if not virtual_record_ids:
+            return []
+
+        survivors: set = set()
+        for start in range(0, len(virtual_record_ids), QDRANT_BULK_DELETE_BATCH_SIZE):
+            batch = list(virtual_record_ids)[
+                start:start + QDRANT_BULK_DELETE_BATCH_SIZE
+            ]
+            filter_dict = await self.vector_db_service.filter_collection(
+                must={"virtualRecordId": batch}
+            )
+            for name in collections:
+                try:
+                    await self._mark_surviving_vrids(
+                        name, filter_dict, batch, survivors
+                    )
+                except Exception as e:
+                    # Unreadable means unproven, and an unproven row must be
+                    # kept: the sweeper can always reclaim it later, but nothing
+                    # can put it back.
+                    self.logger.error(
+                        "Could not confirm surviving points in %s; keeping the "
+                        "mapping rows for this batch: %s",
+                        name,
+                        e,
+                    )
+                    survivors.update(batch)
+                    continue
+
+        return [v for v in virtual_record_ids if v not in survivors]
+
+    async def _mark_surviving_vrids(
+        self,
+        collection_name: str,
+        scroll_filter: Any,
+        batch: Sequence[str],
+        survivors: set,
+    ) -> None:
+        """Add every VRID from *batch* that still holds a point here.
+
+        Walks the whole matched set. One page sized to the batch does not do it:
+        the filter matches *points*, and a record holds many chunks, so a single
+        page can be filled by a handful of VRIDs while the rest go unseen — and
+        unseen reads as "no points left", which drops the mapping row of a
+        record that is still searchable.
+
+        Paging stops early once every VRID in the batch is accounted for. Any
+        other early exit — the bound, or a cursor that stops advancing — leaves
+        the rest *unproven*, and unproven is kept: the sweeper can always
+        reclaim a row later, but nothing can put one back.
+
+        Only two endings prove absence: a page that comes back empty, and a
+        page that reports no next offset. Both mean the matched set is
+        exhausted, so a VRID not seen in it genuinely has no points here.
+        """
+        remaining = {v for v in batch if v not in survivors}
+        offset = None
+        scanned = 0
+        exhausted = False
+
+        while remaining and scanned < PURGE_SCAN_MAX_POINTS:
+            page = await self.vector_db_service.scroll(
+                collection_name=collection_name,
+                scroll_filter=scroll_filter,
+                limit=PURGE_SCAN_PAGE_SIZE,
+                offset=offset,
+                with_payload=[VIRTUAL_RECORD_ID_FIELD],
+            )
+            points = list(getattr(page, "points", None) or [])
+            if not points:
+                exhausted = True
+                break
+            for point in points:
+                parsed = VectorChunkPayload.from_dict(point.payload or {})
+                vrid = parsed.metadata.virtualRecordId
+                if vrid and vrid in remaining:
+                    remaining.discard(vrid)
+                    survivors.add(vrid)
+            scanned += len(points)
+            next_offset = getattr(page, "next_offset", None)
+            if next_offset is None:
+                exhausted = True
+                break
+            if next_offset == offset:
+                # The cursor is not advancing. That is a stalled walk, not a
+                # finished one, so nothing below may be treated as absent.
+                break
+            offset = next_offset
+        else:
+            # Fell out of the condition: either every VRID is accounted for, or
+            # the bound stopped us with some still outstanding.
+            exhausted = not remaining
+
+        if remaining and not exhausted:
+            self.logger.warning(
+                "Could not walk %s to the end for %d virtual record id(s); "
+                "keeping their mapping rows",
+                collection_name,
+                len(remaining),
+            )
+            survivors.update(remaining)
+
+    async def _strip_connector_from_shared_points(
+        self,
+        collections: Sequence[str],
+        connector_id: str,
+        dead_group_ids: set,
+    ) -> tuple:
+        """Remove a connector (and its dead groups) from points still carrying it.
+
+        Returns ``(rewritten, orphans, complete)``; ``complete`` is False when a
+        collection stopped with addressable points still carrying the connector.
+        """
+        rewritten = 0
+        orphans = 0
+        complete = True
+        orphans_handled: set = set()
+
+        for name in collections:
+            c_rewritten, c_orphans, c_complete = await self._strip_in_collection(
+                name, connector_id, dead_group_ids, orphans_handled
+            )
+            rewritten += c_rewritten
+            orphans += c_orphans
+            complete = complete and c_complete
+        return rewritten, orphans, complete
+
+    async def _strip_in_collection(
+        self,
+        collection_name: str,
+        connector_id: str,
+        dead_group_ids: set,
+        orphans_handled: set,
+    ) -> tuple:
+        """One collection's share of :meth:`_strip_connector_from_shared_points`.
+
+        Always re-reads the first page rather than advancing a cursor: each
+        rewrite stops its points matching, so the next first page is the next
+        batch. Paginating would be wrong on providers whose scroll offset is a
+        position rather than a key, because mutating the matched set shifts
+        every later page. Termination is guaranteed by stopping as soon as a
+        page yields no virtual record we have not already handled — which is
+        also what stops a point that fails to rewrite from looping forever.
+
+        The page read here only nominates VRIDs; the arrays it carries are a
+        snapshot taken outside the lock. Each batch re-reads them under the
+        VRIDs' own locks before recomputing, because a concurrent writer — most
+        often an ordinary ``sync_vector_membership`` from indexing — can land
+        between the two. Serialised per ``(event loop, VRID)``: two writers on
+        different loops still race, and the per-connector backfill is the repair
+        path for that.
+        """
+        rewritten = 0
+        orphans = 0
+        handled: set = set()
+
+        while True:
+            shared_filter = await self.vector_db_service.filter_collection(
+                must={CONNECTOR_IDS_FIELD: connector_id}
+            )
+            page = await self.vector_db_service.scroll(
+                collection_name=collection_name,
+                scroll_filter=shared_filter,
+                limit=CONNECTOR_DELETE_SCROLL_PAGE_SIZE,
+                # Only these fields are read below. Without the projection every
+                # page also drags each chunk's full text across the wire.
+                with_payload=[
+                    VIRTUAL_RECORD_ID_FIELD,
+                    CONNECTOR_IDS_FIELD,
+                    RECORD_GROUP_IDS_FIELD,
+                ],
+            )
+            points = list(getattr(page, "points", None) or [])
+            if not points:
+                return rewritten, orphans, True
+
+            progressed = False
+            untagged = 0
+            candidates: List[str] = []
+
+            for point in points:
+                parsed = VectorChunkPayload.from_dict(point.payload or {})
+                virtual_record_id = parsed.metadata.virtualRecordId
+                if not virtual_record_id:
+                    # Membership is written per VRID, so a point without one
+                    # cannot be rewritten by any amount of retrying.
+                    untagged += 1
+                    continue
+                if virtual_record_id in handled:
+                    continue
+                handled.add(virtual_record_id)
+                progressed = True
+                candidates.append(virtual_record_id)
+
+            # This page only nominates. The arrays it carries were read outside
+            # the lock, so each batch below re-reads them while holding it and
+            # recomputes from that instead. Every VRID here loses the same ids,
+            # so within a batch those whose arrays reduce to the same pair are
+            # still written together.
+            orphaned_ids: List[str] = []
+            for start in range(0, len(candidates), MEMBERSHIP_WRITE_BATCH_SIZE):
+                rewritten += await self._rewrite_membership_batch(
+                    collection_name,
+                    connector_id,
+                    dead_group_ids,
+                    candidates[start:start + MEMBERSHIP_WRITE_BATCH_SIZE],
+                    orphaned_ids,
+                )
+
+            # Outside every lock, deliberately: this re-acquires the VRID's own
+            # lock, and asyncio.Lock is not reentrant — calling it above would
+            # wedge the batch until MEMBERSHIP_LOCK_TIMEOUT_SECONDS expires.
+            for virtual_record_id in orphaned_ids:
+                if virtual_record_id in orphans_handled:
+                    continue
+                orphans_handled.add(virtual_record_id)
+                # Confirmed under the lock, not inferred from the filter: this
+                # VRID's points name no owner but this connector. Deciding to
+                # delete on the payload alone is exactly when to stop trusting
+                # it and ask the graph instead.
+                outcome = await self.rewrite_or_delete_vector_membership(
+                    virtual_record_id
+                )
+                self.logger.warning(
+                    "Virtual record %s still carried connector %s with no other "
+                    "owner after the exclusive pass; graph-confirmed outcome: %s",
+                    virtual_record_id,
+                    connector_id,
+                    outcome,
+                )
+                orphans += 1
+
+            if untagged:
+                self.logger.error(
+                    "%d point(s) in %s carrying connector %s have no "
+                    "virtualRecordId and cannot be rewritten",
+                    untagged,
+                    collection_name,
+                    connector_id,
+                )
+
+            if not progressed:
+                if untagged == len(points):
+                    # Every point here is unaddressable. Reporting this
+                    # incomplete would fail the event forever, since no retry
+                    # can give these points a VRID — surface it and let the
+                    # delete stand for everything that could be handled.
+                    self.logger.error(
+                        "Connector %s membership rewrite stopped in %s: %d "
+                        "remaining point(s) have no virtualRecordId, so no retry "
+                        "can clear them; they keep a stale connector id",
+                        connector_id,
+                        collection_name,
+                        untagged,
+                    )
+                    return rewritten, orphans, True
+                self.logger.error(
+                    "Stopping connector %s membership rewrite in %s: a page of "
+                    "points still carries the connector but yielded no new "
+                    "virtual record id (rewrites may be failing silently)",
+                    connector_id,
+                    collection_name,
+                )
+                return rewritten, orphans, False
+
+    async def _read_membership_in_collection(
+        self,
+        collection_name: str,
+        virtual_record_ids: Sequence[str],
+    ) -> tuple:
+        """Current membership arrays for these VRIDs, as this collection holds them.
+
+        Returns ``({vrid: (connectorIds, recordGroupIds)}, unproven)``. A VRID
+        missing from the mapping and *not* in ``unproven`` genuinely has no
+        points here; one in ``unproven`` is simply unknown, and must not be
+        written or deleted on the strength of that.
+
+        Only meaningful under the VRIDs' locks. Read outside them it is the same
+        stale snapshot the enumerating scroll already took, which is the bug
+        this exists to close.
+
+        Unions every point of a VRID seen rather than trusting the first. Points
+        of one VRID can legitimately disagree — OpenSearch's ``conflicts=proceed``
+        skips a version conflict silently, leaving some chunks on the old array —
+        and picking one arbitrarily can drop a live connector. A union can only
+        keep an id too long, which that connector's own purge or the backfill
+        repairs; dropping one is silent and permanent.
+        """
+        wanted = {v for v in virtual_record_ids if v}
+        if not wanted:
+            return {}, set()
+
+        connectors: Dict[str, Dict[str, None]] = {}
+        groups: Dict[str, Dict[str, None]] = {}
+        unseen = set(wanted)
+        offset = None
+        scanned = 0
+        exhausted = False
+
+        try:
+            filt = await self.vector_db_service.filter_collection(
+                must={"virtualRecordId": sorted(wanted)}
+            )
+            while unseen and scanned < MEMBERSHIP_REREAD_MAX_POINTS:
+                page = await self.vector_db_service.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=filt,
+                    limit=PURGE_SCAN_PAGE_SIZE,
+                    offset=offset,
+                    with_payload=[
+                        VIRTUAL_RECORD_ID_FIELD,
+                        CONNECTOR_IDS_FIELD,
+                        RECORD_GROUP_IDS_FIELD,
+                    ],
+                )
+                points = list(getattr(page, "points", None) or [])
+                if not points:
+                    exhausted = True
+                    break
+                for point in points:
+                    parsed = VectorChunkPayload.from_dict(point.payload or {})
+                    vrid = parsed.metadata.virtualRecordId
+                    if not vrid or vrid not in wanted:
+                        continue
+                    unseen.discard(vrid)
+                    # setdefault before update: a VRID whose points carry no
+                    # connectorIds at all must still register as *present*, or it
+                    # reads as "points vanished" when it is really an empty array
+                    # for the graph to arbitrate.
+                    connectors.setdefault(vrid, {}).update(
+                        dict.fromkeys(parsed.connectorIds)
+                    )
+                    groups.setdefault(vrid, {}).update(
+                        dict.fromkeys(parsed.recordGroupIds)
+                    )
+                scanned += len(points)
+                next_offset = getattr(page, "next_offset", None)
+                if next_offset is None:
+                    exhausted = True
+                    break
+                if next_offset == offset:
+                    # Not advancing is a stalled walk, not a finished one.
+                    break
+                offset = next_offset
+        except Exception as e:
+            # Redis refuses offsets past its result ceiling by raising, and a
+            # disconnect looks the same. Either way nothing here is proven.
+            self.logger.error(
+                "Could not re-read membership for %d virtual record id(s) in "
+                "%s: %s",
+                len(wanted),
+                collection_name,
+                e,
+            )
+            return {}, set(wanted)
+
+        current = {
+            vrid: (list(connectors[vrid]), list(groups.get(vrid, {})))
+            for vrid in connectors
+        }
+        return current, (set() if exhausted else set(unseen))
+
+    async def _rewrite_membership_batch(
+        self,
+        collection_name: str,
+        connector_id: str,
+        dead_group_ids: set,
+        batch: Sequence[str],
+        orphaned_ids: List[str],
+    ) -> int:
+        """Lock a batch of VRIDs, re-read their arrays, recompute, write.
+
+        Returns how many were rewritten. VRIDs that reduce to no owner are
+        appended to *orphaned_ids* rather than resolved here: resolving one
+        re-takes the very lock this still holds, and the lock is not reentrant.
+
+        The re-read is the whole point. The enumerating scroll ran outside the
+        lock, so by now another writer sharing one of these VRIDs may have
+        rewritten it — and recomputing from that page's snapshot is exactly what
+        puts a deleted connector's id back, or drops a live one.
+        """
+        rewritten = 0
+        async with vrid_write_locks(batch) as locked_ids:
+            current, unproven = await self._read_membership_in_collection(
+                collection_name, locked_ids
+            )
+
+            by_remaining: Dict[tuple, List[str]] = {}
+            for virtual_record_id in locked_ids:
+                if virtual_record_id in unproven:
+                    continue
+                found = current.get(virtual_record_id)
+                if found is None:
+                    # Proven absent: the points went away under us — another
+                    # connector's exclusive delete, or a re-index. Nothing to
+                    # rewrite, and nothing that makes this an orphan.
+                    continue
+                connector_ids, record_group_ids = found
+
+                remaining_connectors = tuple(
+                    cid for cid in connector_ids if cid != connector_id
+                )
+                if not remaining_connectors:
+                    orphaned_ids.append(virtual_record_id)
+                    continue
+                remaining_groups = (
+                    tuple(
+                        gid
+                        for gid in record_group_ids
+                        if gid not in dead_group_ids
+                    )
+                    if dead_group_ids
+                    else None
+                )
+                by_remaining.setdefault(
+                    (remaining_connectors, remaining_groups), []
+                ).append(virtual_record_id)
+
+            for (
+                remaining_connectors,
+                remaining_groups,
+            ), virtual_record_ids in by_remaining.items():
+                await write_membership_batch_locked(
+                    self.vector_db_service,
+                    collection_name,
+                    virtual_record_ids,
+                    list(remaining_connectors),
+                    None if remaining_groups is None else list(remaining_groups),
+                    self.logger,
+                )
+                rewritten += len(virtual_record_ids)
+
+        if unproven:
+            self.logger.warning(
+                "Could not confirm current membership for %d virtual record "
+                "id(s) in %s; leaving them rather than writing from a read that "
+                "proved nothing",
+                len(unproven),
+                collection_name,
+            )
+        return rewritten
+
+    async def purge_connector_by_virtual_record_ids(
         self, ctx: DeleteContext, virtual_record_ids: List[str] | None = None
     ) -> Dict[str, Any]:
-        """Remove all of a connector's vector data per the active collection strategy.
+        """Remove a connector's vector data from an explicit list of VRIDs.
+
+        The fallback path, for connectors whose points predate the membership
+        arrays — a graph lookup per VRID is the only way to reach a point that
+        carries no ``connectorIds`` to find itself by. :meth:`purge_connector`
+        is the normal path and needs no list.
 
         ``DROP_COLLECTION`` reaches here only when the registry has *proven*
         ``ctx.is_last_writer_to_collection`` — it downgrades an unproven drop
@@ -391,8 +1099,13 @@ class IndexingPipeline:
 
             for virtual_record_id in normalized_virtual_record_ids:
                 try:
+                    # Raising: the handler below skips the id "to avoid
+                    # accidental data loss" and could not fire, because the
+                    # provider swallowed the failure and answered [] -- which
+                    # this loop reads as unreferenced and queues for deletion.
                     remaining_records = await self.graph_provider.get_records_by_virtual_record_id(
-                        virtual_record_id=virtual_record_id
+                        virtual_record_id=virtual_record_id,
+                        raise_on_error=True,
                     )
                     remaining_keys = remaining_record_keys(remaining_records)
                     if remaining_keys:
@@ -447,7 +1160,8 @@ class IndexingPipeline:
             for virtual_record_id in safe_virtual_record_ids:
                 try:
                     recheck = await self.graph_provider.get_records_by_virtual_record_id(
-                        virtual_record_id=virtual_record_id
+                        virtual_record_id=virtual_record_id,
+                        raise_on_error=True,
                     )
                     if remaining_record_keys(recheck):
                         self.logger.warning(
@@ -486,7 +1200,13 @@ class IndexingPipeline:
             # and nothing that could still want the points. Deleting across
             # every managed collection is therefore the correct scope; a VRID
             # still shared with a live record took the rewrite branch above.
-            collection_names = await self.collection_locator.all_collections(fresh=True)
+            # strict: an enumeration that *failed* and a deployment that
+            # genuinely holds nothing both arrive here as an empty list, and the
+            # two want opposite outcomes — retry versus ack. strict raises on the
+            # first, so only the second reaches the check below.
+            collection_names = await self.collection_locator.all_collections(
+                fresh=True, strict=True
+            )
 
             if not collection_names:
                 # Nothing to delete from, so nothing was deleted. Falling

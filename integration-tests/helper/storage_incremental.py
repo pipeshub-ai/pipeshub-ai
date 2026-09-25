@@ -138,6 +138,43 @@ async def sync_until_names_visible(
     return await graph_provider.count_records(connector_id)
 
 
+
+async def sync_until_names_absent(
+    pipeshub_client: "PipeshubClient",
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    names: list[str],
+    *,
+    max_attempts: int = DEFAULT_MAX_SYNC_ATTEMPTS,
+    sync_timeout: int = DEFAULT_SYNC_TIMEOUT_SEC,
+    name_grace_timeout: int = DEFAULT_NAME_GRACE_TIMEOUT_SEC,
+) -> None:
+    """Restart sync until no record carries any of *names*; the mirror of sync_until_names_visible."""
+
+    async def _all_absent() -> bool:
+        for name in names:
+            if await graph_provider.get_record_by_name(connector_id, name) is not None:
+                return False
+        return True
+
+    for _ in range(max_attempts):
+        restart_sync(pipeshub_client, connector_id)
+        await wait_for_sync_completion(
+            pipeshub_client,
+            graph_provider,
+            connector_id,
+            timeout=sync_timeout,
+        )
+        if await _all_absent():
+            return
+    await wait_until_graph_condition(
+        connector_id,
+        check=_all_absent,
+        timeout=name_grace_timeout,
+        poll_interval=5,
+        description=f"removal of {names}",
+    )
+
 async def assert_incremental_new_files(
     graph_provider: "GraphProviderProtocol",
     connector_id: str,

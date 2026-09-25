@@ -6,16 +6,20 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
     Connectors,
-    EventTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.vector_cleanup_events import (
+    build_connector_vector_cleanup_events,
+    log_cleanup_publish_failure,
+)
 from app.models.entities import FileRecord, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import PEOPLE_GONE, action_failed
 
 if TYPE_CHECKING:
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -49,6 +53,44 @@ def _mutation_succeeded(result: object) -> bool:
     return bool(result)
 
 
+def _people_gone() -> dict:
+    return {
+        "success": False,
+        "reason": PEOPLE_GONE,
+        "code": 400,
+    }
+
+
+_CLIENT_ERROR_MIN = 400
+_SERVER_ERROR_MIN = 500
+
+
+def _provider_refusal_code(result: object) -> Optional[int]:
+    """The status a graph provider chose when it refused a request on purpose.
+
+    The providers *return* their failures instead of raising, so a caller's
+    ``except`` never sees them. A failure they wrote themselves — the container is
+    gone, the requester is not an owner — carries a 4xx ``code`` (neo4j spells it
+    as a string); a failure that is really ``str(e)`` carries 500 or no code at
+    all. That is the only reliable line between wording meant for a reader and
+    exception text, so classifying on the words themselves is not safe.
+    """
+    if not isinstance(result, dict):
+        return None
+    try:
+        code = int(result["code"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return code if _CLIENT_ERROR_MIN <= code < _SERVER_ERROR_MIN else None
+
+
+def _browse_failure(result: object, missing: str, action: str) -> dict:
+    """Turn a failed provider browse into something a person can act on."""
+    if _provider_refusal_code(result) == 404:
+        return {"success": False, "code": 404, "reason": missing}
+    return {"success": False, "code": 500, "reason": action_failed(action)}
+
+
 class KnowledgeBaseService:
     """Data handler for knowledge base operations."""
 
@@ -68,6 +110,25 @@ class KnowledgeBaseService:
         self.processor = processor
         # Needed to resolve the storage endpoint for upload signed-url routes.
         self.config_service = config_service
+
+    def _mutation_failure(self, result: object, action: str) -> dict:
+        """Turn a failed graph-provider write into something a person can act on.
+
+        Passes on only what the provider refused on purpose (its 4xx cases, which
+        it worded for a reader); anything else is ``str(e)`` and is logged here
+        instead of being handed to the caller.
+        """
+        code = _provider_refusal_code(result)
+        if code is not None and isinstance(result, dict) and result.get("reason"):
+            return {"success": False, "code": code, "reason": result["reason"]}
+        self.logger.error("❌ Graph provider could not %s: %s", action, result)
+        return {"success": False, "code": 500, "reason": action_failed(action)}
+
+    def _validation_failure(self, result: object, action: str) -> dict:
+        """Same rule as ``_mutation_failure``, for the checks routers read as ``valid``."""
+        failure = self._mutation_failure(result, action)
+        failure["valid"] = False
+        return failure
 
     async def _resolve_user_and_kb_access(
         self,
@@ -99,7 +160,14 @@ class KnowledgeBaseService:
         user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
         if not user:
             self.logger.warning(f"⚠️ User not found: {user_id}")
-            return None, None, {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
+            return None, None, {
+                "success": False,
+                "code": 404,
+                "reason": (
+                    "We couldn't find your account in this workspace. Sign out and sign back in; "
+                    "if that doesn't help, ask a workspace admin to check your access."
+                ),
+            }
 
         user_key = user.get("id") or user.get("_key")
         if not user_key:
@@ -149,22 +217,45 @@ class KnowledgeBaseService:
                 org_id,
                 chunk_size=MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE,
             )
-            if not mapping:
-                return None, {
-                    "success": False,
-                    "reason": f"Users not found in graph: {user_ids}",
-                    "code": 400,
-                }
-            missing = [uid for uid in user_ids if uid not in mapping]
+            missing = [uid for uid in user_ids if uid not in (mapping or {})]
             if missing:
-                return None, {
-                    "success": False,
-                    "reason": f"Users not found in graph: {missing}",
-                    "code": 400,
-                }
+                self.logger.warning(f"Share refused: users {missing} not found in org {org_id}")
+                return None, _people_gone()
             return [mapping[uid] for uid in user_ids], None
         except ValueError as e:
-            return None, {"success": False, "reason": str(e), "code": 400}
+            # The providers raise this, naming the missing ids, when any user is unknown.
+            self.logger.warning(
+                f"Share refused for requester {requester_id} in org {org_id}: {e}"
+            )
+            return None, _people_gone()
+
+    async def _teams_not_in_requester_org(
+        self,
+        team_ids: list[str],
+        requester_id: str,
+    ) -> Optional[dict]:
+        """Error dict unless every team exists in the requester's org."""
+        if not team_ids:
+            return None
+        requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
+        org_id = requester.get("orgId") if requester else None
+        teams = await self.graph_provider.get_nodes_by_field_in(
+            CollectionNames.TEAMS.value, "id", team_ids, ["id", "orgId"]
+        )
+        in_org = {t.get("id") for t in teams or [] if org_id and t.get("orgId") == org_id}
+        # Another org's team reads as missing, so team ids can't be probed across tenants.
+        missing = [team_id for team_id in team_ids if team_id not in in_org]
+        if missing:
+            self.logger.warning(f"Share refused: teams {missing} are not in org {org_id}")
+            return {
+                "success": False,
+                "reason": (
+                    "One or more of the selected teams no longer exists or isn't part of your "
+                    "organization. Refresh the page and choose the teams again."
+                ),
+                "code": 404,
+            }
+        return None
 
     async def _assert_no_folder_sibling_conflict(
         self,
@@ -228,9 +319,15 @@ class KnowledgeBaseService:
         self,
         user_id: str,
         org_id: str,
-        name: str
+        name: str,
+        is_hidden: bool = False,
     ) -> Optional[Dict]:
-        """Create a new knowledge base"""
+        """Create a new knowledge base.
+
+        is_hidden excludes the KB from list/browse/unscoped-search surfaces
+        (e.g. a project's linked file collection) while it remains fully
+        resolvable when explicitly referenced by id (filters.kb, direct get).
+        """
         try:
             self.logger.info(f"🚀 Creating KB '{name}' for user {user_id} in org {org_id}")
 
@@ -275,7 +372,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "code": 500,
-                    "reason": f"Transaction creation failed: {str(tx_error)}"
+                    "reason": action_failed("create this knowledge base")
                 }
 
             kb_data = {
@@ -296,6 +393,7 @@ class KnowledgeBaseService:
                 "isAuthenticated": True,
                 "vectorMembershipBackfilled": True,
                 "hideConnector": True,  # Excluded from main connector management UI
+                "isHidden": is_hidden,
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             }
@@ -394,7 +492,7 @@ class KnowledgeBaseService:
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": action_failed("create this knowledge base")
             }
 
     async def get_knowledge_base(
@@ -426,7 +524,7 @@ class KnowledgeBaseService:
             self.logger.error(f"❌ Failed to get knowledge base: {str(e)}")
             return {
                 "success": False,
-                "reason": str(e),
+                "reason": action_failed("open this knowledge base"),
                 "code": 500
             }
 
@@ -520,7 +618,7 @@ class KnowledgeBaseService:
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": action_failed("load your knowledge bases")
             }
 
     async def update_knowledge_base(
@@ -570,7 +668,7 @@ class KnowledgeBaseService:
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": action_failed("update this knowledge base")
             }
 
     async def delete_knowledge_base(
@@ -605,33 +703,45 @@ class KnowledgeBaseService:
             )
 
             if not result or not result.get("success"):
-                self.logger.warning(f"⚠️ Failed to delete knowledge base {kb_id}")
+                # the provider's "error" can be exception text, so it stays in the log
+                self.logger.warning(
+                    "⚠️ Failed to delete knowledge base %s: %s",
+                    kb_id, (result or {}).get("error"),
+                )
                 return {
                     "success": False,
-                    "reason": (result or {}).get("error", "Failed to delete knowledge base"),
+                    "reason": action_failed("delete this knowledge base"),
                     "code": 500,
                 }
 
-            # Single bulkDeleteRecords event drives Qdrant cleanup for all records at once.
-            virtual_record_ids = result.get("virtual_record_ids", [])
-            if virtual_record_ids:
+            # Vector cleanup for every record at once: one connector-scoped
+            # event normally, chunked id lists for a KB whose points predate the
+            # membership arrays.
+            events = build_connector_vector_cleanup_events(
+                org_id=org_id,
+                connector_id=kb_id,
+                vector_membership_backfilled=result.get(
+                    "vector_membership_backfilled", False
+                ),
+                vector_membership_backfill_exhausted=result.get(
+                    "vector_membership_backfill_exhausted", False
+                ),
+                connector_name=result.get("connector_name"),
+                record_group_ids=result.get("record_group_ids", []),
+                virtual_record_ids=result.get("virtual_record_ids", []),
+            )
+            published = 0
+            for event in events:
                 try:
-                    await self.kafka_service.publish_event(
-                        "record-events",
-                        {
-                            "eventType": EventTypes.BULK_DELETE_RECORDS.value,
-                            "timestamp": get_epoch_timestamp_in_ms(),
-                            "payload": {
-                                "orgId": org_id,
-                                "connectorId": kb_id,
-                                "connectorName": result.get("connector_name"),
-                                "virtualRecordIds": virtual_record_ids,
-                                "totalRecords": len(virtual_record_ids),
-                            },
-                        },
-                    )
+                    await self.kafka_service.publish_event("record-events", event)
+                    published += 1
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to publish bulkDeleteRecords for KB {kb_id}: {str(e)}")
+                    log_cleanup_publish_failure(self.logger, event, f"KB {kb_id}", e)
+            if events and published != len(events):
+                self.logger.error(
+                    f"Published only {published}/{len(events)} vector-cleanup "
+                    f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
+                )
 
             self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by user_key={user_key}")
             return {
@@ -652,7 +762,7 @@ class KnowledgeBaseService:
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": action_failed("delete this knowledge base")
             }
 
     def _build_kb_folder_record(
@@ -710,7 +820,7 @@ class KnowledgeBaseService:
             # Validate user and permissions
             validation_result = await self.graph_provider._validate_folder_creation(kb_id, user_id)
             if not validation_result["valid"]:
-                return validation_result
+                return self._validation_failure(validation_result, "create this folder")
 
             # Check for name conflicts in KB root
             existing_folder = await self.graph_provider.find_folder_by_name_in_parent(
@@ -749,7 +859,7 @@ class KnowledgeBaseService:
 
         except Exception as e:
             self.logger.error(f"❌ KB folder creation failed: {str(e)}")
-            return {"success": False, "code": 500, "reason": str(e)}
+            return {"success": False, "code": 500, "reason": action_failed("create this folder")}
 
     async def create_nested_folder(
         self,
@@ -770,7 +880,7 @@ class KnowledgeBaseService:
             # Validate user and permissions
             validation_result = await self.graph_provider._validate_folder_creation(kb_id, user_id)
             if not validation_result["valid"]:
-                return validation_result
+                return self._validation_failure(validation_result, "create this folder")
 
             # Additional validation for parent folder
             folder_valid = await self.graph_provider.validate_folder_exists_in_kb(kb_id, parent_folder_id)
@@ -818,7 +928,7 @@ class KnowledgeBaseService:
 
         except Exception as e:
             self.logger.error(f"❌ Nested folder creation failed: {str(e)}")
-            return {"success": False, "code": 500, "reason": str(e)}
+            return {"success": False, "code": 500, "reason": action_failed("create this folder")}
 
     async def get_folder_contents(
         self,
@@ -861,7 +971,7 @@ class KnowledgeBaseService:
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": action_failed("open this folder")
             }
 
     async def updateFolder(
@@ -958,7 +1068,7 @@ class KnowledgeBaseService:
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": action_failed("rename this folder")
             }
 
     async def delete_folder(
@@ -994,12 +1104,7 @@ class KnowledgeBaseService:
             if not (cascade_result and cascade_result.get("success")):
                 # The recursive delete itself failed (not just the cleanup-event
                 # publish) — do not report a success the graph doesn't back up.
-                self.logger.error(f"❌ Failed to delete folder {folder_id}: {cascade_result}")
-                return cascade_result or {
-                    "success": False,
-                    "code": 500,
-                    "reason": "Failed to delete folder",
-                }
+                return self._mutation_failure(cascade_result, "delete this folder")
             self.logger.info(f"🎉 Folder {folder_id} and ALL contents deleted successfully by {user_id}")
             response = {
                 "success": True,
@@ -1019,7 +1124,7 @@ class KnowledgeBaseService:
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": action_failed("delete this folder")
             }
 
     async def update_record(
@@ -1153,7 +1258,7 @@ class KnowledgeBaseService:
             self.logger.error(f"❌ Failed to update KB record: {str(e)}")
             return {
                 "success": False,
-                "reason": str(e),
+                "reason": action_failed("update this file"),
                 "code": 500
             }
 
@@ -1195,17 +1300,13 @@ class KnowledgeBaseService:
                 result.setdefault("deleteType", "kb_records")
                 return result
             else:
-                return result or {
-                    "success": False,
-                    "reason": "Failed to delete records",
-                    "code": 500
-                }
+                return self._mutation_failure(result, "delete these files")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete KB records: {str(e)}")
             return {
                 "success": False,
-                "reason": str(e),
+                "reason": action_failed("delete these files"),
                 "code": 500
             }
 
@@ -1256,17 +1357,13 @@ class KnowledgeBaseService:
                 result.setdefault("deleteType", "folder_records")
                 return result
             else:
-                return result or {
-                    "success": False,
-                    "reason": "Failed to delete records in folder",
-                    "code": 500
-                }
+                return self._mutation_failure(result, "delete these files")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete folder records: {str(e)}")
             return {
                 "success": False,
-                "reason": str(e),
+                "reason": action_failed("delete these files"),
                 "code": 500
             }
 
@@ -1309,6 +1406,10 @@ class KnowledgeBaseService:
             if resolve_err:
                 return resolve_err
 
+            team_err = await self._teams_not_in_requester_org(unique_teams, requester_id)
+            if team_err:
+                return team_err
+
             # Step 2: Single AQL query to do everything at once
             # Pass role even if only teams (it will be ignored for teams)
             result = await self.graph_provider.create_kb_permissions(
@@ -1328,12 +1429,11 @@ class KnowledgeBaseService:
                 await notify_kb_records_changed(kb_id)
                 return result
             else:
-                self.logger.error(f"❌ Permission creation failed: {result.get('reason')}")
-                return result
+                return self._mutation_failure(result, "share this knowledge base")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to create KB permissions: {str(e)}")
-            return {"success": False, "reason": str(e), "code": 500}
+            return {"success": False, "reason": action_failed("share this knowledge base"), "code": 500}
 
     async def update_kb_permission(
         self,
@@ -1545,21 +1645,13 @@ class KnowledgeBaseService:
                     "newRole": new_role,
                     "kbId": kb_id,
                 }
-            # Propagate the provider's own reason when it gave one; the
-            # generic message is only for the bare-bool contract.
-            if isinstance(result, dict):
-                return result
-            return {
-                "success": False,
-                "reason": "Failed to update permission",
-                "code": 500
-            }
+            return self._mutation_failure(result, "update this person's access")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to update KB permission: {str(e)}")
             return {
                 "success": False,
-                "reason": str(e),
+                "reason": action_failed("update this person's access"),
                 "code": 500
             }
 
@@ -1728,21 +1820,13 @@ class KnowledgeBaseService:
                     "teamIds": valid_team_ids,
                     "kbId": kb_id,
                 }
-            # Propagate the provider's own reason when it gave one; the
-            # generic message is only for the bare-bool contract.
-            if isinstance(result, dict):
-                return result
-            return {
-                "success": False,
-                "reason": "Failed to remove permissions",
-                "code": 500
-            }
+            return self._mutation_failure(result, "remove this person's access")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to remove KB permission: {str(e)}")
             return {
                 "success": False,
-                "reason": str(e),
+                "reason": action_failed("remove this person's access"),
                 "code": 500
             }
 
@@ -1777,7 +1861,7 @@ class KnowledgeBaseService:
             self.logger.error(f"❌ Failed to list KB permissions: {str(e)}")
             return {
                 "success": False,
-                "reason": str(e),
+                "reason": action_failed("load who this knowledge base is shared with"),
                 "code": 500
             }
 
@@ -1872,7 +1956,7 @@ class KnowledgeBaseService:
                 "records": [],
                 "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
                 "filters": {"applied": {}, "available": {}},
-                "error": str(e),
+                "error": action_failed("load these files"),
             }
 
     async def list_kb_records(
@@ -1965,7 +2049,7 @@ class KnowledgeBaseService:
                 "records": [],
                 "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
                 "filters": {"applied": {}, "available": {}},
-                "error": str(e),
+                "error": action_failed("load these files"),
             }
 
     async def get_kb_children(
@@ -2020,7 +2104,14 @@ class KnowledgeBaseService:
             )
 
             if not result.get("success"):
-                return self._error_response(404, result.get("reason", "KB not found"))
+                failure = _browse_failure(
+                    result, "Knowledge base not found", "open this knowledge base",
+                )
+                if failure["code"] != 404:
+                    self.logger.error(
+                        "❌ Failed to get KB children: %s", result.get("reason")
+                    )
+                return self._error_response(failure["code"], failure["reason"])
 
             # Add pagination metadata
             total_items = result.get("totalCount", 0)
@@ -2064,8 +2155,10 @@ class KnowledgeBaseService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get KB children with pagination: {str(e)}")
-            return self._error_response(500, str(e))
+            self.logger.error(
+                "❌ Failed to get KB children with pagination: %s", e, exc_info=True
+            )
+            return self._error_response(500, action_failed("open this knowledge base"))
 
     async def get_folder_children(
         self,
@@ -2127,7 +2220,14 @@ class KnowledgeBaseService:
             )
 
             if not result.get("success"):
-                return self._error_response(404, result.get("reason", "Folder not found"))
+                failure = _browse_failure(
+                    result, "Folder not found", "open this folder",
+                )
+                if failure["code"] != 404:
+                    self.logger.error(
+                        "❌ Failed to get folder children: %s", result.get("reason")
+                    )
+                return self._error_response(failure["code"], failure["reason"])
 
             # Add pagination metadata
             total_items = result.get("totalCount", 0)
@@ -2177,8 +2277,10 @@ class KnowledgeBaseService:
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get folder children with pagination: {str(e)}")
-            return self._error_response(500, str(e))
+            self.logger.error(
+                "❌ Failed to get folder children with pagination: %s", e, exc_info=True
+            )
+            return self._error_response(500, action_failed("open this folder"))
 
     def _error_response(self, code: int, reason: str) -> Dict:
         """Create consistent error response"""
@@ -2334,7 +2436,7 @@ class KnowledgeBaseService:
                 kb_id=kb_id, user_id=user_id, org_id=org_id, parent_folder_id=parent_folder_id
             )
             if not validation.get("valid"):
-                return validation
+                return self._validation_failure(validation, "upload these files")
 
             analysis = gp._analyze_upload_structure(files, validation)
 
@@ -2369,16 +2471,19 @@ class KnowledgeBaseService:
             }
         except Exception as e:
             self.logger.error(f"❌ Upload records failed: {str(e)}", exc_info=True)
-            return {"success": False, "reason": str(e), "code": 500}
+            return {"success": False, "reason": action_failed("upload these files"), "code": 500}
 
     async def validate_folder_for_upload(self, kb_id: str, folder_id: str, user_id: str, org_id: str) -> Dict:
         """Validate that a folder exists and belongs to the KB before upload."""
-        return await self.graph_provider.validate_folder_for_upload(
+        result = await self.graph_provider.validate_folder_for_upload(
             kb_id=kb_id,
             folder_id=folder_id,
             user_id=user_id,
             org_id=org_id,
         )
+        if isinstance(result, dict) and not result.get("valid"):
+            return self._validation_failure(result, "upload to this folder")
+        return result
 
     async def move_record(
         self,
@@ -2548,4 +2653,4 @@ class KnowledgeBaseService:
                     self.logger.info("🔄 Transaction rolled back")
                 except Exception as rb_err:
                     self.logger.warning(f"Rollback failed: {rb_err}")
-            return {"success": False, "code": 500, "reason": str(e)}
+            return {"success": False, "code": 500, "reason": action_failed("move this file")}

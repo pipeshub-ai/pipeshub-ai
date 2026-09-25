@@ -38,10 +38,15 @@ from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.confidence import normalize as normalize_confidence
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.error_classification import classify_error
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.modules.demo_data.chat import (
+    demo_exclusions_for_run,
+    exclude_from_query,
+    exclude_from_state,
+)
 
 if TYPE_CHECKING:
     from app.utils.stage_timer import StageTimer
@@ -308,15 +313,18 @@ async def run_agent_loop_stream(
         has_slack_connector = connector_instances_have_slack(connector_instances)
         if stage_timer:
             stage_timer.mark("connector_flags")
+        demo_excluded = await demo_exclusions_for_run(graph_provider, config_service, user_info, log)
+        query_info = exclude_from_query(query_info, demo_excluded)
         chat_state = build_initial_state(
             query_info, user_info, llm, log, retrieval_service, graph_provider,
             reranker_service, config_service, model_name, model_key, org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
             has_slack_connector=has_slack_connector, client_name=client_name,
         )
+        exclude_from_state(chat_state, demo_excluded)
     except Exception as exc:
         log.error("agent-loop stream: failed to build initial state: %s", exc, exc_info=True)
-        error_code, user_message = classify_error(str(exc))
+        error_code, user_message = classify_exception(exc)
         if cancellation_registry is not None:
             await cancellation_registry.unregister(run_id)
         yield _pre_stream_error_frame(protocol, user_message, error_code)
@@ -399,7 +407,7 @@ async def run_agent_loop_stream(
                 )
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)
-            error_code, user_message = classify_error(str(exc))
+            error_code, user_message = classify_exception(exc)
             # Genuine unhandled failure (never reached AnswerFinalizer's
             # graceful error-answer path) -- RUN_ERROR in AG-UI mode, same
             # as the pre-stream build-failure yields above.

@@ -3,8 +3,8 @@ plan/critique/replan and verify/retry looping mechanics extracted from
 `PlanCritiqueExecuteLoop` and PipesHub's `OrchestratorLoop`.
 
 Tested against a minimal fake standing in for `Agent` — `PhaseDriver` only
-ever calls `step()`/`last_tool_result()`/`inject_user_message()`/reads
-`max_turns`, so a fake implementing exactly that surface exercises every
+ever calls `step()`/`inject_user_message()`/reads `max_turns` (the gate
+verdict comes from the turn `step()` returns), so a fake implementing exactly that surface exercises every
 branch deterministically, with no real model/tool wiring needed (that
 wiring is covered separately by `test_plan_critique_execute_loop.py` and
 `OrchestratorLoop`'s own tests)."""
@@ -16,7 +16,7 @@ from typing import Any
 
 from app.agent_loop_lib.agent.loops import StepOutcome
 from app.agent_loop_lib.agent.phase_driver import PhaseDriver
-from app.agent_loop_lib.core.types import AgentResult, Goal
+from app.agent_loop_lib.core.types import AgentResult, AgentTurn, Goal, ToolResult
 
 _GOAL = Goal(description="g")
 
@@ -24,7 +24,7 @@ _GOAL = Goal(description="g")
 @dataclass
 class _ScriptedTurn:
     """One `agent.step()` call's canned outcome plus the gate-tool verdict
-    `agent.last_tool_result()` should report for that same turn."""
+    that turn's tool results carry."""
 
     status: str = "continue"
     result: AgentResult | None = None
@@ -45,13 +45,12 @@ class _FakeAgent:
 
     async def step(self, goal: Goal, turn_index: int) -> StepOutcome:
         self.step_calls.append(turn_index)
-        turn = self._turns[len(self.step_calls) - 1]
-        return StepOutcome(status=turn.status, result=turn.result)
-
-    def last_tool_result(self, name: str) -> Any:
-        turn = self._turns[len(self.step_calls) - 1]
-        verdict = turn.verdict
-        return None if verdict == "NO_RESULT_SENTINEL" else verdict
+        scripted = self._turns[len(self.step_calls) - 1]
+        results = [] if scripted.verdict in ("NO_RESULT_SENTINEL", None) else [
+            ToolResult(tool_call_id=f"gate-{turn_index}", name=gate, content=scripted.verdict)
+            for gate in ("critique_plan", "verify_result")
+        ]
+        return StepOutcome(status=scripted.status, result=scripted.result, turn=AgentTurn(tool_results=results))
 
     async def inject_user_message(self, text: str, *, pinned: bool = False) -> None:
         self.injected_messages.append(text)

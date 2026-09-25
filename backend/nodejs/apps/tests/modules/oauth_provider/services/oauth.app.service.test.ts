@@ -14,7 +14,7 @@ import {
   InvalidRedirectUriError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
-import { PAT_APP_CLIENT_ID_PREFIX } from '../../../../src/modules/oauth_provider/constants/constants'
+import { PAT_APP_CLIENT_ID_PREFIX, SERVICE_TOKEN_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
@@ -297,13 +297,14 @@ describe('OAuthAppService', () => {
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
 
-    it('should exclude the synthetic pat-system app clientId from the filter', async () => {
-      // The per-org PAT app (pat-system:<orgId>) is an internal pseudo-client
-      // (see PatService) — its creator must not be able to view, edit,
-      // suspend, delete, or regenerate its secret through this CRUD surface,
-      // since verifyAccessToken never checks app status and a working
+    it('should exclude the synthetic pat-system and svc-system apps from the filter', async () => {
+      // The per-org PAT app (pat-system:<orgId>) and service-token app
+      // (svc-system:<orgId>) are internal pseudo-clients (see PatService and
+      // ServiceTokenService) — their creator must not be able to view, edit,
+      // suspend, delete, or regenerate a secret for them through this CRUD
+      // surface, since verifyAccessToken never checks app status and a working
       // secret would let them mint client_credentials tokens outside the
-      // auditable PAT list.
+      // auditable token list.
       const findStub = sinon.stub(OAuthApp, 'findOne').resolves(null)
       try {
         await service.getAppById(fakeAppId, fakeOrgId, fakeUserId)
@@ -311,10 +312,15 @@ describe('OAuthAppService', () => {
         // expected NotFoundError
       }
       const filter = findStub.firstCall.args[0] as Record<string, unknown>
-      const clientIdFilter = filter.clientId as { $not: RegExp }
-      expect(clientIdFilter.$not.source).to.equal(`^${PAT_APP_CLIENT_ID_PREFIX}`)
+      const clientIdFilter = filter.clientId as { $not: RegExp; $nin: string[] }
+      // Asserting behaviour rather than the exact pattern, so adding a third
+      // internal pseudo-client later does not break this test for no reason.
       expect(clientIdFilter.$not.test(`${PAT_APP_CLIENT_ID_PREFIX}${fakeOrgId}`)).to.be.true
+      expect(
+        clientIdFilter.$not.test(`${SERVICE_TOKEN_APP_CLIENT_ID_PREFIX}${fakeOrgId}`),
+      ).to.be.true
       expect(clientIdFilter.$not.test('some-other-client-id')).to.be.false
+      expect(clientIdFilter.$nin).to.deep.equal([FIRST_PARTY_DEVICE_CLIENT_ID])
     })
 
     it('should throw NotFoundError when app is not visible to caller (e.g. different creator in same org)', async () => {
@@ -1298,6 +1304,55 @@ describe('OAuthAppService - branch coverage', () => {
     it('should return false when grant type is not allowed', () => {
       const app = { allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE] } as any
       expect(service.isGrantTypeAllowed(app, 'client_credentials')).to.be.false
+    })
+  })
+
+  describe('createDynamicClient', () => {
+    it('should reject client_credentials', async () => {
+      try {
+        await service.createDynamicClient({
+          orgId: VALID_ORG_ID,
+          createdBy: VALID_USER_ID,
+          name: 'Cursor',
+          redirectUris: ['https://example.com/cb'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          allowedScopes: ['user:read'],
+          isConfidential: false,
+        })
+        expect.fail('should have thrown')
+      } catch (err: any) {
+        expect(err).to.be.instanceOf(BadRequestError)
+      }
+    })
+
+    it('should allow a private-use redirect URI', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(),
+        slug: 'dcr',
+        clientId: 'cid',
+        name: 'Cursor',
+        redirectUris: ['cursor://anysphere.cursor-mcp/oauth/callback'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.REFRESH_TOKEN],
+        allowedScopes: ['user:read'],
+        status: OAuthAppStatus.ACTIVE,
+        isConfidential: false,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 2592000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      const createStub = sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
+      await service.createDynamicClient({
+          orgId: VALID_ORG_ID,
+          createdBy: VALID_USER_ID,
+        name: 'Cursor',
+        redirectUris: ['cursor://anysphere.cursor-mcp/oauth/callback'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.REFRESH_TOKEN],
+        allowedScopes: ['user:read'],
+        isConfidential: false,
+      })
+      expect(createStub.calledOnce).to.be.true
+      expect(createStub.firstCall.args[0].isDynamic).to.be.true
     })
   })
 

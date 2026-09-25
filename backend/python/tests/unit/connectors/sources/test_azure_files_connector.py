@@ -17,7 +17,7 @@ from app.connectors.sources.azure_files.connector import (
 from app.models.entities import FileRecord, RecordType
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from urllib.parse import quote
+from urllib.parse import urlparse
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -1099,8 +1099,42 @@ class TestProcessorPlaceholderParent:
             assert isinstance(result, FileRecord)
             assert result.is_internal is True
             assert result.hide_weburl is True
-            assert "myacc.file.core.windows.net" in result.weburl
+            parsed = urlparse(result.weburl)
+            assert parsed.scheme == "https"
+            assert parsed.hostname == "myacc.file.core.windows.net"
             assert result.path == "folder"
+
+    def test_forwards_record_group_kwargs_to_base(self, logger, provider, cfg):
+        proc = AzureFilesDataSourceEntitiesProcessor(
+            logger=logger, data_store_provider=provider,
+            config_service=cfg, account_name="myacc",
+        )
+        proc.org_id = "org-1"
+        child = MagicMock()
+        child.connector_name = Connectors.AZURE_FILES
+        child.connector_id = "c1"
+        child.org_id = "org-1"
+        child.external_record_group_id = "share1"
+        child.record_group_type = RecordGroupType.FILE_SHARE.value
+
+        result = proc._create_placeholder_parent_record(
+            "share1/folder",
+            RecordType.FILE,
+            child,
+            record_name="folder",
+            record_group_type=RecordGroupType.FILE_SHARE.value,
+            external_record_group_id="share1",
+        )
+        assert isinstance(result, FileRecord)
+        assert result.record_name == "folder"
+        assert result.record_group_type == RecordGroupType.FILE_SHARE.value
+        assert result.external_record_group_id == "share1"
+        assert result.is_internal is True
+        assert result.hide_weburl is True
+        parsed = urlparse(result.weburl)
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "myacc.file.core.windows.net"
+        assert result.path == "folder"
 
 
 # ===========================================================================
@@ -1175,6 +1209,24 @@ class TestInitBranches:
 class TestGetRevisionIdBranches:
     def test_file_id_returns_str(self, conn):
         assert conn._get_azure_files_revision_id({"file_id": 12345}) == "12345"
+
+    def test_file_edit_changes_the_revision(self, conn):
+        # The FileId survives an edit; alone it hid every content change.
+        before = {"file_id": 7, "size": 10, "last_write_time": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        after = {**before, "size": 12, "last_write_time": datetime(2026, 1, 2, tzinfo=timezone.utc)}
+        assert conn._get_azure_files_revision_id(before) != conn._get_azure_files_revision_id(after)
+
+    def test_rename_keeps_the_revision(self, conn):
+        # A rename keeps the FileId, size and last-write time, so move
+        # detection still finds the record by its revision.
+        item = {"file_id": 7, "size": 10, "last_write_time": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        renamed = {**item, "name": "new.csv", "path": "sets/2/new.csv", "etag": '"0xNEW"'}
+        assert conn._get_azure_files_revision_id(item) == conn._get_azure_files_revision_id(renamed)
+        assert conn._get_azure_files_revision_id(item) == "7:10:2026-01-01T00:00:00+00:00"
+
+    def test_directory_keeps_the_bare_file_id(self, conn):
+        item = {"file_id": 7, "is_directory": True, "last_write_time": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        assert conn._get_azure_files_revision_id(item) == "7"
 
     def test_content_md5_bytes(self, conn):
         md5_bytes = b"\x01\x02\x03"
@@ -2610,3 +2662,200 @@ class TestCreateConnector:
             data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureFilesConnector)
+
+
+# ===========================================================================
+# Removing records of items no longer in the share
+# ===========================================================================
+class TestRemovingItemsThatAreGone:
+    @staticmethod
+    def _listing(conn, by_directory):
+        async def listing(share_name, directory_path=""):
+            result = by_directory.get(directory_path)
+            if result is None:
+                return _make_response(False, error="listing failed")
+            return _make_response(True, result)
+
+        conn.data_source = MagicMock()
+        conn.data_source.list_directories_and_files = listing
+        conn.sync_filters = FilterCollection()
+        conn.record_sync_point = MagicMock()
+        conn.record_sync_point.read_sync_point = AsyncMock(return_value=None)
+        conn.record_sync_point.update_sync_point = AsyncMock()
+        conn._process_azure_files_item = AsyncMock(return_value=(None, []))
+
+    @pytest.mark.asyncio
+    async def test_sync_share_reports_what_it_saw(self, conn):
+        self._listing(conn, {
+            "": [_file_item("a.txt"), _file_item("docs", is_directory=True)],
+            "docs": [_file_item("b.txt", path="docs/b.txt")],
+        })
+
+        seen, complete = await conn._sync_share("share1")
+
+        assert complete is True
+        # The share root is the parent of top-level items and is never listed.
+        assert seen == {"share1", "share1/a.txt", "share1/docs", "share1/docs/b.txt"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_listing_marks_the_share_incomplete(self, conn):
+        self._listing(conn, {"": [_file_item("docs", is_directory=True)]})  # "docs" fails
+
+        _, complete = await conn._sync_share("share1")
+
+        assert complete is False
+
+    @pytest.mark.asyncio
+    async def test_an_item_that_fails_to_process_still_counts_as_seen(self, conn):
+        self._listing(conn, {"": [_file_item("a.txt")]})
+        conn._process_azure_files_item = AsyncMock(side_effect=Exception("boom"))
+
+        seen, complete = await conn._sync_share("share1")
+
+        assert "share1/a.txt" in seen
+        assert complete is True
+
+    @pytest.mark.asyncio
+    async def test_items_modified_before_the_last_sync_are_still_visited(self, conn):
+        # A rename keeps the file's timestamps; skipping on them hid moves.
+        self._listing(conn, {"": [_file_item("old.txt", last_modified=datetime(2020, 1, 1, tzinfo=timezone.utc))]})
+        conn.record_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 4_000_000_000_000})
+
+        seen, _ = await conn._sync_share("share1")
+
+        conn._process_azure_files_item.assert_awaited_once()
+        assert "share1/old.txt" in seen
+
+    @pytest.mark.asyncio
+    async def test_records_not_seen_are_deleted(self, conn, proc):
+        proc.get_records_by_record_type = AsyncMock(return_value=[
+            _make_file_record(record_id="keep", external_record_id="share1/a.txt"),
+            _make_file_record(record_id="gone", external_record_id="share1/deleted.txt"),
+        ])
+        proc.on_record_deleted = AsyncMock()
+
+        await conn._remove_records_not_seen({"share1", "share1/a.txt"})
+
+        proc.on_record_deleted.assert_awaited_once_with("gone")
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.azure_files.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_run_sync_removes_only_after_every_share_was_listed(self, mock_filters, conn):
+        share_filter = MagicMock()
+        share_filter.value = ["s1", "s2"]
+        sync_filters = MagicMock()
+        sync_filters.get.return_value = share_filter
+        mock_filters.return_value = (sync_filters, FilterCollection())
+        conn.data_source = MagicMock()
+        conn.data_source.list_shares = AsyncMock(return_value=_make_response(True, data=[]))
+        conn._create_record_groups_for_shares = AsyncMock()
+        conn._remove_records_not_seen = AsyncMock()
+
+        conn._sync_share = AsyncMock(side_effect=[({"s1", "s1/a"}, True), ({"s2"}, True)])
+        await conn.run_sync()
+        conn._remove_records_not_seen.assert_awaited_once_with({"s1", "s1/a", "s2"})
+
+        conn._remove_records_not_seen.reset_mock()
+        conn._sync_share = AsyncMock(side_effect=[({"s1"}, True), ({"s2"}, False)])
+        await conn.run_sync()
+        conn._remove_records_not_seen.assert_not_awaited()
+
+
+class TestRevisionFallbacks:
+    def test_last_modified_stands_in_for_a_missing_write_time(self, conn):
+        # A bare FileId never changes on an edit, which was the original bug.
+        before = {"file_id": 7, "size": 10, "last_modified": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        after = {**before, "last_modified": datetime(2026, 1, 2, tzinfo=timezone.utc)}
+        assert conn._get_azure_files_revision_id(before) != conn._get_azure_files_revision_id(after)
+        assert conn._get_azure_files_revision_id(before) != "7"
+
+    def test_etag_is_the_last_resort(self, conn):
+        assert conn._get_azure_files_revision_id({"file_id": 7, "size": 1, "etag": '"0xA"'}) == "7:1:0xA"
+
+    @pytest.mark.asyncio
+    async def test_reindex_compares_and_stores_the_same_revision_as_the_sync(self, conn):
+        written = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        properties = {"file_id": 7, "size": 10, "last_write_time": written, "etag": '"0xE"'}
+        revision = conn._get_azure_files_revision_id(properties)
+        conn.data_source = MagicMock()
+        conn.data_source.get_file_properties = AsyncMock(return_value=_make_response(True, properties))
+
+        unchanged = _make_file_record(external_record_id="share1/a.txt", external_revision_id=revision)
+        assert await conn._check_and_fetch_updated_record("org", unchanged) is None
+
+
+def _folder_filter(values, exclude=False):
+    from app.connectors.core.registry.filters import Filter, FilterType, ListOperator
+
+    operator = ListOperator.NOT_IN if exclude else ListOperator.IN
+    return FilterCollection(filters=[Filter(key="folder_paths", value=values, type=FilterType.LIST, operator=operator)])
+
+
+class TestFolderFilter:
+    """The "Folders" sync filter on Azure Files: the walk starts in the chosen folders."""
+
+    @staticmethod
+    def _prepare(conn, by_directory):
+        visited = []
+
+        async def listing(share_name, directory_path=""):
+            visited.append(directory_path)
+            result = by_directory.get(directory_path)
+            if result is None:
+                return _make_response(False, error=f"Directory not found: {share_name}/{directory_path}")
+            return _make_response(True, result)
+
+        conn.data_source = MagicMock()
+        conn.data_source.list_directories_and_files = listing
+        conn.record_sync_point = MagicMock()
+        conn.record_sync_point.read_sync_point = AsyncMock(return_value=None)
+        conn.record_sync_point.update_sync_point = AsyncMock()
+        conn._process_azure_files_item = AsyncMock(return_value=(None, []))
+        return visited
+
+    @pytest.mark.asyncio
+    async def test_include_starts_in_the_chosen_folder_and_keeps_its_parents(self, conn):
+        conn.sync_filters = _folder_filter(["reports/2026"])
+        visited = self._prepare(conn, {"reports/2026": [_file_item("q1.pdf", path="reports/2026/q1.pdf")]})
+
+        seen, complete = await conn._sync_share("s1")
+
+        assert visited == ["reports/2026"]
+        assert complete is True
+        # Parents of the chosen folder stay, or the removal step would drop them.
+        assert {"s1", "s1/reports", "s1/reports/2026", "s1/reports/2026/q1.pdf"} == seen
+
+    @pytest.mark.asyncio
+    async def test_exclude_does_not_enter_the_excluded_folder(self, conn):
+        conn.sync_filters = _folder_filter(["tmp"], exclude=True)
+        visited = self._prepare(conn, {
+            "": [_file_item("a.txt"), _file_item("tmp", is_directory=True), _file_item("docs", is_directory=True)],
+            "docs": [],
+        })
+
+        seen, complete = await conn._sync_share("s1")
+
+        assert visited == ["", "docs"]
+        assert "s1/tmp" not in seen and "s1/a.txt" in seen
+        assert complete is True
+
+    @pytest.mark.asyncio
+    async def test_a_chosen_folder_that_does_not_exist_is_empty_not_a_failure(self, conn):
+        conn.sync_filters = _folder_filter(["typo"])
+        self._prepare(conn, {})
+
+        seen, complete = await conn._sync_share("s1")
+
+        assert complete is True
+        # Left out of seen, an existing record for the folder is removed with its children.
+        assert seen == {"s1"}
+
+    @pytest.mark.asyncio
+    async def test_a_missing_chosen_folder_does_not_keep_its_parents(self, conn):
+        conn.sync_filters = _folder_filter(["reports/typo", "docs"])
+        self._prepare(conn, {"docs": []})
+
+        seen, complete = await conn._sync_share("s1")
+
+        assert complete is True
+        assert seen == {"s1", "s1/docs"}

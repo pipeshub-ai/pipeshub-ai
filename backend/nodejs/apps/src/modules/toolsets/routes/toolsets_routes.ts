@@ -51,6 +51,7 @@ import {
   reauthenticateAgentToolset,
   getAgentToolsetOAuthUrl,
 } from '../controller/toolsets_controller';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 // ============================================================================
 // Validation Schemas
@@ -262,6 +263,14 @@ const getAgentToolsetsSchema = z.object({
  */
 export function createToolsetsRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(
+    router,
+    'toolsetId',
+    'toolsetType',
+    'instanceId',
+    'oauthConfigId',
+    'agentKey',
+  );
   const config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 

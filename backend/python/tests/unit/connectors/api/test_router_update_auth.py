@@ -342,7 +342,9 @@ class TestAdminOAuthUpdatesExistingConfigNotFound:
                 )
 
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "NoneType" in exc_info.value.detail or "attribute" in exc_info.value.detail
+        # an internal AttributeError never reaches the person
+        assert exc_info.value.detail == "We couldn't save this connector's sign-in details. Please try again; if it keeps failing, contact your admin."
+        assert "NoneType" not in exc_info.value.detail
 
 
 class TestAdminOAuthNoCredentialsHasAppId:
@@ -728,7 +730,9 @@ class TestGeneralExceptionRaises500:
                 )
 
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "something broke" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't save this connector's sign-in details. Please try again; if it keeps failing, contact your admin."
+        assert "something broke" not in exc_info.value.detail
 
 
 class TestOAuthCreateFailsRaises500:

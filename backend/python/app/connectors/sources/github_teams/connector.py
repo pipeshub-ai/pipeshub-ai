@@ -116,7 +116,19 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
                 ],
                 app_description="OAuth application for accessing Github organization data",
                 app_categories=["Knowledge Management"],
-            )
+            ),
+            # A GitHub personal access token as an alternative to OAuth. The field
+            # is named "token" because GitHubClient.build_from_services reads the
+            # API_TOKEN value from auth.token.
+            AuthBuilder.type(AuthType.API_TOKEN).fields(
+                [
+                    CommonFields.api_token(
+                        token_name="Personal Access Token",
+                        placeholder="Enter a GitHub personal access token",
+                        field_name="token",
+                    ),
+                ]
+            ),
         ]
     )
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)
@@ -137,10 +149,11 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.REPO_IDS.value,
-            display_name="Repositories",
-            description="Limit sync to specific repositories (full_name, e.g. my-org/my-repo)",
-            filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
+            display_name="Repository",
+            description="Select the repository to sync.",
+            filter_type=FilterType.SELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
+            required=True,
         ))
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,
@@ -295,12 +308,32 @@ class GitHubTeamsConnector(BaseConnector):
     # Sync
     # ------------------------------------------------------------------
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        if not self.data_source:
+            return
+        email, source_user_id = None, None
+        try:
+            me_res = await self.runtime.ds_call(self.data_source.get_authenticated)
+            if me_res.success and me_res.data is not None:
+                email = getattr(me_res.data, "email", None)
+                source_user_id = getattr(me_res.data, "id", None)
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated GitHub account: %s", e)
+            return
+        await self.register_authenticated_source_user(
+            email.strip() if isinstance(email, str) else None,
+            str(source_user_id) if source_user_id is not None else None,
+        )
+
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
         try:
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
             await self.runtime.refresh_token_if_needed()
+            await self._register_authenticated_identity()
             self.logger.info("Starting GitHub Teams sync")
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "githubteams", self.connector_id, self.logger

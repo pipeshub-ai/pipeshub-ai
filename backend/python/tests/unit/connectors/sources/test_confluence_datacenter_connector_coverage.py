@@ -950,14 +950,14 @@ class TestFetchGroupMembers:
         mock_ds.get_group_members_by_name = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         emails = await c._fetch_group_members("g1", "G")
-        assert emails == []
+        assert emails is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         c = _conn()
         c._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
         emails = await c._fetch_group_members("g1", "G")
-        assert emails == []
+        assert emails is None
 
 
 # ===========================================================================

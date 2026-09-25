@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { randomBytes } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 
@@ -30,17 +31,21 @@ import { IUserCredentials, UserCredentials } from '../schema/userCredentials.sch
 
 import { AuthSessionRequest } from '../middlewares/types';
 
-import { SessionService } from '../services/session.service';
+import { SessionData, SessionService } from '../services/session.service';
 import mongoose from 'mongoose';
 import { OAuth2Client } from 'google-auth-library';
-import { validateAzureAdUser } from '../utils/azureAdTokenValidation';
+import {
+  MicrosoftSignInConfig,
+  microsoftAccountIdentity,
+  validateAzureAdUser,
+} from '../utils/azureAdTokenValidation';
 import { IamService } from '../services/iam.service';
 import { MailService } from '../services/mail.service';
 
 import {
   BadRequestError,
   ForbiddenError,
-  GoneError,
+  HttpError,
   InternalServerError,
   NotFoundError,
   UnauthorizedError,
@@ -63,6 +68,10 @@ import { Org } from '../../user_management/schema/org.schema';
 import { Users } from '../../user_management/schema/users.schema';
 import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
+import {
+  assertMethodAllowedAtStep,
+  IOrgAuthConfigLike,
+} from '../utils/authMethodGuard';
 
 const {
   LOGIN,
@@ -72,10 +81,49 @@ const {
   WRONG_PASSWORD,
   REFRESH_TOKEN,
   PASSWORD_CHANGED,
+  ACCOUNT_BLOCKED,
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
 const SESSION_INVALIDATE_TOKEN_DELAY_MS = 1000;
+
+export const SIGN_IN_SESSION_EXPIRED =
+  'Your sign-in session expired. Start again from the sign-in page.';
+export const SESSION_NO_LONGER_VALID =
+  'Your session is no longer valid. Please sign in again.';
+export const OTP_SEND_FAILED =
+  "We couldn't send your sign-in code. Wait a minute and try again, or use another sign-in method.";
+export const OTP_ALREADY_USED =
+  'That sign-in code has already been used. Request a new code and try again.';
+export const EMAIL_MISMATCH =
+  "You signed in with a different account than the email you entered. Sign in with the matching account, or go back and enter that account's email.";
+export const PROVIDER_SHARED_NO_EMAIL =
+  "Your sign-in provider didn't share an email address, so we couldn't sign you in. Ask your admin to allow the email permission for PipesHub.";
+export const ADMIN_ONLY_SIGN_IN_SETTINGS =
+  'Only workspace admins can view or change sign-in settings.';
+export const SIGN_IN_ACCOUNT_CHANGED =
+  'This step was completed with a different account than the step before it. Start again from the sign-in page and use the same account for every step.';
+export const OAUTH_SIGN_IN_FAILED =
+  "Sign-in with your identity provider didn't complete. Try again; if it keeps happening, ask your admin to check the sign-in settings.";
+export const SAML_HAS_ITS_OWN_SIGN_IN =
+  "Single sign-on (SAML) can't be completed with this request. On the sign-in page, choose your organisation's single sign-on option. Apps calling the API directly should send the browser to /api/v1/saml/signIn instead.";
+export const WRONG_EMAIL_OR_PASSWORD =
+  'The email or password is incorrect. Check both and try again, or use Forgot password to set a new password.';
+export const WRONG_SIGN_IN_CODE =
+  "That sign-in code isn't right. Check the most recent code in your email, or request a new one.";
+export const SIGN_IN_CODE_REQUESTED =
+  'If that email can sign in with a code, one is being sent. It works for 10 minutes. If nothing arrives, check your spam folder or try again later.';
+
+let decoyHash: Promise<string> | undefined;
+
+// Refusals that have no stored hash to check still pay for one bcrypt
+// comparison, so an unknown email doesn't answer noticeably faster than a
+// real account.
+async function compareWithDecoyHash(candidate: unknown): Promise<void> {
+  decoyHash ??= bcrypt.hash(randomBytes(16).toString('hex'), SALT_ROUNDS);
+  const hash = await decoyHash;
+  await bcrypt.compare(typeof candidate === 'string' ? candidate : '', hash);
+}
 
 @injectable()
 export class UserAccountController {
@@ -99,9 +147,26 @@ export class UserAccountController {
     decodedToken: Record<string, any>,
     target: Record<string, any>,
     context: string,
+    emailClaimTrusted: boolean,
   ): Promise<void> {
-    const tokenEmail: string | undefined = decodedToken?.email;
-    if (!tokenEmail || tokenEmail.toLowerCase() === target.email?.toLowerCase()) {
+    const tokenEmail =
+      typeof decodedToken.email === 'string' ? decodedToken.email : undefined;
+    const targetEmail =
+      typeof target.email === 'string' ? target.email.toLowerCase() : '';
+    if (
+      !emailClaimTrusted ||
+      tokenEmail === undefined ||
+      tokenEmail === '' ||
+      tokenEmail.toLowerCase() === targetEmail
+    ) {
+      return;
+    }
+    // Only rename an account that this token signs in by its UPN; never move
+    // another account's email.
+    const signInNames = [decodedToken.preferred_username, decodedToken.upn]
+      .filter((name): name is string => typeof name === 'string')
+      .map((name) => name.toLowerCase());
+    if (!signInNames.includes(targetEmail)) {
       return;
     }
     if (target._id) {
@@ -133,6 +198,23 @@ export class UserAccountController {
       });
     }
     target.email = tokenEmail.toLowerCase();
+  }
+
+  // A later sign-in step must prove the account an earlier step already proved.
+  protected assertSameAccountAsEarlierSteps(
+    sessionInfo: SessionData,
+    user: Record<string, unknown> | null | undefined,
+  ): void {
+    const id = user?._id;
+    const userId =
+      id instanceof mongoose.Types.ObjectId
+        ? id.toHexString()
+        : typeof id === 'string'
+          ? id
+          : '';
+    if (Number(sessionInfo.currentStep) > 0 && userId !== sessionInfo.userId) {
+      throw new UnauthorizedError(SIGN_IN_ACCOUNT_CHANGED);
+    }
   }
 
   async generateHashedOTP() {
@@ -177,7 +259,45 @@ export class UserAccountController {
     return true;
   }
 
-  async verifyOTP(
+  // Not awaited: waiting for the mail service would make the attempt that
+  // locks an account slower than any other refusal, and a failed send must
+  // not turn that refusal into a server error.
+  protected notifyAccountLocked(
+    email: string,
+    userId: string,
+    orgId: string,
+  ): void {
+    void (async () => {
+      try {
+        const org = await Org.findOne({ _id: orgId, isDeleted: false });
+        const user = await Users.findOne({
+          _id: userId,
+          orgId,
+          isDeleted: false,
+        });
+        await this.mailService.sendMail({
+          emailTemplateType: 'suspiciousLoginAttempt',
+          initiator: {
+            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            orgId,
+          },
+          usersMails: [email],
+          subject: 'Alert : Suspicious Login Attempt Detected',
+          templateData: {
+            orgName: org?.shortName || org?.registeredName,
+            name: user?.fullName,
+          },
+        });
+      } catch (error) {
+        this.logger.error("The account-locked email couldn't be sent", {
+          userId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  }
+
+   async verifyOTP(
     userId: string,
     orgId: string,
     inputOTP: any,
@@ -190,21 +310,26 @@ export class UserAccountController {
       isDeleted: false,
     });
     if (!userCredentials) {
-      throw new BadRequestError('Please request OTP before login');
+      await compareWithDecoyHash(inputOTP);
+      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
     }
-    if (await this.ensureBlockStatus(userCredentials)) {
-      const blockedUntil = this.getBlockedUntilIso(userCredentials);
-      throw new BadRequestError(
-        blockedUntil
-          ? `Your account has been disabled as you have entered incorrect OTP/Password too many times. [blockedUntil:${blockedUntil}]`
-          : 'Your account has been disabled as you have entered incorrect OTP/Password too many times.',
-      );
-    }
-    if (!userCredentials.otpValidity || !userCredentials.hashedOTP) {
-      throw new UnauthorizedError('Invalid OTP. Please try again.');
-    }
-    if (Date.now() > userCredentials.otpValidity) {
-      throw new GoneError('OTP has expired. Please request a new one.');
+    // A locked account, a missing code and an expired code are all answered
+    // like a wrong code, since an unknown email can only ever get that answer.
+    // The owner learns about a lock from the email sent when it was applied.
+    const locked = await this.ensureBlockStatus(userCredentials);
+    if (
+      locked ||
+      !userCredentials.otpValidity ||
+      !userCredentials.hashedOTP ||
+      Date.now() > userCredentials.otpValidity
+    ) {
+      if (locked) {
+        this.logger.warn('Sign-in code refused: the account is locked', {
+          userId,
+        });
+      }
+      await compareWithDecoyHash(inputOTP);
+      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
     }
 
     // Ensure OTP is a string for bcrypt.compare (bcrypt requires both arguments to be strings)
@@ -230,31 +355,32 @@ export class UserAccountController {
         userCredentials.isBlocked = true;
         userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
         await userCredentials.save();
-
-        const org = await Org.findOne({ _id: orgId, isDeleted: false });
-        const user = await Users.findOne({ _id: userId, orgId, isDeleted: false });
-
-        await this.mailService.sendMail({
-          emailTemplateType: 'suspiciousLoginAttempt',
-          initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-            orgId: orgId?.toString(),
-          },
-          usersMails: [email],
-          subject: 'Alert : Suspicious Login Attempt Detected',
-          templateData: {
-            orgName: org?.shortName || org?.registeredName,
-            name: user?.fullName,
-          },
+        await UserActivities.create({
+          userId: userId,
+          orgId: orgId,
+          email: email,
+          activityType: ACCOUNT_BLOCKED,
+          ipAddress: ipAddress,
+          loginMode: 'OTP',
         });
-        throw new UnauthorizedError(
-          'Too many login attempts. Account Blocked.',
-        );
+
+        this.notifyAccountLocked(email, userId, orgId);
       }
-      throw new UnauthorizedError('Invalid OTP. Please try again.');
-    } else {
-      userCredentials.wrongCredentialCount = 0;
-      await userCredentials.save();
+      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+    }
+
+    // Clearing the code in the same write that matches it makes it single-use,
+    // even when two requests race with the same code.
+    const claimed = await UserCredentials.findOneAndUpdate(
+      { userId, orgId, isDeleted: false, hashedOTP: userCredentials.hashedOTP },
+      {
+        $set: { wrongCredentialCount: 0 },
+        $unset: { hashedOTP: '', otpValidity: '' },
+      },
+      { new: true },
+    );
+    if (!claimed) {
+      throw new UnauthorizedError(OTP_ALREADY_USED);
     }
 
     return { statusCode: 200 };
@@ -322,7 +448,7 @@ export class UserAccountController {
       const configMethodMap: Record<string, { path: string, key: string }> = {
         'google': { path: GOOGLE_AUTH_CONFIG_PATH, key: 'google' },
         'microsoft': { path: MICROSOFT_AUTH_CONFIG_PATH, key: 'microsoft' },
-        [AuthMethodType.AZURE_AD]: { path: AZURE_AD_AUTH_CONFIG_PATH, key: 'azuread' },
+        [AuthMethodType.AZURE_AD]: { path: AZURE_AD_AUTH_CONFIG_PATH, key: 'azureAd' },
         [AuthMethodType.OAUTH]: { path: OAUTH_AUTH_CONFIG_PATH, key: 'oauth' },
         [AuthMethodType.SAML_SSO]: { path: SSO_AUTH_CONFIG_PATH, key: 'saml' },
       };
@@ -361,7 +487,7 @@ export class UserAccountController {
               const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configData;
               authProviders.oauth = publicConfig;
             } else {
-              authProviders[mapping.key === 'azuread' ? 'azuread' : mapping.key] = configData;
+              authProviders[mapping.key] = configData;
             }
 
             if (configData?.enableJit === true) {
@@ -457,7 +583,7 @@ export class UserAccountController {
       const isPasswordValid = passwordValidator(newPassword);
       if (!isPasswordValid) {
         throw new BadRequestError(
-          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number, and one special character.',
+          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number, and one special character, and be no longer than 72 bytes.',
         );
       }
       let userCredentialData = await UserCredentials.findOne({
@@ -663,7 +789,7 @@ export class UserAccountController {
       );
 
       if (adminCheckResult.statusCode !== 200) {
-        throw new NotFoundError(adminCheckResult.data);
+        throw new NotFoundError(ADMIN_ONLY_SIGN_IN_SETTINGS);
       }
 
       if (!orgId) {
@@ -707,7 +833,7 @@ export class UserAccountController {
       );
 
       if (adminCheckResult.statusCode !== 200) {
-        throw new NotFoundError(adminCheckResult.data);
+        throw new NotFoundError(ADMIN_ONLY_SIGN_IN_SETTINGS);
       }
 
       if (!authMethod) {
@@ -747,7 +873,7 @@ export class UserAccountController {
       );
 
       if (userFindResult.statusCode !== 200) {
-        throw new NotFoundError(userFindResult.data);
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
       }
       await this.updatePassword(userId, orgId, password, req.ip!);
 
@@ -822,7 +948,7 @@ export class UserAccountController {
       );
 
       if (userFindResult.statusCode !== 200) {
-        throw new NotFoundError(userFindResult.data);
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
       }
 
       const user = userFindResult.data;
@@ -866,6 +992,8 @@ export class UserAccountController {
     const org = await Org.findOne({ _id: orgId, isDeleted: false });
 
     if (userCredentialData && (await this.ensureBlockStatus(userCredentialData))) {
+      // Same hashing work as an unknown email, whose request always hashes once.
+      await this.generateHashedOTP();
       const blockedUntil = this.getBlockedUntilIso(userCredentialData);
       throw new ForbiddenError(
         blockedUntil
@@ -890,14 +1018,22 @@ export class UserAccountController {
       userCredentialData.otpValidity = otpValidity;
       await userCredentialData.save();
     }
-    try {
-      const result = await this.mailService.sendMail({
+    // Not awaited: waiting for the mail service would make a real account's
+    // answer slower than an unknown email's. The code is already stored, so it
+    // works whenever the email arrives.
+    const logSendFailure = (details: Record<string, unknown>): void => {
+      this.logger.error("The sign-in code email couldn't be sent", {
+        userId,
+        ...details,
+      });
+    };
+    this.mailService
+      .sendMail({
         emailTemplateType: 'loginWithOTP',
         initiator: {
           jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
           orgId: orgId?.toString(),
         },
-
         usersMails: [email],
         subject: 'OTP for Login',
         templateData: {
@@ -905,14 +1041,18 @@ export class UserAccountController {
           orgName: org?.shortName || org?.registeredName,
           otp: otp,
         },
+      })
+      .then((result) => {
+        if (result.statusCode !== 200) {
+          logSendFailure({ data: result.data });
+        }
+      })
+      .catch((error: unknown) => {
+        logSendFailure({
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-      if (result.statusCode !== 200) {
-        throw new Error(result.data);
-      }
-      return { statusCode: 200, data: 'OTP sent' };
-    } catch (err) {
-      throw err;
-    }
+    return { statusCode: 200, data: 'OTP sent' };
   }
 
   getLoginOtp = async (
@@ -932,24 +1072,44 @@ export class UserAccountController {
         ipAddress: req.ip,
       });
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
-      let result = await this.iamService.getUserByEmail(email, authToken);
-      if (result.statusCode !== 200) {
-        throw new NotFoundError(result.data);
+      const result = await this.iamService.getUserByEmail(email, authToken);
+      if (result.statusCode === 404) {
+        // Same answer, and the same code hashing, as for a real account.
+        await this.generateHashedOTP();
+        res.status(200).send(SIGN_IN_CODE_REQUESTED);
+        return;
       }
-      const user = result.data;
-
-      result = await this.generateAndSendLoginOtp(
-        user._id,
-        user.orgId,
-        user.fullName,
-        email,
-        req.ip || ' ',
-      );
-
       if (result.statusCode !== 200) {
-        throw new BadRequestError(result.data);
+        this.logger.error('Looking up the account for a sign-in code failed', {
+          statusCode: result.statusCode,
+          data: result.data,
+        });
+        throw new InternalServerError(OTP_SEND_FAILED);
       }
-      res.status(200).send(result.data);
+      const user = result.data as {
+        _id: string;
+        orgId: string;
+        fullName: string;
+      };
+
+      // A locked account or a failed send gets the same answer as an unknown
+      // email, so the answer never shows that the account exists.
+      try {
+        await this.generateAndSendLoginOtp(
+          user._id,
+          user.orgId,
+          user.fullName,
+          email,
+          req.ip || ' ',
+        );
+      } catch (sendError) {
+        this.logger.warn('No sign-in code was sent', {
+          userId: user._id,
+          error:
+            sendError instanceof Error ? sendError.message : String(sendError),
+        });
+      }
+      res.status(200).send(SIGN_IN_CODE_REQUESTED);
     } catch (error) {
       throw error;
     }
@@ -1014,13 +1174,13 @@ export class UserAccountController {
         iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
       );
       if (result.statusCode !== 200) {
-        throw new NotFoundError(result.data);
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
       }
 
       const user = result.data;
 
       if (!user) {
-        throw new NotFoundError('User not found');
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
       }
 
       const userCredential = await UserCredentials.findOneAndUpdate({
@@ -1035,7 +1195,7 @@ export class UserAccountController {
       }, { new: true, upsert: true });
 
       if (!userCredential) {
-        throw new NotFoundError('User credentials not found');
+        throw new NotFoundError(SESSION_NO_LONGER_VALID);
       }
 
       if (await this.ensureBlockStatus(userCredential as IUserCredentials)) {
@@ -1081,13 +1241,12 @@ export class UserAccountController {
 
   async authenticateWithPassword(
     user: Record<string, any>,
-    password: string,
+    password: unknown,
     ip: string,
   ) {
     const userId = user._id;
     const orgId = user.orgId;
     const email = user.email;
-    const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
 
     let userCredentials = await UserCredentials.findOne({
       orgId,
@@ -1095,21 +1254,24 @@ export class UserAccountController {
       isDeleted: false,
     });
 
-    if (!userCredentials?.hashedPassword) {
-      // Do not reveal that no password has been set for this account —
-      // that would let an attacker enumerate valid email addresses by
-      // comparing the response to a wrong-password attempt. Return the
-      // same BadRequestError as an incorrect password so the client sees
-      // an identical response in both cases.
-      throw new BadRequestError('Incorrect password, please try again.');
-    }
-    if (await this.ensureBlockStatus(userCredentials)) {
-      const blockedUntil = this.getBlockedUntilIso(userCredentials);
-      throw new BadRequestError(
-        blockedUntil
-          ? `Your account has been disabled as you have entered incorrect OTP/Password too many times. [blockedUntil:${blockedUntil}]`
-          : 'Your account has been disabled as you have entered incorrect OTP/Password too many times.',
-      );
+    // No password set, no password sent and a locked account are all answered
+    // like a wrong password, since an unknown email can only ever get that
+    // answer. The owner learns about a lock from the email sent when it was
+    // applied.
+    const locked =
+      !!userCredentials && (await this.ensureBlockStatus(userCredentials));
+    if (
+      !userCredentials?.hashedPassword ||
+      typeof password !== 'string' ||
+      locked
+    ) {
+      if (locked) {
+        this.logger.warn('Password sign-in refused: the account is locked', {
+          userId: String(userId),
+        });
+      }
+      await compareWithDecoyHash(password);
+      throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
     }
 
     const isPasswordCorrect = await this.verifyPassword(
@@ -1126,30 +1288,23 @@ export class UserAccountController {
         email: email,
         activityType: WRONG_PASSWORD,
         ipAddress: ip,
-        loginMode: 'OTP',
+        loginMode: 'PASSWORD',
       });
       if (userCredentials.wrongCredentialCount >= 5) {
         userCredentials.isBlocked = true;
         userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
         await userCredentials.save();
-
-        await this.mailService.sendMail({
-          emailTemplateType: 'suspiciousLoginAttempt',
-          initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-            orgId: orgId?.toString(),
-          },
-          usersMails: [email],
-          subject: 'Alert : Suspicious Login Attempt Detected',
-          templateData: {
-            orgName: org?.shortName || org?.registeredName,
-            name: user.fullName,
-          },
+        await UserActivities.create({
+          userId: userId,
+          orgId: orgId,
+          email: email,
+          activityType: ACCOUNT_BLOCKED,
+          ipAddress: ip,
+          loginMode: 'PASSWORD',
         });
+        this.notifyAccountLocked(String(email), String(userId), String(orgId));
       }
-      throw new BadRequestError(
-        "Incorrect password, please try again."
-      )
+      throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
     } else {
       userCredentials.wrongCredentialCount = 0;
       await userCredentials.save();
@@ -1181,7 +1336,7 @@ export class UserAccountController {
     );
     this.logger.info('result for otp verification', result);
     if (result.statusCode !== 200) {
-      throw new BadRequestError('Error verifying OTP');
+      throw new BadRequestError("We couldn't verify that code. Request a new code and try again.");
     }
 
     const userId = user._id;
@@ -1219,7 +1374,7 @@ export class UserAccountController {
 
     const payload = ticket.getPayload();
     if (!payload) {
-      throw new UnauthorizedError('Error authorizing user through google');
+      throw new UnauthorizedError("Sign-in with Google didn't complete. Try again, or use another sign-in method.");
     }
 
     this.logger.debug('entered email', user.email);
@@ -1227,7 +1382,7 @@ export class UserAccountController {
     const email = payload?.email;
     if (email?.toLowerCase() !== user.email?.toLowerCase()) {
       throw new BadRequestError(
-        'Email mismatch: Token email does not match session email.',
+        EMAIL_MISMATCH,
       );
     }
     await UserActivities.create({
@@ -1250,10 +1405,23 @@ export class UserAccountController {
         user,
         this.config.scopedJwtSecret,
       );
-    const { tenantId } = configManagerResponse.data;
-
-    const decodedToken = await validateAzureAdUser(credentials, tenantId);
-    await this.correctEmailFromToken(decodedToken, user, 'Microsoft auth');
+    const { clientId, tenantId } = configManagerResponse.data as MicrosoftSignInConfig;
+    const decodedToken = await validateAzureAdUser(credentials, {
+      clientId,
+      tenantId,
+    });
+    const identity = microsoftAccountIdentity(decodedToken, tenantId);
+    await this.correctEmailFromToken(
+      decodedToken,
+      user,
+      'Microsoft auth',
+      identity.emailClaimTrusted,
+    );
+    if (identity.email !== String(user.email ?? '').toLowerCase()) {
+      throw new UnauthorizedError(
+        "This Microsoft account doesn't match the account you're signing in to. Sign in with the Microsoft account linked to your PipesHub email.",
+      );
+    }
 
     await UserActivities.create({
       email: user.email,
@@ -1275,9 +1443,23 @@ export class UserAccountController {
         user,
         this.config.scopedJwtSecret,
       );
-    const { tenantId } = configManagerResponse.data;
-    const decodedToken = await validateAzureAdUser(credentials, tenantId);
-    await this.correctEmailFromToken(decodedToken, user, 'Azure AD auth');
+    const { clientId, tenantId } = configManagerResponse.data as MicrosoftSignInConfig;
+    const decodedToken = await validateAzureAdUser(credentials, {
+      clientId,
+      tenantId,
+    });
+    const identity = microsoftAccountIdentity(decodedToken, tenantId);
+    await this.correctEmailFromToken(
+      decodedToken,
+      user,
+      'Azure AD auth',
+      identity.emailClaimTrusted,
+    );
+    if (identity.email !== String(user.email ?? '').toLowerCase()) {
+      throw new UnauthorizedError(
+        "This Microsoft account doesn't match the account you're signing in to. Sign in with the Microsoft account linked to your PipesHub email.",
+      );
+    }
 
     await UserActivities.create({
       email: user.email,
@@ -1306,11 +1488,11 @@ export class UserAccountController {
     const { accessToken } = credentials;
 
     if (!accessToken) {
-      throw new BadRequestError('Access token is required for OAuth authentication');
+      throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
     }
 
     if (!userInfoEndpoint) {
-      throw new BadRequestError('User info endpoint is required for OAuth authentication');
+      throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
     }
 
     try {
@@ -1331,18 +1513,20 @@ export class UserAccountController {
             status: userInfoResponse.status,
             provider: configManagerResponse.data.providerName
           });
-          throw new UnauthorizedError('Failed to fetch user information from OAuth provider');
+          throw new UnauthorizedError(OAUTH_SIGN_IN_FAILED);
         }
 
         userInfo = await userInfoResponse.json();
       } else {
-        throw new BadRequestError('Cannot verify user information: missing user info endpoint or access token');
+        throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
       }
 
       // Verify email matches
       const providerEmail = userInfo.email || userInfo.preferred_username || userInfo.sub;
       if (!providerEmail) {
-        throw new BadRequestError('No email found in OAuth provider response');
+        throw new BadRequestError(
+          PROVIDER_SHARED_NO_EMAIL,
+        );
       }
 
       this.logger.debug('entered email', user.email);
@@ -1350,7 +1534,7 @@ export class UserAccountController {
 
       if (providerEmail?.toLowerCase() !== user.email?.toLowerCase()) {
         throw new BadRequestError(
-          'Email mismatch: OAuth provider email does not match session email.',
+          EMAIL_MISMATCH,
         );
       }
 
@@ -1365,7 +1549,14 @@ export class UserAccountController {
       if (error instanceof Error && (error.message.includes('BadRequestError') || error.message.includes('UnauthorizedError'))) {
         throw error;
       }
-      throw new UnauthorizedError(`OAuth authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      // Our own errors already carry a message meant for the user; anything else is logged, not shown.
+      if (error instanceof HttpError) {
+        throw new UnauthorizedError(error.message);
+      }
+      this.logger.error('OAuth sign-in failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new UnauthorizedError(OAUTH_SIGN_IN_FAILED);
     }
   }
 
@@ -1383,11 +1574,17 @@ export class UserAccountController {
       let userDetails: { firstName?: string; lastName?: string; fullName: string } | undefined;
 
       if (!method) throw new BadRequestError('method is required');
-      if (!sessionInfo) throw new NotFoundError('SessionInfo not found');
+      if (!sessionInfo) throw new NotFoundError(SIGN_IN_SESSION_EXPIRED);
 
       if (sessionInfo && !sessionInfo.email) {
         sessionInfo.email = req.body.email || "";
       }
+
+      assertMethodAllowedAtStep(
+        sessionInfo.authConfig as IOrgAuthConfigLike['authSteps'] | undefined,
+        Number(sessionInfo.currentStep),
+        String(method),
+      );
 
       // 1. Password Guard (Turnstile)
       if (method === AuthMethodType.PASSWORD) {
@@ -1398,9 +1595,9 @@ export class UserAccountController {
         }
       }
 
-      // SAML_SSO follows a different flow - handling it early as per original code
+      // SAML completes in the identity provider's redirect to /saml/signIn/callback.
       if (method === AuthMethodType.SAML_SSO) {
-        return;
+        throw new BadRequestError(SAML_HAS_ITS_OWN_SIGN_IN);
       }
 
       const orgId = sessionInfo.orgId;
@@ -1431,7 +1628,7 @@ export class UserAccountController {
               audience: clientId,
             });
             const payload = ticket.getPayload();
-            if (!payload?.email) throw new UnauthorizedError('Email not found in Google token');
+            if (!payload?.email) throw new UnauthorizedError(PROVIDER_SHARED_NO_EMAIL);
             providerEmail = payload.email;
             userDetails = this.jitProvisioningService.extractGoogleUserDetails(payload, providerEmail);
             break;
@@ -1443,14 +1640,17 @@ export class UserAccountController {
             const configManagerResponse = await this.configurationManagerService.getConfig(
               this.config.cmBackend, configPath, newUserMock, this.config.scopedJwtSecret
             );
-            const { tenantId } = configManagerResponse.data;
-            const decodedToken = await validateAzureAdUser(credentials, tenantId);
-            providerEmail = decodedToken.email || decodedToken.upn || decodedToken.preferred_username;
+            const { clientId, tenantId } = configManagerResponse.data as MicrosoftSignInConfig;
+            const decodedToken = await validateAzureAdUser(credentials, {
+              clientId,
+              tenantId,
+            });
+            const identity = microsoftAccountIdentity(decodedToken, tenantId);
+            providerEmail = identity.email;
             if (!providerEmail) {
-              throw new UnauthorizedError('Email not found in Microsoft / Azure AD token');
+              throw new UnauthorizedError(PROVIDER_SHARED_NO_EMAIL);
             }
             sessionInfo.email = providerEmail;
-            await this.correctEmailFromToken(decodedToken, sessionInfo, 'Azure AD JIT');
             userDetails = this.jitProvisioningService.extractMicrosoftUserDetails(decodedToken, providerEmail);
             break;
           }
@@ -1461,17 +1661,17 @@ export class UserAccountController {
             );
             const { userInfoEndpoint } = configManagerResponse.data;
             const { accessToken } = credentials;
-            if (!accessToken) throw new BadRequestError('Access token is required');
+            if (!accessToken) throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
 
             const userInfoResponse = await fetch(userInfoEndpoint, {
               headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
             });
-            if (!userInfoResponse.ok) throw new UnauthorizedError('Failed to fetch user info');
+            if (!userInfoResponse.ok) throw new UnauthorizedError(OAUTH_SIGN_IN_FAILED);
             const userInfo = await userInfoResponse.json();
             providerEmail = userInfo.email || userInfo.preferred_username || userInfo.sub;
 
             if (!providerEmail) {
-              throw new BadRequestError('Email mismatch: OAuth provider email does not match session email.');
+              throw new BadRequestError(PROVIDER_SHARED_NO_EMAIL);
             }
             userDetails = this.jitProvisioningService.extractOAuthUserDetails(userInfo, providerEmail!);
             break;
@@ -1483,6 +1683,7 @@ export class UserAccountController {
           const authToken = iamJwtGenerator(providerEmail, this.config.scopedJwtSecret);
           userFindResult = await this.iamService.getUserByEmail(providerEmail, authToken);
           user = userFindResult?.statusCode === 200 ? userFindResult?.data : null;
+          this.assertSameAccountAsEarlierSteps(sessionInfo, user);
 
           const methodKey = method === AuthMethodType.AZURE_AD ? 'azureAd' :
             method === AuthMethodType.MICROSOFT ? 'microsoft' :
@@ -1510,9 +1711,24 @@ export class UserAccountController {
       if (!user) {
         const authToken = iamJwtGenerator(sessionInfo.email || "", this.config.scopedJwtSecret);
         userFindResult = await this.iamService.getUserByEmail(sessionInfo.email || "", authToken);
-        user = userFindResult?.data;
-        if (!user) throw new NotFoundError('User not found');
+        user =
+          userFindResult?.statusCode === 200 ? userFindResult.data : undefined;
+        if (!user) {
+          // An unknown email gets the same refusal, after the same hash
+          // comparison, as a real account given a wrong password or code.
+          const submitted = (credentials ?? {}) as {
+            password?: unknown;
+            otp?: unknown;
+          };
+          if (method === AuthMethodType.OTP) {
+            await compareWithDecoyHash(submitted.otp);
+            throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+          }
+          await compareWithDecoyHash(submitted.password);
+          throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
+        }
       }
+      this.assertSameAccountAsEarlierSteps(sessionInfo, user);
 
       switch (method) {
         case AuthMethodType.PASSWORD:
@@ -1533,14 +1749,13 @@ export class UserAccountController {
         case AuthMethodType.OAUTH:
           await this.authenticateWithOAuth(user, credentials, req.ip!);
           break;
-        case AuthMethodType.SAML_SSO:
-          break;
         default:
           throw new BadRequestError('Unsupported authentication method');
       }
 
       // 4. MULTI-STEP HANDLING
       if (sessionInfo.currentStep < sessionInfo.authConfig.length - 1) {
+        sessionInfo.userId = String(user._id);
         sessionInfo.currentStep++;
         await this.sessionService.updateSession(sessionInfo);
 
@@ -1557,7 +1772,7 @@ export class UserAccountController {
         }
         if (allowedMethods.includes(AuthMethodType.AZURE_AD)) {
           const cfg = await this.configurationManagerService.getConfig(this.config.cmBackend, AZURE_AD_AUTH_CONFIG_PATH, user, this.config.scopedJwtSecret);
-          authProviders.azuread = cfg.data;
+          authProviders.azureAd = cfg.data;
         }
         if (allowedMethods.includes(AuthMethodType.OAUTH)) {
           const cfg = await this.configurationManagerService.getConfig(this.config.cmBackend, OAUTH_AUTH_CONFIG_PATH, user, this.config.scopedJwtSecret);
@@ -1638,7 +1853,7 @@ export class UserAccountController {
       );
 
       if (updateUserResult.statusCode !== 200) {
-        throw new InternalServerError('Error checking admin');
+        throw new InternalServerError("We couldn't save your account details. Please try again.");
       }
       const updatedUser = updateUserResult.data;
 
@@ -1667,7 +1882,7 @@ export class UserAccountController {
       // 1. Initial Validation
       if (!code || !provider || !redirectUri) {
         this.logger.warn('OAuth token exchange failed: missing required parameters');
-        throw new BadRequestError('Missing required OAuth parameters');
+        throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
       }
 
       // 2. Get bootstrap config to perform the exchange
@@ -1683,7 +1898,9 @@ export class UserAccountController {
 
       const oauthConfig = configResponse.data;
       if (!oauthConfig?.tokenEndpoint || !oauthConfig?.clientSecret) {
-        throw new BadRequestError('OAuth is not properly configured');
+        throw new BadRequestError(
+          'Single sign-on isn\'t fully set up yet. Ask your admin to finish the sign-in settings, or use another sign-in method.',
+        );
       }
 
       // 3. Exchange authorization code for tokens (Functionality strictly maintained)
@@ -1707,7 +1924,7 @@ export class UserAccountController {
           status: tokenResponse.status,
           errorBody,
         });
-        throw new BadRequestError(`Failed to exchange authorization code for tokens from Oauth: ${tokenResponse.status}`);
+        throw new BadRequestError(OAUTH_SIGN_IN_FAILED);
       }
 
       const tokens = await tokenResponse.json();
@@ -1721,14 +1938,14 @@ export class UserAccountController {
       });
 
       if (!userInfoResponse.ok) {
-        throw new UnauthorizedError('Failed to fetch user information from OAuth provider');
+        throw new UnauthorizedError(OAUTH_SIGN_IN_FAILED);
       }
 
       const userInfo = await userInfoResponse.json();
       const providerEmail = userInfo.email || userInfo.preferred_username || userInfo.sub;
 
       if (!providerEmail) {
-        throw new BadRequestError('Email not found in OAuth provider response');
+        throw new BadRequestError(PROVIDER_SHARED_NO_EMAIL);
       }
 
       // 5. Apply the "Google Flow" for user check and JIT

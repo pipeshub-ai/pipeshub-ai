@@ -165,7 +165,11 @@ class GraphTransactionStore(TransactionStore):
         after_key: Optional[str] = None,
         exclude_statuses: Optional[list[str]] = None,
     ) -> list[Record]:
-        """Get records by status. Returns properly typed Record instances."""
+        """Get records by status. Returns properly typed Record instances.
+
+        An empty list means no record matched. A listing that could not be read
+        raises GraphQueryError - callers must not read that as "nothing found".
+        """
         return await self.graph_provider.get_records_by_status(
             org_id,
             connector_id,
@@ -289,14 +293,18 @@ class GraphTransactionStore(TransactionStore):
         """Single-record delete within the active transaction — no containment walk."""
         return await self.graph_provider.delete_single_record(record_id, transaction=self.txn)
 
-    async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
-        return await self.graph_provider.get_user_group_by_external_id(connector_id, external_id, transaction=self.txn)
+    async def get_user_group_by_external_id(self, connector_id: str, external_id: str, *, raise_on_error: bool = False) -> Optional[AppUserGroup]:
+        return await self.graph_provider.get_user_group_by_external_id(
+            connector_id, external_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def delete_user_group_by_id(self, group_id: str) -> None:
         return await self.graph_provider.delete_nodes_and_edges([group_id],CollectionNames.GROUPS.value,graph_name="knowledgeGraph",transaction=self.txn)
 
-    async def get_app_role_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppRole]:
-        return await self.graph_provider.get_app_role_by_external_id(connector_id, external_id, transaction=self.txn)
+    async def get_app_role_by_external_id(self, connector_id: str, external_id: str, *, raise_on_error: bool = False) -> Optional[AppRole]:
+        return await self.graph_provider.get_app_role_by_external_id(
+            connector_id, external_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_users(self, org_id: str, active: bool = True) -> list[User]:
         users_dict = await self.graph_provider.get_users(org_id, active=active)
@@ -517,6 +525,16 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.ensure_team_app_edge(connector_id, org_id, transaction=self.txn)
 
+    async def upsert_authenticated_as(
+        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str
+    ) -> None:
+        return await self.graph_provider.upsert_authenticated_as(
+            creator_key, source_user_key, connector_id, org_id, transaction=self.txn
+        )
+
+    async def remove_authenticated_as(self, connector_id: str) -> bool:
+        return await self.graph_provider.remove_authenticated_as(connector_id, transaction=self.txn)
+
     async def batch_upsert_orgs(self, orgs: list[Org]) -> None:
         return await self.graph_provider.batch_upsert_orgs(orgs, transaction=self.txn)
 
@@ -610,8 +628,13 @@ class GraphTransactionStore(TransactionStore):
         await self.graph_provider.batch_create_edges(
             [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
         )
-    async def get_sync_point(self, sync_point_key: str) -> Optional[dict]:
-        return await self.graph_provider.get_sync_point(sync_point_key, CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+    async def get_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
+        return await self.graph_provider.get_sync_point(
+            sync_point_key,
+            CollectionNames.SYNC_POINTS.value,
+            transaction=self.txn,
+            raise_on_error=raise_on_error,
+        )
 
     async def get_all_orgs(self, *, active: bool = True, is_external: bool = False) -> list[Org]:
         return await self.graph_provider.get_all_orgs(
@@ -654,8 +677,13 @@ class GraphTransactionStore(TransactionStore):
     async def delete_sync_point(self, sync_point_key: str) -> None:
         return await self.graph_provider.remove_sync_point([sync_point_key],
                     collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
-    async def read_sync_point(self, sync_point_key: str) -> None:
-        return await self.graph_provider.get_sync_point(sync_point_key, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+    async def read_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
+        return await self.graph_provider.get_sync_point(
+            sync_point_key,
+            collection=CollectionNames.SYNC_POINTS.value,
+            transaction=self.txn,
+            raise_on_error=raise_on_error,
+        )
 
     async def update_sync_point(self, sync_point_key: str, sync_point_data: dict) -> None:
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)

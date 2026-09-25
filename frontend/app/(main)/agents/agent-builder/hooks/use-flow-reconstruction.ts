@@ -19,6 +19,7 @@ import type {
   AgentMcpServer,
 } from '../../types';
 import type { AgentReconstructionSource, FlowNodeData } from '../types';
+import { skillNodeWarning } from '../skill-node-warning';
 
 /** Reconstructed model config — unified shape for both object and legacy string entries. */
 interface ModelConfigObject {
@@ -683,6 +684,7 @@ export function useAgentBuilderReconstruction(): {
           if (!skillName) return;
           nodeCounter += 1;
           const nodeId = `skill-${nodeCounter}`;
+          const warning = skillNodeWarning(skill, t);
           const skillNode: Node<FlowNodeData> = {
             id: nodeId,
             type: 'flowNode',
@@ -694,10 +696,12 @@ export function useAgentBuilderReconstruction(): {
               description: skill.description || t('agentBuilder.skillNodeTemplateDescription'),
               icon: 'psychology',
               category: 'skills',
+              warning,
               config: {
                 skillName,
                 skillDescription: skill.description,
                 skillCategory: skill.category,
+                replacedBy: skill.replacedBy,
               },
               inputs: [],
               outputs: ['output'],
@@ -773,6 +777,7 @@ export function useAgentBuilderReconstruction(): {
             instructions: agent.instructions ?? '',
             startMessage: agent.startMessage || t('agentBuilder.defaultStartMessage'),
             defaultReasoningEffort: agent.defaultReasoningEffort ?? null,
+            sendUserContext: agent.sendUserContext !== false,
             routing: 'auto',
             allowMultipleLLMs: true,
           },

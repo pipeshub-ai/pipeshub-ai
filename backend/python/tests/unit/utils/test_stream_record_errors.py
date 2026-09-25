@@ -341,6 +341,29 @@ class TestSdkShapes:
         assert mapped.status_code == 429
         assert mapped.headers["Retry-After"] == "30"
 
+    def test_retry_after_is_read_off_a_box_style_response_info(self) -> None:
+        class _Info:
+            status_code = 429
+            headers = {"retry-after": "45"}
+
+        class _BoxApiError(Exception):
+            response_info = _Info()
+
+        mapped = to_stream_error(_BoxApiError("429"), connector="Box")
+        assert mapped.status_code == 429
+        assert mapped.headers["Retry-After"] == "45"
+
+    def test_response_headers_still_win_over_response_info(self) -> None:
+        class _Headers:
+            headers = {"Retry-After": "10"}
+
+        class _Exc(Exception):
+            status_code = 429
+            response = _Headers()
+            response_info = type("_Info", (), {"headers": {"Retry-After": "99"}})()
+
+        assert to_stream_error(_Exc("429"), connector="X").headers["Retry-After"] == "10"
+
 
 class TestInternalServiceError:
     """Our own storage service has no connector to reconnect."""

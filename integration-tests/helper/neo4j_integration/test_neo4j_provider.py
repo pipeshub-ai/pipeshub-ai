@@ -126,6 +126,30 @@ class TestNeo4jProvider(Neo4jProvider):
         result = await self.client.execute_query(cypher, {"cid": connector_id})
         return int(result[0]["c"]) if result else 0
 
+    async def fetch_record_group_names(
+        self, connector_id: str, group_type: str | None = None
+    ) -> List[str]:
+        """Names of a connector's RecordGroups, optionally of one type.
+
+        A source's containers — SharePoint sites, Drive shared drives, Jira
+        projects — become RecordGroups, so this is how a test asks "did site X
+        sync" by the site's own name rather than by searching record names for
+        a substring, which can match a file called after the site instead.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        params: Dict[str, Any] = {"cid": connector_id}
+        type_filter = ""
+        if group_type:
+            type_filter = " AND g.groupType = $gtype"
+            params["gtype"] = group_type
+        result = await self.client.execute_query(
+            f"MATCH (g:RecordGroup) WHERE g.connectorId = $cid{type_filter} "
+            "RETURN coalesce(g.name, g.groupName) AS name",
+            params,
+        )
+        return [str(row["name"]) for row in result if row.get("name")]
+
     async def count_user_groups(self, connector_id: str) -> int:
         """Count ``Group`` (Jira site user-group) nodes for this connector."""
         if not self.client:

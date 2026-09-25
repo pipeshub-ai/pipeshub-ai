@@ -12,7 +12,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
 
@@ -107,6 +107,12 @@ class PostgreSQLClient:
                     timeout=self.timeout,
                     command_timeout=self.timeout,
                     ssl=(self.sslmode or "prefer").strip().lower(),
+                    # Named, cached statements break behind a transaction-mode
+                    # pooler (PgBouncer, Supavisor): the next use can land on a
+                    # server connection that never prepared them, or on one
+                    # where that name is another client's statement. With the
+                    # cache off, asyncpg prepares unnamed statements instead.
+                    statement_cache_size=0,
                 )
 
                 logger.info("🔧 [PostgreSQLClient] PostgreSQL connection pool ready")
@@ -165,13 +171,17 @@ class PostgreSQLClient:
         try:
             async with self._pool.acquire(timeout=self.pool_acquire_timeout) as conn:
                 prepared_params = self._normalize_params(params)
-                statement = await conn.prepare(query)
-                if statement.get_attributes():
-                    rows = await statement.fetch(*prepared_params)
-                    return [dict(row) for row in rows]
+                # Prepare and run in one transaction: a transaction-mode pooler
+                # keeps a transaction on one server connection, so the unnamed
+                # statement is still there when it is run.
+                async with conn.transaction():
+                    statement = await conn.prepare(query)
+                    if statement.get_attributes():
+                        rows = await statement.fetch(*prepared_params)
+                        return [dict(row) for row in rows]
 
-                status = await conn.execute(query, *prepared_params)
-                return [{"affected_rows": self._parse_affected_rows(status)}]
+                    status = await conn.execute(query, *prepared_params)
+                    return [{"affected_rows": self._parse_affected_rows(status)}]
         except Exception as e:
             # Re-raised as-is: the driver's class (InsufficientPrivilegeError,
             # UndefinedTableError, the acquire timeout above) is what the
@@ -198,16 +208,18 @@ class PostgreSQLClient:
         try:
             async with self._pool.acquire(timeout=self.pool_acquire_timeout) as conn:
                 prepared_params = self._normalize_params(params)
-                statement = await conn.prepare(query)
-                attributes = statement.get_attributes()
-                if not attributes:
-                    await conn.execute(query, *prepared_params)
-                    return ([], [])
+                # See execute_query: one transaction keeps the pooler on one server.
+                async with conn.transaction():
+                    statement = await conn.prepare(query)
+                    attributes = statement.get_attributes()
+                    if not attributes:
+                        await conn.execute(query, *prepared_params)
+                        return ([], [])
 
-                rows = await statement.fetch(*prepared_params)
-                columns = [attr.name for attr in attributes]
-                raw_rows = [tuple(row) for row in rows]
-                return (columns, raw_rows)
+                    rows = await statement.fetch(*prepared_params)
+                    columns = [attr.name for attr in attributes]
+                    raw_rows = [tuple(row) for row in rows]
+                    return (columns, raw_rows)
         except Exception as e:
             logger.error(f"🔧 [PostgreSQLClient.execute_query_raw] Query execution failed: {e}")
             raise
@@ -336,11 +348,14 @@ class AuthConfig(BaseModel):
             if parsed.port and "port" not in set_fields:
                 self.port = parsed.port
             if parsed.path and "database" not in set_fields:
-                self.database = parsed.path.lstrip("/") or None
+                self.database = unquote(parsed.path.lstrip("/")) or None
             if parsed.username and "user" not in set_fields:
                 self.user = unquote(parsed.username)
             if parsed.password and "password" not in set_fields:
                 self.password = unquote(parsed.password)
+            sslmode = parse_qs(parsed.query).get("sslmode")
+            if sslmode and "sslmode" not in set_fields:
+                self.sslmode = sslmode[0]
 
         missing = [f for f in ("host", "database", "user") if not getattr(self, f)]
         if missing:

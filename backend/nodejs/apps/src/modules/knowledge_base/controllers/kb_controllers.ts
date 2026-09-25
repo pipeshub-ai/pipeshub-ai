@@ -11,6 +11,10 @@ import {
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
+import {
   uploadNextVersionToStorage,
   createPlaceholderDocument,
   processUploadsInBackground,
@@ -20,6 +24,8 @@ import {
   UPLOAD_STORAGE_CONCURRENCY,
 } from '../utils/utils';
 import { mapWithConcurrency } from '../../../libs/utils/concurrency.util';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
+import { setSampleAccountsSignIn } from '../../user_management/services/demo-accounts.service';
 import axios from 'axios';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -142,6 +148,164 @@ export const getKnowledgeHubNodes =
     }
   };
 
+/**
+ * The demo data switch is owned by the connector service, which also applies
+ * it to search and browsing; these only forward the caller's request.
+ */
+export const getDemoDataStatus =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      if (!req.user?.userId || !req.user?.orgId) {
+        throw new UnauthorizedError('User not authenticated');
+      }
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/demo-data/status`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+      handleConnectorResponse(
+        response,
+        res,
+        'Getting demo data status',
+        'Failed to get demo data status',
+      );
+    } catch (error: unknown) {
+      logger.error('Error getting demo data status', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      next(handleBackendError(error, 'get demo data status'));
+    }
+  };
+
+export const setDemoDataPreference =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      if (!req.user?.userId || !req.user?.orgId) {
+        throw new UnauthorizedError('User not authenticated');
+      }
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/demo-data/preference`,
+        HttpMethod.PUT,
+        req.headers as Record<string, string>,
+        { include: req.body.include },
+      );
+      handleConnectorResponse(
+        response,
+        res,
+        'Saving demo data preference',
+        'Failed to save demo data preference',
+      );
+    } catch (error: unknown) {
+      logger.error('Error saving demo data preference', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      next(handleBackendError(error, 'save demo data preference'));
+    }
+  };
+
+export const setDemoDataWorkspace =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError('User not authenticated');
+      }
+      if (!(await isUserOrgAdmin(userId, orgId))) {
+        throw new ForbiddenError('Only admins can change this for everyone');
+      }
+      const enabled: boolean = req.body.enabled;
+      const url = `${appConfig.connectorBackend}/api/v1/demo-data`;
+      const headers = req.headers as Record<string, string>;
+      const isOk = (r: { statusCode?: number }): boolean =>
+        (r.statusCode ?? 0) >= 200 && (r.statusCode ?? 0) < 300;
+
+      const before = await executeConnectorCommand(
+        `${url}/status`,
+        HttpMethod.GET,
+        headers,
+      );
+      if (!isOk(before)) {
+        throw handleBackendError(before, 'read demo data for everyone');
+      }
+      const wasEnabled =
+        (before.data as { offForEveryone?: boolean } | undefined)
+          ?.offForEveryone !== true;
+
+      // Ordered so a failure never leaves the setting "off" while the
+      // shared-password sample accounts can still sign in.
+      let response: Awaited<ReturnType<typeof executeConnectorCommand>>;
+      if (!enabled) {
+        // Off: stop the accounts first; if that fails, nothing is saved.
+        await setSampleAccountsSignIn(orgId, userId, false);
+        try {
+          response = await executeConnectorCommand(
+            `${url}/workspace`,
+            HttpMethod.PUT,
+            headers,
+            { enabled },
+          );
+        } catch (saveError: unknown) {
+          // The reply can be lost after the save, so let the accounts back in
+          // only when the setting still reads "on"; if unsure, keep them stopped.
+          if (wasEnabled) {
+            const after = await executeConnectorCommand(
+              `${url}/status`,
+              HttpMethod.GET,
+              headers,
+            ).catch(() => undefined);
+            const stillOn =
+              !!after &&
+              isOk(after) &&
+              (after.data as { offForEveryone?: boolean } | undefined)
+                ?.offForEveryone === false;
+            if (stillOn) await setSampleAccountsSignIn(orgId, userId, true);
+          }
+          throw saveError;
+        }
+        if (!isOk(response) && wasEnabled) {
+          // The demo stays on, so its accounts go back to how they were.
+          await setSampleAccountsSignIn(orgId, userId, true);
+        }
+      } else {
+        // On: save first; a failure after it leaves the accounts stopped, the safe side.
+        response = await executeConnectorCommand(
+          `${url}/workspace`,
+          HttpMethod.PUT,
+          headers,
+          { enabled },
+        );
+        if (isOk(response)) {
+          await setSampleAccountsSignIn(orgId, userId, true);
+        }
+      }
+      handleConnectorResponse(
+        response,
+        res,
+        'Saving demo data for everyone',
+        'Failed to save demo data for everyone',
+      );
+    } catch (error: unknown) {
+      logger.error('Error saving demo data for everyone', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      next(handleBackendError(error, 'save demo data for everyone'));
+    }
+  };
 export const createKnowledgeBase =
   (appConfig: AppConfig) =>
   async (
@@ -922,7 +1086,7 @@ const assertKbWritePermission = async (
     );
   }
   if (kbCheckResponse.statusCode !== 200) {
-    throw new InternalServerError('Failed to verify knowledge base access');
+    throw handleBackendError(kbCheckResponse, 'verify knowledge base access');
   }
   const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
   if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
@@ -1203,8 +1367,11 @@ export const updateRecord =
             );
           }
 
-          throw new InternalServerError(
-            `File upload failed: ${storageError.message}. Please retry.`,
+          logger.error('Uploading the file to storage failed', {
+            error: storageError,
+          });
+          throw markClientSafe(
+            new InternalServerError(serverFailureMessage('save this file')),
           );
         }
       }

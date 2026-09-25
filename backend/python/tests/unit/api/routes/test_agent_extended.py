@@ -578,10 +578,10 @@ class TestCreateKnowledgeEdges:
         knowledge_sources = {
             "app1": {"connectorId": "app1", "filters": {}},
         }
-        result = await _create_knowledge_edges(
-            "agent-key", knowledge_sources, "user-key", graph_provider, MagicMock()
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await _create_knowledge_edges(
+                "agent-key", knowledge_sources, "user-key", graph_provider, MagicMock()
+            )
 
     @pytest.mark.asyncio
     async def test_batch_upsert_exception(self):
@@ -593,10 +593,10 @@ class TestCreateKnowledgeEdges:
         knowledge_sources = {
             "app1": {"connectorId": "app1", "filters": {}},
         }
-        result = await _create_knowledge_edges(
-            "agent-key", knowledge_sources, "user-key", graph_provider, MagicMock()
-        )
-        assert result == []
+        with pytest.raises(Exception, match="DB error"):
+            await _create_knowledge_edges(
+                "agent-key", knowledge_sources, "user-key", graph_provider, MagicMock()
+            )
 
     @pytest.mark.asyncio
     async def test_batch_create_edges_exception(self):
@@ -610,11 +610,11 @@ class TestCreateKnowledgeEdges:
             "app1": {"connectorId": "app1", "filters": {}},
         }
         logger = MagicMock()
-        result = await _create_knowledge_edges(
-            "agent-key", knowledge_sources, "user-key", graph_provider, logger
-        )
-        # Knowledge still built even if edges fail
-        assert len(result) == 1
+        # A knowledge node with no edge is unreachable from the agent, so this must not pass as success.
+        with pytest.raises(Exception, match="Edge error"):
+            await _create_knowledge_edges(
+                "agent-key", knowledge_sources, "user-key", graph_provider, logger
+            )
 
 
 # ============================================================================

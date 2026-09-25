@@ -5,6 +5,7 @@ import io
 import logging
 import os
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -3796,15 +3797,16 @@ class TestSharedFolderExpansion:
         assert found == []
 
     @pytest.mark.asyncio
-    async def test_403_without_retryable_reason_skips_the_folder(self, connector):
-        # A 403 with no rate-limit reason (or none at all) is still a genuine
-        # permission loss and safe to skip permanently.
+    async def test_403_with_a_known_permission_refusal_skips_the_folder(self, connector):
+        # Access revoked since the folder was listed: nothing to replay, safe to skip.
         folder = _make_file_metadata(
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
         async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
-            raise _make_http_error(HttpStatusCode.FORBIDDEN.value)
+            http_err = _make_http_error(HttpStatusCode.FORBIDDEN.value)
+            http_err.error_details = [{"reason": "insufficientFilePermissions"}]
+            raise http_err
             yield  # pragma: no cover - makes this an async generator
 
         with patch(
@@ -3816,6 +3818,27 @@ class TestSharedFolderExpansion:
             )
 
         assert found == []
+
+    @pytest.mark.asyncio
+    async def test_403_without_a_known_permission_refusal_is_not_swallowed(self, connector) -> None:
+        # No reason, or one Drive adds later, may be a quota limit; skipping would drop
+        # this folder's descendants for good, since incremental sync never replays them.
+        folder = _make_file_metadata(
+            file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        )
+
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped) -> AsyncIterator[list]:
+            raise _make_http_error(HttpStatusCode.FORBIDDEN.value)
+            yield  # pragma: no cover - makes this an async generator
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.fetch_folder_children",
+            fake_children,
+        ):
+            with pytest.raises(HttpError):
+                await connector._expand_shared_folders(
+                    [folder], {"fold-1"}, AsyncMock()
+                )
 
     @pytest.mark.asyncio
     async def test_retryable_403_reason_is_not_swallowed(self, connector):

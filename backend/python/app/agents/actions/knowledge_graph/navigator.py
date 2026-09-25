@@ -154,15 +154,18 @@ class GraphNavigator:
         user_key: str,
         org_id: str,
         frontend_url: str | None = None,
+        excluded_app_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._graph = graph_provider
         self._user_id = user_id
         self._user_key = user_key
         self._org_id = org_id
         self._frontend_url = frontend_url
+        self._excluded_app_ids = excluded_app_ids
         self._service = KnowledgeHubService(
             logger=logger,
             graph_provider=graph_provider,
+            excluded_app_ids=excluded_app_ids,
         )
 
     async def _context_block(self, node_id: str) -> str | None:
@@ -287,6 +290,12 @@ class GraphNavigator:
                         indexing_status=None,
                         connector=None,
                     )
+            elif await self._service._belongs_to(node_id, node_info["nodeType"], self._excluded_app_ids):
+                # Switched-off demo data: as if the node were not there.
+                return NavigationView(
+                    current=None, breadcrumbs=[], rows=[], related=[], pagination=None,
+                    web_url=None, indexing_status=None, connector=None,
+                )
             else:
                 parent_type = node_info["nodeType"]
                 current = _node_ref(

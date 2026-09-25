@@ -34,11 +34,13 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import (
+    FailedItems,
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
+from app.connectors.core.registry.folder_scope import FolderScope, clean_up_scope
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -268,12 +270,20 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         parent_external_id: str,
         parent_record_type: RecordType,
         record: Record,
+        record_name: str | None = None,
+        record_group_type: str | None = None,
+        external_record_group_id: str | None = None,
     ) -> Record:
         """
         Create a placeholder parent record with Azure-specific weburl and path.
         """
         parent_record = super()._create_placeholder_parent_record(
-            parent_external_id, parent_record_type, record
+            parent_external_id,
+            parent_record_type,
+            record,
+            record_name=record_name,
+            record_group_type=record_group_type,
+            external_record_group_id=external_record_group_id,
         )
 
         if parent_record_type == RecordType.FILE and isinstance(parent_record, FileRecord):
@@ -328,6 +338,7 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
+        .add_filter_field(CommonFields.folder_paths_filter("container"))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
@@ -864,7 +875,19 @@ class AzureBlobConnector(BaseConnector):
         return True
 
     async def _sync_container(self, container_name: str) -> None:
-        """Sync blobs from a specific container with incremental sync support.
+        """Sync a container, or only the folders the folder filter names."""
+        sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
+        scope = FolderScope.from_filters(sync_filters)
+        if not scope.is_everything:
+            self.logger.info(f"Folder filter for container {container_name}: {scope.describe()}")
+        for prefix in scope.list_prefixes:
+            await self._sync_container_prefix(container_name, prefix, scope)
+        await clean_up_scope(
+            self.data_entities_processor, self.record_sync_point, self.connector_id, container_name, scope, self.logger
+        )
+
+    async def _sync_container_prefix(self, container_name: str, prefix: str, scope: FolderScope) -> None:
+        """Sync blobs under one prefix of a container ("" for all of it), with incremental sync support.
 
         The Azure SDK's list_blobs method returns an AsyncItemPaged object which is an
         async iterator that handles pagination internally. We iterate directly over it
@@ -888,8 +911,9 @@ class AzureBlobConnector(BaseConnector):
 
         modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = self._get_date_filters()
 
+        # Each listed prefix keeps its own last sync time.
         sync_point_key = generate_record_sync_point_key(
-            RecordType.FILE.value, "container", container_name
+            RecordType.FILE.value, "container", f"{container_name}/{prefix}" if prefix else container_name
         )
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
@@ -904,11 +928,14 @@ class AzureBlobConnector(BaseConnector):
         batch_records = []
         max_timestamp = last_sync_time if last_sync_time else 0
         blob_count = 0
+        listing_failed = False
+        failed = FailedItems()
 
         try:
             async with self.rate_limiter:
                 response = await self.data_source.list_blobs(
                     container_name=container_name,
+                    prefix=prefix or None,
                 )
 
                 if not response.success:
@@ -926,6 +953,7 @@ class AzureBlobConnector(BaseConnector):
                 # Azure SDK returns an AsyncItemPaged object which handles pagination internally.
                 # We iterate directly over it using async for.
                 async for blob in blobs_iterator:
+                    obj_timestamp_ms = None
                     try:
                         blob_count += 1
                         # Convert BlobProperties to dict for consistent handling
@@ -935,6 +963,9 @@ class AzureBlobConnector(BaseConnector):
                             continue
 
                         is_folder = blob_name.endswith("/")
+
+                        if not (scope.includes_folder(blob_name) if is_folder else scope.includes_file(blob_name)):
+                            continue
 
                         # Check extension filter
                         if not self._pass_extension_filter(blob_name, is_folder=is_folder):
@@ -980,12 +1011,16 @@ class AzureBlobConnector(BaseConnector):
                                     batch_records
                                 )
                                 batch_records = []
+                        elif blob_name.lstrip("/"):
+                            # The processor returns no record for a real name only on an error.
+                            failed.add(obj_timestamp_ms)
                     except Exception as e:
                         error_blob_name = blob_dict.get("name", "unknown") if "blob_dict" in locals() else "unknown"
                         self.logger.error(
                             f"Error processing blob {error_blob_name}: {e}",
                             exc_info=True,
                         )
+                        failed.add(obj_timestamp_ms)
                         continue
 
             self.logger.info(f"Processed {blob_count} blobs from container {container_name}")
@@ -994,14 +1029,23 @@ class AzureBlobConnector(BaseConnector):
             self.logger.error(
                 f"Error during container sync for {container_name}: {e}", exc_info=True
             )
+            listing_failed = True
 
         if batch_records:
             await self.data_entities_processor.on_new_records(batch_records)
 
-        if max_timestamp > 0:
+        # Blobs are listed by name, not time, so a checkpoint after a partial
+        # listing would skip the older blobs it never reached.
+        if failed.count:
+            self.logger.warning(
+                f"{failed.count} blobs in container {container_name} failed to process; "
+                "the next sync retries them"
+            )
+        checkpoint = failed.checkpoint(max_timestamp)
+        if checkpoint and checkpoint > 0 and not listing_failed:
             await self.record_sync_point.update_sync_point(
                 sync_point_key, {
-                    "last_sync_time": max_timestamp,
+                    "last_sync_time": checkpoint,
                 }
             )
 

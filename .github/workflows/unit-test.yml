@@ -17,13 +17,26 @@ on:
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
+      # The graph-entity schema guard compares the models here against the YAML
+      # the connector checks validate against, so a change to either side has
+      # to run it.
+      - 'integration-tests/unit/**'
+      - 'integration-tests/validation/**'
+      # The connector-type guard checks the types these suites ask for against
+      # the names the connectors register under backend/python/app, so a
+      # misspelling on the suite side has to run it too.
+      - 'integration-tests/connectors/**'
 
   workflow_call:
     inputs:
+      # Only ever raise the Python minimum; never lower it to make a PR pass. Add tests instead.
+      # It lives in three places that must move together: this default, the `|| 89.8`
+      # fallback on the `coverage report --fail-under` line (the one pull_request runs use),
+      # and weekly-coverage.yml (its input and its Slack text).
       python-coverage-threshold:
         description: 'Minimum Python coverage percentage'
         type: number
-        default: 88.4
+        default: 89.8
       generate-coverage-reports:
         description: 'Generate and upload coverage report artifacts'
         type: boolean
@@ -143,7 +156,30 @@ jobs:
         run: |
           cd backend/python
           coverage run -m pytest tests/unit -v
-          coverage report --fail-under=${{ inputs.python-coverage-threshold || 88.4 }}
+          coverage report --fail-under=${{ inputs.python-coverage-threshold || 89.8 }}
+
+      # Lives under integration-tests because it guards that suite's schemas,
+      # but it is pure and needs no stack -- and the job that normally runs it
+      # sits behind a reviewer gate, so on a pull request it would not run until
+      # someone approved it, and in practice not until the nightly. That is the
+      # delay the guard exists to remove, so it runs here too.
+      # Two offline guards over integration-tests: the graph-entity schemas, and
+      # the connector types the suites ask for, which must match a registered
+      # @ConnectorBuilder name exactly. The second exists because the SharePoint
+      # suite asked for "SharePointOnline" against "SharePoint Online" and only
+      # a nightly with a real tenant could find out.
+      - name: Run the integration-suite guards
+        run: |
+          uv pip install --system pyyaml
+          # `-c` and `--noconftest` because the file sits inside integration-tests,
+          # whose pytest.ini asks for pytest-order and whose conftest expects a
+          # running stack. Neither is here, and without these the step dies on
+          # `unrecognized arguments: --order-scope=module` before the guard runs
+          # -- leaving it exactly as unenforced on a pull request as it was.
+          PYTHONPATH=backend/python:integration-tests \
+            pytest integration-tests/unit/test_graph_entity_schemas.py \
+              integration-tests/unit/test_connector_types_are_registered.py \
+              --noconftest -c backend/python/pytest.ini -v
 
       # The only automated check on agent behaviour: six golden properties the
       # prompt and loop must hold (tool choice, no placeholder write params, a
@@ -161,6 +197,35 @@ jobs:
         run: |
           cd backend/python
           pytest tests/evals -v
+
+      # backend/python/tests/integration holds 24 files and only the three under
+      # redis_cluster were run by any workflow. Despite the name most need no
+      # services: the ones that do are written to skip when the service is
+      # absent, so on a bare runner they skip cleanly and the rest execute.
+      # Three files are excluded below, leaving 20 that run here.
+      #
+      # test_npm_import_live.py is excluded because it is not offline: it pulls
+      # real tarballs from registry.npmjs.org. It skips when the registry is
+      # unreachable, but a CI runner can reach it, so leaving it in would make
+      # every Python pull request depend on the public npm registry and on the
+      # pinned packages staying published.
+      #
+      # test_model_reasoning_effort_e2e.py is excluded and tracked in #3201 so
+      # the exclusion does not quietly become permanent. It asserts
+      # that a model-level "defaultReasoningEffort" is honoured by
+      # get_generator_model, and that key appears nowhere in app/utils/aimodels.py
+      # — the setting is an agent-level field, applied in api/routes/agent.py.
+      # The test encodes a design the code does not have. Whether to implement
+      # it or delete the test is a product decision; excluding it here is what
+      # lets the other 23 files run in the meantime.
+      - name: Run Python integration tests
+        run: |
+          cd backend/python
+          pytest tests/integration \
+            --ignore=tests/integration/redis_cluster \
+            --ignore=tests/integration/skills/test_npm_import_live.py \
+            --ignore=tests/integration/test_model_reasoning_effort_e2e.py \
+            -v --timeout=300 --session-timeout=900
 
       - name: Generate coverage reports
         if: ${{ always() && inputs.generate-coverage-reports == true }}

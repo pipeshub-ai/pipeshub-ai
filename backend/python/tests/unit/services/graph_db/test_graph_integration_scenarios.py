@@ -381,6 +381,8 @@ class FakeGraphProvider:
         org_id: str,
         filters: dict[str, list[str]] | None = None,
         time_range: dict[str, int] | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, str]:
         """
         Reproduce the permission model by walking the 8 connector access paths
@@ -695,6 +697,7 @@ class FakeGraphProvider:
         key: str,
         collection: str,
         transaction: str | None = None,
+        raise_on_error: bool = False,  # noqa: ARG002 - this store cannot fail; named so signature drift shows up here
     ) -> dict[str, object] | None:
         col = self._ensure_collection(collection)
         return col.get(key)

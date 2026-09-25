@@ -242,6 +242,56 @@ class TestDelegateMethods:
         )
 
     @pytest.mark.asyncio
+    async def test_get_records_in_record_group_pages_by_the_group_key(self):
+        proc, tx = _make_processor()
+        tx.get_record_group_by_external_id.return_value = MagicMock(id="rg-key")
+        sentinel = [MagicMock(spec=Record)]
+        tx.get_records_by_status.return_value = sentinel
+
+        result = await proc.get_records_in_record_group("conn-1", "bucket-a", 100, "after")
+
+        assert result is sentinel
+        tx.get_record_group_by_external_id.assert_awaited_once_with(
+            connector_id="conn-1", external_id="bucket-a"
+        )
+        tx.get_records_by_status.assert_awaited_once_with(
+            org_id="org-1",
+            connector_id="conn-1",
+            status_filters=None,
+            record_group_id="rg-key",
+            limit=100,
+            after_key="after",
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_records_in_record_group_unknown_group(self):
+        proc, tx = _make_processor()
+        tx.get_record_group_by_external_id.return_value = None
+
+        assert await proc.get_records_in_record_group("conn-1", "missing", 100) == []
+        tx.get_records_by_status.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_listing_failures_propagate_through_the_pass_throughs(self):
+        """These three only forward the call, so they must forward the failure too.
+
+        Turning it back into an empty list here would put the swallow back one
+        layer up, where every caller reads it as "no matching records".
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        proc, tx = _make_processor()
+        tx.get_record_group_by_external_id.return_value = MagicMock(id="rg-key")
+        tx.get_records_by_status.side_effect = GraphQueryError("db down")
+
+        with pytest.raises(GraphQueryError):
+            await proc.get_records_in_record_group("conn-1", "bucket-a", 100)
+        with pytest.raises(GraphQueryError):
+            await proc.get_placeholder_records("conn-1")
+        with pytest.raises(GraphQueryError):
+            await proc.get_records_by_status("conn-1", ["FAILED"])
+
+    @pytest.mark.asyncio
     async def test_get_records_by_record_type(self):
         proc, tx = _make_processor()
         sentinel = [MagicMock(spec=Record)]
@@ -264,8 +314,12 @@ class TestDelegateMethods:
             org_id="org-1",
             connector_id="conn-1",
             status_filters=None,
+            limit=None,
+            offset=0,
             record_group_id="rg-1",
             is_placeholder=True,
+            after_key=None,
+            exclude_statuses=None,
         )
 
     @pytest.mark.asyncio
