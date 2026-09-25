@@ -514,23 +514,28 @@ class BoxConnector(BaseConnector):
         Fetch permissions for a Box item (file or folder).
         """
         permissions = []
+        collaborations = []
+        marker = None
         try:
-            # Get collaborations for the item
-            if item_type == 'file':
-                response = await self.data_source.collaborations_get_file_collaborations(file_id=item_id)
-            else:
-                response = await self.data_source.collaborations_get_folder_collaborations(folder_id=item_id)
-
-            if not response.success:
-                # 404 or no permission to view collabs (BoxResponse has no status_code; check error string)
-                if response.error and "404" in str(response.error):
-                    self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id} (404).")
+            while True:
+                if item_type == 'file':
+                    response = await self.data_source.collaborations_get_file_collaborations(file_id=item_id, marker=marker)
                 else:
-                    self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
-                return permissions
+                    response = await self.data_source.collaborations_get_folder_collaborations(folder_id=item_id, marker=marker)
 
-            data = self._to_dict(response.data)
-            collaborations = data.get('entries', [])
+                if not response.success:
+                    # 404 or no permission to view collabs (BoxResponse has no status_code; check error string)
+                    if response.error and "404" in str(response.error):
+                        self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id} (404).")
+                    else:
+                        self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
+                    break
+
+                data = self._to_dict(response.data)
+                collaborations.extend(data.get('entries', []))
+                marker = data.get('next_marker')
+                if not marker:
+                    break
 
             for collab in collaborations:
                 accessible_by = collab.get('accessible_by', {})

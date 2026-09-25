@@ -111,7 +111,6 @@ class TestFullSyncWalk:
         assert {f"file-{n}" for n in range(5)} <= set(db.records)
 
 
-
     async def test_an_inactive_user_is_not_walked(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
         db.active_emails.discard(BOB_EMAIL)
@@ -156,6 +155,19 @@ class TestSharingAndPermissions:
         assert db.access("file-2") == {"PUBLIC"}
         assert {"PUBLIC", "ORG_org-1", "g-eng"} <= set(db.user_groups)
 
+    async def test_every_page_of_a_file_collaborator_list_is_read(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.default_page = box_api.max_page = 2
+        for n in range(3):
+            box_api.add_user(f"u-{n}", f"user{n}@acme.test")
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        for n in range(3):
+            box_api.collaborate("file-1", f"u-{n}")
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert db.access("file-1") == {"user0@acme.test", "user1@acme.test", "user2@acme.test"}
 
     async def test_a_failed_collaborator_read_keeps_the_access_already_stored(self, box_api, db, checkpoints, sdk_sleeps) -> None:
         enterprise(box_api, db)

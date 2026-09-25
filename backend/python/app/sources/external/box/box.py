@@ -1137,7 +1137,7 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaborations_get_file_collaborations(self, file_id: str, **kwargs) -> BoxResponse:
+    async def collaborations_get_file_collaborations(self, file_id: str, limit: int | None = None, marker: str | None = None, **kwargs) -> BoxResponse:
         """Get all collaborations on a file
 
         API Endpoint: collaborations.get_file_collaborations
@@ -1145,6 +1145,8 @@ class BoxDataSource:
 
         Args:
             file_id (str, required): The ID of the file
+            limit (int, optional): The maximum number of collaborations to return
+            marker (str, optional): The next_marker of the previous page
 
         Returns:
             BoxResponse: SDK response
@@ -1160,12 +1162,12 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_collaborations(file_id))
+            response = await loop.run_in_executor(None, lambda: manager.get_file_collaborations(file_id, limit=limit, marker=marker))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def collaborations_get_folder_collaborations(self, folder_id: str, **kwargs) -> BoxResponse:
+    async def collaborations_get_folder_collaborations(self, folder_id: str, limit: int | None = None, marker: str | None = None, **kwargs) -> BoxResponse:
         """Get all collaborations on a folder
 
         API Endpoint: collaborations.get_folder_collaborations
@@ -1173,6 +1175,8 @@ class BoxDataSource:
 
         Args:
             folder_id (str, required): The ID of the folder
+            limit (int, optional): The maximum number of collaborations to return
+            marker (str, optional): The next_marker of the previous page
 
         Returns:
             BoxResponse: SDK response
@@ -1188,7 +1192,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_collaborations(folder_id))
+            response = await loop.run_in_executor(None, lambda: manager.get_folder_collaborations(folder_id, limit=limit, marker=marker))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
