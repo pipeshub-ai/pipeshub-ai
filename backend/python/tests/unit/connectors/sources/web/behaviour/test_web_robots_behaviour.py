@@ -8,6 +8,7 @@ from web_behaviour_fakes import (
     MakeConnector,
     Page,
     RecordingNotifications,
+    VirtualClock,
 )
 
 ROBOTS = "http://site.test/robots.txt"
@@ -164,3 +165,17 @@ async def test_the_longest_matching_rule_decides_and_allow_wins_a_tie(
         assert f"http://site.test{path}" in db.pages(), path
     for path in blocked:
         assert site.gets(f"http://site.test{path}") == 0, path
+
+
+@pytest.mark.parametrize("status", [429, 503], ids=["429", "503"])
+async def test_a_rate_limited_robots_txt_skips_the_site_at_once(
+    status: int, site: FakeWeb, db: FakeRecordsDb, clock: VirtualClock, make_connector: MakeConnector
+) -> None:
+    _site(site)
+    site.add(ROBOTS, Page(status=status, body=b"", headers={"Retry-After": "120"}))
+
+    await (await make_connector()).run_sync()
+
+    assert site.gets(ROBOTS) == 1
+    assert clock.sleeps == []
+    assert db.pages() == {}

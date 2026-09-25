@@ -166,6 +166,7 @@ PROBE_TIMEOUT_SECONDS = 10
 
 # The name robots.txt groups are matched against; sites without a group for it get their "*" rules.
 ROBOTS_USER_AGENT = "PipesHub"
+ROBOTS_TIMEOUT_SECONDS = 10
 
 DOCUMENT_MIME_TYPES = {
     MimeTypes.PDF.value,
@@ -1399,19 +1400,24 @@ class WebConnector(BaseConnector):
         429, no answer) means crawl nothing on that site for now."""
         if self.session is None:
             return None
-        result = await fetch_url_with_fallback(
-            url=f"{origin}/robots.txt", session=self.session, logger=self.logger,
-            timeout=15, max_retries_per_strategy=1,
-        )
-        if result is None or result.status_code == HTTPStatus.TOO_MANY_REQUESTS or result.status_code >= 500:
-            self.logger.warning(
-                "Couldn't read %s/robots.txt (%s); not crawling that site this sync",
-                origin, result.status_code if result else "no answer",
-            )
+        url = f"{origin}/robots.txt"
+        # One short attempt: the page fetcher's rate-limit backoff could hold the sync for many minutes here.
+        try:
+            async with self.session.get(
+                url, headers=build_stealth_headers(url), allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=ROBOTS_TIMEOUT_SECONDS),
+            ) as response:
+                status = response.status
+                body = await response.read() if status < 400 else b""
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
+            self.logger.warning("Couldn't read %s (%s); not crawling that site this sync", url, e)
             return None
-        if result.status_code >= 400:
+        if status == HTTPStatus.TOO_MANY_REQUESTS or status >= 500:
+            self.logger.warning("Couldn't read %s (%s); not crawling that site this sync", url, status)
+            return None
+        if status >= 400:
             return RobotsRules()
-        return RobotsRules.parse(result.content_bytes.decode("utf-8", "replace"), ROBOTS_USER_AGENT)
+        return RobotsRules.parse(body.decode("utf-8", "replace"), ROBOTS_USER_AGENT)
 
     def _robots_summary(self) -> str:
         unreadable = sorted(urlparse(origin).netloc for origin, rules in self._robots.items() if rules is None)
