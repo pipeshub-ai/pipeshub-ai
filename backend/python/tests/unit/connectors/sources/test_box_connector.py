@@ -820,7 +820,7 @@ class TestBoxRunSync:
             new_callable=AsyncMock,
             return_value=(MagicMock(), MagicMock()),
         ):
-            # It should still proceed past read_sync_point failure
+            # An unreadable cursor stops the run; a full sync would re-anchor at "now" and drop events.
             box_connector.data_source.events_get_events = AsyncMock(
                 return_value=MagicMock(success=False, data={})
             )
@@ -830,7 +830,10 @@ class TestBoxRunSync:
             box_connector._sync_user_groups = AsyncMock()
             box_connector._sync_record_groups = AsyncMock()
             box_connector._process_users_in_batches = AsyncMock()
-            await box_connector.run_sync()
+            with pytest.raises(Exception, match="read fail"):
+                await box_connector.run_sync()
+            box_connector._sync_users.assert_not_awaited()
+            box_connector.data_source.events_get_events.assert_not_awaited()
 
 
 class TestBoxSyncFolderRecursively:

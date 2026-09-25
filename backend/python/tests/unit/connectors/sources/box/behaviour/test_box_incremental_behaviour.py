@@ -119,6 +119,21 @@ class TestCursor:
         assert checkpoints.cursor()["cursor"] == before
 
 
+    async def test_a_webhook_with_an_unreadable_cursor_does_not_skip_to_now(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_file("file-1", "new.pdf", ALICE)
+        box_api.add_event("ITEM_UPLOAD", item_event("file-1"), created_by=by(ALICE, box_api))
+        saved = dict(checkpoints.cursor())
+        polls_before = len(box_api.calls("GET", "/2.0/events"))
+        checkpoints.fail_reads = True
+
+        await connector.run_incremental_sync()
+
+        assert len(box_api.calls("GET", "/2.0/events")) == polls_before
+        assert checkpoints.cursor() == saved
+
+
 class TestContentEvents:
     async def test_an_upload_into_a_new_folder_also_stores_the_folder(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

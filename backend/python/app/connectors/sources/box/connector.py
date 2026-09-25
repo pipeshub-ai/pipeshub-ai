@@ -1174,11 +1174,13 @@ class BoxConnector(BaseConnector):
             # 1. Check if we have an existing cursor
             key = "event_stream_cursor"
 
-            cursor_data = None
             try:
                 cursor_data = await self.box_cursor_sync_point.read_sync_point(key)
             except Exception as e:
-                self.logger.debug(f"⚠️ [Smart Sync] Could not read sync point (first run?): {e}")
+                # A first run reads an empty dict; treating a failed read as one would re-anchor
+                # at "now" and drop every event since the stored position.
+                self.logger.error(f"❌ [Smart Sync] Could not read the saved event-stream position; skipping this run: {e}")
+                raise
 
             # 2. DECISION LOGIC
             if cursor_data and cursor_data.get("cursor"):
@@ -1344,8 +1346,9 @@ class BoxConnector(BaseConnector):
             if data and isinstance(data, dict):
                 stream_position = data.get("cursor") or 'now'
             self.logger.info(f"📍 [Incremental] Loaded Cursor: {stream_position}")
-        except Exception:
-            self.logger.info("⚠️ [Incremental] No existing cursor found, starting from 'now'")
+        except Exception as e:
+            self.logger.error(f"❌ [Incremental] Could not read the saved event-stream position; skipping this run: {e}")
+            return
 
         limit = 500
         has_more = True

@@ -368,4 +368,16 @@ class TestEventStreamAnchor:
 
         assert checkpoints.cursor() is None
 
+    async def test_an_unreadable_cursor_fails_the_run_instead_of_starting_over(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        saved = dict(checkpoints.cursor())
+        box_api.add_event("COLLABORATION_REMOVE", {"type": "file", "id": "file-1"})
+        checkpoints.fail_reads = True
+
+        with pytest.raises(RuntimeError):
+            await connector.run_sync()
+
+        assert checkpoints.cursor() == saved
 
