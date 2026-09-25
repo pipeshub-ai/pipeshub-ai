@@ -72,6 +72,27 @@ HTTP_INTERNAL_SERVER_ERROR = 500
 
 from app.connectors.api.utils import increment_org_corpus_revision_with_retry
 
+async def _resolve_kb_owner_before_deletion(
+    request: Request, kb_id: str, operation_name: str
+) -> str | None:
+    """Resolve the KB-owning org BEFORE deletion.
+
+    After the document is removed from the graph, get_document may return
+    nothing and fallbacks would incorrectly target the requester's org. If
+    resolution fails, skip the bump entirely rather than corrupting a different
+    org's cache invalidation.
+    """
+    try:
+        _kb_doc = await request.app.state.graph_provider.get_document(kb_id, "apps")
+        return (_kb_doc or {}).get("orgId")
+    except Exception as _exc:
+        _log.warning(
+            "%s: could not resolve KB owner for kb_id=%s "
+            "before deletion — corpus revision will not be bumped. err=%s",
+            operation_name, kb_id, _exc,
+        )
+        return None
+
 kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
@@ -1387,8 +1408,8 @@ async def update_record(
         # Only call the helper when a non-empty org_id was resolved; passing
         # None would silently fall back to the requester's org, which is wrong
         # for cross-org access.
-        _kb_ctx_for_bump = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
-        _bump_org_id = _kb_ctx_for_bump.get("org_id") if _kb_ctx_for_bump else None
+        kb_context = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
+        _bump_org_id = kb_context.get("org_id") if kb_context else None
         if _bump_org_id:
             await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _bump_org_id)
 
@@ -1410,11 +1431,14 @@ async def update_record(
         # Enrich response with required fields for UpdateRecordResponse
         graph_provider = request.app.state.graph_provider
         try:
-            # Get KB context for the record. The write already succeeded, so a missing
+            # Re-use KB context fetched above. The write already succeeded, so a missing
             # context is an enrichment miss — degrade gracefully rather than turning a
             # completed update into a misleading 404.
-            kb_context = await graph_provider._get_kb_context_for_record(record_id)
             kb_id = kb_context.get("kb_id") if kb_context else None
+            # If the initial context fetch missed kb_id, try a fallback lookup before giving up.
+            if not kb_id:
+                kb_context = await graph_provider._get_kb_context_for_record(record_id)
+                kb_id = kb_context.get("kb_id") if kb_context else None
             if not kb_id:
                 logger.warning(f"⚠️ KB context unavailable for updated record {record_id}; returning un-enriched response")
                 return {
@@ -1525,21 +1549,7 @@ async def delete_records_in_kb(
             )
         user_id = request.state.user.get("userId")
 
-        # Resolve the KB-owning org BEFORE deletion.  After the document is
-        # removed from the graph, get_document may return nothing and the
-        # helper would fall back to the requester's org, bumping the wrong
-        # corpus revision.  If resolution fails, skip the bump entirely
-        # rather than corrupting a different org's cache invalidation.
-        _kb_org: str | None = None
-        try:
-            _kb_doc = await request.app.state.graph_provider.get_document(kb_id, "apps")
-            _kb_org = (_kb_doc or {}).get("orgId")
-        except Exception as _exc:
-            _log.warning(
-                "delete_records_in_kb: could not resolve KB owner for kb_id=%s "
-                "before deletion — corpus revision will not be bumped. err=%s",
-                kb_id, _exc,
-            )
+        _kb_org = await _resolve_kb_owner_before_deletion(request, kb_id, "delete_records_in_kb")
 
         result = await kb_service.delete_records_in_kb(
             kb_id=kb_id,
@@ -1603,18 +1613,7 @@ async def delete_record_in_folder(
             )
         user_id = request.state.user.get("userId")
 
-        # Resolve the KB-owning org BEFORE deletion so the corpus revision
-        # bump targets the correct org even after the document is removed.
-        _kb_org: str | None = None
-        try:
-            _kb_doc = await request.app.state.graph_provider.get_document(kb_id, "apps")
-            _kb_org = (_kb_doc or {}).get("orgId")
-        except Exception as _exc:
-            _log.warning(
-                "delete_record_in_folder: could not resolve KB owner for kb_id=%s "
-                "before deletion — corpus revision will not be bumped. err=%s",
-                kb_id, _exc,
-            )
+        _kb_org = await _resolve_kb_owner_before_deletion(request, kb_id, "delete_record_in_folder")
 
         result = await kb_service.delete_records_in_folder(
             kb_id=kb_id,

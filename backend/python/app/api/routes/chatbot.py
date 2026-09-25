@@ -1369,7 +1369,10 @@ async def askAIStream(
 
                             if cached_entry:
                                 cached_citations = cached_entry.get("citations") or []
-                                if cached_citations:
+                                if not cached_citations:
+                                    logger.info("Cache bypassed: Cached entry has no citations.")
+                                    cached_entry = None
+                                else:
                                     virtual_ids_to_check = set()
                                     for c in cached_citations:
                                         meta = c.get("metadata") or {}

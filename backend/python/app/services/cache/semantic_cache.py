@@ -61,6 +61,9 @@ class SemanticCacheService:
         await self.vector_db.create_index(
             self.collection_name, "metadata.filters_hash", {"type": "keyword"}
         )
+        await self.vector_db.create_index(
+            self.collection_name, "metadata.corpusRevision", {"type": "keyword"}
+        )
 
         # Migration: apply non-indexed mapping for large stored-text fields.
         # This is an OpenSearch-only operation: put_mapping adds index:false to

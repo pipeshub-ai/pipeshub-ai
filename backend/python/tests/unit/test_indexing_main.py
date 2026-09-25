@@ -1096,10 +1096,13 @@ class TestLifespan:
         mock_app = MagicMock()
         mock_app.state = MagicMock()
 
+        mock_consumer = MagicMock()
+        mock_consumer.worker_loop.is_running.return_value = False
+
         with (
             patch("app.indexing_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
             patch("app.indexing_main.recover_in_progress_records", new_callable=AsyncMock),
-            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[("record", MagicMock())]),
+            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[("record", mock_consumer)]),
             patch("app.indexing_main.stop_kafka_consumers", new_callable=AsyncMock) as mock_stop,
         ):
             async with lifespan(mock_app):
@@ -1121,10 +1124,13 @@ class TestLifespan:
         mock_app = MagicMock()
         mock_app.state = MagicMock()
 
+        mock_consumer = MagicMock()
+        mock_consumer.worker_loop.is_running.return_value = False
+
         with (
             patch("app.indexing_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
             patch("app.indexing_main.recover_in_progress_records", new_callable=AsyncMock),
-            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[("record", mock_consumer)]),
             patch("app.indexing_main.stop_kafka_consumers", new_callable=AsyncMock),
         ):
             async with lifespan(mock_app):
@@ -1140,10 +1146,13 @@ class TestLifespan:
         mock_app = MagicMock()
         mock_app.state = MagicMock()
 
+        mock_consumer = MagicMock()
+        mock_consumer.worker_loop.is_running.return_value = False
+
         with (
             patch("app.indexing_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
             patch("app.indexing_main.recover_in_progress_records", new_callable=AsyncMock, side_effect=RuntimeError("recovery fail")),
-            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[("record", mock_consumer)]),
             patch("app.indexing_main.stop_kafka_consumers", new_callable=AsyncMock),
         ):
             async with lifespan(mock_app):

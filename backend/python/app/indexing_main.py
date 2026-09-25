@@ -1432,11 +1432,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"❌ Error during vector membership backfill future shutdown: {str(e)}")
 
+    # Flush the accessible-records invalidator BEFORE stopping consumers.
+    # The indexing callbacks spawn trailing-bump tasks on the consumer's
+    # worker loop. Flushing here (and routing it to that loop) ensures
+    # the pending bump is awaited safely before the loop is destroyed.
+    try:
+        from app.services.cache.invalidation_hooks import get_accessible_records_invalidator
+        inv = get_accessible_records_invalidator()
+        if inv is not None:
+            # We already have worker_loop from the startup phase.
+            if worker_loop and worker_loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(inv.close(), worker_loop)
+                await asyncio.wrap_future(future)
+            else:
+                await inv.close()
+            logger.info("✅ Accessible-records invalidator flushed (pre-drain)")
+    except Exception as e:
+        logger.error(f"❌ Error flushing accessible-records invalidator: {e}")
+
     # Stop message consumers
     try:
         await stop_kafka_consumers(app_container)
     except Exception as e:
         logger.error(f"❌ Error during application shutdown: {str(e)}")
+
+    # Secondary safety flush: if any in-flight record finished processing
+    # and scheduled a NEW trailing bump just before the consumer drained,
+    # flush it again on the main loop. Neo4j is now detached from the dead
+    # worker loop and safe to call here.
+    try:
+        inv = get_accessible_records_invalidator()
+        if inv is not None:
+            await inv.close()
+            logger.info("✅ Accessible-records invalidator flushed (post-drain fallback)")
+    except Exception as e:
+        logger.error(f"❌ Error flushing accessible-records invalidator (post-drain): {e}")
 
     # Stop the resource governor's sample loop after consumers (which hold
     # its gates) have drained, so nothing races a limit change mid-shutdown.
@@ -1450,18 +1480,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error during resource governor shutdown: {str(e)}")
     governor.close()
 
-    # Flush any pending corpus-revision bumps before the graph provider is torn
-    # down.  The invalidator coalesces KB-record events into a 2-second trailing
-    # bump; close() cancels the timer and immediately calls
-    # increment_corpus_revision so the next startup sees a fresh revision.
-    try:
-        from app.services.cache.invalidation_hooks import get_accessible_records_invalidator
-        inv = get_accessible_records_invalidator()
-        if inv is not None:
-            await inv.close()
-            logger.info("✅ Accessible-records invalidator flushed")
-    except Exception as e:
-        logger.error(f"❌ Error flushing accessible-records invalidator: {e}")
 
     try:
         accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
