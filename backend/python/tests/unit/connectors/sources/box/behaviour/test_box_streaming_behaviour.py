@@ -77,15 +77,6 @@ class TestOpeningAFile:
         assert error.status_code == 429
         assert "try again shortly" in error.detail
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Left alone: the shared stream-error mapper reads Retry-After from "
-            "exc.response, but the Box SDK keeps it on exc.response_info, so the "
-            "429 reaches the user without saying how long to wait. The fix belongs "
-            "in the shared mapper, outside this Box-only change."
-        ),
-    )
     async def test_a_lasting_rate_limit_passes_on_how_long_to_wait(self, box_api, db, checkpoints) -> None:
         connector = await synced(box_api, db, checkpoints)
         box_api.fail("GET", "/2.0/files/file-1/content", 429, times=10, headers={"Retry-After": "30"})
