@@ -1202,7 +1202,8 @@ class BoxConnector(BaseConnector):
             if not (cursor_data and cursor_data.get("cursor")):
                 self.logger.info("⚪ [Smart Sync] No cursor found. Starting FULL SYNC & Anchoring.")
 
-            # ANCHOR THE STREAM
+            # ANCHOR THE STREAM (saved only once the full sync below has finished)
+            anchor: dict[str, object] | None = None
             try:
                 # Get current position ('now')
                 response = await self.data_source.events_get_events(
@@ -1217,11 +1218,8 @@ class BoxConnector(BaseConnector):
 
                     if next_stream_pos:
                         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-                        await self.box_cursor_sync_point.update_sync_point(
-                            key,
-                            {"cursor": next_stream_pos, "cursor_updated_at": now_ms}
-                        )
-                        self.logger.info(f"⚓ [Smart Sync] Anchored Event Stream at: {next_stream_pos}")
+                        anchor = {"cursor": next_stream_pos, "cursor_updated_at": now_ms}
+                        self.logger.info(f"⚓ [Smart Sync] Anchoring Event Stream at: {next_stream_pos}")
                     else:
                         self.logger.warning("⚠️ [Smart Sync] Anchoring Warning: 'next_stream_position' not found.")
             except Exception as e:
@@ -1250,6 +1248,9 @@ class BoxConnector(BaseConnector):
                 if u.source_user_id
             }
             await self._backfill_shared_with_me_history(our_org_box_user_ids)
+
+            if anchor:
+                await self.box_cursor_sync_point.update_sync_point(key, anchor)
 
             self.logger.info("✅ [Full Sync] Completed successfully.")
 

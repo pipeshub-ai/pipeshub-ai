@@ -119,7 +119,6 @@ class TestCursor:
         assert checkpoints.cursor()["cursor"] == before
 
 
-
 class TestContentEvents:
     async def test_an_upload_into_a_new_folder_also_stores_the_folder(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

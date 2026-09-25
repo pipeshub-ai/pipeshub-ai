@@ -8,6 +8,7 @@ databases are in-memory fakes. SDK retry waits are recorded, not slept.
 import logging
 from typing import Any
 
+import pytest
 from box_behaviour_fakes import (
     CONNECTOR_ID,
     ROOT_ID,
@@ -356,5 +357,15 @@ class TestEventStreamAnchor:
         assert checkpoints.cursor()["cursor"] == "1"
         assert isinstance(checkpoints.cursor()["cursor_updated_at"], int)
 
+    async def test_a_full_sync_that_fails_leaves_no_cursor_so_the_next_run_is_full_again(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        db.fail_active_users = True
+        connector = await ready_connector(db, checkpoints)
+
+        with pytest.raises(RuntimeError):
+            await connector.run_sync()
+
+        assert checkpoints.cursor() is None
 
 
