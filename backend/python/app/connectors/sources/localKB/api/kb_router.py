@@ -1408,8 +1408,13 @@ async def update_record(
         # Only call the helper when a non-empty org_id was resolved; passing
         # None would silently fall back to the requester's org, which is wrong
         # for cross-org access.
-        kb_context = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
-        _bump_org_id = kb_context.get("org_id") if kb_context else None
+        try:
+            kb_context = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
+            _bump_org_id = kb_context.get("org_id") if kb_context else None
+        except Exception as e:
+            logger.warning(f"Failed to lookup KB context for record {record_id} prior to revision bump: {e}")
+            _bump_org_id = None
+
         if _bump_org_id:
             await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _bump_org_id)
 

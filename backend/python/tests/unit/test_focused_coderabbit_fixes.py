@@ -86,14 +86,15 @@ async def test_worker_loop_shutdown_path():
 # 4. Redis purge before any chat request
 # ---------------------------------------------------------
 @pytest.mark.asyncio
-async def test_redis_purge_initializes_cache():
+async def test_redis_purge_defers_uninitialized_cache():
     from app.query_main import lifespan
     
     mock_container = MagicMock()
     mock_cache_svc = AsyncMock()
+    mock_cache_svc._initialized = False
     mock_container.semantic_cache_service = AsyncMock(return_value=mock_cache_svc)
     mock_gp = AsyncMock()
-    mock_gp.get_all_orgs.return_value = []  # Bypass inner loop to avoid global container access
+    mock_gp.get_all_orgs.return_value = []
     mock_container.graph_provider = AsyncMock(return_value=mock_gp)
     mock_container._graph_provider = mock_gp
     
@@ -109,5 +110,38 @@ async def test_redis_purge_initializes_cache():
             # Sleep briefly to let the background task run
             await asyncio.sleep(0.1)
             
-        # The background task should have called initialize
-        mock_cache_svc.initialize.assert_awaited()
+        # The background task should no longer blindly call initialize without a dimension
+        mock_cache_svc.initialize.assert_not_called()
+
+# ---------------------------------------------------------
+# 5. KB deletion outcomes
+# ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_kb_deletion_outcomes():
+    from app.connectors.sources.localKB.api.kb_router import delete_records_in_kb
+    from fastapi.exceptions import HTTPException
+    
+    mock_request = MagicMock(spec=Request)
+    mock_request.json = AsyncMock(return_value={"recordIds": ["r1"]})
+    mock_request.state.user = {"userId": "u1"}
+    
+    mock_gp = AsyncMock()
+    mock_request.app.state.graph_provider = mock_gp
+    
+    mock_kb_service = AsyncMock()
+    
+    # Outcome 1: Successful deletion bumps corpus revision
+    mock_gp.get_document.return_value = {"orgId": "org1"}
+    mock_kb_service.delete_records_in_kb.return_value = {"success": True}
+    
+    with patch("app.connectors.sources.localKB.api.kb_router.increment_org_corpus_revision_with_retry", new_callable=AsyncMock) as mock_bump:
+        await delete_records_in_kb(kb_id="kb1", request=mock_request, kb_service=mock_kb_service)
+        mock_bump.assert_awaited_once_with(mock_gp, "org1")
+        
+    # Outcome 2: Failed lookup warns and skips bump
+    mock_gp.get_document.return_value = None # Failed lookup
+    mock_kb_service.delete_records_in_kb.return_value = {"success": True}
+    
+    with patch("app.connectors.sources.localKB.api.kb_router.increment_org_corpus_revision_with_retry", new_callable=AsyncMock) as mock_bump:
+        await delete_records_in_kb(kb_id="kb1", request=mock_request, kb_service=mock_kb_service)
+        mock_bump.assert_not_called()

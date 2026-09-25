@@ -346,15 +346,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     async def _scheduled_semantic_cache_purge() -> None:
         semantic_cache_svc = await app_container.semantic_cache_service()
-        # Initialize early so index mappings exist before the first chat request
-        try:
-            await semantic_cache_svc.initialize()
-        except Exception as e:
-            logger.warning(f"Failed to initialize semantic cache service for purge: {e}")
             
         while True:
             try:
                 await asyncio.sleep(600)  # every 10 minutes
+                
+                if getattr(semantic_cache_svc, "_initialized", False) is False:
+                    # Defer purge runs until a chat request initializes the cache dimension
+                    continue
+
                 # Aggregate active, inactive, internal, and external orgs
                 internal_orgs = await graph_provider.get_all_orgs(active=False, is_external=False)
                 external_orgs = await graph_provider.get_all_orgs(active=False, is_external=True)

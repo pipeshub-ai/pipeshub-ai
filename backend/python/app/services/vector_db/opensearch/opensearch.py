@@ -802,7 +802,6 @@ class OpenSearchService(IVectorDBService):
         if len(hits) > limit:
             hits = hits[:limit]
             
-        is_cosine = await self._is_cosine_index(collection_name)
         points = [
             VectorPoint(
                 id=hit["_id"],

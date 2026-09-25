@@ -485,16 +485,18 @@ class AccessibleRecordsInvalidator:
                 self._scheduled_bumps.pop(org_id, None)
 
                 async def _trailing_bump(target_org: str) -> None:
-                    await asyncio.sleep(2.0)
                     success = False
-                    try:
-                        await self.graph_provider.increment_corpus_revision(target_org)
-                        success = True
-                    except Exception as bump_exc:
-                        self.logger.warning(
-                            "Failed to increment corpus revision for org %s: %s",
-                            target_org, str(bump_exc),
-                        )
+                    for attempt in range(1, 4):
+                        await asyncio.sleep(2.0 * attempt)
+                        try:
+                            await self.graph_provider.increment_corpus_revision(target_org)
+                            success = True
+                            break
+                        except Exception as bump_exc:
+                            self.logger.warning(
+                                "Failed to increment corpus revision for org %s (attempt %d): %s",
+                                target_org, attempt, str(bump_exc),
+                            )
                     finally:
                         # Only clear the entry on success so close() can still
                         # flush a failed bump.  On success, check whether another
