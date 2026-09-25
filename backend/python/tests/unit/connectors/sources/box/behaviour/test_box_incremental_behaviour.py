@@ -84,6 +84,17 @@ class TestCursor:
         assert full_walks(box_api) == 2
         assert checkpoints.cursor()["cursor_updated_at"] > int(old.timestamp() * 1000)
 
+    async def test_a_full_sync_starts_the_retry_count_afresh(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        old = datetime.now(timezone.utc) - timedelta(days=15)
+        checkpoints.cursor().update(cursor_updated_at=int(old.timestamp() * 1000), held_attempts=4)
+
+        await connector.run_sync()
+
+        assert full_walks(box_api) == 2
+        assert checkpoints.cursor()["held_attempts"] == 0
+
     async def test_a_failed_event_page_leaves_the_cursor_where_it_was(self, box_api, db, checkpoints, sdk_sleeps) -> None:
         enterprise(box_api, db)
         connector = await synced_connector(box_api, db, checkpoints)
@@ -128,7 +139,7 @@ class TestCursor:
 
         assert "file-1" in db.records
         assert checkpoints.cursor()["cursor"] == box_api.stream_head
-        assert "held_attempts" not in checkpoints.cursor()
+        assert checkpoints.cursor()["held_attempts"] == 0
 
     async def test_a_batch_that_keeps_failing_is_passed_over_after_five_attempts(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
@@ -144,7 +155,17 @@ class TestCursor:
         await connector.run_sync()
 
         assert checkpoints.cursor()["cursor"] == box_api.stream_head
-        assert "held_attempts" not in checkpoints.cursor()
+        assert checkpoints.cursor()["held_attempts"] == 0
+
+        box_api.add_file("file-2", "next.pdf", ALICE)
+        box_api.add_event("ITEM_UPLOAD", item_event("file-2"), created_by=by(ALICE, box_api))
+        after_skip = checkpoints.cursor()["cursor"]
+        box_api.fail("GET", "/2.0/files/file-2", 503, times=5)
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor()["cursor"] == after_skip
+        assert checkpoints.cursor()["held_attempts"] == 1
 
     async def test_an_upload_whose_second_collaborator_page_fails_is_granted_on_the_retry(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

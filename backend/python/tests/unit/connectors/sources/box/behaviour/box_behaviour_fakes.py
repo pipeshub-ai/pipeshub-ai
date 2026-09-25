@@ -466,7 +466,10 @@ class FakeBoxRecordsDb:
 
 
 class FakeCheckpointStore:
-    """In-memory sync-point collection behind ``DataStoreProvider.transaction()``."""
+    """In-memory sync-point collection behind ``DataStoreProvider.transaction()``.
+
+    Writes merge into the stored document, as the Arango and Neo4j providers do.
+    """
 
     def __init__(self) -> None:
         self.sync_points: dict[str, dict[str, Any]] = {}
@@ -478,7 +481,7 @@ class FakeCheckpointStore:
         return self.sync_points.get(key)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
-        self.sync_points[key] = dict(data)
+        self.sync_points.setdefault(key, {}).update(data)
 
     async def delete_sync_point(self, key: str) -> None:
         self.sync_points.pop(key, None)

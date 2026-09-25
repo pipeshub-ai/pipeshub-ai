@@ -1273,7 +1273,7 @@ class BoxConnector(BaseConnector):
 
                     if next_stream_pos:
                         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-                        anchor = {"cursor": next_stream_pos, "cursor_updated_at": now_ms}
+                        anchor = {"cursor": next_stream_pos, "cursor_updated_at": now_ms, "held_attempts": 0}
                         self.logger.info(f"⚓ [Smart Sync] Anchoring Event Stream at: {next_stream_pos}")
                     else:
                         self.logger.warning("⚠️ [Smart Sync] Anchoring Warning: 'next_stream_position' not found.")
@@ -1473,7 +1473,8 @@ class BoxConnector(BaseConnector):
                     held_attempts = 0
                     await self.box_cursor_sync_point.update_sync_point(
                         key,
-                        {"cursor": stream_position, "cursor_updated_at": now_ms}
+                        # The store merges into the saved document, so the count must be reset explicitly.
+                        {"cursor": stream_position, "cursor_updated_at": now_ms, "held_attempts": 0}
                     )
                     self.logger.debug(f"💾 [Incremental] Updated cursor to: {stream_position}")
 
