@@ -7,6 +7,7 @@ the cursor is fresh. The Box SDK underneath is real; its retry waits are recorde
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -83,6 +84,19 @@ class TestCursor:
         assert full_walks(box_api) == 2
         assert checkpoints.cursor()["cursor_updated_at"] > int(old.timestamp() * 1000)
 
+    async def test_a_failed_event_page_leaves_the_cursor_where_it_was(self, box_api, db, checkpoints, sdk_sleeps) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_file("file-1", "new.pdf", ALICE)
+        box_api.add_event("ITEM_UPLOAD", item_event("file-1"), created_by=by(ALICE, box_api))
+        before = checkpoints.cursor()["cursor"]
+        box_api.fail("GET", "/2.0/events", 503, times=10)
+
+        await connector.run_sync()
+
+        assert len(sdk_sleeps) == 4
+        assert checkpoints.cursor()["cursor"] == before
+        assert "file-1" not in db.records
 
     async def test_an_event_batch_that_crashes_leaves_the_cursor_where_it_was(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
@@ -118,6 +132,16 @@ class TestCursor:
 
         assert checkpoints.cursor()["cursor"] == before
 
+    async def test_a_box_error_is_logged_without_the_access_token(self, box_api, db, checkpoints, caplog) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.fail("GET", "/2.0/events", 503, times=10)
+
+        with caplog.at_level(logging.DEBUG, logger="test.box"):
+            await connector.run_sync()
+
+        assert "Failed to fetch events: 503 staged failure" in caplog.text
+        assert "tok-1" not in caplog.text and "Bearer" not in caplog.text
 
     async def test_a_webhook_with_an_unreadable_cursor_does_not_skip_to_now(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

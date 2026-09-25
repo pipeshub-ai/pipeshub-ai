@@ -6,6 +6,7 @@ next step; these tests pin which reason each Box failure turns into.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import pytest
@@ -101,6 +102,16 @@ class TestOpeningAFile:
 
         assert error.status_code == 502
         assert "try again later" in error.detail
+
+    async def test_a_failed_download_is_logged_without_the_access_token(self, box_api, db, checkpoints, caplog) -> None:
+        connector = await synced(box_api, db, checkpoints)
+        box_api.fail("GET", "/2.0/files/file-1/content", 503, times=10)
+
+        with caplog.at_level(logging.DEBUG, logger="test.box"):
+            await open_error(connector, db)
+
+        assert "Error getting temporary download URL" in caplog.text
+        assert "tok-1" not in caplog.text
 
     async def test_revoked_app_credentials_ask_for_a_reconnect(self, box_api, db, checkpoints) -> None:
         connector = await synced(box_api, db, checkpoints)
