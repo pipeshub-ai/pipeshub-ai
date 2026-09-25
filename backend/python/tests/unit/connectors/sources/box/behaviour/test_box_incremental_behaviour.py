@@ -95,6 +95,26 @@ class TestCursor:
         assert full_walks(box_api) == 2
         assert checkpoints.cursor()["held_attempts"] == 0
 
+    async def test_a_failed_group_refresh_holds_the_batch_until_the_group_is_stored(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.add_group("g-new", "New team", (BOB,))
+        box_api.add_file("file-1", "new.pdf", ALICE)
+        box_api.collaborate("file-1", "g-new", kind="group")
+        box_api.add_event("ITEM_UPLOAD", item_event("file-1"), created_by=by(ALICE, box_api))
+        before = checkpoints.cursor()["cursor"]
+        box_api.fail("GET", "/2.0/groups", 503, times=5)
+
+        await connector.run_sync()
+
+        assert "g-new" not in db.access("file-1")
+        assert checkpoints.cursor()["cursor"] == before
+
+        await connector.run_sync()
+
+        assert "g-new" in db.access("file-1")
+        assert checkpoints.cursor()["cursor"] == box_api.stream_head
+
     async def test_a_failed_event_page_leaves_the_cursor_where_it_was(self, box_api, db, checkpoints, sdk_sleeps) -> None:
         enterprise(box_api, db)
         connector = await synced_connector(box_api, db, checkpoints)

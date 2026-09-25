@@ -1374,6 +1374,8 @@ class BoxConnector(BaseConnector):
         """
         self.logger.info("🔄 [Incremental] Starting Box Enterprise incremental sync.")
 
+        # Set before the user and group refresh: a batch applied without those groups loses their edges.
+        self._read_complete = True
         our_org_box_user_ids: Set[str] = set()
         try:
             self.logger.info("👥 [Incremental] Refreshing User list...")
@@ -1442,7 +1444,6 @@ class BoxConnector(BaseConnector):
 
                 if events:
                     self.logger.info(f"📥 [Incremental] Fetched {len(events)} new events from Box.")
-                    self._read_complete = True
                     await self._process_event_batch(events, our_org_box_user_ids=our_org_box_user_ids)
                     if not self._read_complete:
                         held_attempts += 1
@@ -1471,6 +1472,7 @@ class BoxConnector(BaseConnector):
                     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
                     cursor_updated_at = now_ms
                     held_attempts = 0
+                    self._read_complete = True
                     await self.box_cursor_sync_point.update_sync_point(
                         key,
                         # The store merges into the saved document, so the count must be reset explicitly.
