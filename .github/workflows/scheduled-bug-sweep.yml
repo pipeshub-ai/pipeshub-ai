@@ -136,6 +136,20 @@ jobs:
           echo "changed_count=$(wc -l < recently-changed.txt)" >> "$GITHUB_OUTPUT"
           echo "Recently changed source files: $(wc -l < recently-changed.txt)"
 
+      - name: Remove git metadata before the review
+        # Agent mode in the pinned action rewrites origin to
+        # https://x-access-token:<github_token>@github.com/... in .git/config
+        # (src/github/operations/git-config.ts), where the reviewer could read
+        # it. With no repository here that rewrite fails, the action logs
+        # "Failed to configure git authentication" and carries on, and the token
+        # is written nowhere. Nothing after this step uses git.
+        run: |
+          rm -rf .git
+          if git rev-parse --git-dir >/dev/null 2>&1; then
+            echo "::error::A git repository is still reachable from the workspace, so the review would get a token in its git config. Stopping before the review runs."
+            exit 1
+          fi
+
       - name: Review for defects
         id: review
         # Pinned to a commit rather than a tag because this step is handed the
@@ -244,14 +258,18 @@ jobs:
           # The reviewer reads repository content, which anyone can write to, so
           # it gets no tool that writes a file or runs a command. Any writable
           # path is one a later step might execute or git might read as config,
-          # and any shell command can read the process environment. Glob and
-          # Grep cover finding files; the report comes back as structured output.
-          # `Read(./**)` keeps reads inside the checkout; /proc is denied as well
-          # because it holds this process's environment, API key included.
-          settings: '{"permissions": {"deny": ["Read(//proc/**)", "Read(//sys/**)"]}}'
+          # and any shell command can read the process environment. The report
+          # comes back as structured output.
+          # Glob and Grep are left off the allow list: a bare entry approves them
+          # for any path. They still run inside the checkout, which needs no
+          # approval, and blockReadsOutsideWorkingDirectories fences Read, Grep
+          # and Glob to it. /proc is denied because it holds this process's
+          # environment, API key and job token included. .git is denied in case
+          # it ever comes back: the action writes the token into its config.
+          settings: '{"permissions": {"blockReadsOutsideWorkingDirectories": true, "deny": ["Read(//proc/**)", "Read(//sys/**)", "Read(./.git/**)"]}}'
           claude_args: >-
             --model claude-opus-5
-            --allowedTools "Read(./**),Glob,Grep"
+            --allowedTools "Read(./**)"
             --json-schema '{"type":"object","additionalProperties":false,"required":["findings"],"properties":{"scanned":{"type":"object"},"findings":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["kind","title","file","line","severity","summary","failure_scenario"],"properties":{"kind":{"enum":["security","bug"]},"title":{"type":"string"},"file":{"type":"string"},"line":{"type":"integer","minimum":1},"severity":{"enum":["critical","high","medium","low"]},"area":{"enum":["python","javascript","connectors","sdk","performance","agent_builder",""]},"summary":{"type":"string"},"failure_scenario":{"type":"string"},"suggested_fix":{"type":"string"},"cwe":{"type":"string"}}}}}}'
 
       - name: Save the report
