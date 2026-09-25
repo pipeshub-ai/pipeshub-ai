@@ -1434,12 +1434,11 @@ class WebConnector(BaseConnector):
             return True
 
     def _crawl4ai_result_to_response(self, fetch_result: FetchResult, url: str) -> Optional[FetchResponse]:
+        # The site's own status is kept for the reason shown; 0 means the browser got no answer.
         status_code = resolve_fetch_status_code(
             fetch_result.status_code,
             fetch_result.error,
-        ) or 503
-        if self._is_rate_limited_status(status_code, fetch_result.error):
-            status_code = HttpStatusCode.TOO_MANY_REQUESTS.value
+        ) or 0
 
         if not fetch_result.success or not (fetch_result.html or "").strip():
             return FetchResponse(
@@ -1548,7 +1547,9 @@ class WebConnector(BaseConnector):
 
     def _is_browser_rate_limited(self, response: FetchResponse | None) -> bool:
         """Only a browser block is worth this retry; a document's plain-HTTP answer already had its own backoff."""
-        return response is not None and response.strategy == "crawl4ai" and self._is_rate_limited(response)
+        if response is None or response.strategy != "crawl4ai":
+            return False
+        return response.status_code == 0 or self._is_rate_limited(response)
 
     async def _retry_rate_limited(
         self,
@@ -3482,7 +3483,7 @@ class WebConnector(BaseConnector):
                     result.error_message if result else None,
                 )
                 raise map_source_status(
-                    result.status_code if result else HttpStatusCode.BAD_GATEWAY.value,
+                    result.status_code if result and result.status_code else HttpStatusCode.BAD_GATEWAY.value,
                     connector=self.display_name,
                     retry_after=(
                         str(int(result.retry_after))

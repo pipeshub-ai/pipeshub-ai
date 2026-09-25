@@ -376,3 +376,35 @@ async def test_robust_mode_probes_with_get_when_head_fails_and_still_fetches_the
     await (await make_connector(use_headless_browser=True)).run_sync()
 
     assert browser.storage_docs[db.pages()[pdf].storage_document_id] == b"%PDF-1.4 report"
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (403, "The page refused access (403 Forbidden)."),
+        (503, "The site didn't respond properly (503 Service Unavailable)."),
+    ],
+)
+async def test_robust_mode_reports_the_status_the_site_really_sent(
+    status: int, reason: str, browser: FakeWeb, db: FakeRecordsDb, clock: VirtualClock, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home", "/page")
+    browser.add("http://site.test/page", Page(status=status, body=b"<html><body>no</body></html>"))
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    assert (db.pages()["http://site.test/page"].reason or "").startswith(reason)
+    assert BROWSER_RETRY_LAST_WAIT in clock.sleeps
+
+
+async def test_robust_mode_reports_no_answer_as_unreachable(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home", "/page")
+    browser.add("http://site.test/page", Page(hang_up=True))
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    assert db.pages()["http://site.test/page"].reason == (
+        "We couldn't reach this page. Check the URL is correct and publicly reachable, then sync again."
+    )
