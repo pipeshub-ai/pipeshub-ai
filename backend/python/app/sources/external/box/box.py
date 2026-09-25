@@ -791,11 +791,15 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def groups_get_groups(self, **kwargs) -> BoxResponse:
+    async def groups_get_groups(self, limit: int | None = None, offset: int | None = None, **kwargs) -> BoxResponse:
         """Get all groups
 
         API Endpoint: groups.get_groups
         Namespace: groups
+
+        Args:
+            limit (int, optional): The maximum number of groups to return
+            offset (int, optional): The offset for pagination
 
         Returns:
             BoxResponse: SDK response
@@ -811,7 +815,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_groups())
+            response = await loop.run_in_executor(None, lambda: manager.get_groups(limit=limit, offset=offset))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
@@ -929,7 +933,7 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def groups_get_group_memberships(self, group_id: str, **kwargs) -> BoxResponse:
+    async def groups_get_group_memberships(self, group_id: str, limit: int | None = None, offset: int | None = None, **kwargs) -> BoxResponse:
         """Get all members of a group
 
         API Endpoint: groups.get_group_memberships
@@ -937,6 +941,8 @@ class BoxDataSource:
 
         Args:
             group_id (str, required): The ID of the group
+            limit (int, optional): The maximum number of memberships to return
+            offset (int, optional): The offset for pagination
 
         Returns:
             BoxResponse: SDK response
@@ -952,7 +958,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_group_memberships(group_id))
+            response = await loop.run_in_executor(None, lambda: manager.get_group_memberships(group_id, limit=limit, offset=offset))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))

@@ -245,6 +245,27 @@ class TestGroups:
         assert db.user_groups["g-eng"].name == "Engineering"
         assert db.group_members["g-eng"] == [ALICE_EMAIL, BOB_EMAIL]
 
+    async def test_every_page_of_groups_is_read(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.default_page = 2
+        for n in range(3):
+            box_api.add_group(f"g-{n}", f"Group {n}", (ALICE,))
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert {"g-0", "g-1", "g-2"} <= set(db.user_groups)
+
+    async def test_every_page_of_a_group_member_list_is_read(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_user("u-carol", "carol@acme.test")
+        box_api.page_cap["/2.0/groups/g-eng/memberships"] = 2
+        box_api.add_group("g-eng", "Engineering", (ALICE, BOB, "u-carol"))
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert db.group_members["g-eng"] == [ALICE_EMAIL, BOB_EMAIL, "carol@acme.test"]
 
 
 

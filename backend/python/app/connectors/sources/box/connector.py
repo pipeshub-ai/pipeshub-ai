@@ -806,26 +806,19 @@ class BoxConnector(BaseConnector):
                         description=group.get('description')
                     )
 
-                    # Get group members
-                    members_response = await self.data_source.groups_get_group_memberships(
-                        group_id=group_id,
-                        limit=1000
-                    )
+                    memberships = await self._get_group_memberships(group_id)
 
                     group_member_users = []
 
-                    if members_response.success:
-                        members_data = self._to_dict(members_response.data)
-                        memberships = members_data.get('entries', [])
-                        for membership in memberships:
-                            user_info = membership.get('user', {})
-                            email = user_info.get('login')
+                    for membership in memberships or []:
+                        user_info = membership.get('user', {})
+                        email = user_info.get('login')
 
-                            if email:
-                                # Lookup user in our pre-fetched map
-                                found_user = user_map.get(email.lower())
-                                if found_user:
-                                    group_member_users.append(found_user)
+                        if email:
+                            # Lookup user in our pre-fetched map
+                            found_user = user_map.get(email.lower())
+                            if found_user:
+                                group_member_users.append(found_user)
 
                     # Sync group and memberships using the in-memory list
                     await self.data_entities_processor.on_new_user_groups([(app_user_group, group_member_users)])
@@ -842,6 +835,25 @@ class BoxConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error syncing Box groups: {e}", exc_info=True)
+
+    async def _get_group_memberships(self, group_id: str) -> list[dict] | None:
+        """Every membership of a group, or None when a page of them could not be read."""
+        memberships: list[dict] = []
+        offset = 0
+        limit = 1000
+        while True:
+            response = await self.data_source.groups_get_group_memberships(
+                group_id=group_id, limit=limit, offset=offset
+            )
+            if not response.success:
+                self.logger.warning(f"Failed to fetch members of group {group_id}: {response.error}")
+                return None
+            data = self._to_dict(response.data)
+            entries = data.get('entries', [])
+            memberships.extend(entries)
+            offset += len(entries)
+            if not entries or offset >= data.get('total_count', 0):
+                return memberships
 
     async def _reconcile_deleted_groups(self, active_box_ids: set) -> None:
         """
