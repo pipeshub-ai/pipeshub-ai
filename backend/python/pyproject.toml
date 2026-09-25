@@ -297,6 +297,10 @@ dependencies = [
     "requests-toolbelt==1.0.0",
     "requests==2.33.0",
     "selectolax>=0.3.21",
+    # sqlalchemy 2.1.0 ships broken package metadata (duplicate normalised extra
+    # "mssql-pymssql") that causes `uv` to abort resolution before tests run.
+    # Exclude it so the resolver falls back to the latest 2.0.x release.
+    "sqlalchemy!=2.1.0",
     "sentence-transformers==3.4.1",
     "slack-sdk==3.27.0",
     "talon==1.4.4",
