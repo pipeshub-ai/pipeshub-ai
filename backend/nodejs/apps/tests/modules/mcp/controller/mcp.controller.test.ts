@@ -377,6 +377,22 @@ describe('MCP Controller — handleMCPRequest', () => {
   // Successful flow
   // =========================================================================
   describe('successful request flow', () => {
+    const loggerInstance = Logger.getInstance()
+    let infoStub: sinon.SinonStub
+
+    beforeEach(() => {
+      if (typeof (loggerInstance.info as any).restore === 'function') {
+        (loggerInstance.info as any).restore()
+      }
+      infoStub = sinon.stub(loggerInstance, 'info')
+    })
+
+    afterEach(() => {
+      if (typeof (loggerInstance.info as any).restore === 'function') {
+        (loggerInstance.info as any).restore()
+      }
+    })
+
     it('should not call next on success', async () => {
       mcpServerExports.createMCPServer = sinon.stub().returns({
         server: { connect: sinon.stub().resolves() },
@@ -442,23 +458,88 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(next.called).to.be.false
     })
 
-    it('should work with GET request', async () => {
+it('should work with GET request', async () => {
       mcpServerExports.createMCPServer = sinon.stub().returns({
         server: { connect: sinon.stub().resolves() },
-      })
+      });
 
       const req = createMockRequest({
         method: 'GET',
         headers: { authorization: 'Bearer tok' },
         body: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
+      });
+      const res = createMockResponse();
+      const next = createMockNext();
 
-      await handleMCPRequest(appConfig)(req, res as any, next)
+      await handleMCPRequest(appConfig)(req, res as any, next);
 
-      expect(next.called).to.be.false
-    })
+      expect(next.called).to.be.false;
+    });
+
+    it('should log success, echo requestId header, and set header before handleRequest when client sent X-Pipeshub-Request-Id', async () => {
+      let headerSetBeforeHandleRequest = false;
+      const handleRequestStub = sinon.stub().callsFake(() => {
+        return Promise.resolve();
+      });
+      const setHeaderStub = sinon.stub().callsFake(() => {
+        headerSetBeforeHandleRequest = true;
+      });
+      sdkTransportExports.StreamableHTTPServerTransport = class {
+        constructor() {}
+        handleRequest = handleRequestStub;
+      }
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves() },
+      });
+
+      const req = createAuthenticatedRequest('user-123', 'org-1', 'user@test.com', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer tok',
+          'x-pipeshub-request-id': 'req-abc-123',
+        },
+        body: { jsonrpc: '2.0', method: 'initialize', id: 1 },
+      });
+      const res = createMockResponse();
+      res.setHeader = setHeaderStub;
+      const next = createMockNext();
+
+      await handleMCPRequest(appConfig)(req, res as any, next);
+
+      expect(infoStub.calledOnce).to.be.true;
+      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed');
+      expect(infoStub.firstCall.args[1]).to.deep.include({
+        method: 'POST',
+        userId: 'user-123',
+        requestId: 'req-abc-123',
+      });
+      expect(setHeaderStub.calledWith('X-Pipeshub-Request-Id', 'req-abc-123')).to.be.true;
+      expect(headerSetBeforeHandleRequest).to.be.true;
+    });
+
+    it('should log success with requestId undefined and not set response header when header is missing', async () => {
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves() },
+      });
+
+      const req = createAuthenticatedRequest('user-123', 'org-1', 'user@test.com', {
+        method: 'POST',
+        headers: { authorization: 'Bearer tok' },
+        body: { jsonrpc: '2.0', method: 'initialize', id: 1 },
+      });
+      const res = createMockResponse();
+      const next = createMockNext();
+
+      await handleMCPRequest(appConfig)(req, res as any, next);
+
+      expect(infoStub.calledOnce).to.be.true;
+      expect(infoStub.firstCall.args[1]).to.deep.include({
+        method: 'POST',
+        userId: 'user-123',
+        requestId: undefined,
+      });
+      expect(res.setHeader.calledWith('X-Pipeshub-Request-Id', sinon.match.any)).to.be.false;
+    });
   })
 
   // =========================================================================
@@ -564,6 +645,53 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.equal(error)
+    })
+
+    it('should log error with requestId when header supplied, and requestId undefined when header absent', async () => {
+      const error = new Error('test error message')
+      mcpServerExports.createMCPServer = sinon.stub().throws(error)
+
+      const reqWithId = createAuthenticatedRequest('user-42', 'org-1', 'user@test.com', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer tok',
+          'x-pipeshub-request-id': 'req-error-999',
+        },
+        body: {},
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(reqWithId, res as any, next)
+
+      expect(errorStub.calledOnce).to.be.true
+      expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
+      expect(errorStub.firstCall.args[1]).to.deep.include({
+        error: 'test error message',
+        method: 'POST',
+        userId: 'user-42',
+        requestId: 'req-error-999',
+      })
+
+      errorStub.resetHistory()
+
+      const reqWithoutId = createAuthenticatedRequest('user-42', 'org-1', 'user@test.com', {
+        method: 'POST',
+        headers: { authorization: 'Bearer tok' },
+        body: {},
+      })
+      const res2 = createMockResponse()
+      const next2 = createMockNext()
+
+      await handleMCPRequest(appConfig)(reqWithoutId, res2 as any, next2)
+
+      expect(errorStub.calledOnce).to.be.true
+      expect(errorStub.firstCall.args[1]).to.deep.include({
+        error: 'test error message',
+        method: 'POST',
+        userId: 'user-42',
+        requestId: undefined,
+      })
     })
 
     // it('should log error with error.message, req.method, and req.user.userId', async () => {
