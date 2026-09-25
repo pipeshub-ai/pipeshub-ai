@@ -15,8 +15,8 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxSurge: {{ .Values.rollingUpdate.maxSurge | default 1 }}
+      maxUnavailable: {{ .Values.rollingUpdate.maxUnavailable | default 0 }}
   selector:
     matchLabels:
       {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
@@ -353,6 +353,11 @@ spec:
 
             - name: HOME
               value: /home/user
+            # Chromium is installed into /root during the image build. HOME is
+            # /home/user, and that path is an emptyDir, so Playwright would
+            # look for a browser that is not there.
+            - name: PLAYWRIGHT_BROWSERS_PATH
+              value: /root/.cache/ms-playwright
             
             {{- if .Values.telemetry.enabled }}
             # OpenTelemetry configuration

@@ -15,6 +15,10 @@ image:
   pullPolicy: IfNotPresent
 
 replicaCount: 2
+# Two app nodes hold four pods. A surge pod needs a free 3 CPU and stays Pending.
+rollingUpdate:
+  maxSurge: 0
+  maxUnavailable: 1
 # 4 app pods fit on the two app nodes. Add Karpenter or Cluster Autoscaler
 # before raising maxReplicas, or extra pods stay Pending.
 autoscaling:

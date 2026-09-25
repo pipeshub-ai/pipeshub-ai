@@ -421,6 +421,10 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
   --set serviceAccount.create=false \
   --set serviceAccount.name=aws-load-balancer-controller \
   --wait --timeout 10m >/dev/null
+# Helm rewrites the webhook CA in the TLS secret. Running pods keep the old
+# certificate, and the API server then rejects every Ingress update.
+kubectl rollout restart deployment/aws-load-balancer-controller -n kube-system >/dev/null
+kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout 5m >/dev/null
 note "controller ${LBC_VERSION} ready"
 
 step "TLS certificate for ${DOMAIN}"
@@ -491,7 +495,7 @@ cat >"${STATE_DIR}/s3-policy.json" <<EOF
   "Statement": [
     {"Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketLocation"], "Resource": "arn:aws:s3:::${BUCKET}"},
     {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], "Resource": "arn:aws:s3:::${BUCKET}/*"},
-    {"Effect": "Allow", "Action": ["kms:Decrypt", "kms:GenerateDataKey"], "Resource": "*", "Condition": {"StringEquals": {"kms:ViaService": "s3.${REGION}.amazonaws.com"}}}
+    {"Effect": "Allow", "Action": ["kms:Decrypt", "kms:GenerateDataKey"], "Resource": "*", "Condition": {"StringEquals": {"kms:ViaService": "s3.${REGION}.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": "arn:aws:s3:::${BUCKET}"}}}
   ]
 }
 EOF
@@ -503,8 +507,7 @@ if [[ "$RELEASE" == *pipeshub-ai* ]]; then
 else
   SA_NAME="${RELEASE}-pipeshub-ai"
 fi
-EXISTING_ASSOC="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER" \
-  --namespace "$NAMESPACE" --service-account "$SA_NAME" --query 'associations[0].associationId' --output text)"
+EXISTING_ASSOC=$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER" --namespace "$NAMESPACE" --service-account "$SA_NAME" --query 'associations[0].associationId' --output text)
 if [[ -z "$EXISTING_ASSOC" || "$EXISTING_ASSOC" == None ]]; then
   eksctl create podidentityassociation \
     --cluster "$CLUSTER" --region "$REGION" \

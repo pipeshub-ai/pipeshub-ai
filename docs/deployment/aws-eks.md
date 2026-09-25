@@ -334,7 +334,7 @@ cat > pipeshub-s3-policy.json <<EOF
   "Statement": [
     {"Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketLocation"], "Resource": "arn:aws:s3:::${BUCKET}"},
     {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], "Resource": "arn:aws:s3:::${BUCKET}/*"},
-    {"Effect": "Allow", "Action": ["kms:Decrypt", "kms:GenerateDataKey"], "Resource": "*", "Condition": {"StringEquals": {"kms:ViaService": "s3.${AWS_REGION}.amazonaws.com"}}}
+    {"Effect": "Allow", "Action": ["kms:Decrypt", "kms:GenerateDataKey"], "Resource": "*", "Condition": {"StringEquals": {"kms:ViaService": "s3.${AWS_REGION}.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": "arn:aws:s3:::${BUCKET}"}}}
   ]
 }
 EOF
