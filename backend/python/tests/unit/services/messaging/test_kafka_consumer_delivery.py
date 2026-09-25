@@ -95,6 +95,7 @@ class Recorder:
                  fail_times: int = 1) -> None:
         self.broker = broker
         self.seen: list[int] = []
+        self.succeeded: list[int] = []
         self.committed_when_seen: list[int | None] = []
         self.fail = fail or {}
         self.fail_times = fail_times
@@ -107,7 +108,31 @@ class Recorder:
         if i in self.fail and self._failures.get(i, 0) < self.fail_times:
             self._failures[i] = self._failures.get(i, 0) + 1
             raise self.fail[i]
+        self.succeeded.append(i)
         return True
+
+
+class FlakyRetryManager(RetryManager):
+    """A real RetryManager whose first ``failures`` Redis calls time out."""
+
+    def __init__(self, failures: int) -> None:
+        super().__init__(logging.getLogger("test"), redis_client=fakeredis.aioredis.FakeRedis())
+        self.failures_left = failures
+        self.failed_calls = 0
+
+    def _maybe_fail(self) -> None:
+        if self.failures_left > 0:
+            self.failures_left -= 1
+            self.failed_calls += 1
+            raise TimeoutError("Redis timed out")
+
+    async def increment_and_check(self, message_id: str, max_attempts: int) -> tuple[int, bool]:
+        self._maybe_fail()
+        return await super().increment_and_check(message_id, max_attempts)
+
+    async def clear(self, message_id: str) -> None:
+        self._maybe_fail()
+        await super().clear(message_id)
 
 
 async def _start(handler, retry_manager=None) -> KafkaMessagingConsumer:
@@ -315,10 +340,75 @@ class TestTransientFailures:
         )
         await consumer.stop()
 
+        # seen records every delivery: two failed attempts of 0, then its success.
         assert [i for i in handler.seen if i < 10] == [0, 0, 0, 1]
+        assert [i for i in handler.succeeded if i < 10] == [0, 1]
         assert [i for i in handler.seen if i >= 10] == [10, 11]
         last_attempt_of_0 = len(handler.seen) - 1 - handler.seen[::-1].index(0)
         assert handler.seen.index(11) < last_attempt_of_0
+
+
+    async def test_records_arriving_on_a_healthy_partition_during_a_retry_pause_are_not_held_back(
+        self, broker, retry_manager, monkeypatch
+    ) -> None:
+        # A long retry pause, so anything that waits for it misses the deadline below.
+        monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "5000")
+        broker.produce(TOPIC, _event(0), partition=0)
+        handler = Recorder(broker, fail={0: ConnectionError("down")})
+        consumer = await _start(handler, retry_manager)
+        await _until(lambda: 0 in handler.seen)
+
+        broker.produce(TOPIC, _event(10), partition=1)
+        await _until(lambda: 10 in handler.succeeded, timeout=2)
+        assert handler.seen.count(0) == 1, "partition 0 is still waiting out its pause"
+        assert broker.committed_offset(GROUP, TOPIC, 1) == 1
+        await consumer.stop()
+
+    async def test_a_retry_resumes_only_the_partition_it_paused(self, broker, retry_manager) -> None:
+        broker.produce(TOPIC, _event(0), partition=0)
+        broker.produce(TOPIC, _event(10), partition=1)
+        handler = Recorder(broker, fail={0: ConnectionError("down")})
+        consumer = await _start(handler, retry_manager)
+        await _until(lambda: 10 in handler.seen)
+        # Something else (for example sync backpressure) pauses partition 1.
+        other = next(tp for tp in broker.logs if tp.partition == 1)
+        broker.consumers[-1].pause(other)
+        await _until(lambda: 0 in handler.succeeded)
+        await _settle()
+        await consumer.stop()
+        assert broker.consumers[-1].paused() == {other}
+
+
+class TestRetryBookkeepingFailures:
+    """Redis holds the retry counts; losing it must not lose messages or loop forever."""
+
+    async def test_a_redis_timeout_while_counting_a_retry_does_not_skip_the_message(self, broker) -> None:
+        for i in range(3):
+            broker.produce(TOPIC, _event(i))
+        retry_manager = FlakyRetryManager(failures=1)
+        handler = Recorder(broker, fail={0: ConnectionError("graph database unreachable")})
+        consumer = await _start(handler, retry_manager)
+        await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 3)
+        await consumer.stop()
+
+        assert retry_manager.failed_calls == 1
+        assert handler.seen == [0, 0, 1, 2]
+        assert handler.succeeded == [0, 1, 2]
+
+    async def test_with_redis_down_a_failing_message_is_still_given_up_on_after_max_attempts(
+        self, broker
+    ) -> None:
+        for i in range(3):
+            broker.produce(TOPIC, _event(i))
+        retry_manager = FlakyRetryManager(failures=10**9)
+        handler = Recorder(broker, fail={0: ConnectionError("down")}, fail_times=99)
+        consumer = await _start(handler, retry_manager)
+        await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 3)
+        await _settle()
+        await consumer.stop()
+
+        assert handler.seen == [0, 0, 0, 1, 2]
+        assert handler.succeeded == [1, 2]
 
 
 class TestGracefulShutdown:

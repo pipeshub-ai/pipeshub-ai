@@ -151,6 +151,7 @@ class TestConsumeLoop:
         mock_aio.commit = AsyncMock()
         mock_aio.stop = AsyncMock()
         mock_aio.seek = MagicMock()
+        mock_aio.pause = MagicMock()
         consumer.consumer = mock_aio
         consumer.running = True
         consumer.message_handler = AsyncMock(return_value=False)
@@ -164,6 +165,7 @@ class TestConsumeLoop:
 
         mock_aio.commit.assert_not_awaited()
         mock_aio.seek.assert_called_once_with(tp, 20)
+        mock_aio.pause.assert_called_once_with(tp)
 
     @pytest.mark.asyncio
     async def test_per_message_exception_continues_loop(self, consumer):
