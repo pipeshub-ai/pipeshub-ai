@@ -475,6 +475,7 @@ class OpenSearchService(IVectorDBService):
                 f"(m={m}, ef_construction={ef_construction}, ef_search={ef_search}, "
                 f"quantization_bits={quantization_bits}, refresh_interval=30s)"
             )
+            self._is_cosine_cache.pop(collection_name, None)
 
         # Create / update the RRF search pipeline idempotently
         await self._ensure_rrf_pipeline(collection_name)
@@ -669,6 +670,7 @@ class OpenSearchService(IVectorDBService):
         if await self.client.indices.exists(index=collection_name):  # type: ignore
             await self.client.indices.delete(index=collection_name)  # type: ignore
             logger.info(f"Deleted OpenSearch index '{collection_name}'")
+            self._is_cosine_cache.pop(collection_name, None)
 
         pipeline_name = f"{collection_name}-rrf-pipeline"
         try:
@@ -745,20 +747,18 @@ class OpenSearchService(IVectorDBService):
     async def _is_cosine_index(self, collection_name: str) -> bool:
         if collection_name in self._is_cosine_cache:
             return self._is_cosine_cache[collection_name]
-        try:
-            mapping = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
-            props = mapping.get(collection_name, {}).get("mappings", {}).get("properties", {})
-            dense_emb = props.get("dense_embedding", {})
-            # Prefer the nested method.space_type path (OpenSearch k-NN plugin
-            # stores it there for method-based indices); fall back to the
-            # top-level space_type field for older index mappings.
-            method = dense_emb.get("method", {})
-            space_type = method.get("space_type", "") or dense_emb.get("space_type", "")
-            is_cosine = space_type == "cosinesimil"
-            self._is_cosine_cache[collection_name] = is_cosine
-            return is_cosine
-        except Exception:
-            return False
+
+        mapping = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
+        props = mapping.get(collection_name, {}).get("mappings", {}).get("properties", {})
+        dense_emb = props.get("dense_embedding", {})
+        # Prefer the nested method.space_type path (OpenSearch k-NN plugin
+        # stores it there for method-based indices); fall back to the
+        # top-level space_type field for older index mappings.
+        method = dense_emb.get("method", {})
+        space_type = method.get("space_type", "") or dense_emb.get("space_type", "")
+        is_cosine = space_type == "cosinesimil"
+        self._is_cosine_cache[collection_name] = is_cosine
+        return is_cosine
 
     async def scroll(
         self,

@@ -1371,6 +1371,7 @@ async def askAIStream(
                         "limit": query_info.limit,
                         "projectInstructions": query_info.projectInstructions,
                         "timezone": query_info.timezone,
+                        "currentTime": query_info.currentTime,
                     }
                     cache_scope = SemanticCacheScope(
                         orgId=org_id,

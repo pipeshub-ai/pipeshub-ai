@@ -51,9 +51,27 @@ class SemanticCacheService:
             return
 
         exists = await self.vector_db.collection_exists(self.collection_name)
+        if exists:
+            try:
+                info = await self.vector_db.get_collection_info(self.collection_name)
+                if info.dense_dimension != embedding_dimension:
+                    try:
+                        await self.vector_db.delete_collection(self.collection_name)
+                        exists = False
+                    except Exception as e:
+                        self.logger.warning(
+                            "Failed to delete mismatched semantic cache collection. "
+                            f"Another instance may be recreating it: {e}"
+                        )
+            except Exception as e:
+                self.logger.warning(f"Failed to verify semantic cache dimension: {e}")
+
         if not exists:
-            config = CollectionConfig(embedding_size=embedding_dimension)
-            await self.vector_db.create_collection(self.collection_name, config)
+            try:
+                config = CollectionConfig(embedding_size=embedding_dimension)
+                await self.vector_db.create_collection(self.collection_name, config)
+            except Exception as e:
+                self.logger.warning(f"Failed to create semantic cache collection: {e}")
 
         # Index on the nested metadata field so filters survive OpenSearch
         # document conversion (top-level payload fields are discarded by the

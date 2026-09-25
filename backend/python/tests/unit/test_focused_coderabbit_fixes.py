@@ -204,3 +204,94 @@ async def test_arango_corpus_revision_retries():
         await provider.increment_corpus_revision("org3")
     assert provider.execute_query.call_count == 1
 
+
+# ---------------------------------------------------------
+# 8. Semantic cache dimension reconciliation
+# ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_semantic_cache_dimension_reconciliation():
+    from app.services.cache.semantic_cache import SemanticCacheService
+    
+    mock_db = AsyncMock()
+    cache_svc = SemanticCacheService(vector_db_service=mock_db)
+    
+    # 1. Dimensions match: collection preserved
+    mock_db.collection_exists.return_value = True
+    mock_info = MagicMock()
+    mock_info.dense_dimension = 1536
+    mock_db.get_collection_info.return_value = mock_info
+    
+    await cache_svc.initialize(embedding_dimension=1536)
+    mock_db.delete_collection.assert_not_called()
+    mock_db.create_collection.assert_not_called()
+    
+    # 2. Dimensions mismatch: collection recreated
+    cache_svc._initialized = False # reset
+    mock_db.collection_exists.return_value = True
+    mock_info = MagicMock()
+    mock_info.dense_dimension = 768
+    mock_db.get_collection_info.return_value = mock_info
+    
+    await cache_svc.initialize(embedding_dimension=1536)
+    mock_db.delete_collection.assert_called_once_with(cache_svc.collection_name)
+    mock_db.create_collection.assert_called_once()
+    
+    # 3. Dimension is None (unknown): collection recreated
+    cache_svc._initialized = False # reset
+    mock_db.delete_collection.reset_mock()
+    mock_db.create_collection.reset_mock()
+    mock_info.dense_dimension = None
+    
+    await cache_svc.initialize(embedding_dimension=1536)
+    mock_db.delete_collection.assert_called_once_with(cache_svc.collection_name)
+    mock_db.create_collection.assert_called_once()
+
+# ---------------------------------------------------------
+# 9. OpenSearch metric cache invalidation
+# ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_opensearch_metric_cache_invalidation():
+    from app.services.vector_db.opensearch.opensearch import OpenSearchService
+    
+    provider = OpenSearchService(config_service=MagicMock())
+    provider.client = AsyncMock()
+    provider.client.indices.exists.return_value = False
+    
+    # Seed cache
+    provider._is_cosine_cache["records"] = True
+    
+    # Create invalidates
+    await provider.create_collection("records")
+    assert "records" not in provider._is_cosine_cache
+    
+    # Seed cache again
+    provider._is_cosine_cache["records"] = True
+    provider.client.indices.exists.return_value = True
+    
+    # Delete invalidates
+    await provider.delete_collection("records")
+    assert "records" not in provider._is_cosine_cache
+
+# ---------------------------------------------------------
+# 10. OpenSearch mapping lookup failure propagates to SemanticCacheService
+# ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_opensearch_mapping_error_propagation():
+    from app.services.cache.semantic_cache import SemanticCacheService
+    
+    mock_db = AsyncMock()
+    cache_svc = SemanticCacheService(vector_db_service=mock_db)
+    cache_svc.collection_name = "records"
+    
+    # Simulate the mapping error being propagated up through vector_db.query_nearest_points
+    mock_db.query_nearest_points.side_effect = Exception("Mapping lookup failed")
+    
+    result = await cache_svc.get_cached_response(
+        query="test query", 
+        embedding=[0.1, 0.2, 0.3], 
+        filters_hash="hash"
+    )
+    
+    # cache should return no hit instead of crashing or returning bad match
+    assert result is None
+
