@@ -262,3 +262,40 @@ async def test_storage_outage_still_records_the_page_for_live_fetch(
     guide = db.pages()[GUIDE]
     assert guide.storage_document_id is None
     assert guide.weburl == GUIDE
+
+
+@pytest.mark.parametrize("robust", [False, True], ids=["plain", "robust-mode"])
+async def test_a_page_that_moved_leaves_no_stale_record_under_its_old_url(
+    robust: bool, browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old, new = "http://site.test/old-name", "http://site.test/new-name"
+    browser.html(START_URL, "Home", "/old-name")
+    browser.html(old, "Guide")
+    connector = await make_connector(use_headless_browser=robust)
+    await connector.run_sync()
+    stale = db.pages()[old]
+
+    browser.redirect(old, "/new-name", status=301)
+    browser.html(new, "Guide")
+    await connector.run_sync()
+    assert old in db.pages()
+
+    await connector.run_sync()
+
+    assert db.deleted == [stale.id]
+    assert browser.storage_deletes == [stale.storage_document_id]
+    assert set(db.pages()) == {START_URL, new}
+
+
+async def test_a_redirect_off_the_site_never_removes_the_stored_page(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    connector = await _first_sync(site, db, make_connector)
+
+    site.redirect(GUIDE, "http://other.test/guide")
+    site.html("http://other.test/guide", "Guide elsewhere")
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert db.deleted == []
+    assert GUIDE in db.pages()

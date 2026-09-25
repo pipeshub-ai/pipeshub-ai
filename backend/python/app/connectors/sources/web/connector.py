@@ -862,6 +862,7 @@ class WebConnector(BaseConnector):
 
             if record_update is None:
                 return
+            await self._forget_redirected_url(url, record_update)
             file_record = record_update.record
             if file_record:
                 is_disabled = self._check_index_filter(file_record)
@@ -1045,6 +1046,7 @@ class WebConnector(BaseConnector):
 
                     if record_update is None:
                         continue
+                    await self._forget_redirected_url(crawl_result.url, record_update)
 
                     file_record = record_update.record
                     if file_record:
@@ -2211,10 +2213,18 @@ class WebConnector(BaseConnector):
                 new_permissions=perms,
             )
 
-    async def _handle_gone_page(self, url: str) -> None:
-        """Delete a stored page the second sync in a row it answers 404/410.
+    async def _forget_redirected_url(self, requested_url: str, record_update: RecordUpdate) -> None:
+        """A URL that now redirects to a page we store is an old name for it; its own record goes like a gone page."""
+        record = record_update.record
+        if record is None or not record.weburl:
+            return
+        if self._normalize_url(requested_url) != self._normalize_url(record.weburl):
+            await self._handle_gone_page(requested_url, keep_id=record.id)
 
-        Only a clear "gone" answer counts: errors, blocks and timeouts never reach here.
+    async def _handle_gone_page(self, url: str, keep_id: str | None = None) -> None:
+        """Delete a stored page the second sync in a row it answers 404/410, or redirects to a page we store.
+
+        Only those clear answers count: errors, blocks and timeouts never reach here.
         Failed-page records and folder placeholders are left alone.
         """
         external_id = self._ensure_trailing_slash(self._normalize_url(url))
@@ -2225,12 +2235,14 @@ class WebConnector(BaseConnector):
             )
             if record:
                 break
-        if record is None or record.is_internal or record.indexing_status == ProgressStatus.FAILED.value:
+        if record is None or record.id == keep_id or record.is_internal:
+            return
+        if record.indexing_status == ProgressStatus.FAILED.value:
             return
         if external_id not in self._gone_last_sync:
             self._gone_this_sync.add(external_id)
             return
-        self.logger.info("Removing %s: it answered 404/410 on two syncs in a row", url)
+        self.logger.info("Removing %s: gone, or moved to another stored page, on two syncs in a row", url)
         await self.data_entities_processor.on_record_deleted(record.id)
         if record.storage_document_id and not await self._delete_storage_document(record.storage_document_id):
             self.logger.warning("Removed %s but could not delete its stored copy %s", url, record.storage_document_id)
