@@ -411,6 +411,29 @@ class TestRetryBookkeepingFailures:
         assert handler.succeeded == [1, 2]
 
 
+    async def test_giving_up_after_repeated_unexpected_errors_commits_that_offset(
+        self, broker, retry_manager
+    ) -> None:
+        # An error outside the handler (here, while classifying its failure)
+        # takes the loop's catch-all path rather than the classified one.
+        broker.produce(TOPIC, _event(0))
+        handler = Recorder(broker, fail={0: ConnectionError("down")}, fail_times=99)
+        with patch.object(
+            consumer_module.MessageErrorClassifier, "classify_by_exception", side_effect=RuntimeError("boom")
+        ):
+            consumer = await _start(handler, retry_manager)
+            await _until(lambda: handler.seen.count(0) == 3)
+            await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 1)
+            broker.produce(TOPIC, _event(1))
+            await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 2)
+            await _settle()
+            await consumer.stop()
+
+        assert handler.seen == [0, 0, 0, 1]
+        # Message 1 ran with 0 already committed, not with a gap before it.
+        assert handler.committed_when_seen[-1] == 1
+
+
 class TestGracefulShutdown:
     async def test_stop_during_a_handler_leaves_the_message_for_the_next_start(self, broker, retry_manager) -> None:
         broker.produce(TOPIC, _event(0))

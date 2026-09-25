@@ -308,27 +308,15 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                         )
 
                                 if should_commit:
-                                    try:
-                                        await self.consumer.commit(
-                                            {topic_partition: message.offset + 1}
-                                        )  # type: ignore
-                                        self.logger.debug(
-                                            f"Committed offset for {message.topic}-{message.partition} "
-                                            f"at offset {message.offset}"
-                                        )
-                                    except Exception as e:
-                                        # This message is settled, so a later commit on the
-                                        # partition that covers it is still correct.
-                                        self.logger.error(f"Failed to commit {message_id}: {e}")
-                                    # Mark as processed only once settled (prevents skipped retries)
-                                    self.__mark_message_processed(message_id)
+                                    await self.__commit_settled(topic_partition, message, message_id)
                                     continue
 
                             except Exception as e:
                                 self.logger.error(f"Error processing message {message_id}: {e}")
                                 if self.__count_attempt_in_memory(message_id) >= messaging_env.max_delivery_attempts:
                                     self.logger.warning(f"Giving up on {message_id} after repeated errors")
-                                    self._failed_attempts.pop(message_id, None)
+                                    await self.__clear_retry_tracking(message_id)
+                                    await self.__commit_settled(topic_partition, message, message_id)
                                     continue
 
                             # Kafka never re-sends a fetched record on its own, so
@@ -353,6 +341,20 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             self.logger.error(f"Fatal error in consume_messages: {e}")
         finally:
             await self.cleanup()
+
+    async def __commit_settled(self, topic_partition: "TopicPartition", message: Any, message_id: str) -> None:  # noqa: ANN401 - aiokafka ConsumerRecord
+        """Commit a message that is done, terminal or given up on."""
+        try:
+            await self.consumer.commit({topic_partition: message.offset + 1})  # type: ignore
+            self.logger.debug(
+                f"Committed offset for {message.topic}-{message.partition} at offset {message.offset}"
+            )
+        except Exception as e:
+            # This message is settled, so a later commit on the partition
+            # that covers it is still correct.
+            self.logger.error(f"Failed to commit {message_id}: {e}")
+        # Mark as processed only once settled (prevents skipped retries)
+        self.__mark_message_processed(message_id)
 
     def __retry_later(self, topic_partition: "TopicPartition", offset: int) -> None:
         """Rewind the partition to ``offset`` and hold it for one poll interval,
