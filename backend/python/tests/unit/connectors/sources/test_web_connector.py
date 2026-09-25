@@ -2582,6 +2582,7 @@ class TestFetchAndProcessUrl:
         existing.id = "existing-id"
         existing.record_name = "Test"
         existing.external_revision_id = content_hash
+        existing.etag = existing.ctag = None
         existing.parent_external_record_id = None
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"

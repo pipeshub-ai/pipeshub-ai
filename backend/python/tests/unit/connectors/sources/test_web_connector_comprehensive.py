@@ -1520,6 +1520,7 @@ class TestFetchAndProcessUrlOrchestration:
         existing.id = "rec-1"
         existing.record_name = "Old"
         existing.external_revision_id = "oldhash"
+        existing.etag = existing.ctag = None
         existing.parent_external_record_id = None
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"
@@ -1607,6 +1608,7 @@ class TestFetchAndProcessUrlOrchestration:
         unchanged = MagicMock()
         unchanged.id = "rec-1"
         unchanged.version = 7
+        unchanged.etag = unchanged.ctag = None
         unchanged.record_name = first.record.record_name
         unchanged.parent_external_record_id = first.record.parent_external_record_id
         unchanged.external_revision_id = first.record.external_revision_id
@@ -1620,6 +1622,7 @@ class TestFetchAndProcessUrlOrchestration:
         changed = MagicMock()
         changed.id = "rec-1"
         changed.version = 7
+        changed.etag = changed.ctag = None
         changed.record_name = first.record.record_name
         changed.parent_external_record_id = first.record.parent_external_record_id
         changed.external_revision_id = "a-different-hash"
@@ -1632,6 +1635,7 @@ class TestFetchAndProcessUrlOrchestration:
         legacy = MagicMock()
         legacy.id = "rec-1"
         legacy.version = 7
+        legacy.etag = legacy.ctag = None
         legacy.record_name = first.record.record_name
         legacy.parent_external_record_id = first.record.parent_external_record_id
         legacy.external_revision_id = first.record.external_revision_id
@@ -1663,6 +1667,7 @@ class TestFetchAndProcessUrlOrchestration:
         existing.id = "rec-1"
         existing.record_name = "Old"
         existing.external_revision_id = "stale"
+        existing.etag = existing.ctag = None
         existing.parent_external_record_id = "https://example.com/"
         existing.indexing_status = ProgressStatus.QUEUED.value
         existing.extraction_status = "QUEUED"
@@ -2705,6 +2710,7 @@ class TestWebConnectorRemainingCoverageGaps:
         existing.id = "rec-1"
         existing.record_name = "Same"
         existing.external_revision_id = content_hash
+        existing.etag = existing.ctag = None
         existing.parent_external_record_id = "https://example.com/wrong-parent/"
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"

@@ -79,3 +79,43 @@ async def test_robust_mode_asks_before_downloading_a_document_again(
     assert browser.not_modified == [PDF]
     assert browser.storage_uploads == uploads
     assert db.pages()[PDF].etag == '"v1"'
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [({}, {"etag": '"v1"'}), ({"etag": '"v1"'}, {"etag": '"v1-rotated"'}), ({}, {"last_modified": LAST_MODIFIED})],
+    ids=["gained-etag", "rotated-etag", "gained-last-modified"],
+)
+async def test_new_validators_on_an_unchanged_file_are_saved_for_the_next_sync(
+    before: dict, after: dict, site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/manual.pdf")
+    site.add(PDF, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", **before))
+    connector = await make_connector()
+    await connector.run_sync()
+    first = db.pages()[PDF]
+
+    site.add(PDF, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", **after))
+    await connector.run_sync()
+
+    again = db.pages()[PDF]
+    assert (again.etag, again.ctag) == (after.get("etag"), after.get("last_modified"))
+    assert again.version == first.version
+    assert db.content_updates == []
+
+    await connector.run_sync()
+    assert site.not_modified == [PDF]
+
+
+async def test_a_validator_the_site_stops_sending_is_kept(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/manual.pdf")
+    site.add(PDF, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector()
+    await connector.run_sync()
+
+    site.add(PDF, Page(body=b"%PDF-1.4 v2", content_type="application/pdf"))
+    await connector.run_sync()
+
+    assert db.pages()[PDF].etag == '"v1"'
