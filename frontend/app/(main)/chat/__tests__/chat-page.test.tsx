@@ -55,6 +55,7 @@ vi.mock('../components', async () => {
 let demoDataActive = false;
 vi.mock('@/app/(main)/workspace/connectors/demo-data/use-demo-data', () => ({
   useDemoDataActive: () => demoDataActive,
+  useDemoDataStatus: () => null,
 }));
 vi.mock('@/app/(main)/workspace/connectors/demo-data/components', () => ({
   DemoDataRemovalNotice: () => null,
