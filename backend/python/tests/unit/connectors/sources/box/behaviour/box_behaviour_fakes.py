@@ -79,7 +79,7 @@ class FakeBoxApi(BaseAdapter):
         self.default_page = 100
         self.max_page = 1000
         self.page_cap: dict[str, int] = {}
-        self._holds: list[tuple[str, str, threading.Event, threading.Event]] = []
+        self._holds: list[tuple[str, str, dict[str, str], threading.Event, threading.Event]] = []
         self._cap = self.max_page
 
     # ---- building the enterprise -------------------------------------------------
@@ -141,11 +141,11 @@ class FakeBoxApi(BaseAdapter):
         """Answer the next ``times`` matching requests with ``status`` (then behave normally)."""
         self.faults.append(Fault(method.upper(), path, status, times, headers or {}, as_user, query))
 
-    def hold(self, method: str, path: str) -> tuple[threading.Event, threading.Event]:
+    def hold(self, method: str, path: str, query: dict[str, str] | None = None) -> tuple[threading.Event, threading.Event]:
         """Stall the next matching request until ``release`` is set; ``reached`` is set when it arrives."""
         reached, release = threading.Event(), threading.Event()
         with self._lock:
-            self._holds.append((method.upper(), path, reached, release))
+            self._holds.append((method.upper(), path, query or {}, reached, release))
         return reached, release
 
     def expire(self, token: str) -> None:
@@ -173,12 +173,16 @@ class FakeBoxApi(BaseAdapter):
         token = auth[len("Bearer "):] if auth.startswith("Bearer ") else None
         as_user = request.headers.get("As-User")
         with self._lock:
-            held = next((h for h in self._holds if h[0] == request.method and h[1] == url.path), None)
+            held = next(
+                (h for h in self._holds
+                 if h[0] == request.method and h[1] == url.path and all(query.get(k) == v for k, v in h[2].items())),
+                None,
+            )
             if held:
                 self._holds.remove(held)
         if held:
-            held[2].set()
-            held[3].wait(timeout=10)
+            held[3].set()
+            held[4].wait(timeout=10)
         with self._lock:
             self.requests.append(SeenRequest(request.method, url.path, query, as_user, token))
             if url.path != "/oauth2/token" and token not in self.valid_tokens:

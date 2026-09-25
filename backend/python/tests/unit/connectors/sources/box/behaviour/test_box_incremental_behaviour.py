@@ -509,3 +509,48 @@ class TestOverlappingRuns:
                  if r.query.get("stream_type") == "admin_logs_streaming" and r.query.get("limit") == "500"]
         assert polls == ["0"]
         assert len(box_api.calls("GET", "/2.0/users")) == 2
+
+    async def test_a_webhook_after_an_incomplete_full_sync_resumes_the_history(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.page_cap["/2.0/events"] = 1
+        for _ in range(200):
+            box_api.add_event("COLLABORATION_INVITE", {})
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        collab_id = box_api.collaborate("file-1", BOB)
+        box_api.add_event(
+            "COLLABORATION_INVITE", collab_event_source(box_api, "file-1", BOB, collab_id),
+            created_by=by(ALICE, box_api), additional_details={"collab_id": collab_id},
+        )
+        connector = await ready_connector(db, checkpoints)
+        reached, release = box_api.hold("GET", "/2.0/events", {"stream_type": "admin_logs", "stream_position": "5"})
+        full_sync = asyncio.create_task(connector.run_sync())
+        await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
+
+        connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
+        connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
+        release.set()
+        await full_sync
+        await asyncio.gather(*[t for t in asyncio.all_tasks() if t is not asyncio.current_task()])
+
+        history = [r.query["stream_position"] for r in box_api.calls("GET", "/2.0/events") if r.query.get("stream_type") == "admin_logs"]
+        assert history[200] == "200"
+        assert db.records["file-1"].shared_with_me_record_group_ids == [f"0S:{BOB_EMAIL}"]
+        assert len(box_api.calls("GET", "/2.0/users")) == 2
+
+    async def test_a_webhook_after_an_incomplete_full_sync_leaves_a_stale_cursor_stale(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-a", "a.txt", ALICE)
+        connector = await synced_connector(box_api, db, checkpoints)
+        old = int((datetime.now(timezone.utc) - timedelta(days=15)).timestamp() * 1000)
+        checkpoints.cursor()["cursor_updated_at"] = old
+        box_api.fail("GET", "/2.0/folders/0/items", 503, times=1000, as_user=ALICE)
+        reached, release = box_api.hold("GET", "/2.0/users")
+        full_sync = asyncio.create_task(connector.run_sync())
+        await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
+
+        connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
+        release.set()
+        await full_sync
+        await asyncio.gather(*[t for t in asyncio.all_tasks() if t is not asyncio.current_task()])
+
+        assert checkpoints.cursor()["cursor_updated_at"] == old

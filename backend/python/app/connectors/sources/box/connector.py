@@ -2506,15 +2506,17 @@ class BoxConnector(BaseConnector):
             return
         self.logger.info("Box webhook received. Queuing an incremental sync.")
         self._webhook_run_pending = True
-        task = asyncio.create_task(self._run_queued_incremental_sync())
+        task = asyncio.create_task(self._run_queued_sync())
         self._webhook_tasks.add(task)
         task.add_done_callback(self._webhook_tasks.discard)
 
-    async def _run_queued_incremental_sync(self) -> None:
+    async def _run_queued_sync(self) -> None:
         async with self._one_sync_at_a_time():
             # Cleared as the run starts, so a change that lands during it queues the next one.
             self._webhook_run_pending = False
-            await self.run_incremental_sync()
+            # run_sync, not run_incremental_sync: after an incomplete full sync it must be a full sync
+            # again, and an incremental run here would store or refresh the cursor over the gap.
+            await self.run_sync()
 
     @classmethod
     async def create_connector(
