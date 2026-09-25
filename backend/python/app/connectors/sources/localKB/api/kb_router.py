@@ -70,47 +70,7 @@ HTTP_MIN_STATUS = 100
 HTTP_MAX_STATUS = 600
 HTTP_INTERNAL_SERVER_ERROR = 500
 
-async def _increment_org_corpus_revision(request: Request, org_id: str | None = None) -> None:
-    """Bump the corpus revision for *org_id* (the KB owner).
-
-    Always pass the org that *owns* the KB/record, not request.state.user["orgId"].
-    The latter would wrongly bump the requester's revision when a user with
-    cross-org access modifies another org's knowledge base.
-
-    Retries up to 3 times with a short backoff so transient graph errors do not
-    leave semantic-cache hits silently enabled after a mutation.
-    """
-    import asyncio as _asyncio
-
-    if not org_id:
-        # Explicit org_id should always be provided; fall back to the
-        # requester's org only as a last resort, and log a warning so it
-        # is easy to find during review.
-        org_id = request.state.user.get("orgId")
-        _log.warning(
-            "_increment_org_corpus_revision: org_id not supplied; "
-            "falling back to requester org '%s'. Ensure callers pass the "
-            "resource-owning org.",
-            org_id,
-        )
-    if not org_id:
-        return
-
-    graph_provider = request.app.state.graph_provider
-    max_attempts = 3
-    last_exc: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            await graph_provider.increment_corpus_revision(org_id)
-            return  # success
-        except Exception as exc:
-            last_exc = exc
-            if attempt < max_attempts:
-                await _asyncio.sleep(0.5 * attempt)
-    _log.warning(
-        "Could not increment corpus revision for org '%s' after %d attempts: %s",
-        org_id, max_attempts, str(last_exc),
-    )
+from app.connectors.api.utils import increment_org_corpus_revision_with_retry
 
 kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
 
@@ -1430,7 +1390,7 @@ async def update_record(
         _kb_ctx_for_bump = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
         _bump_org_id = _kb_ctx_for_bump.get("org_id") if _kb_ctx_for_bump else None
         if _bump_org_id:
-            await _increment_org_corpus_revision(request, _bump_org_id)
+            await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _bump_org_id)
 
         # Publish update event
         event_data = result.get("eventData")
@@ -1596,7 +1556,7 @@ async def delete_records_in_kb(
 
         if result and result.get("success") is True:
             if _kb_org:
-                await _increment_org_corpus_revision(request, _kb_org)
+                await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org)
             else:
                 _log.warning(
                     "delete_records_in_kb: KB owner org unresolved for kb_id=%s; "
@@ -1672,7 +1632,7 @@ async def delete_record_in_folder(
 
         if result and result.get("success") is True:
             if _kb_org:
-                await _increment_org_corpus_revision(request, _kb_org)
+                await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org)
             else:
                 _log.warning(
                     "delete_record_in_folder: KB owner org unresolved for kb_id=%s; "

@@ -43,6 +43,7 @@ from app.agents.actions.knowledge_graph.views import (
 )
 from app.api.middlewares.auth import is_request_admin, require_scopes, require_service_token
 from app.api.middlewares.token_policy import has_service_scope
+from app.connectors.api.utils import increment_org_corpus_revision_with_retry
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppStatus,
@@ -2152,22 +2153,7 @@ async def delete_record(
             # expires. The warning is still emitted after the final attempt.
             org_id = result.get("orgId")
             if org_id:
-                import asyncio as _asyncio
-                _max_attempts = 3
-                _last_exc: Exception | None = None
-                for _attempt in range(1, _max_attempts + 1):
-                    try:
-                        await graph_provider.increment_corpus_revision(org_id)
-                        _last_exc = None
-                        break
-                    except Exception as _exc:
-                        _last_exc = _exc
-                        if _attempt < _max_attempts:
-                            await _asyncio.sleep(0.5 * _attempt)
-                if _last_exc is not None:
-                    logger.warning(
-                        f"Could not increment corpus revision for org after {_max_attempts} attempts: {_last_exc}"
-                    )
+                await increment_org_corpus_revision_with_retry(graph_provider, org_id)
 
             # Publish deletion event. The graph deletion above has already
             # committed, so a publish failure here cannot be undone by failing

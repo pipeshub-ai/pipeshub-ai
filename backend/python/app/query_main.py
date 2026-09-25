@@ -330,6 +330,37 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.mcp_registry = mcp_registry
     logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
+    async def _scheduled_semantic_cache_purge() -> None:
+        semantic_cache_svc = await container.semantic_cache_service()
+        while True:
+            try:
+                await asyncio.sleep(600)  # every 10 minutes
+                # Aggregate active, inactive, internal, and external orgs
+                internal_orgs = await graph_provider.get_all_orgs(active=False, is_external=False)
+                external_orgs = await graph_provider.get_all_orgs(active=False, is_external=True)
+                all_orgs = internal_orgs + external_orgs
+                
+                for org in all_orgs:
+                    org_id = org.get("id")
+                    if not org_id:
+                        continue
+                    try:
+                        revision = await graph_provider.get_corpus_revision(org_id)
+                        success = await semantic_cache_svc.purge_stale_entries(org_id, revision)
+                        if not success:
+                            logger.warning(f"Scheduled purge failed for org {org_id}, will retry on next pass")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.warning(f"Error checking revision for org {org_id} during scheduled purge: {e}")
+                        
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in scheduled semantic cache purge loop: {e}")
+
+    app.state.semantic_cache_purge_task = asyncio.create_task(_scheduled_semantic_cache_purge())
+
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
@@ -339,7 +370,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
-        "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
+        "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task", "semantic_cache_purge_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():

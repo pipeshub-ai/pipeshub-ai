@@ -225,13 +225,15 @@ class SemanticCacheService:
         await self.purge_stale_entries(org_id, new_revision)
         return new_revision
 
-    async def purge_stale_entries(self, org_id: str, current_revision: str) -> None:
+    async def purge_stale_entries(self, org_id: str, current_revision: str) -> bool:
         """Delete all cache entries for *org_id* whose ``corpusRevision`` does
         not match *current_revision*.
 
         Call this after a corpus revision bump (connector sync, KB mutation,
         record deletion) rather than automatically on every cache write.
         Prefer ``bump_corpus_revision`` which combines both steps.
+
+        Returns True if the purge succeeded, False otherwise.
         """
         try:
             filter_expr = FilterExpression(
@@ -240,8 +242,10 @@ class SemanticCacheService:
             )
             await self.vector_db.delete_points(self.collection_name, filter_expr)
             logger.debug(f"Purged stale semantic cache entries for org {org_id}")
+            return True
         except Exception as e:
             logger.warning(f"Failed to purge stale semantic cache entries: {e}")
+            return False
 
 
 def hash_filters(scope: SemanticCacheScope) -> str:
