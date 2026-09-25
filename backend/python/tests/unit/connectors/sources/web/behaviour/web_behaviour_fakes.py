@@ -78,6 +78,11 @@ class Page:
     head_status: int | None = None
 
 
+    # Validators: sent with the page, and a matching If-None-Match / If-Modified-Since gets a 304.
+    etag: str | None = None
+    last_modified: str | None = None
+
+
 def _key(url: str) -> str:
     parsed = urlparse(url)
     path = parsed.path or "/"
@@ -96,6 +101,7 @@ class FakeWeb:
         self._pages: dict[str, Page | list[Page]] = {}
         self._lock = threading.Lock()
         self.requests: list[tuple[str, str]] = []
+        self.not_modified: list[str] = []
         self.browser_visits: list[str] = []
         self.browser_starts = 0
         self.browser_broken = False
@@ -157,6 +163,17 @@ class FakeWeb:
             request.transport.abort()
             raise ConnectionResetError("fake site hung up")
         headers = dict(page.headers)
+        if page.etag:
+            headers["ETag"] = page.etag
+        if page.last_modified:
+            headers["Last-Modified"] = page.last_modified
+        if page.status == 200 and (
+            (page.etag and request.headers.get("If-None-Match") == page.etag)
+            or (page.last_modified and request.headers.get("If-Modified-Since") == page.last_modified)
+        ):
+            if request.method == "GET":
+                self.not_modified.append(url)
+            return web.Response(status=304, headers=headers)
         if page.location:
             headers["Location"] = page.location
         if page.content_type:

@@ -1273,6 +1273,9 @@ class WebConnector(BaseConnector):
                         session=self.session,
                         logger=self.logger,
                         referer=referer,
+                        extra_headers=await self._conditional_headers(
+                            current_url, links_needed=current_depth < self.max_depth,
+                        ),
                         timeout=15,
                         max_size_mb=self.max_size_mb,
                     )
@@ -1571,7 +1574,32 @@ class WebConnector(BaseConnector):
             return None
         return await fetch_url_with_fallback(
             url=url, session=self.session, logger=self.logger, timeout=15, max_size_mb=self.max_size_mb,
+            extra_headers=await self._conditional_headers(url, links_needed=False),
         )
+
+    @staticmethod
+    def _header(headers: dict, name: str) -> str | None:
+        wanted = name.lower()
+        return next((value for key, value in headers.items() if key.lower() == wanted), None)
+
+    async def _conditional_headers(self, url: str, links_needed: bool) -> dict[str, str] | None:
+        """Ask the site to skip the body when our stored copy is current (it answers 304).
+
+        Not for a page whose links the crawl still needs, since a 304 carries no body to read them from.
+        """
+        if links_needed and not self._is_document_url(url):
+            return None
+        record = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id, external_record_id=self._ensure_trailing_slash(url)
+        )
+        if record is None or not record.storage_document_id:
+            return None
+        headers = {}
+        if record.etag:
+            headers["If-None-Match"] = record.etag
+        if record.ctag:
+            headers["If-Modified-Since"] = record.ctag
+        return headers or None
 
     async def _headless_fetch(self, url: str) -> FetchResponse | None:
         """Fetch a single URL via crawl4ai (used outside the BFS crawl loop); documents go over plain HTTP."""
@@ -1890,6 +1918,7 @@ class WebConnector(BaseConnector):
                         session=self.session,
                         logger=self.logger,
                         referer=referer,
+                        extra_headers=await self._conditional_headers(url, links_needed=False),
                         timeout=15,
                         max_size_mb=self.max_size_mb,
                     )
@@ -1907,6 +1936,9 @@ class WebConnector(BaseConnector):
                 result = await self._validate_fetch_result(url, depth, referer, raw)
                 if result is None or self._excluded_by_extension_filter(result):
                     return None
+
+            if result.status_code == HTTPStatus.NOT_MODIFIED:
+                return None  # the site confirmed our stored copy is current
 
             final_url = result.final_url
 
@@ -2070,6 +2102,9 @@ class WebConnector(BaseConnector):
                 parent_record_type=RecordType.FILE if parent_url else None,
                 storage_document_id=storage_document_id,
                 fetch_signed_url=fetch_signed_url,
+                etag=self._header(result.headers, "ETag"),
+                # Last-Modified, kept verbatim to send back as If-Modified-Since.
+                ctag=self._header(result.headers, "Last-Modified"),
             )
 
             if existing_record and not content_changed:
