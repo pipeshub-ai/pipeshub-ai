@@ -331,3 +331,22 @@ async def test_a_stored_page_gone_twice_is_removed_whatever_key_it_was_stored_un
     # Still linked from the site, so it stays listed as one failed page with nothing indexed.
     [remains] = [r for r in db.records.values() if r.weburl != START_URL]
     assert remains.indexing_status == ProgressStatus.FAILED.value and remains.storage_document_id is None
+
+
+async def test_a_page_gone_behind_a_redirect_is_removed_where_it_is_stored(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old, new = "http://site.test/old", "http://site.test/new"
+    site.html(START_URL, "Home", "/old")
+    site.redirect(old, "/new", status=301)
+    site.html(new, "New")
+    connector = await make_connector()
+    await connector.run_sync()
+    stored = db.pages()[new]
+
+    site.add(new, Page(status=404))
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert db.deleted == [stored.id]
+    assert not [r for r in db.records.values() if r.weburl == old or r.external_record_id.rstrip("/") == old]

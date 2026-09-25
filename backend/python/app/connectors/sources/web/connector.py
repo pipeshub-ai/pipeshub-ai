@@ -1880,7 +1880,8 @@ class WebConnector(BaseConnector):
             else:
                 size_skip = result.headers.get("X-Fetch-Skip-Reason") == "max_size_exceeded"
                 self._record_final_failure(
-                    url, depth, referer, result.status_code, self._too_large_reason() if size_skip else None,
+                    result.final_url or url, depth, referer, result.status_code,
+                    self._too_large_reason() if size_skip else None,
                 )
             return None
         elif not result.success:
@@ -1907,7 +1908,9 @@ class WebConnector(BaseConnector):
 
         content_bytes = result.content_bytes
         if len(content_bytes) > self.max_size_mb * 1024 * 1024:
-            self._record_final_failure(url, depth, referer, result.status_code, self._too_large_reason())
+            self._record_final_failure(
+                result.final_url or url, depth, referer, result.status_code, self._too_large_reason(),
+            )
             return None
 
         return result
@@ -1915,7 +1918,10 @@ class WebConnector(BaseConnector):
     def _record_final_failure(
         self, url: str, depth: int, referer: str | None, status_code: int | None, reason: str | None = None,
     ) -> None:
-        """A failure retrying can't fix (404, 401, too large): shown as a failed page, never re-fetched this sync."""
+        """A failure retrying can't fix (404, 401, too large): shown as a failed page, never re-fetched this sync.
+
+        ``url`` is where the answer came from, after any redirect: the URL the page is stored under.
+        """
         normalized = self._normalize_url(url)
         self.retry_urls[normalized] = RetryUrl(
             url=normalized,

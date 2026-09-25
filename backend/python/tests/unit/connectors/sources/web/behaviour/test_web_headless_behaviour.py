@@ -264,7 +264,11 @@ async def test_robust_mode_skips_an_oversized_file_behind_an_aborted_redirect_wi
 
     assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
     assert browser.gets(pdf) == 0
-    assert pdf not in db.pages()
+    # Listed where the file is, as too large, and nothing downloaded.
+    too_large = db.pages()[pdf]
+    assert too_large.storage_document_id is None
+    assert (too_large.reason or "").startswith("This file is larger than this connector's 1 MB size limit")
+    assert "http://site.test/handbook" not in db.pages()
 
 
 @pytest.mark.parametrize(
