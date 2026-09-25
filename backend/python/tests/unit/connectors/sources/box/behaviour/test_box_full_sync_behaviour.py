@@ -267,6 +267,17 @@ class TestGroups:
 
         assert db.group_members["g-eng"] == [ALICE_EMAIL, BOB_EMAIL, "carol@acme.test"]
 
+    async def test_a_failed_member_read_keeps_the_members_already_stored(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_group("g-eng", "Engineering", (ALICE, BOB))
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        box_api.fail("GET", "/2.0/groups/g-eng/memberships", 500, times=10)
+        checkpoints.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert db.group_members["g-eng"] == [ALICE_EMAIL, BOB_EMAIL]
 
 
     async def test_a_group_removed_in_box_is_deleted(self, box_api, db, checkpoints) -> None:

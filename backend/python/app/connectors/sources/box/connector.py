@@ -807,10 +807,13 @@ class BoxConnector(BaseConnector):
                     )
 
                     memberships = await self._get_group_memberships(group_id)
+                    if memberships is None:
+                        # Saving the group replaces its stored members, so an unread list would remove them all.
+                        continue
 
                     group_member_users = []
 
-                    for membership in memberships or []:
+                    for membership in memberships:
                         user_info = membership.get('user', {})
                         email = user_info.get('login')
 
