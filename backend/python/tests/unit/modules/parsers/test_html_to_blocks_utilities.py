@@ -106,13 +106,17 @@ class TestTableGridHelpers:
         ]
         assert _collapse_body_rows(grid, [(0, 1), (1, 2)]) == [["L", "v1"], ["L", "v2"]]
 
-    def test_collapse_body_cell_merges_a_group_once(self) -> None:
+    def test_collapse_body_cell_under_a_cell_spanning_both_ways(self) -> None:
         row = [
             NormalizedCell(text="a", colspan=2, rowspan=2, is_origin=False),
-            NormalizedCell(text="a", colspan=2, rowspan=2, is_origin=False),
+            NormalizedCell(text="", colspan=2, rowspan=2, is_origin=False),
             NormalizedCell(text="b", is_origin=True),
         ]
         assert _collapse_body_cell(row, 0, 3) == "a | b"
+
+    def test_collapse_body_cell_keeps_equal_neighbours(self) -> None:
+        row = [NormalizedCell(text="5", is_origin=True), NormalizedCell(text="5", is_origin=True)]
+        assert _collapse_body_cell(row, 0, 2) == "5 | 5"
 
     def test_collapse_body_cell_drops_colspan_slots(self) -> None:
         row = [NormalizedCell(text="x", colspan=2, is_origin=True), NormalizedCell(text="", is_origin=False)]

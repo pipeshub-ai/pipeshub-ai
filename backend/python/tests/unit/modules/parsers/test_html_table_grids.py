@@ -115,8 +115,9 @@ class TestRealTables:
 def _random_table(rng: random.Random) -> tuple[str, list[list[str | None]], int]:
     """A random table with a one-row header, row-label `<th>`s and spans.
 
-    Returns the HTML, the expected grid (None where a span covers the slot,
-    filled in below) and the data row count.
+    Returns the HTML, the expected grid (a span's text in its first column on
+    every row it covers, "" in the columns its colspan adds) and the data row
+    count.
     """
     width = rng.randint(2, 5)
     height = rng.randint(1, 8)
@@ -131,17 +132,21 @@ def _random_table(rng: random.Random) -> tuple[str, list[list[str | None]], int]
                 c += 1
                 continue
             text = f"v{r}_{c}"
-            rowspan = rng.choice([1, 1, 1, 2, 3]) if r + 1 < height else 1
-            rowspan = min(rowspan, height - r)
-            if any(grid[rr][c] is not None for rr in range(r, r + rowspan)):
+            rowspan = min(rng.choice([1, 1, 1, 2, 3]), height - r)
+            colspan = 1
+            while colspan < 2 and c + colspan < width and grid[r][c + colspan] is None and rng.random() < 0.25:
+                colspan += 1
+            if any(grid[rr][cc] is not None for rr in range(r, r + rowspan) for cc in range(c, c + colspan)):
                 rowspan = 1
             for rr in range(r, r + rowspan):
                 grid[rr][c] = text
+                for cc in range(c + 1, c + colspan):
+                    grid[rr][cc] = ""
             tag = "th" if c == 0 and rng.random() < 0.5 else "td"
             scope = ' scope="row"' if tag == "th" else ""
-            span = f' rowspan="{rowspan}"' if rowspan > 1 else ""
+            span = (f' rowspan="{rowspan}"' if rowspan > 1 else "") + (f' colspan="{colspan}"' if colspan > 1 else "")
             cells.append(f"<{tag}{scope}{span}>{text}</{tag}>")
-            c += 1
+            c += colspan
         rows_html.append("<tr>" + "".join(cells) + "</tr>")
     html = "<table><tr>" + header + "</tr>" + "".join(rows_html) + "</table>"
     return html, grid, height
@@ -181,6 +186,48 @@ class TestAnyTable:
                 text = block.data["row_natural_language_text"]
                 assert ": ," not in text
                 assert not text.rstrip().endswith(":")
+
+    def test_a_cell_spanning_rows_and_columns_repeats_only_where_it_starts(self) -> None:
+        _columns, _captions, rows = _parse(
+            "<table><tr><th>A</th><th>B</th><th>C</th></tr>"
+            "<tr><td colspan=2 rowspan=2>Shared</td><td>X</td></tr><tr><td>Y</td></tr></table>",
+        )
+
+        assert rows == ["A: Shared, C: X", "A: Shared, C: Y"]
+
+    def test_equal_neighbours_under_one_wide_header_are_both_kept(self) -> None:
+        _columns, _captions, rows = _parse(
+            "<table><tr><th colspan=2>Score</th><th>Name</th></tr>"
+            "<tr><td>5</td><td>5</td><td>Ann</td></tr></table>",
+        )
+
+        assert rows == ["Score: 5 | 5, Name: Ann"]
+
+    def test_a_leading_full_width_td_is_the_title_and_keeps_the_header_below_it(self) -> None:
+        columns, captions, rows = _parse(
+            "<table><tr><td colspan=3>Title</td></tr><tr><th>A</th><th>B</th><th>C</th></tr>"
+            "<tr><td>1</td><td>2</td><td>3</td></tr></table>",
+        )
+
+        assert captions == ["Title"]
+        assert columns == ["A", "B", "C"]
+        assert rows == ["A: 1, B: 2, C: 3"]
+
+    def test_a_lone_full_width_row_stays_a_row(self) -> None:
+        _columns, captions, rows = _parse("<table><tr><td colspan=2>Only row</td></tr></table>")
+
+        assert captions == []
+        assert rows == ["Only row"]
+
+    def test_a_labelled_row_with_an_image_keeps_its_label_and_no_column_numbers(self) -> None:
+        image = '<img src="data:image/png;base64,iVBORw0KGgo=" alt="photo">'
+        container = HtmlToBlocksConverter().convert(
+            "<table><tr><th scope=row>Born</th><td>1915</td><td>x</td></tr>"
+            f"<tr><th scope=row>Photo</th><td>{image}</td><td>caption text</td></tr></table>",
+        )
+
+        fragments = [b.data for b in container.blocks if b.type == BlockType.TEXT]
+        assert fragments == ["Photo", "caption text"]
 
     def test_a_table_of_only_header_cells_still_yields_rows(self) -> None:
         _columns, _captions, rows = _parse(

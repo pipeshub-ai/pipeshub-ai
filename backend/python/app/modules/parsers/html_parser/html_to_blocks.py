@@ -814,14 +814,10 @@ def _collapse_body_cell(
     """The text of one logical column group in one row.
 
     Cells covered by a rowspan carry the spanning cell's text; colspan
-    continuation slots are empty and drop out. Repeats from a cell spanning
-    both ways appear once.
+    continuation slots are empty and drop out, so every remaining part is a
+    distinct cell, even when two neighbours hold the same value.
     """
-    parts: list[str] = []
-    for col in range(col_start, col_end):
-        text = row[col].text.strip()
-        if text and (not parts or parts[-1] != text):
-            parts.append(text)
+    parts = [text for col in range(col_start, col_end) if (text := row[col].text.strip())]
     return _CELL_SEP.join(parts)
 
 
@@ -904,12 +900,24 @@ class HtmlTableNormalizer:
         row_nodes, header_count = _table_rows(table_node)
         grid, header_flags = self._expand_rows(row_nodes, header_count=header_count)
         width = _grid_width(grid)
+        if (
+            header_count == 0 and len(grid) > 1 and width > 1
+            and any(_tag_name(child) in {"th", "td"} for child in _direct_children(row_nodes[0]))
+            and _spanning_title(grid[0], width)
+        ):
+            # A <td> title is not a header row, so counting stopped on it and
+            # the column labels below it were read as data.
+            header_count = 1 + _count_leading_header_rows(row_nodes[1:])
+            grid, header_flags = self._expand_rows(row_nodes, header_count=header_count)
         grid = _pad_grid_to_width(grid, width)
         header_grid = [row for row, is_header in zip(grid, header_flags, strict=True) if is_header]
         body_grid = [row for row, is_header in zip(grid, header_flags, strict=True) if not is_header]
 
         title = ""
-        if header_grid and width > 1 and (row_title := _spanning_title(header_grid[0], width)):
+        if (
+            header_grid and len(grid) > 1 and width > 1
+            and (row_title := _spanning_title(header_grid[0], width))
+        ):
             title = row_title
             header_grid = header_grid[1:]
         if not body_grid:
@@ -994,13 +1002,16 @@ class HtmlTableNormalizer:
                     else:
                         slot = NormalizedCell(
                             text="",
+                            rowspan=rowspan,
                             colspan=colspan,
                             is_header=normalized.is_header,
                             is_origin=False,
                         )
                     row.append(slot)
                     if rowspan > 1:
-                        rowspan_pending[col + offset] = (rowspan - 1, normalized)
+                        # Each covered column repeats its own slot, so a later
+                        # row carries the text once, where the origin row has it.
+                        rowspan_pending[col + offset] = (rowspan - 1, slot)
                 col += colspan
 
             grid.append(row)
@@ -1993,6 +2004,8 @@ class _DomWalker:
         self,
         headers: list[str],
         row_cells: list[_TableCell],
+        *,
+        labelled: bool = False,
     ) -> list[_Segment]:
         """Split one table row into alternating TEXT and IMAGE segments.
 
@@ -2002,15 +2015,21 @@ class _DomWalker:
         segment, then resumes accumulation. Mirrors
         ``markdown_to_blocks.MarkdownToBlocksConverter._split_table_row_into_segments``.
         """
-        pending_pairs: list[tuple[str, str]] = []
+        pending_pairs: list[tuple[int, str, str]] = []
         fragments: list[_Segment] = []
 
         def flush_text_fragment() -> None:
             if not pending_pairs:
                 return
-            hdrs = [pair[0] for pair in pending_pairs]
-            vals = [pair[1] for pair in pending_pairs]
-            text = _format_table_row(hdrs, vals)
+            vals = [pair[2] for pair in pending_pairs]
+            if headers:
+                text = _format_table_row([pair[1] for pair in pending_pairs], vals)
+            else:
+                # As on the text path: no invented "Column N" labels, and only
+                # the fragment that starts at the row's label reads "Label: value".
+                text = _format_table_row(
+                    [], vals, labelled=labelled and pending_pairs[0][0] == 0,
+                )
             if text.strip():
                 fragments.append(_Segment(kind="text", text=text))
             pending_pairs.clear()
@@ -2029,14 +2048,14 @@ class _DomWalker:
                 elif cell.plain:
                     value = cell.plain.strip()
                 if value:
-                    pending_pairs.append((header, value))
+                    pending_pairs.append((col_idx, header, value))
                 continue
 
             for seg in cell_segments:
                 if seg.kind == "text":
                     value = seg.text.strip()
                     if value:
-                        pending_pairs.append((header, value))
+                        pending_pairs.append((col_idx, header, value))
                 else:
                     flush_text_fragment()
                     fragments.append(seg)
@@ -2051,6 +2070,7 @@ class _DomWalker:
         row_number: int,
         headers: list[str],
         row_cells: list[_TableCell],
+        labelled: bool,
         row_block_indices: list[int],
         row_markdown: str,
     ) -> None:
@@ -2066,10 +2086,11 @@ class _DomWalker:
             row_number: 1-based row number stored on the container.
             headers: Collapsed column header labels for fragment formatting.
             row_cells: Per-column cell content (plain and markdown are identical).
+            labelled: Whether the row's first cell labels it (headerless tables).
             row_block_indices: Mutable list; receives the container block index.
             row_markdown: Joined cell markdown used for ``data:image`` URI lookup.
         """
-        segments = self._split_table_row_into_segments(headers, row_cells)
+        segments = self._split_table_row_into_segments(headers, row_cells, labelled=labelled)
         container = Block(
             id=str(uuid4()),
             index=len(self.blocks),
@@ -2192,12 +2213,17 @@ class _DomWalker:
                 _TableCell(plain=cell, markdown=cell) for cell in row_cells
             ]
             row_markdown = " ".join(row_cells)
+            labelled = (
+                row_number <= len(normalized.row_labels)
+                and normalized.row_labels[row_number - 1]
+            )
             if self._row_has_images(table_cells):
                 self._emit_table_row_with_image_splits(
                     group_index=group.index,
                     row_number=row_number,
                     headers=headers,
                     row_cells=table_cells,
+                    labelled=labelled,
                     row_block_indices=row_block_indices,
                     row_markdown=row_markdown,
                 )
@@ -2211,10 +2237,7 @@ class _DomWalker:
                 parent_index=group.index,
                 data={
                     "row_natural_language_text": _format_table_row(
-                        headers,
-                        row_cells,
-                        labelled=row_number <= len(normalized.row_labels)
-                        and normalized.row_labels[row_number - 1],
+                        headers, row_cells, labelled=labelled,
                     ),
                     "row_number": row_number,
                     "cells": row_cells,
