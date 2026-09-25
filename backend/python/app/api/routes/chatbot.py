@@ -1309,9 +1309,22 @@ async def askAIStream(
                         corpus_revision = None  # disable cache for this request
 
                 if corpus_revision is not None:
+                    # When record-ID shortening is active the live path mints a
+                    # request-scoped RecordIdShortener mapping (R1, R2, …).  A
+                    # cache hit would replay those labels without rebuilding the
+                    # mapping, so a later request would receive R<n> identifiers
+                    # that resolve to *different* records.  Disable the cache
+                    # entirely for such requests.
+                    if query_info.enableRecordIdShortening:
+                        corpus_revision = None  # disable cache for this request
+
+                if corpus_revision is not None:
                     # Build a profile of every request input that changes the
                     # response so two callers with the same query but different
-                    # model/mode settings cannot share a cached answer.
+                    # model/mode/timezone settings cannot share a cached answer.
+                    # `mode` is declared on ChatQuery but is not forwarded to
+                    # run_chat_stream or used to select a response format, so it
+                    # is deliberately excluded here.
                     request_profile = {
                         "chatMode": query_info.chatMode,
                         "modelKey": query_info.modelKey,
@@ -1320,6 +1333,7 @@ async def askAIStream(
                         "quickMode": query_info.quickMode,
                         "limit": query_info.limit,
                         "projectInstructions": query_info.projectInstructions,
+                        "timezone": query_info.timezone,
                     }
                     cache_scope = SemanticCacheScope(
                         orgId=org_id,

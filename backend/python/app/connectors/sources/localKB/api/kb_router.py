@@ -1564,6 +1564,23 @@ async def delete_records_in_kb(
                 detail="Invalid request body"
             )
         user_id = request.state.user.get("userId")
+
+        # Resolve the KB-owning org BEFORE deletion.  After the document is
+        # removed from the graph, get_document may return nothing and the
+        # helper would fall back to the requester's org, bumping the wrong
+        # corpus revision.  If resolution fails, skip the bump entirely
+        # rather than corrupting a different org's cache invalidation.
+        _kb_org: str | None = None
+        try:
+            _kb_doc = await request.app.state.graph_provider.get_document(kb_id, "apps")
+            _kb_org = (_kb_doc or {}).get("orgId")
+        except Exception as _exc:
+            _log.warning(
+                "delete_records_in_kb: could not resolve KB owner for kb_id=%s "
+                "before deletion — corpus revision will not be bumped. err=%s",
+                kb_id, _exc,
+            )
+
         result = await kb_service.delete_records_in_kb(
             kb_id=kb_id,
             record_ids=body.get("recordIds"),
@@ -1578,14 +1595,14 @@ async def delete_records_in_kb(
             )
 
         if result and result.get("success") is True:
-            # Use the KB's owning org, not the requester's org.
-            _kb_org = None
-            try:
-                _kb_doc = await request.app.state.graph_provider.get_document(kb_id, "apps")
-                _kb_org = (_kb_doc or {}).get("orgId")
-            except Exception:
-                pass
-            await _increment_org_corpus_revision(request, _kb_org)
+            if _kb_org:
+                await _increment_org_corpus_revision(request, _kb_org)
+            else:
+                _log.warning(
+                    "delete_records_in_kb: KB owner org unresolved for kb_id=%s; "
+                    "skipping corpus revision bump to avoid advancing the wrong org.",
+                    kb_id,
+                )
 
         return result
 
@@ -1625,6 +1642,20 @@ async def delete_record_in_folder(
                 detail="Invalid request body"
             )
         user_id = request.state.user.get("userId")
+
+        # Resolve the KB-owning org BEFORE deletion so the corpus revision
+        # bump targets the correct org even after the document is removed.
+        _kb_org: str | None = None
+        try:
+            _kb_doc = await request.app.state.graph_provider.get_document(kb_id, "apps")
+            _kb_org = (_kb_doc or {}).get("orgId")
+        except Exception as _exc:
+            _log.warning(
+                "delete_record_in_folder: could not resolve KB owner for kb_id=%s "
+                "before deletion — corpus revision will not be bumped. err=%s",
+                kb_id, _exc,
+            )
+
         result = await kb_service.delete_records_in_folder(
             kb_id=kb_id,
             folder_id=folder_id,
@@ -1640,14 +1671,14 @@ async def delete_record_in_folder(
             )
 
         if result and result.get("success") is True:
-            # Use the KB's owning org, not the requester's org.
-            _kb_org = None
-            try:
-                _kb_doc = await request.app.state.graph_provider.get_document(kb_id, "apps")
-                _kb_org = (_kb_doc or {}).get("orgId")
-            except Exception:
-                pass
-            await _increment_org_corpus_revision(request, _kb_org)
+            if _kb_org:
+                await _increment_org_corpus_revision(request, _kb_org)
+            else:
+                _log.warning(
+                    "delete_record_in_folder: KB owner org unresolved for kb_id=%s; "
+                    "skipping corpus revision bump to avoid advancing the wrong org.",
+                    kb_id,
+                )
 
         return result
 
