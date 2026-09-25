@@ -19,8 +19,12 @@ class RobotsRules:
 
     @classmethod
     def parse(cls, text: str, product_token: str) -> RobotsRules:
-        """Keep the rules of the groups naming ``product_token``, or else those for ``*``."""
+        """Keep the rules of the groups naming ``product_token``, or else those for ``*``.
+
+        A group naming us applies even with no rules (RFC 9309 §2.2.1): then everything is allowed.
+        """
         named: list[tuple[bool, str]] = []
+        named_group = False
         anyone: list[tuple[bool, str]] = []
         agents: list[str] = []
         in_rules = False
@@ -35,6 +39,7 @@ class RobotsRules:
                 if in_rules:
                     agents, in_rules = [], False
                 agents.append(value.lower())
+                named_group = named_group or value.lower() == token
             elif key in ("allow", "disallow"):
                 in_rules = True
                 if not value:
@@ -44,7 +49,7 @@ class RobotsRules:
                     named.append(rule)
                 if "*" in agents:
                     anyone.append(rule)
-        return cls(named or anyone)
+        return cls(named if named_group else anyone)
 
     def allows(self, url: str) -> bool:
         parsed = urlparse(url)

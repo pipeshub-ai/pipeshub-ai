@@ -179,3 +179,21 @@ async def test_a_rate_limited_robots_txt_skips_the_site_at_once(
     assert site.gets(ROBOTS) == 1
     assert clock.sleeps == []
     assert db.pages() == {}
+
+
+@pytest.mark.parametrize(
+    "robots",
+    [
+        pytest.param("User-agent: *\nDisallow: /\n\nUser-agent: PipesHub\n", id="empty-group"),
+        pytest.param("User-agent: *\nDisallow: /\n\nUser-agent: PipesHub\nDisallow:\n", id="empty-disallow"),
+    ],
+)
+async def test_a_group_naming_pipeshub_with_no_rules_allows_everything(
+    robots: str, site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    _site(site)
+    _robots(site, robots)
+
+    await (await make_connector()).run_sync()
+
+    assert "http://site.test/private/secret" in db.pages()
