@@ -18712,16 +18712,20 @@ paths:
         Restricted system fields (`_id`, `orgId`, `slug`, `__v`) cannot be updated and
         cause a `400` if included.
 
-        **Email change:** When `email` is changed, a verification email is sent to the
-        new address. The response includes a `meta.emailChangeMailStatus` field:
-        `notNeeded` | `sent` | `failed`.
+        **Email change:** Only the account owner can change its email address; anyone
+        else, including an admin, gets `403` when the body contains `email`. The stored
+        address does not change here: a verification link is sent to the new address,
+        and the change is applied when that link is opened (`PUT /userAccount/validateEmailChange`),
+        which also publishes `UpdateUserEvent` with the new address. The response
+        includes `meta.emailChangeMailStatus`: `notNeeded` | `sent` | `failed`.
 
         **Role:** Only org admins can set `role`. Promoting a member to `admin` is rejected
         with `400` when the change would exceed 5 non-deleted admins (including pending
         admin invites). Demoting the last remaining admin is also rejected.
 
-        **Authorization:** Admin can update any user; non-admin can only update themselves
-        (`userAdminOrSelfCheck` middleware, throws `400` not `403`).
+        **Authorization:** Admin can update any user's other fields; non-admin can only update
+        themselves (`userAdminOrSelfCheck` middleware, throws `400` not `403`). The email rule
+        above applies to admins too.
       operationId: updateUser
       security:
         - bearerAuth: []
@@ -18808,6 +18812,14 @@ paths:
             - Promoting to admin would exceed the organization limit of 5 admins
             - Demoting the last remaining admin
           content:  
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Only the account owner can change its email address (`emailChangeSelfOnly`). Returned
+            before the user is looked up, so it does not reveal whether the id exists.
+          content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
@@ -18988,16 +19000,16 @@ paths:
     patch:
       tags:
         - Users
-      summary: Update user email
+      summary: Request an email address change
       description: |
-        Update the email address of a specific user. The new email is saved directly without a
-        uniqueness check. A `UpdateUserEvent` is published to the event bus.
+        Start changing the caller's own email address. The stored address does not change
+        here: the new address is checked for uniqueness within the organization, and a
+        verification link is sent to it. The change is applied when that link is opened
+        (`PUT /userAccount/validateEmailChange`), which also publishes `UpdateUserEvent`
+        with the new address. If the link cannot be sent, the response is `500`.
 
-        Use `PUT /users/{id}` instead if you need the full update flow including email uniqueness
-        validation and verification email sending.
-
-        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
-        not `403` if not authorized).
+        **Authorization:** Only the account owner (`emailChangeSelfOnly` — `403` for anyone
+        else, including admins, before the user is looked up).
       operationId: updateEmail
       security:
         - bearerAuth: []
@@ -19026,17 +19038,38 @@ paths:
                   format: email
       responses:
         '200':
-          description: Email updated successfully
+          description: |
+            Verification requested, or nothing to do. `email` is the address still stored;
+            `emailChangeMailStatus` is `sent` when a link went to the new address, or
+            `notNeeded` when it matches the current one.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
+                type: object
+                additionalProperties: false
+                required: [email, emailChangeMailStatus]
+                properties:
+                  email:
+                    type: string
+                    format: email
+                    example: "john.smith@company.com"
+                  emailChangeMailStatus:
+                    type: string
+                    enum: [sent, notNeeded]
         '400':
           description: |
             Invalid request. Possible reasons:
 
             - Invalid user ID format or invalid email format (Zod)
-            - Requester is not admin and is not the target user (`userAdminOrSelfCheck`)
+            - Email already in use by another user in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Only the account owner can change its email address (`emailChangeSelfOnly`). Returned
+            before the user is looked up, so it does not reveal whether the id exists.
           content:
             application/json:
               schema:

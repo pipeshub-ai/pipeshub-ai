@@ -31,9 +31,9 @@ export const emailChangeSelfOnly = (
     if (!actor) {
       throw new UnauthorizedError('Unauthorized to change the email address');
     }
-    // Both ids are string identifiers, so a string comparison is enough and
-    // avoids the deprecated ObjectId constructor.
-    if (String(actor) !== String(req.params.id)) {
+    // Ids are hex, where case doesn't change the id; the next check
+    // (userAdminOrSelfCheck) treats them the same way.
+    if (String(actor).toLowerCase() !== String(req.params.id).toLowerCase()) {
       throw new ForbiddenError(
         'Only the account owner can change its email address',
       );

@@ -31,6 +31,12 @@ describe('emailChangeSelfOnly Middleware', () => {
     expect(next.calledOnceWithExactly()).to.be.true;
   });
 
+  it('lets the owner through when the id in the path differs only in letter case', () => {
+    const upper = ownerId.replace(/[a-f]/g, (c) => c.toUpperCase());
+    emailChangeSelfOnly(reqFor(ownerId, upper, { email: 'new@x.com' }) as any, res, next);
+    expect(next.calledOnceWithExactly()).to.be.true;
+  });
+
   it('refuses a non-owner changing the email, before any user lookup', () => {
     // The middleware runs ahead of userExists precisely so this 403 is
     // returned whether or not the target id exists — a non-owner must not be

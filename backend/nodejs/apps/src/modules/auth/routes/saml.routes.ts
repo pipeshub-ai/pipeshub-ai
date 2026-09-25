@@ -34,6 +34,7 @@ import {
   AuthMethodType,
   OrgAuthConfig,
 } from '../schema/orgAuthConfiguration.schema';
+import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
 import { Org } from '../../user_management/schema/org.schema';
 
 export const isValidEmail = (email: string) => {
@@ -252,6 +253,7 @@ export function createSamlRouter(container: Container) {
               ),
               logger,
               container.get<JitProvisioningService>('JitProvisioningService'),
+              container.get<EntitiesEventProducer>('EntitiesEventProducer'),
             );
           });
         container
