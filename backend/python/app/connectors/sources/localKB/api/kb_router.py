@@ -1409,6 +1409,7 @@ async def update_record(
         # None would silently fall back to the requester's org, which is wrong
         # for cross-org access.
         cache_invalidation_pending = False
+        kb_context = None
         try:
             kb_context = await request.app.state.graph_provider._get_kb_context_for_record(record_id)
             _bump_org_id = kb_context.get("org_id") if kb_context else None

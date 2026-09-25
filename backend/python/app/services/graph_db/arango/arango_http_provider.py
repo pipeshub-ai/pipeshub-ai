@@ -22837,11 +22837,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     return str(results[0])
                 return "0"
             except Exception as exc:
-                # ArangoDB error 1210 is a unique-constraint violation that can
-                # arise from a concurrent UPSERT race.  Retry once; propagate
-                # all other errors immediately, and propagate 1210 on the second
-                # attempt.
-                if "1210" in str(exc) and attempt == 0:
+                # ArangoDB error 1210 is a unique-constraint violation and 1200 
+                # is a write-write conflict that can arise from a concurrent UPSERT race.
+                # Retry once; propagate all other errors immediately, and propagate 
+                # these errors on the second attempt.
+                if ("1210" in str(exc) or "1200" in str(exc)) and attempt == 0:
                     continue
                 raise
         return "0"  # unreachable; satisfies the type checker

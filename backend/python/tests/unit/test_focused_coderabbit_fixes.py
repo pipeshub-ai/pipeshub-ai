@@ -145,3 +145,62 @@ async def test_kb_deletion_outcomes():
     with patch("app.connectors.sources.localKB.api.kb_router.increment_org_corpus_revision_with_retry", new_callable=AsyncMock) as mock_bump:
         await delete_records_in_kb(kb_id="kb1", request=mock_request, kb_service=mock_kb_service)
         mock_bump.assert_not_called()
+
+# ---------------------------------------------------------
+# 6. Failed initial KB context lookup fallback
+# ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_update_record_failed_kb_context_lookup():
+    from app.connectors.sources.localKB.api.kb_router import update_record
+    
+    mock_request = MagicMock()
+    mock_request.json = AsyncMock(return_value={"updates": {}, "fileMetadata": {}})
+    mock_request.state.user = {"userId": "u1"}
+    
+    mock_gp = AsyncMock()
+    mock_gp._get_kb_context_for_record.side_effect = Exception("Lookup failed")
+    mock_gp.get_knowledge_base.return_value = {"id": "kb1"}
+    
+    mock_request.app.state.graph_provider = mock_gp
+    mock_request.app.container.logger = MagicMock()
+    
+    mock_kb_service = AsyncMock()
+    mock_kb_service.update_record.return_value = {"success": True, "eventData": {}}
+    mock_kafka = AsyncMock()
+    
+    with patch("app.connectors.sources.localKB.api.kb_router.increment_org_corpus_revision_with_retry", new_callable=AsyncMock) as mock_bump:
+        result = await update_record(record_id="r1", request=mock_request, kb_service=mock_kb_service, kafka_service=mock_kafka)
+        mock_bump.assert_not_called()
+        assert result.get("cacheInvalidationPending") is True
+
+# ---------------------------------------------------------
+# 7. ArangoDB retries for 1200 and 1210
+# ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_arango_corpus_revision_retries():
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+    import json
+    
+    provider = ArangoHTTPProvider(logger=MagicMock(), config_service=MagicMock())
+    provider.execute_query = AsyncMock()
+    
+    # 1. 1200 Error on first attempt, success on second
+    provider.execute_query.side_effect = [Exception("ArangoDB error 1200: write-write conflict"), ["1"]]
+    res = await provider.increment_corpus_revision("org1")
+    assert res == "1"
+    assert provider.execute_query.call_count == 2
+    
+    # 2. 1210 Error on first attempt, success on second
+    provider.execute_query.reset_mock()
+    provider.execute_query.side_effect = [Exception("ArangoDB error 1210: unique constraint"), ["2"]]
+    res = await provider.increment_corpus_revision("org2")
+    assert res == "2"
+    assert provider.execute_query.call_count == 2
+    
+    # 3. Non-retryable error fails immediately
+    provider.execute_query.reset_mock()
+    provider.execute_query.side_effect = [Exception("ArangoDB error 1202: document not found")]
+    with pytest.raises(Exception, match="1202"):
+        await provider.increment_corpus_revision("org3")
+    assert provider.execute_query.call_count == 1
+
