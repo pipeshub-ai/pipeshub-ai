@@ -416,6 +416,7 @@ class TestAbstractMethodInventory:
         "filter_accessible_virtual_record_ids",
         "get_record_parent_adjacency",
         "get_corpus_revision",
+        "mark_corpus_mutation_start",
         "increment_corpus_revision",
     ]
 

@@ -24,6 +24,8 @@ def _make(app_doc=None, get_document_error=None, org_edges=None):
     else:
         graph.get_document = AsyncMock(return_value=app_doc)
     graph.get_edges_to_node = AsyncMock(return_value=org_edges or [])
+    graph.mark_corpus_mutation_start = AsyncMock(return_value="mutation-1")
+    graph.increment_corpus_revision = AsyncMock(return_value="2")
 
     return AccessibleRecordsInvalidator(MagicMock(), cache, graph), cache, graph
 
@@ -37,6 +39,12 @@ class TestConnectorSyncCompleted:
         graph.get_document.assert_awaited_once_with("conn-1", CollectionNames.APPS.value)
         graph.get_edges_to_node.assert_not_called()
         cache.invalidate_connector.assert_awaited_once_with(ORG, "conn-1")
+        graph.mark_corpus_mutation_start.assert_awaited_once_with(ORG)
+        
+        # Test trailing bump background task behavior
+        import asyncio
+        await asyncio.sleep(0.1) # yield to task
+        graph.increment_corpus_revision.assert_awaited_once_with(ORG, "mutation-1")
 
     async def test_resolves_org_from_org_app_relation_when_property_missing(self) -> None:
         inv, cache, graph = _make(
@@ -90,6 +98,12 @@ class TestConnectorSyncCompleted:
         inv, cache, _ = _make(app_doc={"orgId": ORG})
         cache.invalidate_connector = AsyncMock(side_effect=RuntimeError("redis down"))
         await inv.on_connector_sync_completed("conn-1")  # must not raise
+
+    async def test_mutation_registration_failure_prevents_invalidation(self) -> None:
+        inv, cache, graph = _make(app_doc={"orgId": ORG})
+        graph.mark_corpus_mutation_start.side_effect = RuntimeError("graph db mutation lock failed")
+        await inv.on_connector_sync_completed("conn-1")  # swallows error
+        cache.invalidate_connector.assert_not_called()
 
 
 class TestKbRecordsChanged:

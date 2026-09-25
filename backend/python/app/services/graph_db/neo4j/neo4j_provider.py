@@ -19739,7 +19739,8 @@ class Neo4jProvider(IGraphDBProvider):
             raise RuntimeError("Neo4j client not connected")
         query = """
         MATCH (r:CorpusRevision {orgId: $org_id})
-        RETURN toString(r.revision) AS revision, size(coalesce(r.pendingMutations, [])) AS pendingCount
+        WITH r, [m IN coalesce(r.pendingMutations, []) WHERE split(m, '|')[1].toInteger() >= timestamp() - 300000] AS activeMutations
+        RETURN toString(r.revision) AS revision, size(activeMutations) AS pendingCount
         """
         results = await self.client.execute_query(query, {"org_id": org_id})
         if results:
@@ -19754,9 +19755,10 @@ class Neo4jProvider(IGraphDBProvider):
             raise RuntimeError("Neo4j client not connected")
         mutation_id = str(uuid.uuid4())
         query = """
+        WITH $mutation_id + '|' + toString(timestamp()) AS new_mut
         MERGE (r:CorpusRevision {orgId: $org_id})
-        ON CREATE SET r.revision = 0, r.pendingMutations = [$mutation_id]
-        ON MATCH SET r.pendingMutations = coalesce(r.pendingMutations, []) + $mutation_id
+        ON CREATE SET r.revision = 0, r.pendingMutations = [new_mut]
+        ON MATCH SET r.pendingMutations = coalesce(r.pendingMutations, []) + new_mut
         """
         await self.client.execute_query(query, {"org_id": org_id, "mutation_id": mutation_id})
         return mutation_id
@@ -19773,8 +19775,8 @@ class Neo4jProvider(IGraphDBProvider):
         ON CREATE SET r.revision = 1, r.pendingMutations = []
         ON MATCH SET r.revision = coalesce(r.revision, 0) + 1,
                      r.pendingMutations = CASE WHEN $mutation_id IS NOT NULL 
-                                          THEN [x IN coalesce(r.pendingMutations, []) WHERE x <> $mutation_id]
-                                          ELSE coalesce(r.pendingMutations, []) END
+                                          THEN [x IN coalesce(r.pendingMutations, []) WHERE split(x, '|')[0] <> $mutation_id AND split(x, '|')[1].toInteger() >= timestamp() - 300000]
+                                          ELSE [x IN coalesce(r.pendingMutations, []) WHERE split(x, '|')[1].toInteger() >= timestamp() - 300000] END
         RETURN toString(r.revision) AS revision
         """
         results = await self.client.execute_query(query, {"org_id": org_id, "mutation_id": mutation_id})

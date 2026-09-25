@@ -159,11 +159,21 @@ class TestPrivateHelperDelegation:
         mock_mapper.assert_called_once_with("agentHasToolset")
 
     @pytest.mark.asyncio
-    async def test_initialize_schema_delegates_to_ensure_schema(self):
+    async def test_initialize_schema_delegates_to_ensure_schema_and_succeeds(self):
         provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
-        provider.ensure_schema = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        provider.ensure_schema = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
         await provider._initialize_schema()
+
+        provider.ensure_schema.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_initialize_schema_raises_runtime_error_on_failure(self):
+        provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        provider.ensure_schema = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="Failed to ensure Neo4j schema"):
+            await provider._initialize_schema()
 
         provider.ensure_schema.assert_awaited_once()
 

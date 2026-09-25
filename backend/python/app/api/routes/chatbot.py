@@ -1211,7 +1211,7 @@ async def _generate_chat_stream_via_agent_loop(
         try:
             async for event in run_stream:
                 yield event
-                if protocol == "agui" and "event: RUN_ERROR" in event or "event: RUN_FINISHED" in event:
+                if protocol == "agui" and ("event: RUN_ERROR" in event or "event: RUN_FINISHED" in event):
                     emitted_terminal_event = True
                 elif protocol != "agui" and '"error"' in event:
                     emitted_terminal_event = True
@@ -1315,19 +1315,18 @@ async def askAIStream(
     if query_info.runId and await cancellation_registry.is_active(query_info.runId):
         raise HTTPException(status_code=409, detail=f"runId '{query_info.runId}' is already active")
 
-    # Normalize currentTime to the minute to improve cache hit rates.
-    # This ensures the exact same time string is used in the cache key
-    # and the LLM prompt, satisfying the requirement that the agent
-    # receives the same time it is cached against.
-    if query_info.currentTime:
+    chat_mode = query_info.chatMode or "internal_search"
+    bypass_cache = bool(query_info.previousConversations) or bool(query_info.attachments) or (query_info.retrievalMode and query_info.retrievalMode.upper() != "HYBRID")
+    use_cache = chat_mode in ("internal_search", "quick") and not bypass_cache
+
+    if use_cache and query_info.currentTime:
         try:
-            # e.g. "2024-03-14T15:09:23.123Z" -> "2024-03-14T15:09:00.000Z"
-            # Fast string slicing for standard ISO format:
-            if len(query_info.currentTime) >= 16 and query_info.currentTime[10] == 'T':
-                query_info.currentTime = query_info.currentTime[:16] + ":00.000Z"
+            from datetime import datetime
+            dt = datetime.fromisoformat(query_info.currentTime)
+            dt = dt.replace(second=0, microsecond=0)
+            query_info.currentTime = dt.isoformat(timespec='milliseconds')
         except Exception:
             pass
-
 
     _chat_user = getattr(request.state, "user", {}) or {}
     _chat_email = _chat_user.get("email")
@@ -1349,10 +1348,6 @@ async def askAIStream(
         config_service=config_service,
         cancellation_registry=cancellation_registry,
     )
-
-    chat_mode = query_info.chatMode or "internal_search"
-    bypass_cache = bool(query_info.previousConversations) or bool(query_info.attachments) or (query_info.retrievalMode and query_info.retrievalMode.upper() != "HYBRID")
-    use_cache = chat_mode in ("internal_search", "quick") and not bypass_cache
     
     if use_cache:
         async def cached_or_live_stream(base_stream):
@@ -1525,14 +1520,10 @@ async def askAIStream(
                             pass
             except Exception as exc:
                 logger.error("Error generating stream in cached_or_live_stream", exc_info=True)
-                run_failed = True
-                if not run_finished and not run_failed:  # Actually run_failed is just set to True, but if RUN_ERROR was not yet seen
-                    pass # Wait, if it didn't emit RUN_ERROR from the base stream, we emit it here?
-                    # No, _generate_chat_stream_via_agent_loop will emit the RUN_ERROR if it handles it.
-                    # If it bubbles all the way here, _generate_chat_stream_via_agent_loop didn't handle it.
-                # Just to be safe, emit RUN_ERROR
-                evt = frame(AGUIEventType.RUN_ERROR, message="An internal error occurred while generating the response.", code="internal_error", runId=query_info.runId)
-                yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+                if not run_finished and not run_failed:
+                    run_failed = True
+                    evt = frame(AGUIEventType.RUN_ERROR, message="An internal error occurred while generating the response.", code="internal_error", runId=query_info.runId)
+                    yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
             finally:
                 await base_stream.aclose()
 

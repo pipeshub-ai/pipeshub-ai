@@ -132,11 +132,12 @@ async def test_kb_deletion_outcomes():
     
     # Outcome 1: Successful deletion bumps corpus revision
     mock_gp.get_document.return_value = {"orgId": "org1"}
+    mock_gp.mark_corpus_mutation_start.return_value = "mutation-123"
     mock_kb_service.delete_records_in_kb.return_value = {"success": True}
     
     with patch("app.connectors.sources.localKB.api.kb_router.increment_org_corpus_revision_with_retry", new_callable=AsyncMock) as mock_bump:
         await delete_records_in_kb(kb_id="kb1", request=mock_request, kb_service=mock_kb_service)
-        mock_bump.assert_awaited_once_with(mock_gp, "org1")
+        mock_bump.assert_awaited_once_with(mock_gp, "org1", "mutation-123")
         
     # Outcome 2: Failed lookup warns and skips bump
     mock_gp.get_document.return_value = None # Failed lookup

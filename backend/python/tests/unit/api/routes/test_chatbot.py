@@ -572,7 +572,7 @@ class TestAskAIStreamEndpoint:
         # Verify _generate_chat_stream_via_agent_loop was called with normalized time
         mock_generate_stream.assert_called_once()
         called_query_info = mock_generate_stream.call_args.kwargs["query_info"]
-        assert called_query_info.currentTime == "2024-03-14T15:09:00.000Z"
+        assert called_query_info.currentTime == "2024-03-14T15:09:00.000+00:00"
 
 
 

@@ -447,6 +447,9 @@ class TestLifespan:
 
             async with lifespan(mock_app):
                 pass
+            
+            # retrieval_service should NOT have been awaited (no orgs)
+            mock_container.retrieval_service.assert_not_awaited()
 
     async def test_cache_purge_retry_on_service_resolution_failure(self):
         from app.query_main import lifespan
@@ -502,10 +505,6 @@ class TestLifespan:
                 pass
             
             assert call_count == 2
-
-
-            # retrieval_service should NOT have been awaited (no orgs)
-            mock_container.retrieval_service.assert_not_awaited()
 
     async def test_startup_graph_provider_fallback(self):
         """When _graph_provider is not set, lifespan falls back to await graph_provider()."""

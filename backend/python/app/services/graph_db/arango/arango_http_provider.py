@@ -22809,9 +22809,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Get the current corpus revision for an organization."""
         query = """
         LET r = DOCUMENT("CorpusRevision", @org_id)
+        LET now = DATE_NOW()
+        LET activeMutations = (
+            FOR m IN r != null ? (r.pendingMutations || []) : []
+            FILTER m.timestamp >= now - 300000
+            RETURN m
+        )
         RETURN {
             revision: r != null ? TO_STRING(r.revision) : "0",
-            pendingCount: r != null ? LENGTH(r.pendingMutations || []) : 0
+            pendingCount: LENGTH(activeMutations)
         }
         """
         results = await self.execute_query(query, bind_vars={"org_id": org_id})
@@ -22825,9 +22831,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def mark_corpus_mutation_start(self, org_id: str) -> str:
         mutation_id = str(uuid.uuid4())
         query = """
+        LET new_mut = { id: @mutation_id, timestamp: DATE_NOW() }
         UPSERT { _key: @org_id }
-        INSERT { _key: @org_id, orgId: @org_id, revision: 0, pendingMutations: [@mutation_id] }
-        UPDATE { pendingMutations: PUSH(OLD.pendingMutations || [], @mutation_id) }
+        INSERT { _key: @org_id, orgId: @org_id, revision: 0, pendingMutations: [new_mut] }
+        UPDATE { pendingMutations: PUSH(OLD.pendingMutations || [], new_mut) }
         IN CorpusRevision
         """
         await self.execute_query(query, bind_vars={"org_id": org_id, "mutation_id": mutation_id})
@@ -22841,11 +22848,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         error, and any failure on the retry attempt, is propagated to the caller.
         """
         query = """
+        LET now = DATE_NOW()
         UPSERT { _key: @org_id }
         INSERT { _key: @org_id, orgId: @org_id, revision: 1, pendingMutations: [] }
         UPDATE { 
             revision: OLD.revision + 1,
-            pendingMutations: @mutation_id != null ? REMOVE_VALUE(OLD.pendingMutations || [], @mutation_id) : (OLD.pendingMutations || [])
+            pendingMutations: (
+                FOR m IN (OLD.pendingMutations || [])
+                FILTER (@mutation_id != null ? m.id != @mutation_id : true) AND m.timestamp >= now - 300000
+                RETURN m
+            )
         }
         IN CorpusRevision
         RETURN TO_STRING(NEW.revision)
