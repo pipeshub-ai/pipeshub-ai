@@ -83,7 +83,7 @@ class TestStopWaitParsing:
         assert stop_wait_sec(LOG) == expected
 
 
-def _drain_env(rows: list[dict], specs: dict[str, object]):
+def _drain_env(rows: list[dict], specs: dict[str, object], budget: int | None = None):
     graph = AsyncMock()
     state = {r["id"]: dict(r) for r in rows}
 
@@ -102,8 +102,10 @@ def _drain_env(rows: list[dict], specs: dict[str, object]):
 
     dispatcher = MagicMock()
     dispatcher.submit = AsyncMock(return_value=SubmitResult.ACCEPTED)
-    coordinator = MagicMock()
+    coordinator = MagicMock(spec=["try_claim_once"] + (["drain_budget"] if budget is not None else []))
     coordinator.try_claim_once = AsyncMock(return_value=True)
+    if budget is not None:
+        coordinator.drain_budget = MagicMock(return_value=budget)
 
     async def resolve(_gp, ids, _logger):
         return [specs[i] for i in ids if i in specs]
@@ -191,3 +193,51 @@ class TestFinalize:
         ):
             await sync_runner._finalize(graph, LOG, "c1", None, None, resync_spec=MagicMock())
         assert order == ["drain", "reissue"]
+
+
+class TestDrainOrderAndBudget:
+    """Every completion used to publish the whole queue, in org-traversal order:
+    each event but one bounced back to QUEUED (a read and a write each), and the
+    same connectors won every freed slot."""
+
+    def _rows(self):
+        q = AppStatus.QUEUED.value
+        return [
+            {"id": "a", "status": q, "pendingResync": True, "updatedAtTimestamp": 300},
+            {"id": "b", "status": q, "pendingResync": True, "updatedAtTimestamp": 100},
+            {"id": "c", "status": q, "pendingResync": True, "updatedAtTimestamp": 200},
+        ]
+
+    def _specs(self):
+        return {k: MagicMock(connector_id=k) for k in "abc"}
+
+    @pytest.mark.asyncio
+    async def test_oldest_first_and_no_more_than_the_free_slots(self) -> None:
+        specs = self._specs()
+        graph, _s, dispatcher, patches = _drain_env(self._rows(), specs, budget=2)
+        with patches[0], patches[1], patches[2]:
+            started = await sync_runner.drain_queued_syncs(graph, LOG)
+        assert started == ["b", "c"]
+        assert [c.args[0] for c in dispatcher.submit.await_args_list] == [specs["b"], specs["c"]]
+
+    @pytest.mark.asyncio
+    async def test_no_free_slot_publishes_nothing(self) -> None:
+        graph, _s, dispatcher, patches = _drain_env(self._rows(), self._specs(), budget=0)
+        with patches[0], patches[1], patches[2]:
+            assert await sync_runner.drain_queued_syncs(graph, LOG) == []
+        dispatcher.submit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_coordinator_that_cannot_count_slots_still_publishes_all(self) -> None:
+        """Across a fleet another worker may have room, so no local budget applies."""
+        graph, _s, dispatcher, patches = _drain_env(self._rows(), self._specs())
+        with patches[0], patches[1], patches[2]:
+            started = await sync_runner.drain_queued_syncs(graph, LOG)
+        assert started == ["b", "c", "a"]
+
+    @pytest.mark.asyncio
+    async def test_local_budget_is_the_free_slots(self, monkeypatch) -> None:
+        monkeypatch.setenv("CONNECTOR_SYNC_MAX_CONCURRENT", "3")
+        coordinator = LocalSyncCoordinator(LOG)
+        await coordinator.begin("x")
+        assert coordinator.drain_budget() == 2
