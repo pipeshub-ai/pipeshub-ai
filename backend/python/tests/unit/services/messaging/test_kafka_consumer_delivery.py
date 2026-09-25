@@ -113,26 +113,47 @@ class Recorder:
 
 
 class FlakyRetryManager(RetryManager):
-    """A real RetryManager whose first ``failures`` Redis calls time out."""
+    """A real RetryManager whose first ``failures`` calls to ``methods`` time out."""
 
-    def __init__(self, failures: int) -> None:
+    def __init__(self, failures: int, methods: tuple[str, ...] = ("increment_and_check", "clear", "get_count")) -> None:
         super().__init__(logging.getLogger("test"), redis_client=fakeredis.aioredis.FakeRedis())
         self.failures_left = failures
+        self.methods = methods
         self.failed_calls = 0
 
-    def _maybe_fail(self) -> None:
-        if self.failures_left > 0:
+    def _maybe_fail(self, method: str) -> None:
+        if method in self.methods and self.failures_left > 0:
             self.failures_left -= 1
             self.failed_calls += 1
             raise TimeoutError("Redis timed out")
 
     async def increment_and_check(self, message_id: str, max_attempts: int) -> tuple[int, bool]:
-        self._maybe_fail()
+        self._maybe_fail("increment_and_check")
         return await super().increment_and_check(message_id, max_attempts)
 
     async def clear(self, message_id: str) -> None:
-        self._maybe_fail()
+        self._maybe_fail("clear")
         await super().clear(message_id)
+
+    async def get_count(self, message_id: str) -> int:
+        self._maybe_fail("get_count")
+        return await super().get_count(message_id)
+
+
+class FailingCommits:
+    """Makes a fake consumer's first ``times`` commits fail, as a broker outage would."""
+
+    def __init__(self, consumer: object, times: int) -> None:
+        self.real_commit = consumer.commit
+        self.times = times
+        self.failed = 0
+        consumer.commit = self
+
+    async def __call__(self, offsets: dict | None = None) -> None:
+        if self.failed < self.times:
+            self.failed += 1
+            raise ConnectionError("broker unavailable for commit")
+        await self.real_commit(offsets)
 
 
 async def _start(handler, retry_manager=None) -> KafkaMessagingConsumer:
@@ -385,7 +406,7 @@ class TestRetryBookkeepingFailures:
     async def test_a_redis_timeout_while_counting_a_retry_does_not_skip_the_message(self, broker) -> None:
         for i in range(3):
             broker.produce(TOPIC, _event(i))
-        retry_manager = FlakyRetryManager(failures=1)
+        retry_manager = FlakyRetryManager(failures=1, methods=("increment_and_check",))
         handler = Recorder(broker, fail={0: ConnectionError("graph database unreachable")})
         consumer = await _start(handler, retry_manager)
         await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 3)
@@ -432,6 +453,43 @@ class TestRetryBookkeepingFailures:
         assert handler.seen == [0, 0, 0, 1]
         # Message 1 ran with 0 already committed, not with a gap before it.
         assert handler.committed_when_seen[-1] == 1
+
+
+    async def test_a_message_given_up_on_whose_commit_fails_is_not_handled_again_after_a_restart(
+        self, broker, retry_manager
+    ) -> None:
+        broker.produce(TOPIC, _event(0))
+        handler = Recorder(broker, fail={0: ConnectionError("down")}, fail_times=99)
+        first = await _start(handler, retry_manager)
+        commits = FailingCommits(broker.consumers[-1], times=99)
+        await _until(lambda: handler.seen.count(0) == 3 and commits.failed == 1)
+        await _settle()
+        await first.stop()
+        assert broker.committed_offset(GROUP, TOPIC) is None
+
+        second = await _start(handler, retry_manager)
+        await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 1)
+        await _settle()
+        await second.stop()
+        assert handler.seen == [0, 0, 0]
+        assert await retry_manager.get_count(f"{TOPIC}-0-0") == 0
+
+    async def test_with_redis_down_a_message_given_up_on_whose_commit_fails_is_not_handled_again(
+        self, broker
+    ) -> None:
+        broker.produce(TOPIC, _event(0))
+        retry_manager = FlakyRetryManager(failures=10**9)
+        handler = Recorder(broker, fail={0: ConnectionError("down")}, fail_times=99)
+        consumer = await _start(handler, retry_manager)
+        fake = broker.consumers[-1]
+        commits = FailingCommits(fake, times=1)
+        await _until(lambda: handler.seen.count(0) == 3 and commits.failed == 1)
+        # A rebalance hands the partition back from before the failed commit.
+        fake.seek(next(iter(broker.logs)), 0)
+        await _until(lambda: broker.committed_offset(GROUP, TOPIC) == 1)
+        await _settle()
+        await consumer.stop()
+        assert handler.seen == [0, 0, 0]
 
 
 class TestGracefulShutdown:

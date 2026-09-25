@@ -266,13 +266,21 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                     f"partition={message.partition}, offset={message.offset}"
                                 )
 
+                                if await self.__attempts_exhausted(message_id):
+                                    # Given up on earlier, but that commit failed.
+                                    self.logger.warning(
+                                        f"{message_id} already used up its attempts; committing it "
+                                        "without handling it again"
+                                    )
+                                    await self.__commit_settled(topic_partition, message, message_id)
+                                    continue
+
                                 success, exc = await self.__process_message(message)
 
                                 should_commit = False
                                 if success:
                                     should_commit = True
                                     self.logger.debug(f"Message {message_id} processed successfully")
-                                    await self.__clear_retry_tracking(message_id)
                                 else:
                                     # Classify exception to determine commit behavior
                                     error_type = MessageErrorType.TRANSIENT
@@ -286,7 +294,6 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                             f"Terminal error for {message_id}: {type(exc).__name__}. "
                                             "Committing without retry."
                                         )
-                                        await self.__clear_retry_tracking(message_id)
                                     elif self.retry_manager:
                                         count, should_dead_letter = await self.__count_failed_attempt(message_id)
                                         if should_dead_letter:
@@ -294,7 +301,6 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                             self.logger.warning(
                                                 f"Dead-lettering {message_id} after {count} attempts"
                                             )
-                                            await self.__clear_retry_tracking(message_id)
                                         else:
                                             self.logger.warning(
                                                 f"Message {message_id} failed (attempt {count}/"
@@ -313,9 +319,9 @@ class KafkaMessagingConsumer(IMessagingConsumer):
 
                             except Exception as e:
                                 self.logger.error(f"Error processing message {message_id}: {e}")
-                                if self.__count_attempt_in_memory(message_id) >= messaging_env.max_delivery_attempts:
+                                _, give_up = await self.__count_failed_attempt(message_id)
+                                if give_up:
                                     self.logger.warning(f"Giving up on {message_id} after repeated errors")
-                                    await self.__clear_retry_tracking(message_id)
                                     await self.__commit_settled(topic_partition, message, message_id)
                                     continue
 
@@ -343,18 +349,25 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             await self.cleanup()
 
     async def __commit_settled(self, topic_partition: "TopicPartition", message: Any, message_id: str) -> None:  # noqa: ANN401 - aiokafka ConsumerRecord
-        """Commit a message that is done, terminal or given up on."""
+        """Commit a message that is done, terminal or given up on.
+
+        Its retry count is cleared only once the commit succeeds: a message
+        given up on keeps its exhausted count, so if it is redelivered it is
+        committed without running the handler again.
+        """
+        # Mark as processed only once settled (prevents skipped retries)
+        self.__mark_message_processed(message_id)
         try:
             await self.consumer.commit({topic_partition: message.offset + 1})  # type: ignore
-            self.logger.debug(
-                f"Committed offset for {message.topic}-{message.partition} at offset {message.offset}"
-            )
         except Exception as e:
             # This message is settled, so a later commit on the partition
             # that covers it is still correct.
             self.logger.error(f"Failed to commit {message_id}: {e}")
-        # Mark as processed only once settled (prevents skipped retries)
-        self.__mark_message_processed(message_id)
+            return
+        self.logger.debug(
+            f"Committed offset for {message.topic}-{message.partition} at offset {message.offset}"
+        )
+        await self.__clear_retry_tracking(message_id)
 
     def __retry_later(self, topic_partition: "TopicPartition", offset: int) -> None:
         """Rewind the partition to ``offset`` and hold it for one poll interval,
@@ -390,10 +403,24 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         self._failed_attempts[message_id] = self._failed_attempts.get(message_id, 0) + 1
         return self._failed_attempts[message_id]
 
+    async def __attempts_exhausted(self, message_id: str) -> bool:
+        max_attempts = messaging_env.max_delivery_attempts
+        if self._failed_attempts.get(message_id, 0) >= max_attempts:
+            return True
+        if self.retry_manager is None:
+            return False
+        try:
+            return await self.retry_manager.get_count(message_id) >= max_attempts
+        except Exception as e:
+            self.logger.error(f"Failed to read retry count for {message_id}: {e}")
+            return False
+
     async def __count_failed_attempt(self, message_id: str) -> tuple[int, bool]:
         """Count one failed attempt; returns ``(attempts, give_up)``."""
         max_attempts = messaging_env.max_delivery_attempts
         in_memory = self.__count_attempt_in_memory(message_id)
+        if self.retry_manager is None:
+            return in_memory, in_memory >= max_attempts
         try:
             count, give_up = await self.retry_manager.increment_and_check(message_id, max_attempts)  # type: ignore
         except Exception as e:
