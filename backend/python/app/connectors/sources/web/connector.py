@@ -1583,7 +1583,7 @@ class WebConnector(BaseConnector):
         wanted = name.lower()
         return next((value for key, value in headers.items() if key.lower() == wanted), None)
 
-    async def _conditional_headers(self, url: str, links_needed: bool) -> dict[str, str] | None:
+    async def _conditional_headers(self, url: str, *, links_needed: bool) -> dict[str, str] | None:
         """Ask the site to skip the body when our stored copy is current (it answers 304).
 
         Not for a page whose links the crawl still needs, since a 304 carries no body to read them from.

@@ -57,10 +57,10 @@ class FetchResult:
     status_code: Optional[int] = None
     error: Optional[str] = None
     js_execution_result: Optional[dict[str, Any]] = None
-    content_type: Optional[str] = None  # of the response the browser loaded, when it reports one
+    content_type: str | None = None  # of the response the browser loaded, when it reports one
 
 
-def _content_type(response_headers: Any) -> Optional[str]:
+def _content_type(response_headers: object) -> str | None:
     if not isinstance(response_headers, dict):
         return None
     return next((str(v) for k, v in response_headers.items() if str(k).lower() == "content-type"), None)
