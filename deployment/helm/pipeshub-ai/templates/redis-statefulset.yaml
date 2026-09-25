@@ -1,0 +1,284 @@
+{{- if .Values.redis.builtin.enabled }}
+{{- $master := printf "%s-redis-master" .Release.Name }}
+{{- $replica := printf "%s-redis-replicas" .Release.Name }}
+{{- $class := .Values.redis.persistence.storageClass | default .Values.global.storageClass }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $master }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+    app.kubernetes.io/role: master
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+    app.kubernetes.io/role: master
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $master }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+    app.kubernetes.io/role: master
+spec:
+  serviceName: {{ $master }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+      app.kubernetes.io/role: master
+  template:
+    metadata:
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+        app.kubernetes.io/role: master
+    spec:
+      securityContext:
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        runAsUser: 999
+        runAsNonRoot: true
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "pipeshub-ai.selectorLabels" . | nindent 18 }}
+                  app.kubernetes.io/component: redis
+              topologyKey: kubernetes.io/hostname
+      {{- with .Values.redis.builtin.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.builtin.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.builtin.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: "{{ .Values.redis.builtin.image.repository }}:{{ .Values.redis.builtin.image.tag }}"
+          imagePullPolicy: {{ .Values.redis.builtin.image.pullPolicy }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.redisSecretName" . }}
+                  key: redis-password
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.redisSecretName" . }}
+                  key: redis-password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              exec redis-server \
+                --bind 0.0.0.0 \
+                --protected-mode yes \
+                --appendonly yes \
+                --appendfsync everysec \
+                --requirepass "$REDIS_PASSWORD" \
+                --masterauth "$REDIS_PASSWORD" \
+                --maxmemory {{ .Values.redis.builtin.maxmemory }} \
+                --maxmemory-policy {{ .Values.redis.builtin.maxmemoryPolicy }} \
+                --rename-command FLUSHALL "" \
+                --rename-command FLUSHDB ""
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          {{- with .Values.redis.builtin.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.redis.builtin.persistence.size | quote }}
+        {{- if $class }}
+        storageClassName: {{ $class | quote }}
+        {{- end }}
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $master }}-pdb
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/role: master
+{{- if gt (int .Values.redis.replica.replicaCount) 0 }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $replica }}-headless
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+    app.kubernetes.io/role: replica
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+    app.kubernetes.io/role: replica
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $replica }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+    app.kubernetes.io/role: replica
+spec:
+  serviceName: {{ $replica }}-headless
+  replicas: {{ .Values.redis.replica.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+      app.kubernetes.io/role: replica
+  template:
+    metadata:
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+        app.kubernetes.io/role: replica
+    spec:
+      securityContext:
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        runAsUser: 999
+        runAsNonRoot: true
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "pipeshub-ai.selectorLabels" . | nindent 18 }}
+                  app.kubernetes.io/component: redis
+              topologyKey: kubernetes.io/hostname
+      {{- with .Values.redis.builtin.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.builtin.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.builtin.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: "{{ .Values.redis.builtin.image.repository }}:{{ .Values.redis.builtin.image.tag }}"
+          imagePullPolicy: {{ .Values.redis.builtin.image.pullPolicy }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.redisSecretName" . }}
+                  key: redis-password
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.redisSecretName" . }}
+                  key: redis-password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              exec redis-server \
+                --bind 0.0.0.0 \
+                --protected-mode yes \
+                --appendonly yes \
+                --appendfsync everysec \
+                --requirepass "$REDIS_PASSWORD" \
+                --masterauth "$REDIS_PASSWORD" \
+                --replicaof {{ $master }} 6379 \
+                --maxmemory {{ .Values.redis.builtin.maxmemory }} \
+                --maxmemory-policy {{ .Values.redis.builtin.maxmemoryPolicy }} \
+                --rename-command FLUSHALL "" \
+                --rename-command FLUSHDB ""
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          {{- with .Values.redis.builtin.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.redis.builtin.persistence.size | quote }}
+        {{- if $class }}
+        storageClassName: {{ $class | quote }}
+        {{- end }}
+{{- end }}
+{{- end }}

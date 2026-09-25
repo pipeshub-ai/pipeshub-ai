@@ -24,11 +24,15 @@ annotations:
   category: AI/ML Platform
   licenses: Apache-2.0
 
+# Vendored under deployment/helm/vendor. helm dependency build packages these
+# local charts. It does not contact Docker Hub. Bitnami's OCI registry now
+# requires a login, which a client install must not need.
 dependencies:
   - name: mongodb
     version: 18.1.10
-    repository: "oci://registry-1.docker.io/bitnamicharts"
+    repository: "file://../vendor/mongodb"
+    condition: mongodb.enabled
   - name: redis
     version: 24.0.0
-    repository: "oci://registry-1.docker.io/bitnamicharts"
+    repository: "file://../vendor/redis"
     condition: redis.enabled

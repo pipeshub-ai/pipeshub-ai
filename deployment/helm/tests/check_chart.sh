@@ -61,6 +61,7 @@ VARIANTS=(
   "local-existing-secrets|${LOCAL[*]} --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-app"
   "defaults-dind|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
   "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
+  "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
 )
 
 KUBECONFORM=(
@@ -115,6 +116,30 @@ if [[ -f "$OUT/cloud.yaml" ]]; then
   expect cloud 'ZOO_SERVERS' absent
   expect local-neo4j-kafka 'ZOOKEEPER_SERVERS' absent
 fi
+if [[ -f "$OUT/eks.yaml" ]]; then
+  expect eks 'ReadWriteMany' absent
+  expect eks 'efs' absent
+  expect eks 'bitnami/' absent
+  expect eks 'app.kubernetes.io/component: kafka' absent
+  expect eks 'app.kubernetes.io/component: zookeeper' absent
+  expect eks '--bootstrap' present
+  expect eks 'QDRANT__STORAGE__COLLECTION__REPLICATION_FACTOR' present
+  expect eks 'value: "2"' present 'name: QDRANT__STORAGE__COLLECTION__REPLICATION_FACTOR'
+  expect eks 'memory: 8Gi' present
+  expect eks 'cpu: "4"' present
+  expect eks 'replicaSet=rs0' present
+  expect eks 'value: "redis"' present 'name: MESSAGE_BROKER'
+  expect eks 'value: "redis"' present 'name: KV_STORE_TYPE'
+  expect eks 'pipeshubai/pipeshub-sandbox:0.8.0' present
+  expect eks 'name: ci-mongodb-initiate-1' present
+  expect eks 'helm.sh/hook' absent
+  expect eks 'cidr: 169.254.170.23/32' present
+  expect eks 'name: DOCKER_HOST' present
+  expect eks 'storageClassName: "gp3"' present
+  # Neo4j is one pod. Qdrant is three. Count the StatefulSet replica lines by name.
+  expect eks 'replicas: 3' present 'name: ci-pipeshub-ai-qdrant'
+  expect eks 'replicas: 1' present 'name: ci-pipeshub-ai-neo4j'
+fi
 
 # name | expected message fragment | helm arguments (after SECRETS)
 REFUSED=(
@@ -125,6 +150,8 @@ REFUSED=(
   "docker sandbox without a daemon|no Docker daemon is configured|--set persistence.accessModes={ReadWriteMany}"
   "shared RWO volume across replicas|persistence requires ReadWriteMany|--set sandbox.dind.enabled=true"
   "cluster mode on the bundled redis|requires redis.external.enabled=true|${LOCAL[*]} --set redis.mode=cluster"
+  "neo4j community replicas|requires an Enterprise image|${LOCAL[*]} --set neo4j.replicaCount=2"
+  "both mongodb charts|cannot both be true|--set mongodb.enabled=true --set mongodb.builtin.enabled=true --set persistence.enabled=false --set config.sandboxMode=local"
 )
 for entry in "${REFUSED[@]}"; do
   IFS='|' read -r name message rest <<<"$entry"

@@ -1,0 +1,287 @@
+{{- if .Values.mongodb.builtin.enabled }}
+{{- $name := printf "%s-mongodb" .Release.Name }}
+{{- $headless := printf "%s-headless" $name }}
+{{- $keyName := printf "%s-keyfile" $name }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $keyName }}
+{{- $key := "" }}
+{{- if $existing }}
+{{- $key = index $existing.data "keyfile" }}
+{{- else }}
+{{- $key = randAlphaNum 756 | b64enc }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $keyName }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+type: Opaque
+data:
+  keyfile: {{ $key | quote }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $headless }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: mongo
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  type: ClusterIP
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: mongo
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  serviceName: {{ $headless }}
+  replicas: {{ .Values.mongodb.replicaCount }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mongodb
+  template:
+    metadata:
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: mongodb
+    spec:
+      securityContext:
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "pipeshub-ai.selectorLabels" . | nindent 18 }}
+                  app.kubernetes.io/component: mongodb
+              topologyKey: kubernetes.io/hostname
+      {{- with .Values.mongodb.builtin.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mongodb.builtin.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mongodb.builtin.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # Secret mounts are mode 0644. mongod refuses a keyfile that is group-readable.
+        - name: keyfile
+          image: "{{ .Values.mongodb.builtin.image.repository }}:{{ .Values.mongodb.builtin.image.tag }}"
+          imagePullPolicy: {{ .Values.mongodb.builtin.image.pullPolicy }}
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+          command:
+            - /bin/sh
+            - -c
+            - cp /secret/keyfile /keyfile/keyfile && chown 999:999 /keyfile/keyfile && chmod 400 /keyfile/keyfile
+          volumeMounts:
+            - name: keyfile-secret
+              mountPath: /secret
+              readOnly: true
+            - name: keyfile
+              mountPath: /keyfile
+      containers:
+        - name: mongodb
+          image: "{{ .Values.mongodb.builtin.image.repository }}:{{ .Values.mongodb.builtin.image.tag }}"
+          imagePullPolicy: {{ .Values.mongodb.builtin.image.pullPolicy }}
+          ports:
+            - name: mongo
+              containerPort: 27017
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.mongodbSecretName" . }}
+                  key: mongodb-username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.mongodbSecretName" . }}
+                  key: mongodb-password
+          # Only ordinal 0 runs the image entrypoint, which creates the root user
+          # on an empty disk. The other members start mongod directly so they can
+          # receive the initial sync instead of building a second dataset.
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              common=(--bind_ip_all --replSet {{ .Values.mongodb.replicaSetName | quote }} --keyFile /keyfile/keyfile --wiredTigerCacheSizeGB {{ .Values.mongodb.builtin.cacheSizeGB | quote }})
+              if [ "${HOSTNAME##*-}" = "0" ]; then
+                exec docker-entrypoint.sh mongod "${common[@]}"
+              fi
+              exec mongod "${common[@]}"
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: keyfile
+              mountPath: /keyfile
+          readinessProbe:
+            tcpSocket:
+              port: mongo
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: mongo
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 6
+          {{- with .Values.mongodb.builtin.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: keyfile-secret
+          secret:
+            secretName: {{ $keyName }}
+            defaultMode: 0400
+        - name: keyfile
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.mongodb.persistence.size | quote }}
+        {{- $mongoClass := .Values.mongodb.persistence.storageClass | default .Values.global.storageClass }}
+        {{- if $mongoClass }}
+        storageClassName: {{ $mongoClass | quote }}
+        {{- end }}
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}-pdb
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mongodb
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Not a Helm hook: with --wait, post-install hooks run only after the app is
+  # Ready, and the app cannot be Ready until this replica set exists.
+  name: {{ $name }}-initiate-{{ .Release.Revision }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: mongodb-initiate
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: initiate
+          image: "{{ .Values.mongodb.builtin.image.repository }}:{{ .Values.mongodb.builtin.image.tag }}"
+          imagePullPolicy: {{ .Values.mongodb.builtin.image.pullPolicy }}
+          env:
+            - name: MONGO_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.mongodbSecretName" . }}
+                  key: mongodb-username
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.mongodbSecretName" . }}
+                  key: mongodb-password
+            - name: MONGO_HOST
+              value: {{ printf "%s-0.%s.%s.svc.cluster.local" $name $headless .Release.Namespace | quote }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              for i in $(seq 1 60); do
+                if mongosh --quiet --host "$MONGO_HOST" --username "$MONGO_USER" --password "$MONGO_PASSWORD" --authenticationDatabase admin --eval 'db.adminCommand({ping:1})' >/dev/null; then
+                  break
+                fi
+                sleep 5
+              done
+              mongosh --quiet --host "$MONGO_HOST" --username "$MONGO_USER" --password "$MONGO_PASSWORD" --authenticationDatabase admin --eval '
+                const members = [
+                {{- range $i := until (int .Values.mongodb.replicaCount) }}
+                  { _id: {{ $i }}, host: "{{ $name }}-{{ $i }}.{{ $headless }}.{{ $.Release.Namespace }}.svc.cluster.local:27017" },
+                {{- end }}
+                ];
+                const want = members.map((m) => m.host).sort().join(",");
+                try {
+                  const status = rs.status();
+                  const have = status.members.map((m) => m.name).sort().join(",");
+                  if (want !== have) {
+                    const conf = rs.conf();
+                    conf.members = members;
+                    conf.version = conf.version + 1;
+                    rs.reconfig(conf, { force: false });
+                    print("reconfigured");
+                  } else {
+                    print("already initiated");
+                  }
+                } catch (err) {
+                  const msg = String(err);
+                  if (err.codeName === "NotYetInitialized" || msg.indexOf("no replset config") !== -1) {
+                    rs.initiate({ _id: {{ .Values.mongodb.replicaSetName | quote }}, members: members });
+                    print("initiated");
+                  } else {
+                    throw err;
+                  }
+                }
+              '
+{{- end }}

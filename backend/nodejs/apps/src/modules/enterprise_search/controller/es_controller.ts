@@ -1449,7 +1449,10 @@ export const streamChat =
       res.end();
     } finally {
       if (session) {
+        // End before the SSE callbacks run. They close over `session` and
+        // Mongo rejects a save on an already-ended session.
         session.endSession();
+        session = null;
       }
     }
   };
@@ -1790,6 +1793,7 @@ export const createConversation =
     } finally {
       if (session) {
         session.endSession();
+        session = null;
       }
     }
   };
@@ -2146,6 +2150,7 @@ export const addMessage =
     } finally {
       if (session) {
         session.endSession();
+        session = null;
       }
     }
   };
@@ -2891,6 +2896,7 @@ export const addMessageStream =
     } finally {
       if (session) {
         session.endSession();
+        session = null;
       }
     }
   };
@@ -3337,6 +3343,7 @@ export const deleteConversationById = async (
   } finally {
     if (session) {
       session.endSession();
+      session = null;
     }
   }
 };
@@ -3556,6 +3563,7 @@ export const shareConversationById =
     } finally {
       if (session) {
         session.endSession();
+        session = null;
       }
     }
   };
@@ -3730,6 +3738,7 @@ export const unshareConversationById =
   } finally {
     if (session) {
       session.endSession();
+      session = null;
     }
   }
 };
@@ -4413,6 +4422,7 @@ async function regenerateAnswersInternal(
   } finally {
     if (session) {
       session.endSession();
+      session = null;
     }
   }
 }
@@ -4590,6 +4600,7 @@ export const updateTitle = async (
   } finally {
     if (session) {
       await session.endSession();
+      session = null;
     }
   }
 };
@@ -4731,6 +4742,7 @@ export const updateFeedback = async (
   } finally {
     if (session) {
       await session.endSession();
+      session = null;
     }
   }
 };
@@ -6995,6 +7007,7 @@ export const deleteAgent =
     } finally {
       if (session) {
         session.endSession();
+        session = null;
       }
     }
   };
@@ -7277,6 +7290,7 @@ export const createAgentConversation =
     } finally {
       if (session) {
         session.endSession();
+        session = null;
       }
     }
   };
@@ -7602,6 +7616,7 @@ export const createAgentConversation =
     } finally {
       if (session) {
         session.endSession();
+        session = null;
       }
     }
   };
@@ -8362,6 +8377,7 @@ export const addMessageStreamToAgentConversation =
     } finally {
       if (session) {
         session.endSession();
+        session = null;
       }
     }
   };
@@ -8896,7 +8912,10 @@ export const archiveAgentConversation = async (
     });
     next(error);
   } finally {
-    if (session) await session.endSession();
+    if (session) {
+      await session.endSession();
+      session = null;
+    }
   }
 };
 
@@ -8998,7 +9017,10 @@ export const unarchiveAgentConversation = async (
     });
     next(error);
   } finally {
-    if (session) await session.endSession();
+    if (session) {
+      await session.endSession();
+      session = null;
+    }
   }
 };
 
@@ -9244,6 +9266,7 @@ export const updateAgentFeedback = async (
   } finally {
     if (session) {
       await session.endSession();
+      session = null;
     }
   }
 };

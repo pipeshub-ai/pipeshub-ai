@@ -150,6 +150,9 @@ spec:
         resources:
           requests:
             storage: 10Gi
+        {{- with .Values.global.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
     - metadata:
         name: log
       spec:
@@ -157,6 +160,9 @@ spec:
         resources:
           requests:
             storage: 5Gi
+        {{- with .Values.global.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
 
 ---
 

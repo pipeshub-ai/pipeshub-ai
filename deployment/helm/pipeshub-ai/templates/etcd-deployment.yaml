@@ -122,8 +122,9 @@ spec:
   resources:
     requests:
       storage: {{ .Values.etcd.persistence.size | quote }}
-  {{- if .Values.etcd.persistence.storageClass }}
-  storageClassName: {{ .Values.etcd.persistence.storageClass | quote }}
+  {{- $etcdClass := .Values.etcd.persistence.storageClass | default .Values.global.storageClass }}
+  {{- if $etcdClass }}
+  storageClassName: {{ $etcdClass | quote }}
   {{- end }}
 {{- end }}
 {{- end }}

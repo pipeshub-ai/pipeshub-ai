@@ -80,6 +80,14 @@ spec:
                     {{- include "pipeshub-ai.selectorLabels" . | nindent 20 }}
                     app.kubernetes.io/component: neo4j
                 topologyKey: kubernetes.io/hostname
+      {{- with .Values.neo4j.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.neo4j.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: neo4j
           image: "{{ .Values.neo4j.image.repository }}:{{ .Values.neo4j.image.tag }}"
@@ -150,8 +158,9 @@ spec:
         resources:
           requests:
             storage: {{ .Values.neo4j.persistence.size }}
-        {{- if .Values.neo4j.persistence.storageClass }}
-        storageClassName: {{ .Values.neo4j.persistence.storageClass | quote }}
+        {{- $neo4jClass := .Values.neo4j.persistence.storageClass | default .Values.global.storageClass }}
+        {{- if $neo4jClass }}
+        storageClassName: {{ $neo4jClass | quote }}
         {{- end }}
     - metadata:
         name: logs
@@ -159,9 +168,9 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 5Gi
-        {{- if .Values.neo4j.persistence.storageClass }}
-        storageClassName: {{ .Values.neo4j.persistence.storageClass | quote }}
+            storage: {{ .Values.neo4j.persistence.logsSize }}
+        {{- if $neo4jClass }}
+        storageClassName: {{ $neo4jClass | quote }}
         {{- end }}
 
 ---
