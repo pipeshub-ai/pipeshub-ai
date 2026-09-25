@@ -1406,7 +1406,8 @@ class WebConnector(BaseConnector):
 
     async def _robots_allows_landing(self, requested_url: str, result: FetchResponse) -> bool:
         """robots.txt applies to where a redirect landed as well; the queued URL was checked before fetching."""
-        if self._normalize_url(result.final_url) == self._normalize_url(requested_url):
+        # Raw URLs, not dedupe keys: /secret and /secret/ are one page but can have different rules.
+        if urldefrag(result.final_url).url == urldefrag(requested_url).url:
             return True
         return await self._robots_allows(result.final_url)
 

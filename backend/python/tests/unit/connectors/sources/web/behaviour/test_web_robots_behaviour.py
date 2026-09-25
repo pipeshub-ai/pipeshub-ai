@@ -256,3 +256,16 @@ async def test_a_single_page_that_redirects_onto_a_disallowed_page_is_not_stored
     await (await make_connector("http://site.test/go", crawl_type="single")).run_sync()
 
     assert db.pages() == {}
+
+
+async def test_a_redirect_that_only_adds_a_trailing_slash_is_still_checked(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/secret")
+    site.redirect("http://site.test/secret", "/secret/")
+    site.html("http://site.test/secret/", "Secret")
+    _robots(site, "User-agent: *\nDisallow: /secret/\n")
+
+    await (await make_connector()).run_sync()
+
+    assert set(db.pages()) == {START_URL}
