@@ -15,6 +15,7 @@ from typing import Any, Optional
 from app.connectors.services.sync_progress_store import (
     STALE_THRESHOLD_MS,
     SyncPhase,
+    org_progress_key_pattern,
 )
 
 # Per-org sample used to derive a rough drain rate across progress polls.
@@ -24,8 +25,6 @@ _MIN_SAMPLE_INTERVAL_SECONDS = 5.0
 _SNAPSHOT_CACHE_TTL_SECONDS = 2.0
 # Cache keyed by org_id so tenants never share a snapshot.
 _snapshot_cache: dict[str, tuple[float, Optional[dict[str, Any]]]] = {}
-
-_PROGRESS_KEY_PREFIX = "connector_sync_progress:"
 
 
 def clear_indexing_queue_snapshot_cache() -> None:
@@ -73,7 +72,7 @@ def _remaining_for_run(run: dict[str, Any]) -> int:
 
 
 async def _scan_org_progress_keys(redis_client: Any, org_id: str) -> list[str]:
-    pattern = f"{_PROGRESS_KEY_PREFIX}{org_id}:*"
+    pattern = org_progress_key_pattern(org_id)
     keys: list[str] = []
     # scan_iter, not a scan() cursor loop: on RedisCluster, scan() returns one
     # cursor per primary node, and scan_iter is what merges them.

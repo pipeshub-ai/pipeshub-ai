@@ -9,9 +9,9 @@ A connector "sync run" has two decoupled phases:
   grow as records reach a terminal indexing state.
 
 Counters are stored in a single Redis hash per connector instance
-(``connector_sync_progress:{org_id}:{connector_id}``). All operations are
-best-effort: Redis being unavailable must never break a sync or indexing run,
-so every method swallows and logs its own errors.
+(``connector_sync_progress:{<org_id>:<connector_id>}``, see ``progress_key``).
+All operations are best-effort: Redis being unavailable must never break a
+sync or indexing run, so every method swallows and logs its own errors.
 
 Because discovery (connectors service) and indexing (indexing service) run in
 different processes, both write to the same shared Redis keys. Increment
@@ -44,6 +44,23 @@ _NUMERIC_FIELDS = ("discovered", "indexed", "failed", "skipped", "unchanged", "t
 # heartbeat while processing, so this is a true liveness signal rather than a
 # limit on the duration of a single large document.
 STALE_THRESHOLD_MS = 30 * 60 * 1000
+
+_KEY_PREFIX = "connector_sync_progress:"
+
+
+def progress_key(org_id: str, connector_id: str) -> str:
+    """Redis key of one connector's run hash.
+
+    The braces are a Redis Cluster hash tag: the run hash and its outcomes set
+    share it, so they land in one slot. Multi-key scripts across slots are
+    refused on a cluster, which would silently leave every counter at 0.
+    """
+    return f"{_KEY_PREFIX}{{{org_id}:{connector_id}}}"
+
+
+def org_progress_key_pattern(org_id: str) -> str:
+    """SCAN pattern for every progress key of one org (run hashes and outcomes sets)."""
+    return f"{_KEY_PREFIX}{{{org_id}:*"
 
 
 def summarize_run(run: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -127,7 +144,6 @@ def summarize_run(run: Optional[dict[str, Any]]) -> dict[str, Any]:
 class ConnectorSyncProgressStore:
     """Per-connector-instance run progress counters in Redis."""
 
-    KEY_PREFIX = "connector_sync_progress:"
     # Runs that never settle (crashed indexer, lost messages) self-expire.
     TTL_SECONDS = 24 * 60 * 60
     # Counter updates sit on the per-record hot path. Keep the existence guard,
@@ -305,7 +321,7 @@ class ConnectorSyncProgressStore:
         return cls(logger, redis_client)
 
     def _key(self, org_id: str, connector_id: str) -> str:
-        return f"{self.KEY_PREFIX}{org_id}:{connector_id}"
+        return progress_key(org_id, connector_id)
 
     def _outcomes_key(self, org_id: str, connector_id: str, run_id: str) -> str:
         return f"{self._key(org_id, connector_id)}:outcomes:{run_id}"

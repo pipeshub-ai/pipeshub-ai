@@ -12,6 +12,11 @@ from app.connectors.services.indexing_queue import (
     clear_indexing_queue_snapshot_cache,
     fetch_indexing_queue_snapshot,
 )
+from app.connectors.services.sync_progress_store import (
+    ConnectorSyncProgressStore,
+    org_progress_key_pattern,
+    progress_key,
+)
 
 
 ORG_ID = "org-1"
@@ -61,10 +66,10 @@ def _scan_iter(keys_for: Callable[[str], list[str]]) -> MagicMock:
 @pytest.mark.asyncio
 async def test_snapshot_sums_org_backlog_across_connectors() -> None:
     keys = [
-        f"connector_sync_progress:{ORG_ID}:c1",
-        f"connector_sync_progress:{ORG_ID}:c2",
-        f"connector_sync_progress:{ORG_ID}:c3",
-        f"connector_sync_progress:{ORG_ID}:c1:outcomes:run-a",
+        progress_key(ORG_ID, "c1"),
+        progress_key(ORG_ID, "c2"),
+        progress_key(ORG_ID, "c3"),
+        f"{progress_key(ORG_ID, 'c1')}:outcomes:run-a",
     ]
     run_data = {
         keys[0]: _run_hash(phase="INDEXING", total=100, indexed=40),
@@ -95,7 +100,7 @@ async def test_snapshot_sums_org_backlog_across_connectors() -> None:
 async def test_snapshot_estimates_eta_from_org_drain_rate() -> None:
     import time
 
-    keys = [f"connector_sync_progress:{ORG_ID}:c1"]
+    keys = [progress_key(ORG_ID, "c1")]
     redis = AsyncMock()
 
     async def hgetall(key: str):
@@ -130,7 +135,7 @@ async def test_snapshot_returns_none_when_scan_fails() -> None:
 
 @pytest.mark.asyncio
 async def test_snapshot_reuses_cache_within_ttl() -> None:
-    keys = [f"connector_sync_progress:{ORG_ID}:c1"]
+    keys = [progress_key(ORG_ID, "c1")]
     redis = AsyncMock()
     scan_mock = _scan_iter(lambda _match: keys)
     redis.scan_iter = scan_mock
@@ -157,13 +162,14 @@ async def test_snapshot_cache_is_org_scoped() -> None:
     async def hgetall(key: str):
         if key.startswith("indexing_queue:throughput_sample:"):
             return {}
-        if ":org-a:" in key:
+        if key == progress_key("org-a", "c1"):
             return _run_hash(phase="INDEXING", total=10, indexed=0)
         return _run_hash(phase="INDEXING", total=99, indexed=0)
 
-    redis.scan_iter = _scan_iter(
-        lambda match: [f"connector_sync_progress:{match.split(':')[1]}:c1"]
-    )
+    keys_by_pattern = {
+        org_progress_key_pattern(org): [progress_key(org, "c1")] for org in ("org-a", "org-b")
+    }
+    redis.scan_iter = _scan_iter(lambda match: keys_by_pattern[match])
     redis.hgetall = AsyncMock(side_effect=hgetall)
     redis.hset = AsyncMock()
     redis.expire = AsyncMock()
@@ -179,7 +185,7 @@ async def test_snapshot_cache_is_org_scoped() -> None:
 
 @pytest.mark.asyncio
 async def test_stale_runs_do_not_count_toward_backlog() -> None:
-    keys = [f"connector_sync_progress:{ORG_ID}:c1"]
+    keys = [progress_key(ORG_ID, "c1")]
     redis = AsyncMock()
 
     async def hgetall(key: str):
@@ -209,12 +215,12 @@ async def test_standalone_redis_scan_covers_every_page() -> None:
     redis = fakeredis.FakeAsyncRedis(decode_responses=True)
     for i in range(250):
         await redis.hset(
-            f"connector_sync_progress:{ORG_ID}:c{i}",
+            progress_key(ORG_ID, f"c{i}"),
             mapping=_run_hash(phase="INDEXING", total=2, indexed=0),
         )
-    await redis.sadd(f"connector_sync_progress:{ORG_ID}:c0:outcomes:run-a", "r1")
+    await redis.sadd(f"{progress_key(ORG_ID, 'c0')}:outcomes:run-a", "r1")
     await redis.hset(
-        "connector_sync_progress:other-org:c1",
+        progress_key("other-org", "c1"),
         mapping=_run_hash(phase="INDEXING", total=1000, indexed=0),
     )
 
@@ -273,7 +279,7 @@ class _ClusterShapedRedis(AsyncClusterDataAccessCommands):
 
 @pytest.mark.asyncio
 async def test_cluster_redis_scan_merges_per_node_cursors() -> None:
-    k = [f"connector_sync_progress:{ORG_ID}:c{i}" for i in range(3)]
+    k = [progress_key(ORG_ID, f"c{i}") for i in range(3)]
     redis = _ClusterShapedRedis(
         pages_by_node={
             "node-a:6379": [[k[0]], [k[1], f"{k[1]}:outcomes:run-a"]],
@@ -286,3 +292,22 @@ async def test_cluster_redis_scan_merges_per_node_cursors() -> None:
 
     assert snap is not None
     assert snap["lag"] == 18
+
+
+@pytest.mark.asyncio
+async def test_scan_finds_the_keys_the_progress_store_writes() -> None:
+    redis = fakeredis.FakeAsyncRedis(decode_responses=True)
+    store = ConnectorSyncProgressStore(MagicMock(), redis)
+    for org_id, connector_id, discovered in ((ORG_ID, "c1", 7), (ORG_ID, "c2", 5), ("org-2", "c1", 100)):
+        run_id = await store.start_run(org_id, connector_id)
+        await store.add_discovered(org_id, connector_id, discovered, run_id=run_id)
+        await store.record_result(
+            org_id, connector_id, outcome="indexed", run_id=run_id, record_id="r1"
+        )
+
+    snap = await fetch_indexing_queue_snapshot(redis, ORG_ID)
+
+    assert snap is not None
+    # (7 - 1) + (5 - 1); the other org and the outcomes sets are not counted.
+    assert snap["lag"] == 10
+    await redis.aclose()

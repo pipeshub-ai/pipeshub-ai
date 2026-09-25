@@ -11,6 +11,10 @@ Covers:
 import logging
 import time
 
+import fakeredis
+from redis.crc import key_slot
+from redis.exceptions import RedisClusterException
+
 from app.connectors.services.sync_progress_store import (
     STALE_THRESHOLD_MS,
     ConnectorSyncProgressStore,
@@ -431,3 +435,58 @@ class TestSummarizeRun:
         )
         assert view["isStale"] is True
         assert view["isActive"] is False
+
+
+class _SlotCheckedRedis:
+    """Real Lua (fakeredis) behind redis-py's own RedisCluster slot rule.
+
+    ``RedisCluster`` refuses a multi-key EVAL whose keys hash to different
+    slots before the script runs. ``register_script`` is hidden so the store
+    goes through ``eval``, where the rule is applied.
+    """
+
+    def __init__(self) -> None:
+        self.inner = fakeredis.FakeAsyncRedis(decode_responses=True)
+        self.eval_key_sets: list[tuple[str, ...]] = []
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: object) -> object:
+        keys = tuple(str(k) for k in keys_and_args[:numkeys])
+        self.eval_key_sets.append(keys)
+        if len({key_slot(k.encode()) for k in keys}) > 1:
+            raise RedisClusterException("EVAL - all keys must map to the same key slot")
+        return await self.inner.eval(script, numkeys, *keys_and_args)
+
+    def __getattr__(self, name: str) -> object:
+        if name == "register_script":
+            raise AttributeError(name)
+        return getattr(self.inner, name)
+
+
+class TestClusterSlots:
+    async def test_counters_update_when_redis_is_a_cluster(self) -> None:
+        redis = _SlotCheckedRedis()
+        store = ConnectorSyncProgressStore(logging.getLogger("test"), redis)
+
+        run_id = await store.start_run(ORG, CONN)
+        await store.add_discovered(ORG, CONN, 3, run_id=run_id)
+        await store.add_unchanged(ORG, CONN, 1, run_id=run_id)
+        await store.record_result(ORG, CONN, outcome="indexed", run_id=run_id, record_id="a")
+        await store.record_result(ORG, CONN, outcome="failed", run_id=run_id)
+        await store.touch_heartbeat(ORG, CONN, run_id=run_id)
+        await store.close_discovery(ORG, CONN, expected_run_id=run_id)
+
+        data = await store.get(ORG, CONN)
+        assert data is not None
+        assert (data["discovered"], data["unchanged"], data["indexed"], data["failed"]) == (3, 1, 1, 1)
+        assert data["total"] == 3
+        assert any(len(keys) > 1 for keys in redis.eval_key_sets)
+
+        # clear also deletes the outcomes set it derives inside the script, so
+        # that key has to share the slot too.
+        stored = [k async for k in redis.inner.scan_iter()]
+        assert len(stored) == 2
+        assert len({key_slot(k.encode()) for k in stored}) == 1
+
+        await store.clear(ORG, CONN, expected_run_id=run_id)
+        assert [k async for k in redis.inner.scan_iter()] == []
+        await redis.inner.aclose()
