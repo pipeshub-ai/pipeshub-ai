@@ -115,6 +115,52 @@ class TestCursor:
         assert "g-new" in db.access("file-1")
         assert checkpoints.cursor()["cursor"] == box_api.stream_head
 
+    async def test_a_refresh_that_raises_holds_an_id_only_grant(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_file("file-1", "plan.pdf", ALICE)
+        connector = await synced_connector(box_api, db, checkpoints)
+        collab_id = box_api.collaborate("file-1", BOB)
+        box_api.add_event(
+            "COLLABORATION_INVITE",
+            {"type": "collaboration", "id": collab_id, "item": {"type": "file", "id": "file-1"}, "accessible_by": {"type": "user", "id": BOB}},
+            created_by=by(ALICE, box_api),
+        )
+        before = checkpoints.cursor()["cursor"]
+        db.failing.add("on_new_app_users")
+
+        await connector.run_sync()
+
+        assert checkpoints.cursor()["cursor"] == before
+
+        db.failing.clear()
+        await connector.run_sync()
+
+        assert db.records["file-1"].shared_with_me_record_group_ids == [f"0S:{BOB_EMAIL}"]
+        assert checkpoints.cursor()["cursor"] == box_api.stream_head
+
+    async def test_after_giving_up_on_a_failed_refresh_the_run_stops_at_that_page(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        connector = await synced_connector(box_api, db, checkpoints)
+        box_api.page_cap["/2.0/events"] = 1
+        for n in (1, 2):
+            box_api.add_group(f"g-{n}", f"Team {n}", (BOB,))
+            box_api.add_file(f"file-{n}", f"new-{n}.pdf", ALICE)
+            box_api.collaborate(f"file-{n}", f"g-{n}", kind="group")
+            box_api.add_event("ITEM_UPLOAD", item_event(f"file-{n}"), created_by=by(ALICE, box_api))
+        second_event = str(int(box_api.stream_head) - 1)
+        box_api.fail("GET", "/2.0/groups", 503, times=25)
+
+        for _ in range(5):
+            await connector.run_sync()
+
+        assert "g-2" not in db.access("file-2")
+        assert checkpoints.cursor()["cursor"] == second_event
+
+        await connector.run_sync()
+
+        assert "g-2" in db.access("file-2")
+        assert checkpoints.cursor()["cursor"] == box_api.stream_head
+
     async def test_a_failed_event_page_leaves_the_cursor_where_it_was(self, box_api, db, checkpoints, sdk_sleeps) -> None:
         enterprise(box_api, db)
         connector = await synced_connector(box_api, db, checkpoints)

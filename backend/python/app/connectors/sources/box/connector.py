@@ -1397,8 +1397,10 @@ class BoxConnector(BaseConnector):
             await self._sync_user_groups()
 
         except Exception as e:
-            # If this fails, log it, but maybe still try to process file events?
             self.logger.error(f"⚠️ [Incremental] Failed to refresh users/groups: {e}")
+            self._read_complete = False
+        # Pages applied with a stale user or group list lose grants, so a failed refresh stops at one page.
+        refresh_complete = self._read_complete
 
         key = "event_stream_cursor"
 
@@ -1472,13 +1474,15 @@ class BoxConnector(BaseConnector):
                     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
                     cursor_updated_at = now_ms
                     held_attempts = 0
-                    self._read_complete = True
                     await self.box_cursor_sync_point.update_sync_point(
                         key,
                         # The store merges into the saved document, so the count must be reset explicitly.
                         {"cursor": stream_position, "cursor_updated_at": now_ms, "held_attempts": 0}
                     )
                     self.logger.debug(f"💾 [Incremental] Updated cursor to: {stream_position}")
+                    if not refresh_complete:
+                        break
+                    self._read_complete = True
 
         except Exception as e:
             self.logger.error(f"❌ [Incremental] Error during sync: {e}", exc_info=True)

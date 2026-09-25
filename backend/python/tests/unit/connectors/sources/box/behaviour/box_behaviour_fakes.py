@@ -418,6 +418,7 @@ class FakeBoxRecordsDb:
             self.record_groups[group.external_group_id] = group
 
     async def on_new_app_users(self, users: list[Any]) -> None:
+        self._check("on_new_app_users")
         for user in users:
             stored = self.app_users.get(user.email.lower())
             self.app_users[user.email.lower()] = user.model_copy(update={"id": stored.id}) if stored else user
