@@ -668,16 +668,12 @@ class TestOpeningAPageOrFile:
             await read_stream(await connector.stream_record(stored_file()))
         assert err.value.status_code == 404
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits the Confluence client: Atlassian documents an "
-            "attachment's download link as relative to the site's base address, but the client joins it "
-            "to the bare host, so on a Data Center site served under a sub-path (for example "
-            "https://intranet.example.com/confluence) every attachment download points at the wrong URL."
-        ),
+    @pytest.mark.parametrize(
+        "download_link",
+        ["/download/attachments/p1/report.pdf", "/confluence/download/attachments/p1/report.pdf"],
+        ids=["relative-to-the-site-base", "already-carries-the-sub-path"],
     )
-    async def test_attachment_download_keeps_the_sites_sub_path(self, atlassian_api, checkpoints) -> None:
+    async def test_attachment_download_keeps_the_sites_sub_path(self, atlassian_api, checkpoints, download_link) -> None:
         db = FakeRecordsDb()
         base = "https://intranet.example.com/confluence"
         config = {"auth": {"authType": "API_TOKEN", "baseUrl": base, "apiToken": FAKE_PAT}}
@@ -686,7 +682,7 @@ class TestOpeningAPageOrFile:
         )
         assert await connector.init()
         atlassian_api.install(connector.external_client.get_client())
-        atlassian_api.on("GET", "/confluence/rest/api/content/att1", {"id": "att1", "_links": {"base": base, "context": "/confluence", "download": "/download/attachments/p1/report.pdf"}})
+        atlassian_api.on("GET", "/confluence/rest/api/content/att1", {"id": "att1", "_links": {"base": base, "context": "/confluence", "download": download_link}})
         atlassian_api.on("GET", "/confluence/download/attachments/p1/report.pdf", httpx.Response(200, content=b"%PDF"))
 
         try:
