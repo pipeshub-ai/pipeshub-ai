@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app.utils.conversation_tasks import register_task, _rows_to_csv_bytes
+from app.utils.conversation_tasks import register_task
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -646,6 +646,7 @@ def create_execute_query_tool(
     org_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     blob_store: Optional["BlobStorage"] = None,
+    user_id: Optional[str] = None,
 ) -> Callable:
     """Factory function to create the execute_query tool with runtime dependencies.
     
@@ -655,6 +656,8 @@ def create_execute_query_tool(
         org_id: Optional organization ID for background CSV export
         conversation_id: Optional conversation ID for background CSV export
         blob_store: Optional blob storage for saving full result CSVs
+        user_id: Optional owner of the CSV export; without it the export has
+            no artifact record and so no download link on local storage
         
     Returns:
         A langchain tool for executing SQL queries
@@ -748,30 +751,19 @@ def create_execute_query_tool(
                 and resolved_blob_store
                 and org_id
             ):
-                async def _save_csv_to_blob() -> Optional[Dict[str, Any]]:
-                    try:
-                        csv_bytes = _rows_to_csv_bytes(raw_columns, raw_rows)
-                        file_name = f"query_result_{int(time.time())}.csv"
-                        upload_info = await resolved_blob_store.save_conversation_file_to_storage(
-                            org_id=org_id,
-                            conversation_id=conversation_id,
-                            file_name=file_name,
-                            file_bytes=csv_bytes,
-                        )
-                        logger.info(
-                            "CSV export complete for conversation %s (%d rows)",
-                            conversation_id,
-                            len(raw_rows),
-                        )
-                        return {"type": "csv_download", **upload_info}
-                    except Exception:
-                        logger.exception(
-                            "Background CSV export failed for conversation %s",
-                            conversation_id,
-                        )
-                        return None
+                from app.sandbox.artifact_upload import save_query_result_csv
 
-                task = asyncio.create_task(_save_csv_to_blob())
+                task = asyncio.create_task(save_query_result_csv(
+                    blob_store=resolved_blob_store,
+                    graph_provider=graph_provider,
+                    org_id=org_id,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    columns=raw_columns,
+                    rows=raw_rows,
+                    file_name=f"query_result_{int(time.time())}.csv",
+                    source_tool="sql.execute_sql_query",
+                ))
                 register_task(conversation_id, task)
             
             return result

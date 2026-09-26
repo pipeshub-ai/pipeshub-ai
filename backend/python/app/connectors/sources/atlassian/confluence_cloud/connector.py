@@ -122,6 +122,7 @@ from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
 from app.sources.external.common.atlassian import AtlassianMultiSiteError
+from app.sources.client.http.http_retry import is_retryable_status
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
 from app.connectors.core.base.error.stream_errors import (
@@ -1719,24 +1720,14 @@ class ConfluenceConnector(BaseConnector):
                                 embedded_image_ids: set[str] = set()
 
                                 try:
-                                    if content_type == "page":
-                                        v2_response = await datasource.get_page_attachments(
-                                            id=int(item_id),
-                                            status=["current"],  # Only fetch current version attachments
-                                            limit=100
-                                        )
-                                    else:  # blogpost
-                                        v2_response = await datasource.get_blogpost_attachments(
-                                            id=int(item_id),
-                                            status=["current"],  # Only fetch current version attachments
-                                            limit=100
-                                        )
-                                    if v2_response and v2_response.status == HttpStatusCode.SUCCESS.value:
-                                        v2_data = v2_response.json()
-                                        attachments_v2 = v2_data.get("results", [])
-                                        if attachments_v2:
-                                            attachments = attachments_v2
-                                            v2_attachments_base_url = v2_data.get("_links", {}).get("base")
+                                    attachments_v2, v2_base_url, attachments_cut_short = (
+                                        await self._list_current_attachments_v2(datasource, item_id, content_type)
+                                    )
+                                    if attachments_v2:
+                                        attachments = attachments_v2
+                                        v2_attachments_base_url = v2_base_url
+                                    if attachments_cut_short:
+                                        listing_complete = False
                                 except Exception as v2_error:
                                     self.logger.debug(f"Error fetching v2 attachments: {v2_error}")
 
@@ -3754,23 +3745,12 @@ class ConfluenceConnector(BaseConnector):
                 attachments_api_base_url: str | None = None
                 try:
                     datasource = await self._get_fresh_datasource()
-                    if record.record_type == RecordType.CONFLUENCE_PAGE:
-                        attachments_response = await datasource.get_page_attachments(
-                            id=int(record.external_record_id),
-                            status=["current"],  # Only fetch current version attachments
-                            limit=100
-                        )
-                    else:
-                        attachments_response = await datasource.get_blogpost_attachments(
-                            id=int(record.external_record_id),
-                            status=["current"],
-                            limit=100
-                        )
-                    if attachments_response and attachments_response.status == HttpStatusCode.SUCCESS.value:
-                        attachments_result = attachments_response.json()
-                        attachments_data = attachments_result.get("results", [])
-                        attachments_api_base_url = attachments_result.get("_links", {}).get("base")
-                        self.logger.debug(f"Fetched {len(attachments_data)} attachment(s) for streaming")
+                    attachments_data, attachments_api_base_url, _ = await self._list_current_attachments_v2(
+                        datasource,
+                        record.external_record_id,
+                        "page" if record.record_type == RecordType.CONFLUENCE_PAGE else "blogpost",
+                    )
+                    self.logger.debug(f"Fetched {len(attachments_data)} attachment(s) for streaming")
                 except Exception as e:
                     self.logger.warning(f"Failed to fetch attachments for streaming: {e}", exc_info=True)
                     attachments_data = []
@@ -3937,6 +3917,60 @@ class ConfluenceConnector(BaseConnector):
             return value
         return f"att{value}"
 
+    async def _list_current_attachments_v2(
+        self,
+        datasource: ConfluenceDataSource,
+        content_id: str,
+        content_type: str,
+        limit: int = 100,
+    ) -> tuple[list[dict[str, Any]], str | None, bool]:
+        """Every current attachment of a page or blog post, following the v2 cursor.
+
+        Returns the attachments, the listing's base URL, and whether the list was cut
+        short, so the caller keeps its checkpoint. It is cut short when a later page
+        fails, when the first page fails for a temporary reason (the caller's fallback
+        may then be partial), or when a next link can't be followed.
+        """
+        list_attachments = (
+            datasource.get_page_attachments if content_type == "page" else datasource.get_blogpost_attachments
+        )
+        attachments: list[dict[str, Any]] = []
+        base_url: str | None = None
+        cursor: str | None = None
+        visited_cursors: set[str] = set()
+        while True:
+            kwargs: dict[str, Any] = {"id": int(content_id), "status": ["current"], "limit": limit}
+            if cursor:
+                kwargs["cursor"] = cursor
+            try:
+                response = await list_attachments(**kwargs)
+            except Exception as e:
+                self.logger.warning(f"Could not list attachments of {content_type} {content_id}: {e}")
+                response = None
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                temporary = not response or is_retryable_status(response.status)
+                if attachments or temporary:
+                    self.logger.warning(
+                        f"Listed only {len(attachments)} attachments of {content_type} {content_id} before the "
+                        "listing failed; the rest are read again next sync"
+                    )
+                return attachments, base_url, bool(attachments) or temporary
+            data = response.json() or {}
+            attachments.extend(data.get("results") or [])
+            links = data.get("_links") or {}
+            base_url = base_url or links.get("base")
+            if not links.get("next"):
+                return attachments, base_url, False
+            next_cursor = self._extract_cursor_from_next_link(links["next"])
+            if not next_cursor or next_cursor == cursor or next_cursor in visited_cursors:
+                self.logger.warning(
+                    f"Can't follow the next link of the attachment list of {content_type} {content_id} "
+                    f"after {len(attachments)} attachments; the rest are read again next sync"
+                )
+                return attachments, base_url, True
+            visited_cursors.add(next_cursor)
+            cursor = next_cursor
+
     async def _fetch_page_attachments_list(
         self,
         page_id: str,
@@ -3945,22 +3979,12 @@ class ConfluenceConnector(BaseConnector):
         datasource: ConfluenceDataSource | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Fetch current attachments for one page/blogpost."""
+        """Fetch every current attachment of one page/blogpost (``limit`` is the page size)."""
         try:
             ds = datasource or await self._get_fresh_datasource()
-            page_id_int = int(page_id) if isinstance(page_id, str) else page_id
-            list_kwargs: dict[str, Any] = {
-                "id": page_id_int,
-                "status": ["current"],
-                "limit": limit,
-            }
-            if record_type == RecordType.CONFLUENCE_BLOGPOST:
-                response = await ds.get_blogpost_attachments(**list_kwargs)
-            else:
-                response = await ds.get_page_attachments(**list_kwargs)
-
-            if response and response.status == HttpStatusCode.SUCCESS.value:
-                return list(response.json().get("results", []) or [])
+            content_type = "blogpost" if record_type == RecordType.CONFLUENCE_BLOGPOST else "page"
+            attachments, _, _ = await self._list_current_attachments_v2(ds, str(page_id), content_type, limit=limit)
+            return attachments
         except Exception as e:
             self.logger.debug(f"Failed to list attachments for page {page_id}: {e}")
         return []

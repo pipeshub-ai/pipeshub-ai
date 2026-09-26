@@ -15,7 +15,6 @@ import {
   handleRegenerationSuccess,
   handleRegenerationError,
 } from './../utils/utils';
-import * as crypto from 'crypto';
 import sharp from 'sharp';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession, Types } from 'mongoose';
@@ -28,8 +27,6 @@ import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
-  HttpError,
-  UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
   handleBackendError,
@@ -112,43 +109,39 @@ import {
   EXCLUDE_AGENT,
   ONLY_AGENT,
 } from '../constants/constants';
-import { Users } from '../../user_management/schema/users.schema';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import {
   validateNoXSS,
   validateNoFormatSpecifiers,
 } from '../../../utils/xss-sanitization';
-import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
-import { Org } from '../../user_management/schema/org.schema';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import {
   applyProjectScope,
   loadProjectForSession,
   resolveProjectLink,
-  type ResolvedProjectLink,
 } from '../utils/project-context';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
-  userFacingAIResponseError,
 } from '../utils/chat-error-messages';
 import { ProjectService } from '../../projects/services/project.service';
+import {
+  assignAgentCapabilitiesToPayload,
+  assignToolsToPayload,
+  buildAiChatRequest,
+  parseChatMode,
+} from '../utils/ai-chat-payload';
+import { hydrateScopedRequestAsUser } from '../utils/scoped-request';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
+
+/** Node hand-builds the AI request body, so the protocol has to ride in it: a header alone never reaches Python. */
+const withStreamProtocol = (
+  payload: Record<string, unknown>,
+  protocol: ReturnType<typeof resolveProtocol>,
+): Record<string, unknown> =>
+  isAGUI(protocol) ? { ...payload, protocol: AGUI_PROTOCOL } : payload;
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
-
-/**
- * A chat failure whose saved state has to commit before the error reaches
- * the caller.
- */
-class CommittedFailure {
-  constructor(readonly error: Error) {}
-}
-
-const throwIfFailed = <T>(result: T | CommittedFailure): T => {
-  if (result instanceof CommittedFailure) throw result.error;
-  return result;
-};
 
 /** `cause` is read through a cast: the compiler's lib target predates it. */
 const causeCode = (error: unknown): string | undefined => {
@@ -157,30 +150,6 @@ const causeCode = (error: unknown): string | undefined => {
   if (cause === null || typeof cause !== 'object') return undefined;
   const code = (cause as { code?: unknown }).code;
   return typeof code === 'string' ? code : undefined;
-};
-
-/**
- * The error a failed chat request sends back. Only a deliberate 4xx we raised
- * keeps its own message; anything else carries the user-facing reason with no
- * raw error attached, since the error middleware shows messages and metadata.
- */
-const clientChatError = (error: unknown, failReason: string): Error => {
-  logger.error('Chat request failed', {
-    error: error instanceof Error ? error.message : String(error),
-    stack: error instanceof Error ? error.stack : undefined,
-  });
-  if (causeCode(error) === 'ECONNREFUSED') {
-    return new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
-  }
-  if (error instanceof HttpError) {
-    if (error.statusCode < 500) {
-      return error;
-    }
-    if (error.message === SERVICE_UNAVAILABLE_MESSAGE) {
-      return new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
-    }
-  }
-  return new InternalServerError(failReason);
 };
 
 /** Remove `id` from graph document clones (Neo4j vs Arango shape) before returning search to the client. */
@@ -295,171 +264,25 @@ export async function fetchDeletedAgentKeysForUser(
  * @param requestChatMode - The chatMode value from request body
  * @returns Object containing the parsed chatMode and agentMode flag
  */
-export const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
-  let chatMode: string = requestChatMode || 'quick';
-  let agentMode: boolean = false;
+export {
+  assignAgentCapabilitiesToPayload,
+  assignCallerContextToAiPayload,
+  assignToolsToPayload,
+  parseChatMode,
+} from '../utils/ai-chat-payload';
 
-  if (chatMode.includes('agent')) {
-    chatMode = chatMode.split(':')[1] || 'quick';
-    agentMode = true;
-  }
+export {
+  addMessage,
+  addMessageToAgentConversation,
+  createAgentConversation,
+  createConversation,
+} from './non-streaming-chat.controller';
 
-  return { chatMode, agentMode };
-};
-
-// Forwards the user-selected tool list to the AI payload when the client
-// explicitly sent `tools`. Omitting it tells Python to use all configured
-// tools (Python receives None); sending `[]` disables tools entirely.
-export const assignToolsToPayload = (
-  payload: Record<string, unknown>,
-  tools: unknown,
-): void => {
-  if (tools !== undefined) {
-    payload.tools = Array.isArray(tools) ? tools : [];
-  }
-};
-
-/** Forward Slack / internal caller display name and email to the AI backend for LLM user context.
- * Does not change retrieval ACL — the Python agent still keys permissions on the service-account
- * agent creator's userId/orgId.
- */
-export const assignCallerContextToAiPayload = (
-  payload: Record<string, unknown>,
-  body: Record<string, unknown>,
-): void => {
-  const rawName = body.callerDisplayName;
-  if (typeof rawName === 'string' && rawName.trim()) {
-    payload.callerDisplayName = rawName.trim();
-  }
-  const rawEmail = body.callerEmail;
-  if (typeof rawEmail === 'string' && rawEmail.trim()) {
-    payload.callerEmail = rawEmail.trim();
-  }
-};
-
-/**
- * Forward `agentCapabilities` from the request body to the AI backend payload.
- * Only passes through when the value is a non-null object — ignores scalars and arrays.
- * Capability booleans narrow what the Python backend enables; they never expand permissions.
- */
-export const assignAgentCapabilitiesToPayload = (
-  payload: Record<string, unknown>,
-  body: Record<string, unknown>,
-): void => {
-  const caps = body.agentCapabilities;
-  if (caps !== null && caps !== undefined && typeof caps === 'object' && !Array.isArray(caps)) {
-    payload.agentCapabilities = caps;
-  }
-};
-
-
-/** 24-char hex suitable for Mongo ObjectId; stable per email for Slack/service-account callers without a User row. */
-export const stableObjectIdHexForExternalEmail = (email: string): string =>
-  crypto
-    .createHash('sha256')
-    .update(`slack-service-account:${email.toLowerCase().trim()}`)
-    .digest('hex')
-    .slice(0, 24);
-
-const failReasonFromCaughtError = (
-  conversation: { failReason?: unknown } | null | undefined,
-  error: { message?: string; cause?: { code?: string } },
-): string => {
-  if (error.cause?.code === 'ECONNREFUSED') {
-    return CHAT_ERROR_MESSAGES.unavailable;
-  }
-  const existing = conversation?.failReason;
-  if (typeof existing === 'string' && existing.trim()) {
-    return existing;
-  }
-  return userFacingChatError(error);
-};
-
-export const hydrateScopedRequestAsUser = async (
-  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
-  appConfig: AppConfig,
-  keyValueStoreService?: KeyValueStoreService,
-): Promise<void> => {
-  const existingUser = (req as AuthenticatedUserRequest).user as
-    | Record<string, any>
-    | undefined;
-  if (existingUser?.userId && existingUser?.orgId) {
-    return;
-  }
-
-  const email = (req as AuthenticatedServiceRequest).tokenPayload?.email;
-  if (!email) {
-    throw new UnauthorizedError('Email not found in scoped token');
-  }
-
-  const user = await Users.findOne({
-    email,
-    isDeleted: false,
-  });
-  
-  const authTokenService = new AuthTokenService(
-    appConfig.jwtSecret,
-    appConfig.scopedJwtSecret,
-  );
-
-
-  if (!user) {
-    const { agentKey } = req.params;
-    if (agentKey && keyValueStoreService) {
-      const store = await getSlackBotStore(keyValueStoreService);
-      const configs = store.configs;
-      for (const config of configs) {
-        if (config.agentId === agentKey) {
-          const isServiceAccount = await checkServiceAccountAccess(req, appConfig);
-          if (isServiceAccount) {
-            const org = await Org.findOne({ isDeleted: false });
-            if (!org?._id) {
-              throw new NotFoundError('Organization not found');
-            }
-            const stableUserIdHex = stableObjectIdHexForExternalEmail(email);
-            const scopedJwtToken = authTokenService.generateScopedToken({
-              userId: stableUserIdHex,
-              orgId: org._id,
-              email: email,
-              scopes: [TokenScopes.CONVERSATION_CREATE],
-              isServiceAccount: true,
-            }, '1h');
-            (req as AuthenticatedServiceRequest).headers.authorization = `Bearer ${scopedJwtToken}`;
-            (req as AuthenticatedServiceRequest).user = {
-              userId: new Types.ObjectId(stableUserIdHex),
-              orgId: org._id,
-              email: email,
-              scopes: [TokenScopes.CONVERSATION_CREATE],
-              isServiceAccount: true,
-            };
-            return;
-          }
-        }
-      }
-    }
-    throw new NotFoundError('User not found, create an account on the Pipeshub platform first.');
-  }
-
-  const jwtToken = authTokenService.generateToken({
-    userId: user._id,
-    orgId: user.orgId,
-    email: user.email,
-    fullName: user.fullName,
-    mobile: user.mobile,
-    userSlug: user.slug,
-  });
-
-  req.headers.authorization = `Bearer ${jwtToken}`;
-
-  (req as AuthenticatedUserRequest).user = {
-    userId: user._id,
-    orgId: user.orgId,
-    email: user.email,
-    fullName: user.fullName,
-    mobile: user.mobile,
-    userSlug: user.slug,
-  };
-};
+export {
+  checkServiceAccountAccess,
+  hydrateScopedRequestAsUser,
+  stableObjectIdHexForExternalEmail,
+} from '../utils/scoped-request';
 
   export { handleBackendError };
   
@@ -904,41 +727,20 @@ export const streamChat =
       (res as any).flush?.();
       timer.mark('conversation_created');
 
-      const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
-      // Prepare AI payload
-      const aiPayload: Record<string, unknown> = {
-        query: req.body.query,
+      const { agentMode } = parseChatMode(req.body.chatMode);
+      const aiRequest = buildAiChatRequest({ kind: 'assistant' }, req.body, {
+        conversationId: newConversationId,
         previousConversations: req.body.previousConversations || [],
-        recordIds: req.body.recordIds || [],
-        filters: req.body.filters || {},
-        attachments: req.body.attachments || [],
-        // New fields for multi-model support
-        modelKey: req.body.modelKey || null,
-        modelName: req.body.modelName || null,
-        modelFriendlyName: req.body.modelFriendlyName || null,
-        reasoningEffort: req.body.reasoningEffort || null,
-        chatMode: chatMode,
-        conversationId: newConversationId || null,
-        timezone: req.body.timezone || null,
-        currentTime: req.body.currentTime || null,
-        // Lets a later `POST /conversations/:id/cancel` target this run —
-        // see `RunCancellationRegistry`/`cancellationRunIdSchema`.
-        runId: req.body.runId || null,
-        // Explicit protocol propagation — Node hand-builds this request body,
-        // so a header alone would never reach Python (see agui.ts docstring).
-        ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
-      };
-      if (agentMode) {
-        assignToolsToPayload(aiPayload, req.body.tools);
-        assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
-      }
-      applyProjectScope(aiPayload, projectLink.project);
+        isNewConversation: true,
+        project: projectLink.project,
+      });
+      const aiPayload = withStreamProtocol(aiRequest.payload, protocol);
       if (projectLink.projectId) {
         void ProjectService.touchActivity(projectLink.projectId);
       }
 
       const aiCommandOptions: AICommandOptions = {
-        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
+        uri: `${appConfig.aiBackend}${aiRequest.path}/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -1472,689 +1274,6 @@ export const streamChatInternal =
     }
   };
 
-export const createConversation =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    const requestId = req.context?.requestId;
-    const startTime = Date.now();
-
-    let userId: Types.ObjectId | undefined;
-
-    let orgId: Types.ObjectId | undefined;
-
-    if ('user' in req) {
-      const auth_req = req as AuthenticatedUserRequest;
-
-      userId = auth_req.user?.userId;
-
-      orgId = auth_req.user?.orgId;
-    } else {
-      try {
-        const auth_req = req as AuthenticatedServiceRequest;
-
-        const email = auth_req.tokenPayload?.email;
-
-        const users = await Users.find({
-          email: email,
-
-          isDeleted: false,
-        });
-
-        const user = users[0];
-
-        if (!user) {
-          throw new NotFoundError('User not found');
-        }
-
-        userId = user._id as Types.ObjectId;
-
-        orgId = user.orgId;
-
-        const authTokenService = new AuthTokenService(
-          appConfig.jwtSecret,
-          appConfig.scopedJwtSecret,
-        );
-
-        const jwtToken = authTokenService.generateToken({
-          userId: user._id,
-
-          orgId: user.orgId,
-
-          email: user.email,
-
-          fullName: user.fullName,
-
-          mobile: user.mobile,
-
-          userSlug: user.slug,
-        });
-
-        req.headers.authorization = `Bearer ${jwtToken}`;
-      } catch (error: any) {
-        logger.error('Error creating conversation', {
-          requestId,
-
-          message: 'Error creating conversation',
-
-          error: error.message,
-
-          stack: error.stack,
-
-          duration: Date.now() - startTime,
-        });
-
-        next(error);
-      }
-    }
-    let session: ClientSession | null = null;
-    let responseData: any;
-
-    const modelInfo = extractModelInfo(req.body);
-
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-
-    } else if (!req.body.query) {
-      throw new BadRequestError('Query is required');
-    }
-
-    let projectLink: ResolvedProjectLink = {};
-
-    // Helper function that contains the common conversation operations.
-    async function createConversationUtil(
-      session?: ClientSession | null,
-    ): Promise<any> {
-      const userQueryMessage = buildUserQueryMessage(
-        req.body.query,
-        req.body.appliedFilters,
-        req.body.chatMode,
-        req.body.attachments,
-      );
-
-      const userConversationData: Partial<IChatSession> = {
-        orgId,
-        userId,
-        initiator: userId,
-        title: req.body.query.slice(0, 100),
-        lastActivityAt: Date.now(),
-        status: CONVERSATION_STATUS.INPROGRESS,
-        modelInfo: modelInfo,
-        sessionType: 'chat',
-        ...(projectLink.projectId
-          ? {
-              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
-              projectVisibility: projectLink.projectVisibility,
-            }
-          : {}),
-      };
-
-      const conversation = new ChatSession(userConversationData);
-      const savedConversation = session
-        ? await conversation.save({ session })
-        : await conversation.save();
-      if (!savedConversation) {
-        throw new InternalServerError('Failed to create conversation');
-      }
-      await appendMessages(
-        savedConversation._id as mongoose.Types.ObjectId,
-        savedConversation.orgId,
-        [userQueryMessage],
-        session,
-      );
-
-      const aiPayload: Record<string, unknown> = {
-        query: req.body.query,
-        previousConversations: req.body.previousConversations || [],
-        recordIds: req.body.recordIds || [],
-        filters: req.body.filters || {},
-        attachments: req.body.attachments || [],
-        // New fields for multi-model support
-        modelKey: req.body.modelKey || null,
-        modelName: req.body.modelName || null,
-        modelFriendlyName: req.body.modelFriendlyName || null,
-        reasoningEffort: req.body.reasoningEffort || null,
-        chatMode: req.body.chatMode || 'quick',
-      };
-      applyProjectScope(aiPayload, projectLink.project);
-      if (projectLink.projectId) {
-        void ProjectService.touchActivity(projectLink.projectId);
-      }
-
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/chat`,
-        method: HttpMethod.POST,
-        headers: req.headers as Record<string, string>,
-        body: aiPayload,
-      };
-
-      logger.debug('Sending query to AI service', {
-        requestId,
-        query: req.body.query,
-        filters: req.body.filters,
-      });
-
-      try {
-        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-        const aiResponseData =
-          (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-          savedConversation.status = CONVERSATION_STATUS.FAILED;
-          const failReason = userFacingAIResponseError(aiResponseData);
-          savedConversation.failReason = failReason;
-
-          const updatedWithError = session
-            ? await savedConversation.save({ session })
-            : await savedConversation.save();
-
-          if (!updatedWithError) {
-            throw new InternalServerError(
-              CHAT_ERROR_MESSAGES.saveFailed,
-            );
-          }
-
-          throw new InternalServerError(
-            failReason,
-            aiResponseData?.data,
-          );
-        }
-
-        const citations = await Promise.all(
-          aiResponseData.data?.citations?.map(async (citation: any) => {
-            const newCitation = new Citation({
-              content: citation.content,
-              chunkIndex: citation.chunkIndex,
-              citationType: citation.citationType,
-              metadata: {
-                ...citation.metadata,
-                orgId,
-              },
-            });
-            return newCitation.save();
-          }) || [],
-        );
-
-        // Update the existing conversation with AI response
-        const aiResponseMessage = buildAIResponseMessage(
-          aiResponseData,
-          citations,
-          modelInfo,
-        );
-        // Add the AI message to the conversation
-        const [insertedAiMessage] = await appendMessages(
-          savedConversation._id as mongoose.Types.ObjectId,
-          savedConversation.orgId,
-          [aiResponseMessage],
-          session,
-        );
-        savedConversation.lastActivityAt = Date.now();
-        recordClassifiedFailureOnSession(
-          savedConversation,
-          aiResponseData.data as IAIResponse,
-        );
-
-        const updatedConversation = session
-          ? await savedConversation.save({ session })
-          : await savedConversation.save();
-
-        if (!updatedConversation) {
-          throw new InternalServerError('Failed to update conversation');
-        }
-        const responseConversation = await attachPopulatedCitations(
-          updatedConversation.toObject(),
-          [insertedAiMessage!.toObject()],
-          citations,
-          session,
-        );
-        return {
-          conversation: {
-            _id: updatedConversation._id,
-            ...responseConversation,
-          },
-        };
-      } catch (error: any) {
-        // TODO: Add support for retry mechanism and generate response from retry
-        // and append the response to the correct messageId
-
-        const failReason = failReasonFromCaughtError(savedConversation, error);
-        await markConversationFailed(
-          savedConversation,
-          failReason,
-          session,
-          'internal_error',
-          error.stack,
-        );
-        // Returned, not thrown: inside a transaction a throw would roll back
-        // the failed state just saved, so replica-set installs lose it.
-        return new CommittedFailure(clientChatError(error, failReason));
-      }
-    }
-
-    try {
-      projectLink = await resolveProjectLink(
-        orgId as unknown as string,
-        userId as unknown as string,
-        req.body as Record<string, unknown>,
-      );
-
-      logger.debug('Creating new conversation', {
-        requestId,
-        userId,
-        query: req.body.query,
-        filters: {
-          recordIds: req.body.recordIds,
-        },
-        timestamp: new Date().toISOString(),
-      });
-
-      if (rsAvailable) {
-        // Start a session and run the operations inside a transaction.
-        session = await mongoose.startSession();
-        responseData = throwIfFailed(
-          await session.withTransaction(() => createConversationUtil(session)),
-        );
-      } else {
-        // Execute without session/transaction.
-        responseData = throwIfFailed(await createConversationUtil());
-      }
-
-      logger.debug('Conversation created successfully', {
-        requestId,
-        conversationId: responseData.conversation._id,
-        duration: Date.now() - startTime,
-      });
-
-      res.status(HTTP_STATUS.CREATED).json({
-        ...responseData,
-        meta: {
-          requestId,
-          timestamp: new Date().toISOString(),
-          duration: Date.now() - startTime,
-        },
-      });
-    } catch (error: any) {
-      logger.error('Error creating conversation', {
-        requestId,
-        message: 'Error creating conversation',
-        error: error.message,
-        stack: error.stack,
-        duration: Date.now() - startTime,
-      });
-
-      if (session?.inTransaction()) {
-        await session.abortTransaction();
-      }
-      next(error);
-    } finally {
-      if (session) {
-        session.endSession();
-        session = null;
-      }
-    }
-  };
-
-export const addMessage =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    const requestId = req.context?.requestId;
-    const startTime = Date.now();
-    let session: ClientSession | null = null;
-    const modelInfo = extractModelInfo(req.body);
-
-    try {
-      let userId: Types.ObjectId | undefined;
-
-      let orgId: Types.ObjectId | undefined;
-
-      if ('user' in req) {
-        const auth_req = req as AuthenticatedUserRequest;
-
-        userId = auth_req.user?.userId;
-
-        orgId = auth_req.user?.orgId;
-      } else {
-        const auth_req = req as AuthenticatedServiceRequest;
-
-        const email = auth_req.tokenPayload?.email;
-
-        const users = await Users.find({
-          email: email,
-
-          isDeleted: false,
-        });
-
-        const user = users[0];
-
-        if (!user) {
-          throw new NotFoundError('User not found');
-        }
-
-        userId = user._id as Types.ObjectId;
-
-        orgId = user.orgId;
-
-        const authTokenService = new AuthTokenService(
-          appConfig.jwtSecret,
-          appConfig.scopedJwtSecret,
-        );
-
-        const jwtToken = authTokenService.generateToken({
-          userId: user._id,
-
-          orgId: user.orgId,
-
-          email: user.email,
-
-          fullName: user.fullName,
-
-          mobile: user.mobile,
-
-          userSlug: user.slug,
-        });
-
-        req.headers.authorization = `Bearer ${jwtToken}`;
-      }
-
-      // Validate query parameter for XSS and format specifiers
-      if (req.body.query && typeof req.body.query === 'string') {
-        validateNoXSS(req.body.query, 'query');
-        validateNoFormatSpecifiers(req.body.query, 'query');
-        
-      } else if (!req.body.query) {
-        throw new BadRequestError('Query is required');
-      }
-
-      logger.debug('Adding message to conversation', {
-        requestId,
-        message: 'Adding message to conversation',
-        conversationId: req.params.conversationId,
-        query: req.body.query,
-        filters: req.body.filters,
-        timestamp: new Date().toISOString(),
-      });
-
-      // Extract common operations into a helper function.
-      async function performAddMessage(session?: ClientSession | null) {
-        // Get existing conversation
-        const conversation = await ChatSession.findOne({
-          _id: req.params.conversationId,
-          orgId,
-          userId,
-          isDeleted: false,
-          ...EXCLUDE_AGENT,
-        });
-
-        if (!conversation) {
-          throw new NotFoundError('Conversation not found');
-        }
-
-        // Update status to processing when adding a new message
-        conversation.status = CONVERSATION_STATUS.INPROGRESS;
-        conversation.failReason = undefined; // Clear previous error if any
-
-        // add previous conversations to the conversation
-        // in case of bot_response message
-        // Format previous conversations for context
-        const previousConversations = formatPreviousConversations(
-          (await getMessages(
-            conversation._id as mongoose.Types.ObjectId,
-            {},
-            session,
-          )) as IMessage[],
-        );
-        logger.debug('Previous conversations', {
-          previousConversations,
-        });
-
-        const userQueryMessage = buildUserQueryMessage(
-          req.body.query,
-          req.body.appliedFilters,
-          req.body.chatMode,
-          req.body.attachments,
-        );
-        // First, add the user message to the existing conversation
-        await appendMessages(
-          conversation._id as mongoose.Types.ObjectId,
-          conversation.orgId,
-          [userQueryMessage],
-          session,
-        );
-        conversation.lastActivityAt = Date.now();
-
-        // Save the user message to the existing conversation first
-        const savedConversation = session
-          ? await conversation.save({ session })
-          : await conversation.save();
-
-        if (!savedConversation) {
-          throw new InternalServerError(
-            'Failed to update conversation with user message',
-          );
-        }
-        logger.debug('Sending query to AI service', {
-          requestId,
-          payload: {
-            query: req.body.query,
-            previousConversations,
-            filters: req.body.filters,
-          },
-        });
-
-        const aiPayload: Record<string, unknown> = {
-          query: req.body.query,
-          previousConversations: previousConversations,
-          filters: req.body.filters || {},
-          attachments: req.body.attachments || [],
-          // New fields for multi-model support
-          modelKey: req.body.modelKey || null,
-          modelName: req.body.modelName || null,
-          reasoningEffort: req.body.reasoningEffort || null,
-          chatMode: req.body.chatMode || 'quick',
-        };
-        // Project context always comes from the session row, never the
-        // request body — a follow-up turn cannot move itself into a project.
-        const followUpProject = await loadProjectForSession(
-          conversation.orgId.toString(),
-          (conversation.userId as unknown as Types.ObjectId).toString(),
-          conversation.projectId,
-        );
-        applyProjectScope(aiPayload, followUpProject);
-        if (conversation.projectId) {
-          void ProjectService.touchActivity(conversation.projectId.toString());
-        }
-
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/chat`,
-          method: HttpMethod.POST,
-          headers: req.headers as Record<string, string>,
-          body: aiPayload,
-        };
-        try {
-          const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-          let aiResponseData;
-          try {
-            aiResponseData =
-              (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
-          } catch (error: any) {
-            // Update conversation status for AI service connection errors
-            conversation.status = CONVERSATION_STATUS.FAILED;
-            if (error.cause?.code === 'ECONNREFUSED') {
-              conversation.failReason = CHAT_ERROR_MESSAGES.unavailable;
-            } else {
-              conversation.failReason = userFacingChatError(error);
-            }
-
-            const saveErrorStatus = session
-              ? await conversation.save({ session })
-              : await conversation.save();
-
-            if (!saveErrorStatus) {
-              logger.error('Failed to save conversation error status', {
-                requestId,
-                conversationId: conversation._id,
-              });
-            }
-            if (error.cause && error.cause.code === 'ECONNREFUSED') {
-              throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
-            }
-            logger.error(' Failed error ', error);
-            throw new InternalServerError(userFacingChatError(error));
-          }
-
-          if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-            // Update conversation status for API errors
-            conversation.status = CONVERSATION_STATUS.FAILED;
-            const failReason = userFacingAIResponseError(aiResponseData);
-            conversation.failReason = failReason;
-
-            const saveApiError = session
-              ? await conversation.save({ session })
-              : await conversation.save();
-
-            if (!saveApiError) {
-              logger.error('Failed to save conversation API error status', {
-                requestId,
-                conversationId: conversation._id,
-              });
-            }
-
-            throw new InternalServerError(
-              failReason,
-              aiResponseData?.data,
-            );
-          }
-
-          const savedCitations: ICitation[] = await Promise.all(
-            aiResponseData.data?.citations?.map(async (citation: any) => {
-              const newCitation = new Citation({
-                content: citation.content,
-                chunkIndex: citation.chunkIndex,
-                citationType: citation.citationType,
-                metadata: {
-                  ...citation.metadata,
-                  orgId,
-                },
-              });
-              return newCitation.save();
-            }) || [],
-          );
-
-          // Update the existing conversation with AI response
-          const aiResponseMessage = buildAIResponseMessage(
-            aiResponseData,
-            savedCitations,
-            modelInfo,
-          );
-          // Add the AI message to the existing conversation
-          const [insertedAiMessage] = await appendMessages(
-            savedConversation._id as mongoose.Types.ObjectId,
-            savedConversation.orgId,
-            [aiResponseMessage],
-            session,
-          );
-          savedConversation.lastActivityAt = Date.now();
-          recordClassifiedFailureOnSession(
-            savedConversation,
-            aiResponseData.data as IAIResponse,
-          );
-
-          // Save the updated conversation with AI response
-          const updatedConversation = session
-            ? await savedConversation.save({ session })
-            : await savedConversation.save();
-
-          if (!updatedConversation) {
-            throw new InternalServerError(
-              'Failed to update conversation with AI response',
-            );
-          }
-
-          // Return the updated conversation with new messages.
-          const responseConversation = await attachPopulatedCitations(
-            updatedConversation.toObject(),
-            [insertedAiMessage!.toObject()],
-            savedCitations,
-            session,
-          );
-          return {
-            conversation: responseConversation,
-            recordsUsed: savedCitations.length, // or validated record count if needed
-          };
-        } catch (error: any) {
-          // TODO: Add support for retry mechanism and generate response from retry
-          // and append the response to the correct messageId
-
-          const failReason = failReasonFromCaughtError(conversation, error);
-          await markConversationFailed(
-            conversation,
-            failReason,
-            session,
-            'internal_error',
-            error.stack,
-          );
-          // Returned, not thrown: inside a transaction a throw would roll
-          // back the failed state just saved, so replica-set installs lose it.
-          return new CommittedFailure(clientChatError(error, failReason));
-        }
-      }
-
-      let responseData;
-      if (rsAvailable) {
-        session = await mongoose.startSession();
-        responseData = throwIfFailed(
-          await session.withTransaction(() => performAddMessage(session)),
-        );
-      } else {
-        responseData = throwIfFailed(await performAddMessage());
-      }
-
-      logger.debug('Message added successfully', {
-        requestId,
-        message: 'Message added successfully',
-        conversationId: req.params.conversationId,
-        duration: Date.now() - startTime,
-      });
-
-      res.status(HTTP_STATUS.OK).json({
-        ...responseData,
-        meta: {
-          requestId,
-          timestamp: new Date().toISOString(),
-          duration: Date.now() - startTime,
-          recordsUsed: responseData.recordsUsed,
-        },
-      });
-    } catch (error: any) {
-      logger.error('Error adding message', {
-        requestId,
-        message: 'Error adding message',
-        conversationId: req.params.conversationId,
-        error: error.message,
-        stack: error.stack,
-        duration: Date.now() - startTime,
-      });
-
-      if (session?.inTransaction()) {
-        await session.abortTransaction();
-      }
-      return next(error);
-    } finally {
-      if (session) {
-        session.endSession();
-        session = null;
-      }
-    }
-  };
-
 export const addMessageStream =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
@@ -2307,43 +1426,24 @@ export const addMessageStream =
         allMessagesSoFar.slice(0, -1),
       );
 
-      const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
-      // Prepare AI payload
-      const aiPayload: Record<string, unknown> = {
-        query: req.body.query,
-        previousConversations: previousConversations,
-        filters: req.body.filters || {},
-        attachments: req.body.attachments || [],
-        // New fields for multi-model support
-        modelKey: req.body.modelKey || null,
-        modelName: req.body.modelName || null,
-        modelFriendlyName: req.body.modelFriendlyName || null,
-        reasoningEffort: req.body.reasoningEffort || null,
-        chatMode: chatMode,
-        conversationId: conversationId || null,
-        timezone: req.body.timezone || null,
-        currentTime: req.body.currentTime || null,
-        runId: req.body.runId || null,
-        // Explicit protocol propagation — Node hand-builds this request body,
-        // so a header alone would never reach Python (see agui.ts docstring).
-        ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
-      };
-      if (agentMode) {
-        assignToolsToPayload(aiPayload, req.body.tools);
-        assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
-      }
       const followUpProject = await loadProjectForSession(
         confirmedConversation.orgId.toString(),
         (confirmedConversation.userId as unknown as Types.ObjectId).toString(),
         confirmedConversation.projectId,
       );
-      applyProjectScope(aiPayload, followUpProject);
+      const aiRequest = buildAiChatRequest({ kind: 'assistant' }, req.body, {
+        conversationId,
+        previousConversations,
+        isNewConversation: false,
+        project: followUpProject,
+      });
+      const aiPayload = withStreamProtocol(aiRequest.payload, protocol);
       if (confirmedConversation.projectId) {
         void ProjectService.touchActivity(confirmedConversation.projectId.toString());
       }
 
       const aiCommandOptions: AICommandOptions = {
-        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
+        uri: `${appConfig.aiBackend}${aiRequest.path}/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -6182,42 +5282,6 @@ export const getAgent =
     }
   };
 
-export const checkServiceAccountAccess =
-  async (req: AuthenticatedServiceRequest, appConfig: AppConfig): Promise<boolean> => {
-    const requestId = req.context?.requestId;
-    try {
-
-      const agentKey = req.params.agentKey;
-
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/internal/service-account`,
-        method: HttpMethod.GET,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        return false;
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse, 'Check Service Account Access');
-      }
-      const response = aiResponse.data as { isServiceAccount: boolean };
-      const serviceAccountResponse = response.isServiceAccount;
-      return serviceAccountResponse;
-    } catch (error: any) {
-      logger.error('Error checking service account access', {
-        requestId,
-        message: 'Error checking service account access',
-        error: error.message,
-      });
-      return false;
-    }
-  };
-
 export const getWebSearchProviderUsage =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -6602,43 +5666,19 @@ export const deleteAgent =
       );
       (res as any).flush?.();
 
-      // Prepare AI payload
-      const aiPayload: Record<string, unknown> = {
-        query: req.body.query,
-        quickMode: req.body.quickMode || false,
+      const aiRequest = buildAiChatRequest({ kind: 'agent', agentKey: agentKey as string }, req.body, {
+        conversationId: newAgentConversationId,
         previousConversations: req.body.previousConversations || [],
-        recordIds: req.body.recordIds || [],
-        filters: req.body.filters || {},
-        attachments: req.body.attachments || [],
-        chatMode: req.body.chatMode || 'auto',
-        modelKey: req.body.modelKey || null,
-        modelName: req.body.modelName || null,
-        modelFriendlyName: req.body.modelFriendlyName || null,
-        reasoningEffort: req.body.reasoningEffort || null,
-        timezone: req.body.timezone || null,
-        currentTime: req.body.currentTime || null,
-        conversationId: newAgentConversationId || null,
-        runId: req.body.runId || null,
-        // Explicit protocol propagation — Node hand-builds this request body,
-        // so a header alone would never reach Python (see agui.ts docstring).
-        ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
-      };
-      assignToolsToPayload(aiPayload, req.body.tools);
-      // Must run after assignToolsToPayload — a project's own tool scope
-      // always wins over whatever the request carried (see
-      // applyProjectScope's doc comment in project-context.ts).
-      applyProjectScope(aiPayload, projectLink.project);
+        isNewConversation: true,
+        project: projectLink.project,
+      });
+      const aiPayload = withStreamProtocol(aiRequest.payload, protocol);
       if (projectLink.projectId) {
         void ProjectService.touchActivity(projectLink.projectId);
       }
 
-      assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
-      assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
-
-      logger.info('aiPayload', aiPayload);
-
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
+        uri: `${appConfig.aiBackend}${aiRequest.path}/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -7165,597 +6205,6 @@ export const streamAgentConversationInternal =
     }
   };
 
-export const createAgentConversation =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    const startTime = Date.now();
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    const { agentKey } = req.params;
-    let session: ClientSession | null = null;
-    let responseData: any;
-
-    const modelInfo = extractModelInfo(req.body);
-
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-
-    } else if (!req.body.query) {
-      throw new BadRequestError('Query is required');
-    }
-
-    let projectLink: ResolvedProjectLink = {};
-
-    // Helper function that contains the common conversation operations.
-    async function createConversationUtil(
-      session?: ClientSession | null,
-    ): Promise<any> {
-      const userQueryMessage = buildUserQueryMessage(
-        req.body.query,
-        req.body.appliedFilters,
-        req.body.chatMode,
-        req.body.attachments,
-      );
-
-      const userConversationData: Partial<IChatSession> = {
-        orgId,
-        userId,
-        initiator: userId,
-        title: req.body.query.slice(0, 100),
-        lastActivityAt: Date.now(),
-        status: CONVERSATION_STATUS.INPROGRESS,
-        agentKey,
-        modelInfo,
-        sessionType: 'agent',
-        // Set explicitly: the legacy agentConversations schema defaulted this,
-        // the unified chatSessions schema can't (it also backs plain chats).
-        conversationSource: 'agent_chat',
-        ...(projectLink.projectId
-          ? {
-              projectId: new mongoose.Types.ObjectId(projectLink.projectId),
-              projectVisibility: projectLink.projectVisibility,
-            }
-          : {}),
-      };
-
-      const conversation = new ChatSession(userConversationData);
-      const savedConversation = session
-        ? await conversation.save({ session })
-        : ((await conversation.save()) as IChatSessionDocument);
-      if (!savedConversation) {
-        throw new InternalServerError('Failed to create conversation');
-      }
-      await appendMessages(
-        savedConversation._id as mongoose.Types.ObjectId,
-        savedConversation.orgId,
-        [userQueryMessage],
-        session,
-      );
-
-      const aiPayload: Record<string, unknown> = {
-        query: req.body.query,
-        previousConversations: req.body.previousConversations || [],
-        recordIds: req.body.recordIds || [],
-        filters: req.body.filters || {},
-        modelKey: req.body.modelKey || null,
-        modelName: req.body.modelName || null,
-        modelFriendlyName: req.body.modelFriendlyName || null,
-        reasoningEffort: req.body.reasoningEffort || null,
-        chatMode: req.body.chatMode || 'auto',
-        timezone: req.body.timezone || null,
-        currentTime: req.body.currentTime || null,
-        attachments: req.body.attachments || [],
-      };
-      assignToolsToPayload(aiPayload, req.body.tools);
-      assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
-      applyProjectScope(aiPayload, projectLink.project);
-      if (projectLink.projectId) {
-        void ProjectService.touchActivity(projectLink.projectId);
-      }
-
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
-        method: HttpMethod.POST,
-        headers: req.headers as Record<string, string>,
-        body: aiPayload,
-      };
-
-      logger.debug('Sending query to AI service', {
-        requestId,
-        query: req.body.query,
-        filters: req.body.filters,
-      });
-
-      try {
-        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-        const aiResponseData =
-          (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-          savedConversation.status = CONVERSATION_STATUS.FAILED as any;
-          const failReason = userFacingAIResponseError(aiResponseData);
-          savedConversation.failReason = failReason;
-
-          const updatedWithError = session
-            ? await savedConversation.save({ session })
-            : await savedConversation.save();
-
-          if (!updatedWithError) {
-            throw new InternalServerError(
-              CHAT_ERROR_MESSAGES.saveFailed,
-            );
-          }
-
-          throw new InternalServerError(
-            failReason,
-            aiResponseData?.data,
-          );
-        }
-
-        const citations = await Promise.all(
-          aiResponseData.data?.citations?.map(async (citation: any) => {
-            const newCitation = new Citation({
-              content: citation.content,
-              chunkIndex: citation.chunkIndex,
-              citationType: citation.citationType,
-              metadata: {
-                ...citation.metadata,
-                orgId,
-              },
-            });
-            return newCitation.save();
-          }) || [],
-        );
-
-        // Update the existing conversation with AI response
-        const aiResponseMessage = buildAIResponseMessage(
-          aiResponseData,
-          citations,
-          modelInfo,
-        ) as IMessageDocument;
-        // Add the AI message to the conversation
-        const insertedAiMessage = (
-          await appendMessages(
-            savedConversation._id as mongoose.Types.ObjectId,
-            savedConversation.orgId,
-            [aiResponseMessage],
-            session,
-          )
-        )[0];
-        savedConversation.lastActivityAt = Date.now();
-        recordClassifiedFailureOnSession(
-          savedConversation,
-          aiResponseData.data as IAIResponse,
-        );
-
-        const updatedConversation = session
-          ? await savedConversation.save({ session })
-          : await savedConversation.save();
-
-        if (!updatedConversation) {
-          throw new InternalServerError('Failed to update conversation');
-        }
-        const responseConversation = await attachPopulatedCitations(
-          updatedConversation.toObject(),
-          [insertedAiMessage!.toObject()],
-          citations,
-          session,
-        );
-        return {
-          conversation: {
-            _id: updatedConversation._id,
-            ...responseConversation,
-          },
-        };
-      } catch (error: any) {
-        // TODO: Add support for retry mechanism and generate response from retry
-        // and append the response to the correct messageId
-
-        const failReason = failReasonFromCaughtError(savedConversation, error);
-        await markAgentConversationFailed(
-          savedConversation,
-          failReason,
-          session,
-          'internal_error',
-          error.stack,
-        );
-        // Returned, not thrown: inside a transaction a throw would roll back
-        // the failed state just saved, so replica-set installs lose it.
-        return new CommittedFailure(clientChatError(error, failReason));
-      }
-    }
-
-    try {
-      projectLink = await resolveProjectLink(
-        orgId as unknown as string,
-        userId as unknown as string,
-        req.body as Record<string, unknown>,
-      );
-
-      logger.debug('Creating new conversation', {
-        requestId,
-        userId,
-        query: req.body.query,
-        filters: {
-          recordIds: req.body.recordIds,
-        },
-        timestamp: new Date().toISOString(),
-      });
-
-      if (rsAvailable) {
-        // Start a session and run the operations inside a transaction.
-        session = await mongoose.startSession();
-        responseData = throwIfFailed(
-          await session.withTransaction(() => createConversationUtil(session)),
-        );
-      } else {
-        // Execute without session/transaction.
-        responseData = throwIfFailed(await createConversationUtil());
-      }
-
-      logger.debug('Conversation created successfully', {
-        requestId,
-        conversationId: responseData.conversation._id,
-        duration: Date.now() - startTime,
-      });
-
-      res.status(HTTP_STATUS.CREATED).json({
-        ...responseData,
-        meta: {
-          requestId,
-          timestamp: new Date().toISOString(),
-          duration: Date.now() - startTime,
-        },
-      });
-    } catch (error: any) {
-      logger.error('Error creating conversation', {
-        requestId,
-        message: 'Error creating conversation',
-        error: error.message,
-        stack: error.stack,
-        duration: Date.now() - startTime,
-      });
-
-      if (session?.inTransaction()) {
-        await session.abortTransaction();
-      }
-      next(error);
-    } finally {
-      if (session) {
-        session.endSession();
-        session = null;
-      }
-    }
-  };
-
-  export const addMessageToAgentConversation =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    const startTime = Date.now();
-    const { agentKey } = req.params;
-    let session: ClientSession | null = null;
-
-    const modelInfo = extractModelInfo(req.body);
-
-    try {
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
-
-      // Validate query parameter for XSS and format specifiers
-      if (req.body.query && typeof req.body.query === 'string') {
-        validateNoXSS(req.body.query, 'query');
-        validateNoFormatSpecifiers(req.body.query, 'query');
-        
-      } else if (!req.body.query) {
-        throw new BadRequestError('Query is required');
-      }
-
-      logger.debug('Adding message to conversation', {
-        requestId,
-        message: 'Adding message to conversation',
-        conversationId: req.params.conversationId,
-        query: req.body.query,
-        filters: req.body.filters,
-        timestamp: new Date().toISOString(),
-      });
-
-      // Extract common operations into a helper function.
-      async function performAddMessage(session?: ClientSession | null) {
-        // Get existing conversation
-        const conversation = await ChatSession.findOne({
-          _id: req.params.conversationId,
-          agentKey,
-          orgId,
-          userId,
-          isDeleted: false,
-          ...ONLY_AGENT,
-        });
-
-        if (!conversation) {
-          throw new NotFoundError('Conversation not found');
-        }
-
-        // Update status to processing when adding a new message
-        conversation.status = CONVERSATION_STATUS.INPROGRESS as any;
-        conversation.failReason = undefined; // Clear previous error if any
-
-        // add previous conversations to the conversation
-        // in case of bot_response message
-        // Format previous conversations for context
-        const existingMessages = (await getMessages(
-          conversation._id as mongoose.Types.ObjectId,
-          {},
-          session,
-        )) as IMessage[];
-        const previousConversations =
-          formatPreviousConversations(existingMessages);
-        logger.debug('Previous conversations', {
-          previousConversations,
-        });
-
-        const userQueryMessage = buildUserQueryMessage(
-          req.body.query,
-          req.body.appliedFilters,
-          req.body.chatMode,
-          req.body.attachments,
-        );
-        // First, add the user message to the existing conversation
-        await appendMessages(
-          conversation._id as mongoose.Types.ObjectId,
-          conversation.orgId,
-          [userQueryMessage],
-          session,
-        );
-        conversation.lastActivityAt = Date.now();
-
-        const fieldsToUpdate: Array<keyof IAIModel> = [
-          'modelKey',
-          'modelName',
-          'modelProvider',
-          'chatMode',
-          'modelFriendlyName',
-          'reasoningEffort',
-        ];
-        for (const field of fieldsToUpdate) {
-          const value = req.body[field];
-          if (value !== undefined && value !== null) {
-            assignAiModelField(conversation.modelInfo as IAIModel, field, value);
-          }
-        }
-
-        // Save the user message to the existing conversation first
-        const savedConversation = session
-          ? await conversation.save({ session })
-          : ((await conversation.save()) as IChatSessionDocument);
-
-        if (!savedConversation) {
-          throw new InternalServerError(
-            'Failed to update conversation with user message',
-          );
-        }
-        logger.debug('Sending query to AI service', {
-          requestId,
-          payload: {
-            query: req.body.query,
-            previousConversations,
-            filters: req.body.filters,
-          },
-        });
-        
-        const aiPayload: Record<string, unknown> = {
-          query: req.body.query,
-            previousConversations: previousConversations,
-            filters: req.body.filters || {},
-            attachments: req.body.attachments || [],
-            // New fields for multi-model support
-            modelKey: req.body.modelKey || null,
-            modelName: req.body.modelName || null,
-            reasoningEffort: req.body.reasoningEffort || null,
-            chatMode: req.body.chatMode || 'auto',
-            timezone: req.body.timezone || null,
-            currentTime: req.body.currentTime || null,
-        };
-        assignToolsToPayload(aiPayload, req.body.tools);
-        assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
-        const followUpProject = await loadProjectForSession(
-          conversation.orgId.toString(),
-          (conversation.userId as unknown as Types.ObjectId).toString(),
-          conversation.projectId,
-        );
-        applyProjectScope(aiPayload, followUpProject);
-        if (conversation.projectId) {
-          void ProjectService.touchActivity(conversation.projectId.toString());
-        }
-
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
-          method: HttpMethod.POST,
-          headers: req.headers as Record<string, string>,
-          body: aiPayload
-        };
-        try {
-          const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-          let aiResponseData;
-          try {
-            aiResponseData =
-              (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
-          } catch (error: any) {
-            // Update conversation status for AI service connection errors
-            conversation.status = CONVERSATION_STATUS.FAILED;
-            if (error.cause?.code === 'ECONNREFUSED') {
-              conversation.failReason = CHAT_ERROR_MESSAGES.unavailable;
-            } else {
-              conversation.failReason = userFacingChatError(error);
-            }
-
-            const saveErrorStatus = session
-              ? await conversation.save({ session })
-              : await conversation.save();
-
-            if (!saveErrorStatus) {
-              logger.error('Failed to save conversation error status', {
-                requestId,
-                conversationId: conversation._id,
-              });
-            }
-            if (error.cause && error.cause.code === 'ECONNREFUSED') {
-              throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE);
-            }
-            logger.error(' Failed error ', error);
-            throw new InternalServerError(userFacingChatError(error));
-          }
-
-          if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-            // Update conversation status for API errors
-            conversation.status = CONVERSATION_STATUS.FAILED as any;
-            const failReason = userFacingAIResponseError(aiResponseData);
-            conversation.failReason = failReason;
-
-            const saveApiError = session
-              ? await conversation.save({ session })
-              : await conversation.save();
-
-            if (!saveApiError) {
-              logger.error('Failed to save conversation API error status', {
-                requestId,
-                conversationId: conversation._id,
-              });
-            }
-
-            throw new InternalServerError(
-              failReason,
-              aiResponseData?.data,
-            );
-          }
-
-          const savedCitations: ICitation[] = await Promise.all(
-            aiResponseData.data?.citations?.map(async (citation: any) => {
-              const newCitation = new Citation({
-                content: citation.content,
-                chunkIndex: citation.chunkIndex,
-                citationType: citation.citationType,
-                metadata: {
-                  ...citation.metadata,
-                  orgId,
-                },
-              });
-              return newCitation.save();
-            }) || [],
-          );
-
-          // Update the existing conversation with AI response
-          const aiResponseMessage = buildAIResponseMessage(
-            aiResponseData,
-            savedCitations,
-            modelInfo,
-          ) as IMessageDocument;
-          // Add the AI message to the existing conversation
-          const insertedAiMessage = (
-            await appendMessages(
-              savedConversation._id as mongoose.Types.ObjectId,
-              savedConversation.orgId,
-              [aiResponseMessage],
-              session,
-            )
-          )[0];
-          savedConversation.lastActivityAt = Date.now();
-          recordClassifiedFailureOnSession(
-            savedConversation,
-            aiResponseData.data as IAIResponse,
-          );
-
-          // Save the updated conversation with AI response
-          const updatedConversation = session
-            ? await savedConversation.save({ session })
-            : await savedConversation.save();
-
-          if (!updatedConversation) {
-            throw new InternalServerError(
-              'Failed to update conversation with AI response',
-            );
-          }
-
-          // Return the updated conversation with new messages.
-          const responseConversation = await attachPopulatedCitations(
-            updatedConversation.toObject(),
-            [insertedAiMessage!.toObject()],
-            savedCitations,
-            session,
-          );
-          return {
-            conversation: responseConversation,
-            recordsUsed: savedCitations.length, // or validated record count if needed
-          };
-        } catch (error: any) {
-          // TODO: Add support for retry mechanism and generate response from retry
-          // and append the response to the correct messageId
-
-          // Update conversation status for general errors
-          const failReason = failReasonFromCaughtError(conversation, error);
-          await markAgentConversationFailed(
-            conversation,
-            failReason,
-            session,
-            'internal_error',
-            error.stack,
-          );
-          // Returned, not thrown: inside a transaction a throw would roll
-          // back the failed state just saved, so replica-set installs lose it.
-          return new CommittedFailure(clientChatError(error, failReason));
-        }
-      }
-
-      let responseData;
-      if (rsAvailable) {
-        session = await mongoose.startSession();
-        responseData = throwIfFailed(
-          await session.withTransaction(() => performAddMessage(session)),
-        );
-      } else {
-        responseData = throwIfFailed(await performAddMessage());
-      }
-
-      logger.debug('Message added successfully', {
-        requestId,
-        message: 'Message added successfully',
-        conversationId: req.params.conversationId,
-        duration: Date.now() - startTime,
-      });
-
-      res.status(HTTP_STATUS.OK).json({
-        ...responseData,
-        meta: {
-          requestId,
-          timestamp: new Date().toISOString(),
-          duration: Date.now() - startTime,
-          recordsUsed: responseData.recordsUsed,
-        },
-      });
-    } catch (error: any) {
-      logger.error('Error adding message', {
-        requestId,
-        message: 'Error adding message',
-        conversationId: req.params.conversationId,
-        error: error.message,
-        stack: error.stack,
-        duration: Date.now() - startTime,
-      });
-
-      if (session?.inTransaction()) {
-        await session.abortTransaction();
-      }
-      return next(error);
-    } finally {
-      if (session) {
-        session.endSession();
-        session = null;
-      }
-    }
-  };
-
 export const addMessageStreamToAgentConversation =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest | AuthenticatedServiceRequest, res: Response) => {
@@ -7926,41 +6375,24 @@ export const addMessageStreamToAgentConversation =
         allMessagesSoFar.slice(0, -1),
       );
 
-      // Prepare AI payload
-      const aiPayload: Record<string, unknown> = {
-        query: req.body.query,
-        previousConversations: previousConversations,
-        filters: req.body.filters || {},
-        attachments: req.body.attachments || [],
-        // New fields for multi-model support
-        modelKey: req.body.modelKey || null,
-        modelName: req.body.modelName || null,
-        modelFriendlyName: req.body.modelFriendlyName || null,
-        reasoningEffort: req.body.reasoningEffort || null,
-        chatMode: req.body.chatMode || 'auto',
-        timezone: req.body.timezone || null,
-        currentTime: req.body.currentTime || null,
-        conversationId: conversationId || null,
-        runId: req.body.runId || null,
-        // Explicit protocol propagation — Node hand-builds this request body,
-        // so a header alone would never reach Python (see agui.ts docstring).
-        ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
-      };
-      assignToolsToPayload(aiPayload, req.body.tools);
-      assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
-      assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
       const followUpProject = await loadProjectForSession(
         confirmedConversation.orgId.toString(),
         (confirmedConversation.userId as unknown as Types.ObjectId).toString(),
         confirmedConversation.projectId,
       );
-      applyProjectScope(aiPayload, followUpProject);
+      const aiRequest = buildAiChatRequest({ kind: 'agent', agentKey: agentKey as string }, req.body, {
+        conversationId,
+        previousConversations,
+        isNewConversation: false,
+        project: followUpProject,
+      });
+      const aiPayload = withStreamProtocol(aiRequest.payload, protocol);
       if (confirmedConversation.projectId) {
         void ProjectService.touchActivity(confirmedConversation.projectId.toString());
       }
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
+        uri: `${appConfig.aiBackend}${aiRequest.path}/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),

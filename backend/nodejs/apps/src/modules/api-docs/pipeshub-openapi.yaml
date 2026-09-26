@@ -196,15 +196,13 @@ tags:
     description: In-app notifications for the signed-in user (connector errors, warnings, and related alerts)
 
   # Storage
-  - name: Document Management
-    description: Document CRUD and retrieval operations
   - name: Internal Storage
     description: |
-      Service-to-service storage endpoints. Each mirrors a public `/document`
-      route but is authenticated with the storage scoped token rather than a
-      signed-in user's session, so these are **not** callable by API clients or
-      the browser. They are listed here so the surface is discoverable and the
-      pairing with the public routes is visible.
+      Service-to-service storage endpoints, authenticated with the storage
+      scoped token rather than a signed-in user's session, so these are **not**
+      callable by API clients or the browser. Storage checks only the org, not
+      record permissions; read and write files through the Knowledge Base
+      routes (for example `GET /knowledgeBase/stream/record/{recordId}`).
   - name: Knowledge Base
     description: Knowledge base management operations
   - name: Knowledge Hub
@@ -373,6 +371,16 @@ components:
       description: The document's id.
       schema:
         type: string
+  headers:
+    X-Conversation-Id:
+      description: |
+        Id of the conversation this turn wrote to. Sent on success and on
+        failure, so a caller whose first turn failed can still fetch or
+        continue that conversation.
+      schema:
+        type: string
+        format: objectId
+
   securitySchemes:
     bearerAuth:
       type: http
@@ -6361,6 +6369,33 @@ components:
           required:
             - chatMode
 
+    CreateAgentConversationResponse:
+      type: object
+      description: |
+        Envelope returned by `POST /agents/{agentKey}/conversations`: the
+        persisted agent conversation (initial user message plus the agent's
+        answer) and request metadata.
+      required:
+        - conversation
+        - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/AgentConversation'
+        meta:
+          type: object
+          required:
+            - timestamp
+            - duration
+          properties:
+            requestId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+            duration:
+              type: integer
+              minimum: 0
+
     CreateConversationResponse:
       type: object
       additionalProperties: false
@@ -6396,15 +6431,26 @@ components:
               description: Total handler duration in milliseconds.
 
     AgentStreamCreateConversationRequest:
+      allOf:
+        - $ref: '#/components/schemas/AgentCreateConversationRequest'
+        - type: object
+          description: |
+            Request body for `POST /agents/{agentKey}/conversations/stream`.
+            `query` and `chatMode: quick` are required; all other fields are
+            optional overrides. Unknown fields are stripped during validation.
+          required:
+            - chatMode
+
+    AgentCreateConversationRequest:
       type: object
       additionalProperties: false
       description: |
-        Request body for `POST /agents/{agentKey}/conversations/stream`.
-        `query` and `chatMode: quick` are required; all other fields are
-        optional overrides. Unknown fields are stripped during validation.
+        First turn of an agent conversation. Used as-is by the non-streaming
+        `POST /agents/{agentKey}/conversations`, where `chatMode` may be
+        omitted; `AgentStreamCreateConversationRequest` additionally requires
+        it. Unknown fields are stripped during validation.
       required:
         - query
-        - chatMode
       properties:
         query:
           type: string
@@ -6460,8 +6506,9 @@ components:
           enum:
             - quick
           description: |
-            Required execution mode. Scoped agent conversations currently
-            support only `quick`.
+            Execution mode. Scoped agent conversations support only `quick`.
+            Required on the `/stream` route; optional on the non-streaming
+            route.
         modelKey:
           type: string
           minLength: 1
@@ -6801,15 +6848,26 @@ components:
                 `meta` for client convenience.
 
     AgentAddMessageStreamRequest:
+      allOf:
+        - $ref: '#/components/schemas/AgentAddMessageRequest'
+        - type: object
+          description: |
+            Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
+            `query` and `chatMode: quick` are required; all other fields are
+            optional overrides. Unknown fields are stripped during validation.
+          required:
+            - chatMode
+
+    AgentAddMessageRequest:
       type: object
       additionalProperties: false
       description: |
-        Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        `query` and `chatMode: quick` are required; all other fields are
-        optional overrides. Unknown fields are stripped during validation.
+        Follow-up turn on an agent conversation. Used as-is by the
+        non-streaming `POST /agents/{agentKey}/conversations/{conversationId}/messages`,
+        where `chatMode` may be omitted; `AgentAddMessageStreamRequest`
+        additionally requires it. Unknown fields are stripped during validation.
       required:
         - query
-        - chatMode
       properties:
         query:
           type: string
@@ -6843,8 +6901,9 @@ components:
           enum:
             - quick
           description: |
-            Required execution mode. Scoped agent conversations currently
-            support only `quick`.
+            Execution mode. Scoped agent conversations support only `quick`.
+            Required on the `/stream` route; optional on the non-streaming
+            route.
         modelKey:
           type: string
           minLength: 1
@@ -7581,13 +7640,15 @@ components:
           description: All messages in this conversation
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
           description: |
             Current status of the conversation:
             - `None` — no activity yet
             - `Inprogress` — AI is processing
             - `Complete` — response ready
             - `Failed` — error occurred
+            - `Stopped` — cancelled, or the client disconnected mid-answer;
+              the last message keeps the partial answer
         failReason:
           type: string
           description: Error description, populated only when `status` is `Failed`.
@@ -7755,7 +7816,7 @@ components:
           format: objectId
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         modelInfo:
@@ -10974,7 +11035,8 @@ components:
             $ref: '#/components/schemas/Message'
         status:
           type: string
-          enum: [INPROGRESS, COMPLETED, FAILED]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
+          description: Same values as `Conversation.status`.
         isShared:
           type: boolean
         sharedWith:
@@ -11036,7 +11098,7 @@ components:
           format: objectId
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         modelInfo:
@@ -11310,7 +11372,7 @@ components:
             $ref: '#/components/schemas/Message'
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         modelInfo:
@@ -11644,7 +11706,7 @@ components:
                 enum: [read, write]
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         messages:
@@ -22787,476 +22849,10 @@ paths:
                     type: string
                     format: date-time
 
-  /document/{documentId}/download:
-    get:
-      tags:
-        - Document Management
-      summary: Download document
-      description: |
-        Get a time-limited signed URL to download the document, or receive the file directly for local storage.<br><br>
-        <b>Overview:</b><br>
-        This endpoint generates secure download access to documents. For cloud storage (S3/Azure), it returns a presigned URL. For local storage, it streams the file directly.<br><br>
-        <b>Download Behavior by Storage:</b><br>
-        <ul>
-        <li><b>S3/Azure:</b> Returns presigned URL valid for specified duration</li>
-        <li><b>Local:</b> Streams file directly with appropriate headers</li>
-        </ul>
-        <b>Version Download:</b><br>
-        Specify the <code>version</code> parameter to download a specific historical version. Only available for versioned documents.<br><br>
-        <b>URL Expiration:</b><br>
-        <ul>
-        <li>Default: 3600 seconds (1 hour)</li>
-        <li>Configurable via <code>expirationTimeInSeconds</code></li>
-        <li>Maximum depends on storage provider limits</li>
-        </ul>
-        <b>Security:</b><br>
-        Signed URLs are single-use and time-limited. They can be safely shared for temporary access.
-      operationId: downloadDocument
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          description: Document ID (24-character MongoDB ObjectId)
-          schema:
-            type: string
-            pattern: '^[a-fA-F0-9]{24}$'
-            example: "507f1f77bcf86cd799439011"
-        - name: version
-          in: query
-          required: false
-          description: Version number to download (0-indexed). Must be less than total versions.
-          schema:
-            type: integer
-            minimum: 0
-            example: 2
-        - name: expirationTimeInSeconds
-          in: query
-          required: false
-          description: Signed URL validity duration in seconds
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 86400
-            default: 3600
-            example: 7200
-      responses:
-        '200':
-          description: Download URL generated or file stream
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  signedUrl:
-                    type: string
-                    format: uri
-                    description: Presigned URL for download (S3/Azure only)
-                    example: "https://bucket.s3.amazonaws.com/docs/file.pdf?X-Amz-Signature=..."
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-                description: Direct file stream (local storage only)
-        '400':
-          description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid version number</li>
-            <li>Version requested for non-versioned document</li>
-            <li>Version exceeds available versions</li>
-            </ul>
-        '401':
-          description: Unauthorized - Valid bearer token required
-        '404':
-          description: Document not found
-  # TODO: most of the document operations is done using /knowledgeBase/{recordId} route, none of this methods are being called by frontend do we really need them?
-  # /document/upload:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Upload document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Upload a new document to the storage system.
-  #     operationId: uploadDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     requestBody:
-  #       required: true
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #     responses:
-  #       '200':
-  #         description: Document uploaded successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '400':
-  #         description: Invalid file or missing required fields
-  #       '401':
-  #         description: Unauthorized
-  #
-  # /document/placeholder:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Create placeholder document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Create a placeholder document entry without uploading content.
-  #     operationId: createPlaceholderDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     requestBody:
-  #       required: true
-  #       description: "Request payload"
-  #       content:
-  #         application/json:
-  #           schema:
-  #             type: object
-  #     responses:
-  #       '200':
-  #         description: Placeholder document created successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #
-  # /document/{documentId}:
-  #   get:
-  #     tags:
-  #       - Document Management
-  #     summary: Get document by ID
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve document metadata and details by its ID.
-  #     operationId: getDocumentById
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:read]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Document details retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  #   delete:
-  #     tags:
-  #       - Document Management
-  #     summary: Delete document by ID
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Delete a document by its ID.
-  #     operationId: deleteDocumentById
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:delete]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Document deleted successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/uploadNextVersion:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Upload next version of document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Upload a new version of an existing document.
-  #     operationId: uploadNextVersionDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       required: true
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #     responses:
-  #       '200':
-  #         description: New version uploaded successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/rollBack:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Roll back to previous version
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Roll back a document to its previous version.
-  #     operationId: rollBackToPreviousVersion
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       content:
-  #         application/json:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               version:
-  #                 type: integer
-  #                 description: Version number to roll back to
-  #     responses:
-  #       '200':
-  #         description: Document rolled back successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/buffer:
-  #   get:
-  #     tags:
-  #       - Document Management
-  #     summary: Get document buffer
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve the binary buffer of a document.
-  #     operationId: getDocumentBuffer
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:read]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Document buffer retrieved
-  #         content:
-  #           application/octet-stream:
-  #             schema:
-  #               type: string
-  #               format: binary
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  #   put:
-  #     tags:
-  #       - Document Management
-  #     summary: Create/update document buffer
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Create or update the binary buffer of a document.
-  #     operationId: createDocumentBuffer
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       required: true
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #         application/octet-stream:
-  #           schema:
-  #             type: string
-  #             format: binary
-  #     responses:
-  #       '200':
-  #         description: Document buffer updated successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/directUpload:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Direct upload document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Upload a document directly without intermediate processing.
-  #     operationId: uploadDirectDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #     responses:
-  #       '200':
-  #         description: Document uploaded directly
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/isModified:
-  #   get:
-  #     tags:
-  #       - Document Management
-  #     summary: Check if document is modified
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Check if a document has been modified since its last saved version.
-  #     operationId: documentDiffChecker
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:read]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Modification status retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 isModified:
-  #                   type: boolean
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
   # --- Internal storage routes -------------------------------------------
-  # Service-to-service only: each mirrors a public /document route but is
-  # authenticated with the storage scoped token instead of a user's session.
+  # Service-to-service only, authenticated with the storage scoped token.
+  # Storage scopes by org, not record permissions, so users have no route
+  # here; they read and write files through /knowledgeBase.
   /document/internal/upload:
     post:
       tags:
@@ -26776,6 +26372,117 @@ paths:
   # ==================== ENTERPRISE SEARCH ENDPOINTS ====================
 
   # -------------------- Conversations --------------------
+  /conversations/create:
+    post:
+      tags:
+        - Conversations
+      summary: Create conversation (non-streaming)
+      description: |
+        Start a new assistant conversation and wait for the complete answer.
+        The JSON counterpart of `POST /conversations/stream`, for API, SDK
+        and automation callers that do not consume SSE.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
+
+        **Modes**
+
+        `chatMode: agent` (or `agent:<mode>`) runs the universal agent and
+        honours `tools` / `agentCapabilities`; `internal_search` and
+        `web_search` run the search assistant and ignore `tools`. Omitted,
+        it defaults to internal search.
+      operationId: createConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      requestBody:
+        required: true
+        description: The first question, with optional scope, model and mode.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '201':
+          description: Conversation created with its first answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateConversationResponse'
+        '400':
+          description: |
+            Invalid request — `query` is missing or empty, contains markup or
+            printf-style format specifiers, or another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `conversation:write` OAuth scope.
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, or the
+            selected one could not start. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /conversations/stream:
     post:
       tags:
@@ -28140,7 +27847,7 @@ paths:
                               enum: [read, write]
                       status:
                         type: string
-                        enum: [None, Inprogress, Complete, Failed]
+                        enum: [None, Inprogress, Complete, Failed, Stopped]
                       failReason:
                         type: string
                         description: Populated only when `status` is `Failed`
@@ -28659,6 +28366,128 @@ paths:
         '500':
           description: Internal server error while deleting the conversation
 
+  /conversations/{conversationId}/messages:
+    post:
+      tags:
+        - Conversations
+      summary: Add message (non-streaming)
+      description: |
+        Ask a follow-up in an existing assistant conversation and wait for
+        the complete answer. The JSON counterpart of
+        `POST /conversations/{conversationId}/messages/stream`. Earlier turns
+        are sent to the model as history; project context comes from the
+        conversation, never from the request.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
+      operationId: addMessage
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: The follow-up question, with optional scope and model overrides.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMessageRequest'
+      responses:
+        '200':
+          description: The conversation with the new question and answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddMessageResponse'
+        '400':
+          description: |
+            Invalid request — `query` is missing or empty, contains markup or
+            printf-style format specifiers, or another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `conversation:chat` OAuth scope.
+        '404':
+          description: |
+            Conversation not found — it does not exist, belongs to another
+            user, is of the other type (assistant vs agent), or, for agent
+            routes, belongs to a different agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, or the
+            selected one could not start. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /conversations/{conversationId}/messages/stream:
     post:
       tags:
@@ -28956,13 +28785,14 @@ paths:
                         description: User who started the conversation
                       status:
                         type: string
-                        enum: [None, Inprogress, Complete, Failed]
+                        enum: [None, Inprogress, Complete, Failed, Stopped]
                         description: |
                           Current status of the conversation:
                           - `None` — no activity yet
                           - `Inprogress` — AI is processing
                           - `Complete` — response ready
                           - `Failed` — error occurred
+                          - `Stopped` — cancelled, or the client disconnected mid-answer
                       failReason:
                         type: string
                         description: |
@@ -32570,9 +32400,35 @@ paths:
     post:
       tags:
         - Agents
-      summary: Add message to agent conversation
-      description: Append a user message and wait for the full non-streaming AI response.
+      summary: Add message to agent conversation (non-streaming)
+      description: |
+        Ask a follow-up in an existing agent conversation and wait for the
+        complete answer. The JSON counterpart of
+        `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
       operationId: addAgentConversationMessage
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -32590,24 +32446,80 @@ paths:
             format: objectId
       requestBody:
         required: true
-        description: Follow-up message body (query required).
+        description: The follow-up question, with optional scope, model and tool overrides.
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AddMessageRequest'
+              $ref: '#/components/schemas/AgentAddMessageRequest'
       responses:
         '200':
-          description: Updated conversation with new assistant message
+          description: The conversation with the new question and answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AddMessageResponse'
         '400':
-          description: Invalid request
+          description: |
+            Invalid request — `query` is missing or empty, contains markup or
+            printf-style format specifiers, or another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `agent:execute` OAuth scope, or the caller cannot use this agent.
         '404':
-          description: Conversation not found
+          description: |
+            Conversation not found — it does not exist, belongs to another
+            user, is of the other type (assistant vs agent), or, for agent
+            routes, belongs to a different agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, or the
+            selected one could not start. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/archive:
     post:
@@ -33212,11 +33124,34 @@ paths:
     post:
       tags:
         - Agents
-      summary: Create agent conversation
+      summary: Create agent conversation (non-streaming)
       description: |
-        Create a new conversation with the agent using an initial user query;
-        returns the persisted conversation after the first AI response (non-streaming).
+        Start a conversation with an agent and wait for the complete answer.
+        The JSON counterpart of `POST /agents/{agentKey}/conversations/stream`.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
       operationId: createAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -33228,31 +33163,71 @@ paths:
             type: string
       requestBody:
         required: true
-        description: Initial user query and optional model or filter context.
+        description: The first question, with optional scope, model, project and tool overrides.
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateConversationRequest'
+              $ref: '#/components/schemas/AgentCreateConversationRequest'
       responses:
         '201':
-          description: Conversation created
+          description: Conversation created with the agent's first answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - conversation
-                  - meta
-                properties:
-                  conversation:
-                    $ref: '#/components/schemas/AgentConversation'
-                  meta:
-                    type: object
-                    additionalProperties: true
+                $ref: '#/components/schemas/CreateAgentConversationResponse'
         '400':
-          description: Invalid request
+          description: |
+            Invalid request — `query` is missing or empty, contains markup or
+            printf-style format specifiers, or another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `agent:execute` OAuth scope, or the caller cannot use this agent.
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, or the
+            selected one could not start. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== CONNECTOR MANAGER ENDPOINTS ====================
 

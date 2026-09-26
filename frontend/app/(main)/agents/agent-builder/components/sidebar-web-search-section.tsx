@@ -322,7 +322,7 @@ function ProviderRow({
             <Tooltip
               content={
                 isConfigured
-                  ? t('workspace.users.actions.edit')
+                  ? t('action.edit')
                   : t('agentBuilder.configureShort')
               }
             >

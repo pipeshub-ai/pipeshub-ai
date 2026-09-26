@@ -63,6 +63,7 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
+import { BadRequestError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
@@ -405,46 +406,43 @@ describe('Enterprise Search Controller', () => {
       expect(handler).to.be.a('function')
     })
 
-    it('should throw BadRequestError when user is missing and body has no query', async () => {
+    it('should pass BadRequestError to next when user is missing and body has no query', async () => {
       const handler = createConversation(createMockAppConfig())
       const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-        expect.fail('Expected an error to be thrown')
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
-    it('should throw BadRequestError when query is missing', async () => {
+    it('should pass BadRequestError to next when query is missing', async () => {
       const handler = createConversation(createMockAppConfig())
       const req = createMockRequest({ body: {} })
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-        expect.fail('Expected an error to be thrown')
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
-    it('should throw BadRequestError when query is empty string', async () => {
+    it('should pass BadRequestError to next when query is empty string', async () => {
       const handler = createConversation(createMockAppConfig())
       const req = createMockRequest({ body: { query: '' } })
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-        expect.fail('Expected an error to be thrown')
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
     it('should create conversation and return CREATED on happy path', async () => {
@@ -948,7 +946,7 @@ describe('Enterprise Search Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should throw BadRequestError when query is missing', async () => {
+    it('should pass BadRequestError to next when query is missing', async () => {
       const handler = addMessage(createMockAppConfig())
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -957,11 +955,11 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
@@ -3689,7 +3687,7 @@ describe('Enterprise Search Controller', () => {
       expect(handler).to.be.a('function')
     })
 
-    it('should throw BadRequestError when query is missing', async () => {
+    it('should pass BadRequestError to next when query is missing', async () => {
       const handler = createAgentConversation(createMockAppConfig())
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
@@ -3698,11 +3696,11 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
     it('should create agent conversation and return CREATED', async () => {
@@ -6734,7 +6732,7 @@ describe('Enterprise Search Controller', () => {
       expect(handler).to.be.a('function')
     })
 
-    it('should throw BadRequestError when query is missing', async () => {
+    it('should pass BadRequestError to next when query is missing', async () => {
       const handler = addMessageToAgentConversation(createMockAppConfig())
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -6743,11 +6741,11 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
@@ -6921,14 +6919,14 @@ describe('Enterprise Search Controller', () => {
     it('should look up user from tokenPayload email when user property is absent', async () => {
       const handler = createConversation(createMockAppConfig())
 
-      sinon.stub(Users, 'find').resolves([{
+      sinon.stub(Users, 'findOne').resolves({
         _id: new mongoose.Types.ObjectId(VALID_OID),
         orgId: new mongoose.Types.ObjectId(VALID_OID2),
         email: 'test@test.com',
         fullName: 'Test User',
         mobile: '1234567890',
         slug: 'test-user',
-      }] as any)
+      } as any)
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6976,7 +6974,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next when user not found from tokenPayload email', async () => {
       const handler = createConversation(createMockAppConfig())
 
-      sinon.stub(Users, 'find').resolves([])
+      sinon.stub(Users, 'findOne').resolves(null)
 
       const req: any = {
         headers: { authorization: 'Bearer old-token' },
@@ -7009,14 +7007,14 @@ describe('Enterprise Search Controller', () => {
     it('should look up user from tokenPayload email and add message', async () => {
       const handler = addMessage(createMockAppConfig())
 
-      sinon.stub(Users, 'find').resolves([{
+      sinon.stub(Users, 'findOne').resolves({
         _id: new mongoose.Types.ObjectId(VALID_OID),
         orgId: new mongoose.Types.ObjectId(VALID_OID2),
         email: 'test@test.com',
         fullName: 'Test User',
         mobile: '1234567890',
         slug: 'test-user',
-      }] as any)
+      } as any)
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -7062,7 +7060,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next when user not found from tokenPayload in addMessage', async () => {
       const handler = addMessage(createMockAppConfig())
 
-      sinon.stub(Users, 'find').resolves([])
+      sinon.stub(Users, 'findOne').resolves(null)
 
       const req: any = {
         headers: { authorization: 'Bearer old-token' },
@@ -8438,7 +8436,7 @@ describe('Enterprise Search Controller', () => {
         slug: 'test-user',
       }
 
-      sinon.stub(Users, 'find').resolves([mockUser])
+      sinon.stub(Users, 'findOne').resolves(mockUser as any)
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -8472,7 +8470,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next with NotFoundError when user not found via service request', async () => {
       const handler = createConversation(createMockAppConfig())
 
-      sinon.stub(Users, 'find').resolves([])
+      sinon.stub(Users, 'findOne').resolves(null)
 
       const req: any = {
         headers: { authorization: 'Bearer scoped-token' },
@@ -8508,7 +8506,7 @@ describe('Enterprise Search Controller', () => {
         slug: 'test-user',
       }
 
-      sinon.stub(Users, 'find').resolves([mockUser])
+      sinon.stub(Users, 'findOne').resolves(mockUser as any)
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -11565,15 +11563,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next with error when email lookup finds no user', async () => {
       const handler = createConversation(createMockAppConfig())
 
-      const findChain: any = {
-        sort: sinon.stub().returnsThis(),
-        skip: sinon.stub().returnsThis(),
-        limit: sinon.stub().returnsThis(),
-        select: sinon.stub().returnsThis(),
-        lean: sinon.stub().returnsThis(),
-        exec: sinon.stub().resolves([]),
-      }
-      sinon.stub(Users, 'find').returns(findChain as any)
+      sinon.stub(Users, 'findOne').resolves(null)
 
       // Service request without user but with tokenPayload
       const req: any = {

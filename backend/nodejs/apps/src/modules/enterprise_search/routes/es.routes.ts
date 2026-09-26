@@ -4,10 +4,8 @@ import multer from 'multer';
 import { createMulter } from '../../../libs/utils/multer.utils';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
-  addMessage,
   archiveConversation,
   archiveSearch,
-  createConversation,
   deleteConversationById,
   deleteSearchById,
   deleteSearchHistory,
@@ -31,10 +29,8 @@ import {
   uploadChatAttachmentsInternal,
   deleteChatAttachment,
   addMessageStream,
-  createAgentConversation,
   streamAgentConversation,
   streamAgentConversationInternal,
-  addMessageToAgentConversation,
   addMessageStreamToAgentConversation,
   addMessageStreamToAgentConversationInternal,
   getAllAgentConversations,
@@ -62,6 +58,12 @@ import {
   setConversationProject,
   setConversationProjectVisibility,
 } from '../controller/es_controller';
+import {
+  addMessage,
+  addMessageToAgentConversation,
+  createAgentConversation,
+  createConversation,
+} from '../controller/non-streaming-chat.controller';
 import {
   getSpeechCapabilities,
   synthesizeSpeech,
@@ -95,6 +97,8 @@ import {
   updateAgentFeedbackParamsSchema,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
+  agentCreateConversationSchema,
+  agentAddMessageSchema,
   getAllConversationsQuerySchema,
   getAllAgentConversationsQuerySchema,
   listAllArchivesConversationQuerySchema,
@@ -638,6 +642,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    ValidationMiddleware.validate(agentCreateConversationSchema),
     createAgentConversation(appConfig),
   );
 
@@ -653,6 +658,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId/messages',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    ValidationMiddleware.validate(agentAddMessageSchema),
     addMessageToAgentConversation(appConfig),
   );
 

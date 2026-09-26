@@ -1,5 +1,9 @@
 """
-StorageClient — thin HTTP wrapper for /api/v1/document routes.
+StorageClient — thin HTTP wrapper for the /api/v1/document/internal routes.
+
+Storage is service-to-service only (it scopes by org, not record ACLs), so the
+client authenticates with a storage scoped token minted from
+``SCOPED_JWT_SECRET`` — the same secret the deployment was started with.
 
 Import this in any storage integration test:
     from storage_client import StorageClient
@@ -8,6 +12,7 @@ Import this in any storage integration test:
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
 from typing import Callable
@@ -23,7 +28,25 @@ for _p in (_ROOT_DIR, _HELPER_DIR):
 
 from pipeshub_client import PipeshubClient
 
-DOCUMENT_BASE = "/api/v1/document"
+DOCUMENT_BASE = "/api/v1/document/internal"
+STORAGE_TOKEN_SCOPE = "storage:token"
+
+
+def scoped_jwt_secret() -> str:
+    return os.getenv("SCOPED_JWT_SECRET", "").strip()
+
+
+def mint_storage_token(org_id: str, user_id: str | None = None) -> str:
+    """Storage service token, shaped like the one Node's createJwt issues."""
+    from app.utils.jwt import mint_service_token  # type: ignore[import-not-found]
+
+    secret = scoped_jwt_secret()
+    if not secret:
+        raise RuntimeError("SCOPED_JWT_SECRET is required to call the storage service")
+    claims: dict[str, object] = {"orgId": org_id, "scopes": [STORAGE_TOKEN_SCOPE]}
+    if user_id:
+        claims["userId"] = user_id
+    return mint_service_token(secret, claims)
 
 
 class StorageClient:
@@ -65,8 +88,9 @@ class StorageClient:
         return self._c.org_id
 
     def _auth_headers(self) -> dict[str, str]:
-        self._c._ensure_access_token()
-        return {"Authorization": f"Bearer {self._c._access_token}"}
+        # Minted per request: service tokens are short-lived.
+        token = mint_storage_token(self._c.org_id, self._c.user_id)
+        return {"Authorization": f"Bearer {token}"}
 
     def _json_headers(self) -> dict[str, str]:
         return {**self._auth_headers(), "Content-Type": "application/json"}

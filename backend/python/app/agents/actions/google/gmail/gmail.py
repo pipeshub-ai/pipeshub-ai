@@ -1,6 +1,9 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
+from email.utils import parseaddr
+from http import HTTPStatus
 from typing import Any, Dict, List, Optional
 
 from googleapiclient.errors import HttpError
@@ -8,6 +11,7 @@ from googleapiclient.errors import HttpError
 from pydantic import BaseModel, Field
 
 from app.agents.actions.google.gmail.utils import GmailUtils
+from app.agents.actions.util.google_api_errors import GoogleToolWording, google_error_message
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agents.actions.util.attachments import (
     attachment_record_ids_parameter,
@@ -37,6 +41,8 @@ from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
 logger = logging.getLogger(__name__)
 
+_MAX_SEARCH_RESULTS = 500
+
 
 def _gmail_message_label(message: dict) -> str:
     payload = message.get("payload") or {}
@@ -48,6 +54,80 @@ def _gmail_message_label(message: dict) -> str:
     return subject or message.get("snippet") or message.get("id") or "?"
 
 
+_GMAIL_WORDING = GoogleToolWording(
+    product="Gmail",
+    toolset="Gmail",
+    access="Gmail access",
+    not_found="that email. Check the message id, or call search_emails to find the right one.",
+    gone="that email has already been deleted.",
+)
+
+
+def _gmail_failure(error: Exception, action: str) -> tuple[bool, str]:
+    logger.error("Failed to %s: %s", action, error)
+    return False, json.dumps({"error": google_error_message(error, action, _GMAIL_WORDING)})
+
+
+def _attachments_in(part: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every named part at any depth: mail clients nest attachments inside multipart/related and /mixed."""
+    found: list[dict[str, Any]] = []
+    if part.get("filename"):
+        body = part.get("body") or {}
+        found.append({
+            "attachment_id": body.get("attachmentId"),
+            "filename": part["filename"],
+            "mime_type": part.get("mimeType"),
+            "size": body.get("size"),
+        })
+    for child in part.get("parts") or []:
+        found.extend(_attachments_in(child))
+    return found
+
+
+@dataclass(frozen=True)
+class _ReplyContext:
+    thread_id: str | None = None
+    rfc_message_id: str | None = None
+    references: str | None = None
+
+
+def _unreadable(msg: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": msg["id"],
+        "threadId": msg.get("threadId", ""),
+        "subject": "(metadata unavailable)",
+        "from": "",
+        "to": "",
+        "date": "",
+        "snippet": "",
+        "labelIds": [],
+        "unreadable": True,
+    }
+
+
+def _recipient_problem(mail_to: list[str], *others: list[str] | None) -> str | None:
+    if not mail_to:
+        return "Give at least one recipient email address in mail_to."
+    for entry in [*mail_to, *(e for group in others for e in group or [])]:
+        _, address = parseaddr(entry or "")
+        if "@" not in address or " " in address.strip():
+            return (
+                f"'{(entry or '').strip()}' is not an email address. Find the person's address first "
+                "(for example from an earlier email) and try again."
+            )
+    return None
+
+
+def _refuse_file_paths() -> tuple[bool, str]:
+    # Paths would be read from the server's own disk, so the model could mail out any file there.
+    return False, json.dumps({
+        "error": (
+            "Files can't be attached by path. Attach PipesHub files (chat uploads, artifacts, knowledge-base "
+            "files) by passing their record IDs in attachment_record_ids instead."
+        )
+    })
+
+
 # Pydantic schemas for Gmail tools
 class SendEmailInput(BaseModel):
     """Schema for sending an email"""
@@ -56,7 +136,6 @@ class SendEmailInput(BaseModel):
     mail_cc: Optional[List[str]] = Field(default=None, description="List of email addresses to CC")
     mail_bcc: Optional[List[str]] = Field(default=None, description="List of email addresses to BCC")
     mail_body: Optional[str] = Field(default=None, description="The body content of the email")
-    mail_attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
     thread_id: Optional[str] = Field(default=None, description="The thread ID to maintain conversation context")
     message_id: Optional[str] = Field(default=None, description="The message ID for threading")
 
@@ -69,7 +148,6 @@ class ReplyInput(BaseModel):
     mail_cc: Optional[List[str]] = Field(default=None, description="List of email addresses to CC")
     mail_bcc: Optional[List[str]] = Field(default=None, description="List of email addresses to BCC")
     mail_body: Optional[str] = Field(default=None, description="The body content of the reply email")
-    mail_attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
     thread_id: Optional[str] = Field(default=None, description="The thread ID to maintain conversation context")
 
 
@@ -80,7 +158,6 @@ class DraftEmailInput(BaseModel):
     mail_cc: Optional[List[str]] = Field(default=None, description="List of email addresses to CC")
     mail_bcc: Optional[List[str]] = Field(default=None, description="List of email addresses to BCC")
     mail_body: Optional[str] = Field(default=None, description="The body content of the email")
-    mail_attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
 
 
 class SearchEmailsInput(BaseModel):
@@ -170,38 +247,23 @@ class Gmail:
         self.client = GoogleGmailDataSource(client)
         self.chat_state = state
 
-    def _handle_error(self, error: Exception, operation: str = "operation") -> tuple[bool, str]:
-        """Handle errors with user-friendly authentication messages.
-
-        Args:
-            error: The exception that occurred
-            operation: Description of the operation that failed
-
-        Returns:
-            tuple[bool, str]: (False, error_json_string)
-        """
-        error_msg = str(error).lower()
-
-        # Check for AttributeError (client not properly initialized)
-        if isinstance(error, AttributeError):
-            if "users" in str(error) or "client" in error_msg:
-                logger.error(f"Gmail client not properly initialized - authentication may be required: {error}")
-                return False, json.dumps({
-                    "error": "Gmail toolset is not authenticated. Please complete the OAuth flow first. "
-                             "Go to Settings > Toolsets to authenticate your Gmail account."
-                })
-
-        # Check for authentication-related errors
-        if isinstance(error, ValueError) or "not authenticated" in error_msg or "oauth" in error_msg or "authentication" in error_msg:
-            logger.error(f"Gmail authentication error during {operation}: {error}")
-            return False, json.dumps({
-                "error": "Gmail toolset is not authenticated. Please complete the OAuth flow first. "
-                         "Go to Settings > Toolsets to authenticate your Gmail account."
-            })
-
-        # Generic error handling
-        logger.error(f"Failed to {operation}: {error}")
-        return False, json.dumps({"error": str(error)})
+    async def _reply_context(self, message_id: str, thread_id: str | None) -> "_ReplyContext":
+        """Threading comes from the original's RFC 822 headers; Gmail's own message id is not one."""
+        original = await self.client.users_messages_get(
+            userId="me", id=message_id, format="metadata", metadataHeaders=["Message-ID", "References"],
+        )
+        found = {
+            str(h.get("name", "")).lower(): h.get("value")
+            for h in (original.get("payload") or {}).get("headers") or []
+            if isinstance(h, dict)
+        }
+        rfc_message_id = found.get("message-id")
+        chain = " ".join(v for v in (found.get("references"), rfc_message_id) if v)
+        return _ReplyContext(
+            thread_id=original.get("threadId") or thread_id,
+            rfc_message_id=rfc_message_id,
+            references=chain or None,
+        )
 
     async def _resolve_in_memory_attachments(
         self,
@@ -280,7 +342,6 @@ class Gmail:
             ToolParameter(name="mail_cc", type=ParameterType.ARRAY, description="List of email addresses to CC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_bcc", type=ParameterType.ARRAY, description="List of email addresses to BCC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_body", type=ParameterType.STRING, description="The body content of the reply email", required=False),
-            ToolParameter(name="mail_attachments", type=ParameterType.ARRAY, description="List of file paths to attach (legacy; prefer attachment_record_ids)", required=False, items={"type": "string"}),
             ToolParameter(name="thread_id", type=ParameterType.STRING, description="The thread ID to maintain conversation context", required=False),
             attachment_record_ids_parameter(required=False),
         ],
@@ -299,6 +360,15 @@ class Gmail:
         attachment_record_ids: Optional[List[str]] = None,
     ) -> tuple[bool, str]:
         """Reply to an email, optionally attaching PipesHub records."""
+        if mail_attachments:
+            return _refuse_file_paths()
+        problem = _recipient_problem(mail_to, mail_cc, mail_bcc)
+        if problem:
+            return False, json.dumps({"error": problem})
+        try:
+            context = await self._reply_context(message_id, thread_id)
+        except Exception as e:
+            return _gmail_failure(e, "read the email being replied to, so no reply was sent")
         try:
             destination = ", ".join(mail_to) if mail_to else ""
             in_memory = await self._resolve_in_memory_attachments(attachment_record_ids, destination=destination)
@@ -308,17 +378,18 @@ class Gmail:
                 mail_cc,
                 mail_bcc,
                 mail_body,
-                mail_attachments,
-                thread_id,
-                message_id,
+                None,
+                context.thread_id,
+                context.rfc_message_id,
                 in_memory_attachments=in_memory,
+                references=context.references,
             )
             message = await self.client.users_messages_send(userId="me", body=message_body)
             return True, json.dumps({"message_id": message.get("id", ""), "message": message})
         except ValueError as exc:
             return False, json.dumps({"error": str(exc)})
         except Exception as e:
-            return self._handle_error(e, "send reply")
+            return _gmail_failure(e, "send the reply")
 
     @tool(
         path="/tools/gmail/draft_email",
@@ -333,7 +404,6 @@ class Gmail:
             ToolParameter(name="mail_cc", type=ParameterType.ARRAY, description="List of email addresses to CC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_bcc", type=ParameterType.ARRAY, description="List of email addresses to BCC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_body", type=ParameterType.STRING, description="The body content of the email", required=False),
-            ToolParameter(name="mail_attachments", type=ParameterType.ARRAY, description="List of file paths to attach (legacy; prefer attachment_record_ids)", required=False, items={"type": "string"}),
             attachment_record_ids_parameter(required=False),
         ],
         tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
@@ -349,6 +419,11 @@ class Gmail:
         attachment_record_ids: Optional[List[str]] = None,
     ) -> tuple[bool, str]:
         """Draft an email, optionally attaching PipesHub records."""
+        if mail_attachments:
+            return _refuse_file_paths()
+        problem = _recipient_problem(mail_to, mail_cc, mail_bcc)
+        if problem:
+            return False, json.dumps({"error": problem})
         try:
             destination = ", ".join(mail_to) if mail_to else ""
             in_memory = await self._resolve_in_memory_attachments(attachment_record_ids, destination=destination)
@@ -358,7 +433,7 @@ class Gmail:
                 mail_cc,
                 mail_bcc,
                 mail_body,
-                mail_attachments,
+                None,
                 in_memory_attachments=in_memory,
             )
             draft = await self.client.users_drafts_create(
@@ -368,7 +443,7 @@ class Gmail:
         except ValueError as exc:
             return False, json.dumps({"error": str(exc)})
         except Exception as e:
-            return self._handle_error(e, "create draft")
+            return _gmail_failure(e, "save the draft")
 
     @tool(
         path="/tools/gmail/send_email",
@@ -384,7 +459,6 @@ class Gmail:
             ToolParameter(name="mail_cc", type=ParameterType.ARRAY, description="List of email addresses to CC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_bcc", type=ParameterType.ARRAY, description="List of email addresses to BCC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_body", type=ParameterType.STRING, description="The body content of the email", required=False),
-            ToolParameter(name="mail_attachments", type=ParameterType.ARRAY, description="List of file paths to attach (legacy; prefer attachment_record_ids)", required=False, items={"type": "string"}),
             ToolParameter(name="thread_id", type=ParameterType.STRING, description="The thread ID to maintain conversation context", required=False),
             ToolParameter(name="message_id", type=ParameterType.STRING, description="The message ID for threading", required=False),
             attachment_record_ids_parameter(required=False),
@@ -406,6 +480,17 @@ class Gmail:
         attachment_record_ids: Optional[List[str]] = None,
     ) -> tuple[bool, str]:
         """Send an email, optionally attaching PipesHub records."""
+        if mail_attachments:
+            return _refuse_file_paths()
+        problem = _recipient_problem(mail_to, mail_cc, mail_bcc)
+        if problem:
+            return False, json.dumps({"error": problem})
+        context = _ReplyContext(thread_id=thread_id)
+        if message_id:
+            try:
+                context = await self._reply_context(message_id, thread_id)
+            except Exception as e:
+                return _gmail_failure(e, "read the email this one answers, so nothing was sent")
         try:
             destination = ", ".join(mail_to) if mail_to else ""
             in_memory = await self._resolve_in_memory_attachments(attachment_record_ids, destination=destination)
@@ -415,17 +500,18 @@ class Gmail:
                 mail_cc,
                 mail_bcc,
                 mail_body,
-                mail_attachments,
-                thread_id,
-                message_id,
+                None,
+                context.thread_id,
+                context.rfc_message_id,
                 in_memory_attachments=in_memory,
+                references=context.references,
             )
             message = await self.client.users_messages_send(userId="me", body=message_body)
             return True, json.dumps({"message_id": message.get("id", ""), "message": message})
         except ValueError as exc:
             return False, json.dumps({"error": str(exc)})
         except Exception as e:
-            return self._handle_error(e, "send email")
+            return _gmail_failure(e, "send the email")
 
     @tool(
         path="/tools/gmail/search_emails",
@@ -458,8 +544,14 @@ class Gmail:
         Returns:
             tuple[bool, str]: True if the emails are searched, False otherwise
         """
+        if max_results is not None and not 1 <= max_results <= _MAX_SEARCH_RESULTS:
+            return False, json.dumps({
+                "error": (
+                    f"max_results must be between 1 and {_MAX_SEARCH_RESULTS}; Gmail returns at most "
+                    f"{_MAX_SEARCH_RESULTS} messages per page. Use page_token to read further pages."
+                )
+            })
         try:
-            # Use GoogleGmailDataSource method
             result = await self.client.users_messages_list(
                 userId="me",
                 q=query,
@@ -495,40 +587,29 @@ class Gmail:
                         "labelIds": meta.get("labelIds", []),
                     }
                 except HttpError as e:
-                    if e.resp.status == 404:
+                    if e.resp.status == HTTPStatus.NOT_FOUND:
                         logger.debug("Gmail message %s no longer exists, skipping", msg["id"])
                         return None
-                    return {
-                        "id": msg["id"],
-                        "threadId": msg.get("threadId", ""),
-                        "subject": "(metadata unavailable)",
-                        "from": "",
-                        "to": "",
-                        "date": "",
-                        "snippet": "",
-                        "labelIds": [],
-                    }
+                    return _unreadable(msg)
                 except Exception:
-                    return {
-                        "id": msg["id"],
-                        "threadId": msg.get("threadId", ""),
-                        "subject": "(metadata unavailable)",
-                        "from": "",
-                        "to": "",
-                        "date": "",
-                        "snippet": "",
-                        "labelIds": [],
-                    }
+                    return _unreadable(msg)
 
             enriched = [m for m in await asyncio.gather(*[fetch_metadata(m) for m in messages]) if m is not None]
-
-            return True, json.dumps({
-                "messages": list(enriched),
+            payload: dict[str, Any] = {
+                "messages": enriched,
                 "nextPageToken": next_page_token,
                 "resultSizeEstimate": result_size_estimate,
-            })
+            }
+            unreadable = [m["id"] for m in enriched if m.get("unreadable")]
+            if unreadable:
+                payload["unreadable_message_ids"] = unreadable
+                payload["note"] = (
+                    f"The details of {len(unreadable)} of {len(enriched)} messages could not be read, so their "
+                    "subject, sender and date are missing. Call get_email_details with those ids to read them."
+                )
+            return True, json.dumps(payload)
         except Exception as e:
-            return self._handle_error(e, "search emails")
+            return _gmail_failure(e, "search emails")
 
     @tool(
         path="/tools/gmail/get_email_details",
@@ -561,7 +642,7 @@ class Gmail:
             )
             return True, json.dumps(message)
         except Exception as e:
-            return self._handle_error(e, f"get email details for {message_id}")
+            return _gmail_failure(e, "read that email")
 
     @tool(
         path="/tools/gmail/get_email_attachments",
@@ -591,27 +672,16 @@ class Gmail:
                 format="full",
             )
 
-            attachments = []
-            if "payload" in message and "parts" in message["payload"]:
-                for part in message["payload"]["parts"]:
-                    if part.get("filename"):
-                        attachments.append({
-                            "attachment_id": part["body"]["attachmentId"],
-                            "filename": part["filename"],
-                            "mime_type": part["mimeType"],
-                            "size": part["body"]["size"]
-                        })
-
-            return True, json.dumps(attachments)
+            return True, json.dumps(_attachments_in(message.get("payload") or {}))
         except Exception as e:
-            return self._handle_error(e, f"get email attachments for {message_id}")
+            return _gmail_failure(e, "list that email's attachments")
 
     @tool(
         path="/tools/gmail/get_user_profile",
         short_description="Get the authenticated user's Gmail profile",
         description="Get the authenticated user's Gmail profile including email address, total messages, and threads count.",
         parameters=[
-            ToolParameter(name="user_id", type=ParameterType.STRING, description="The user ID (use 'me' for authenticated user)", required=False, default="me"),
+            ToolParameter(name="user_id", type=ParameterType.STRING, description="Always 'me': only the signed-in user's own profile can be read", required=False, default="me"),
         ],
         tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
     )
@@ -626,11 +696,15 @@ class Gmail:
         Returns:
             tuple[bool, str]: True if successful, False otherwise
         """
+        if (user_id or "me").strip().lower() != "me":
+            return False, json.dumps({
+                "error": (
+                    "get_user_profile reads only the signed-in user's own mailbox. "
+                    "Call it again without user_id."
+                )
+            })
         try:
-            # Use GoogleGmailDataSource method
-            profile = await self.client.users_get_profile(
-                userId=user_id
-            )
+            profile = await self.client.users_get_profile(userId="me")
             return True, json.dumps({
                 "email_address": profile.get("emailAddress", ""),
                 "messages_total": profile.get("messagesTotal", 0),
@@ -638,7 +712,7 @@ class Gmail:
                 "history_id": profile.get("historyId", "")
             })
         except Exception as e:
-            return self._handle_error(e, "get user profile")
+            return _gmail_failure(e, "read the Gmail profile")
 
     # @tool(
     #     app_name="gmail",

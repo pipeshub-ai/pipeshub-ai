@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import base64
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.agents.actions.artifacts.artifacts import ArtifactManager
+from app.config.constants.arangodb import OriginTypes
 from app.models.entities import ArtifactType, LifecycleStatus
 from app.services.artifact_registry import ArtifactMetadata, ArtifactVersion, VersionConflictError
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
@@ -209,6 +211,102 @@ class TestGetArtifactDownloadUrl:
         success, payload = await manager.get_artifact_download_url(artifact_id="art-1")
         assert success is False
         assert "permission" in json.loads(payload)["error"]
+
+
+def _record_graph(*, record: SimpleNamespace | None, has_edge: bool = False, acl_access: bool = False) -> MagicMock:
+    graph = MagicMock()
+    graph.get_record_by_id = AsyncMock(return_value=record)
+    graph.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey-1"})
+    graph.get_edge = AsyncMock(return_value={"role": "READER"} if has_edge else None)
+    graph.check_record_access_with_details = AsyncMock(return_value={"access": "KB"} if acl_access else None)
+    return graph
+
+
+def _upload_record(**overrides) -> SimpleNamespace:
+    fields = {
+        "id": "rec-1", "org_id": "org-1", "origin": OriginTypes.UPLOAD,
+        "external_record_id": "doc-1", "record_name": "salaries.xlsx",
+        "mime_type": "application/vnd.ms-excel", "weburl": "https://drive.example/x",
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+class TestGetRecordDownloadUrl:
+    async def test_user_without_access_gets_no_signed_url(self) -> None:
+        # A signed URL needs no bearer token, so org membership alone must not mint one.
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _record_graph(record=_upload_record())
+        manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
+
+        success, payload = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is False
+        assert "permission" in json.loads(payload)["error"]
+        blob.get_download_url.assert_not_awaited()
+        graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+
+    async def test_connector_record_details_hidden_without_access(self) -> None:
+        graph = _record_graph(record=_upload_record(origin=OriginTypes.CONNECTOR))
+        manager, _ = _make_manager(graph_provider=graph)
+
+        success, payload = await manager.get_record_download_url(record_id="rec-1")
+
+        body = json.loads(payload)
+        assert success is False
+        assert "source_url" not in body and "file_name" not in body
+
+    async def test_record_in_another_org_is_denied(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _record_graph(record=_upload_record(org_id="org-2"), has_edge=True, acl_access=True)
+        manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
+
+        success, _ = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is False
+        blob.get_download_url.assert_not_awaited()
+
+    async def test_direct_permission_edge_gets_signed_url(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _record_graph(record=_upload_record(), has_edge=True)
+        manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
+
+        success, payload = await manager.get_record_download_url(record_id="rec-1")
+
+        body = json.loads(payload)
+        assert success is True
+        assert (body["download_url"], body["url_type"]) == ("https://s3.example/signed", "direct_download")
+        blob.get_download_url.assert_awaited_once_with("org-1", "doc-1")
+
+    async def test_kb_access_without_direct_edge_gets_signed_url(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _record_graph(record=_upload_record(), acl_access=True)
+        manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
+
+        success, _ = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is True
+
+    async def test_local_storage_links_to_permission_checked_stream(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value=None)
+        blob.get_record_stream_url = AsyncMock(
+            return_value="https://app.example/api/v1/knowledgeBase/stream/record/rec-1",
+        )
+        graph = _record_graph(record=_upload_record(), has_edge=True)
+        manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
+
+        success, payload = await manager.get_record_download_url(record_id="rec-1")
+
+        body = json.loads(payload)
+        assert success is True
+        assert body["download_url"] == "https://app.example/api/v1/knowledgeBase/stream/record/rec-1"
+        assert body["url_type"] == "authenticated_link"
+        blob.get_record_stream_url.assert_awaited_once_with("rec-1")
 
 
 class TestListArtifacts:

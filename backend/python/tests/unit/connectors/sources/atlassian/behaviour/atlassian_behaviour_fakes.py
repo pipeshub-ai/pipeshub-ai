@@ -14,15 +14,37 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
+from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 if TYPE_CHECKING:
+    from app.connectors.core.base.connector.connector_service import BaseConnector
     from app.models.entities import Record
     from app.sources.client.http.http_client import HTTPClient
 
 Handler = Callable[[httpx.Request], httpx.Response]
+
+
+def record_logs(connector: BaseConnector) -> MagicMock:
+    """Record the connector's own log calls.
+
+    Unlike caplog, this does not depend on global logging state, which other tests in
+    the suite can leave disabled or non-propagating. The real logger is still called.
+    """
+    recorder = MagicMock(wraps=connector.logger)
+    connector.logger = recorder
+    return recorder
+
+
+def logged(recorder: MagicMock, level: str = "error") -> list[str]:
+    """Messages logged at ``level`` through a ``record_logs`` recorder, %-args applied."""
+    return [
+        str(call.args[0]) % call.args[1:] if len(call.args) > 1 else str(call.args[0])
+        for call in getattr(recorder, level).call_args_list
+        if call.args
+    ]
 
 
 def json_response(payload: object, status: int = 200, headers: Optional[dict[str, str]] = None) -> httpx.Response:
@@ -174,6 +196,11 @@ class FakeCheckpointStore:
         return self.sync_points.get(key)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
+        # Neo4j (the default DATA_STORE) only stores primitives or lists of primitives as properties.
+        for field, value in data.items():
+            items = value if isinstance(value, list) else [value]
+            if any(isinstance(item, (dict, list, tuple, set)) for item in items):
+                raise TypeError(f"sync point field {field!r} is not a primitive: {value!r}")
         self.sync_points[key] = dict(data)
 
     async def delete_sync_point(self, key: str) -> None:

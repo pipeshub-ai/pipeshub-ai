@@ -176,8 +176,8 @@ export default function ChangePassword({
                 setConfirmError(t('validation.password.mismatch'));
               }
             }}
-            label={t('auth.signUp.confirmPasswordLabel')}
-            placeholder={t('auth.signUp.confirmPasswordPlaceholder')}
+            label={t('resetPassword.form.confirmPasswordLabel')}
+            placeholder={t('resetPassword.form.confirmPasswordPlaceholder')}
             error={confirmError}
             autoComplete="new-password"
             disabled={disabled}

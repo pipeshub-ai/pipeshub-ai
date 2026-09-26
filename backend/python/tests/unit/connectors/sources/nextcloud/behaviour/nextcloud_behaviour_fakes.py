@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import itertools
 import json
+import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -62,6 +63,14 @@ class Fault:
     matches: Callable[[str], bool]
     responses: list[httpx.Response | Exception]
     hits: int = 0
+    make: Callable[[], httpx.Response | Exception] | None = None
+
+    def live(self) -> bool:
+        return bool(self.responses) or self.make is not None
+
+    def end(self) -> None:
+        self.responses.clear()
+        self.make = None
 
 
 @dataclass
@@ -82,6 +91,8 @@ class FakeNextcloud:
     requests: list[httpx.Request] = field(default_factory=list)
     unrouted: list[str] = field(default_factory=list)
     faults: list[Fault] = field(default_factory=list)
+    trash: dict[str, list[Node]] = field(default_factory=dict)
+    search_supported: bool = True
 
     def __post_init__(self) -> None:
         self._ids = itertools.count(100)
@@ -166,21 +177,31 @@ class FakeNextcloud:
     def delete(self, path: str) -> Node:
         """Deleting a folder logs one activity for the folder only, as Nextcloud does."""
         node = self.nodes[path]
-        for p in [p for p in self.nodes if p == path or p.startswith(path + "/")]:
+        removed = [p for p in self.nodes if p == path or p.startswith(path + "/")]
+        self.trash[node.file_id] = [self.nodes[p] for p in removed]
+        for p in removed:
             del self.nodes[p]
         self._tick()
         self._log("file_deleted", "deleted_self", {node.file_id: f"/{path}"})
         return node
 
     def restore(self, node: Node) -> None:
+        """Restoring from the trash brings a folder back with everything it held, under one activity."""
         self._ensure_parents(node.path)
-        self.nodes[node.path] = node
+        for restored in self.trash.pop(node.file_id, [node]):
+            self.nodes[restored.path] = restored
         self._tick()
         self._log("file_restored", "restored_self", {node.file_id: f"/{node.path}"})
 
     def fail(self, method: str, matches: Callable[[str], bool], *responses: httpx.Response | Exception) -> Fault:
         """Answer the next matching requests with ``responses`` (one each; an exception is raised), then behave normally."""
         fault = Fault(method.upper(), matches, list(responses))
+        self.faults.append(fault)
+        return fault
+
+    def outage(self, method: str, matches: Callable[[str], bool], make: Callable[[], httpx.Response | Exception]) -> Fault:
+        """Answer every matching request with a fresh ``make()``, retries included, until ``end()`` is called."""
+        fault = Fault(method.upper(), matches, [], make=make)
         self.faults.append(fault)
         return fault
 
@@ -209,9 +230,9 @@ class FakeNextcloud:
         self.requests.append(request)
         path = self._decoded_path(request)
         for fault in self.faults:
-            if fault.responses and fault.method == request.method and fault.matches(path):
+            if fault.live() and fault.method == request.method and fault.matches(path):
                 fault.hits += 1
-                answer = fault.responses.pop(0)
+                answer = fault.responses.pop(0) if fault.responses else fault.make()
                 if isinstance(answer, Exception):
                     raise answer
                 return answer
@@ -229,6 +250,8 @@ class FakeNextcloud:
                 if node is None or node.is_dir:
                     return httpx.Response(404)
                 return httpx.Response(200, content=node.content, headers={"content-type": node.content_type})
+        if request.method == "SEARCH" and path.rstrip("/") == "/remote.php/dav":
+            return self._search(request.content.decode())
         if request.method == "GET" and path == ACTIVITY_PATH:
             return self._activity(request.url.params)
         if request.method == "GET" and path == USERS_PREFIX + self.user:
@@ -259,6 +282,22 @@ class FakeNextcloud:
             '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" '
             'xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">'
             f"{body}</d:multistatus>"
+        )
+        return httpx.Response(207, content=xml.encode(), headers={"content-type": "application/xml; charset=utf-8"})
+
+    def _search(self, body: str) -> httpx.Response:
+        """WebDAV SEARCH for one file ID in the user's files (the trash is not searched)."""
+        if not self.search_supported:
+            return httpx.Response(501)
+        scope = re.search(r"<d:href>/files/([^<]+)</d:href>", body)
+        wanted = re.search(r"<d:literal>([^<]+)</d:literal>", body)
+        if not scope or not wanted or scope.group(1) != self.user:
+            return httpx.Response(400)
+        found = [n for p, n in self.nodes.items() if p and n.file_id == wanted.group(1)]
+        xml = (
+            '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" '
+            'xmlns:nc="http://nextcloud.org/ns">'
+            f"{''.join(self._response_xml(n) for n in found)}</d:multistatus>"
         )
         return httpx.Response(207, content=xml.encode(), headers={"content-type": "application/xml; charset=utf-8"})
 
@@ -338,7 +377,8 @@ class FakeRecordsDb:
     and adds one only when the parent record already exists. ``get_record_path``
     follows the Arango query: it walks those edges, keeping only the ancestor each
     record names as its parent. ``on_record_deleted`` removes one record and
-    nothing below it, as production does.
+    nothing below it, as production does; ``on_records_deleted_cascade`` removes
+    the subtree below each record too.
     """
 
     def __init__(self, org_id: str = "org-1") -> None:
@@ -355,6 +395,7 @@ class FakeRecordsDb:
         self.fail_lookup_for: set[str] = set()
         self.fail_write_for: set[str] = set()
         self.fail_delete_for: set[str] = set()
+        self.unreadable_paths: set[str] = set()
         self.messaging_producer: Any = None
 
     def _by_id(self, record_id: str) -> Optional[FileRecord]:
@@ -417,6 +458,34 @@ class FakeRecordsDb:
             del self.records[record.external_record_id]
             self.deleted.append(record.record_name)
 
+    async def on_records_deleted_cascade(self, record_ids: list[str], connector_id: str,
+                                         cascade_children: bool = True) -> dict[str, Any]:
+        """Deletes each record with everything below it along parent edges, all or nothing."""
+        doomed: list[str] = []
+        pending = list(record_ids)
+        while pending:
+            record_id = pending.pop()
+            if record_id in doomed or self._by_id(record_id) is None:
+                continue
+            doomed.append(record_id)
+            pending.extend(child for child, parent in self.edges.items() if parent == record_id)
+        failed = [rid for rid in doomed if self._by_id(rid).external_record_id in self.fail_delete_for]
+        if failed:
+            return {"success": False, "reason": "delete failed", "deleted_records": [],
+                    "failed_records": failed, "successfully_deleted": 0, "failed_count": len(failed)}
+        for record_id in doomed:
+            record = self._by_id(record_id)
+            self.edges.pop(record_id, None)
+            del self.records[record.external_record_id]
+            self.deleted.append(record.record_name)
+        return {"success": True, "deleted_records": doomed, "failed_records": [],
+                "successfully_deleted": len(doomed), "failed_count": 0}
+
+    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str,
+                                    record_type: str | None = None) -> list[FileRecord]:
+        return [r.model_copy(deep=True) for r in self.records.values()
+                if r.parent_external_record_id == parent_external_record_id]
+
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         return 1 if self.edges.pop(record_id, None) else 0
 
@@ -449,6 +518,9 @@ class FakeRecordsDb:
         return "/".join(n for n in names if n)
 
     async def get_record_path(self, record_id: str) -> Optional[str]:
+        """Like the graph providers, a path read that fails comes back as None, not an error."""
+        if record_id in self.unreadable_paths:
+            return None
         return self._path(record_id)
 
     async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[SimpleNamespace]:
@@ -456,6 +528,13 @@ class FakeRecordsDb:
         if record is None or not self.permissions.get(record.external_record_id):
             return None
         return SimpleNamespace(email=self.permissions[record.external_record_id][0].email, source_user_id=None)
+
+
+def _neo4j_property(value: object) -> bool:
+    primitive = (str, int, float, bool, type(None))
+    if isinstance(value, list):
+        return all(isinstance(v, primitive) and v is not None for v in value)
+    return isinstance(value, primitive)
 
 
 class FakeStore:
@@ -472,7 +551,22 @@ class FakeStore:
         return self.sync_points.get(key)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
-        self.sync_points[key] = dict(data)
+        """Merges into the stored document, as Arango's UPDATE and Neo4j's ``SET +=`` do.
+
+        A field that is left out keeps its stored value; clearing one takes an explicit write.
+        Values Neo4j can't hold as a node property (a map, or a list of anything but
+        primitives) are refused, as Neo4j refuses them.
+        """
+        for field_name, value in data.items():
+            if not _neo4j_property(value):
+                raise TypeError(f"Neo4j cannot store {field_name!r} as a property: {value!r}")
+        self.sync_points.setdefault(key, {}).update(data)
+
+    def checkpoint(self) -> dict[str, Any]:
+        for key, value in self.sync_points.items():
+            if key.endswith("/activity_cursor"):
+                return value
+        return {}
 
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> Optional[Record]:
         """Same signature as ``GraphDataStore.get_record_by_path``; Nextcloud records store no path."""

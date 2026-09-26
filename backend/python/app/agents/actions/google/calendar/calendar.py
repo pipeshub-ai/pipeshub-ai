@@ -3,16 +3,14 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta
-from http import HTTPStatus
 from typing import List, Optional, Union
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from google.auth.exceptions import RefreshError
-from googleapiclient.errors import HttpError
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.google_api_errors import GoogleToolWording, google_error_message
 from app.agents.actions.util.tool_summaries import entity_summary, list_summary
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -40,50 +38,22 @@ class _CalendarInputError(ValueError):
     """Bad tool arguments; the message says what to change and is safe to show the agent."""
 
 
-_RATE_LIMIT_REASONS = {"rateLimitExceeded", "userRateLimitExceeded", "RATE_LIMIT_EXCEEDED"}
-_SCOPE_REASONS = {"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}
-_RECONNECT_STEP = "Reconnect the Calendar toolset in Settings > Toolsets and try again."
-
-
-def _google_error_reasons(error: HttpError) -> set[str]:
-    details = error.error_details if isinstance(error.error_details, list) else []
-    return {d["reason"] for d in details if isinstance(d, dict) and isinstance(d.get("reason"), str)}
+_CALENDAR_WORDING = GoogleToolWording(
+    product="Google Calendar",
+    toolset="Calendar",
+    access="calendar access",
+    not_found=(
+        "that event or calendar. Check the id, or call get_calendar_events or get_calendar_list "
+        "to find the right one."
+    ),
+    gone="that event has already been deleted from Google Calendar.",
+)
 
 
 def _calendar_error_message(error: Exception, action: str) -> str:
-    """Plain-language failure the agent can relay; never the raw exception, which carries request URLs."""
     if isinstance(error, _CalendarInputError):
         return str(error)
-    if isinstance(error, RefreshError):
-        return f"Could not {action}: the Google sign-in has expired or was revoked. {_RECONNECT_STEP}"
-    if not isinstance(error, HttpError):
-        return (
-            f"Could not {action} because of an unexpected error. Try again, and if it keeps "
-            "failing, reconnect the Calendar toolset in Settings > Toolsets."
-        )
-    status = error.resp.status
-    reasons = _google_error_reasons(error)
-    if status == HTTPStatus.TOO_MANY_REQUESTS or reasons & _RATE_LIMIT_REASONS:
-        retry_after = str(error.resp.get("retry-after") or "").strip()
-        wait = f"Wait {retry_after} seconds" if retry_after.isdigit() else "Wait a minute"
-        return f"Google Calendar is receiving too many requests right now, so it could not {action}. {wait} and try again."
-    if status == HTTPStatus.UNAUTHORIZED:
-        return f"Could not {action}: Google did not accept the saved sign-in. {_RECONNECT_STEP}"
-    if status == HTTPStatus.FORBIDDEN and reasons & _SCOPE_REASONS:
-        return (
-            f"Could not {action}: the connected Google account has not given this app permission to do that. "
-            "Reconnect the Calendar toolset in Settings > Toolsets and allow calendar access."
-        )
-    if status == HTTPStatus.NOT_FOUND:
-        return (
-            f"Could not {action}: Google Calendar could not find that event or calendar. Check the id, "
-            "or call get_calendar_events or get_calendar_list to find the right one."
-        )
-    if status == HTTPStatus.GONE:
-        return f"Could not {action}: that event has already been deleted from Google Calendar."
-    if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
-        return f"Google Calendar is having a temporary problem and could not {action}. Try again in a moment."
-    return f"Google Calendar refused to {action}: {error.reason or f'HTTP {status}'}"
+    return google_error_message(error, action, _CALENDAR_WORDING)
 
 
 def _calendar_failure(error: Exception, action: str) -> tuple[bool, str]:

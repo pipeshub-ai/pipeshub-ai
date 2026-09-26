@@ -56,7 +56,7 @@ async def test_a_page_that_stays_down_is_retried_a_bounded_number_of_times(
 
 
 @pytest.mark.parametrize("status", [404, 410])
-async def test_a_missing_page_is_asked_for_once_and_not_stored(
+async def test_a_missing_page_is_asked_for_once_and_shown_as_not_found(
     status: int, site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     _home_linking_to_page(site)
@@ -66,7 +66,24 @@ async def test_a_missing_page_is_asked_for_once_and_not_stored(
 
     assert site.gets(PAGE) == 1
     assert PAGE not in site.browser_visits
-    assert PAGE not in db.pages()
+    failed = db.pages()[PAGE]
+    assert failed.indexing_status == ProgressStatus.FAILED.value
+    assert failed.reason is not None and failed.reason.startswith(f"The page wasn't found ({status} ")
+
+
+async def test_a_page_behind_a_login_is_shown_as_refused(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    _home_linking_to_page(site)
+    site.add(PAGE, Page(status=401, body=b"login"))
+
+    await (await make_connector()).run_sync()
+
+    assert site.gets(PAGE) == 1
+    assert db.pages()[PAGE].reason == (
+        "The page refused access (401 Unauthorized). It may need a login or block automated visitors; "
+        "make sure it's publicly reachable, then sync again."
+    )
 
 
 async def test_a_long_retry_after_leaves_the_page_for_the_next_sync_without_waiting(
@@ -123,7 +140,7 @@ async def test_a_server_that_hangs_up_leaves_a_failed_page_with_a_next_step(
 
     failed = db.pages()[PAGE]
     assert failed.indexing_status == ProgressStatus.FAILED.value
-    assert failed.reason is not None and failed.reason.endswith("sync.")
+    assert failed.reason == "We couldn't reach this page. Check the URL is correct and publicly reachable, then sync again."
     assert "http://site.test/fine" in db.pages()
 
 
@@ -158,3 +175,15 @@ async def test_the_connection_check_passes_for_a_reachable_site(
 
     assert await connector.test_connection_and_access() is True
     assert await notifications.delivered() == []
+
+
+async def test_a_cdn_error_code_is_reported_as_the_site_s_answer_not_as_unreachable(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    _home_linking_to_page(site)
+    site.add(PAGE, Page(status=522, body=b"origin timed out"))
+
+    await (await make_connector()).run_sync()
+
+    reason = db.pages()[PAGE].reason or ""
+    assert "(522" in reason and "couldn't reach" not in reason

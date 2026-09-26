@@ -32,10 +32,133 @@ DURATIONS = REPO / "scripts/shard_durations.json"
 # nightly ends when the slowest shard ends, so drift here is wasted wall clock.
 MAX_OVER_MEAN = 1.35
 
+# Connectors that are not registered yet. A shard must not select them, and the
+# core job must exclude them, or the nightly tries to construct a missing type.
+HELD_OUT_CONNECTORS = frozenset({"cifs"})
+
 _SHARD_LINE = re.compile(r'^\s*CONN_SHARD_(\d+):\s*"([^"]*)"\s*$', re.MULTILINE)
+_CORE_MARKER_LINE = re.compile(
+    r'^[ \t]*core\)[ \t]+MARKERS="([^"]*)"',
+    re.MULTILINE,
+)
 _MARKER_LINE = re.compile(r"^\s{4}(\w+):\s*(.+)$")
 _MATRIX_LINE = re.compile(r"^\s*shard:\s.*$", re.MULTILINE)
 _MATRIX_SHARD = re.compile(r'"(connectors-\d+)"')
+_IDENT = re.compile(r"[A-Za-z_$][\w$]*")
+_Marker = tuple
+
+
+def _marker_tokens(expression: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    while index < len(expression):
+        if expression[index].isspace():
+            index += 1
+            continue
+        if expression[index] in "()":
+            tokens.append((expression[index], expression[index]))
+            index += 1
+            continue
+        word = _IDENT.match(expression, index)
+        if word is None:
+            raise ValueError(expression[index:])
+        text = word.group(0)
+        kind = text if text in {"and", "or", "not"} else "id"
+        tokens.append((kind, text))
+        index = word.end()
+    return tokens
+
+
+def _parse_marker_expr(expression: str) -> _Marker:
+    """Pytest ``-m`` expression. ``and`` binds tighter than ``or``."""
+    tokens = _marker_tokens(expression)
+    pos = 0
+
+    def peek() -> str:
+        return tokens[pos][0] if pos < len(tokens) else ""
+
+    def eat(kind: str) -> tuple[str, str]:
+        nonlocal pos
+        if peek() != kind:
+            raise ValueError(kind)
+        token = tokens[pos]
+        pos += 1
+        return token
+
+    def parse_or() -> _Marker:
+        node = parse_and()
+        while peek() == "or":
+            eat("or")
+            node = ("or", node, parse_and())
+        return node
+
+    def parse_and() -> _Marker:
+        node = parse_not()
+        while peek() == "and":
+            eat("and")
+            node = ("and", node, parse_not())
+        return node
+
+    def parse_not() -> _Marker:
+        if peek() == "not":
+            eat("not")
+            return ("not", parse_not())
+        return parse_primary()
+
+    def parse_primary() -> _Marker:
+        if peek() == "(":
+            eat("(")
+            node = parse_or()
+            eat(")")
+            return node
+        if peek() == "id":
+            return ("id", eat("id")[1])
+        raise ValueError(peek() or "end")
+
+    if not tokens:
+        raise ValueError("empty")
+    tree = parse_or()
+    if pos != len(tokens):
+        raise ValueError("trailing")
+    return tree
+
+
+def _marker_names(tree: _Marker) -> set[str]:
+    kind = tree[0]
+    if kind == "id":
+        return {tree[1]}
+    if kind == "not":
+        return _marker_names(tree[1])
+    return _marker_names(tree[1]) | _marker_names(tree[2])
+
+
+def _eval_marker(tree: _Marker, env: dict[str, bool]) -> bool:
+    kind = tree[0]
+    if kind == "id":
+        return env.get(tree[1], False)
+    if kind == "not":
+        return not _eval_marker(tree[1], env)
+    left = _eval_marker(tree[1], env)
+    right = _eval_marker(tree[2], env)
+    return left or right if kind == "or" else left and right
+
+
+def _always_excludes(expression: str, name: str) -> bool:
+    """True when no marker assignment that includes ``name`` can match."""
+    try:
+        tree = _parse_marker_expr(expression)
+    except ValueError:
+        return False
+    others = sorted(_marker_names(tree) - {name})
+    # A core line names a handful of markers. Past this, fail closed.
+    if len(others) > 12:
+        return False
+    for mask in range(1 << len(others)):
+        env = {var: bool(mask & (1 << index)) for index, var in enumerate(others)}
+        env[name] = True
+        if _eval_marker(tree, env):
+            return False
+    return True
 
 
 def matrix_shards(workflow_text: str) -> set[str]:
@@ -140,7 +263,23 @@ def check(
                 )
             seen[name] = shard
 
-    for name in sorted(connectors - set(seen)):
+    held = HELD_OUT_CONNECTORS & connectors
+    core_expressions = _CORE_MARKER_LINE.findall(workflow_text)
+    for name in sorted(held):
+        if name in seen:
+            problems.append(
+                f"'{name}' is held out of the nightly until its connector is registered, "
+                f"but {seen[name]} still selects it."
+            )
+        elif not core_expressions or any(
+            not _always_excludes(expression, name) for expression in core_expressions
+        ):
+            problems.append(
+                f"'{name}' is held out of the shards, but the core job does not exclude "
+                f"it, so those tests fall into core."
+            )
+
+    for name in sorted(connectors - set(seen) - held):
         problems.append(
             f"Connector marker '{name}' is in no shard. Its tests are marked "
             f"`integration`, so they fall into `core` instead of their own shard, making "

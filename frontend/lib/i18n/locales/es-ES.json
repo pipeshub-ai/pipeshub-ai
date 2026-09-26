@@ -6,6 +6,13 @@
       "resetExpiredMessage": "Este enlace para restablecer la contraseña ha caducado. Por favor, solicite uno nuevo desde la opción Olvidé mi contraseña en la página de inicio de sesión.",
       "backToSignIn": "Volver al inicio de sesión",
       "genericLinkInvalidMessage": "Este enlace puede haber caducado. Por favor, pida a su administrador de la organización que le envíe una nueva invitación."
+    },
+    "form": {
+      "title": "Cambiar contraseña",
+      "newPasswordLabel": "Nueva contraseña*",
+      "newPasswordPlaceholder": "Introduzca su nueva contraseña",
+      "confirmPasswordLabel": "Confirmar contraseña*",
+      "confirmPasswordPlaceholder": "Confirme su contraseña"
     }
   },
   "agents": {
@@ -32,7 +39,8 @@
     "tabYourProjects": "Tus proyectos",
     "tabArchived": "Archivados",
     "archivedEmptyState": "No hay proyectos archivados",
-    "archivedEmptyStateHint": "Los proyectos que archives aparecerán aquí."
+    "archivedEmptyStateHint": "Los proyectos que archives aparecerán aquí.",
+    "chatCount_many": "{{count}} de chats"
   },
   "timeGroup": {
     "today": "Hoy",
@@ -43,6 +51,7 @@
   "chatStream": {
     "thinkingFallback": "Pensando…",
     "refiningResponse": "Refinando la respuesta…",
+    "errorFallback": "Se ha producido un error. Inténtelo de nuevo.",
     "copyCode": "Copiar",
     "copiedCode": "Copiado"
   },
@@ -83,7 +92,9 @@
       "unsupportedDescription": "Tipo de archivo no admitido.",
       "duplicateDescription": "Ya existe un archivo con este nombre aquí.",
       "trackerHint": "Los detalles están en el panel de subida abajo.",
-      "openLabs": "Abrir Labs"
+      "openLabs": "Abrir Labs",
+      "title_many": "{{count}} de archivos no se pueden subir",
+      "sizeLimitTitle_many": "{{count}} de archivos superan el límite de tamaño"
     },
     "rejectionSummary": {
       "tooLarge_one": "{{count}} supera {{maxMb}} MB",
@@ -93,7 +104,11 @@
       "duplicate_one": "{{count}} nombre duplicado",
       "duplicate_other": "{{count}} nombres duplicados",
       "other_one": "{{count}} otro error",
-      "other_other": "{{count}} otros errores"
+      "other_other": "{{count}} otros errores",
+      "tooLarge_many": "{{count}} de más de {{maxMb}} MB",
+      "unsupported_many": "{{count}} de tipos no admitidos",
+      "duplicate_many": "{{count}} de nombres duplicados",
+      "other_many": "{{count}} de otros errores"
     },
     "reasons": {
       "tooLarge": "Supera el límite de {{maxMb}} MB",
@@ -203,6 +218,10 @@
       "visitDocs": "Visita la",
       "docsLabel": "documentación",
       "toLearnMore": "para saber más."
+    },
+    "tour": {
+      "dismiss": "Cerrar el recorrido",
+      "completedDescription": "Ya está todo listo. Si quiere saber más, consulte la <docs>documentación</docs>."
     }
   },
   "nav": {
@@ -263,7 +282,10 @@
     "uploading": "Subiendo...",
     "saving": "Guardando...",
     "processing": "Procesando...",
-    "reindexing": "Reindexando..."
+    "reindexing": "Reindexando...",
+    "tryAgain": "Inténtelo de nuevo",
+    "edit": "Editar",
+    "remove": "Quitar"
   },
   "filter": {
     "type": "Tipo",
@@ -419,7 +441,15 @@
     "beta": {
       "label": "Beta",
       "tooltip": "Esta función está en beta y puede cambiar."
-    }
+    },
+    "you": "Usted",
+    "refreshing": "Actualizando...",
+    "clear": "Borrar",
+    "current": "Actual",
+    "openProfile": "Abrir perfil",
+    "loading": "Cargando...",
+    "moreOptions": "Más opciones",
+    "docs": "Documentación"
   },
   "units": {
     "bytes": "Bytes",
@@ -458,7 +488,11 @@
     "more": "Más",
     "loadMore": "Cargar más",
     "moreCollections": "Más colecciones",
-    "searchCollections": "Buscar"
+    "searchCollections": "Buscar",
+    "open": "Abrir la barra lateral",
+    "expand": "Expandir la barra lateral",
+    "close": "Cerrar la barra lateral",
+    "collapse": "Contraer la barra lateral"
   },
   "menu": {
     "reindex": "Reindexar",
@@ -489,7 +523,15 @@
     "folderEmpty": "Esta carpeta está vacía",
     "itemStats": "Tienes {{collections}} colecciones, {{files}} archivos dentro de esta carpeta de colección",
     "searchPlaceholder": "ej: Documentos de ventas",
-    "searchMinChars": "La búsqueda requiere al menos 2 caracteres"
+    "searchMinChars": "La búsqueda requiere al menos 2 caracteres",
+    "createFolder": "Crear carpeta",
+    "goToCollections": "Ir a Colecciones",
+    "namedEmpty": "{{name}} está vacío",
+    "noRecords": "No se han encontrado registros",
+    "searchEmptyHint": "No se ha encontrado lo que busca. Pruebe a buscar otra cosa.",
+    "adjustFiltersHint": "Seleccione otra fuente o ajuste los filtros",
+    "addFromCollectionsHint": "Puede añadir los archivos o las carpetas de su empresa desde Colecciones",
+    "addFilesHint": "Añada sus archivos o carpetas"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -550,7 +592,15 @@
       "browseWorkspaceActionsAria": "Abrir acciones del espacio de trabajo para añadir o gestionar integraciones",
       "actionsCount": "{{count}} acciones",
       "resetDefaults": "Restablecer valores predeterminados",
-      "knowledgeScopeClearedWarning": "No hay fuentes de conocimiento incluidas en esta ejecución, por lo que el agente no buscará en sus conectores ni en sus colecciones para responder."
+      "knowledgeScopeClearedWarning": "No hay fuentes de conocimiento incluidas en esta ejecución, por lo que el agente no buscará en sus conectores ni en sus colecciones para responder.",
+      "searchMcp": "Buscar servidores MCP",
+      "mcpTab": "MCP",
+      "noMcpServers": "No hay servidores MCP configurados para este agente.",
+      "configureMoreMcp": "Configurar más servidores MCP",
+      "browseWorkspaceMcp": "Explorar servidores MCP",
+      "browseWorkspaceMcpAria": "Abrir los servidores MCP para añadir o gestionar conexiones",
+      "noActionMatches": "Ninguna acción coincide con su búsqueda.",
+      "noMcpMatches": "Ningún servidor MCP coincide con su búsqueda."
     },
     "projectResources": {
       "noConnectors": "No hay conectores habilitados para este proyecto.",
@@ -746,6 +796,8 @@
         ]
       }
     },
+    "demoBanner": "Está viendo Acme Corp, una pequeña empresa ficticia cargada como datos de demostración. Pruebe una de estas opciones o",
+    "demoConnectYourOwn": "conecte sus propias fuentes",
     "askMoreQuestionSets": [
       [
         "¿Cuáles son los principales desafíos y cómo se están abordando?",
@@ -843,6 +895,7 @@
       },
       "workspace": {
         "failedToLoad": "Error al cargar este proyecto",
+        "failedToLoadFiles": "No se han podido cargar los archivos",
         "instructionsTitle": "Instrucciones",
         "instructionsPlaceholder": "Añadir instrucciones que el asistente debe seguir en cada chat de este proyecto…",
         "noInstructions": "Aún no se han añadido instrucciones",
@@ -912,13 +965,20 @@
         "suggestPlanWork": "Planificar un trabajo",
         "suggestWriteInstructions": "Escribir las instrucciones del proyecto",
         "suggestSummariseDocumentPrompt": "Resume el documento más importante de los archivos de este proyecto.",
-        "suggestPlanWorkPrompt": "Ayúdame a planificar un trabajo para este proyecto. Divídelo en pasos concretos."
+        "suggestPlanWorkPrompt": "Ayúdame a planificar un trabajo para este proyecto. Divídelo en pasos concretos.",
+        "uploadSessionLabel_many": "{{count}} de archivos",
+        "memberCount_many": "{{count}} de miembros",
+        "filesStatusCount_many": "{{count}} de archivos",
+        "filesStatusCountWithSize_many": "{{count}} de archivos · {{size}}",
+        "connectorsStatusCount_many": "{{count}} de conectados",
+        "toolsStatusCount_many": "{{count}} de activados"
       },
       "moveDialog": {
         "title": "Mover a proyecto",
         "noProjects": "Aún no tienes ningún proyecto",
         "removeOption": "Sin proyecto",
-        "moving": "Moviendo…"
+        "moving": "Moviendo…",
+        "moveFailed": "No se ha podido mover la conversación"
       },
       "deleteDialog": {
         "title": "¿Eliminar este proyecto?",
@@ -932,10 +992,123 @@
         "editor": "Editor",
         "viewer": "Lector"
       }
-    }
-  },
-  "workspaceSettings": {
-    "title": "Configuración del espacio de trabajo"
+    },
+    "demoHide": "Ocultar los datos de demostración",
+    "scrollAttachmentsLeft": "Desplazar los adjuntos hacia la izquierda",
+    "scrollAttachmentsRight": "Desplazar los adjuntos hacia la derecha",
+    "demoSuggestions": {
+      "1": {
+        "text": "¿Por qué se cambió la arquitectura del servicio de pagos y cómo se tomó la decisión?",
+        "icons": [
+          "github",
+          "jira",
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "¿Qué clientes informaron de tiempos de espera agotados en las exportaciones y cómo se solucionó?",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      },
+      "3": {
+        "text": "¿Cuál es nuestra política sobre las guardias durante un día festivo?",
+        "icons": [
+          "sheets"
+        ]
+      },
+      "4": {
+        "text": "¿Quién revisó y aprobó la PR n.º 482 del worker de facturación, y qué pidió Dana antes de fusionarla?",
+        "icons": [
+          "github"
+        ]
+      },
+      "5": {
+        "text": "¿Cuál es la estrategia de precios para empresas en 2026?",
+        "icons": [
+          "sheets",
+          "slack"
+        ],
+        "restricted": true
+      }
+    },
+    "demoRestrictedHint": "Solo para el comité de precios, así que aquí no obtendrá respuesta. Así funcionan los permisos.",
+    "demoRestrictedHintSignIn": "Solo para el comité de precios, así que aquí no obtendrá respuesta. Inicie sesión como {{email}} para ver la respuesta.",
+    "toolValidation": {
+      "tooManyTools": "Hay demasiadas herramientas seleccionadas. Por límites de rendimiento se permiten como máximo 1024 herramientas por solicitud.",
+      "multipleInstances": "No se pueden usar juntas varias instancias del mismo tipo de acción ({{types}}). Abra el panel de Acciones y seleccione solo una instancia por tipo."
+    },
+    "attachments": {
+      "uploadFailed": "Error al subir",
+      "uploadFailedNamed": "No se ha podido subir {{name}}: {{error}}",
+      "unsupportedType": "Tipo de archivo no admitido: {{names}}. Tipos admitidos: {{types}}.",
+      "fileTooLarge": "Archivo demasiado grande: {{names}}. El tamaño máximo es de {{maxMb}} MB por archivo.",
+      "tooManyFiles": "Máximo {{max}} adjuntos por mensaje.",
+      "pasteTruncated": "\n\n[Contenido truncado: el texto pegado superaba el tamaño máximo de adjunto.]",
+      "uploading": "Subiendo…",
+      "retry": "Reintentar la subida",
+      "pastedText": "Texto pegado",
+      "uploadingNamed": "Subiendo el texto pegado",
+      "removePastedText": "Quitar el texto pegado",
+      "showInTextField": "Mostrar en el campo de texto",
+      "previewLoadFailed": "No se ha podido cargar el contenido",
+      "copyText": "Copiar",
+      "closePreview": "Cerrar",
+      "loadingPreview": "Cargando…",
+      "pasteMeta_one": "{{chars}} caracteres · {{count}} línea",
+      "pasteMeta_other": "{{chars}} caracteres · {{count}} líneas",
+      "pasteMeta_many": "{{chars}} caracteres · {{count}} líneas"
+    },
+    "voiceSttNotConfigured": "Configure un modelo de voz a texto (STT) en los ajustes de Modelos de IA para habilitar la entrada por voz.",
+    "voiceSttLoading": "Comprobando las funciones de voz…",
+    "expandComposer": "Expandir el editor",
+    "stopGenerating": "Detener la generación",
+    "backToChat": "Volver al chat",
+    "searchToggle": {
+      "ariaLabel": "Cambiar a la vista de búsqueda"
+    },
+    "plusMenu": {
+      "ariaLabelFiltersApplied": "Adjuntar archivos y funciones. Filtros de búsqueda aplicados",
+      "ariaLabel": "Adjuntar archivos y funciones",
+      "title": "Añadir archivos y funciones"
+    },
+    "stopListening": "Dejar de escuchar",
+    "voiceInput": "Entrada por voz",
+    "regenerateResponse": "Regenerar la respuesta",
+    "editQuery": "Editar la consulta",
+    "queryOptions": "Opciones de consulta",
+    "models": "Modelos",
+    "manage": "Gestionar",
+    "configuredModels": "Modelos configurados",
+    "reasoningEffort": {
+      "label": "Esfuerzo de razonamiento",
+      "overrideHint": "Vuelva a hacer clic para usar el valor predeterminado.",
+      "defaultHintWithLevel": "Si no se define, se usa {{level}}.",
+      "low": "Bajo",
+      "medium": "Medio",
+      "high": "Alto",
+      "max": "Máximo"
+    },
+    "universalAgent": {
+      "toolsLoadError": "No se han podido cargar las acciones disponibles.",
+      "mcpLoadError": "No se han podido cargar los servidores MCP.",
+      "noReasoningModel": "No hay ningún modelo con capacidad de razonamiento configurado. Configure uno en Ajustes → Modelos de IA antes de usar el modo Agente.",
+      "loadingTools": "Cargando acciones…",
+      "noActions": "No se han encontrado acciones autenticadas. Conecte integraciones en Espacio de trabajo → Acciones.",
+      "loadingMcp": "Cargando servidores MCP…",
+      "noMcpServers": "No se han encontrado servidores MCP autenticados. Conecte uno en Espacio de trabajo → Servidores MCP.",
+      "toolCount_one": "{{count}} herramienta",
+      "toolCount_other": "{{count}} herramientas",
+      "toolCount_many": "{{count}} herramientas"
+    },
+    "agentCapabilities": {
+      "notConfiguredOnAgent": "No configurado en este agente",
+      "internalSearch": "Búsqueda interna",
+      "webSearch": "Búsqueda web"
+    },
+    "resizePanels": "Redimensionar los paneles de chat y vista previa",
+    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente."
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -978,6 +1151,8 @@
         "maxAdminsReachedTitle": "No se puede añadir otro administrador",
         "maxAdminsReached": "Una organización puede tener como máximo 5 administradores.",
         "removeFromWorkspace": "Eliminar del espacio de trabajo",
+        "demoteAdminBeforeRemoveTitle": "No se puede quitar al administrador",
+        "demoteAdminBeforeRemove": "Cambie el administrador a miembro y después quítelo.",
         "removeUserTitle": "¿Eliminar usuario?",
         "removeUserMessage": "¿Está seguro de que desea eliminar a {{email}} del espacio de trabajo {{workspace}}?",
         "removeButton": "Eliminar",
@@ -1006,7 +1181,10 @@
         "unblockSuccess": "Usuario desbloqueado correctamente",
         "unblockError": "No se pudo desbloquear al usuario",
         "unblocking": "Desbloqueando…",
-        "edit": "Editar"
+        "edit": "Editar",
+        "resendInviteSuccess": "Invitación reenviada",
+        "resendInviteSuccessDescription": "Se ha reenviado la invitación a {{email}}",
+        "resendInviteError": "No se ha podido reenviar la invitación"
       },
       "profile": {
         "title": "Perfil",
@@ -1039,12 +1217,9 @@
         "roleLabel": "Rol",
         "rolePlaceholder": "Seleccionar rol",
         "roleAdmin": "Administrador",
-        "roleAdminDescription": "Puede gestionar todos los aspectos del espacio de trabajo",
         "roleMember": "Miembro",
-        "roleMemberDescription": "Puede ver y usar el espacio de trabajo",
         "groupLabel": "Grupos (Opcional)",
         "groupPlaceholder": "Seleccionar grupos",
-        "groupSearchPlaceholder": "Buscar grupos...",
         "import": "Importar",
         "importFormatTitle": "CSV o Excel — cualquier formato funciona",
         "importHintHeader": "Fila de encabezado opcional — las columnas adicionales se ignoran",
@@ -1064,8 +1239,41 @@
         "importSkippedDescription": "Las entradas no válidas están marcadas — elimínalas antes de enviar.",
         "importFailed": "Error de importación",
         "importFailedDescription": "No se pudo leer el archivo. Sube un archivo CSV o Excel válido.",
-        "adminGroupWarning": "Todas las personas invitadas aquí se convierten en administradores de la organización, incluidas todas las direcciones importadas de un archivo. Los administradores pueden gestionar usuarios, grupos y configuración."
-      }
+        "adminGroupWarning": "Todas las personas invitadas aquí se convierten en administradores de la organización, incluidas todas las direcciones importadas de un archivo. Los administradores pueden gestionar usuarios, grupos y configuración.",
+        "editSuccessTitle": "Invitación actualizada",
+        "editSuccessDescription": "Se ha actualizado la invitación de {{email}}",
+        "editError": "No se ha podido actualizar la invitación",
+        "editTitle": "Editar invitación",
+        "update": "Actualizar invitación",
+        "smtpNotConfiguredTooltip": "SMTP no está configurado. Configure el correo electrónico antes de enviar invitaciones."
+      },
+      "bulk": {
+        "resendInvite": "Reenviar invitación",
+        "adminInviteCantBeCancelled": "Las invitaciones de administrador no se pueden cancelar",
+        "cancelInvite": "Cancelar invitación",
+        "adminCantBeRemoved": "Los usuarios administradores no se pueden quitar",
+        "removeFromWorkspace": "Quitar del espacio de trabajo",
+        "removeSuccess_one": "{{count}} usuario quitado del espacio de trabajo",
+        "removeSuccess_other": "{{count}} usuarios quitados del espacio de trabajo",
+        "removePartialError_one": "No se ha podido quitar {{count}} usuario",
+        "removePartialError_other": "No se han podido quitar {{count}} usuarios",
+        "resendSuccess_one": "Invitación reenviada a {{count}} usuario",
+        "resendSuccess_other": "Invitación reenviada a {{count}} usuarios",
+        "resendPartialError_one": "No se ha podido reenviar la invitación a {{count}} usuario",
+        "resendPartialError_other": "No se han podido reenviar las invitaciones a {{count}} usuarios",
+        "cancelSuccess_one": "{{count}} invitación cancelada",
+        "cancelSuccess_other": "{{count}} invitaciones canceladas",
+        "cancelPartialError_one": "No se ha podido cancelar {{count}} invitación",
+        "cancelPartialError_other": "No se han podido cancelar {{count}} invitaciones",
+        "removeSuccess_many": "{{count}} usuarios quitados del espacio de trabajo",
+        "removePartialError_many": "No se han podido quitar {{count}} usuarios",
+        "resendSuccess_many": "Invitación reenviada a {{count}} usuarios",
+        "resendPartialError_many": "No se han podido reenviar las invitaciones a {{count}} usuarios",
+        "cancelSuccess_many": "{{count}} invitaciones canceladas",
+        "cancelPartialError_many": "No se han podido cancelar {{count}} invitaciones"
+      },
+      "inviteDisabledSmtp": "SMTP no está configurado. Configure el correo electrónico antes de invitar usuarios.",
+      "bulkLabel": "Usuarios"
     },
     "groups": {
       "title": "Grupos",
@@ -1090,6 +1298,8 @@
         "viewGroup": "Ver grupo",
         "delete": "Eliminar",
         "deleteError": "Error al eliminar el grupo",
+        "managePermissions": "Gestionar permisos",
+        "deleteSystemTooltip": "Solo se pueden eliminar los grupos personalizados",
         "deleteSuccess": "Grupo eliminado"
       },
       "create": {
@@ -1110,6 +1320,7 @@
       },
       "detail": {
         "accessComingSoon": "Permisos de acceso próximamente",
+        "searchUsers": "Buscar usuarios...",
         "accessPermissions": "Permisos de acceso",
         "createdBy": "Creado por",
         "descriptionLabel": "Descripción del grupo",
@@ -1125,6 +1336,7 @@
         "deleteButton": "Eliminar grupo",
         "deleteDescription": "Eliminar permanentemente este grupo del espacio de trabajo",
         "deleteError": "Error al eliminar el grupo",
+        "nameRequired": "El nombre del grupo es obligatorio",
         "deleteSuccess": "Grupo eliminado",
         "deleteSuccessDescription": "\"{{name}}\" ha sido eliminado",
         "deleteTitle": "Eliminar grupo '{{name}}'",
@@ -1137,6 +1349,18 @@
         "saveSuccess": "¡Grupo actualizado!",
         "saveSuccessDescription": "Los cambios en '{{name}}' se guardaron exitosamente",
         "undo": "Deshacer"
+      },
+      "permissions": {
+        "title": "Permisos de acceso",
+        "titleWithName": "{{name}} — Permisos de acceso",
+        "subtitle": "Controle qué pueden hacer los miembros de este grupo.",
+        "save": "Guardar cambios",
+        "saving": "Guardando...",
+        "discard": "Descartar",
+        "saveSuccess": "Permisos guardados",
+        "saveError": "No se han podido guardar los permisos",
+        "loadError": "No se han podido cargar los permisos",
+        "empty": "Aún no se ha definido ningún permiso."
       }
     },
     "teams": {
@@ -1170,6 +1394,8 @@
         "descriptionLabel": "Descripción del equipo",
         "descriptionPlaceholder": "Describe el propósito de este equipo",
         "errorGeneric": "Error al crear el equipo",
+        "applyToAll": "Aplicar a todos",
+        "memberRoles": "Roles de los miembros",
         "nameLabel": "Nombre del equipo",
         "namePlaceholder": "ej. Ingeniería de producto",
         "roleLabel": "Rol",
@@ -1180,6 +1406,7 @@
       },
       "detail": {
         "accessComingSoon": "Permisos de acceso próximamente",
+        "searchMembers": "Buscar miembros...",
         "accessPermissions": "Permisos de acceso",
         "createdBy": "Creado por",
         "descriptionLabel": "Descripción del equipo",
@@ -1196,6 +1423,9 @@
         "deleteButton": "Eliminar equipo",
         "deleteDescription": "Eliminar permanentemente este equipo del espacio de trabajo",
         "deleteError": "Error al eliminar el equipo",
+        "saveErrorDescription": "No se ha podido actualizar el equipo. Inténtelo de nuevo.",
+        "applyToAll": "Aplicar a todos",
+        "newMemberRoles": "Roles de los nuevos miembros",
         "deleteSuccess": "Equipo eliminado",
         "deleteSuccessDescription": "\"{{name}}\" ha sido eliminado",
         "deleteTitle": "Eliminar equipo '{{name}}'",
@@ -1518,6 +1748,7 @@
         "prompts": "Prompts",
         "developerSettings": "Configuración de desarrollador",
         "oauth2": "Apps de OAuth 2.0",
+        "personalAccessTokens": "Tokens de acceso personal",
         "profile": "Perfil",
         "yourConnectors": "Tus conectores personales",
         "yourActions": "Tus acciones",
@@ -1530,7 +1761,8 @@
         "webSearch": "Búsqueda Web",
         "tenants": "Inquilinos",
         "superOrgs": "Organizaciones",
-        "oauthApps": "OAuth Apps"
+        "oauthApps": "OAuth Apps",
+        "serviceAccounts": "Cuentas de servicio"
       }
     },
     "actions": {
@@ -1554,8 +1786,10 @@
         "setup": "Preparar",
         "configure": "Configurar",
         "authenticate": "Autenticar",
+        "manage": "Gestionar",
         "unavailable": "No disponible",
-        "notConfigured": "No configurada"
+        "notConfigured": "No configurada",
+        "adminSetupRequired": "Requiere configuración del administrador"
       },
       "trailingYourActions": "Sus acciones",
       "loading": "Cargando acciones…",
@@ -1657,7 +1891,11 @@
         "saveSuccess": "Cambios guardados.",
         "saveDeauthNotice": "Guardado. {{count}} usuario(s) cerraron sesión y deben autenticarse de nuevo.",
         "missingInstance": "Falta un id de instancia para esta acción. Intente actualizar la página.",
-        "copyFailed": "No se pudo copiar al portapapeles."
+        "copyFailed": "No se pudo copiar al portapapeles.",
+        "loadingOauthApps": "Cargando aplicaciones OAuth…",
+        "noOauthApps": "No hay aplicaciones OAuth configuradas",
+        "personalActionsHint": "Las credenciales de usuario se gestionan en Mis acciones.",
+        "openPersonalActionsCta": "Abrir Mis acciones"
       },
       "errors": {
         "instanceNameRequired": "Introduzca un nombre de instancia."
@@ -1665,8 +1903,15 @@
       "validation": {
         "fieldRequired": "{{field}} es obligatorio",
         "fieldMustBeTrue": "{{field}} debe ser verdadero",
-        "fixErrorsAbove": "Corrija los campos resaltados arriba para continuar."
-      }
+        "fixErrorsAbove": "Corrija los campos resaltados arriba para continuar.",
+        "minLength": "{{field}} debe tener al menos {{minLength}} caracteres",
+        "maxLength": "{{field}} no puede tener más de {{maxLength}} caracteres",
+        "email": "{{field}} debe ser una dirección de correo electrónico válida",
+        "url": "{{field}} debe ser una URL válida",
+        "urlProtocol": "{{field}} debe usar http o https"
+      },
+      "adminRequiredToast": "Solo los administradores pueden añadir acciones nuevas. Pida a su administrador que configure primero esta acción.",
+      "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas."
     },
     "rightPanel": {
       "primaryDisabledHint": "Suba y complete los campos obligatorios (marcados con *) para continuar.",
@@ -1683,7 +1928,11 @@
       "restoreError": "No se pudo restaurar el chat",
       "deleteSuccess": "Eliminado correctamente",
       "deleteSuccessDescription": "Su chat se ha eliminado permanentemente",
-      "deleteError": "No se pudo eliminar el chat"
+      "deleteError": "No se pudo eliminar el chat",
+      "assistantChat": "Chat con el asistente",
+      "agents": "Agentes",
+      "showMore": "Mostrar más",
+      "moreAgents": "Más agentes"
     },
     "general": {
       "subtitle": "Your company general information",
@@ -1780,6 +2029,14 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue Editing"
+      },
+      "featureFlags": {
+        "title": "Indicadores de funciones",
+        "subtitle": "Active o desactive funciones experimentales para todos los agentes de este espacio de trabajo."
+      },
+      "vectorStore": {
+        "title": "Almacén vectorial",
+        "subtitle": "Elimine todos los embeddings o vuelva a generarlos para cada registro a partir del contenido almacenado."
       }
     },
     "authentication": {
@@ -1830,6 +2087,10 @@
         "body": "Ha deshabilitado <bold>Contraseña</bold> y <bold>Contraseña de un solo uso</bold>. Los usuarios solo podrán iniciar sesión con:",
         "warningSingle": "Asegúrese de que {{method}} esté completamente configurado y funcionando antes de guardar. Si el inicio de sesión único falla debido a una configuración incorrecta, los usuarios podrían quedar bloqueados.",
         "warningMultiple": "Asegúrese de que todos los métodos seleccionados estén completamente configurados y funcionando antes de guardar. Si el inicio de sesión único falla debido a una configuración incorrecta, los usuarios podrían quedar bloqueados."
+      },
+      "userMethods": {
+        "heading": "Métodos de inicio de sesión de los usuarios",
+        "subtitle": "Controla qué métodos de inicio de sesión están disponibles para todos los usuarios, en todas las organizaciones."
       }
     },
     "connectors": {
@@ -1870,7 +2131,8 @@
       },
       "tabs": {
         "authenticate": "Authenticate Instance",
-        "configureRecords": "Configure Records"
+        "configureRecords": "Configure Records",
+        "authorize": "Autorizar"
       },
       "tooltips": {
         "authFirst": "Complete authentication first to save configuration"
@@ -1933,7 +2195,8 @@
         "alreadyRemovingTitle": "Ya se está eliminando",
         "alreadyRemovingDescription": "Este conector ya está siendo eliminado.",
         "successTitle": "Conector eliminado",
-        "errorTitle": "Error al eliminar el conector"
+        "errorTitle": "Error al eliminar el conector",
+        "errorDescription": "Inténtelo de nuevo. Si sigue ocurriendo, póngase en contacto con el administrador de su espacio de trabajo."
       },
       "selectRecords": {
         "title": "Seleccionar registros",
@@ -2042,13 +2305,21 @@
         "syncSettings": "Sync Settings",
         "syncStrategySettingsHint": "Puede cambiar la estrategia de sincronización yendo a <bold>{{manageConfig}}</bold>.",
         "syncInterval": "Sync Interval",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "removeInstance": "Quitar la instancia del conector",
+        "removeInstanceDescription": "Quite permanentemente esta instancia del conector y detenga la sincronización de sus datos. Esto no se puede deshacer."
       },
       "instanceCard": {
         "recordsSelected": "Registros Seleccionados",
         "syncStrategy": "Estrategia de Sincronización",
         "authBannerTitle": "Authenticate Personal Account",
-        "authBannerDescription": "Connect your account to enable access and workspace configuration"
+        "authBannerDescription": "Connect your account to enable access and workspace configuration",
+        "lastSynced": "Última sincronización",
+        "syncEnabled": "Sincronización activada",
+        "removing": "Este conector se está quitando.",
+        "configureFirst": "Termine la configuración para poder activar la sincronización.",
+        "authenticateFirst": "Autentique este conector para poder activar la sincronización.",
+        "selected": "{{field}} seleccionados"
       },
       "instanceStatus": {
         "setup": {
@@ -2098,6 +2369,109 @@
         "syncing": "Syncing Records...",
         "synced": "Records Synced",
         "failed": "Sync Failed"
+      },
+      "errors": {
+        "missingCreatedId": "La creación se ha realizado, pero no se ha devuelto ningún id de conector",
+        "createdConfigUnavailable": "El conector se ha creado, pero no se ha podido cargar su configuración. Pruebe a volver a abrir el panel.",
+        "authenticateFirst": "No se ha encontrado ningún ID de conector. Complete primero la autenticación."
+      },
+      "syncIntervals": {
+        "5": "Cada 5 minutos",
+        "15": "Cada 15 minutos",
+        "30": "Cada 30 minutos",
+        "60": "Cada hora",
+        "240": "Cada 4 horas",
+        "480": "Cada 8 horas",
+        "720": "Cada 12 horas",
+        "1440": "Cada día",
+        "10080": "Cada semana",
+        "other": "Cada {{minutes}} min"
+      },
+      "filters": {
+        "selectField": "Seleccionar {{field}}",
+        "addFieldValue": "Añadir {{field}}…",
+        "authenticateForOptions": "Complete la autenticación y guarde el conector para cargar las opciones de este filtro.",
+        "manualIndexingInfo": "Acerca de la indexación manual",
+        "manualIndexingTooltip": "DESACTIVADA (predeterminado): los registros se indexan automáticamente según los filtros de indexación de abajo.\n\nACTIVADA: no se indexa ningún registro automáticamente. Usted elige manualmente qué registros indexar desde la base de conocimiento.",
+        "title": "Filtros de indexación y sincronización",
+        "description": "Los filtros de indexación se aplican siempre: active o desactive los booleanos o ajuste los valores según necesite. En los filtros de sincronización, añada solo los que necesite; los filtros de lista y de fecha usan un operador y un valor, y puede borrar un filtro de sincronización cuando no quiera esa restricción.",
+        "syncTitle": "Filtros de sincronización",
+        "indexingTitle": "Filtros de indexación",
+        "add": "Añadir filtro",
+        "incomplete": "Complete el operador y el valor de cada filtro de abajo para ver aquí un resumen.",
+        "empty": "Aún no hay filtros. Use \"Añadir filtro\" para elegir uno de los filtros admitidos.",
+        "operator": "Operador",
+        "chooseOperator": "Elija un operador…",
+        "value": "Valor",
+        "rollingWindow": "Este operador usa una ventana móvil: no hay fechas fijas que definir.",
+        "dateRange": "intervalo de fechas",
+        "operators": {
+          "is": "Es",
+          "is_not": "No es",
+          "is_empty": "Está vacío",
+          "is_not_empty": "No está vacío",
+          "contains": "Contiene",
+          "does_not_contain": "No contiene",
+          "is_after": "Es posterior a",
+          "is_before": "Es anterior a",
+          "is_between": "Está entre",
+          "in": "En",
+          "not_in": "No en",
+          "greater_than_or_equal": "Mayor o igual que",
+          "greater_than": "Mayor que",
+          "equal": "Igual a",
+          "less_than": "Menor que",
+          "less_than_or_equal": "Menor o igual que",
+          "last_7_days": "Últimos 7 días",
+          "last_14_days": "Últimos 14 días",
+          "last_30_days": "Últimos 30 días",
+          "last_90_days": "Últimos 90 días",
+          "last_180_days": "Últimos 180 días",
+          "last_365_days": "Últimos 365 días"
+        },
+        "fieldValues": "Valores de {{field}}",
+        "loadingOptions": "Cargando opciones…",
+        "noResults": "No se han encontrado resultados",
+        "optionsLoadFailed": "No se han podido cargar las opciones de este filtro. Cierre esta lista y vuelva a abrirla para reintentarlo.",
+        "loadingMore": "Cargando más…"
+      },
+      "syncStrategies": {
+        "SCHEDULED": "Programada",
+        "MANUAL": "Manual",
+        "WEBHOOK": "Webhook",
+        "REALTIME": "En tiempo real"
+      },
+      "syncIntervalOptions": {
+        "5": "5 minutos",
+        "15": "15 minutos",
+        "30": "30 minutos",
+        "60": "1 hora",
+        "240": "4 horas",
+        "480": "8 horas",
+        "720": "12 horas",
+        "1440": "1 día",
+        "10080": "1 semana"
+      },
+      "vectorStore": {
+        "cleanup": {
+          "label": "Limpiar los embeddings",
+          "rowDescription": "Elimina todos los embeddings y vuelve a crear vacía la colección vectorial. Los registros no se eliminan.",
+          "buttonLabel": "Limpiar",
+          "title": "¿Eliminar todos los embeddings?",
+          "body": "Esto elimina la colección vectorial compartida y la vuelve a crear vacía.",
+          "warning": "La búsqueda dejará de devolver resultados para todo el mundo y seguirá así hasta que termine una reindexación. En despliegues grandes la reindexación puede tardar horas. Sus registros no se eliminan: solo sus embeddings.",
+          "confirm": "Eliminar los embeddings"
+        },
+        "reindex": {
+          "label": "Reindexar los embeddings",
+          "rowDescription": "Vuelve a generar los embeddings de cada registro a partir del contenido almacenado. Las fuentes no se vuelven a descargar ni a analizar.",
+          "buttonLabel": "Reindexar",
+          "title": "¿Reindexar todos los registros?",
+          "body": "Esto vuelve a generar los embeddings de cada registro a partir de su contenido almacenado. Las fuentes no se vuelven a descargar ni a analizar.",
+          "warning": "En despliegues grandes esto puede tardar mucho tiempo y se ejecuta en segundo plano.",
+          "confirm": "Iniciar la reindexación"
+        },
+        "typePrompt": "Escriba {{token}} para confirmar."
       }
     },
     "mcpServers": {
@@ -2155,7 +2529,9 @@
         "authBannerTitle": "Se requiere autenticación",
         "authBannerDescription": "Autentica este servidor MCP para que los agentes de tu equipo puedan usarlo.",
         "authBannerAuthenticatedTitle": "Conectado",
-        "authBannerAuthenticatedDescription": "Puedes reautenticar o desconectar este servidor MCP."
+        "authBannerAuthenticatedDescription": "Puedes reautenticar o desconectar este servidor MCP.",
+        "createdBy": "Creado por",
+        "discoveredTools_many": "{{count}} de herramientas disponibles"
       },
       "deleteDialog": {
         "title": "¿Eliminar el servidor MCP?",
@@ -2243,7 +2619,9 @@
         "noCode": "No se devolvió ningún código de autorización.",
         "noState": "No se devolvió ningún parámetro de estado.",
         "backendRejected": "El servidor rechazó la solicitud de autorización."
-      }
+      },
+      "deleteDisabledTooltip": "Este servidor no se puede eliminar",
+      "toolsCount_many": "{{count}} de herramientas"
     },
     "bots": {
       "subtitle": "Configure bot credentials and optionally map each bot to an agent",
@@ -2324,7 +2702,12 @@
         "typeNameToConfirm": "Type \"{{name}}\" to confirm",
         "deleteBotBodyLine1": "Are you sure you want to delete {{name}}? This action cannot be undone.",
         "deleteBotBodyLine2": "All configurations and credentials associated with this bot will be permanently removed."
-      }
+      },
+      "errors": {
+        "loadConfigs": "No se han podido cargar las configuraciones de los bots",
+        "loadData": "No se han podido cargar los datos"
+      },
+      "refreshed": "Actualizado"
     },
     "mail": {
       "subtitle": "Email server configuration for OTP and notifications",
@@ -2413,7 +2796,15 @@
       "systemPrompt": "System Prompt",
       "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
       "configCalloutTitle": "Prompt Configuration",
-      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
+      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs.",
+      "resetToDefault": "Restablecer los valores predeterminados",
+      "customInstructionsTitle": "Instrucciones personalizadas",
+      "customInstructionsDescription": "Añada instrucciones personalizadas para el Asistente de chat: por ejemplo, responder en un idioma concreto, seguir un estilo de formato o aplicar el comportamiento que desee. Cada modo de abajo tiene sus propias instrucciones, ya que responden de forma distinta.",
+      "scopeHint": "Estas instrucciones se aplican solo al <bold>Asistente de chat</bold> (el modo Agente de abajo). Los agentes personalizados creados en el <bold>Creador de agentes</bold> no se ven afectados: cada agente usa su propio prompt de sistema y las instrucciones configuradas en el propio agente.",
+      "agentTitle": "Agente",
+      "agentDescription": "Se aplica cuando un usuario chatea en modo Agente: el asistente decide en cada pregunta si usar el conocimiento interno, la búsqueda web o ambos.",
+      "agentPlaceholder": "p. ej. Prioriza el conocimiento interno para las preguntas sobre la empresa. Resume siempre antes de dar los detalles.",
+      "agentHelperText": "Este prompt guía a la IA cuando puede elegir libremente entre el conocimiento interno y la búsqueda web. Los cambios se aplican de inmediato a las conversaciones nuevas."
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -2553,7 +2944,32 @@
       "discardTitle": "Discard changes?",
       "discardMessage": "If you discard, your edits won't be saved",
       "discardConfirm": "Discard",
-      "discardCancel": "Continue Editing"
+      "discardCancel": "Continue Editing",
+      "deleteError": "No se ha podido eliminar el chat",
+      "assistantChat": "Chat con el asistente",
+      "agents": "Agentes",
+      "seeMore": "Ver más",
+      "showMore": "Mostrar más",
+      "moreAgents": "Más agentes",
+      "moreChats": "Más chats",
+      "authentication": {
+        "title": "Autenticación",
+        "subtitle": "Métodos de inicio de sesión habilitados para su cuenta. Los gestiona el administrador de su espacio de trabajo.",
+        "methodsLabel": "Métodos de inicio de sesión habilitados",
+        "loading": "Cargando…",
+        "none": "No hay ningún método de inicio de sesión habilitado"
+      },
+      "demoData": {
+        "title": "Datos de demostración",
+        "description": "Acme Corp es una empresa ficticia que se ha cargado para que pueda probar PipesHub. Esto solo cambia lo que usted ve; no se elimina nada.",
+        "label": "Mostrar los datos de demostración de Acme Corp en mis respuestas, búsquedas y registros",
+        "followingDefault": "Siguiendo el valor predeterminado: se muestran hasta que su organización tenga datos propios y después se ocultan.",
+        "yourChoice": "Su propia elección.",
+        "useDefault": "Usar el valor predeterminado",
+        "offForEveryone": "Un administrador los ha desactivado para todos.",
+        "everyoneLabel": "Ofrecer la demostración a todo el mundo",
+        "everyoneDescription": "Al desactivarla, la demostración desaparece de las respuestas, las búsquedas y los registros de todo el mundo, y las cuentas de ejemplo dejan de poder iniciar sesión. No se elimina nada."
+      }
     },
     "services": {
       "pageTitle": "Servicios",
@@ -2801,7 +3217,310 @@
         "loadConnectors": "No se pudieron cargar las apps OAuth de los conectores.",
         "loadToolsets": "No se pudieron cargar las apps OAuth de las acciones.",
         "deleteGeneric": "No se pudo eliminar la app OAuth."
+      },
+      "card": {
+        "default": "Predeterminada",
+        "locked": "Bloqueada",
+        "edit": "Editar",
+        "delete": "Eliminar"
       }
+    },
+    "personalAccessTokens": {
+      "title": "Tokens de acceso personal",
+      "subtitle": "Cree tokens de larga duración para sus propios scripts e integraciones, como el servidor MCP. Solo usted ve sus tokens aquí.",
+      "newToken": "Nuevo token",
+      "emptyTitle": "No hay tokens de acceso personal",
+      "emptyDescription": "Cree un token para conectar el servidor MCP de PipesHub o sus propios scripts.",
+      "errorGeneric": "No se han podido cargar los tokens de acceso personal",
+      "retry": "Reintentar",
+      "columnName": "Nombre",
+      "columnScopes": "Ámbitos",
+      "columnCreated": "Creado",
+      "columnExpires": "Caduca",
+      "columnLastUsed": "Último uso",
+      "neverUsed": "Nunca",
+      "neverExpires": "Nunca",
+      "revokeAria": "Revocar {{name}}",
+      "revoke": {
+        "confirmTitle": "¿Revocar el token?",
+        "confirmMessage": "¿Seguro que quiere revocar \"{{name}}\"? Todo lo que use este token dejará de funcionar de inmediato. Esta acción no se puede deshacer.",
+        "confirmButton": "Revocar",
+        "confirmLoading": "Revocando...",
+        "successTitle": "Token revocado",
+        "errorTitle": "No se ha podido revocar el token"
+      },
+      "create": {
+        "panelTitle": "Crear un token de acceso personal",
+        "successPanelTitle": "Token creado",
+        "createButton": "Crear token",
+        "doneButton": "Hecho",
+        "cancel": "Cancelar",
+        "nameLabel": "Nombre del token",
+        "namePlaceholder": "p. ej. servidor MCP",
+        "errorNameRequired": "Introduzca un nombre para este token.",
+        "errorCreateTitle": "No se ha podido crear el token",
+        "expiryHeading": "Caducidad",
+        "expiry30Days": "30 días",
+        "expiry90Days": "90 días",
+        "expiry365Days": "365 días",
+        "expiryNever": "Nunca",
+        "permissionsHeading": "Ámbitos",
+        "errorScopeRequired": "Seleccione al menos un ámbito.",
+        "selectAllScopes": "Seleccionar todo",
+        "clearAllScopes": "Borrar todo",
+        "scopesLoading": "Cargando ámbitos...",
+        "scopesLoadError": "No se han podido cargar los ámbitos.",
+        "scopesRetry": "Reintentar",
+        "successScreenTitle": "Token creado",
+        "successScreenSubtitle": "Copie el token ahora: no podrá volver a verlo.",
+        "tokenLabel": "Token de acceso",
+        "tokenShownOnceWarning": "Este token se muestra una sola vez. Guárdelo en un lugar seguro.",
+        "showTokenAria": "Mostrar el token",
+        "hideTokenAria": "Ocultar el token",
+        "copyTokenAria": "Copiar el token",
+        "pasteBlockLabel": "Listo para pegar en su configuración de MCP",
+        "copyPasteBlockAria": "Copiar el bloque para pegar",
+        "copySuccessTitle": "Copiado",
+        "copyErrorTitle": "No se ha podido copiar"
+      },
+      "scopeCount_one": "{{count}} ámbito",
+      "scopeCount_other": "{{count}} ámbitos",
+      "scopeCount_many": "{{count}} de ámbitos"
+    },
+    "common": {
+      "loadingUsers": "Cargando usuarios...",
+      "noUsersAvailable": "No hay usuarios disponibles",
+      "selected": "{{count}} seleccionados"
+    },
+    "skills": {
+      "title": "Skills",
+      "subtitle": "Cree skills personalizadas que sus agentes puedan usar: instrucciones en markdown, scripts opcionales y archivos de referencia, versionados y gobernados como todo lo demás en el Creador de agentes.",
+      "loading": "Cargando skills…",
+      "refreshed": "Actualizado",
+      "createSkill": "Crear Skill",
+      "importSkill": "Importar",
+      "reviewCandidates": "Revisar candidatas",
+      "searchPlaceholder": "Buscar skills…",
+      "noResults": "Ninguna skill coincide con su búsqueda",
+      "emptyTitle": "Aún no hay Skills",
+      "emptyDescription": "Cree su primera skill o importe una desde npm, una URL o un archivo zip",
+      "status": {
+        "active": "Activa",
+        "deprecated": "Obsoleta",
+        "candidate": "Candidata",
+        "disabled": "Desactivada"
+      },
+      "availability": {
+        "label": "Disponible para los agentes",
+        "description": "Si se desactiva, esta skill permanece en su biblioteca, pero los agentes no pueden descubrirla ni cargarla.",
+        "descriptionBuiltin": "Si se desactiva, esta skill integrada permanece en la biblioteca, pero los agentes de toda la organización no pueden descubrirla ni cargarla."
+      },
+      "cta": {
+        "manage": "Gestionar",
+        "view": "Ver"
+      },
+      "errors": {
+        "loadSkills": "No se han podido cargar las skills",
+        "loadData": "No se han podido cargar los datos"
+      },
+      "toasts": {
+        "loadError": "No se han podido cargar las skills",
+        "updated": "Skill \"{{name}}\" actualizada",
+        "created": "Skill \"{{name}}\" creada",
+        "updateError": "No se ha podido actualizar la skill",
+        "createError": "No se ha podido crear la skill",
+        "deprecated": "Skill \"{{name}}\" marcada como obsoleta",
+        "deprecateError": "No se ha podido marcar la skill como obsoleta",
+        "disabled": "Skill \"{{name}}\" desactivada",
+        "enabled": "Skill \"{{name}}\" activada",
+        "toggleError": "No se ha podido actualizar la disponibilidad de la skill",
+        "deleted": "Skill \"{{name}}\" eliminada",
+        "deleteError": "No se ha podido eliminar la skill",
+        "imported": "Skill \"{{name}}\" importada",
+        "importError": "No se ha podido importar la skill",
+        "resourceAdded": "Recurso añadido",
+        "resourceError": "No se ha podido actualizar el recurso",
+        "rolledBack": "Se ha revertido a la v{{version}}",
+        "rollbackError": "No se ha podido revertir",
+        "candidateApproved": "\"{{name}}\" aprobada",
+        "candidateRejected": "\"{{name}}\" rechazada",
+        "candidateActionError": "No se ha podido actualizar la candidata",
+        "conflict": "Esta skill se ha modificado en otro sitio",
+        "conflictDescription": "Vuelva a cargar la última versión y aplique de nuevo sus cambios.",
+        "conflictReload": "Recargar"
+      },
+      "builtinReadOnly": "Esta es una skill integrada y no se puede editar.",
+      "editorPanel": {
+        "createTitle": "Nueva Skill",
+        "reviewTitle": "Revisar y editar la candidata",
+        "requiredHint": "Obligatorio: {{fields}}",
+        "bodyHint": "Escriba las instrucciones que seguirá el agente al usar esta skill. Puede usar encabezados, listas y bloques de código en markdown."
+      },
+      "tabs": {
+        "content": "Contenido",
+        "metadata": "Metadatos",
+        "resources": "Recursos",
+        "versions": "Versiones"
+      },
+      "form": {
+        "name": "Nombre",
+        "namePlaceholder": "p. ej. pdf-table-extractor",
+        "bodyPlaceholder": "Describa cómo llevar a cabo esta skill…",
+        "description": "Descripción",
+        "descriptionPlaceholder": "Qué hace esta skill y cuándo usarla (no cómo: eso va en el cuerpo)",
+        "category": "Categoría",
+        "subcategory": "Subcategoría",
+        "tags": "Etiquetas",
+        "tagsPlaceholder": "Añadir una etiqueta…",
+        "related": "Skills relacionadas",
+        "relatedPlaceholder": "Añadir el nombre de una skill relacionada…",
+        "requires": "Requiere",
+        "requiresPlaceholder": "Añadir el nombre de una skill necesaria…",
+        "license": "Licencia",
+        "compatibility": "Compatibilidad",
+        "deprecateReason": "Motivo",
+        "replacedBy": "Sustituida por",
+        "noReplacement": "Sin sustituta",
+        "typeNameToConfirm": "Escriba \"{{name}}\" para confirmar",
+        "replacedBy_withName": "Sustituida por {{name}}"
+      },
+      "dangerZone": {
+        "title": "Zona de peligro",
+        "deprecate": "Marcar como obsoleta",
+        "delete": "Eliminar",
+        "deprecateTitle": "¿Marcar \"{{name}}\" como obsoleta?",
+        "deleteTitle": "¿Eliminar \"{{name}}\"?",
+        "deleteBody": "¿Seguro que quiere eliminar esta skill? Esta acción no se puede deshacer.",
+        "cannotDeleteTitle": "No se puede eliminar esta skill",
+        "requiredBy": "Otras skills necesitan esta skill: {{names}}. Márquela como obsoleta para que las dependientes se sigan resolviendo.",
+        "usedByAgents": "Esta skill está asignada a: {{names}}. Si la elimina, se desasignará de ellos."
+      },
+      "resources": {
+        "empty": "Todavía no hay recursos incluidos.",
+        "addNew": "Añadir recurso",
+        "path": "Ruta",
+        "content": "Contenido"
+      },
+      "versions": {
+        "empty": "Todavía no hay historial de versiones.",
+        "current": "Actual",
+        "updatedBy": "Actualizada por {{who}}",
+        "rollback": "Revertir",
+        "rollbackTitle": "¿Revertir a la v{{version}}?",
+        "rollbackBody": "Esto crea una versión nueva con el contenido de la v{{version}}. El historial de versiones se conserva."
+      },
+      "import": {
+        "title": "Importar una Skill",
+        "description": "Importe una skill desde un paquete npm, una URL o un archivo subido.",
+        "tabNpm": "npm",
+        "tabUrl": "URL",
+        "tabUpload": "Subir",
+        "npmLabel": "Comando de instalación de npm o nombre del paquete",
+        "npmHint": "Pegue un comando de instalación de npm/npx/yarn/pnpm, o solo el nombre del paquete: se analiza, nunca se ejecuta.",
+        "urlLabel": "URL del archivo comprimido",
+        "uploadLabel": "Archivo de la skill (.zip, .tar.gz)",
+        "chooseFile": "Elegir archivo…",
+        "preview": "Vista previa",
+        "previewError": "No se ha podido previsualizar esta skill",
+        "confirmImport": "Importar Skill",
+        "source": "Origen: {{source}}",
+        "nameHint": "En minúsculas y con guiones. Cámbielo si el nombre original ya corresponde a una skill integrada (por ejemplo, pptx).",
+        "nameInvalid": "El nombre solo puede contener letras minúsculas, números y guiones simples.",
+        "originalName": "Nombre original: {{name}}",
+        "resourceCount_one": "{{count}} recurso",
+        "resourceCount_other": "{{count}} recursos",
+        "skippedBinary_one": "Se ha omitido {{count}} archivo binario (todavía no se admite)",
+        "skippedBinary_other": "Se han omitido {{count}} archivos binarios (todavía no se admiten)",
+        "resourceCount_many": "{{count}} de recursos",
+        "skippedBinary_many": "Se han omitido {{count}} de archivos binarios (todavía no se admiten)"
+      },
+      "candidates": {
+        "title": "Skills candidatas pendientes",
+        "subtitle": "Skills que sus agentes han propuesto mientras trabajaban. Revíselas y apruébelas para añadirlas a su catálogo, o recháncelas.",
+        "empty": "No hay candidatas pendientes",
+        "approve": "Aprobar",
+        "reject": "Rechazar",
+        "view": "Ver",
+        "hide": "Ocultar",
+        "editAndApprove": "Editar y aprobar"
+      }
+    },
+    "serviceAccounts": {
+      "title": "Cuentas de servicio",
+      "subtitle": "Identidades de máquina, para que la automatización lea con sus propios permisos en lugar de tomar prestados los de alguien.",
+      "newAccount": "Nueva cuenta de servicio",
+      "errorGeneric": "No se han podido cargar las cuentas de servicio.",
+      "retry": "Inténtelo de nuevo",
+      "emptyTitle": "Todavía no hay cuentas de servicio",
+      "emptyDescription": "Una cuenta de servicio permite que un script lea de PipesHub sin iniciar sesión como un compañero. Solo ve lo que usted le conceda y sigue funcionando cuando alguien se marcha.",
+      "columnName": "Nombre",
+      "columnDescription": "Para qué sirve",
+      "columnStatus": "Estado",
+      "statusActive": "Activa",
+      "statusDisabled": "Desactivada",
+      "manageTokens": "Tokens",
+      "enable": "Activar",
+      "disable": "Desactivar",
+      "delete": "Eliminar",
+      "enabledTitle": "Cuenta de servicio activada",
+      "disabledTitle": "Cuenta de servicio desactivada",
+      "disabledBody": "Sus tokens han dejado de funcionar de inmediato, no solo en el siguiente inicio de sesión.",
+      "updateErrorTitle": "No se ha podido actualizar la cuenta de servicio",
+      "deleteTitle": "¿Eliminar esta cuenta de servicio?",
+      "deleteDescription": "{{name}} dejará de funcionar de inmediato y se revocarán todos los tokens que tenga. Todo lo que siga usando uno de esos tokens empezará a fallar.",
+      "deleteSuccessTitle": "Cuenta de servicio eliminada",
+      "deleteErrorTitle": "No se ha podido eliminar la cuenta de servicio",
+      "create": {
+        "title": "Nueva cuenta de servicio",
+        "intro": "La automatización se autentica como esta cuenta y no como una persona, así que lo que puede leer se decide aquí en lugar de heredarse de quien la configuró.",
+        "slugLabel": "Nombre corto",
+        "slugHelp": "Letras minúsculas, dígitos y guiones simples. Pasa a formar parte de la dirección de la cuenta y no se puede cambiar después.",
+        "slugLengthError": "Use entre 3 y 48 caracteres.",
+        "slugFormatError": "Use letras minúsculas, dígitos y guiones simples, sin empezar ni terminar con un guion.",
+        "nameLabel": "Nombre visible",
+        "namePlaceholder": "Sincronización nocturna",
+        "descriptionLabel": "Para qué sirve",
+        "descriptionPlaceholder": "Lee el manual para el resumen de la versión",
+        "note": "Nadie puede iniciar sesión como cuenta de servicio, y siempre es un miembro, nunca un administrador. Concédale acceso igual que a un compañero: mediante grupos y equipos.",
+        "submit": "Crear",
+        "successTitle": "Cuenta de servicio creada",
+        "errorTitle": "No se ha podido crear la cuenta de servicio"
+      },
+      "tokens": {
+        "title": "Tokens",
+        "newToken": "Nuevo token",
+        "mint": "Crear token",
+        "nameLabel": "Para qué es este token",
+        "namePlaceholder": "Tarea del resumen de la versión",
+        "scopesLabel": "Ámbitos",
+        "scopesHelp": "Elija qué puede hacer este token. No hay valor predeterminado: una credencial que se ejecuta sin supervisión debe tener el acceso que alguien haya elegido para ella.",
+        "expiryLabel": "Caduca después de",
+        "expiryDays": "{{count}} días",
+        "existing": "Tokens",
+        "none": "Esta cuenta todavía no tiene ningún token.",
+        "lastUsed": "Último uso: {{date}}",
+        "neverUsed": "Nunca se ha usado",
+        "expiresOn": "caduca el {{date}}",
+        "expiresInDays": "quedan {{count}} días",
+        "expired": "Caducado",
+        "expiringSoon": "{{count}} token(s) caducan pronto. Cree el sustituto, pase la integración a él y después revoque el antiguo.",
+        "revoke": "Revocar",
+        "revokeSuccessTitle": "Token revocado",
+        "revokeErrorTitle": "No se ha podido revocar el token",
+        "mintErrorTitle": "No se ha podido crear el token",
+        "loadErrorTitle": "No se han podido cargar los tokens",
+        "copyNowTitle": "Copie este token ahora",
+        "copyNowBody": "Esta es la única vez que se muestra. Solo se almacena su hash, así que no se puede recuperar.",
+        "disabledNote": "Esta cuenta está desactivada, así que no se pueden crear tokens nuevos. Los existentes se listan abajo y todavía se pueden revocar.",
+        "rotationHelp": "Para rotar: cree el token nuevo, pase la integración a él mientras ambos funcionan y después revoque el antiguo. Revocarlo primero rompería lo que lo esté usando.",
+        "loading": "Cargando tokens…",
+        "copy": "Copiar el token",
+        "revokeTitle": "¿Revocar este token?",
+        "revokeDescription": "\"{{name}}\" deja de funcionar de inmediato y no se puede recuperar. Todo lo que siga usándolo empezará a fallar. Si está rotando, cree primero el sustituto y pase la integración a él."
+      },
+      "disableTitle": "¿Desactivar esta cuenta de servicio?",
+      "disableDescription": "{{name}} deja de funcionar de inmediato, incluidos todos los tokens que ya tenga, no solo en el siguiente inicio de sesión. Todo lo que use uno de esos tokens empezará a fallar hasta que vuelva a activarla.",
+      "disableConfirm": "Desactivar"
     }
   },
   "filePreview": {
@@ -2812,7 +3531,18 @@
     "showMore": "Ver más",
     "showLess": "Ver menos",
     "lockZoom": "Bloquear nivel de zoom",
-    "unlockZoom": "Desbloquear nivel de zoom"
+    "unlockZoom": "Desbloquear nivel de zoom",
+    "closePreview": "Cerrar la vista previa",
+    "openWebUrl": "Abrir la URL web",
+    "openInSource": "Abrir en el origen",
+    "noDetails": "No hay detalles disponibles del archivo",
+    "metadata": "Metadatos",
+    "webUrl": "URL web",
+    "fitToScreen": "Ajustar a la pantalla",
+    "resizeCitations": "Redimensionar el panel de citas",
+    "resizePreview": "Redimensionar el panel de vista previa",
+    "viewCitations": "Ver las citas",
+    "openNamedInSource": "Abrir {{name}} en el origen"
   },
   "agentBuilder": {
     "goBack": "Volver",
@@ -2865,6 +3595,7 @@
     "tools": "Herramientas",
     "noConnectors": "No hay conectores configurados",
     "noCollections": "No hay colecciones disponibles",
+    "noSkills": "Aún no hay skills: cree o importe una en Sus Skills",
     "collapse": "Contraer",
     "expand": "Expandir",
     "serviceAccountCreated": "Agente de servicio creado. Configure cada conjunto de herramientas con el icono de llave en la paleta.",
@@ -2888,6 +3619,7 @@
     "skillNodeTemplateDescription": "Habilidad personalizada que su agente puede invocar",
     "skillDeprecated": "Esta habilidad se ha marcado como obsoleta",
     "skillDeprecatedReplacedBy": "Esta habilidad se ha marcado como obsoleta. Use {{name}} en su lugar.",
+    "skillDisabled": "Esta skill está desactivada y no estará disponible para el agente hasta que se vuelva a activar",
     "inputSection": "Entrada",
     "responseSection": "Respuesta",
     "connectModel": "Conectar un modelo",
@@ -2934,12 +3666,6 @@
     "notConfiguredTooltip": "No configurado (solo listado del registro)",
     "configureToolsetTooltip": "Configurar conjunto de herramientas",
     "authenticateToolsetTooltip": "Autenticar este conjunto de herramientas",
-    "svcAcctConvertNextSteps": "Guarde el agente, luego use el icono de llave junto a cada conjunto de herramientas en la paleta para establecer credenciales a nivel de agente. Las conexiones de conjunto de herramientas por usuario existentes no se transfieren.",
-    "svcAcctCreateNextSteps": "Guarde el agente, luego use el icono de llave en la paleta para configurar credenciales para cada conjunto de herramientas en esta cuenta de servicio. Agregue conocimiento, configure el modelo y refine el flujo según sea necesario.",
-    "svcAcctDescSuffix": "Esto es lo que significa:",
-    "svcAcctKnowledgeNote3": "Cualquier persona que use este agente puede ver respuestas del contenido al que usted tiene acceso, incluso cuando sus propios permisos no lo incluirían.",
-    "svcAcctToolsetsDesc": "Los conjuntos de herramientas usan un conjunto de credenciales para todo el agente, compartido por todos los que lo usan — no los inicios de sesión personales de cada usuario.",
-    "svcAcctToolsetsNote2Create": "No agregue conjuntos de herramientas que requieran inicio de sesión por usuario hasta que esté listo para proporcionar credenciales a nivel de agente en la paleta.",
     "svcAcctConvertTitle": "Convertir a agente de servicio",
     "svcAcctCreateTitle": "Crear agente de servicio",
     "svcAcctConvertDesc": "Este agente pasará a ser un agente de servicio compartido: disponible en toda la organización, cada conjunto de herramientas se autentica una vez a nivel de agente y el conocimiento se limita a lo que conecte en el flujo.",
@@ -3054,6 +3780,7 @@
     "connectionToolGroupToToolsets": "Los grupos de herramientas deben conectarse al controlador de conjuntos de herramientas del agente",
     "connectionToolsetToToolsets": "Los conjuntos de herramientas deben conectarse al controlador de conjuntos de herramientas del agente",
     "connectionToolToToolsets": "Las herramientas deben conectarse al controlador de conjuntos de herramientas del agente",
+    "connectionSkillToSkillsHandle": "Las skills deben conectarse al conector de skills del agente",
     "connectionAgentResponseToOutput": "Conecte el controlador de respuesta del agente a la salida del chat",
     "connectionThroughAgent": "Los nodos deben conectarse a través del agente",
     "defaultSystemPrompt": "Eres un asistente útil.",
@@ -3083,6 +3810,7 @@
     "dropOnlyOneToolGroup": "Solo se permite un grupo de herramientas {{type}}. Elimine primero el nodo existente.",
     "dropDuplicateConnector": "{{name}} ya está agregado a este agente",
     "dropDuplicateKB": "{{name}} ya está agregado a este agente",
+    "dropDuplicateSkill": "{{name}} ya está añadida a este agente",
     "toolsetStatusAuthenticated": "Autenticado y listo para usar",
     "toolsetStatusNeedsAuth": "Configurado — inicie sesión para autenticarse",
     "toolsetStatusRegistry": "Entrada del registro — no configurada para su espacio de trabajo",
@@ -3119,10 +3847,25 @@
     "toolInlineSuffix": "Herramienta {{name}}",
     "paletteToolGroupLabel": "Herramientas de {{app}}",
     "nodeTemplateChatResponseDesc": "Envía la respuesta al usuario",
-    "deprecatedToolsBanner": "{{count}} herramienta(s) de este agente están obsoletas, elimínalas: {{tools}}",
     "removeDeprecatedTools": "Eliminar herramientas obsoletas",
     "showMore": "Mostrar más",
-    "showLess": "Mostrar menos"
+    "showLess": "Mostrar menos",
+    "mcpServerAlreadyAttachedNotify": "{{name}} ya está adjuntado a este agente",
+    "webSearchOnlyOne": "Solo se puede adjuntar un proveedor de búsqueda web",
+    "mcpServerNodeSubtitle": "Herramientas de un servidor MCP",
+    "noMcpServersAvailable": "No hay servidores MCP disponibles",
+    "webSearchLocked": "La búsqueda web no se puede cambiar para este agente",
+    "webSearchLoading": "Cargando proveedores de búsqueda web…",
+    "webSearchConfigureFirst": "Configure primero {{name}}",
+    "webSearch": "Búsqueda web",
+    "toolsetOAuthServerError": "Error de autenticación. Inténtelo de nuevo o póngase en contacto con su administrador.",
+    "attached": "Adjuntado",
+    "mcpServerWithToolCount_one": "Servidor MCP con {{count}} herramienta",
+    "mcpServerWithToolCount_other": "Servidor MCP con {{count}} herramientas",
+    "deprecatedToolsBanner_one": "{{count}} herramienta de este agente está obsoleta. Quítela: {{tools}}",
+    "deprecatedToolsBanner_other": "{{count}} herramientas de este agente están obsoletas. Quítelas: {{tools}}",
+    "mcpServerWithToolCount_many": "Servidor MCP con {{count}} de herramientas",
+    "deprecatedToolsBanner_many": "{{count}} de herramientas de este agente están obsoletas. Quítelas: {{tools}}"
   },
   "recordView": {
     "sections": {
@@ -3164,6 +3907,9 @@
     "reindexLoading": "Enviando solicitud de reindexación…",
     "reindexSuccess": "Solicitud de reindexación enviada correctamente",
     "reindexError": "Error al enviar la solicitud de reindexación",
+    "forceReindexTitle": "¿Iniciar la reindexación forzada?",
+    "forceReindexDescription": "Esto reindexa el documento desde cero y puede suponer un coste adicional. Úselo cuando los resultados de búsqueda estén desactualizados o el documento no aparezca en las búsquedas aunque la indexación haya terminado.",
+    "deleteRecord": "Eliminar el registro",
     "loading": "Cargando…",
     "loadFailed": "No se pudo cargar este registro.",
     "externalSource": "Origen externo",
@@ -3193,16 +3939,45 @@
       "folder": "Carpeta",
       "connectorId": "ID del conector",
       "notAvailable": "N/D",
-      "typeEmail": "Correo",
-      "typeFile": "Archivo",
-      "typeArtifact": "Artefacto",
-      "typeTicket": "Ticket",
-      "typeWebpage": "Página web",
-      "typeMessage": "Mensaje",
       "mailSubject": "Asunto",
       "ticketSummary": "Resumen",
-      "ticketDescription": "Descripción"
-    }
+      "ticketDescription": "Descripción",
+      "recordTypes": {
+        "FILE": "Archivo",
+        "DRIVE": "Unidad",
+        "WEBPAGE": "Página web",
+        "DATABASE": "Base de datos",
+        "DATASOURCE": "Fuente de datos",
+        "MESSAGE": "Mensaje",
+        "MAIL": "Correo electrónico",
+        "EMAIL": "Correo electrónico",
+        "GROUP_MAIL": "Correo de grupo",
+        "TICKET": "Ticket",
+        "COMMENT": "Comentario",
+        "INLINE_COMMENT": "Comentario en línea",
+        "CONFLUENCE_PAGE": "Página de Confluence",
+        "CONFLUENCE_BLOGPOST": "Entrada de blog de Confluence",
+        "SHAREPOINT_PAGE": "Página de SharePoint",
+        "SHAREPOINT_LIST": "Lista de SharePoint",
+        "SHAREPOINT_LIST_ITEM": "Elemento de lista de SharePoint",
+        "SHAREPOINT_DOCUMENT_LIBRARY": "Biblioteca de documentos de SharePoint",
+        "LINK": "Enlace",
+        "PROJECT": "Proyecto",
+        "PULL_REQUEST": "Pull request",
+        "MEETING": "Reunión",
+        "PRODUCT": "Producto",
+        "DEAL": "Oportunidad",
+        "CASE": "Caso",
+        "TASK": "Tarea",
+        "ARTIFACT": "Artefacto",
+        "CODE_FILE": "Archivo de código",
+        "SQL_TABLE": "Tabla SQL",
+        "SQL_VIEW": "Vista SQL",
+        "OTHERS": "Otro"
+      }
+    },
+    "previewConversionFailed": "La conversión de la vista previa ha fallado. Aun así puede descargar el archivo.",
+    "missingRecordId": "Falta el id del registro"
   },
   "oauthConsent": {
     "loading": "Cargando solicitud de autorización…",
@@ -3212,6 +3987,7 @@
     "errorTitle": "Error de autorización",
     "signedInAs": "Sesión iniciada como {{display}}",
     "requestHeading": "Esta aplicación solicita acceso a:",
+    "unreviewedApp": "Esta aplicación se ha registrado por sí misma. Ningún administrador la ha revisado.",
     "legalNotice": "Al hacer clic en «Permitir», autoriza a {{appName}} a acceder a sus datos según lo descrito arriba.",
     "privacyPolicy": "Política de privacidad",
     "deny": "Denegar",
@@ -3346,7 +4122,9 @@
       "microsoftUnavailable": "El inicio de sesión con Microsoft no está disponible. Contacta a tu administrador.",
       "oauthUnavailable": "El inicio de sesión OAuth no está disponible. Contacta a tu administrador.",
       "showPassword": "Mostrar contraseña",
-      "hidePassword": "Ocultar contraseña"
+      "hidePassword": "Ocultar contraseña",
+      "accountDisabled": "Su cuenta se ha deshabilitado.",
+      "tooManyIncorrectCredentials": "Ha introducido credenciales incorrectas demasiadas veces"
     }
   },
   "healthGate": {
@@ -3374,5 +4152,139 @@
     "skip": "Omitir",
     "next": "Siguiente",
     "submit": "Enviar"
+  },
+  "collections": {
+    "stats": {
+      "title": "Analíticas",
+      "menuLabel": "Analíticas",
+      "fetchError": "No se han podido cargar las estadísticas de indexación",
+      "refreshSuccess": "Estadísticas actualizadas",
+      "refreshError": "No se han podido actualizar las estadísticas",
+      "reindexFailedStart": "Reindexando los registros fallidos…",
+      "reindexFailedError": "No se han podido reindexar los registros fallidos",
+      "manualIndexStart": "Indexando los registros de indexación manual…",
+      "manualIndexError": "No se ha podido iniciar la indexación manual"
+    }
+  },
+  "reindexScope": {
+    "description": "Elija qué indexar para \"{{name}}\".",
+    "thisItemOnly": "Solo este elemento",
+    "withChildren": "Este elemento y todo su contenido"
+  },
+  "oauthDevice": {
+    "title": "Conectar un dispositivo",
+    "codeLabel": "Introduzca el código que aparece en su terminal",
+    "phishingWarning": "Continúe solo si ha iniciado esto usted mismo en un dispositivo que controla. Si alguien le ha enviado este código, cierre esta página.",
+    "codePlaceholder": "ABCD-EFGH",
+    "continue": "Continuar",
+    "loading": "Buscando este dispositivo…",
+    "doneTitle": "Dispositivo conectado",
+    "doneLine": "Puede volver al terminal. Ya puede cerrar esta ventana.",
+    "deniedTitle": "Solicitud denegada",
+    "deniedLine": "No se ha concedido acceso al dispositivo."
+  },
+  "validation": {
+    "password": {
+      "rules": "Al menos 8 caracteres: minúscula, mayúscula, número y símbolo.",
+      "minLength": "La contraseña debe tener al menos 8 caracteres.",
+      "lowercase": "La contraseña debe contener una letra minúscula.",
+      "uppercase": "La contraseña debe contener una letra mayúscula.",
+      "number": "La contraseña debe contener un número.",
+      "symbol": "La contraseña debe contener un símbolo.",
+      "mismatch": "Las contraseñas no coinciden."
+    }
+  },
+  "filterDropdown": {
+    "selectedCount": "{{count}} seleccionados",
+    "is": "es",
+    "isAnyOf": "es cualquiera de",
+    "loadingOptions": "Cargando opciones…",
+    "refreshingOptions": "Actualizando opciones…",
+    "loadingMore": "Cargando más…"
+  },
+  "moveFolder": {
+    "moving": "Moviendo...",
+    "noFolders": "No se han encontrado carpetas"
+  },
+  "shareSidebar": {
+    "suggestedTeams": "Equipos sugeridos",
+    "suggestedMembers": "Miembros sugeridos",
+    "loadingMoreUsers": "Cargando más usuarios...",
+    "noResults": "No se han encontrado usuarios ni equipos",
+    "createNewTeam": "Crear un equipo nuevo",
+    "sharing": "Compartiendo...",
+    "accessShared": "Acceso compartido",
+    "sharedWith": "Compartido con {{names}}",
+    "shareFailed": "No se ha podido compartir",
+    "shareError": "No se ha podido compartir el acceso. Inténtelo de nuevo.",
+    "roleUpdated": "Rol actualizado",
+    "roleUpdatedDescription": "{{name}} ahora es {{role}}",
+    "member": "Miembro",
+    "roleError": "No se ha podido actualizar el rol. Inténtelo de nuevo.",
+    "roleFailed": "No se ha podido actualizar el rol",
+    "accessRevoked": "Acceso revocado",
+    "accessRevokedDescription": "{{name}} ya no tiene acceso",
+    "revokeError": "No se ha podido quitar el acceso. Inténtelo de nuevo.",
+    "revokeFailed": "No se ha podido revocar el acceso",
+    "memberCount_one": "{{count}} miembro",
+    "memberCount_other": "{{count}} miembros",
+    "roles": {
+      "owner": {
+        "label": "Acceso total",
+        "description": "Propiedad compartida de la colección"
+      },
+      "writer": {
+        "label": "Puede editar",
+        "description": "Solo editar y organizar archivos y carpetas"
+      },
+      "reader": {
+        "label": "Puede ver",
+        "description": "Solo acceso de lectura"
+      }
+    },
+    "team": "Equipo",
+    "teamsNoRoles": "Los equipos no tienen roles",
+    "invite": "Invitar a Pipeshub",
+    "memberCount_many": "{{count}} de miembros"
+  },
+  "demoData": {
+    "badge": {
+      "label": "Demo",
+      "tooltip": "Datos de ejemplo de la demostración de Acme Corp, no un registro de su empresa"
+    },
+    "removalNotice": {
+      "title": "Los datos de demostración de Acme Corp siguen en su espacio de trabajo",
+      "description": "Los datos propios de su empresa ya están en PipesHub. La demostración está oculta en las respuestas de forma predeterminada, pero cualquiera puede volver a activarla y sus cuentas de ejemplo todavía pueden iniciar sesión. Desactívela para todos o quítela permanentemente.",
+      "remove": "Quitar permanentemente",
+      "keep": "Mantener por ahora",
+      "turnOff": "Desactivar para todos"
+    },
+    "removeDialog": {
+      "title": "¿Quitar permanentemente los datos de demostración de Acme Corp?",
+      "description": "Esto elimina el conector Demo con todos sus registros, grupos y permisos. Para ocultarlo sin eliminar nada, desactívelo para todos. Puede volver a añadirlo más adelante desde la página de Conectores.",
+      "deleteAccounts": "Eliminar también las cuentas de ejemplo: {{names}}",
+      "deleteAccountsHint": "Se crearon con una contraseña inicial, así que cualquiera que la conozca puede iniciar sesión como ellas.",
+      "cancel": "Cancelar",
+      "confirm": "Quitar permanentemente",
+      "successTitle": "Datos de demostración eliminados",
+      "successAccounts": "Las cuentas de ejemplo también se han eliminado.",
+      "partialTitle": "Datos de demostración eliminados, pero quedan algunas cuentas de ejemplo",
+      "partialDescription": "Elimine {{emails}} en Espacio de trabajo → Usuarios.",
+      "errorTitle": "No se han podido quitar los datos de demostración",
+      "errorDescription": "Inténtelo de nuevo. Si sigue ocurriendo, quite el conector Demo desde la página de Conectores."
+    },
+    "switch": {
+      "errorTitle": "No se ha podido cambiar el ajuste de los datos de demostración",
+      "errorDescription": "No se ha cambiado nada. Vuelva a intentarlo en un momento.",
+      "hiddenTitle": "Datos de demostración de Acme Corp ocultos",
+      "hiddenDescription": "Han desaparecido de sus respuestas, búsquedas y registros. Puede volver a activarlos cuando quiera en Perfil → Datos de demostración.",
+      "undo": "Deshacer"
+    },
+    "everyone": {
+      "offTitle": "Datos de demostración desactivados para todos",
+      "offDescription": "Han desaparecido de las respuestas, las búsquedas y los registros de todo el mundo, y las cuentas de ejemplo no pueden iniciar sesión. Vuelva a activarlos en Perfil → Datos de demostración.",
+      "onTitle": "Datos de demostración reactivados para todos",
+      "errorTitle": "No se han podido cambiar los datos de demostración para todos"
+    }
   }
 }

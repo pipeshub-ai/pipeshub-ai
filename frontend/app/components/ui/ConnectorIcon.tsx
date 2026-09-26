@@ -43,6 +43,8 @@ export type ConnectorType =
   | 'local-fs'
   | 'localfs'
   | 'nextcloud'
+  | 'smb'
+  | 'cifs'
   // Document & Knowledge
   | 'notion'
   | 'confluence'
@@ -137,6 +139,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'local-fs': { svg: `${CONNECTOR_ICONS_BASE_PATH}/local-fs.png`, fallback: 'folder', needDarkModeInvert: true },
   'localfs': { svg: `${CONNECTOR_ICONS_BASE_PATH}/local-fs.png`, fallback: 'folder', needDarkModeInvert: true },
   'nextcloud': { svg: svg('nextcloud'), fallback: 'cloud' },
+  'smb': { svg: svg('smb'), fallback: 'folder_shared' },
+  'cifs': { svg: svg('cifs'), fallback: 'folder_shared' },
   // Document & Knowledge
   'notion': { svg: svg('notion'), fallback: 'description' },
   'confluence': { svg: svg('confluence'), fallback: 'article' },
@@ -220,6 +224,8 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['local-files', 'local-fs'],
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
+  ['network-drive', 'smb'], ['smb3', 'smb'], ['smb2', 'smb'], ['smb', 'smb'],
+  ['cifs', 'cifs'],
   // Dev tools & project tracking
   ['linear', 'linear'],
   ['jira', 'jira'], ['confluence', 'confluence'],

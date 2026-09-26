@@ -80,9 +80,16 @@ jobs:
           cd frontend
           npm install
 
-      - name: Check German locale parity
+      - name: Typecheck frontend
         working-directory: frontend
-        run: npm run i18n:check && npm run test:i18n
+        run: npm run typecheck
+
+      # Parity keeps every locale in step with en-US; the key check catches an
+      # en-US key that was deleted while code still asks for it, which parity
+      # alone cannot see because it compares the catalogues to each other.
+      - name: Check locale parity and translation keys
+        working-directory: frontend
+        run: npm run i18n:check && npm run i18n:keys && npm run test:i18n
 
       # frontend/package.json defines test:unit (vitest) and 380 tests exist
       # across 27 files, but no workflow ran them. They need no browser and no

@@ -9,6 +9,7 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from logging import Logger
 from typing import Any
 
@@ -21,6 +22,7 @@ from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.protocol.agui import AGUIEventType
+from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
@@ -3219,102 +3221,26 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
 # Agent Chat Endpoints
 # ============================================================================
 
-def _parse_sse_events(chunk: str) -> list[tuple[str, Any]]:
-    """Parses one or more `event: X\\ndata: Y\\n\\n` frames out of a raw SSE
-    text chunk. Tolerant of a chunk containing multiple frames or a partial
-    trailing one (returns only whole frames found) -- `chat()` drains the
-    WHOLE stream before deciding anything, so a frame boundary split across
-    two `body_iterator` chunks is completed by the next chunk's data before
-    any frame is parsed here, not lost."""
-    events: list[tuple[str, Any]] = []
-    for block in chunk.split("\n\n"):
-        block = block.strip()
-        if not block:
-            continue
-        event_name = None
-        data_line = None
-        for line in block.split("\n"):
-            if line.startswith("event:"):
-                event_name = line[len("event:"):].strip()
-            elif line.startswith("data:"):
-                data_line = line[len("data:"):].strip()
-        if event_name is None or data_line is None:
-            continue
-        try:
-            events.append((event_name, json.loads(data_line)))
-        except json.JSONDecodeError:
-            continue
-    return events
-
-
 @router.post("/{agent_id}/chat", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def chat(request: Request, agent_id: str) -> JSONResponse:
     """Chat with an agent (non-streaming).
 
-    Runs the exact same agent-loop pipeline `chat_stream()` does -- same
-    setup (toolset config loading, permission checks, LLM resolution, all
-    ~250 lines of it), same `run_agent_loop_stream()` call -- by invoking
-    that route function directly and draining its `StreamingResponse.
-    body_iterator` instead of streaming it to the client. This is
-    deliberately NOT a second copy of that setup logic: LangGraph's own
-    separate non-streaming code path (`_select_agent_graph_for_query()` +
-    `graph.ainvoke()`) was removed with the rest of LangGraph, and
-    `chat_stream()`'s setup is too security-sensitive (credential lookup
-    scoping — see its own comments) to risk drifting via duplication.
+    Runs the exact agent-loop pipeline `chat_stream()` does by invoking that
+    route function and draining its `body_iterator` (see `stream_collector`),
+    rather than duplicating its setup: that setup is too security-sensitive
+    (credential lookup scoping — see its own comments) to risk drifting.
 
-    Node.js's `createAgentConversation` (`POST /api/v1/agents/:agentKey/
-    conversations` -> `POST /api/v1/agent/{agent_id}/chat`) is this
-    endpoint's one live caller (see Phase 0 audit) — it reads whichever of
-    `completion_data`'s fields are present (`answer` required, everything
-    else optional; see `buildAIResponseMessage` in
-    `enterprise_search/utils/utils.ts`), so returning agent-loop's
-    `completion_data` shape as-is (no `reason`/`answerMatchType` on the
-    success path -- see `respond.py`) does not break it.
+    Called by Node's `POST /api/v1/agents/:agentKey/conversations` and
+    `POST /api/v1/agents/:agentKey/conversations/:id/messages`, which persist
+    the returned `completion_data` via `saveCompleteConversation`.
     """
+    request.state.chat_streaming = False
     streaming_response = await chat_stream(request, agent_id)
     if not isinstance(streaming_response, StreamingResponse):
         return streaming_response  # pragma: no cover - chat_stream() only returns StreamingResponse today
 
-    completion_data: dict[str, Any] | None = None
-    error_payload: dict[str, Any] | None = None
-    async for raw_chunk in streaming_response.body_iterator:
-        text = raw_chunk.decode("utf-8") if isinstance(raw_chunk, bytes) else raw_chunk
-        for event_name, data in _parse_sse_events(text):
-            if not isinstance(data, dict):
-                continue
-            # chat_stream always speaks AG-UI. A frame with parentRunId belongs to a
-            # sub-agent: its RUN_ERROR is handed back to the parent as a tool result
-            # and the parent still answers, so only root-run frames decide the outcome.
-            if data.get("parentRunId") is not None:
-                continue
-            if event_name == "complete":
-                completion_data = data
-            elif event_name == AGUIEventType.RUN_FINISHED.value and isinstance(data.get("result"), dict):
-                completion_data = data["result"]
-            elif event_name in ("error", AGUIEventType.RUN_ERROR.value):
-                error_payload = data
-
-    if error_payload is not None:
-        return JSONResponse(
-            status_code=error_payload.get("status_code", 400),
-            content={
-                "status": error_payload.get("status", "error"),
-                "message": error_payload.get("message") or error_payload.get("error") or "An error occurred",
-                "searchResults": [],
-                "records": [],
-            },
-        )
-    if completion_data is None:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": "The agent did not produce a response.",
-                "searchResults": [],
-                "records": [],
-            },
-        )
-    return JSONResponse(content=completion_data)
+    outcome = await collect_stream_outcome(streaming_response.body_iterator, request.is_disconnected)
+    return outcome.to_response()
 
 
 @router.post(
@@ -3367,7 +3293,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "email": user_context.get("email"),
             "domain": user_context.get("domain"),
             "has_tools": bool(chat_query.tools),
-            "streaming": True,
+            "streaming": getattr(request.state, "chat_streaming", True),
         })
 
         # `chat_query.tools` is a FILTER over the agent's configured toolsets
@@ -3999,8 +3925,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     ),
                 )
 
-                async for _evt in generator:
-                    yield _evt
+                # Close the bridge with this generator so its producer task is
+                # cancelled on disconnect, not whenever the bridge is GC'd.
+                async with aclosing(generator):
+                    async for _evt in generator:
+                        yield _evt
             except Exception as exc:
                 logger.error(f"Error in chat_stream body: {exc}", exc_info=True)
                 error_code, user_message = classify_exception(exc)

@@ -2,7 +2,6 @@ import { apiClient, streamSSERequest } from '@/lib/api';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import {
-  ChatMessage,
   Conversation,
   ConversationMessage,
   ConversationPagination,
@@ -272,23 +271,6 @@ export const ChatApi = {
       messages: data.conversation.messages || [],
       pagination,
     };
-  },
-
-  // Fetch messages for a conversation
-  async fetchMessages(conversationId: string): Promise<ChatMessage[]> {
-    const { data } = await apiClient.get<ChatMessage[]>(
-      `/api/chat/conversations/${conversationId}/messages`
-    );
-    return data;
-  },
-
-  // Create a new conversation
-  async createConversation(title: string): Promise<Conversation> {
-    const { data } = await apiClient.post<Conversation>(
-      `/api/chat/conversations`,
-      { title }
-    );
-    return data;
   },
 
   /**

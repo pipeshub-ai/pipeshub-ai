@@ -6,6 +6,13 @@
       "resetExpiredMessage": "This password reset link has expired. Please request a new one from the Forgot Password option on the sign-in page.",
       "backToSignIn": "Back to Sign In",
       "genericLinkInvalidMessage": "This link may have expired. Please ask your organization admin to send you a new invite."
+    },
+    "form": {
+      "title": "Change Password",
+      "newPasswordLabel": "New Password*",
+      "newPasswordPlaceholder": "Enter your new password",
+      "confirmPasswordLabel": "Confirm Password*",
+      "confirmPasswordPlaceholder": "Confirm your password"
     }
   },
   "agents": {
@@ -204,6 +211,10 @@
       "visitDocs": "Visit",
       "docsLabel": "documentation",
       "toLearnMore": "to learn more."
+    },
+    "tour": {
+      "dismiss": "Dismiss tour",
+      "completedDescription": "You're all set now. If you want to know more check out <docs>documentation</docs>."
     }
   },
   "nav": {
@@ -264,7 +275,10 @@
     "uploading": "Uploading...",
     "saving": "Saving...",
     "processing": "Processing...",
-    "reindexing": "Reindexing..."
+    "reindexing": "Reindexing...",
+    "tryAgain": "Try again",
+    "edit": "Edit",
+    "remove": "Remove"
   },
   "filter": {
     "type": "Type",
@@ -420,7 +434,15 @@
     "beta": {
       "label": "Beta",
       "tooltip": "This feature is in beta and may change."
-    }
+    },
+    "you": "You",
+    "refreshing": "Refreshing...",
+    "clear": "Clear",
+    "current": "Current",
+    "openProfile": "Open profile",
+    "loading": "Loading...",
+    "moreOptions": "More options",
+    "docs": "Docs"
   },
   "units": {
     "bytes": "Bytes",
@@ -459,7 +481,11 @@
     "more": "More",
     "loadMore": "Load more",
     "moreCollections": "More Collections",
-    "searchCollections": "Search"
+    "searchCollections": "Search",
+    "open": "Open sidebar",
+    "expand": "Expand sidebar",
+    "close": "Close sidebar",
+    "collapse": "Collapse sidebar"
   },
   "menu": {
     "reindex": "Re-index",
@@ -490,7 +516,15 @@
     "folderEmpty": "This folder is empty",
     "itemStats": "You have {{collections}} Collections, {{files}} Files inside this collection folder",
     "searchPlaceholder": "eg: Sales Docs",
-    "searchMinChars": "Minimum 2 characters required for search"
+    "searchMinChars": "Minimum 2 characters required for search",
+    "createFolder": "Create Folder",
+    "goToCollections": "Go to Collections",
+    "namedEmpty": "{{name}} is empty",
+    "noRecords": "No records found",
+    "searchEmptyHint": "Couldn't find what you are searching for. Try searching for something else.",
+    "adjustFiltersHint": "Select a different source or adjust your filters",
+    "addFromCollectionsHint": "You can add your company files or folders from the Collections",
+    "addFilesHint": "Add your files or folders"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -551,7 +585,15 @@
       "browseWorkspaceActionsAria": "Open workspace actions to add or manage integrations",
       "actionsCount": "{{count}} Actions",
       "resetDefaults": "Reset to defaults",
-      "knowledgeScopeClearedWarning": "No knowledge sources are included for this run, so the agent will not search your connectors or collections for answers."
+      "knowledgeScopeClearedWarning": "No knowledge sources are included for this run, so the agent will not search your connectors or collections for answers.",
+      "searchMcp": "Search MCP servers",
+      "mcpTab": "MCP",
+      "noMcpServers": "No MCP servers configured for this agent.",
+      "configureMoreMcp": "Configure more MCP servers",
+      "browseWorkspaceMcp": "Browse MCP servers",
+      "browseWorkspaceMcpAria": "Open MCP servers to add or manage connections",
+      "noActionMatches": "No actions match your search.",
+      "noMcpMatches": "No MCP servers match your search."
     },
     "projectResources": {
       "noConnectors": "No connectors enabled for this project.",
@@ -885,6 +927,7 @@
       },
       "workspace": {
         "failedToLoad": "Failed to load this project",
+        "failedToLoadFiles": "Failed to load files",
         "instructionsTitle": "Instructions",
         "instructionsPlaceholder": "Add instructions the assistant should follow for every chat in this project…",
         "noInstructions": "No instructions added yet",
@@ -960,7 +1003,8 @@
         "title": "Move to project",
         "noProjects": "You don't have any projects yet",
         "removeOption": "No project",
-        "moving": "Moving…"
+        "moving": "Moving…",
+        "moveFailed": "Failed to move conversation"
       },
       "deleteDialog": {
         "title": "Delete this project?",
@@ -975,10 +1019,81 @@
         "viewer": "Viewer"
       }
     },
-    "demoHide": "Hide demo data"
-  },
-  "workspaceSettings": {
-    "title": "Workspace Settings"
+    "demoHide": "Hide demo data",
+    "scrollAttachmentsLeft": "Scroll attachments left",
+    "scrollAttachmentsRight": "Scroll attachments right",
+    "toolValidation": {
+      "tooManyTools": "Too many tools selected. Maximum 1024 tools are allowed per request due to performance limits.",
+      "multipleInstances": "Multiple instances of the same action type ({{types}}) cannot be used together. Open the Actions panel and select only one instance per type."
+    },
+    "attachments": {
+      "uploadFailed": "Upload failed",
+      "uploadFailedNamed": "Failed to upload {{name}}: {{error}}",
+      "unsupportedType": "Unsupported file type: {{names}}. Supported types: {{types}}.",
+      "fileTooLarge": "File too large: {{names}}. Maximum size is {{maxMb}} MB per file.",
+      "tooManyFiles": "Maximum {{max}} attachments per message.",
+      "pasteTruncated": "\n\n[Content truncated — pasted text exceeded the maximum attachment size.]",
+      "uploading": "Uploading…",
+      "retry": "Retry upload",
+      "pastedText": "Pasted text",
+      "uploadingNamed": "Uploading pasted text",
+      "removePastedText": "Remove pasted text",
+      "showInTextField": "Show in text field",
+      "previewLoadFailed": "Failed to load content",
+      "copyText": "Copy",
+      "closePreview": "Close",
+      "loadingPreview": "Loading…",
+      "pasteMeta_one": "{{chars}} chars · {{count}} line",
+      "pasteMeta_other": "{{chars}} chars · {{count}} lines"
+    },
+    "voiceSttNotConfigured": "Configure a Speech-to-Text (STT) model in AI Models settings to enable voice input.",
+    "voiceSttLoading": "Checking speech capabilities…",
+    "expandComposer": "Expand composer",
+    "stopGenerating": "Stop generating",
+    "backToChat": "Back to chat",
+    "searchToggle": {
+      "ariaLabel": "Switch to search view"
+    },
+    "plusMenu": {
+      "ariaLabelFiltersApplied": "Attach files and capabilities. Search filters applied",
+      "ariaLabel": "Attach files and capabilities",
+      "title": "Add files & capabilities"
+    },
+    "stopListening": "Stop listening",
+    "voiceInput": "Voice input",
+    "regenerateResponse": "Regenerate response",
+    "editQuery": "Edit Query",
+    "queryOptions": "Query options",
+    "models": "Models",
+    "manage": "Manage",
+    "configuredModels": "Configured Models",
+    "reasoningEffort": {
+      "label": "Reasoning Effort",
+      "overrideHint": "Click again to use the default.",
+      "defaultHintWithLevel": "Defaults to {{level}} when not set.",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "max": "Max"
+    },
+    "universalAgent": {
+      "toolsLoadError": "Failed to load available actions.",
+      "mcpLoadError": "Failed to load MCP servers.",
+      "noReasoningModel": "No reasoning-capable model is configured. Configure one in Settings → AI Models before using Agent mode.",
+      "loadingTools": "Loading actions…",
+      "noActions": "No authenticated actions found. Connect integrations in Workspace → Actions.",
+      "loadingMcp": "Loading MCP servers…",
+      "noMcpServers": "No authenticated MCP servers found. Connect one in Workspace → MCP Servers.",
+      "toolCount_one": "{{count}} tool",
+      "toolCount_other": "{{count}} tools"
+    },
+    "agentCapabilities": {
+      "notConfiguredOnAgent": "Not configured on this agent",
+      "internalSearch": "Internal Search",
+      "webSearch": "Web Search"
+    },
+    "resizePanels": "Resize chat and preview panels",
+    "mobileProfileComingSoon": "Profile page on mobile is coming soon."
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -1020,7 +1135,9 @@
         "changeRoleError": "Failed to change role",
         "maxAdminsReachedTitle": "Cannot add another admin",
         "maxAdminsReached": "An organization can have at most 5 admins.",
-        "removeFromWorkspace": "Remove from Workplace",
+        "removeFromWorkspace": "Remove from Workspace",
+        "demoteAdminBeforeRemoveTitle": "Cannot remove admin",
+        "demoteAdminBeforeRemove": "Demote the admin to member, then remove them.",
         "removeUserTitle": "Remove user?",
         "removeUserMessage": "Are you sure you want to remove {{email}} from {{workspace}} workspace?",
         "removeButton": "Remove",
@@ -1049,7 +1166,10 @@
         "unblockSuccess": "User unblocked successfully",
         "unblockError": "Failed to unblock user",
         "unblocking": "Unblocking…",
-        "edit": "Edit"
+        "edit": "Edit",
+        "resendInviteSuccess": "Invite resent",
+        "resendInviteSuccessDescription": "Invite has been resent to {{email}}",
+        "resendInviteError": "Failed to resend invite"
       },
       "profile": {
         "title": "Profile",
@@ -1082,12 +1202,9 @@
         "roleLabel": "Role",
         "rolePlaceholder": "Select a role",
         "roleAdmin": "Admin",
-        "roleAdminDescription": "Can manage all aspects of the workspace",
         "roleMember": "Member",
-        "roleMemberDescription": "Can view and use the workspace",
         "groupLabel": "Groups (Optional)",
         "groupPlaceholder": "Select groups",
-        "groupSearchPlaceholder": "Search groups...",
         "import": "Import",
         "importFormatTitle": "CSV or Excel — any layout works",
         "importHintHeader": "Header row optional — extra columns ignored",
@@ -1107,8 +1224,35 @@
         "importSkippedDescription": "Invalid entries are marked in the list — remove them before sending.",
         "importFailed": "Import failed",
         "importFailedDescription": "Could not read the file. Upload a valid CSV or Excel file.",
-        "adminGroupWarning": "Everyone invited here becomes a full org admin — including every address imported from a file. Admins can manage users, groups and org settings."
-      }
+        "adminGroupWarning": "Everyone invited here becomes a full org admin — including every address imported from a file. Admins can manage users, groups and org settings.",
+        "editSuccessTitle": "Invite updated",
+        "editSuccessDescription": "Invite for {{email}} has been updated",
+        "editError": "Failed to update invite",
+        "editTitle": "Edit Invite",
+        "update": "Update Invite",
+        "smtpNotConfiguredTooltip": "SMTP is not configured. Set up email settings before sending invites."
+      },
+      "bulk": {
+        "resendInvite": "Resend Invite",
+        "adminInviteCantBeCancelled": "Admin invites cannot be cancelled",
+        "cancelInvite": "Cancel Invite",
+        "adminCantBeRemoved": "Admin users cannot be removed",
+        "removeFromWorkspace": "Remove from Workspace",
+        "removeSuccess_one": "{{count}} user removed from workspace",
+        "removeSuccess_other": "{{count}} users removed from workspace",
+        "removePartialError_one": "Failed to remove {{count}} user",
+        "removePartialError_other": "Failed to remove {{count}} users",
+        "resendSuccess_one": "Invite resent to {{count}} user",
+        "resendSuccess_other": "Invite resent to {{count}} users",
+        "resendPartialError_one": "Failed to resend invite to {{count}} user",
+        "resendPartialError_other": "Failed to resend invite to {{count}} users",
+        "cancelSuccess_one": "{{count}} invite cancelled",
+        "cancelSuccess_other": "{{count}} invites cancelled",
+        "cancelPartialError_one": "Failed to cancel {{count}} invite",
+        "cancelPartialError_other": "Failed to cancel {{count}} invites"
+      },
+      "inviteDisabledSmtp": "SMTP is not configured. Set up email settings before inviting users.",
+      "bulkLabel": "Users"
     },
     "groups": {
       "title": "Groups",
@@ -1134,7 +1278,8 @@
         "delete": "Delete",
         "deleteError": "Failed to delete group",
         "deleteSuccess": "Group deleted",
-        "managePermissions": "Manage Permissions"
+        "managePermissions": "Manage Permissions",
+        "deleteSystemTooltip": "Only custom groups can be deleted"
       },
       "create": {
         "accessComingSoon": "Access Permissions Coming Soon",
@@ -1154,6 +1299,7 @@
       },
       "detail": {
         "accessComingSoon": "Access Permissions Coming Soon",
+        "searchUsers": "Search users...",
         "accessPermissions": "Access Permissions",
         "createdBy": "Created By",
         "descriptionLabel": "Group Description",
@@ -1169,6 +1315,7 @@
         "deleteButton": "Delete Group",
         "deleteDescription": "Permanently remove this group from the workspace",
         "deleteError": "Failed to delete group",
+        "nameRequired": "Group name is required",
         "deleteSuccess": "Group deleted",
         "deleteSuccessDescription": "\"{{name}}\" has been deleted",
         "deleteTitle": "Delete '{{name}}' Group",
@@ -1226,6 +1373,8 @@
         "descriptionLabel": "Team Description",
         "descriptionPlaceholder": "Describe the purpose of this team",
         "errorGeneric": "Failed to create team",
+        "applyToAll": "Apply to all",
+        "memberRoles": "Member Roles",
         "nameLabel": "Team Name",
         "namePlaceholder": "e.g. Product Engineering",
         "roleLabel": "Role",
@@ -1236,6 +1385,7 @@
       },
       "detail": {
         "accessComingSoon": "Access Permissions Coming Soon",
+        "searchMembers": "Search members...",
         "accessPermissions": "Access Permissions",
         "createdBy": "Created By",
         "descriptionLabel": "Team Description",
@@ -1252,6 +1402,9 @@
         "deleteButton": "Delete Team",
         "deleteDescription": "Permanently remove this team from the workspace",
         "deleteError": "Failed to delete team",
+        "saveErrorDescription": "Could not update team. Please try again.",
+        "applyToAll": "Apply to all",
+        "newMemberRoles": "New Member Roles",
         "deleteSuccess": "Team deleted",
         "deleteSuccessDescription": "\"{{name}}\" has been deleted",
         "deleteTitle": "Delete '{{name}}' Team",
@@ -1574,6 +1727,7 @@
         "prompts": "Prompts",
         "developerSettings": "Developer Settings",
         "oauth2": "OAuth 2.0 Apps",
+        "personalAccessTokens": "Personal Access Tokens",
         "profile": "Profile",
         "yourConnectors": "Your Personal Connectors",
         "yourActions": "Your actions",
@@ -1586,7 +1740,8 @@
         "webSearch": "Web Search",
         "tenants": "Tenants",
         "superOrgs": "Organisations",
-        "oauthApps": "OAuth Apps"
+        "oauthApps": "OAuth Apps",
+        "serviceAccounts": "Service accounts"
       }
     },
     "actions": {
@@ -1612,7 +1767,8 @@
         "authenticate": "Authenticate",
         "manage": "Manage",
         "unavailable": "Not available",
-        "notConfigured": "Not configured"
+        "notConfigured": "Not configured",
+        "adminSetupRequired": "Admin setup required"
       },
       "trailingYourActions": "Your actions",
       "loading": "Loading actions…",
@@ -1714,11 +1870,27 @@
         "saveSuccess": "Changes saved.",
         "saveDeauthNotice": "Saved. {{count}} user(s) were signed out and must authenticate again.",
         "missingInstance": "This action is missing an instance id. Try refreshing the page.",
-        "copyFailed": "Could not copy to the clipboard."
+        "copyFailed": "Could not copy to the clipboard.",
+        "loadingOauthApps": "Loading OAuth apps…",
+        "noOauthApps": "No OAuth apps configured",
+        "personalActionsHint": "User credentials are managed in My Actions.",
+        "openPersonalActionsCta": "Open My Actions"
       },
       "errors": {
         "instanceNameRequired": "Enter an instance name."
-      }
+      },
+      "validation": {
+        "fieldRequired": "{{field}} is required",
+        "fieldMustBeTrue": "{{field}} must be true",
+        "fixErrorsAbove": "Fix the highlighted fields above to continue.",
+        "minLength": "{{field}} must be at least {{minLength}} characters",
+        "maxLength": "{{field}} must be no more than {{maxLength}} characters",
+        "email": "{{field}} must be a valid email address",
+        "url": "{{field}} must be a valid URL",
+        "urlProtocol": "{{field}} must use http or https"
+      },
+      "adminRequiredToast": "Only admins can add new actions. Ask your admin to configure this action first.",
+      "personalNonAdminHint": "Actions marked \"Not configured\" need to be set up by an admin before you can use them."
     },
     "archivedChats": {
       "title": "Archived Chats",
@@ -1731,7 +1903,11 @@
       "restoreError": "Failed to restore chat",
       "deleteSuccess": "Deleted Successfully",
       "deleteSuccessDescription": "Your chat is permanently deleted successfully",
-      "deleteError": "Failed to delete chat"
+      "deleteError": "Failed to delete chat",
+      "assistantChat": "Assistant Chat",
+      "agents": "Agents",
+      "showMore": "Show More",
+      "moreAgents": "More Agents"
     },
     "general": {
       "subtitle": "Your company general information",
@@ -1828,6 +2004,14 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue Editing"
+      },
+      "featureFlags": {
+        "title": "Feature flags",
+        "subtitle": "Toggle experimental capabilities for every agent in this workspace."
+      },
+      "vectorStore": {
+        "title": "Vector Store",
+        "subtitle": "Delete all embeddings or re-embed every record from stored content."
       }
     },
     "authentication": {
@@ -1878,6 +2062,10 @@
         "body": "You have <bold>Password</bold> and <bold>One-Time Password</bold> disabled. Users will only be able to sign in using:",
         "warningSingle": "Make sure {{method}} is fully configured and working before saving. If single sign-on fails due to misconfiguration, users may be locked out.",
         "warningMultiple": "Make sure all selected methods are fully configured and working before saving. If single sign-on fails due to misconfiguration, users may be locked out."
+      },
+      "userMethods": {
+        "heading": "User Sign-In Methods",
+        "subtitle": "Controls which sign-in methods are available to every user, across every organisation."
       }
     },
     "connectors": {
@@ -1891,6 +2079,11 @@
       "refreshAllInstances": "Refresh all",
       "refreshInstance": "Refresh instance details",
       "saveConfig": "Save Configuration",
+      "continueToConfiguration": "Continue to configuration →",
+      "oauthSigningIn": "Finish signing in with your provider…",
+      "authRequiredBeforeConfig": "Complete OAuth authorization before configuring sync and filters",
+      "backToCredentials": "← Back to credentials",
+      "backFromConfigure": "← Back",
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
       "emailVisibilityDocLink": "Email visibility setup guide →",
@@ -1913,7 +2106,8 @@
       },
       "tabs": {
         "authenticate": "Authenticate Instance",
-        "configureRecords": "Configure Records"
+        "configureRecords": "Configure Records",
+        "authorize": "Authorize"
       },
       "tooltips": {
         "authFirst": "Complete authentication first to save configuration"
@@ -1976,7 +2170,8 @@
         "alreadyRemovingTitle": "Already being removed",
         "alreadyRemovingDescription": "This connector is already being removed.",
         "successTitle": "Connector removed",
-        "errorTitle": "Failed to remove connector"
+        "errorTitle": "Failed to remove connector",
+        "errorDescription": "Please try again; if it keeps happening, contact your workspace admin."
       },
       "selectRecords": {
         "title": "Select Records",
@@ -2085,13 +2280,21 @@
         "syncSettings": "Sync Settings",
         "syncStrategySettingsHint": "You can change the sync strategy by going to <bold>{{manageConfig}}</bold>.",
         "syncInterval": "Sync Interval",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "removeInstance": "Remove connector instance",
+        "removeInstanceDescription": "Permanently remove this connector instance and stop syncing its data. This cannot be undone."
       },
       "instanceCard": {
         "recordsSelected": "Records Selected",
         "syncStrategy": "Sync Strategy",
         "authBannerTitle": "Authenticate Personal Account",
-        "authBannerDescription": "Connect your account to enable access and workspace configuration"
+        "authBannerDescription": "Connect your account to enable access and workspace configuration",
+        "lastSynced": "Last synced",
+        "syncEnabled": "Sync enabled",
+        "removing": "This connector is being removed.",
+        "configureFirst": "Finish configuration before you can enable sync.",
+        "authenticateFirst": "Authenticate this connector before you can enable sync.",
+        "selected": "{{field}} selected"
       },
       "instanceStatus": {
         "setup": {
@@ -2141,6 +2344,109 @@
         "syncing": "Syncing Records...",
         "synced": "Records Synced",
         "failed": "Sync Failed"
+      },
+      "errors": {
+        "missingCreatedId": "Create succeeded but no connector id was returned",
+        "createdConfigUnavailable": "Connector was created but configuration could not be loaded. Try reopening the panel.",
+        "authenticateFirst": "No connector ID found. Please complete authentication first."
+      },
+      "syncIntervals": {
+        "5": "Every 5 Minutes",
+        "15": "Every 15 Minutes",
+        "30": "Every 30 Minutes",
+        "60": "Every 1 Hour",
+        "240": "Every 4 Hours",
+        "480": "Every 8 Hours",
+        "720": "Every 12 Hours",
+        "1440": "Every 1 Day",
+        "10080": "Every 1 Week",
+        "other": "Every {{minutes}} min"
+      },
+      "filters": {
+        "selectField": "Select {{field}}",
+        "addFieldValue": "Add {{field}}…",
+        "authenticateForOptions": "Complete authentication and save the connector to load options for this filter.",
+        "manualIndexingInfo": "About manual indexing",
+        "manualIndexingTooltip": "OFF (default): Records are automatically indexed based on the indexing filters below.\n\nON: No records are automatically indexed. You manually choose which records to index from the knowledge base.",
+        "title": "Indexing & sync filters",
+        "description": "Indexing filters always apply—toggle booleans or adjust values as needed. For sync filters, add only what you need; list and date filters use an operator and value, and you can clear a sync filter when you do not want that constraint.",
+        "syncTitle": "Sync filters",
+        "indexingTitle": "Indexing filters",
+        "add": "Add filter",
+        "incomplete": "Finish operator and value for each filter below to see a summary here.",
+        "empty": "No filters yet. Use \"Add filter\" to choose one of the supported filters.",
+        "operator": "Operator",
+        "chooseOperator": "Choose operator…",
+        "value": "Value",
+        "rollingWindow": "This operator uses a rolling window — no fixed dates to set.",
+        "dateRange": "date range",
+        "operators": {
+          "is": "Is",
+          "is_not": "Is Not",
+          "is_empty": "Is Empty",
+          "is_not_empty": "Is Not Empty",
+          "contains": "Contains",
+          "does_not_contain": "Does Not Contain",
+          "is_after": "Is After",
+          "is_before": "Is Before",
+          "is_between": "Is Between",
+          "in": "In",
+          "not_in": "Not In",
+          "greater_than_or_equal": "Greater Than Or Equal",
+          "greater_than": "Greater Than",
+          "equal": "Equal",
+          "less_than": "Less Than",
+          "less_than_or_equal": "Less Than Or Equal",
+          "last_7_days": "Last 7 Days",
+          "last_14_days": "Last 14 Days",
+          "last_30_days": "Last 30 Days",
+          "last_90_days": "Last 90 Days",
+          "last_180_days": "Last 180 Days",
+          "last_365_days": "Last 365 Days"
+        },
+        "fieldValues": "{{field}} values",
+        "loadingOptions": "Loading options…",
+        "noResults": "No results found",
+        "optionsLoadFailed": "We couldn't load the options for this filter. Close this list and open it again to retry.",
+        "loadingMore": "Loading more…"
+      },
+      "syncStrategies": {
+        "SCHEDULED": "Scheduled",
+        "MANUAL": "Manual",
+        "WEBHOOK": "Webhook",
+        "REALTIME": "Real-time"
+      },
+      "syncIntervalOptions": {
+        "5": "5 Minutes",
+        "15": "15 Minutes",
+        "30": "30 Minutes",
+        "60": "1 Hour",
+        "240": "4 Hours",
+        "480": "8 Hours",
+        "720": "12 Hours",
+        "1440": "1 Day",
+        "10080": "1 Week"
+      },
+      "vectorStore": {
+        "cleanup": {
+          "label": "Clean up embeddings",
+          "rowDescription": "Drop all embeddings and recreate the vector collection empty. Records are not deleted.",
+          "buttonLabel": "Clean up",
+          "title": "Delete all embeddings?",
+          "body": "This drops the shared vector collection and recreates it empty.",
+          "warning": "Search will stop returning results for everyone and stays broken until a reindex has finished. Reindexing large deployments can take hours. Your records are not deleted — only their embeddings.",
+          "confirm": "Delete embeddings"
+        },
+        "reindex": {
+          "label": "Reindex embeddings",
+          "rowDescription": "Re-embed every record from stored content. Sources are not re-downloaded or parsed again.",
+          "buttonLabel": "Reindex",
+          "title": "Reindex all records?",
+          "body": "This re-embeds every record from its stored content. Sources are not downloaded or parsed again.",
+          "warning": "This can take a long time on large deployments and runs in the background.",
+          "confirm": "Start reindex"
+        },
+        "typePrompt": "Type {{token}} to confirm."
       }
     },
     "mcpServers": {
@@ -2198,7 +2504,8 @@
         "authBannerTitle": "Authentication required",
         "authBannerDescription": "Authenticate this MCP server so your team's agents can use it.",
         "authBannerAuthenticatedTitle": "Connected",
-        "authBannerAuthenticatedDescription": "You can reauthenticate or disconnect this MCP server."
+        "authBannerAuthenticatedDescription": "You can reauthenticate or disconnect this MCP server.",
+        "createdBy": "Created by"
       },
       "deleteDialog": {
         "title": "Delete MCP server?",
@@ -2286,7 +2593,8 @@
         "noCode": "No authorization code was returned.",
         "noState": "No state parameter was returned.",
         "backendRejected": "The server rejected the authorization request."
-      }
+      },
+      "deleteDisabledTooltip": "This server cannot be deleted"
     },
     "bots": {
       "subtitle": "Configure bot credentials and optionally map each bot to an agent",
@@ -2367,7 +2675,12 @@
         "typeNameToConfirm": "Type \"{{name}}\" to confirm",
         "deleteBotBodyLine1": "Are you sure you want to delete {{name}}? This action cannot be undone.",
         "deleteBotBodyLine2": "All configurations and credentials associated with this bot will be permanently removed."
-      }
+      },
+      "errors": {
+        "loadConfigs": "Failed to load bot configurations",
+        "loadData": "Failed to load data"
+      },
+      "refreshed": "Refreshed"
     },
     "mail": {
       "subtitle": "Email server configuration for OTP and notifications",
@@ -2456,7 +2769,15 @@
       "systemPrompt": "System Prompt",
       "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
       "configCalloutTitle": "Prompt Configuration",
-      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
+      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs.",
+      "resetToDefault": "Reset to Default",
+      "customInstructionsTitle": "Custom Instructions",
+      "customInstructionsDescription": "Add custom instructions for the Chat Assistant — e.g. respond in a specific language, follow a formatting style, or apply any behaviour you want. Each mode below has its own instructions since they answer questions differently.",
+      "scopeHint": "These instructions apply only to the <bold>Chat Assistant</bold> (Agent mode below). Custom agents created in <bold>Agent Builder</bold> are unaffected — each agent uses its own system prompt and instructions configured on the agent itself.",
+      "agentTitle": "Agent",
+      "agentDescription": "Applied when a user chats in Agent mode — the assistant decides per-question whether to use internal knowledge, web search, or both.",
+      "agentPlaceholder": "e.g. Prefer internal knowledge for company-specific questions. Always summarize before providing details.",
+      "agentHelperText": "This prompt guides the AI when it can freely choose between internal knowledge and web search. Changes take effect immediately for new conversations."
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -2597,6 +2918,13 @@
       "discardMessage": "If you discard, your edits won't be saved",
       "discardConfirm": "Discard",
       "discardCancel": "Continue Editing",
+      "deleteError": "Failed to delete chat",
+      "assistantChat": "Assistant Chat",
+      "agents": "Agents",
+      "seeMore": "See more",
+      "showMore": "Show More",
+      "moreAgents": "More Agents",
+      "moreChats": "More Chats",
       "demoData": {
         "title": "Demo data",
         "description": "Acme Corp is a fictional company loaded so you can try PipesHub. This only changes what you see; nothing is deleted.",
@@ -2607,6 +2935,13 @@
         "offForEveryone": "Turned off for everyone by an admin.",
         "everyoneLabel": "Offer the demo to everyone",
         "everyoneDescription": "Turning it off hides the demo from everyone's answers, search and records, and stops the sample accounts signing in. Nothing is deleted."
+      },
+      "authentication": {
+        "title": "Authentication",
+        "subtitle": "Sign-in methods enabled for your account. Managed by your workspace administrator.",
+        "methodsLabel": "Enabled sign-in methods",
+        "loading": "Loading…",
+        "none": "No sign-in methods enabled"
       }
     },
     "services": {
@@ -2855,7 +3190,311 @@
         "loadConnectors": "Could not load connector OAuth apps.",
         "loadToolsets": "Could not load action OAuth apps.",
         "deleteGeneric": "Failed to delete OAuth app."
+      },
+      "card": {
+        "default": "Default",
+        "locked": "Locked",
+        "edit": "Edit",
+        "delete": "Delete"
       }
+    },
+    "personalAccessTokens": {
+      "title": "Personal Access Tokens",
+      "subtitle": "Create long-lived tokens for your own scripts and integrations, like the MCP server. Only you see your tokens here.",
+      "newToken": "New token",
+      "emptyTitle": "No personal access tokens",
+      "emptyDescription": "Create a token to connect the PipesHub MCP server or your own scripts.",
+      "errorGeneric": "Failed to load personal access tokens",
+      "retry": "Retry",
+      "columnName": "Name",
+      "columnScopes": "Scopes",
+      "columnCreated": "Created",
+      "columnExpires": "Expires",
+      "columnLastUsed": "Last used",
+      "neverUsed": "Never",
+      "neverExpires": "Never",
+      "revokeAria": "Revoke {{name}}",
+      "revoke": {
+        "confirmTitle": "Revoke token?",
+        "confirmMessage": "Are you sure you want to revoke \"{{name}}\"? Anything using this token will stop working immediately. This action cannot be undone.",
+        "confirmButton": "Revoke",
+        "confirmLoading": "Revoking...",
+        "successTitle": "Token revoked",
+        "errorTitle": "Failed to revoke token"
+      },
+      "create": {
+        "panelTitle": "Create Personal Access Token",
+        "successPanelTitle": "Token Created",
+        "createButton": "Create token",
+        "doneButton": "Done",
+        "cancel": "Cancel",
+        "nameLabel": "Token name",
+        "namePlaceholder": "e.g. MCP server",
+        "errorNameRequired": "Enter a name for this token.",
+        "errorCreateTitle": "Failed to create token",
+        "expiryHeading": "Expiry",
+        "expiry30Days": "30 days",
+        "expiry90Days": "90 days",
+        "expiry365Days": "365 days",
+        "expiryNever": "Never",
+        "permissionsHeading": "Scopes",
+        "errorScopeRequired": "Select at least one scope.",
+        "selectAllScopes": "Select All",
+        "clearAllScopes": "Clear all",
+        "scopesLoading": "Loading scopes...",
+        "scopesLoadError": "Failed to load scopes.",
+        "scopesRetry": "Retry",
+        "successScreenTitle": "Token created",
+        "successScreenSubtitle": "Copy your token now — you won't be able to see it again.",
+        "tokenLabel": "Access token",
+        "tokenShownOnceWarning": "This token is shown only once. Store it somewhere safe.",
+        "showTokenAria": "Show token",
+        "hideTokenAria": "Hide token",
+        "copyTokenAria": "Copy token",
+        "pasteBlockLabel": "Ready to paste into your MCP config",
+        "copyPasteBlockAria": "Copy paste block",
+        "copySuccessTitle": "Copied",
+        "copyErrorTitle": "Could not copy"
+      },
+      "scopeCount_one": "{{count}} scope",
+      "scopeCount_other": "{{count}} scopes"
+    },
+    "common": {
+      "loadingUsers": "Loading users...",
+      "noUsersAvailable": "No users available",
+      "selected": "{{count}} Selected"
+    },
+    "rightPanel": {
+      "primaryDisabledHint": "Scroll up and complete the required fields (marked with *) to continue.",
+      "primaryLoadingHint": "Please wait…"
+    },
+    "skills": {
+      "title": "Skills",
+      "subtitle": "Build custom skills your agents can use — markdown instructions, optional scripts and reference files, versioned and governed like everything else in Agent Builder.",
+      "loading": "Loading skills…",
+      "refreshed": "Refreshed",
+      "createSkill": "Create Skill",
+      "importSkill": "Import",
+      "reviewCandidates": "Review candidates",
+      "searchPlaceholder": "Search skills…",
+      "noResults": "No skills match your search",
+      "emptyTitle": "No Skills Yet",
+      "emptyDescription": "Create your first skill, or import one from npm, a URL, or a zip file",
+      "status": {
+        "active": "Active",
+        "deprecated": "Deprecated",
+        "candidate": "Candidate",
+        "disabled": "Disabled"
+      },
+      "availability": {
+        "label": "Available to agents",
+        "description": "When off, this skill stays in your library but agents cannot discover or load it.",
+        "descriptionBuiltin": "When off, this built-in skill stays in the library but agents across the organisation cannot discover or load it."
+      },
+      "cta": {
+        "manage": "Manage",
+        "view": "View"
+      },
+      "errors": {
+        "loadSkills": "Failed to load skills",
+        "loadData": "Failed to load data"
+      },
+      "toasts": {
+        "loadError": "Failed to load skills",
+        "updated": "Skill \"{{name}}\" updated",
+        "created": "Skill \"{{name}}\" created",
+        "updateError": "Failed to update skill",
+        "createError": "Failed to create skill",
+        "deprecated": "Skill \"{{name}}\" deprecated",
+        "deprecateError": "Failed to deprecate skill",
+        "disabled": "Skill \"{{name}}\" disabled",
+        "enabled": "Skill \"{{name}}\" enabled",
+        "toggleError": "Failed to update skill availability",
+        "deleted": "Skill \"{{name}}\" deleted",
+        "deleteError": "Failed to delete skill",
+        "imported": "Skill \"{{name}}\" imported",
+        "importError": "Failed to import skill",
+        "resourceAdded": "Resource added",
+        "resourceError": "Failed to update resource",
+        "rolledBack": "Rolled back to v{{version}}",
+        "rollbackError": "Failed to roll back",
+        "candidateApproved": "Approved \"{{name}}\"",
+        "candidateRejected": "Rejected \"{{name}}\"",
+        "candidateActionError": "Failed to update candidate",
+        "conflict": "This skill was changed elsewhere",
+        "conflictDescription": "Reload the latest version, then re-apply your edits.",
+        "conflictReload": "Reload"
+      },
+      "builtinReadOnly": "This is a built-in skill and cannot be edited.",
+      "editorPanel": {
+        "createTitle": "New Skill",
+        "reviewTitle": "Review & Edit Candidate",
+        "requiredHint": "Required: {{fields}}",
+        "bodyHint": "Write the instructions the agent will follow when using this skill. Use markdown headings, lists, and code blocks."
+      },
+      "tabs": {
+        "content": "Content",
+        "metadata": "Metadata",
+        "resources": "Resources",
+        "versions": "Versions"
+      },
+      "form": {
+        "name": "Name",
+        "namePlaceholder": "e.g. pdf-table-extractor",
+        "bodyPlaceholder": "Describe how to perform this skill…",
+        "description": "Description",
+        "descriptionPlaceholder": "What this skill does and when to use it (not how — that goes in the body)",
+        "category": "Category",
+        "subcategory": "Subcategory",
+        "tags": "Tags",
+        "tagsPlaceholder": "Add a tag…",
+        "related": "Related skills",
+        "relatedPlaceholder": "Add a related skill name…",
+        "requires": "Requires",
+        "requiresPlaceholder": "Add a required skill name…",
+        "license": "License",
+        "compatibility": "Compatibility",
+        "deprecateReason": "Reason",
+        "replacedBy": "Replaced by",
+        "noReplacement": "No replacement",
+        "typeNameToConfirm": "Type \"{{name}}\" to confirm",
+        "replacedBy_withName": "Replaced by {{name}}"
+      },
+      "dangerZone": {
+        "title": "Danger zone",
+        "deprecate": "Deprecate",
+        "delete": "Delete",
+        "deprecateTitle": "Deprecate \"{{name}}\"?",
+        "deleteTitle": "Delete \"{{name}}\"?",
+        "deleteBody": "Are you sure you want to delete this skill? This action cannot be undone.",
+        "cannotDeleteTitle": "Cannot delete this skill",
+        "requiredBy": "This skill is required by other skill(s): {{names}}. Deprecate it instead so dependents still resolve.",
+        "usedByAgents": "This skill is assigned to: {{names}}. Deleting will unassign it from them."
+      },
+      "resources": {
+        "empty": "No bundled resources yet.",
+        "addNew": "Add resource",
+        "path": "Path",
+        "content": "Content"
+      },
+      "versions": {
+        "empty": "No version history yet.",
+        "current": "Current",
+        "updatedBy": "Updated by {{who}}",
+        "rollback": "Roll back",
+        "rollbackTitle": "Roll back to v{{version}}?",
+        "rollbackBody": "This creates a new version with v{{version}}'s content. The version history is preserved."
+      },
+      "import": {
+        "title": "Import a Skill",
+        "description": "Import a skill from an npm package, a URL, or an uploaded archive.",
+        "tabNpm": "npm",
+        "tabUrl": "URL",
+        "tabUpload": "Upload",
+        "npmLabel": "npm install command or package name",
+        "npmHint": "Paste an npm/npx/yarn/pnpm install command, or just a package name — it's parsed, never executed.",
+        "urlLabel": "Archive URL",
+        "uploadLabel": "Skill archive (.zip, .tar.gz)",
+        "chooseFile": "Choose file…",
+        "preview": "Preview",
+        "previewError": "Failed to preview this skill",
+        "confirmImport": "Import Skill",
+        "source": "Source: {{source}}",
+        "nameHint": "Lowercase kebab-case. Change this if the original name is already a built-in skill (for example pptx).",
+        "nameInvalid": "Name must be lowercase letters, numbers, and single hyphens.",
+        "originalName": "Original name: {{name}}",
+        "resourceCount_one": "{{count}} resource",
+        "resourceCount_other": "{{count}} resources",
+        "skippedBinary_one": "{{count}} binary file was skipped (not supported yet)",
+        "skippedBinary_other": "{{count}} binary files were skipped (not supported yet)"
+      },
+      "candidates": {
+        "title": "Pending Skill Candidates",
+        "subtitle": "Skills your agents proposed while operating. Review and approve to add them to your catalog, or reject.",
+        "empty": "No pending candidates",
+        "approve": "Approve",
+        "reject": "Reject",
+        "view": "View",
+        "hide": "Hide",
+        "editAndApprove": "Edit & Approve"
+      }
+    },
+    "serviceAccounts": {
+      "title": "Service accounts",
+      "subtitle": "Machine identities, so automation reads with its own permissions instead of borrowing someone's.",
+      "newAccount": "New service account",
+      "errorGeneric": "Could not load service accounts.",
+      "retry": "Try again",
+      "emptyTitle": "No service accounts yet",
+      "emptyDescription": "A service account is how a script reads from PipesHub without signing in as a colleague. It sees only what you grant it, and it keeps working when people leave.",
+      "columnName": "Name",
+      "columnDescription": "What it is for",
+      "columnStatus": "Status",
+      "statusActive": "Active",
+      "statusDisabled": "Disabled",
+      "manageTokens": "Tokens",
+      "enable": "Enable",
+      "disable": "Disable",
+      "delete": "Delete",
+      "enabledTitle": "Service account enabled",
+      "disabledTitle": "Service account disabled",
+      "disabledBody": "Its tokens stopped working immediately, not just at the next sign-in.",
+      "updateErrorTitle": "Could not update the service account",
+      "deleteTitle": "Delete this service account?",
+      "deleteDescription": "{{name}} will stop working straight away, and every token it holds is revoked. Anything still using one of those tokens will start failing.",
+      "deleteSuccessTitle": "Service account deleted",
+      "deleteErrorTitle": "Could not delete the service account",
+      "create": {
+        "title": "New service account",
+        "intro": "Automation authenticates as this account instead of as a person, so what it can read is decided here rather than inherited from whoever set it up.",
+        "slugLabel": "Short name",
+        "slugHelp": "Lowercase letters, digits and single hyphens. This becomes part of the account's address and cannot be changed later.",
+        "slugLengthError": "Use between 3 and 48 characters.",
+        "slugFormatError": "Use lowercase letters, digits and single hyphens, not starting or ending with a hyphen.",
+        "nameLabel": "Display name",
+        "namePlaceholder": "Nightly sync",
+        "descriptionLabel": "What it is for",
+        "descriptionPlaceholder": "Reads the handbook for the release digest",
+        "note": "Nobody can sign in as a service account, and it is always a member, never an administrator. Give it access the same way you would a colleague: through groups and teams.",
+        "submit": "Create",
+        "successTitle": "Service account created",
+        "errorTitle": "Could not create the service account"
+      },
+      "tokens": {
+        "title": "Tokens",
+        "newToken": "New token",
+        "mint": "Create token",
+        "nameLabel": "What is this token for",
+        "namePlaceholder": "Release digest job",
+        "scopesLabel": "Scopes",
+        "scopesHelp": "Choose what this token may do. There is no default: a credential that runs unattended should hold the access someone chose for it.",
+        "expiryLabel": "Expires after",
+        "expiryDays": "{{count}} days",
+        "existing": "Tokens",
+        "none": "This account holds no tokens yet.",
+        "lastUsed": "Last used {{date}}",
+        "neverUsed": "Never used",
+        "expiresOn": "expires {{date}}",
+        "expiresInDays": "{{count}} days left",
+        "expired": "Expired",
+        "expiringSoon": "{{count}} token(s) expire soon. Create the replacement, move the integration across, then revoke the old one.",
+        "revoke": "Revoke",
+        "revokeSuccessTitle": "Token revoked",
+        "revokeErrorTitle": "Could not revoke the token",
+        "mintErrorTitle": "Could not create the token",
+        "loadErrorTitle": "Could not load tokens",
+        "copyNowTitle": "Copy this token now",
+        "copyNowBody": "This is the only time it is shown. Only its hash is stored, so it cannot be retrieved again.",
+        "disabledNote": "This account is disabled, so no new tokens can be created. Existing ones are listed below and can still be revoked.",
+        "rotationHelp": "To rotate: create the new token, move the integration across while both still work, then revoke the old one. Revoking first would break whatever is using it.",
+        "loading": "Loading tokens…",
+        "copy": "Copy token",
+        "revokeTitle": "Revoke this token?",
+        "revokeDescription": "\"{{name}}\" stops working immediately and cannot be brought back. Anything still using it will start failing. If you are rotating, create the replacement and move the integration across first."
+      },
+      "disableTitle": "Disable this service account?",
+      "disableDescription": "{{name}} stops working immediately — including every token it already holds, not just at the next sign-in. Anything using one of those tokens will start failing until you enable it again.",
+      "disableConfirm": "Disable"
     }
   },
   "filePreview": {
@@ -2866,7 +3505,18 @@
     "showMore": "Show more",
     "showLess": "Show less",
     "lockZoom": "Lock zoom level",
-    "unlockZoom": "Unlock zoom level"
+    "unlockZoom": "Unlock zoom level",
+    "closePreview": "Close preview",
+    "openWebUrl": "Open web URL",
+    "openInSource": "Open in source",
+    "noDetails": "No file details available",
+    "metadata": "Metadata",
+    "webUrl": "Web URL",
+    "fitToScreen": "Fit to screen",
+    "resizeCitations": "Resize citations panel",
+    "resizePreview": "Resize file preview panel",
+    "viewCitations": "View Citations",
+    "openNamedInSource": "Open {{name}} in source"
   },
   "agentBuilder": {
     "goBack": "Go back",
@@ -2919,6 +3569,7 @@
     "tools": "Tools",
     "noConnectors": "No connectors configured",
     "noCollections": "No collections available",
+    "noSkills": "No skills yet — create or import one under Your Skills",
     "collapse": "Collapse",
     "expand": "Expand",
     "serviceAccountCreated": "Service agent created. Configure each toolset with the key icon in the palette.",
@@ -2942,6 +3593,7 @@
     "skillNodeTemplateDescription": "Custom skill your agent can invoke",
     "skillDeprecated": "This skill has been deprecated",
     "skillDeprecatedReplacedBy": "This skill has been deprecated. Use {{name}} instead.",
+    "skillDisabled": "This skill is disabled and won't be available to the agent until re-enabled",
     "inputSection": "Input",
     "responseSection": "Response",
     "connectModel": "Connect a model",
@@ -2988,12 +3640,6 @@
     "notConfiguredTooltip": "Not configured (registry listing only)",
     "configureToolsetTooltip": "Configure toolset",
     "authenticateToolsetTooltip": "Authenticate this toolset",
-    "svcAcctConvertNextSteps": "Save the agent, then use the key icon next to each toolset in the palette to set agent-level credentials. Existing per-user toolset connections are not transferred.",
-    "svcAcctCreateNextSteps": "Save the agent, then use the key icon in the palette to configure credentials for each toolset on this Service Account. Add knowledge, set the model, and refine the flow as needed.",
-    "svcAcctDescSuffix": "Here’s what that means:",
-    "svcAcctKnowledgeNote3": "Anyone who uses this agent may see answers from content you are allowed to see there, even when their own permissions would not include it.",
-    "svcAcctToolsetsDesc": "Toolsets use one set of credentials for the whole agent, shared by everyone who uses it — not each user’s personal toolset sign-ins.",
-    "svcAcctToolsetsNote2Create": "Do not add toolsets that require per-user sign-in until you are ready to supply agent-level credentials for them in the palette.",
     "svcAcctConvertTitle": "Convert to service agent",
     "svcAcctCreateTitle": "Create service agent",
     "svcAcctConvertDesc": "This agent becomes a shared service agent: available across your organisation, each toolset authenticates once at the agent level, and knowledge is limited to what you connect on the flow.",
@@ -3108,6 +3754,7 @@
     "connectionToolGroupToToolsets": "Tool groups must connect to the agent toolsets handle",
     "connectionToolsetToToolsets": "Toolsets must connect to the agent toolsets handle",
     "connectionToolToToolsets": "Tools must connect to the agent toolsets handle",
+    "connectionSkillToSkillsHandle": "Skills must connect to the agent skills handle",
     "connectionAgentResponseToOutput": "Connect the agent response handle to chat output",
     "connectionThroughAgent": "Nodes must connect through the agent",
     "defaultSystemPrompt": "You are a helpful assistant.",
@@ -3137,6 +3784,7 @@
     "dropOnlyOneToolGroup": "Only one {{type}} tool group is allowed. Remove the existing node first.",
     "dropDuplicateConnector": "{{name}} is already added to this agent",
     "dropDuplicateKB": "{{name}} is already added to this agent",
+    "dropDuplicateSkill": "{{name}} is already added to this agent",
     "toolsetStatusAuthenticated": "Authenticated and ready to use",
     "toolsetStatusNeedsAuth": "Configured — sign in to authenticate",
     "toolsetStatusRegistry": "Registry listing — not configured for your workspace",
@@ -3173,10 +3821,23 @@
     "toolInlineSuffix": "{{name}} tool",
     "paletteToolGroupLabel": "{{app}} tools",
     "nodeTemplateChatResponseDesc": "Sends the reply to the user",
-    "deprecatedToolsBanner": "{{count}} tool(s) on this agent are deprecated remove them : {{tools}}",
     "removeDeprecatedTools": "Remove Deprecated Tools",
     "showMore": "Show more",
-    "showLess": "Show less"
+    "showLess": "Show less",
+    "mcpServerAlreadyAttachedNotify": "{{name}} is already attached to this agent",
+    "webSearchOnlyOne": "Only one web search provider can be attached",
+    "mcpServerNodeSubtitle": "Tools from an MCP server",
+    "noMcpServersAvailable": "No MCP servers available",
+    "webSearchLocked": "Web search cannot be changed for this agent",
+    "webSearchLoading": "Loading web search providers…",
+    "webSearchConfigureFirst": "Configure {{name}} first",
+    "webSearch": "Web Search",
+    "toolsetOAuthServerError": "Authentication failed. Please try again or contact your administrator.",
+    "attached": "Attached",
+    "mcpServerWithToolCount_one": "MCP server with {{count}} tool",
+    "mcpServerWithToolCount_other": "MCP server with {{count}} tools",
+    "deprecatedToolsBanner_one": "{{count}} tool on this agent is deprecated. Remove it: {{tools}}",
+    "deprecatedToolsBanner_other": "{{count}} tools on this agent are deprecated. Remove them: {{tools}}"
   },
   "recordView": {
     "sections": {
@@ -3218,6 +3879,9 @@
     "reindexLoading": "Submitting reindex request…",
     "reindexSuccess": "Reindex request submitted successfully",
     "reindexError": "Failed to submit reindex request",
+    "forceReindexTitle": "Start force reindex?",
+    "forceReindexDescription": "This re-indexes the document from scratch and may incur extra cost. Use this when search results are stale, or the document is not searchable even after indexing is complete.",
+    "deleteRecord": "Delete record",
     "loading": "Loading…",
     "loadFailed": "Could not load this record.",
     "externalSource": "External source",
@@ -3247,16 +3911,45 @@
       "folder": "Folder",
       "connectorId": "Connector ID",
       "notAvailable": "N/A",
-      "typeEmail": "Email",
-      "typeFile": "File",
-      "typeArtifact": "Artifact",
-      "typeTicket": "Ticket",
-      "typeWebpage": "Web page",
-      "typeMessage": "Message",
       "mailSubject": "Subject",
       "ticketSummary": "Summary",
-      "ticketDescription": "Description"
-    }
+      "ticketDescription": "Description",
+      "recordTypes": {
+        "FILE": "File",
+        "DRIVE": "Drive",
+        "WEBPAGE": "Web page",
+        "DATABASE": "Database",
+        "DATASOURCE": "Data source",
+        "MESSAGE": "Message",
+        "MAIL": "Email",
+        "EMAIL": "Email",
+        "GROUP_MAIL": "Group email",
+        "TICKET": "Ticket",
+        "COMMENT": "Comment",
+        "INLINE_COMMENT": "Inline comment",
+        "CONFLUENCE_PAGE": "Confluence page",
+        "CONFLUENCE_BLOGPOST": "Confluence blog post",
+        "SHAREPOINT_PAGE": "SharePoint page",
+        "SHAREPOINT_LIST": "SharePoint list",
+        "SHAREPOINT_LIST_ITEM": "SharePoint list item",
+        "SHAREPOINT_DOCUMENT_LIBRARY": "SharePoint document library",
+        "LINK": "Link",
+        "PROJECT": "Project",
+        "PULL_REQUEST": "Pull request",
+        "MEETING": "Meeting",
+        "PRODUCT": "Product",
+        "DEAL": "Deal",
+        "CASE": "Case",
+        "TASK": "Task",
+        "ARTIFACT": "Artifact",
+        "CODE_FILE": "Code file",
+        "SQL_TABLE": "SQL table",
+        "SQL_VIEW": "SQL view",
+        "OTHERS": "Other"
+      }
+    },
+    "previewConversionFailed": "Preview conversion failed. You can still download the file.",
+    "missingRecordId": "Missing record id"
   },
   "oauthConsent": {
     "loading": "Loading authorization request…",
@@ -3266,6 +3959,7 @@
     "errorTitle": "Authorization error",
     "signedInAs": "Signed in as {{display}}",
     "requestHeading": "This application is requesting access to:",
+    "unreviewedApp": "This application registered itself. No administrator reviewed it.",
     "legalNotice": "By clicking “Allow”, you authorize {{appName}} to access your data as described above.",
     "privacyPolicy": "Privacy Policy",
     "deny": "Deny",
@@ -3400,7 +4094,9 @@
       "microsoftUnavailable": "Microsoft sign-in is currently unavailable. Contact your administrator.",
       "oauthUnavailable": "OAuth sign-in is currently unavailable. Contact your administrator.",
       "showPassword": "Show password",
-      "hidePassword": "Hide password"
+      "hidePassword": "Hide password",
+      "accountDisabled": "Your account has been disabled.",
+      "tooManyIncorrectCredentials": "You have entered incorrect credentials too many times"
     }
   },
   "healthGate": {
@@ -3468,5 +4164,98 @@
       "onTitle": "Demo data turned back on for everyone",
       "errorTitle": "Couldn't change the demo data for everyone"
     }
+  },
+  "collections": {
+    "stats": {
+      "title": "Analytics",
+      "menuLabel": "Analytics",
+      "fetchError": "Failed to load indexing stats",
+      "refreshSuccess": "Stats refreshed",
+      "refreshError": "Failed to refresh stats",
+      "reindexFailedStart": "Reindexing failed records…",
+      "reindexFailedError": "Failed to reindex failed records",
+      "manualIndexStart": "Indexing manual-indexing records…",
+      "manualIndexError": "Failed to start manual indexing"
+    }
+  },
+  "reindexScope": {
+    "description": "Choose what to index for \"{{name}}\".",
+    "thisItemOnly": "This item only",
+    "withChildren": "This item and all children"
+  },
+  "oauthDevice": {
+    "title": "Connect a device",
+    "codeLabel": "Enter the code shown in your terminal",
+    "phishingWarning": "Only continue if you started this yourself on a device you control. If someone sent you this code, close this page.",
+    "codePlaceholder": "ABCD-EFGH",
+    "continue": "Continue",
+    "loading": "Looking up this device…",
+    "doneTitle": "Device connected",
+    "doneLine": "You can return to the terminal. This window can be closed.",
+    "deniedTitle": "Request denied",
+    "deniedLine": "The device was not granted access."
+  },
+  "validation": {
+    "password": {
+      "rules": "At least 8 characters: lowercase, uppercase, number, symbol.",
+      "minLength": "Password must be at least 8 characters.",
+      "lowercase": "Password must contain a lowercase letter.",
+      "uppercase": "Password must contain an uppercase letter.",
+      "number": "Password must contain a number.",
+      "symbol": "Password must contain a symbol.",
+      "mismatch": "Passwords do not match."
+    }
+  },
+  "filterDropdown": {
+    "selectedCount": "{{count}} selected",
+    "is": "is",
+    "isAnyOf": "is any of",
+    "loadingOptions": "Loading options…",
+    "refreshingOptions": "Refreshing options…",
+    "loadingMore": "Loading more…"
+  },
+  "moveFolder": {
+    "moving": "Moving...",
+    "noFolders": "No folders found"
+  },
+  "shareSidebar": {
+    "suggestedTeams": "Suggested teams",
+    "suggestedMembers": "Suggested members",
+    "loadingMoreUsers": "Loading more users...",
+    "noResults": "No users or teams found",
+    "createNewTeam": "Create a New Team",
+    "sharing": "Sharing...",
+    "accessShared": "Access shared",
+    "sharedWith": "Shared with {{names}}",
+    "shareFailed": "Failed to share",
+    "shareError": "Could not share access. Please try again.",
+    "roleUpdated": "Role updated",
+    "roleUpdatedDescription": "{{name}} is now a {{role}}",
+    "member": "Member",
+    "roleError": "Could not update role. Please try again.",
+    "roleFailed": "Failed to update role",
+    "accessRevoked": "Access revoked",
+    "accessRevokedDescription": "{{name}} no longer has access",
+    "revokeError": "Could not remove access. Please try again.",
+    "revokeFailed": "Failed to revoke access",
+    "memberCount_one": "{{count}} member",
+    "memberCount_other": "{{count}} members",
+    "roles": {
+      "owner": {
+        "label": "Full Access",
+        "description": "Shared ownership of the collection"
+      },
+      "writer": {
+        "label": "Can edit",
+        "description": "Only edit & organise files & folders"
+      },
+      "reader": {
+        "label": "Can view",
+        "description": "Only viewing access"
+      }
+    },
+    "team": "Team",
+    "teamsNoRoles": "Teams do not have roles",
+    "invite": "Invite to Pipeshub"
   }
 }

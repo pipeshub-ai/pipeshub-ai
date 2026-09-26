@@ -1,7 +1,7 @@
 import { injectable, inject } from 'inversify'
 import { Response, NextFunction } from 'express'
 import { Logger } from '../../../libs/services/logger.service'
-import { PatService } from '../services/pat.service'
+import { DEFAULT_EXPIRY_DAYS, PatService } from '../services/pat.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
 import { CreatePatRequest } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
@@ -56,7 +56,8 @@ export class PatController {
         userId,
         domain: domainFromEmail(email),
         scope_count: token.scopes.length,
-        expiry_days: data.expiryDays ?? null,
+        // The lifetime the token was actually minted with ('never' stays 'never').
+        expiry_days: data.expiryDays ?? DEFAULT_EXPIRY_DAYS,
       })
       recordServiceActivity('pat_created', {
         org: orgId,

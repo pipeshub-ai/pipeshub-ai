@@ -163,6 +163,7 @@ Only needed for the connectors you actually run. If a credential is missing, tha
 
 | Variable                         | Used by      | Purpose |
 |----------------------------------|-------------|---------|
+| `SCOPED_JWT_SECRET`              | `storage/`  | The deployment's scoped JWT secret. Storage routes accept only storage service tokens, so the suite mints its own; without it the suite is skipped. |
 | `S3_ACCESS_KEY`                  | S3          | AWS access key for test bucket. |
 | `S3_SECRET_KEY`                  | S3          | AWS secret key. |
 | `S3_REGION`                      | S3          | Optional; default `us-east-1`. |

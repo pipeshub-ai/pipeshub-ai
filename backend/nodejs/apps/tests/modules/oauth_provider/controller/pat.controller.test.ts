@@ -89,6 +89,26 @@ describe('PatController', () => {
       expect(JSON.stringify(events[0])).to.not.include('dev@example.com')
     })
 
+    it('records the default lifetime when the request omits expiryDays', async () => {
+      eventBuffer.drain()
+      mockPatService.createToken.resolves({ id: 't', name: 'n', scopes: [], createdAt: new Date(), expiresAt: new Date(), accessToken: 'x' })
+      mockReq.body = { name: 'n' }
+
+      await controller.createToken(mockReq, mockRes, mockNext)
+
+      expect(eventBuffer.drain()[0].props.expiry_days).to.equal(30)
+    })
+
+    it("keeps a token that never expires as 'never'", async () => {
+      eventBuffer.drain()
+      mockPatService.createToken.resolves({ id: 't', name: 'n', scopes: [], createdAt: new Date(), expiresAt: null, accessToken: 'x' })
+      mockReq.body = { name: 'n', expiryDays: 'never' }
+
+      await controller.createToken(mockReq, mockRes, mockNext)
+
+      expect(eventBuffer.drain()[0].props.expiry_days).to.equal('never')
+    })
+
     it('counts the token on the Grafana activity counter with org and domain only', async () => {
       mockPatService.createToken.resolves({ id: 't', name: 'n', scopes: [], createdAt: new Date(), expiresAt: new Date(), accessToken: 'x' })
       mockReq.user = { orgId: 'org-pat-metric', userId: 'user-1', email: 'dev@pat-metric.example' }
