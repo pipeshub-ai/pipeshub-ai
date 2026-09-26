@@ -169,6 +169,7 @@ async def prefetch_retrieval(
             blob_store=blob_store,
             org_id=org_id,
             config_service=getattr(blob_store, "config_service", None),
+            user_id=user_id,
         )
 
     final_results = sorted(flattened_results, key=flattened_result_sort_key)

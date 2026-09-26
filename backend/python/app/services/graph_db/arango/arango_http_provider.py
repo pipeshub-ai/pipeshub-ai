@@ -15610,6 +15610,53 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return set()
 
+    @staticmethod
+    def _reachable_apps_aql() -> str:
+        """Bind `u` (by `@user_id`), `user_from` and `reachable_apps`: every app key the user reaches.
+
+        Both halves of "reachable": ownership/instance membership
+        (userAppRelation) and sharing (permission). Omitting the second
+        would deny a record whose connector the user reaches only by a
+        share — a gate built on it can only ever narrow, so a gap here is a
+        wrongly-denied result.
+        """
+        return f"""
+            LET u = FIRST(
+                FOR usr IN {CollectionNames.USERS.value}
+                    FILTER usr.userId == @user_id
+                    LIMIT 1
+                    RETURN usr
+            )
+            FILTER u != null
+            LET user_from = CONCAT("{CollectionNames.USERS.value}/", u._key)
+
+            LET reachable_apps = UNION_DISTINCT(
+                (FOR app IN OUTBOUND user_from {CollectionNames.USER_APP_RELATION.value}
+                    RETURN app._key),
+                (FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == user_from AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
+                        RETURN app._key),
+                (FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == user_from AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.APPS.value}/")
+                    RETURN PARSE_IDENTIFIER(perm._to).key),
+                (FOR teamPerm IN {CollectionNames.PERMISSION.value}
+                    FILTER teamPerm._from == user_from AND teamPerm.type == "USER"
+                    FILTER STARTS_WITH(teamPerm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR appPerm IN {CollectionNames.PERMISSION.value}
+                        FILTER appPerm._from == teamPerm._to AND appPerm.type == "TEAM"
+                        FILTER STARTS_WITH(appPerm._to, "{CollectionNames.APPS.value}/")
+                        RETURN PARSE_IDENTIFIER(appPerm._to).key),
+                // The link is the grant on its connector's app, as it is in the app
+                // permission-role query; the role resolution below counts the same link.
+                (FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
+                    FILTER linked._from == user_from
+                    RETURN linked.connectorId)
+            )
+        """
+
     async def filter_accessible_virtual_record_ids(
         self,
         virtual_record_ids: list[str],
@@ -15647,46 +15694,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         record_permission_role_aql = self._get_permission_role_aql("record", "record", "u")
 
+        reachable_apps_aql = self._reachable_apps_aql()
         query = f"""
-            LET u = FIRST(
-                FOR usr IN {CollectionNames.USERS.value}
-                    FILTER usr.userId == @user_id
-                    LIMIT 1
-                    RETURN usr
-            )
-            FILTER u != null
-            LET user_from = CONCAT("{CollectionNames.USERS.value}/", u._key)
-
-            // Both halves of "reachable": ownership/instance membership
-            // (userAppRelation) and sharing (permission). Omitting the second
-            // would deny a record whose connector the user reaches only by a
-            // share — this gate can only ever narrow, so a gap here is a
-            // wrongly-denied result.
-            LET reachable_apps = UNION_DISTINCT(
-                (FOR app IN OUTBOUND user_from {CollectionNames.USER_APP_RELATION.value}
-                    RETURN app._key),
-                (FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == user_from AND perm.type == "USER"
-                    FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
-                    FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
-                        RETURN app._key),
-                (FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == user_from AND perm.type == "USER"
-                    FILTER STARTS_WITH(perm._to, "{CollectionNames.APPS.value}/")
-                    RETURN PARSE_IDENTIFIER(perm._to).key),
-                (FOR teamPerm IN {CollectionNames.PERMISSION.value}
-                    FILTER teamPerm._from == user_from AND teamPerm.type == "USER"
-                    FILTER STARTS_WITH(teamPerm._to, "{CollectionNames.TEAMS.value}/")
-                    FOR appPerm IN {CollectionNames.PERMISSION.value}
-                        FILTER appPerm._from == teamPerm._to AND appPerm.type == "TEAM"
-                        FILTER STARTS_WITH(appPerm._to, "{CollectionNames.APPS.value}/")
-                        RETURN PARSE_IDENTIFIER(appPerm._to).key),
-                // The link is the grant on its connector's app, as it is in the app
-                // permission-role query; the role resolution below counts the same link.
-                (FOR linked IN {CollectionNames.AUTHENTICATED_AS.value}
-                    FILTER linked._from == user_from
-                    RETURN linked.connectorId)
-            )
+            {reachable_apps_aql}
 
             FOR vid IN @virtual_record_ids
                 LET candidates = (
@@ -15786,6 +15796,61 @@ class ArangoHTTPProvider(IGraphDBProvider):
             for row in rows
             if isinstance(row, dict) and row.get("vid") and row.get("rid")
         }
+
+    async def filter_accessible_record_ids(
+        self,
+        record_ids: list[str],
+        user_id: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """Which of ``record_ids`` the user may read, in one round trip."""
+        if not self.http_client:
+            raise PermissionVerificationUnavailableError("graph client not connected")
+        ids = list(dict.fromkeys(rid for rid in record_ids if rid))
+        if not ids or not user_id:
+            return set()
+
+        query = f"""
+            {self._reachable_apps_aql()}
+            FOR record IN DOCUMENT("{CollectionNames.RECORDS.value}", @record_ids)
+                // Search's gates minus indexingStatus, plus the stub flags: a
+                // placeholder is named after its external id and carries no content.
+                FILTER record.orgId == @org_id
+                    AND record.isDeleted != true
+                    AND record.isPlaceholder != true
+                    AND record.isInternal != true
+                    AND (record.origin != @connector_origin OR record.connectorId IN reachable_apps)
+                {self._get_permission_role_aql("record", "record", "u")}
+                LET r_norm = IS_ARRAY(permission_role)
+                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                    : permission_role
+                FILTER r_norm != null AND r_norm != ""
+                RETURN DISTINCT record._key
+        """
+        try:
+            rows = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "user_id": user_id,
+                    "org_id": org_id,
+                    "record_ids": ids,
+                    "connector_origin": OriginTypes.CONNECTOR.value,
+                },
+                txn_id=transaction,
+            )
+        except Exception as exc:
+            # Raised, not set(): an empty set is also what total denial looks like.
+            self.logger.error(
+                "filter_accessible_record_ids: AQL failed for %d ids — %s", len(ids), exc,
+            )
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        if not isinstance(rows, list):
+            raise PermissionVerificationUnavailableError(
+                f"unexpected AQL result type {type(rows).__name__}"
+            )
+        return {str(key) for key in rows if key}
 
     async def get_record_parent_adjacency(
         self,

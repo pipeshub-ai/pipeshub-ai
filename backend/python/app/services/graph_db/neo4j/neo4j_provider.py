@@ -14656,6 +14656,53 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return set()
 
+    @staticmethod
+    def _reachable_apps_cypher() -> str:
+        """Bind `u` (by `$user_id`) and `reachable_apps`: every app id the user reaches.
+
+        Needs both halves — ownership/instance membership (USER_APP_RELATION)
+        and sharing (PERMISSION). The gate built on it can only narrow, so a
+        missing half is a wrongly-denied record.
+        Each leg is its own CALL: folding an accumulator into the same
+        projection as its collect() ("WITH u, a1 + collect(...) AS a2") makes
+        a1 an implicit grouping key alongside an aggregate, which Neo4j
+        rejects at parse time. Same four legs, same shape as
+        get_accessible_containers.
+        """
+        return """
+        MATCH (u:User {userId: $user_id})
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(directApp:App)
+            RETURN collect(DISTINCT directApp.id) AS a1
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:USER_APP_RELATION]->(teamApp:App)
+            RETURN collect(DISTINCT teamApp.id) AS a2
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(permApp:App)
+            RETURN collect(DISTINCT permApp.id) AS a3
+        }
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
+                           -[:PERMISSION {type: 'TEAM'}]->(teamPermApp:App)
+            RETURN collect(DISTINCT teamPermApp.id) AS a4
+        }
+        // The link is the grant on its connector's app, as it is in the app
+        // permission-role query; the role resolution below counts the same link.
+        CALL {
+            WITH u
+            OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User)
+            RETURN collect(DISTINCT linked.connectorId) AS a5
+        }
+        WITH u, a1 + a2 + a3 + a4 + a5 AS reachable_apps
+        """
+
     async def filter_accessible_virtual_record_ids(
         self,
         virtual_record_ids: list[str],
@@ -14692,48 +14739,7 @@ class Neo4jProvider(IGraphDBProvider):
             return {}
 
         record_perm = self._get_permission_role_cypher("record", "record", "u")
-
-        # `reachable_apps` needs both halves — ownership/instance membership
-        # (USER_APP_RELATION) and sharing (PERMISSION). This gate can only
-        # narrow, so a missing half is a wrongly-denied record.
-        # Each leg is its own CALL: folding an accumulator into the same
-        # projection as its collect() ("WITH u, a1 + collect(...) AS a2") makes
-        # a1 an implicit grouping key alongside an aggregate, which Neo4j
-        # rejects at parse time. Same four legs, same shape as
-        # get_accessible_containers.
-        reachable_apps_cypher = """
-        MATCH (u:User {userId: $user_id})
-        CALL {
-            WITH u
-            OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(directApp:App)
-            RETURN collect(DISTINCT directApp.id) AS a1
-        }
-        CALL {
-            WITH u
-            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
-                           -[:USER_APP_RELATION]->(teamApp:App)
-            RETURN collect(DISTINCT teamApp.id) AS a2
-        }
-        CALL {
-            WITH u
-            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(permApp:App)
-            RETURN collect(DISTINCT permApp.id) AS a3
-        }
-        CALL {
-            WITH u
-            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)
-                           -[:PERMISSION {type: 'TEAM'}]->(teamPermApp:App)
-            RETURN collect(DISTINCT teamPermApp.id) AS a4
-        }
-        // The link is the grant on its connector's app, as it is in the app
-        // permission-role query; the role resolution below counts the same link.
-        CALL {
-            WITH u
-            OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User)
-            RETURN collect(DISTINCT linked.connectorId) AS a5
-        }
-        WITH u, a1 + a2 + a3 + a4 + a5 AS reachable_apps
-        """
+        reachable_apps_cypher = self._reachable_apps_cypher()
 
         trusted_apps = frozenset(trusted_app_ids or ())
         trusted_groups = frozenset(trusted_group_ids or ())
@@ -14861,6 +14867,54 @@ class Neo4jProvider(IGraphDBProvider):
                 exc,
             )
             raise PermissionVerificationUnavailableError(str(exc)) from exc
+
+    async def filter_accessible_record_ids(
+        self,
+        record_ids: list[str],
+        user_id: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """Which of ``record_ids`` the user may read, in one round trip."""
+        if not self.client:
+            raise PermissionVerificationUnavailableError("graph client not connected")
+        ids = list(dict.fromkeys(rid for rid in record_ids if rid))
+        if not ids or not user_id:
+            return set()
+
+        query = f"""
+        {self._reachable_apps_cypher()}
+        UNWIND $record_ids AS rid
+        MATCH (record:Record {{id: rid, orgId: $org_id}})
+        // Search's gates minus indexingStatus, plus the stub flags: a placeholder
+        // is named after its external id and carries no content. coalesce because
+        // Cypher's `<>` against null is null, which WHERE drops.
+        WHERE coalesce(record.isDeleted, false) = false
+          AND coalesce(record.isPlaceholder, false) = false
+          AND coalesce(record.isInternal, false) = false
+          AND (coalesce(record.origin, '') <> $connector_origin
+               OR record.connectorId IN reachable_apps)
+        {self._get_permission_role_cypher("record", "record", "u")}
+        WITH record, permission_role
+        WHERE permission_role IS NOT NULL AND permission_role <> ''
+        RETURN collect(DISTINCT record.id) AS ids
+        """
+        params = {
+            "user_id": user_id,
+            "org_id": org_id,
+            "record_ids": ids,
+            "connector_origin": OriginTypes.CONNECTOR.value,
+        }
+        try:
+            rows = await self.client.execute_query(query, params, txn_id=transaction)
+        except Exception as exc:
+            # Raised, not set(): an empty set is also what total denial looks like.
+            self.logger.error(
+                "filter_accessible_record_ids: Cypher failed for %d ids — %s", len(ids), exc,
+            )
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        return {str(i) for i in ((rows[0].get("ids") if rows else None) or []) if i}
 
     async def get_record_parent_adjacency(
         self,
