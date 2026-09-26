@@ -226,6 +226,32 @@ containers:
     name: People
     group: people-readers
     web_url: https://drive.acme-demo.example/drive/folders/acme-people
+  # A record inherits its container's readers, so each lesson's restricted document
+  # sits in a folder only its group can read, as the pricing documents do.
+  - id: drive-deal-desk
+    system: DRIVE
+    kind: folder
+    name: Deal desk (restricted)
+    group: deal-desk
+    web_url: https://drive.acme-demo.example/drive/folders/acme-deal-desk
+  - id: drive-launch-core
+    system: DRIVE
+    kind: folder
+    name: Launch core (restricted)
+    group: launch-core
+    web_url: https://drive.acme-demo.example/drive/folders/acme-launch-core
+  - id: drive-payments-contract
+    system: DRIVE
+    kind: folder
+    name: Payments contracts (restricted)
+    group: payments-contract
+    web_url: https://drive.acme-demo.example/drive/folders/acme-payments-contracts
+  - id: drive-people-managers
+    system: DRIVE
+    kind: folder
+    name: People managers (restricted)
+    group: people-managers
+    web_url: https://drive.acme-demo.example/drive/folders/acme-people-managers
   - id: servicenow-hr
     system: SERVICENOW
     kind: desk
@@ -1195,7 +1221,7 @@ records:
       Proposal sent; signature path agreed with procurement.
 
   - id: drive-dealdesk-northwind
-    container: drive-sales
+    container: drive-deal-desk
     type: FILE
     title: "Deal desk decision — Northwind Traders renewal"
     author: lena
@@ -1346,7 +1372,7 @@ records:
       "seamless" and "game-changing".
 
   - id: drive-mkt-insights-embargo
-    container: drive-marketing
+    container: drive-launch-core
     type: FILE
     title: "Next launch — embargoed brief"
     author: nina
@@ -1444,7 +1470,7 @@ records:
       Monitoring vendor renewal (FIN-40) and travel for the June customer reviews.
 
   - id: drive-fin-stripe-agreement
-    container: drive-finance
+    container: drive-payments-contract
     type: FILE
     title: "Payment processing agreement 2026"
     author: ingrid
@@ -1558,7 +1584,7 @@ records:
       least eight weeks before your leave starts.
 
   - id: drive-people-comp-bands
-    container: drive-people
+    container: drive-people-managers
     type: FILE
     title: "Compensation bands 2026"
     author: tomas

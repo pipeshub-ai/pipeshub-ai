@@ -56,9 +56,15 @@ def test_each_pack_lesson_is_visible_to_exactly_its_reader(fx: dict) -> None:
     group_of_record = _group_of_record(fx)
     lessons = [q for q in _pack_questions(fx) if q.get("restricted")]
     assert {q["id"] for q in lessons}, "the packs need their restricted questions"
+    containers = {c["id"]: c for c in fx["containers"]}
+    records = {r["id"]: r for r in fx["records"]}
     for q in lessons:
         (group,) = {group_of_record[x] for x in q["restricted"]}
         assert not groups[group].get("installer_joins"), f"{q['id']}: the installer must not see {group}"
+        # A record also inherits its container's readers, so a record-level group
+        # inside a wider folder restricts nothing: the folder must be the group's own.
+        for x in q["restricted"]:
+            assert containers[records[x]["container"]]["group"] == group, f"{q['id']}: {x} sits in a wider folder"
         for persona, expect in q["personas"].items():
             member = group in people[persona].get("groups", [])
             assert member == (expect == "cites"), f"{q['id']}: {persona} ({expect}) membership of {group}"
@@ -77,8 +83,19 @@ def test_pack_restricted_facts_come_only_from_restricted_records(fx: dict) -> No
 
 
 def test_every_team_reader_group_is_open_to_the_installer(fx: dict) -> None:
-    # Containers carry the team's shared content; the admin who adds the demo sees it.
-    containers_groups = {c["group"] for c in fx["containers"]}
+    # Team folders carry the shared content the admin who adds the demo should see;
+    # only the folders behind a "who can see this" lesson stay closed.
     groups = {g["id"]: g for g in fx["groups"]}
-    closed = sorted(g for g in containers_groups if not groups[g].get("installer_joins") and g != "pricing-committee")
+    lesson_groups = {"pricing-committee"} | {
+        _group_of_record(fx)[x] for q in _pack_questions(fx) for x in q.get("restricted", [])
+    }
+    closed = sorted(c["id"] for c in fx["containers"] if c["group"] not in lesson_groups and not groups[c["group"]].get("installer_joins"))
     assert closed == [], closed
+
+
+def test_no_open_folder_holds_a_restricted_record(fx: dict) -> None:
+    # The leak this guards: a restricted record placed in a team folder is readable
+    # by everyone who can read the folder.
+    containers = {c["id"]: c for c in fx["containers"]}
+    leaks = sorted(r["id"] for r in fx["records"] if r.get("group") and r["group"] != containers[r["container"]]["group"])
+    assert leaks == [], leaks
