@@ -92,6 +92,92 @@ async def test_a_server_rendered_site_is_crawled_without_the_browser(
     assert set(db.pages()) == {START_URL, "http://site.test/next"}
 
 
+async def test_the_script_rendering_check_does_not_load_a_start_page_robots_txt_disallows(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    browser.add("http://site.test/robots.txt",
+                Page(body=b"User-agent: *\nDisallow: /\n", content_type="text/plain"))
+    browser.add(START_URL, Page(body=SHELL, rendered=html_page("App", text=LONG_TEXT), pre_render_text_len=0))
+
+    connector = await make_connector()
+    await connector.run_sync()
+
+    assert browser.browser_visits == []
+    assert db.pages() == {}
+
+
+async def test_the_script_rendering_check_does_not_follow_the_start_page_to_a_disallowed_address(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.add("http://site.test/robots.txt",
+                Page(body=b"User-agent: *\nDisallow: /private/\n", content_type="text/plain"))
+    browser.redirect(START_URL, "/private/")
+    browser.add("http://site.test/private/",
+                Page(body=SHELL, rendered=html_page("App", text=LONG_TEXT), pre_render_text_len=0))
+
+    await make_connector()
+
+    assert browser.browser_visits == []
+
+
+async def test_a_robots_txt_that_cant_be_read_at_setup_puts_the_script_rendering_check_off_to_the_sync(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    # RFC 9309: an unreadable robots.txt allows nothing, so the browser waits; the check runs only
+    # at setup otherwise, so it is tried again when the sync can read robots.txt.
+    browser.add("http://site.test/robots.txt", [
+        Page(status=503, body=b""),
+        Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"),
+    ])
+    browser.add(START_URL, Page(body=SHELL, rendered=html_page("App", "/inside", text=LONG_TEXT),
+                                pre_render_text_len=0))
+    browser.add("http://site.test/inside", Page(body=SHELL, rendered=html_page("Inside", text=LONG_TEXT)))
+
+    connector = await make_connector()
+    assert browser.browser_visits == []
+    await connector.run_sync()
+
+    assert connector.use_headless_browser is True
+    assert db.pages()["http://site.test/inside"].record_name == "Inside"
+
+
+async def test_while_robots_txt_cant_be_read_the_browser_never_opens_the_start_page(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.add("http://site.test/robots.txt", Page(status=503, body=b""))
+    browser.add(START_URL, Page(body=SHELL, rendered=html_page("App", text=LONG_TEXT), pre_render_text_len=0))
+
+    connector = await make_connector()
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert browser.browser_visits == []
+
+
+async def test_a_start_page_redirect_onto_a_site_whose_robots_txt_cant_be_read_keeps_the_check_pending(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    landing = "http://www.site.test/"
+    browser.add("http://site.test/robots.txt", Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"))
+    browser.add("http://www.site.test/robots.txt", [
+        Page(status=503, body=b""),
+        Page(status=503, body=b""),
+        Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"),
+    ])
+    browser.add(START_URL, Page(status=301, location=landing, content_type=None))
+    browser.add(landing, Page(body=SHELL, rendered=html_page("App", text=LONG_TEXT), pre_render_text_len=0))
+
+    connector = await make_connector(follow_external=True)
+    await connector.run_sync()
+    assert connector._script_check_pending is True
+    assert browser.browser_visits == []
+
+    await connector.run_sync()
+
+    assert connector._script_check_pending is False
+    assert connector.use_headless_browser is True
+
+
 async def test_without_a_working_browser_a_plain_site_still_syncs(
     browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
@@ -264,7 +350,11 @@ async def test_robust_mode_skips_an_oversized_file_behind_an_aborted_redirect_wi
 
     assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
     assert browser.gets(pdf) == 0
-    assert pdf not in db.pages()
+    # Listed where the file is, as too large, and nothing downloaded.
+    too_large = db.pages()[pdf]
+    assert too_large.storage_document_id is None
+    assert (too_large.reason or "").startswith("This file is larger than this connector's 1 MB size limit")
+    assert "http://site.test/handbook" not in db.pages()
 
 
 @pytest.mark.parametrize(
@@ -334,7 +424,8 @@ async def test_robust_mode_takes_the_probe_s_error_for_a_page_instead_of_retryin
 
     assert browser.gets(gone) == 0
     assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
-    assert gone not in db.pages()
+    # The probe's real status, not the browser's silence, is what the failed page reports.
+    assert (db.pages()[gone].reason or "").startswith("The page wasn't found (404 Not Found)")
 
 
 @pytest.mark.parametrize(
@@ -376,3 +467,35 @@ async def test_robust_mode_probes_with_get_when_head_fails_and_still_fetches_the
     await (await make_connector(use_headless_browser=True)).run_sync()
 
     assert browser.storage_docs[db.pages()[pdf].storage_document_id] == b"%PDF-1.4 report"
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (403, "The page refused access (403 Forbidden)."),
+        (503, "The site didn't respond properly (503 Service Unavailable)."),
+    ],
+)
+async def test_robust_mode_reports_the_status_the_site_really_sent(
+    status: int, reason: str, browser: FakeWeb, db: FakeRecordsDb, clock: VirtualClock, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home", "/page")
+    browser.add("http://site.test/page", Page(status=status, body=b"<html><body>no</body></html>"))
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    assert (db.pages()["http://site.test/page"].reason or "").startswith(reason)
+    assert BROWSER_RETRY_LAST_WAIT in clock.sleeps
+
+
+async def test_robust_mode_reports_no_answer_as_unreachable(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home", "/page")
+    browser.add("http://site.test/page", Page(hang_up=True))
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    assert db.pages()["http://site.test/page"].reason == (
+        "We couldn't reach this page. Check the URL is correct and publicly reachable, then sync again."
+    )

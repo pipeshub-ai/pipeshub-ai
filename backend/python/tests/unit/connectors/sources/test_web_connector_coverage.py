@@ -47,6 +47,8 @@ def _make_connector():
         data_store_provider=dsp, config_service=cs, connector_id="web-c-1",
         scope="personal", created_by="test-user-id",
     )
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    c.respect_robots_txt = False
     return c
 
 
@@ -193,10 +195,8 @@ class TestDetermineMimeTypeExtended:
 
     def test_svg_content_type(self):
         c = _make_connector()
-        # 'image/svg+xml' contains 'xml', which the code checks before 'svg',
-        # so the XML branch takes precedence
         mime, ext = c._determine_mime_type("https://x.com/f", "image/svg+xml")
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.SVG
 
     def test_docx_content_type(self):
         c = _make_connector()

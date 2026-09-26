@@ -78,6 +78,11 @@ class Page:
     head_status: int | None = None
 
 
+    # Validators: sent with the page, and a matching If-None-Match / If-Modified-Since gets a 304.
+    etag: str | None = None
+    last_modified: str | None = None
+
+
 def _key(url: str) -> str:
     parsed = urlparse(url)
     path = parsed.path or "/"
@@ -96,12 +101,15 @@ class FakeWeb:
         self._pages: dict[str, Page | list[Page]] = {}
         self._lock = threading.Lock()
         self.requests: list[tuple[str, str]] = []
+        self.not_modified: list[str] = []
         self.browser_visits: list[str] = []
+        self.browser_loaded: list[str] = []  # every address the browser requested, redirect hops included
         self.browser_starts = 0
         self.browser_broken = False
         self.storage_docs: dict[str, bytes] = {}
         self.storage_uploads: list[str] = []
         self.storage_buffer_updates: list[str] = []
+        self.storage_deletes: list[str] = []
         self.storage_down = False
         self._doc_seq = 0
 
@@ -122,7 +130,8 @@ class FakeWeb:
         return sum(1 for method, u in self.requests if method == "GET" and _key(u) == _key(url))
 
     def fetched_urls(self) -> set[str]:
-        return {u for method, u in self.requests if method == "GET"}
+        """Pages fetched, leaving out the crawler's robots.txt reads."""
+        return {u for method, u in self.requests if method == "GET" and not u.endswith("/robots.txt")}
 
     def _current(self, url: str, consume: bool) -> Page:
         with self._lock:
@@ -155,6 +164,17 @@ class FakeWeb:
             request.transport.abort()
             raise ConnectionResetError("fake site hung up")
         headers = dict(page.headers)
+        if page.etag:
+            headers["ETag"] = page.etag
+        if page.last_modified:
+            headers["Last-Modified"] = page.last_modified
+        if page.status == 200 and (
+            (page.etag and request.headers.get("If-None-Match") == page.etag)
+            or (page.last_modified and request.headers.get("If-Modified-Since") == page.last_modified)
+        ):
+            if request.method == "GET":
+                self.not_modified.append(url)
+            return web.Response(status=304, headers=headers)
         if page.location:
             headers["Location"] = page.location
         if page.content_type:
@@ -192,6 +212,11 @@ class FakeWeb:
             if doc_id not in self.storage_docs:
                 return web.Response(status=404)
             return web.Response(body=self.storage_docs[doc_id], content_type="application/octet-stream")
+        if request.method == "DELETE" and path.startswith("/api/v1/document/internal/"):
+            doc_id = path.rsplit("/", 1)[-1]
+            self.storage_deletes.append(doc_id)
+            self.storage_docs.pop(doc_id, None)
+            return web.Response(status=204)
         if request.method == "GET" and path.endswith("/download"):
             doc_id = path.split("/")[-2]
             return web.json_response({"signedUrl": f"http://{STORAGE_HOST}/signed/{doc_id}"})
@@ -202,6 +227,7 @@ class FakeWeb:
     def render(self, url: str) -> tuple[str, Page]:
         """What a browser ends up showing for ``url``, following redirects."""
         for _ in range(10):
+            self.browser_loaded.append(url)
             page = self._current(url, consume=True)
             if page.location and 300 <= page.status < 400:
                 url = urljoin(url, page.location)
@@ -235,6 +261,7 @@ def browser_crawler_class(site: FakeWeb) -> type:
                 return SimpleNamespace(url=url, redirected_url=url, html="", success=False, status_code=None,
                                        error_message="net::ERR_EMPTY_RESPONSE", crawl_stats=None,
                                        js_execution_result=None)
+            browser_headers = {"content-type": page.content_type} if page.content_type else {}
             status = page.rendered_status if page.rendered_status is not None else page.status
             if page.rendered is not None:
                 html = page.rendered.decode("utf-8", "replace")
@@ -256,6 +283,7 @@ def browser_crawler_class(site: FakeWeb) -> type:
                 error_message=None if ok else f"Failed on navigating ACS-GOTO: HTTP {status}",
                 crawl_stats=None,
                 js_execution_result={"success": True, "results": [{"preLen": pre, "postLen": text_len}]},
+                response_headers=browser_headers,
             )
 
         async def arun_many(self, urls: list[str], config: object = None, dispatcher: object = None, **_: object) -> list[object]:
@@ -314,6 +342,8 @@ class FakeRecordsDb:
         existing = self.records.get(record.external_record_id)
         if existing is not None:
             record.id = existing.id
+        # Records are upserted by id, so one stored under an older external id is replaced.
+        self.records = {k: v for k, v in self.records.items() if v.id != record.id}
         self.records[record.external_record_id] = record.model_copy(deep=True)
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
