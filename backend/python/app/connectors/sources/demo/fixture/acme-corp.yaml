@@ -1431,7 +1431,7 @@ records:
       ## Approvals
       - Up to **$250** per purchase: no approval needed; submit the receipt within
         30 days.
-      - $250 to $2,500: your manager approves.
+      - More than $250, up to $2,500: your manager approves.
       - Over $2,500, and any software subscription: finance approves, via a FIN
         ticket.
 
@@ -1698,7 +1698,8 @@ pack_questions:
     - id: f2
       ask: "How much can I spend on a purchase without my manager's approval?"
       must_cite: [drive-fin-expense-policy]
-      answer_must_mention: ["250"]
+      # Phrases only the no-approval band has; "$250" also starts the manager band.
+      answer_must_mention_any_of: ["no approval", "without approval", "without any approval", "up to $250", "under $250", "$250 or less"]
       personas: { alice: cites, bob: cites }
     - id: f3
       ask: "What rate do we pay for card processing?"
@@ -1710,8 +1711,9 @@ pack_questions:
   hr:
     - id: h1
       ask: "How many days of unused annual leave can I carry over into next year?"
-      # Either says the limit is now five days; "five" and "5" are both correct.
+      # Either says the limit is now five days; the handbook's three is out of date.
       must_cite_any_of: [slack-people-0302, sn-hr-1203]
+      answer_must_mention_any_of: ["five", "5"]
       personas: { alice: cites, bob: cites }
     - id: h2
       ask: "What should a new engineer do in their first week?"

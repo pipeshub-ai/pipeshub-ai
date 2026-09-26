@@ -256,20 +256,26 @@ def cited_fixture_ids(cited_names: list[str], name_to_id: dict[str, str], thread
     return ids
 
 
-_NEGATED = re.compile(r"(?:\bnot|n't|\bnever)\s+(?:yet\s+)?$")
+_CLAUSE_BREAK = re.compile(r"[.;:,!?]|\bbut\b")
+_NEGATION = re.compile(r"^(?:not|never)$|n't$")
+
+
+def _negated(before: str) -> bool:
+    """Whether one of the two words before a phrase, in the same clause, negates it:
+    "not on track", "won't renew on time", "has not been reissued"."""
+    clause = _CLAUSE_BREAK.split(before)[-1]
+    return any(_NEGATION.search(w) for w in clause.split()[-2:])
 
 
 def mentions(answer: str, phrase: str) -> bool:
-    """Whether the answer states `phrase`: case-insensitive, not directly negated
-    ("not on track"; a negation further back, "won't renew on time", still counts),
-    and a number is not read inside another ("21" in "#211", "250" in "$2500")."""
+    """Whether the answer states `phrase`: case-insensitive, not negated, and a
+    number is not read inside another ("21" in "#211", "250" in "$2500" or "$250,000").
+    Used for the pack questions' any-of and must-not phrases; `answer_must_mention`
+    stays a plain substring check, as the chat landing's questions were scored."""
     text, p = answer.lower(), phrase.lower()
     before = r"(?<![\d#.,])" if p[:1].isdigit() else ""
     after = r"(?!\d|[.,]\d)" if p[-1:].isdigit() else ""
-    for m in re.finditer(before + re.escape(p) + after, text):
-        if not _NEGATED.search(text[max(0, m.start() - 16):m.start()]):
-            return True
-    return False
+    return any(not _negated(text[:m.start()]) for m in re.finditer(before + re.escape(p) + after, text))
 
 
 def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool, str]:
@@ -286,7 +292,7 @@ def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool,
     any_ok = ((not any_of) or any(x in cited_ids for x in any_of)) and ((not any_of2) or any(x in cited_ids for x in any_of2))
     forbidden = [x for x in q.get("must_not_cite", []) if x in cited_ids]
     mention = q.get("answer_must_mention", [])
-    unmentioned = [m for m in mention if not mentions(answer, m)]
+    unmentioned = [m for m in mention if m.lower() not in answer.lower()]
     # At least one of these, for a fact the model can phrase several ways.
     mention_any = q.get("answer_must_mention_any_of", [])
     if mention_any and not any(mentions(answer, m) for m in mention_any):

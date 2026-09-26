@@ -105,6 +105,7 @@ def test_s1_passes_only_an_answer_that_reports_the_recovery(fx: dict, answer: st
         ("Northwind is back on track; renewal expected on time.", True),
         ("Northwind is not on track for the renewal.", False),
         ("Northwind isn't on track yet.", False),
+        ("Northwind won't renew on time.", False),
         ("Northwind's renewal is not on time.", False),
         ("Northwind is not at risk any more.", True),
     ],
@@ -133,6 +134,8 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
     [
         ("Up to $250 per purchase needs no approval.", True),
         ("You can spend up to $2500 without your manager's approval.", False),
+        ("$250 to $2,500 needs your manager's approval.", False),
+        ("Anything above $250,000 needs finance approval.", False),
     ],
 )
 def test_f2_does_not_read_250_inside_2500(fx: dict, answer: str, ok: bool) -> None:
@@ -163,8 +166,38 @@ def test_the_upload_waits_for_every_knowledge_base_the_persona_loads(fx: dict) -
         ("Contoso's invoice has not yet been reissued; the case is still open.", False),
         ("Contoso's invoice was not reissued.", False),
         ("Contoso reported it; SUP-121 remains open with finance.", False),
+        ("Contoso's invoice has not been reissued.", False),
     ],
 )
 def test_u2_accepts_every_way_of_saying_it_was_reissued_but_not_still_open(fx: dict, answer: str, ok: bool) -> None:
     q = _question(fx, "u2")
     assert kb_harness.score(q, "cites", {"jira-fin-37", "jira-fin-38"}, answer)[0] is ok
+
+
+
+@pytest.mark.parametrize(
+    ("answer", "ok"),
+    [
+        ("Enterprise moves to a $48,000 annual platform fee.", True),
+        ("A $48k platform fee covering 250 seats.", True),
+    ],
+)
+def test_q5_still_accepts_the_pricing_documents_own_wording(fx: dict, answer: str, ok: bool) -> None:
+    # The chat landing's questions are scored as on main: plain substrings.
+    q = _question(fx, "q5")
+    assert kb_harness.score(q, "cites", {"drive-pricing-2026"}, answer)[0] is ok
+
+
+@pytest.mark.parametrize(
+    ("answer", "ok"),
+    [
+        ("You can now carry over five days of unused leave (it used to be three).", True),
+        ("Up to 5 days carry over into 2027.", True),
+        ("You can carry over three days, per the handbook.", False),
+        ("It's three days, not five.", False),
+        ("You can carry 25 days over.", False),
+    ],
+)
+def test_h1_needs_the_current_five_day_limit(fx: dict, answer: str, ok: bool) -> None:
+    q = _question(fx, "h1")
+    assert kb_harness.score(q, "cites", {"slack-people-0302"}, answer)[0] is ok
