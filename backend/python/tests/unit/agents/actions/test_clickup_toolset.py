@@ -25,6 +25,7 @@ from app.sources.client.clickup.clickup import ClickUpClient, ClickUpRESTClientV
 
 V2 = "/api/v2"
 V3 = "/api/v3"
+TOKEN = "pk_fake-clickup-token-must-never-leak"
 
 
 @dataclass
@@ -85,7 +86,7 @@ def api() -> FakeClickUpAPI:
 
 @pytest.fixture
 async def clickup(api: FakeClickUpAPI) -> AsyncIterator[ClickUp]:
-    http = ClickUpRESTClientViaOAuth("oauth-token")
+    http = ClickUpRESTClientViaOAuth(TOKEN)
     http.client = httpx.AsyncClient(transport=httpx.MockTransport(api.handler), headers=http.headers)
     yield ClickUp(ClickUpClient(http))
     await http.close()
@@ -98,9 +99,14 @@ def ok(result: tuple[bool, str]) -> dict:
 
 
 def fail(result: tuple[bool, str]) -> dict:
+    """The failed result, whose error is checked to be plain text the agent can relay safely."""
     success, payload = result
     assert success is False, f"expected failure, got success: {payload}"
-    return json.loads(payload)
+    data = json.loads(payload)
+    message = data["error"]
+    for leaked in (TOKEN, "Bearer", "{", "Traceback"):
+        assert leaked not in message, f"{leaked!r} leaked into: {message}"
+    return data
 
 
 # ===========================================================================
@@ -113,7 +119,7 @@ class TestUserAndWorkspaces:
     async def test_authorized_user_sends_bearer_token(self, clickup, api) -> None:
         api.on("GET", f"{V2}/user", (200, {"user": {"id": 7, "username": "ann"}}))
         assert ok(await clickup.get_authorized_user())["data"]["user"]["id"] == 7
-        assert api.requests[0].headers["authorization"] == "Bearer oauth-token"
+        assert api.requests[0].headers["authorization"] == f"Bearer {TOKEN}"
 
     @pytest.mark.asyncio
     async def test_expired_token_is_reported_with_clickup_reason(self, clickup, api) -> None:
@@ -125,7 +131,7 @@ class TestUserAndWorkspaces:
     @pytest.mark.asyncio
     async def test_network_failure_is_a_failed_result(self, clickup, api) -> None:
         api.on("GET", f"{V2}/user", httpx.ConnectError("connection refused"))
-        assert "connection refused" in fail(await clickup.get_authorized_user())["error"]
+        assert fail(await clickup.get_authorized_user())["error"] == "ClickUp could not be reached. Try again in a moment."
 
     @pytest.mark.asyncio
     async def test_workspaces_get_web_urls(self, clickup, api) -> None:
@@ -287,7 +293,7 @@ class TestSearchTasks:
         api.on("POST", f"{V2}/team/9001/view", (200, {"view": {"id": "v-1"}}))
         api.on("GET", f"{V2}/view/v-1/task", httpx.ReadTimeout("timed out"))
         api.on("DELETE", f"{V2}/view/v-1", (200, {}))
-        assert "timed out" in fail(await clickup.search_tasks("9001", "invoice"))["error"]
+        assert "could not be reached" in fail(await clickup.search_tasks("9001", "invoice"))["error"]
         assert api.calls("DELETE", f"{V2}/view/v-1")
 
     @pytest.mark.asyncio
@@ -552,3 +558,173 @@ class TestUpdatesWithNothingToChange:
         api.on("PUT", f"{V2}/checklist/cl1/checklist_item/i1", (200, {}))
         ok(await clickup.update_checklist_item("cl1", "i1", resolved=False))
         assert api.requests[0].body == {"resolved": False}
+
+
+
+class TestFailuresInPlainLanguage:
+    @pytest.mark.asyncio
+    async def test_rate_limit_says_to_wait(self, clickup, api) -> None:
+        api.on("GET", f"{V2}/task/t1", (429, {"err": "Rate limit reached", "ECODE": "APP_002"}))
+        assert fail(await clickup.get_task("t1"))["error"] == "ClickUp's rate limit has been reached. Wait a minute and try again."
+
+    @pytest.mark.asyncio
+    async def test_rejected_sign_in_says_to_reconnect(self, clickup, api) -> None:
+        api.on("GET", f"{V2}/user", (401, {"err": "Token invalid", "ECODE": "OAUTH_025"}))
+        message = fail(await clickup.get_authorized_user())["error"]
+        assert message == (
+            "ClickUp did not accept the saved sign-in. ClickUp said: Token invalid. "
+            "Reconnect the ClickUp toolset in Settings > Toolsets and try again."
+        )
+
+    @pytest.mark.asyncio
+    async def test_forbidden_says_to_ask_an_admin(self, clickup, api) -> None:
+        api.on("POST", f"{V2}/list/l1/task", (403, {"err": "Team not authorized", "ECODE": "OAUTH_027"}))
+        assert "Ask a workspace admin" in fail(await clickup.create_task("l1", "Ship it"))["error"]
+
+    @pytest.mark.asyncio
+    async def test_missing_task_says_how_to_find_it(self, clickup, api) -> None:
+        message = fail(await clickup.get_task("nope"))["error"]
+        assert "could not find it" in message and "search_tasks" in message
+
+    @pytest.mark.asyncio
+    async def test_bad_request_relays_clickups_reason(self, clickup, api) -> None:
+        api.on("PUT", f"{V2}/task/t1", (400, {"err": "Status not found", "ECODE": "ITEM_156"}))
+        message = fail(await clickup.update_task("t1", status="Shipped"))["error"]
+        assert message == "ClickUp rejected the request. ClickUp said: Status not found. Correct it and try again."
+
+    @pytest.mark.asyncio
+    async def test_server_error_says_to_try_again(self, clickup, api) -> None:
+        api.on("GET", f"{V2}/team", (502, {}))
+        assert "temporary problem" in fail(await clickup.get_authorized_teams_workspaces())["error"]
+
+
+class TestCommentPaging:
+    @staticmethod
+    def _comments(count: int, newest: int = 100) -> list[dict]:
+        return [{"id": str(newest - i), "comment_text": f"c{newest - i}", "date": str(1_700_000_000_000 + newest - i)}
+                for i in range(count)]
+
+    @pytest.mark.asyncio
+    async def test_a_full_page_of_comments_says_how_to_read_older_ones(self, clickup, api) -> None:
+        api.on("GET", f"{V2}/task/t1/comment", (200, {"comments": self._comments(25)}))
+        data = ok(await clickup.get_comments(task_id="t1"))["data"]
+        assert data["has_more"] is True
+        assert (data["next_start"], data["next_start_id"]) == (1_700_000_000_076, "76")
+        assert "there may be older ones" in data["note"]
+
+    @pytest.mark.asyncio
+    async def test_older_comments_are_read_from_where_the_last_page_ended(self, clickup, api) -> None:
+        api.on("GET", f"{V2}/task/t1/comment", (200, {"comments": self._comments(3, newest=75)}))
+        data = ok(await clickup.get_comments(task_id="t1", start=1_700_000_000_076, start_id="76"))["data"]
+        assert api.calls("GET", f"{V2}/task/t1/comment")[0].query == {"start": ["1700000000076"], "start_id": ["76"]}
+        assert data["has_more"] is False and "note" not in data
+
+
+class TestUnreadableCommentPage:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [
+        {}, {"comments": None}, {"comments": "25 comments"}, [{"id": "c1"}], {"comments": ["garbled"] * 25},
+        {"comments": [{}] * 25}, {"comments": [{"id": str(i)} for i in range(25)]},
+    ])
+    async def test_a_reply_without_a_comment_list_is_a_failure_not_an_empty_page(self, clickup, api, payload) -> None:
+        api.on("GET", f"{V2}/task/t1/comment", (200, payload))
+        assert "comments" in fail(await clickup.get_comments(task_id="t1"))["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_full_page_continues_from_the_last_comment_with_a_cursor(self, clickup, api) -> None:
+        comments = [*TestCommentPaging._comments(24), {"comment_text": "no id or date"}]
+        api.on("GET", f"{V2}/task/t1/comment", (200, {"comments": comments}))
+        data = ok(await clickup.get_comments(task_id="t1"))["data"]
+        assert data["has_more"] is True
+        assert (data["next_start"], data["next_start_id"]) == (1_700_000_000_077, "77")
+
+    @pytest.mark.asyncio
+    async def test_malformed_entries_still_count_toward_a_full_page(self, clickup, api) -> None:
+        comments = [*TestCommentPaging._comments(24), "garbled"]
+        api.on("GET", f"{V2}/task/t1/comment", (200, {"comments": comments}))
+        data = ok(await clickup.get_comments(task_id="t1"))["data"]
+        assert data["has_more"] is True
+
+
+class TestInputValidation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("keyword", ["", "   "])
+    async def test_blank_search_is_refused_instead_of_listing_every_task(self, clickup, api, keyword) -> None:
+        assert fail(await clickup.search_tasks("9001", keyword))["error"].startswith("keyword cannot be empty")
+        assert api.requests == []
+
+    @pytest.mark.asyncio
+    async def test_blank_comment_is_refused_before_clickup(self, clickup, api) -> None:
+        assert "comment_text cannot be empty" in fail(await clickup.create_task_comment(" ", task_id="t1"))["error"]
+        assert api.requests == []
+
+    @pytest.mark.asyncio
+    async def test_blank_task_name_is_refused_before_clickup(self, clickup, api) -> None:
+        assert "name cannot be empty" in fail(await clickup.create_task("l1", ""))["error"]
+        assert api.requests == []
+
+
+# Every tool, with arguments that pass its own checks, and the first data-source method it calls.
+EVERY_TOOL = [
+    ("get_authorized_user", {}, "get_authorized_user"),
+    ("get_authorized_teams_workspaces", {}, "get_authorized_teams_workspaces"),
+    ("get_spaces", {"team_id": "9001"}, "get_spaces"),
+    ("get_folders", {"space_id": "s1", "team_id": "9001"}, "get_folders"),
+    ("get_lists", {"folder_id": "f1", "team_id": "9001"}, "get_lists"),
+    ("get_folderless_lists", {"space_id": "s1", "team_id": "9001"}, "get_folderless_lists"),
+    ("create_space", {"team_id": "9001", "name": "Ops"}, "create_space"),
+    ("create_folder", {"space_id": "s1", "name": "Q4"}, "create_folder"),
+    ("create_list", {"name": "Bugs", "folder_id": "f1"}, "create_list"),
+    ("update_list", {"list_id": "l1", "name": "Renamed"}, "update_list"),
+    ("get_tasks", {"team_id": "9001"}, "get_filtered_team_tasks"),
+    ("search_tasks", {"team_id": "9001", "keyword": "invoice"}, "create_team_view"),
+    ("get_task", {"task_id": "t1"}, "get_task"),
+    ("create_task", {"list_id": "l1", "name": "Ship it"}, "create_task"),
+    ("update_task", {"task_id": "t1", "name": "Renamed"}, "update_task"),
+    ("get_comments", {"task_id": "t1"}, "get_task_comments"),
+    ("create_task_comment", {"comment_text": "Done", "task_id": "t1"}, "create_task_comment"),
+    ("create_checklist", {"task_id": "t1", "name": "QA"}, "create_checklist"),
+    ("create_checklist_item", {"checklist_id": "c1", "name": "Smoke test"}, "create_checklist_item"),
+    ("update_checklist_item", {"checklist_id": "c1", "checklist_item_id": "i1", "resolved": True}, "update_checklist_item"),
+    ("get_workspace_docs", {"workspace_id": "9001"}, "get_workspace_docs"),
+    ("get_doc_pages", {"workspace_id": "9001", "doc_id": "d1"}, "get_doc_pages"),
+    ("get_doc_page", {"workspace_id": "9001", "doc_id": "d1", "page_id": "p1"}, "get_doc_page"),
+    ("create_doc", {"workspace_id": "9001", "name": "Runbook"}, "create_doc"),
+    ("create_doc_page", {"workspace_id": "9001", "doc_id": "d1", "name": "Intro"}, "create_doc_page"),
+    ("update_doc_page", {"workspace_id": "9001", "doc_id": "d1", "page_id": "p1", "content": "Hi"}, "update_doc_page"),
+]
+TOOL_IDS = [t[0] for t in EVERY_TOOL]
+
+
+class TestEveryToolFailsHonestly:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool_name", "args", "method"), EVERY_TOOL, ids=TOOL_IDS)
+    async def test_a_rate_limit_is_a_failure_that_says_to_wait(self, clickup, api, tool_name, args, method) -> None:
+        for verb in ("GET", "POST", "PUT", "DELETE"):
+            api.on(verb, r"/api/v\d/.*", (429, {"err": "Rate limit reached", "ECODE": "APP_002"}))
+        assert "Wait a minute" in fail(await getattr(clickup, tool_name)(**args))["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool_name", "args", "method"), EVERY_TOOL, ids=TOOL_IDS)
+    async def test_a_crash_is_a_plain_failure_without_the_exception_text(self, clickup, api, monkeypatch, tool_name, args, method) -> None:
+        async def crash(*_: object, **__: object) -> None:
+            raise RuntimeError(f"Authorization: Bearer {TOKEN}")
+
+        monkeypatch.setattr(clickup.client, method, crash)
+        message = fail(await getattr(clickup, tool_name)(**args))["error"]
+        assert message.startswith("Something unexpected went wrong in")
+
+
+class TestWebLinks:
+    @pytest.mark.parametrize(("entity", "kwargs"), [
+        (ClickUpEntityType.SPACE, {"team_id": "9"}),
+        (ClickUpEntityType.FOLDER, {"team_id": "9", "folder_id": "f1"}),
+        (ClickUpEntityType.LIST, {"team_id": "9", "list_id": "l1"}),
+        (ClickUpEntityType.DOC, {"team_id": "9"}),
+        (ClickUpEntityType.PAGE, {"team_id": "9", "doc_id": "d1"}),
+        (ClickUpEntityType.COMMENT, {"task_id": "t1"}),
+        (ClickUpEntityType.COMMENT_REPLY, {"task_id": "t1", "comment_id": "c1"}),
+        (ClickUpEntityType.LIST, {"list_id": "l1", "folder_id": "f1"}),
+    ])
+    def test_a_link_missing_an_id_is_left_out_rather_than_broken(self, entity, kwargs) -> None:
+        assert _build_clickup_web_url(entity, **kwargs) == ""

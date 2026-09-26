@@ -8,9 +8,12 @@ method, path, query and JSON body GitHub would receive, and responses are
 parsed into real PyGithub objects.
 """
 
+import asyncio
 import json
 import re
-from collections.abc import Iterator
+import threading
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlsplit
 
@@ -19,12 +22,20 @@ from github.Requester import Requester
 
 from app.agents.actions.github.github import (
     GitHub,
+    ListIssuesInput,
+    ListPullRequestsInput,
+    UpdateIssueInput,
+    _github_comment_label,
     _github_commit_label,
+    _github_file_change_label,
+    _github_owner_label,
+    _github_repo_label,
     _github_review_label,
 )
 from app.sources.client.github.github import GitHubClient, GitHubClientViaToken
 
 API = "https://api.github.com"
+TOKEN = "ghp_fake-token-must-never-leak"
 
 
 @dataclass
@@ -36,12 +47,13 @@ class RecordedRequest:
 
 
 class _Response:
-    def __init__(self, status: int, payload: object) -> None:
+    def __init__(self, status: int, payload: object, headers: dict[str, str] | None = None) -> None:
         self.status = status
         self._text = json.dumps(payload)
+        self._headers = headers or {}
 
     def getheaders(self) -> list[tuple[str, str]]:
-        return [("content-type", "application/json; charset=utf-8")]
+        return [("content-type", "application/json; charset=utf-8"), *self._headers.items()]
 
     def read(self) -> str:
         return self._text
@@ -54,7 +66,9 @@ class FakeGitHubAPI:
     requests: list[RecordedRequest] = field(default_factory=list)
     routes: list[tuple[str, re.Pattern, list[tuple[int, object]]]] = field(default_factory=list)
 
-    def on(self, method: str, path_regex: str, *responses: tuple[int, object]) -> "FakeGitHubAPI":
+    def on(self, method: str, path_regex: str, *responses: object) -> "FakeGitHubAPI":
+        """Each response is (status, payload), (status, payload, headers), an exception to raise,
+        or a callable returning one of those."""
         self.routes.append((method, re.compile(rf"^{path_regex}$"), list(responses)))
         return self
 
@@ -74,8 +88,12 @@ class FakeGitHubAPI:
         self.requests.append(recorded)
         for method, pattern, responses in self.routes:
             if method == verb and pattern.match(parts.path):
-                status, payload = responses.pop(0) if len(responses) > 1 else responses[0]
-                return _Response(status, payload)
+                response = responses.pop(0) if len(responses) > 1 else responses[0]
+                if isinstance(response, BaseException):
+                    raise response
+                if callable(response):
+                    response = response()
+                return _Response(*response)
         return _Response(404, {"message": "Not Found", "documentation_url": "https://docs.github.com/rest"})
 
 
@@ -109,7 +127,7 @@ def api() -> Iterator[FakeGitHubAPI]:
 
 @pytest.fixture
 def github(api: FakeGitHubAPI) -> GitHub:
-    client = GitHubClientViaToken("ghp_test")
+    client = GitHubClientViaToken(TOKEN)
     client.create_client()
     requester = client.get_sdk().requester
     # PyGithub spaces requests 0.25s apart (1s for writes); pointless against a fake.
@@ -125,9 +143,13 @@ def ok(result: tuple[bool, str]) -> dict:
 
 
 def err(result: tuple[bool, str]) -> str:
+    """The failure message, checked to be plain text the agent can relay safely."""
     success, payload = result
     assert success is False, f"expected failure, got success: {payload}"
-    return json.loads(payload)["error"]
+    message = json.loads(payload)["error"]
+    for leaked in (TOKEN, "Bearer", "documentation_url", "{"):
+        assert leaked not in message, f"{leaked!r} leaked into: {message}"
+    return message
 
 
 def repo(owner: str = "acme", name: str = "web") -> dict:
@@ -456,7 +478,7 @@ class TestPullRequests:
         payload = ok(await github.get_pull_request("acme", "web", 7))
         assert payload["data"]["pr"]["number"] == 7
         assert payload["data"]["conversation_comments"] == []
-        assert "API rate limit exceeded" in payload["data"]["conversation_comments_error"]
+        assert "rate limit has been reached" in payload["data"]["conversation_comments_error"]
         assert "could not be loaded" in payload["message"]
 
     @pytest.mark.asyncio
@@ -565,3 +587,323 @@ class TestLabels:
 
     def test_review_label(self) -> None:
         assert _github_review_label({"user": {"login": "bo"}, "state": "APPROVED"}) == "bo: APPROVED"
+
+
+# ===========================================================================
+# Failures the agent relays to the user
+# ===========================================================================
+
+
+class TestFailuresInPlainLanguage:
+    @pytest.mark.asyncio
+    async def test_rate_limit_says_how_long_to_wait(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (403, {"message": "API rate limit exceeded for user ID 7."},
+                                  {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(time.time()) + 120)}))
+        message = err(await github.get_repository("acme", "web"))
+        assert "rate limit" in message
+        assert re.search(r"Wait (11\d|120) seconds and try again", message), message
+
+    @pytest.mark.asyncio
+    async def test_429_uses_retry_after(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (429, {"message": "Too many requests"}, {"retry-after": "30"}))
+        assert "Wait 30 seconds and try again" in err(await github.get_repository("acme", "web"))
+
+    @pytest.mark.asyncio
+    async def test_secondary_rate_limit_is_a_rate_limit(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("POST", rf"{REPO_PATH}/issues", (403, {"message": "You have exceeded a secondary rate limit."}, {"retry-after": "60"}))
+        assert "Wait 60 seconds" in err(await github.create_issue("acme", "web", "Crash"))
+
+    @pytest.mark.asyncio
+    async def test_rejected_sign_in_says_to_reconnect(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (401, {"message": "Bad credentials", "documentation_url": "https://docs.github.com/rest"}))
+        message = err(await github.get_repository("acme", "web"))
+        assert "did not accept the saved sign-in" in message
+        assert "Reconnect the GitHub toolset" in message
+
+    @pytest.mark.asyncio
+    async def test_missing_repository_says_how_to_find_the_right_one(self, github, api) -> None:
+        message = err(await github.get_repository("acme", "nope"))
+        assert "could not get the repository" in message.lower()
+        assert "list_repositories" in message
+
+    @pytest.mark.asyncio
+    async def test_validation_failure_relays_githubs_field_errors(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("POST", rf"{REPO_PATH}/pulls", (422, {"message": "Validation Failed", "errors": [
+            {"resource": "PullRequest", "code": "custom", "message": "A pull request already exists for acme:feature."},
+        ]}))
+        message = err(await github.create_pull_request("acme", "web", "Add login", head="feature", base="main"))
+        assert message == (
+            "GitHub refused to create the pull request. GitHub said: Validation Failed; "
+            "A pull request already exists for acme:feature. Correct the request and try again."
+        )
+
+    @pytest.mark.asyncio
+    async def test_server_error_says_to_try_again(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (502, {"message": "Server Error"}))
+        assert "temporary problem" in err(await github.get_repository("acme", "web"))
+
+    @pytest.mark.asyncio
+    async def test_unreachable_github_is_explained(self, github, api) -> None:
+        api.on("GET", REPO_PATH, ConnectionError(f"connection reset while sending Authorization: token {TOKEN}"))
+        assert "could not be reached" in err(await github.get_repository("acme", "web"))
+
+
+class TestEventLoop:
+    @pytest.mark.asyncio
+    async def test_other_work_keeps_running_while_github_answers(self, github, api) -> None:
+        # PyGithub is synchronous; run on the event loop it would freeze every other chat until GitHub answered.
+        released = threading.Event()
+        waited: list[bool] = []
+
+        def slow_repository() -> tuple[int, object]:
+            waited.append(released.wait(timeout=2))
+            return 200, repo()
+
+        async def release() -> None:
+            released.set()
+
+        api.on("GET", REPO_PATH, slow_repository)
+        other_work = asyncio.create_task(release())
+        ok(await github.get_repository("acme", "web"))
+        await other_work
+        assert waited == [True]
+
+
+    @pytest.mark.asyncio
+    async def test_parallel_tool_calls_never_share_the_client_at_once(self, github, api) -> None:
+        # The agent runs a turn's tool calls together; PyGithub's session and rate-limit state are not thread-safe.
+        guard = threading.Lock()
+        in_flight: list[int] = [0]
+        peak: list[int] = [0]
+
+        def slow(payload: object) -> Callable[[], tuple[int, object]]:
+            def respond() -> tuple[int, object]:
+                with guard:
+                    in_flight[0] += 1
+                    peak[0] = max(peak[0], in_flight[0])
+                time.sleep(0.05)
+                with guard:
+                    in_flight[0] -= 1
+                return 200, payload
+            return respond
+
+        api.on("GET", REPO_PATH, slow(repo()))
+        api.on("GET", r"/repos/acme/other", slow(repo(name="other")))
+        api.on("GET", r"/user", slow({"login": "me-user", "id": 7, "url": f"{API}/user"}))
+        results = await asyncio.gather(
+            github.get_repository("acme", "web"), github.get_repository("acme", "other"), github.get_owner("me"),
+        )
+        assert all(r[0] for r in results)
+        assert peak[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_signed_in_user_is_fetched_off_the_event_loop(self, github, api) -> None:
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+
+        def me() -> tuple[int, object]:
+            seen.append(threading.get_ident())
+            return 200, {"login": "me-user", "id": 7, "url": f"{API}/user"}
+
+        api.on("GET", r"/user", me)
+        data = ok(await github.get_owner("me"))
+        assert data["data"]["login"] == "me-user"
+        assert seen and loop_thread not in seen
+
+
+class TestPaging:
+    """A list tool returns one page; the agent must be told when there may be more."""
+
+    @pytest.mark.asyncio
+    async def test_full_page_of_repositories_points_to_the_next_page(self, github, api) -> None:
+        api.on("GET", r"/users/ann", (200, {"login": "ann", "url": f"{API}/users/ann"}))
+        api.on("GET", r"/users/ann/repos", (200, [repo("ann", f"r{i}") for i in range(25)]))
+        data = ok(await github.list_repositories("ann", per_page=10, page=1))
+        assert (data["has_more"], data["next_page"]) == (True, 2)
+        assert "Call again with page=2" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_short_page_of_repositories_is_the_last(self, github, api) -> None:
+        api.on("GET", r"/users/ann", (200, {"login": "ann", "url": f"{API}/users/ann"}))
+        api.on("GET", r"/users/ann/repos", (200, [repo("ann", f"r{i}") for i in range(25)]))
+        data = ok(await github.list_repositories("ann", per_page=10, page=3))
+        assert len(data["data"]) == 5
+        assert data["has_more"] is False and "next_page" not in data
+        assert "last page" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_issues_page_says_more_may_exist(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("GET", rf"{REPO_PATH}/issues", (200, [issue(n) for n in range(1, 8)]))
+        assert ok(await github.list_issues("acme", "web", per_page=3))["has_more"] is True
+        assert ok(await github.list_issues("acme", "web", per_page=3, page=3))["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_pull_requests_page_says_more_may_exist(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("GET", rf"{REPO_PATH}/pulls", (200, [pull(7), pull(8)]))
+        assert ok(await github.list_pull_requests("acme", "web", per_page=1))["next_page"] == 2
+
+    @pytest.mark.asyncio
+    async def test_search_results_say_more_may_exist(self, github, api) -> None:
+        api.on("GET", r"/search/repositories", (200, {"total_count": 40, "items": [repo("acme", f"ml{i}") for i in range(30)]}))
+        data = ok(await github.search_repositories("ml", per_page=5))
+        assert (data["page"], data["per_page"], data["has_more"]) == (1, 5, True)
+
+
+class TestLongPullRequests:
+    @staticmethod
+    def _commits(count: int) -> list[dict]:
+        return [{"sha": f"c{i:03d}", "commit": {"message": f"change {i}"}} for i in range(count)]
+
+    @pytest.mark.asyncio
+    async def test_last_commit_of_a_pr_over_250_commits_is_its_head(self, github, api) -> None:
+        # GitHub stops the commit list at 250, so the 250th commit is not where a review comment belongs.
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("GET", rf"{REPO_PATH}/pulls/7", (200, {**pull(7), "head": {"ref": "feature", "sha": "head999"}}))
+        api.on("GET", rf"{REPO_PATH}/pulls/7/commits", (200, self._commits(250)))
+        data = ok(await github.get_pull_request_commits("acme", "web", 7))
+        assert data["last_commit_sha"] == "head999"
+        assert data["truncated"] is True
+        assert "at most 250 commits" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_unreadable_head_gives_no_commit_to_comment_on(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("GET", rf"{REPO_PATH}/pulls/7", (200, pull(7)), (502, {"message": "Server Error"}))
+        api.on("GET", rf"{REPO_PATH}/pulls/7/commits", (200, self._commits(250)))
+        data = ok(await github.get_pull_request_commits("acme", "web", 7))
+        assert data["last_commit_sha"] is None
+        assert "do not add a line comment yet" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_short_pr_needs_no_extra_request(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("GET", rf"{REPO_PATH}/pulls/7", (200, pull(7)))
+        api.on("GET", rf"{REPO_PATH}/pulls/7/commits", (200, self._commits(3)))
+        data = ok(await github.get_pull_request_commits("acme", "web", 7))
+        assert data["last_commit_sha"] == "c002" and "truncated" not in data
+        assert len(api.calls("GET", rf"{REPO_PATH}/pulls/7")) == 1
+
+
+class TestInputValidation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", ["", "   ", None])
+    async def test_empty_comment_is_refused_before_github(self, github, api, body) -> None:
+        assert err(await github.create_issue_comment("acme", "web", 42, body)).startswith("body cannot be empty")
+        assert api.requests == []
+
+    @pytest.mark.asyncio
+    async def test_blank_issue_title_is_refused_before_github(self, github, api) -> None:
+        assert "title cannot be empty" in err(await github.create_issue("acme", "web", "  "))
+        assert api.requests == []
+
+    @pytest.mark.asyncio
+    async def test_pull_request_needs_both_branches(self, github, api) -> None:
+        assert "base cannot be empty" in err(await github.create_pull_request("acme", "web", "Add login", head="feature", base=""))
+        assert api.requests == []
+
+    @pytest.mark.asyncio
+    async def test_review_comment_needs_a_commit(self, github, api) -> None:
+        message = err(await github.create_pull_request_review_comment("acme", "web", 7, body="nit", commit_id=" ", path="app.py"))
+        assert message.startswith("commit_id cannot be empty")
+        assert api.requests == []
+
+
+
+# Every tool, with arguments that pass its own checks, and the data-source method it calls.
+EVERY_TOOL = [
+    ("create_repository", {"name": "notes"}, "create_repo"),
+    ("get_repository", {"owner": "acme", "repo": "web"}, "get_repo"),
+    ("get_owner", {"owner": "me"}, "get_owner"),
+    ("list_repositories", {"user": "ann"}, "list_user_repos"),
+    ("create_issue", {"owner": "acme", "repo": "web", "title": "Crash"}, "create_issue"),
+    ("get_issue", {"owner": "acme", "repo": "web", "number": 1}, "get_issue"),
+    ("list_issues", {"owner": "acme", "repo": "web"}, "list_issues_only"),
+    ("close_issue", {"owner": "acme", "repo": "web", "number": 1}, "close_issue"),
+    ("update_issue", {"owner": "acme", "repo": "web", "number": 1, "title": "New"}, "update_issue"),
+    ("list_issue_comments", {"owner": "acme", "repo": "web", "number": 1}, "list_issue_comments"),
+    ("get_issue_comment", {"owner": "acme", "repo": "web", "number": 1, "comment_id": 9}, "get_issue_comment"),
+    ("create_issue_comment", {"owner": "acme", "repo": "web", "number": 1, "body": "Hi"}, "create_issue_comment"),
+    ("create_pull_request", {"owner": "acme", "repo": "web", "title": "T", "head": "f", "base": "main"}, "create_pull"),
+    ("get_pull_request", {"owner": "acme", "repo": "web", "number": 7}, "get_pull"),
+    ("get_pull_request_commits", {"owner": "acme", "repo": "web", "number": 7}, "get_pull_commits"),
+    ("get_pull_request_file_changes", {"owner": "acme", "repo": "web", "number": 7}, "get_pull_file_changes"),
+    ("list_pull_requests", {"owner": "acme", "repo": "web"}, "list_pulls"),
+    ("merge_pull_request", {"owner": "acme", "repo": "web", "number": 7}, "merge_pull"),
+    ("get_pull_request_reviews", {"owner": "acme", "repo": "web", "number": 7}, "get_pull_reviews"),
+    ("create_pull_request_review", {"owner": "acme", "repo": "web", "number": 7}, "create_pull_request_review"),
+    ("list_pull_request_comments", {"owner": "acme", "repo": "web", "number": 7}, "get_pull_review_comments"),
+    ("create_pull_request_review_comment",
+     {"owner": "acme", "repo": "web", "number": 7, "body": "nit", "commit_id": "abc", "path": "a.py"},
+     "create_pull_request_review_comment"),
+    ("search_repositories", {"query": "ml"}, "search_repositories"),
+]
+
+
+class TestUnexpectedCrashes:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool_name", "args", "method"), EVERY_TOOL, ids=[t[0] for t in EVERY_TOOL])
+    async def test_a_crash_is_a_plain_failure_without_the_exception_text(self, github, api, monkeypatch, tool_name, args, method) -> None:
+        def crash(**kwargs: object) -> None:
+            raise RuntimeError(f"Authorization: token {TOKEN}")
+
+        monkeypatch.setattr(github.client, method, crash)
+        message = err(await getattr(github, tool_name)(**args))
+        assert message.startswith("Something unexpected went wrong while")
+        assert "Authorization" not in message
+
+    @pytest.mark.asyncio
+    async def test_a_failed_list_page_carries_no_paging_hints(self, github, api) -> None:
+        success, payload = await github.list_repositories("ghost")
+        assert success is False
+        assert set(json.loads(payload)) == {"error"}
+
+
+class TestInputSchemas:
+    def test_blank_assignee_filter_is_dropped(self) -> None:
+        assert ListIssuesInput(owner="a", repo="b", assignee="  ").assignee is None
+        assert ListIssuesInput(owner="a", repo="b", assignee=" ann ").assignee == "ann"
+        assert ListIssuesInput(owner="a", repo="b", assignee=None).assignee is None
+
+    def test_blank_branch_filters_are_dropped(self) -> None:
+        data = ListPullRequestsInput(owner="a", repo="b", head=" ", base=" main ")
+        assert (data.head, data.base) == (None, "main")
+        assert ListPullRequestsInput(owner="a", repo="b", head=None).head is None
+
+    def test_update_schema_reads_objects_from_get_issue(self) -> None:
+        data = UpdateIssueInput(
+            owner="a", repo="b", number=1, title="  ", body=None,
+            assignees=[{"login": "ann"}, {"id": 3}, "bo", 7], labels="bug",
+        )
+        assert data.title is None and data.body is None
+        assert data.assignees == ["ann", "{'id': 3}", "bo", "7"]
+        assert data.labels == ["bug"]
+
+    def test_update_schema_label_shapes(self) -> None:
+        data = UpdateIssueInput(owner="a", repo="b", number=1, assignees="ann", labels=[{"name": "p1"}, {"color": "f00"}, 5])
+        assert data.assignees == ["ann"]
+        assert data.labels == ["p1", "{'color': 'f00'}", "5"]
+        assert UpdateIssueInput(owner="a", repo="b", number=1, labels={"name": "x"}).labels is None
+        assert UpdateIssueInput(owner="a", repo="b", number=1, assignees=42).assignees is None
+
+
+class TestActivityLabels:
+    def test_repository_label_falls_back_to_name(self) -> None:
+        assert _github_repo_label({"full_name": "acme/web"}) == "acme/web"
+        assert _github_repo_label({"name": "web"}) == "web"
+        assert _github_repo_label({}) == "?"
+
+    def test_comment_label_uses_author_and_first_line(self) -> None:
+        assert _github_comment_label({"user": {"login": "bo"}, "body": "Same here\nmore"}) == "bo: Same here"
+        assert _github_comment_label({"user": "not-a-dict", "body": "Only text"}) == "Only text"
+        assert _github_comment_label({"user": {"login": "bo"}}) == "bo"
+        assert _github_comment_label({}) == "?"
+
+    def test_owner_and_file_labels(self) -> None:
+        assert _github_owner_label({"login": "ann"}) == "ann"
+        assert _github_owner_label({}) == "?"
+        assert _github_file_change_label({"filename": "a.py", "status": "added"}) == "a.py (added)"
+        assert _github_file_change_label({}) == "? (?)"
