@@ -34,6 +34,24 @@ pytestmark = [pytest.mark.integration]
 EXAMPLE_TIMEOUT = int(os.getenv("PIPESHUB_EXAMPLES_TIMEOUT", "600"))
 
 
+# The examples are another repository's code, so they get only what a reader's
+# shell would have: none of this job's secrets or connector credentials.
+_PASSED_THROUGH = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
+_SECRET_NAME = re.compile(r"TOKEN|AUTH|PASSWORD|SECRET", re.IGNORECASE)
+
+
+def example_env(env: dict[str, str]) -> dict[str, str]:
+    return {**{k: os.environ[k] for k in _PASSED_THROUGH if k in os.environ}, **env}
+
+
+def redact(text: str, env: dict[str, str]) -> str:
+    """`text` without the values of `env`'s token-like variables, for failure reports."""
+    for name, value in env.items():
+        if value and _SECRET_NAME.search(name):
+            text = text.replace(value, "***")
+    return text
+
+
 @dataclass(frozen=True)
 class Run:
     exit_code: int
@@ -47,10 +65,10 @@ class Run:
 def run(cmd: list[str], *, cwd: Path, env: dict[str, str], timeout: int = EXAMPLE_TIMEOUT) -> Run:
     """Run an example as a separate process, the way its README does."""
     proc = subprocess.run(
-        cmd, cwd=cwd, env={**os.environ, **env}, capture_output=True, text=True,
+        cmd, cwd=cwd, env=example_env(env), capture_output=True, text=True,
         timeout=timeout, check=False,
     )
-    return Run(proc.returncode, proc.stdout, proc.stderr)
+    return Run(proc.returncode, redact(proc.stdout, env), redact(proc.stderr, env))
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEMO_FIXTURE = REPO_ROOT / "backend/python/app/connectors/sources/demo/fixture/acme-corp.yaml"
@@ -112,29 +130,36 @@ def _free_port() -> int:
 
 
 class TestPrivateEnterpriseSearch:
-    def test_search_and_ask(self, examples_dir, examples_base_url, examples_token, seeded_record) -> None:
+    def test_search_and_ask(self, examples_dir, examples_base_url, examples_token, seeded_record, tmp_path) -> None:
         if shutil.which("uv") is None:
             pytest.skip("uv is not on PATH, and the search app is run with it")
         port = _free_port()
+        env = {**_reader_env(examples_base_url, examples_token), "PORT": str(port)}
+        # A file, not a pipe: nothing reads a pipe while the app runs, and a full one would block it.
+        log_path = tmp_path / "app.log"
+        log = log_path.open("w")
         proc = subprocess.Popen(
             ["uv", "run", "app.py"],
             cwd=examples_dir / "private-enterprise-search/python",
-            env={**os.environ, **_reader_env(examples_base_url, examples_token), "PORT": str(port)},
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            env=example_env(env), stdout=log, stderr=subprocess.STDOUT, text=True,
         )
+
+        def app_log() -> str:
+            return redact(log_path.read_text(encoding="utf-8", errors="replace")[-3000:], env)
+
         page = f"http://127.0.0.1:{port}"
         try:
             deadline = time.monotonic() + EXAMPLE_TIMEOUT
             while True:
                 if proc.poll() is not None:
-                    pytest.fail(f"the app exited with {proc.returncode}:\n{proc.stdout.read()[-3000:]}")
+                    pytest.fail(f"the app exited with {proc.returncode}:\n{app_log()}")
                 try:
                     if requests.get(page, timeout=5).status_code == 200:
                         break
                 except requests.ConnectionError:
                     pass
                 if time.monotonic() > deadline:
-                    pytest.fail("the app never started listening")
+                    pytest.fail(f"the app never started listening:\n{app_log()}")
                 time.sleep(2)
 
             found = requests.get(f"{page}/api/search", params={"q": seeded_record["needle"]}, timeout=120)
@@ -155,6 +180,8 @@ class TestPrivateEnterpriseSearch:
                 proc.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait(timeout=30)
+            log.close()
 
 
 # --- Company Knowledge MCP: each client's config, read the way that client reads it ---
@@ -215,9 +242,10 @@ def _claude_code(examples_dir: Path, env: dict[str, str], tmp_path: Path) -> tup
         cwd=tmp_path, env={**env, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}, timeout=60,
     )
     assert result.exit_code == 0, result.report()
+    # The arguments carry the token in a header, so failures name the shape, not the values.
     args = json.loads(record.read_text())
-    assert args[:2] == ["mcp", "add"], f"add-pipeshub.sh ran `claude {' '.join(args)}`"
-    assert args[args.index("--transport") + 1] == "http", args
+    assert args[:2] == ["mcp", "add"], f"add-pipeshub.sh ran `claude {' '.join(args[:2])} ...`, not `claude mcp add`"
+    assert args[args.index("--transport") + 1] == "http", "add-pipeshub.sh no longer registers an http transport"
     headers, positional, i = {}, [], 2
     while i < len(args):
         if args[i] in ("--transport", "--scope"):
@@ -290,7 +318,7 @@ class TestCompanyKnowledgeMcp:
         args[url_at] = _on_this_stack(args[url_at], examples_base_url)
         args[args.index("--bearer-auth") + 1] = examples_token
         # Launched without a terminal, as Claude Desktop does: npx then installs without asking.
-        transport = StdioTransport(server["command"], args, env=dict(os.environ))
+        transport = StdioTransport(server["command"], args, env=example_env({}))
 
         async def connect() -> tuple[list[str], str]:
             async with Client(transport) as client:
