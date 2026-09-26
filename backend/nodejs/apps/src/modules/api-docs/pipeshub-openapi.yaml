@@ -547,6 +547,9 @@ components:
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
+            toolset:read: Read toolsets and their authentication status
+            toolset:write: Add, configure and authenticate toolsets
+            toolset:delete: Remove toolsets and their credentials
             connector:read: Read connector configurations
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
@@ -591,6 +594,9 @@ components:
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
+            toolset:read: Read toolsets and their authentication status
+            toolset:write: Add, configure and authenticate toolsets
+            toolset:delete: Remove toolsets and their credentials
             connector:read: Read connector configurations
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
@@ -43018,6 +43024,7 @@ paths:
       operationId: listToolsetRegistry
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: page
           in: query
@@ -43072,6 +43079,7 @@ paths:
       operationId: getToolsetSchema
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetType
           in: path
@@ -43097,6 +43105,7 @@ paths:
       operationId: createToolset
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       requestBody:
         required: true
         description: Toolset instance payload including name, type, authentication configuration, and optional base URL.
@@ -43153,6 +43162,7 @@ paths:
       operationId: listConfiguredToolsets
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       responses:
         '200':
           description: Configured toolsets retrieved successfully
@@ -43177,6 +43187,7 @@ paths:
       operationId: checkToolsetStatus
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetId
           in: path
@@ -43201,6 +43212,7 @@ paths:
       operationId: getToolsetConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetId
           in: path
@@ -43224,6 +43236,7 @@ paths:
       deprecated: true
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetId
           in: path
@@ -43260,6 +43273,7 @@ paths:
       operationId: updateToolsetConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetId
           in: path
@@ -43298,6 +43312,7 @@ paths:
       operationId: deleteToolsetConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: toolsetId
           in: path
@@ -43323,6 +43338,7 @@ paths:
       operationId: reauthenticateToolset
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetId
           in: path
@@ -43356,6 +43372,7 @@ paths:
       operationId: getToolsetOAuthUrl
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetId
           in: path
@@ -43392,6 +43409,7 @@ paths:
       operationId: handleToolsetOAuthCallback
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: code
           in: query
@@ -43433,6 +43451,7 @@ paths:
       operationId: getMyToolsets
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: page
           in: query
@@ -43727,6 +43746,7 @@ paths:
       operationId: getAgentToolsets
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       parameters:
         - name: agentKey
           in: path
@@ -43872,6 +43892,7 @@ paths:
       operationId: authenticateAgentToolset
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -43912,6 +43933,7 @@ paths:
       operationId: updateAgentToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -43961,6 +43983,7 @@ paths:
       operationId: removeAgentToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -43991,6 +44014,7 @@ paths:
       operationId: reauthenticateAgentToolset
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -44021,6 +44045,7 @@ paths:
       operationId: getAgentToolsetOAuthUrl
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -44062,6 +44087,7 @@ paths:
       operationId: getToolsetInstances
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       responses:
         '200':
           description: Instances retrieved successfully
@@ -44086,6 +44112,7 @@ paths:
       operationId: createToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       requestBody:
         required: true
         description: Toolset instance payload including name, type, auth type, auth configuration, and optional base URL.
@@ -44145,6 +44172,7 @@ paths:
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -44170,6 +44198,7 @@ paths:
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -44203,6 +44232,7 @@ paths:
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: instanceId
           in: path
@@ -44228,6 +44258,7 @@ paths:
       operationId: authenticateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -44261,6 +44292,7 @@ paths:
       operationId: updateToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -44303,6 +44335,7 @@ paths:
       operationId: removeToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: instanceId
           in: path
@@ -44326,6 +44359,7 @@ paths:
       operationId: reauthenticateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -44349,6 +44383,7 @@ paths:
       operationId: getInstanceOAuthAuthorizationUrl
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -44379,6 +44414,7 @@ paths:
       operationId: getToolsetInstanceStatus
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -44409,6 +44445,7 @@ paths:
       operationId: getToolsetToolRules
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -44441,6 +44478,7 @@ paths:
       operationId: updateToolsetToolRules
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -44482,6 +44520,7 @@ paths:
       operationId: listToolsetOAuthConfigs
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetType
           in: path
@@ -44506,6 +44545,7 @@ paths:
       operationId: updateToolsetOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetType
           in: path
@@ -44542,6 +44582,7 @@ paths:
       operationId: deleteToolsetOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: toolsetType
           in: path
