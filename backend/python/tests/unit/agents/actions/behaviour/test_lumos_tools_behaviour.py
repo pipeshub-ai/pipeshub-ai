@@ -333,7 +333,6 @@ class TestWrites:
         assert ok is False
         assert "Added" not in data["error"]
 
-    @pending("not_json")
     async def test_a_created_item_is_not_reported_as_failed_when_the_reply_is_not_json(self, lumos, api) -> None:
         api.on("POST", "/appstore/access_request", httpx.Response(201, content=b"Created"))
 

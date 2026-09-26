@@ -80,9 +80,13 @@ def _lumos_error_message(response: HTTPResponse) -> str:
 
 
 def _reply_data(response: HTTPResponse) -> object:
-    if response.status == HTTPStatus.NO_CONTENT:
+    # The change already happened; an unreadable body must not turn it into a reported failure.
+    if response.status == HTTPStatus.NO_CONTENT or not response.bytes():
         return {}
-    return response.json()
+    try:
+        return response.json()
+    except ValueError:
+        return {}
 
 
 tools: list[ToolDefinition] = [
