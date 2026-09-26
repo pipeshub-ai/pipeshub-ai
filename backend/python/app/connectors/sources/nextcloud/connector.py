@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import json
 import logging
 import uuid
@@ -1850,7 +1851,9 @@ class NextcloudConnector(BaseConnector):
                 if len(batch) >= self.batch_size:
                     await self.data_entities_processor.on_new_records(batch)
                     batch = []
-            elif update.is_updated and not await self._handle_record_updates(update):
+            elif not await self._handle_record_updates(dataclasses.replace(update, is_updated=True)):
+                # Saved even when unchanged: after a partial cascade the folder comes back as a new
+                # record, and only a save links a child that was already stored under it again.
                 failed_entries.append(str(update.external_record_id))
         if batch:
             await self.data_entities_processor.on_new_records(batch)

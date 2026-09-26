@@ -1052,6 +1052,9 @@ class TestIncrementalSync:
         still_there = {r.id for r in db.records.values()} & inside
         assert still_there == (inside if restored else set()), "restored contents keep their records"
         assert store.checkpoint()["pending_deletes"] == []
+        if restored:
+            assert db.path_of("notes.txt") == "Docs/notes.txt"
+            assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
 
     @pytest.mark.parametrize("break_path", [
         pytest.param(lambda db, record: db.unreadable_paths.add(record.id), id="path-read-fails"),
