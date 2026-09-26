@@ -737,3 +737,27 @@ class TestLongPullRequests:
         data = ok(await github.get_pull_request_commits("acme", "web", 7))
         assert data["last_commit_sha"] == "c002" and "truncated" not in data
         assert len(api.calls("GET", rf"{REPO_PATH}/pulls/7")) == 1
+
+
+class TestInputValidation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", ["", "   ", None])
+    async def test_empty_comment_is_refused_before_github(self, github, api, body) -> None:
+        assert err(await github.create_issue_comment("acme", "web", 42, body)).startswith("body cannot be empty")
+        assert api.requests == []
+
+    @pytest.mark.asyncio
+    async def test_blank_issue_title_is_refused_before_github(self, github, api) -> None:
+        assert "title cannot be empty" in err(await github.create_issue("acme", "web", "  "))
+        assert api.requests == []
+
+    @pytest.mark.asyncio
+    async def test_pull_request_needs_both_branches(self, github, api) -> None:
+        assert "base cannot be empty" in err(await github.create_pull_request("acme", "web", "Add login", head="feature", base=""))
+        assert api.requests == []
+
+    @pytest.mark.asyncio
+    async def test_review_comment_needs_a_commit(self, github, api) -> None:
+        message = err(await github.create_pull_request_review_comment("acme", "web", 7, body="nit", commit_id=" ", path="app.py"))
+        assert message.startswith("commit_id cannot be empty")
+        assert api.requests == []

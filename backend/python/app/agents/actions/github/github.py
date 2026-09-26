@@ -146,6 +146,14 @@ def _with_paging(result: Tuple[bool, str], page: int, per_page: int) -> Tuple[bo
     return True, json.dumps(payload)
 
 
+def _missing_text(**fields: object) -> Optional[Tuple[bool, str]]:
+    """Refuse a write whose required text is empty, before GitHub is called."""
+    empty = [name for name, value in fields.items() if not isinstance(value, str) or not value.strip()]
+    if not empty:
+        return None
+    return False, json.dumps({"error": f"{' and '.join(empty)} cannot be empty. Ask the user what it should say, then try again."})
+
+
 def _unexpected_failure(doing: str, error: Exception) -> Tuple[bool, str]:
     logger.error("Error %s: %s", doing, error)
     return False, json.dumps({
@@ -741,6 +749,8 @@ class GitHub:
         labels: Optional[List[str]] = None,
     ) -> Tuple[bool, str]:
         """Create a new issue in a GitHub repository."""
+        if missing := _missing_text(title=title):
+            return missing
         # The agent runtime skips the input schemas, so normalise here: get_issue returns assignee and label objects.
         assignees = _normalize_assignees(assignees) or None
         labels = _normalize_labels(labels) or None
@@ -1020,6 +1030,8 @@ class GitHub:
     )
     async def create_issue_comment(self, owner: str, repo: str, number: int, body: str) -> Tuple[bool, str]:
         """Add a comment to an issue."""
+        if missing := _missing_text(body=body):
+            return missing
         try:
             logger.info("github.create_issue_comment called with args: %s", {"owner": owner, "repo": repo, "number": number, "body": body[:100] + "..." if len(body) > 100 else body})
             response = await asyncio.to_thread(self.client.create_issue_comment, owner=owner, repo=repo, number=number, body=body)
@@ -1064,6 +1076,8 @@ class GitHub:
         draft: bool = False,
     ) -> Tuple[bool, str]:
         """Create a new pull request in a GitHub repository."""
+        if missing := _missing_text(title=title, head=head, base=base):
+            return missing
         try:
             logger.info("github.create_pull_request called with args: %s", {"owner": owner, "repo": repo, "title": title, "head": head, "base": base, "body": body, "draft": draft})
             response = await asyncio.to_thread(
@@ -1482,6 +1496,8 @@ class GitHub:
         side: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Create a new review comment on a PR (line or file)."""
+        if missing := _missing_text(body=body, commit_id=commit_id, path=path):
+            return missing
         try:
             logger.info("github.create_pull_request_review_comment called with args: %s", {"owner": owner, "repo": repo, "number": number, "body": body[:100] + "..." if len(body) > 100 else body, "commit_id": commit_id, "path": path, "line": line, "side": side})
             response = await asyncio.to_thread(
