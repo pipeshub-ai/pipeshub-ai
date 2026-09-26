@@ -428,6 +428,18 @@ class TestNotebooks:
         assert ok is False
         assert "pg-1" in assert_safe_error(data)
 
+    async def test_ids_past_the_limit_survive_a_first_batch_that_all_failed(self, sp, stub) -> None:
+        ids = [f"pg-{i}" for i in range(22)]
+        for pid in ids:
+            stub.on("GET", f"{SITE_PATH}/onenote/pages/{pid}", graph_error(503, "serviceNotAvailable", "down"))
+
+        ok, data = result(await sp.get_notebook_page_content(site_id=SITE, page_ids=ids))
+
+        assert ok is False
+        assert data["skipped_page_ids"] == ["pg-20", "pg-21"]
+        assert "pg-20" in data["note"]
+        assert {stub.path_of(r).rsplit("/", 1)[-1] for r in stub.graph_calls()} == set(ids[:20])
+
     async def test_page_ids_past_the_limit_are_named_not_dropped(self, sp, stub) -> None:
         ids = [f"pg-{i}" for i in range(22)]
         for pid in ids:

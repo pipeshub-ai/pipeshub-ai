@@ -1762,13 +1762,23 @@ class SharePoint:
                     results.append(content_resp.data)
                 else:
                     failed_page_ids.append(pid)
+            skipped: dict[str, Any] = {}
+            if skipped_page_ids:
+                skipped = {
+                    "skipped_page_ids": skipped_page_ids,
+                    "note": (
+                        f"Only the first {_MAX_NOTEBOOK_PAGES_PER_CALL} pages are read per call. Call again with the "
+                        f"remaining page_ids to read them: {', '.join(skipped_page_ids)}."
+                    ),
+                }
             if failed_page_ids and not results:
                 return False, json.dumps({
                     "error": (
-                        f"None of the requested OneNote pages could be read ({', '.join(failed_page_ids)}). "
+                        f"None of the OneNote pages that were tried could be read ({', '.join(failed_page_ids)}). "
                         "Check the ids with list_notebook_pages, or try again in a moment."
                     ),
                     "failed_page_ids": failed_page_ids,
+                    **skipped,
                 })
             out: dict[str, Any] = {
                 "pages": results,
@@ -1777,12 +1787,7 @@ class SharePoint:
             }
             if failed_page_ids:
                 out["failed_page_ids"] = failed_page_ids
-            if skipped_page_ids:
-                out["skipped_page_ids"] = skipped_page_ids
-                out["note"] = (
-                    f"Only the first {_MAX_NOTEBOOK_PAGES_PER_CALL} pages are read per call. Call again with the "
-                    f"remaining page_ids to read them: {', '.join(skipped_page_ids)}."
-                )
+            out.update(skipped)
             return True, json.dumps(out)
         except Exception as e:
             return self._handle_error(e, "get notebook page content")
