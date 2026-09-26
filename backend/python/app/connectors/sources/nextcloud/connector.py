@@ -879,9 +879,13 @@ class NextcloudConnector(BaseConnector):
         user_email: str,
         record_group_id: str,
         user_root_path: Optional[str],
-        path_to_external_id: Dict[str, str]
+        path_to_external_id: Dict[str, str],
+        failed_entries: list[str],
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
-        """Process Nextcloud entries and yield records with their permissions."""
+        """Process Nextcloud entries and yield records with their permissions.
+
+        An entry that can't be processed is skipped and its id or path added to ``failed_entries``.
+        """
         for entry in entries:
             try:
                 record_update = await self._process_nextcloud_entry(
@@ -901,7 +905,7 @@ class NextcloudConnector(BaseConnector):
                 await asyncio.sleep(0)
             except Exception:
                 # Already logged by _process_nextcloud_entry; one bad entry doesn't stop the rest.
-                continue
+                failed_entries.append(str(entry.get('file_id') or entry.get('path')))
 
     async def _get_file_shares(self, path: str, user_id: str) -> List[Dict]:
         """
@@ -1048,6 +1052,7 @@ class NextcloudConnector(BaseConnector):
             updated_count = 0
             new_count = 0
             all_saved = True
+            failed_entries: list[str] = []
 
             # Pass correct variable name to generator
             async for file_record, permissions, record_update in self._process_nextcloud_items_generator(
@@ -1056,7 +1061,8 @@ class NextcloudConnector(BaseConnector):
                 user_email,
                 record_group_id,
                 user_root_path,
-                path_to_external_id
+                path_to_external_id,
+                failed_entries,
             ):
                 # Handle updates separately from new records
                 if record_update.is_updated and not record_update.is_new:
@@ -1087,6 +1093,11 @@ class NextcloudConnector(BaseConnector):
             self.logger.info(
                 f"Sync complete for {user_email}: {new_count} new, {updated_count} updated"
             )
+            if failed_entries:
+                self.logger.error(
+                    f"❌ {len(failed_entries)} item(s) could not be processed: {', '.join(failed_entries[:20])}"
+                )
+                return False
             return all_saved
 
         except NextcloudAppPasswordRejectedError:

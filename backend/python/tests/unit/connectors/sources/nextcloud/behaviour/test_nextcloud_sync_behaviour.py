@@ -414,8 +414,13 @@ class TestFullSync:
         connector = await make_connector(server, db, store)
 
         await connector.run_sync()
-
         assert db.names() == {"Docs", "Reports", "Photos", "q1.pdf", "cat.png", "readme.txt"}
+        assert store.cursor() is None, "the entry that failed would never be read again past a cursor"
+
+        db.fail_lookup_for.clear()
+        await connector.run_sync()
+        assert db.path_of("notes.txt") == "Docs/notes.txt"
+        assert store.cursor() == str(server.latest_activity_id)
 
     @pytest.mark.parametrize(
         "break_it",
