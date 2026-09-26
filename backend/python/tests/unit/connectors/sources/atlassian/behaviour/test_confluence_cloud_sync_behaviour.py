@@ -381,6 +381,30 @@ class TestPageSync:
         assert len(files) == 130
         assert checkpoints.values_for("confluence_pages/ENG") is not None
 
+    @pytest.mark.parametrize(
+        ("first_page", "checkpoint_moves"),
+        [
+            (json_response({"message": "Service Unavailable"}, status=503), False),
+            (json_response({"message": "Not Found"}, status=404), True),
+            ({"results": [], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?limit=100"}}, False),
+        ],
+        ids=["temporary-first-page-failure-holds", "permanent-failure-falls-back", "unfollowable-next-link-holds"],
+    )
+    async def test_an_attachment_list_that_cannot_be_read_in_full_keeps_the_checkpoint(
+        self, api, db, checkpoints, search, first_page, checkpoint_moves
+    ) -> None:
+        att = {"id": "att0", "title": "file0.pdf", "mediaType": "application/pdf", "fileSize": 10,
+               "version": {"number": 1}, "_links": {"download": "/download/attachments/10/file0.pdf"}}
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[att])])
+        api.on("GET", f"{V2}/pages/10/attachments", first_page if isinstance(first_page, httpx.Response) else json_response(first_page))
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att0" in db.records, "the attachment from the search result is still saved"
+        assert (checkpoints.values_for("confluence_pages/ENG") is not None) is checkpoint_moves
+
     async def test_opening_a_page_reads_every_attachment_for_its_images(self, api, db, checkpoints, search) -> None:
         self._many_attachments(api, search, None)
         connector, _ = await ready_connector(db, checkpoints)
