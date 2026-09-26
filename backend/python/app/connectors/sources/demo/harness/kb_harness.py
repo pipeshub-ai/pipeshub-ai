@@ -364,20 +364,31 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
 _AMOUNT = re.compile(r"\$\s?\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s?dollars\b")
 
 
+# Parts of a sentence: "; : but" and a comma before a space ("$2,500" stays one number).
+_PART = re.compile(r";|:|,(?=\s)|\bbut\b")
+# "no approval above that" is about a higher band, not the one it follows.
+_RAISES = re.compile(r"\b(?:above|over|more than|beyond|exceeding|greater than)\b")
+
+
 def states_together(answer: str, first: list[str], second: list[str]) -> bool:
-    """Whether a second-list phrase is about a first-list amount: in one sentence,
-    the amount nearest that phrase lies inside a first-list hit. So "up to $250
-    without approval" and "for purchases up to $250, no approval is needed" count,
-    and "up to $250 needs your manager, and there is no approval above $2,500"
-    doesn't: the amount nearest "no approval" there is $2,500."""
+    """Whether a second-list phrase is about a first-list amount: in the same part
+    of a sentence, or in the part right after it when that part names no other
+    amount, and not followed in its part by "above", "over" or "more than". So
+    "up to $250 without approval" and "up to $250: no approval needed" count, and
+    "up to $250, no approval above $2,500" or "... no approval above that" don't."""
+
+    def states_it(part: str) -> bool:
+        return any(not _RAISES.search(part[end:]) for m in second for _, end in mention_spans(part, m))
+
     for sentence in _SENTENCE_END.split(_normalized(answer)):
-        bands = [span for m in first for span in mention_spans(sentence, m)]
-        amounts = [m.span() for m in _AMOUNT.finditer(sentence)]
-        if not bands or not amounts:
-            continue
-        for start, end in (span for m in second for span in mention_spans(sentence, m)):
-            nearest = min(amounts, key=lambda a: max(0, a[0] - end, start - a[1]))
-            if any(b0 <= nearest[0] and nearest[1] <= b1 for b0, b1 in bands):
+        parts = _PART.split(sentence)
+        for i, part in enumerate(parts):
+            if not any(mention_spans(part, m) for m in first):
+                continue
+            if states_it(part):
+                return True
+            after = parts[i + 1] if i + 1 < len(parts) else ""
+            if not _AMOUNT.search(after) and states_it(after):
                 return True
     return False
 
