@@ -897,7 +897,17 @@ class SharePoint:
                         "parent_path": parent_ref.get("path"),
                     })
                 logger.info(f"✅ list_files: {len(normalized)} items (drive={drive_id}, folder={folder_id})")
+                more = {}
+                if data.get("has_more"):
+                    more = {
+                        "has_more": True,
+                        "note": (
+                            f"At least one folder holds more than {capped_top} items, so this list is not complete. "
+                            "Use search_files to find a file by name, or call list_files on a subfolder."
+                        ),
+                    }
                 return True, json.dumps({
+                    **more,
                     "items": normalized,
                     "files": [i for i in normalized if not i["is_folder"]],
                     "folders": [i for i in normalized if i["is_folder"]],

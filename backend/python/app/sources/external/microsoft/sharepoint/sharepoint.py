@@ -674,6 +674,7 @@ class SharePointDataSource:
             folder_queue: list[tuple[Optional[str], int]] = [(folder_id, 1)]
             queue_index = 0
             visited_folders = set()
+            truncated_folders: list[str] = []
 
             while queue_index < len(folder_queue):
                 current_folder_id, current_depth = folder_queue[queue_index]
@@ -709,6 +710,8 @@ class SharePointDataSource:
                 current_items: list[dict[str, Any]] = []
                 if response and hasattr(response, "value") and response.value:
                     current_items = [self._serialize_drive_item(i) for i in response.value]
+                if response is not None and getattr(response, "odata_next_link", None):
+                    truncated_folders.append(folder_key)
 
                 for item in current_items:
                     if not isinstance(item, dict):
@@ -727,7 +730,13 @@ class SharePointDataSource:
             )
             return SharePointResponse(
                 success=True,
-                data={"items": items, "count": len(items), "depth": capped_depth},
+                data={
+                    "items": items,
+                    "count": len(items),
+                    "depth": capped_depth,
+                    "has_more": bool(truncated_folders),
+                    "truncated_folders": truncated_folders,
+                },
                 message=f"Found {len(items)} items",
             )
         except Exception as e:

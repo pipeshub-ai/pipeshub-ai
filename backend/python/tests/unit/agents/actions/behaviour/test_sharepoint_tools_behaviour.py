@@ -153,7 +153,6 @@ class TestReads:
         assert {stub.query(r)["$top"] for r in stub.graph_calls()} == {"20"}
         assert data.get("has_more") in (None, False)
 
-    @pending("files")
     async def test_list_files_says_when_a_folder_had_more_than_one_page(self, sp, stub) -> None:
         stub.on("GET", f"{V1}/drives/{DRIVE}/items/f-1/children", page(
             [drive_item("d-1", "a.txt")], next_link=f"https://graph.microsoft.com{V1}/drives/{DRIVE}/items/f-1/children?$skiptoken=x",
