@@ -588,11 +588,11 @@ class Lumos:
     ) -> tuple[bool, str]:
         return await self._call(
             self.client.get_appstore_permissions_appstore_requestable_permissions_get(
-            app_id=app_id,
-            search_term=search_term,
-            page=page,
-            size=size,
-        ),
+                app_id=app_id,
+                search_term=search_term,
+                page=page,
+                size=size,
+            ),
             "Fetched permissions successfully",
         )
 
@@ -617,11 +617,11 @@ class Lumos:
     ) -> tuple[bool, str]:
         return await self._call(
             self.client.get_appstore_permissions_for_app_appstore_apps_app_id_requestable_permissions_get(
-            app_id=app_id,
-            search_term=search_term,
-            page=page,
-            size=size,
-        ),
+                app_id=app_id,
+                search_term=search_term,
+                page=page,
+                size=size,
+            ),
             "Fetched app permissions successfully",
         )
 
@@ -646,11 +646,11 @@ class Lumos:
     ) -> tuple[bool, str]:
         return await self._call(
             self.client.get_access_requests(
-            user_id=user_id,
-            statuses=statuses,
-            page=page,
-            size=size,
-        ),
+                user_id=user_id,
+                statuses=statuses,
+                page=page,
+                size=size,
+            ),
             "Fetched access requests successfully",
         )
 
@@ -703,15 +703,15 @@ class Lumos:
             return blocked
         return await self._call(
             self.client.create_access_request(
-            app_id=app_id,
-            requester_user_id=requester_user_id,
-            target_user_id=target_user_id,
-            note=note,
-            business_justification=business_justification,
-            expiration_in_seconds=expiration_in_seconds,
-            access_length=access_length,
-            requestable_permission_ids=requestable_permission_ids,
-        ),
+                app_id=app_id,
+                requester_user_id=requester_user_id,
+                target_user_id=target_user_id,
+                note=note,
+                business_justification=business_justification,
+                expiration_in_seconds=expiration_in_seconds,
+                access_length=access_length,
+                requestable_permission_ids=requestable_permission_ids,
+            ),
             "Created access request successfully",
         )
 
@@ -805,12 +805,12 @@ class Lumos:
             return blocked
         return await self._call(
             self.client.create_access_policy(
-            name=name,
-            business_justification=business_justification,
-            apps=apps,
-            access_condition=access_condition,
-            is_everyone_condition=is_everyone_condition,
-        ),
+                name=name,
+                business_justification=business_justification,
+                apps=apps,
+                access_condition=access_condition,
+                is_everyone_condition=is_everyone_condition,
+            ),
             "Created access policy successfully",
         )
 
@@ -844,13 +844,13 @@ class Lumos:
             return blocked
         return await self._call(
             self.client.update_access_policy(
-            access_policy_id=access_policy_id,
-            name=name,
-            business_justification=business_justification,
-            apps=apps,
-            access_condition=access_condition,
-            is_everyone_condition=is_everyone_condition,
-        ),
+                access_policy_id=access_policy_id,
+                name=name,
+                business_justification=business_justification,
+                apps=apps,
+                access_condition=access_condition,
+                is_everyone_condition=is_everyone_condition,
+            ),
             "Updated access policy successfully",
         )
 
@@ -903,13 +903,13 @@ class Lumos:
             return blocked
         return await self._call(
             self.client.create_appstore_requestable_permission_appstore_requestable_permissions_post(
-            app_id=app_id,
-            label=label,
-            include_inherited_configs=include_inherited_configs,
-            app_class_id=app_class_id,
-            app_instance_id=app_instance_id,
-            request_config=request_config,
-        ),
+                app_id=app_id,
+                label=label,
+                include_inherited_configs=include_inherited_configs,
+                app_class_id=app_class_id,
+                app_instance_id=app_instance_id,
+                request_config=request_config,
+            ),
             "Created requestable permission successfully",
         )
 
@@ -930,9 +930,9 @@ class Lumos:
     ) -> tuple[bool, str]:
         return await self._call(
             self.client.get_appstore_permission_appstore_requestable_permissions_permission_id_get(
-            permission_id=permission_id,
-            include_inherited_configs=include_inherited_configs,
-        ),
+                permission_id=permission_id,
+                include_inherited_configs=include_inherited_configs,
+            ),
             "Fetched requestable permission successfully",
         )
 
@@ -968,14 +968,14 @@ class Lumos:
             return blocked
         return await self._call(
             self.client.update_appstore_permission_appstore_requestable_permissions_permission_id_patch(
-            permission_id=permission_id,
-            include_inherited_configs=include_inherited_configs,
-            app_id=app_id,
-            app_class_id=app_class_id,
-            app_instance_id=app_instance_id,
-            label=label,
-            request_config=request_config,
-        ),
+                permission_id=permission_id,
+                include_inherited_configs=include_inherited_configs,
+                app_id=app_id,
+                app_class_id=app_class_id,
+                app_instance_id=app_instance_id,
+                label=label,
+                request_config=request_config,
+            ),
             "Updated requestable permission successfully",
         )
 
@@ -995,8 +995,8 @@ class Lumos:
             return blocked
         return await self._call(
             self.client.delete_appstore_permission_appstore_requestable_permissions_permission_id_delete(
-            permission_id=permission_id
-        ),
+                permission_id=permission_id
+            ),
             "Deleted requestable permission successfully",
         )
 
@@ -1017,9 +1017,9 @@ class Lumos:
             return blocked
         return await self._call(
             self.client.add_role_to_user_users_user_id_roles_role_name_post(
-            user_id=user_id,
-            role_name=role_name,
-        ),
+                user_id=user_id,
+                role_name=role_name,
+            ),
             "Added user role successfully",
         )
 
@@ -1040,8 +1040,8 @@ class Lumos:
             return blocked
         return await self._call(
             self.client.remove_role_from_user_users_user_id_roles_role_name_delete(
-            user_id=user_id,
-            role_name=role_name,
-        ),
+                user_id=user_id,
+                role_name=role_name,
+            ),
             "Removed user role successfully",
         )
