@@ -1065,16 +1065,8 @@ class TestDownloadAndReindex:
         assert db.path_of(name) == f"Docs/{name}"
         assert await body_of(await connector.stream_record(db.by_name(name))) == b"special"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a file inside a folder named "
-            "'files' is downloaded from the wrong place (the path is cut at '/files/', which is "
-            "meant to match only Nextcloud's own URL prefix), so it can't be opened, or another "
-            "file with the same name is served instead."
-        ),
-    )
-    @pytest.mark.parametrize("path", ["Work/files/report.txt", "Work/files/2026/report.txt"])
+    @pytest.mark.parametrize("path", ["Work/files/report.txt", "Work/files/2026/report.txt", "files/report.txt",
+                                      "files/alice/report.txt"])
     async def test_a_file_under_a_folder_named_files_downloads(self, server, db, store, path) -> None:
         server.add_file("report.txt", b"a different file at the top level")
         server.add_file(path, b"the real report")
@@ -1085,6 +1077,14 @@ class TestDownloadAndReindex:
         response = await connector.stream_record(record)
 
         assert await body_of(response) == b"the real report"
+        assert server.calls("GET", WEBDAV_PREFIX)[-1].url.path == f"{WEBDAV_PREFIX}alice/{path}"
+
+    async def test_share_lookup_keeps_a_folder_named_files(self, server, db, store) -> None:
+        connector = await make_connector(server, db, store)
+
+        await connector._get_file_shares(f"{WEBDAV_PREFIX}alice/Work/files/report.txt", "alice")
+
+        assert [r.url.params["path"] for r in server.calls("GET", SHARES_PATH)] == ["/Work/files/report.txt"]
 
     async def test_reindex_refreshes_a_top_level_file(self, server, db, store) -> None:
         connector = await synced(server, db, store)

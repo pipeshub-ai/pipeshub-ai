@@ -112,6 +112,22 @@ def get_parent_path_from_path(path: str) -> Optional[str]:
     return f"/{parent_path}" if parent_path else "/"
 
 
+def path_inside_user_home(path: str, user_id: str | None) -> str:
+    """``path`` relative to the user's home folder, without leading or trailing slashes.
+
+    Only Nextcloud's own WebDAV prefix (``/remote.php/dav/files/<user>``, after any
+    sub-path Nextcloud is installed under) is removed; a folder of the user's that
+    happens to be called "files" stays part of the path.
+    """
+    prefix = f"/remote.php/dav/files/{user_id}"
+    start = path.find(prefix) if user_id else -1
+    if start != -1:
+        rest = path[start + len(prefix):]
+        if not rest or rest.startswith("/"):
+            return rest.strip("/")
+    return path.strip("/")
+
+
 def get_path_depth(path: str) -> int:
     """Calculate the depth of a path (number of directory levels)."""
     if not path or path == "/":
@@ -897,20 +913,10 @@ class NextcloudConnector(BaseConnector):
             List of share dictionaries
         """
         try:
-            # Convert WebDAV path to relative path for share API
-            relative_path = path
-            if '/files/' in path:
-                parts = path.split('/files/')
-                if len(parts) > 1:
-                    user_and_path = parts[1]
-                    path_parts = user_and_path.split('/', 1)
-                    if len(path_parts) > 1:
-                        relative_path = '/' + path_parts[1].rstrip('/')
-                    else:
-                        relative_path = '/'
-
-            if relative_path == '/' or not relative_path:
+            inside_home = path_inside_user_home(path, user_id)
+            if not inside_home:
                 return []
+            relative_path = f"/{inside_home}"
 
             response = await self.data_source.get_shares(
                 path=relative_path,
@@ -1752,19 +1758,7 @@ class NextcloudConnector(BaseConnector):
                 detail="Cannot download folders"
             )
 
-        # Extract relative path from full WebDAV path (path is already relative to user root)
-        relative_path = path
-        if relative_path and '/files/' in relative_path:
-            parts = relative_path.split('/files/')
-            if len(parts) > 1:
-                user_and_path = parts[1]
-                path_parts = user_and_path.split('/', 1)
-                if len(path_parts) > 1:
-                    relative_path = path_parts[1]
-                else:
-                    relative_path = ''
-        elif relative_path:
-            relative_path = relative_path.lstrip('/')
+        relative_path = path_inside_user_home(path, self.current_user_id)
 
         # Download file using authenticated WebDAV client
         try:
