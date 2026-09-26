@@ -21,7 +21,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SafeMarkdownImage } from '@/app/components/ui/safe-markdown-image';
 import { markdownUrlTransform } from '@/lib/utils/image-url-policy';
 import type { MessagePart, StatusMessage } from '../../types';
-import { parseArtifactMarkers, parseDownloadMarkers } from '../../utils/parse-download-markers';
+import { stripAnswerMarkers } from '../../utils/parse-download-markers';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { createMarkdownComponents } from './answer-content';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
@@ -365,9 +365,7 @@ const CONFIDENCE_TRAILER_RE = /(?:\n*-{3,}\s*\n)?\s*Confidence:\s*(?:Very High|H
 const NARRATION_REMARK_PLUGINS: PluggableList = [remarkGfm];
 
 function NarrationTextImpl({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
-  const { text: withoutArtifacts } = parseArtifactMarkers(content);
-  const { text: afterDownloads } = parseDownloadMarkers(withoutArtifacts);
-  const withoutConfidence = afterDownloads.replace(CONFIDENCE_TRAILER_RE, '');
+  const withoutConfidence = stripAnswerMarkers(content).replace(CONFIDENCE_TRAILER_RE, '');
 
   // After stripping markers, lines like `- ::artifact[...]{...}` become
   // bare `- ` or `- \n`. Remove empty list items / headings so they don't
@@ -410,7 +408,7 @@ const NarrationText = React.memo(NarrationTextImpl);
  * animation (see `TimelineRow`) signals "in progress" instead of an
  * in-text cursor, so this doesn't need its own accent bar. */
 function LiveNarrationTextImpl({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
-  const cleanContent = processMarkdownContent(content);
+  const cleanContent = processMarkdownContent(stripAnswerMarkers(content));
 
   const citMapsRef = useRef(citationMaps);
   citMapsRef.current = citationMaps;
