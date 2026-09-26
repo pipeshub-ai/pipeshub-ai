@@ -622,7 +622,9 @@ class TestCommentPaging:
 
 class TestUnreadableCommentPage:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("payload", [{}, {"comments": None}, {"comments": "25 comments"}, [{"id": "c1"}]])
+    @pytest.mark.parametrize("payload", [
+        {}, {"comments": None}, {"comments": "25 comments"}, [{"id": "c1"}], {"comments": ["garbled"] * 25},
+    ])
     async def test_a_reply_without_a_comment_list_is_a_failure_not_an_empty_page(self, clickup, api, payload) -> None:
         api.on("GET", f"{V2}/task/t1/comment", (200, payload))
         assert "comments" in fail(await clickup.get_comments(task_id="t1"))["error"]

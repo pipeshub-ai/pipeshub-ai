@@ -1317,7 +1317,8 @@ class ClickUp:
                     return self._handle_response(response)
                 data = response.data
                 # Treating an unreadable page as empty would claim there are no more comments.
-                if not isinstance(data, dict) or not isinstance(data.get("comments"), list):
+                page = data.get("comments") if isinstance(data, dict) else None
+                if not isinstance(page, list) or (page and not any(isinstance(c, dict) for c in page)):
                     return False, json.dumps({
                         "error": "ClickUp's reply did not include a readable list of comments. Try again in a moment.",
                     })
