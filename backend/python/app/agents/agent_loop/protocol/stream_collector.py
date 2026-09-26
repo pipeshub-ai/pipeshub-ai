@@ -35,6 +35,8 @@ _ERROR_CODE_STATUS: dict[str, int] = {
     "content_filter": 422,
     "llm_not_configured": 424,
     "llm_initialization_failed": 424,
+    "toolset_config_missing": 424,
+    "mcp_server_config_missing": 424,
     "rate_limit": 429,
     "quota_exceeded": 429,
     "auth_error": 502,
@@ -97,8 +99,6 @@ class StreamOutcome:
     error: dict[str, Any] | None = None
 
     def to_response(self) -> JSONResponse:
-        # A completion wins over an earlier error frame, matching Node's
-        # streaming handlers, which persist `completeData` whenever it arrived.
         if self.completion is not None:
             return JSONResponse(content=self.completion)
         if self.error is not None:
@@ -138,11 +138,14 @@ async def collect_stream_outcome(
     body_iterator: AsyncIterable[str | bytes],
     is_disconnected: Callable[[], Awaitable[bool]] | None = None,
 ) -> StreamOutcome:
-    """Consumes the whole stream and returns its root run's terminal frame.
+    """Consumes the whole stream and returns its root run's LAST terminal frame.
 
     Frames carrying `parentRunId` belong to sub-agents: their RUN_ERROR is
     handed back to the parent as a tool result and the parent still answers,
-    so only root frames decide the outcome.
+    so only root frames decide the outcome. The last root frame wins both
+    ways: a RUN_ERROR after RUN_FINISHED means the answer was not saved, and
+    a graceful RUN_FINISHED after a RUN_ERROR (see `agui_emitter.py`) is the
+    run's real result.
 
     `is_disconnected` is checked between chunks so a caller that gave up
     stops the agent loop instead of leaving it to run to completion unseen.
@@ -158,9 +161,11 @@ async def collect_stream_outcome(
             if not isinstance(frame.data, dict) or frame.data.get("parentRunId") is not None:
                 continue
             if frame.event in _COMPLETION_EVENTS:
-                completion = _completion_from(frame) or completion
+                result = _completion_from(frame)
+                if result is not None:
+                    completion, error = result, None
             elif frame.event in _ERROR_EVENTS:
-                error = frame.data
+                completion, error = None, frame.data
 
     iterator = body_iterator.__aiter__()
     try:

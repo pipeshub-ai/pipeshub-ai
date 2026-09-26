@@ -119,7 +119,7 @@ export const buildAiChatRequest = (
   let path: string;
   if (target.kind === 'agent') {
     path = `/api/v1/agent/${encodeURIComponent(target.agentKey)}/chat`;
-    payload.chatMode = body.chatMode || 'auto';
+    payload.chatMode = body.chatMode || 'quick';
     if (context.isNewConversation) payload.quickMode = body.quickMode || false;
     assignToolsToPayload(payload, body.tools);
     assignCallerContextToAiPayload(payload, body);

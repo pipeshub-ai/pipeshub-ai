@@ -9,6 +9,7 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from logging import Logger
 from typing import Any
 
@@ -3924,8 +3925,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     ),
                 )
 
-                async for _evt in generator:
-                    yield _evt
+                # Close the bridge with this generator so its producer task is
+                # cancelled on disconnect, not whenever the bridge is GC'd.
+                async with aclosing(generator):
+                    async for _evt in generator:
+                        yield _evt
             except Exception as exc:
                 logger.error(f"Error in chat_stream body: {exc}", exc_info=True)
                 error_code, user_message = classify_exception(exc)

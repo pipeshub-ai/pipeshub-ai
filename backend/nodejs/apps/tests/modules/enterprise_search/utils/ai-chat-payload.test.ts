@@ -81,7 +81,9 @@ describe('enterprise_search/utils/ai-chat-payload', () => {
       )
 
       expect(path).to.equal('/api/v1/agent/a%2Fb%20c/chat')
-      expect(payload).to.include({ chatMode: 'auto', quickMode: true, callerDisplayName: 'Ada', callerEmail: 'ada@example.com' })
+      // Python treats `auto` (or anything unknown) as "run the tier classifier"; a scoped
+      // agent is quick-only, so an omitted mode must not fall through to it.
+      expect(payload).to.include({ chatMode: 'quick', quickMode: true, callerDisplayName: 'Ada', callerEmail: 'ada@example.com' })
       expect(payload.tools, 'an explicit empty list disables tools').to.deep.equal([])
     })
 

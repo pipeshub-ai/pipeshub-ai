@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncGenerator, Mapping
+from contextlib import aclosing
 import base64
 import json
 import logging
@@ -1383,7 +1384,9 @@ async def _generate_chat_stream_via_agent_loop(
 
     client_name = request.headers.get("client-name")
 
-    async for event in run_chat_stream(
+    # `aclosing`: closing this generator (client gone, collector done) must close
+    # the bridge now so its producer task is cancelled, not whenever it is GC'd.
+    async with aclosing(run_chat_stream(
         query_dict, user_info, llm, policy, logger_,
         retrieval_service=retrieval_service, graph_provider=graph_provider,
         reranker_service=None, config_service=config_service,
@@ -1394,8 +1397,9 @@ async def _generate_chat_stream_via_agent_loop(
         system_prompts_config=system_prompts_config, protocol=protocol,
         client_name=client_name,
         cancellation_registry=cancellation_registry,
-    ):
-        yield event
+    )) as events:
+        async for event in events:
+            yield event
 
 
 async def _parse_chat_query(

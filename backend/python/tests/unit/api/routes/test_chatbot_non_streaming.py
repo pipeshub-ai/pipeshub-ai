@@ -121,3 +121,39 @@ class TestAskAINonStreaming:
         with pytest.raises(HTTPException) as exc:
             await _call(_request({"query": "q", "runId": run_id}), _registry(active=True))
         assert exc.value.status_code == 409
+
+
+class TestAgentLoopStreamClosing:
+    async def test_closing_the_route_stream_closes_the_agent_loop_immediately(self):
+        """Closing `_generate_chat_stream_via_agent_loop` (the collector stopping on
+        disconnect, or Starlette on a dropped SSE client) must close `run_chat_stream`
+        at once, so its producer task is cancelled instead of left to the GC."""
+        from app.api.routes.chatbot import ChatQuery, _generate_chat_stream_via_agent_loop
+
+        closed: list[bool] = []
+
+        async def fake_run_chat_stream(*_a, **_k):
+            try:
+                for i in range(1000):
+                    yield f'event: TEXT_MESSAGE_CONTENT\ndata: {{"delta": "{i}"}}\n\n'
+            finally:
+                closed.append(True)
+
+        request = _request()
+        request.query_params = {}
+        request.headers = {}
+        request.app.container.logger.return_value = MagicMock()
+        llm_bundle = (MagicMock(), {"provider": "openai", "isMultimodal": False, "contextLength": 8000}, {})
+        with (
+            patch("app.api.routes.chatbot.get_llm_for_chat", new=AsyncMock(return_value=llm_bundle)),
+            patch("app.api.routes.chatbot.load_system_prompts", new=AsyncMock(return_value={})),
+            patch("app.api.routes.chatbot.is_user_context_enabled", new=AsyncMock(return_value=True)),
+            patch("app.api.routes.chatbot.run_chat_stream", new=fake_run_chat_stream),
+        ):
+            stream = _generate_chat_stream_via_agent_loop(
+                request, ChatQuery(query="hi"), MagicMock(), MagicMock(), MagicMock(),
+            )
+            await stream.__anext__()
+            await stream.aclose()
+
+            assert closed == [True]

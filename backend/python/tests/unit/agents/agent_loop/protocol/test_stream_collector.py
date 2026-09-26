@@ -131,13 +131,21 @@ class TestCollectStreamOutcome:
 
         assert (await collect_stream_outcome(stream)).completion == {"answer": "kept"}
 
-    async def test_completion_wins_over_an_earlier_error(self):
+    async def test_a_completion_after_an_error_wins(self):
         stream = _Stream(_run_error("transient", "server_error"), _run_finished({"answer": "recovered"}))
 
         response = (await collect_stream_outcome(stream)).to_response()
 
         assert response.status_code == 200
         assert _body(response) == {"answer": "recovered"}
+
+    async def test_an_error_after_the_completion_wins(self):
+        stream = _Stream(_run_finished({"answer": "unsaved"}), _run_error("The answer could not be saved.", "stream_error"))
+
+        response = (await collect_stream_outcome(stream)).to_response()
+
+        assert response.status_code == 500
+        assert _body(response)["message"] == "The answer could not be saved."
 
     async def test_stream_without_terminal_frame_is_a_500(self):
         response = (await collect_stream_outcome(_Stream(_frame("STEP_STARTED", {})))).to_response()
@@ -181,6 +189,8 @@ class TestErrorResponse:
         [
             ("llm_initialization_failed", 424),
             ("llm_not_configured", 424),
+            ("toolset_config_missing", 424),
+            ("mcp_server_config_missing", 424),
             ("rate_limit", 429),
             ("content_filter", 422),
             ("request_too_large", 413),

@@ -181,10 +181,15 @@ classDiagram
 2. Frames carrying `parentRunId` belong to sub-agents and are ignored. A sub-agent's
    `RUN_ERROR` is handed back to its parent as a tool result, and the parent still answers.
 3. The completion is the root `RUN_FINISHED.result`, or a legacy `complete` frame.
-   A completion wins over an earlier error, which matches Node's streaming handlers,
-   which persist `completeData` whenever it arrived.
-4. `is_disconnected` is checked between chunks, so a caller that gave up stops the
-   agent loop. The iterator is always `aclose()`d, which runs the generator's cleanup.
+   The **last** root terminal frame wins: a `RUN_ERROR` after `RUN_FINISHED` means the
+   answer was not saved, and a graceful `RUN_FINISHED` after a `RUN_ERROR` (see
+   `agui_emitter.py`) is the run's real result.
+4. `is_disconnected` is checked between chunks. AG-UI heartbeats arrive at least every
+   15 s, so a caller that gave up stops the agent loop within that window. The iterator
+   is always `aclose()`d, and both route adapters wrap their bridge in
+   `contextlib.aclosing`, so closing the outer stream cancels the bridge's producer and
+   heartbeat tasks at once. (`async for` does not close the generator it iterates, so
+   without it they ran until garbage collection. This applies to `/stream` disconnects too.)
 
 `_parse_chat_query` is the request prelude shared by `/chat` and `/chat/stream`: JSON
 parse, `ChatQuery` validation, the 409 for a `runId` that is already active, and the
@@ -278,7 +283,7 @@ add `protocol: "agui"` on top.
 | `recordIds` | create only | create only | body |
 | `conversationId` | ✓ | ✓ | the conversation phase 1 wrote |
 | `modelKey`, `modelName`, `modelFriendlyName`, `reasoningEffort`, `timezone`, `currentTime`, `runId` | ✓ | ✓ | body, `null` when absent |
-| `chatMode` | `parseChatMode` (`agent:<m>` → `<m>`) | body or `auto` | body |
+| `chatMode` | `parseChatMode` (`agent:<m>` → `<m>`) | body or `quick` (never `auto`, which Python treats as "run the tier classifier") | body |
 | `tools`, `agentCapabilities` | only when `chatMode` is agent | ✓ | body |
 | `quickMode` | — | create only | body |
 | `callerDisplayName`, `callerEmail` | — | ✓ | body (internal callers) |
@@ -310,6 +315,7 @@ crashed streaming turn leaves, and the next follow-up moves it on.
 | `request_too_large` | 413 | 413, message kept | same |
 | `content_filter` | 422 | 422, message kept | same |
 | `llm_not_configured` / `llm_initialization_failed` | 424 | 424, message kept | same |
+| `toolset_config_missing` / `mcp_server_config_missing` | 424 | 424, message kept ("connect your actions in Workspace → Actions") | same |
 | `rate_limit` / `quota_exceeded` | 429 | 429, message kept | same |
 | `auth_error` / `server_error` (provider) | 502 | 500, generic message | same |
 | `timeout` | 504 | 500, "unavailable" | same |

@@ -321,6 +321,10 @@ class TestAgentConversationNonStreaming(_Base):
         assert 400 <= resp.status_code < 500, f"{resp.status_code}: {resp.text}"
         conversation_id = resp.headers.get(CONVERSATION_ID_HEADER)
         assert conversation_id, "a failed turn must name the conversation it left behind"
+        # The GET is a Mongo lookup scoped by agentKey, so it finds the turn saved under the
+        # unknown key; anything but 200 means the failed turn was not persisted.
         stored = self.agent_conversations.get_conversation(missing_agent, conversation_id, timeout=self.timeout)
-        if stored.status_code == 200:
-            assert _json(stored)["conversation"]["status"] == "Failed"
+        assert stored.status_code == 200, f"{stored.status_code}: {stored.text}"
+        stored_body = _json(stored)
+        assert stored_body["conversation"]["status"] == "Failed"
+        assert _messages(stored_body)[-1].get("messageType") == "error"

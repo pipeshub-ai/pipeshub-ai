@@ -7818,7 +7818,7 @@ components:
           format: objectId
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         modelInfo:
@@ -11100,7 +11100,7 @@ components:
           format: objectId
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         modelInfo:
@@ -11374,7 +11374,7 @@ components:
             $ref: '#/components/schemas/Message'
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         modelInfo:
@@ -11708,7 +11708,7 @@ components:
                 enum: [read, write]
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         messages:
@@ -28315,7 +28315,7 @@ paths:
                               enum: [read, write]
                       status:
                         type: string
-                        enum: [None, Inprogress, Complete, Failed]
+                        enum: [None, Inprogress, Complete, Failed, Stopped]
                       failReason:
                         type: string
                         description: Populated only when `status` is `Failed`
@@ -29253,13 +29253,14 @@ paths:
                         description: User who started the conversation
                       status:
                         type: string
-                        enum: [None, Inprogress, Complete, Failed]
+                        enum: [None, Inprogress, Complete, Failed, Stopped]
                         description: |
                           Current status of the conversation:
                           - `None` — no activity yet
                           - `Inprogress` — AI is processing
                           - `Complete` — response ready
                           - `Failed` — error occurred
+                          - `Stopped` — cancelled, or the client disconnected mid-answer
                       failReason:
                         type: string
                         description: |
