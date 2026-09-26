@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import json
 import re
 from collections import defaultdict
 from collections.abc import AsyncGenerator
@@ -110,6 +111,19 @@ BATCH_PROCESSING_SIZE: int = 100
 # How many runs an issue that fails to process holds its project's checkpoint
 # before it is given up on, so one broken issue can't stop a project for good.
 MAX_FAILED_ISSUE_ATTEMPTS: int = 5
+
+
+def _stored_map(value: object) -> dict[str, Any]:
+    """A map kept in a sync point as JSON text (graph stores such as Neo4j can't hold nested maps)."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 USER_PAGE_SIZE: int = 50
 # /user/list supports up to 2000; use a moderate page to cut round-trips vs USER_PAGE_SIZE.
 USER_LIST_PAGE_SIZE: int = 100
@@ -823,9 +837,10 @@ class JiraDataCenterConnector(BaseConnector):
             "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
             "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated")
         }
-        failed = failed_issue_attempts if failed_issue_attempts is not None else existing.get("failed_issue_attempts")
+        failed = failed_issue_attempts if failed_issue_attempts is not None else _stored_map(existing.get("failed_issue_attempts"))
+        # Written even when empty: Neo4j merges sync point fields, so an omitted field would keep its old value.
         if failed or existing.get("failed_issue_attempts"):
-            sync_point_data["failed_issue_attempts"] = failed or {}
+            sync_point_data["failed_issue_attempts"] = json.dumps(failed, sort_keys=True)
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
@@ -2691,7 +2706,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         # Per-project sync: reset Epic Link key→id cache
         self._issue_key_to_id_cache.clear()
-        self._failed_issue_attempts_before = dict((project_sync_data or {}).get("failed_issue_attempts") or {})
+        self._failed_issue_attempts_before = _stored_map((project_sync_data or {}).get("failed_issue_attempts"))
         self._held_issues = {}
 
         def checkpoint_at(last_seen: int | None) -> int | None:
