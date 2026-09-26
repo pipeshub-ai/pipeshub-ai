@@ -381,6 +381,20 @@ class TestNotebooks:
         assert data["has_more"] is True
         assert "Archive" in data["note"]
 
+    async def test_pages_read_before_a_later_page_failed_are_kept(self, sp, stub) -> None:
+        stub.on("GET", f"{NOTEBOOKS}/nb-1/sections", page([section("s-1", "Q1")]))
+        stub.on("GET", f"{SITE_PATH}/onenote/sections/s-1/pages", notebooks_by_skip({
+            "0": page([onenote_page(f"pg-{i}", f"P{i}") for i in range(50)]),
+            "50": graph_error(503, "serviceNotAvailable", "Service unavailable"),
+        }))
+
+        ok, data = result(await sp.list_notebook_pages(site_id=SITE, notebook_id="nb-1"))
+
+        assert ok is True
+        assert len(data["pages"]) == 50
+        assert "unreadable_sections" not in data
+        assert data["has_more"] is True and "Q1" in data["note"]
+
     async def test_sections_past_a_failed_page_are_called_missing(self, sp, stub) -> None:
         stub.on("GET", f"{NOTEBOOKS}/nb-1/sections", notebooks_by_skip({
             "0": page([section(f"s-{i}", f"W{i}") for i in range(50)]),

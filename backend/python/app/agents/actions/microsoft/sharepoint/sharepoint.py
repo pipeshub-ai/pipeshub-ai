@@ -1675,7 +1675,7 @@ class SharePoint:
                     ),
                     "pages",
                 )
-                if page_failure is not None:
+                if page_failure is not None and not raw_pages:
                     unreadable_sections.append({"section_id": sec_id, "section_name": sec_name})
                     continue
                 if not pages_complete:
@@ -1722,7 +1722,7 @@ class SharePoint:
             if capped_sections:
                 out["has_more"] = True
                 notes.append(
-                    f"These sections hold more pages than could be listed, so some of their pages are missing: "
+                    f"Not every page of these sections could be listed, so some of their pages are missing: "
                     f"{', '.join(str(n) for n in capped_sections)}."
                 )
             if notes:
