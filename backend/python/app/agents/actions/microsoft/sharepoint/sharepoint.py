@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from http import HTTPStatus
 from typing import Any, Optional
 
 # JSON-serializable value produced by _serialize_response (avoids Any)
@@ -34,7 +35,11 @@ from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.models.entities import FileRecord, RecordType
 from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.microsoft.microsoft import MSGraphClient
-from app.sources.external.microsoft.sharepoint.sharepoint import SharePointDataSource
+from app.sources.external.microsoft.sharepoint.sharepoint import (
+    SharePointDataSource,
+    SharePointResponse,
+    failure_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +187,45 @@ class GetNotebookPageContentInput(BaseModel):
 # Toolset registration
 # ---------------------------------------------------------------------------
 
+_RECONNECT_STEP = "Reconnect the SharePoint toolset in Settings > Toolsets and try again."
+_KIOTA_UNMAPPED = "The server returned an unexpected status code"
+_STATUS_SUFFIX = re.compile(r"\s*\(status \d{3}\)$")
+
+
+def _graph_failure_message(*, action: str, response: SharePointResponse) -> str:
+    """Plain words and a next step for a failure Graph answered with an HTTP status."""
+    status = response.status_code or 0
+    if status == HTTPStatus.TOO_MANY_REQUESTS:
+        retry_after = (response.retry_after or "").strip()
+        wait = f"Wait {retry_after} seconds" if retry_after.isdigit() else "Wait a minute"
+        return f"SharePoint is receiving too many requests right now, so it could not {action}. {wait} and try again."
+    if status == HTTPStatus.UNAUTHORIZED:
+        return f"Could not {action}: Microsoft did not accept the saved sign-in. {_RECONNECT_STEP}"
+    if status == HTTPStatus.FORBIDDEN:
+        return (
+            f"Could not {action}: the signed-in account does not have access to that site or item. "
+            "Ask its owner for access, or choose one you can open."
+        )
+    if status == HTTPStatus.NOT_FOUND:
+        return (
+            f"Could not {action}: SharePoint could not find that site, page or item. Check the id, or call "
+            "get_sites, list_files or search_files to find the right one."
+        )
+    if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        return f"SharePoint is having a temporary problem and could not {action}. Try again in a moment."
+    detail = _STATUS_SUFFIX.sub("", response.error or "")
+    if not detail or detail.startswith(_KIOTA_UNMAPPED):
+        return f"SharePoint refused to {action} (status {status}). Check the arguments and try again."
+    return f"SharePoint refused to {action}: {detail}"
+
+
+def _failure_text(response: SharePointResponse, action: str, fallback: str) -> str:
+    if isinstance(getattr(response, "status_code", None), int):
+        return _graph_failure_message(action=action, response=response)
+    return response.error or fallback
+
+
+
 @ToolsetBuilder("SharePoint")\
     .in_group("Microsoft 365")\
     .with_description("SharePoint sites, files, and pages")\
@@ -277,8 +321,16 @@ class SharePoint:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _failed(self, response: SharePointResponse, action: str, fallback: str) -> tuple[bool, str]:
+        return False, json.dumps({"error": _failure_text(response, action, fallback)})
+
     def _handle_error(self, error: Exception, operation: str = "operation") -> tuple[bool, str]:
         """Return a standardised error tuple."""
+        status = getattr(error, "response_status_code", None)
+        if isinstance(status, int):
+            logger.error(f"Failed to {operation}: {error}")
+            failure = failure_response(error)
+            return False, json.dumps({"error": _graph_failure_message(action=operation, response=failure)})
         error_msg = str(error).lower()
 
         if isinstance(error, AttributeError) and (
@@ -500,7 +552,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to list sites"})
+                return self._failed(response, "list sites", "Failed to list sites")
         except Exception as e:
             return self._handle_error(e, "get sites")
 
@@ -523,7 +575,7 @@ class SharePoint:
             if response.success:
                 return True, json.dumps(response.data)
             else:
-                return False, json.dumps({"error": response.error or "Site not found"})
+                return self._failed(response, "read that site", "Site not found")
         except Exception as e:
             return self._handle_error(e, f"get site {site_id}")
 
@@ -615,7 +667,7 @@ class SharePoint:
             logger.info(f"📍 Getting page {page_id} from site {site_id}")
             response = await self.client.get_site_page_with_canvas(site_id=site_id, page_id=page_id)
             if not response.success:
-                return False, json.dumps({"error": response.error or "Failed to get page"})
+                return self._failed(response, "read that page", "Failed to get page")
             page_data = self._serialize_response(response.data)
 
             if not isinstance(page_data, dict) or not page_data.get("id"):
@@ -693,7 +745,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to search pages"})
+                return self._failed(response, "search pages", "Failed to search pages")
         except Exception as e:
             return self._handle_error(e, f"search pages '{query}'")
 
@@ -764,7 +816,7 @@ class SharePoint:
                         "count": 0,
                         "note": "This site is not accessible via the drives API (it may be a hub site, archived, or a subsite with a different URL structure).",
                     })
-                return False, json.dumps({"error": error})
+                return self._failed(response, "list the site's document libraries", error)
         except Exception as e:
             error_msg = str(e)
             if any(k in error_msg for k in ("404", "itemNotFound", "not found", "could not be found")):
@@ -860,7 +912,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to list files"})
+                return self._failed(response, "list the files", "Failed to list files")
         except Exception as e:
             return self._handle_error(e, f"list files (site={site_id}, drive={drive_id})")
 
@@ -954,7 +1006,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to search files"})
+                return self._failed(response, "search files", "Failed to search files")
         except Exception as e:
             return self._handle_error(e, f"search files '{query}'")
 
@@ -1021,7 +1073,7 @@ class SharePoint:
                 result["content_readable_as_text"] = bool(is_text_readable)
                 return True, json.dumps(result)
             else:
-                return False, json.dumps({"error": response.error or "File not found"})
+                return self._failed(response, "read that file's details", "File not found")
         except Exception as e:
             return self._handle_error(e, f"get file metadata {item_id}")
 
@@ -1054,7 +1106,7 @@ class SharePoint:
                 site_id=site_id, drive_id=drive_id, item_id=item_id,
             )
             if not meta.success:
-                return False, json.dumps({"error": meta.error or "File not found"})
+                return self._failed(meta, "read that file", "File not found")
             raw_meta = meta.data or {}
             file_facet = raw_meta.get("file") or {}
             mime_type = file_facet.get("mimeType") if isinstance(file_facet, dict) else None
@@ -1089,7 +1141,7 @@ class SharePoint:
                 site_id=site_id, drive_id=drive_id, item_id=item_id,
             )
             if not resp.success:
-                return False, json.dumps({"error": resp.error or "Failed to read file content"})
+                return self._failed(resp, "read that file", "Failed to read file content")
 
             raw = resp.data
             if not isinstance(raw, (bytes, bytearray)) or not raw:
@@ -1175,7 +1227,7 @@ class SharePoint:
                 publish=bool(publish),
             )
             if not response.success:
-                return False, json.dumps({"error": response.error or "Failed to create page"})
+                return self._failed(response, "create the page", "Failed to create page")
 
             page_data = response.data or {}
             page_id = page_data.get("id")
@@ -1234,7 +1286,7 @@ class SharePoint:
                 publish=bool(publish),
             )
             if not response.success:
-                return False, json.dumps({"error": response.error or "Failed to update page"})
+                return self._failed(response, "update the page", "Failed to update page")
 
             data = response.data or {}
             published = data.get("published", False)
@@ -1323,7 +1375,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to create folder"})
+                return self._failed(response, "create the folder", "Failed to create folder")
         except Exception as e:
             return self._handle_error(e, f"create folder '{folder_name}'")
 
@@ -1380,7 +1432,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to create Word document"})
+                return self._failed(response, "create the Word document", "Failed to create Word document")
         except Exception as e:
             return self._handle_error(e, f"create Word document '{file_name}'")
 
@@ -1449,7 +1501,7 @@ class SharePoint:
                     f"to {result['destination_folder_id']}"
                 )
                 return True, json.dumps(result)
-            return False, json.dumps({"error": response.error or "Failed to move item"})
+            return self._failed(response, "move the item", "Failed to move item")
         except Exception as e:
             return self._handle_error(e, f"move item '{item_id}'")
 
@@ -1478,7 +1530,7 @@ class SharePoint:
             if not list_resp.success:
                 return False, json.dumps({
                     "resolved": False,
-                    "error": list_resp.error or "Failed to list notebooks for this site.",
+                    "error": _failure_text(list_resp, "list the site's notebooks", "Failed to list notebooks for this site."),
                 })
             notebooks = (list_resp.data or {}).get("results") or (list_resp.data or {}).get("notebooks") or []
             query_norm = self._normalize_notebook_name(notebook_query)
@@ -1549,7 +1601,7 @@ class SharePoint:
                 skip=0,
             )
             if not sec_resp.success:
-                return False, json.dumps({"error": sec_resp.error or "Failed to list sections"})
+                return self._failed(sec_resp, "list the notebook's sections", "Failed to list sections")
             sections_data = (sec_resp.data or {}).get("results") or (sec_resp.data or {}).get("sections") or []
             sections_with_pages: list[dict[str, Any]] = []
             flat_pages: list[dict[str, Any]] = []
@@ -1692,6 +1744,6 @@ class SharePoint:
                 )
                 return True, json.dumps(result)
             else:
-                return False, json.dumps({"error": response.error or "Failed to create OneNote notebook"})
+                return self._failed(response, "create the notebook", "Failed to create OneNote notebook")
         except Exception as e:
             return self._handle_error(e, f"create OneNote notebook '{notebook_name}'")

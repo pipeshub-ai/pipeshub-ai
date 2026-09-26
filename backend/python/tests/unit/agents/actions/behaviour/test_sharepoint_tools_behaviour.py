@@ -358,7 +358,6 @@ class TestNotebooks:
 # ---------------------------------------------------------------------------
 
 
-@pending("errors")
 class TestFailures:
     @pytest.mark.parametrize(("response", "expected"), [
         (graph_error(401, "InvalidAuthenticationToken", "Access token has expired or is not yet valid."),

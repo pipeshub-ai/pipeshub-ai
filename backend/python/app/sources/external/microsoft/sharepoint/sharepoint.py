@@ -63,11 +63,17 @@ _SharePointResponseData = dict[str, Any] | list[Any] | bytes
 
 
 class SharePointResponse:
-    """Standardized SharePoint API response wrapper."""
+    """Standardized SharePoint API response wrapper.
+
+    ``status_code`` and ``retry_after`` are set on failures that came back from
+    Graph, so callers can tell a throttled or forbidden call from a missing item.
+    """
     success: bool
     data: Optional[_SharePointResponseData] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    status_code: int | None = None
+    retry_after: str | None = None
 
     def __init__(
         self,
@@ -76,11 +82,15 @@ class SharePointResponse:
         data: Optional[_SharePointResponseData] = None,
         error: Optional[str] = None,
         message: Optional[str] = None,
+        status_code: int | None = None,
+        retry_after: str | None = None,
     ) -> None:
         self.success = success
         self.data = data
         self.error = error
         self.message = message
+        self.status_code = status_code
+        self.retry_after = retry_after
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +105,21 @@ class SharePointResponse:
 
 # Set up logger
 logger = logging.getLogger(__name__)
+
+
+def failure_response(error: Exception, message: str | None = None) -> SharePointResponse:
+    """A failed call, keeping the HTTP status and Retry-After kiota attaches to a Graph error."""
+    headers = getattr(error, "response_headers", None)
+    retry_after = None
+    if isinstance(headers, Mapping):
+        retry_after = next((str(v) for k, v in headers.items() if str(k).lower() == "retry-after"), None)
+    status = getattr(error, "response_status_code", None)
+    return SharePointResponse(
+        success=False,
+        error=message or str(error),
+        status_code=status if isinstance(status, int) else None,
+        retry_after=retry_after,
+    )
 
 class SharePointDataSource:
     """
@@ -186,7 +211,7 @@ class SharePointDataSource:
             )
         except Exception as e:
             logger.error(f"Error handling SharePoint response: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     def get_data_source(self) -> 'SharePointDataSource':
         """Get the underlying SharePoint client."""
@@ -304,10 +329,7 @@ class SharePointDataSource:
                 error_msg = str(e.message)
             else:
                 error_msg = str(e)
-            return SharePointResponse(
-                success=False,
-                error=error_msg,
-            )
+            return failure_response(e, error_msg)
 
     async def search_pages_with_search_api(
         self,
@@ -384,7 +406,7 @@ class SharePointDataSource:
             error_msg = str(e)
             if hasattr(e, "error") and hasattr(e.error, "message"):
                 error_msg = e.error.message
-            return SharePointResponse(success=False, error=error_msg)
+            return failure_response(e, error_msg)
 
     def _serialize_page_from_list_item(self, resource: object) -> dict[str, Any]:
         """Extract page metadata from a listItem search hit resource.
@@ -620,7 +642,7 @@ class SharePointDataSource:
             )
         except Exception as e:
             logger.error(f"❌ list_drives_for_site failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     async def list_drive_children(
         self,
@@ -710,7 +732,7 @@ class SharePointDataSource:
             )
         except Exception as e:
             logger.error(f"❌ list_drive_children failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     async def search_files_with_search_api(
         self,
@@ -784,7 +806,7 @@ class SharePointDataSource:
             error_msg = str(e)
             if hasattr(e, "error") and hasattr(e.error, "message"):
                 error_msg = e.error.message
-            return SharePointResponse(success=False, error=error_msg)
+            return failure_response(e, error_msg)
 
     def _serialize_file_from_search_hit(self, resource: object) -> dict[str, Any]:
         """Extract file metadata from a Graph Search DriveItem hit resource."""
@@ -924,7 +946,7 @@ class SharePointDataSource:
             )
         except Exception as e:
             logger.error(f"❌ create_folder failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     async def create_word_document(
         self,
@@ -1041,7 +1063,7 @@ class SharePointDataSource:
             )
         except Exception as e:
             logger.error(f"❌ create_word_document failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     async def move_drive_item(
         self,
@@ -1087,7 +1109,7 @@ class SharePointDataSource:
             )
         except Exception as e:
             logger.error(f"❌ move_drive_item failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     async def create_onenote_notebook(
         self,
@@ -1213,10 +1235,10 @@ class SharePointDataSource:
         except ODataError as e:
             error_msg = getattr(getattr(e, "error", None), "message", str(e))
             logger.error(f"❌ create_onenote_notebook Graph API error: {error_msg}")
-            return SharePointResponse(success=False, error=error_msg)
+            return failure_response(e, error_msg)
         except Exception as e:
             logger.error(f"❌ create_onenote_notebook failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     def _onenote_web_url_from_links(self, links: object) -> Optional[str]:
         """Extract web URL from notebook/section/page links object."""
@@ -1338,7 +1360,7 @@ class SharePointDataSource:
             )
         except Exception as e:
             logger.error(f"❌ list_onenote_notebooks failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     async def list_onenote_sections(
         self,
@@ -1386,7 +1408,7 @@ class SharePointDataSource:
             )
         except Exception as e:
             logger.error(f"❌ list_onenote_sections failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     async def list_onenote_pages(
         self,
@@ -1433,7 +1455,7 @@ class SharePointDataSource:
             )
         except Exception as e:
             logger.error(f"❌ list_onenote_pages failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     def _html_to_plain_text(self, html: str) -> str:
         """Strip HTML tags for a plain-text snippet."""
@@ -1489,7 +1511,7 @@ class SharePointDataSource:
             )
         except Exception as e:
             logger.error(f"❌ get_onenote_page_content failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     async def get_drive_item_metadata(
         self,
@@ -1529,7 +1551,7 @@ class SharePointDataSource:
             return SharePointResponse(success=True, data=item_dict)
         except Exception as e:
             logger.error(f"❌ get_drive_item_metadata failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     async def get_drive_item_content(
         self,
@@ -1568,7 +1590,7 @@ class SharePointDataSource:
             return SharePointResponse(success=True, data=raw)
         except Exception as e:
             logger.error(f"❌ get_drive_item_content failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     def _serialize_site(self, site: object) -> dict[str, Any]:
         """Convert a Graph SDK site object to a dictionary."""
@@ -1657,7 +1679,7 @@ class SharePointDataSource:
                 error_msg = str(e.message)
             else:
                 error_msg = str(e)
-            return SharePointResponse(success=False, error=error_msg)
+            return failure_response(e, error_msg)
 
     async def get_site_page_with_canvas(
         self,
@@ -1696,7 +1718,7 @@ class SharePointDataSource:
             return SharePointResponse(success=True, data=response)
         except Exception as e:
             logger.error(f"❌ get_site_page_with_canvas failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     def _site_page_post_response_to_dict(self, response: object) -> dict[str, Any]:
         """Best-effort dict from Kiota SitePage POST response for agents."""
@@ -1805,7 +1827,7 @@ class SharePointDataSource:
             return SharePointResponse(success=True, data=page_data, message=f"Page '{title}' created")
         except Exception as e:
             logger.error(f"❌ create_site_page failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     async def update_site_page(
         self,
@@ -1885,7 +1907,7 @@ class SharePointDataSource:
             return SharePointResponse(success=True, data=data, message="Page updated")
         except Exception as e:
             logger.error(f"❌ update_site_page failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
+            return failure_response(e)
 
     # ========== SITES OPERATIONS (17 methods) ==========
 
