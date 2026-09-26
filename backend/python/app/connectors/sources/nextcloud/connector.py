@@ -139,6 +139,21 @@ def describe_failures(failures: dict[str, str]) -> str:
     return "; ".join(named) + (f"; and {hidden} more" if hidden > 0 else "")
 
 
+class SkippedEntries:
+    """Membership over the IDs a listing has skipped so far, while that list keeps growing."""
+
+    def __init__(self, failed: list[str]) -> None:
+        self._failed = failed
+        self._read = 0
+        self._seen: set[str] = set()
+
+    def contains(self, entry_id: str | None) -> bool:
+        if self._read < len(self._failed):
+            self._seen.update(self._failed[self._read:])
+            self._read = len(self._failed)
+        return entry_id is not None and str(entry_id) in self._seen
+
+
 def pending_delete_fields(pending: list[str], paths: dict[str, str]) -> dict[str, list[str]]:
     """The checkpoint fields for queued deletions: IDs and their paths as parallel lists.
 
@@ -696,7 +711,8 @@ class NextcloudConnector(BaseConnector):
             path = entry.get('path')
 
             if file_id and path:
-                path_map[path] = file_id
+                # Folder hrefs end in '/', and parents are looked up without it.
+                path_map[path.rstrip('/')] = file_id
 
         return path_map
 
@@ -1078,13 +1094,21 @@ class NextcloudConnector(BaseConnector):
 
             # Process entries in batches
             batch_records = []
-            batch_count = 0
             updated_count = 0
             new_count = 0
             all_saved = True
             failed_entries: list[str] = []
+            skipped = SkippedEntries(failed_entries)
+            new_folder_ids: set[str] = set()
 
-            # Pass correct variable name to generator
+            async def flush() -> None:
+                nonlocal batch_records
+                if batch_records:
+                    self.logger.info(f"Processing batch of {len(batch_records)} records")
+                    await self._clear_parent_child_edges_for_records(batch_records)
+                    await self.data_entities_processor.on_new_records(batch_records)
+                    batch_records = []
+
             async for file_record, permissions, record_update in self._process_nextcloud_items_generator(
                 sorted_entries,
                 user_id,
@@ -1094,31 +1118,39 @@ class NextcloudConnector(BaseConnector):
                 path_to_external_id,
                 failed_entries,
             ):
-                # Handle updates separately from new records
-                if record_update.is_updated and not record_update.is_new:
-                    all_saved = await self._handle_record_updates(record_update) and all_saved
-                    updated_count += 1
+                parent_id = file_record.parent_external_record_id if file_record else None
+                # A save links a record only to a parent that is already stored, and a later
+                # full sync sees nothing to change, so what's inside a skipped folder waits too.
+                if skipped.contains(parent_id):
+                    failed_entries.append(str(record_update.external_record_id))
                     continue
 
-                # Collect new records for batch processing
-                if file_record and record_update.is_new:
+                if record_update.is_new:
+                    if not file_record:
+                        continue
                     batch_records.append((file_record, permissions))
-                    batch_count += 1
                     new_count += 1
-
-                    if batch_count >= self.batch_size:
-                        self.logger.info(f"Processing batch of {batch_count} records")
-                        await self._clear_parent_child_edges_for_records(batch_records)
-                        await self.data_entities_processor.on_new_records(batch_records)
-                        batch_records = []
-                        batch_count = 0
+                    if not file_record.is_file:
+                        new_folder_ids.add(str(record_update.external_record_id))
+                    if len(batch_records) >= self.batch_size:
+                        await flush()
                         await asyncio.sleep(0.1)
+                    continue
+
+                # A stored record under a folder that is new in this run is saved again so it is
+                # linked under that folder, which a failed earlier run may have left unstored.
+                relink = parent_id is not None and parent_id in new_folder_ids
+                if not (record_update.is_updated or relink):
+                    continue
+                await flush()  # folders sort first, so any new folder above this one is stored
+                update = record_update if record_update.is_updated else dataclasses.replace(
+                    record_update, is_updated=True
+                )
+                all_saved = await self._handle_record_updates(update) and all_saved
+                updated_count += 1
 
             # Process remaining records
-            if batch_records:
-                self.logger.info(f"Processing final batch of {len(batch_records)} records")
-                await self._clear_parent_child_edges_for_records(batch_records)
-                await self.data_entities_processor.on_new_records(batch_records)
+            await flush()
 
             self.logger.info(
                 f"Sync complete for {user_email}: {new_count} new, {updated_count} updated"
@@ -1843,9 +1875,13 @@ class NextcloudConnector(BaseConnector):
 
         failed_entries: list[str] = []
         batch: list[tuple[FileRecord, list[Permission]]] = []
+        skipped = SkippedEntries(failed_entries)
         async for record, permissions, update in self._process_nextcloud_items_generator(
             below, user_id, user_email, record_group_id, user_root_path, path_to_external_id, failed_entries,
         ):
+            if record and skipped.contains(record.parent_external_record_id):
+                failed_entries.append(str(update.external_record_id))
+                continue
             if update.is_new and record:
                 batch.append((record, permissions))
                 if len(batch) >= self.batch_size:

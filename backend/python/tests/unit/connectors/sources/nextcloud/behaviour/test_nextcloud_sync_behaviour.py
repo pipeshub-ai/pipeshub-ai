@@ -453,6 +453,34 @@ class TestFullSync:
         assert {"q1.pdf", "notes.txt", "cat.png", "readme.txt"} <= db.names()
         assert store.cursor() == str(server.latest_activity_id)
 
+    async def test_a_folder_that_fails_during_a_full_sync_takes_its_contents_with_it(self, server, db, store) -> None:
+        seed_drive(server)
+        db.fail_lookup_for = {ids_of(server)["Docs"]}
+        connector = await make_connector(server, db, store)
+
+        await connector.run_sync()
+        assert store.cursor() is None
+        assert not {"Docs", "Reports", "q1.pdf", "notes.txt"} & db.names(), "nothing saved below a folder that wasn't"
+        assert {"Photos", "cat.png", "readme.txt"} <= db.names()
+
+        db.fail_lookup_for.clear()
+        await connector.run_sync()
+        assert db.path_of("notes.txt") == "Docs/notes.txt"
+        assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_a_full_sync_relinks_stored_files_under_a_folder_it_stores_again(self, server, db, store) -> None:
+        seed_drive(server)
+        server.activities.clear()  # activity app disabled: every run is a full sync
+        connector = await make_connector(server, db, store)
+        await connector.run_sync()
+        del db.records[ids_of(server)["Docs"]]  # the folder record went, what it held did not
+
+        await connector.run_sync()
+
+        assert db.path_of("notes.txt") == "Docs/notes.txt"
+        assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
+
     async def test_an_update_that_fails_to_save_during_a_full_sync_is_retried(self, server, db, store) -> None:
         seed_drive(server)
         server.activities.clear()  # activity app disabled: every run is a full sync
