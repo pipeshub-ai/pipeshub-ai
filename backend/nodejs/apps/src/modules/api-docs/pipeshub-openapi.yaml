@@ -7105,7 +7105,7 @@ components:
           items:
             anyOf:
               - $ref: '#/components/schemas/CitationReference'
-              - $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+              - $ref: '#/components/schemas/PopulatedCitationReference'
           description: |
             References to source documents used in the response. Routes that
             return the saved conversation after a turn (create, add message)
@@ -7230,6 +7230,32 @@ components:
         context:
           type: string
           description: Additional context around the citation
+
+    PopulatedCitationReference:
+      type: object
+      additionalProperties: false
+      description: |
+        A message's citation reference after the handler populates it: the
+        stored reference fields, with `citationId` as the id and the cited
+        document under `citationData`.
+      properties:
+        citationId:
+          type: string
+          format: objectId
+          description: ID of the citation record
+        relevanceScore:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: How relevant this citation is to the query (0-1)
+        excerpt:
+          type: string
+          description: Relevant excerpt from the source document
+        context:
+          type: string
+          description: Additional context around the citation
+        citationData:
+          $ref: '#/components/schemas/Citation'
 
     Citation:
       type: object
