@@ -83,6 +83,9 @@ def _github_file_change_label(entry: dict) -> str:
     return f"{entry.get('filename', '?')} ({entry.get('status', '?')})"
 
 
+# GitHub's list-commits-on-a-pull-request endpoint stops at this many.
+_PR_COMMIT_LIST_CAP = 250
+
 _RECONNECT_STEP = "Reconnect the GitHub toolset in Settings > Toolsets and try again."
 
 
@@ -1165,9 +1168,30 @@ class GitHub:
             else:
                 payload["length"] = 0
                 payload["last_commit_sha"] = None
+            if payload["length"] >= _PR_COMMIT_LIST_CAP:
+                await self._use_head_of_capped_commit_list(payload, owner, repo, number)
             return True, json.dumps(payload)
         except Exception as e:
             return _unexpected_failure("getting pull request commits", e)
+
+    async def _use_head_of_capped_commit_list(self, payload: dict, owner: str, repo: str, number: int) -> None:
+        """GitHub lists only a pull request's first 250 commits, so the last one listed is not its head."""
+        payload["truncated"] = True
+        payload["message"] = (
+            f"GitHub lists at most {_PR_COMMIT_LIST_CAP} commits of a pull request, so this list may be "
+            "missing the newest ones."
+        )
+        pr_response = await asyncio.to_thread(self.client.get_pull, owner=owner, repo=repo, number=number)
+        raw = getattr(pr_response.data, "raw_data", None) if pr_response.success else None
+        head_sha = ((raw or {}).get("head") or {}).get("sha") if isinstance(raw, dict) else None
+        payload["last_commit_sha"] = head_sha
+        if head_sha:
+            payload["message"] += " last_commit_sha is the pull request's latest commit."
+        else:
+            payload["message"] += (
+                " The pull request's latest commit could not be read, so do not add a line comment yet; "
+                "call get_pull_request_commits again in a moment."
+            )
 
     @tool(
         path="/tools/github/get_pull_request_file_changes",

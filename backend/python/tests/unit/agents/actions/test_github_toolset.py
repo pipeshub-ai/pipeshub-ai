@@ -702,3 +702,38 @@ class TestPaging:
         api.on("GET", r"/search/repositories", (200, {"total_count": 40, "items": [repo("acme", f"ml{i}") for i in range(30)]}))
         data = ok(await github.search_repositories("ml", per_page=5))
         assert (data["page"], data["per_page"], data["has_more"]) == (1, 5, True)
+
+
+class TestLongPullRequests:
+    @staticmethod
+    def _commits(count: int) -> list[dict]:
+        return [{"sha": f"c{i:03d}", "commit": {"message": f"change {i}"}} for i in range(count)]
+
+    @pytest.mark.asyncio
+    async def test_last_commit_of_a_pr_over_250_commits_is_its_head(self, github, api) -> None:
+        # GitHub stops the commit list at 250, so the 250th commit is not where a review comment belongs.
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("GET", rf"{REPO_PATH}/pulls/7", (200, {**pull(7), "head": {"ref": "feature", "sha": "head999"}}))
+        api.on("GET", rf"{REPO_PATH}/pulls/7/commits", (200, self._commits(250)))
+        data = ok(await github.get_pull_request_commits("acme", "web", 7))
+        assert data["last_commit_sha"] == "head999"
+        assert data["truncated"] is True
+        assert "at most 250 commits" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_unreadable_head_gives_no_commit_to_comment_on(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("GET", rf"{REPO_PATH}/pulls/7", (200, pull(7)), (502, {"message": "Server Error"}))
+        api.on("GET", rf"{REPO_PATH}/pulls/7/commits", (200, self._commits(250)))
+        data = ok(await github.get_pull_request_commits("acme", "web", 7))
+        assert data["last_commit_sha"] is None
+        assert "do not add a line comment yet" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_short_pr_needs_no_extra_request(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("GET", rf"{REPO_PATH}/pulls/7", (200, pull(7)))
+        api.on("GET", rf"{REPO_PATH}/pulls/7/commits", (200, self._commits(3)))
+        data = ok(await github.get_pull_request_commits("acme", "web", 7))
+        assert data["last_commit_sha"] == "c002" and "truncated" not in data
+        assert len(api.calls("GET", rf"{REPO_PATH}/pulls/7")) == 1
