@@ -107,8 +107,15 @@ class SharePointResponse:
 logger = logging.getLogger(__name__)
 
 
+# Without an error map kiota raises a bare APIError and never reads Graph's error.message.
+_GRAPH_ERRORS: dict[str, Any] = {"4XX": ODataError, "5XX": ODataError}
+
+
 def failure_response(error: Exception, message: str | None = None) -> SharePointResponse:
     """A failed call, keeping the HTTP status and Retry-After kiota attaches to a Graph error."""
+    graph_message = getattr(getattr(error, "error", None), "message", None)
+    if not message and isinstance(graph_message, str) and graph_message.strip():
+        message = graph_message
     headers = getattr(error, "response_headers", None)
     retry_after = None
     if isinstance(headers, Mapping):
@@ -704,7 +711,7 @@ class SharePointDataSource:
                 ri.path_parameters = {}
 
                 response = await self.client.request_adapter.send_async(
-                    ri, DriveItemCollectionResponse, {}
+                    ri, DriveItemCollectionResponse, _GRAPH_ERRORS
                 )
 
                 current_items: list[dict[str, Any]] = []
@@ -942,7 +949,7 @@ class SharePointDataSource:
             ri.content = json.dumps(body).encode("utf-8")
             ri.headers.try_add("Content-Type", "application/json")
 
-            response = await self.client.request_adapter.send_async(ri, DriveItem, {})
+            response = await self.client.request_adapter.send_async(ri, DriveItem, _GRAPH_ERRORS)
             if response is None:
                 return SharePointResponse(success=False, error="Failed to create folder — no response")
 
@@ -1059,7 +1066,7 @@ class SharePointDataSource:
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
 
-            response = await self.client.request_adapter.send_async(ri, DriveItem, {})
+            response = await self.client.request_adapter.send_async(ri, DriveItem, _GRAPH_ERRORS)
             if response is None:
                 return SharePointResponse(success=False, error="Failed to create Word document — no response")
 
@@ -1101,7 +1108,7 @@ class SharePointDataSource:
             ri.content = json.dumps(patch_data).encode("utf-8")
             ri.headers.try_add("Content-Type", "application/json")
 
-            response = await self.client.request_adapter.send_async(ri, DriveItem, {})
+            response = await self.client.request_adapter.send_async(ri, DriveItem, _GRAPH_ERRORS)
             if response is None:
                 return SharePointResponse(success=False, error="Failed to move item — no response")
 
@@ -1336,7 +1343,7 @@ class SharePointDataSource:
             ri.path_parameters = {}
 
             raw: Optional[bytes] = await self.client.request_adapter.send_primitive_async(
-                ri, "bytes", {}
+                ri, "bytes", _GRAPH_ERRORS
             )
             if not raw:
                 return SharePointResponse(
@@ -1551,7 +1558,7 @@ class SharePointDataSource:
             ri.url_template = url
             ri.path_parameters = {}
 
-            response = await self.client.request_adapter.send_async(ri, DriveItem, {})
+            response = await self.client.request_adapter.send_async(ri, DriveItem, _GRAPH_ERRORS)
             if response is None:
                 return SharePointResponse(success=False, error="Item not found")
 
@@ -1589,7 +1596,7 @@ class SharePointDataSource:
             ri.path_parameters = {}
 
             raw: Optional[bytes] = await self.client.request_adapter.send_primitive_async(
-                ri, "bytes", {}
+                ri, "bytes", _GRAPH_ERRORS
             )
 
             if not raw:
@@ -1720,7 +1727,7 @@ class SharePointDataSource:
             )
             ri.path_parameters = {}
 
-            response = await self.client.request_adapter.send_async(ri, SitePage, {})
+            response = await self.client.request_adapter.send_async(ri, SitePage, _GRAPH_ERRORS)
             if response is None:
                 return SharePointResponse(success=False, error="Page not found")
             logger.info(f"✅ get_site_page_with_canvas: {page_id}")
@@ -1766,7 +1773,7 @@ class SharePointDataSource:
             pub_ri.path_parameters = {}
             pub_ri.content = b"{}"
             pub_ri.headers.try_add("Content-Type", "application/json")
-            await self.client.request_adapter.send_no_response_content_async(pub_ri, {})
+            await self.client.request_adapter.send_no_response_content_async(pub_ri, _GRAPH_ERRORS)
             return True, None
         except Exception as e:
             return False, str(e)
@@ -1894,7 +1901,7 @@ class SharePointDataSource:
             patch_ri.path_parameters = {}
             patch_ri.content = json.dumps(patch_data).encode("utf-8")
             patch_ri.headers.try_add("Content-Type", "application/json")
-            await self.client.request_adapter.send_no_response_content_async(patch_ri, {})
+            await self.client.request_adapter.send_no_response_content_async(patch_ri, _GRAPH_ERRORS)
 
             published = False
             publish_error: Optional[str] = None

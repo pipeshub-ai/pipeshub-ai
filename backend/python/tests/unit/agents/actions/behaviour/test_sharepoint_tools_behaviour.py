@@ -496,8 +496,23 @@ class TestFailures:
         assert ok is False
         assert assert_safe_error(data) == "SharePoint refused to read that site: Invalid hostname for this tenancy"
 
+    @pytest.mark.parametrize(("call", "method", "path"), [
+        ("create_folder", "POST", f"{V1}/drives/{DRIVE}/root/children"),
+        ("move_item", "PATCH", f"{V1}/drives/{DRIVE}/items/d-1"),
+        ("list_files", "GET", f"{V1}/drives/{DRIVE}/root/children"),
+    ])
+    async def test_a_refusal_of_a_hand_built_request_keeps_graphs_reason(self, sp, stub, call, method, path) -> None:
+        stub.on(method, path, graph_error(409, "nameAlreadyExists", "An item with this name already exists"))
+        args = {"create_folder": {"folder_name": "Q3"}, "move_item": {"item_id": "d-1", "destination_folder_id": "f-2"},
+                "list_files": {}}[call]
+
+        ok, data = result(await getattr(sp, call)(site_id=SITE, drive_id=DRIVE, **args))
+
+        assert ok is False
+        assert assert_safe_error(data).endswith(": An item with this name already exists")
+
     async def test_a_refusal_without_a_reason_says_to_check_the_arguments(self, sp, stub) -> None:
-        stub.on("POST", f"{V1}/drives/{DRIVE}/root/children", graph_error(409, "nameAlreadyExists", "x"))
+        stub.on("POST", f"{V1}/drives/{DRIVE}/root/children", httpx.Response(409))
 
         ok, data = result(await sp.create_folder(site_id=SITE, drive_id=DRIVE, folder_name="Q3"))
 
