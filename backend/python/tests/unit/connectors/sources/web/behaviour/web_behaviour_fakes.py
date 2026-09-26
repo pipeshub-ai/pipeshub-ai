@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -76,6 +76,12 @@ class Page:
     browser_aborts: bool = False
     # What a HEAD gets instead of the page's usual answer, e.g. 405 from a site without HEAD.
     head_status: int | None = None
+    # A cookie ("name=value") the request must carry, else 403: set by an earlier redirect.
+    requires_cookie: str | None = None
+    # Served behind a Cloudflare-style challenge that only the cloudscraper fake can solve.
+    cloudflare_challenge: bool = False
+    # Where the solved challenge sends the scraper; the page itself by default.
+    cloudflare_challenge_redirect: str | None = None
 
 
     # Validators: sent with the page, and a matching If-None-Match / If-Modified-Since gets a 304.
@@ -101,6 +107,9 @@ class FakeWeb:
         self._pages: dict[str, Page | list[Page]] = {}
         self._lock = threading.Lock()
         self.requests: list[tuple[str, str]] = []
+        self.clients: list[tuple[str, str]] = []  # (fake client, url) for curl_cffi / cloudscraper requests
+        self.challenges_solved: list[str] = []
+        self.served: list[tuple[str, str, str]] = []  # (client, method, url) for every answered request
         self.not_modified: list[str] = []
         self.browser_visits: list[str] = []
         self.browser_loaded: list[str] = []  # every address the browser requested, redirect hops included
@@ -146,48 +155,62 @@ class FakeWeb:
 
     # -- HTTP side -------------------------------------------------------
 
-    async def handle(self, request: web.Request) -> web.StreamResponse:
-        host = (request.host or "").split(":")[0].lower()
-        if host == STORAGE_HOST:
-            return await self._storage(request)
-        url = f"http://{host}{request.path_qs}"
-        self.requests.append((request.method, url))
-        page = self._current(url, consume=request.method == "GET")
-        if request.method == "HEAD" and page.head_status is not None:
-            if page.head_status == HEAD_HANGS_UP:
-                assert request.transport is not None
-                request.transport.abort()
-                raise ConnectionResetError("fake site dropped a HEAD")
-            return web.Response(status=page.head_status)
+    def answer(self, method: str, url: str, request_headers: dict, via: str = "aiohttp") -> tuple[int, dict, bytes, Page] | None:
+        """The site's answer to one request, shared by the HTTP server and the fake clients.
+
+        None means the connection is dropped without an answer.
+        """
+        self.requests.append((method, url))
+        self.served.append((via, method, url))
+        page = self._current(url, consume=method == "GET")
+        if method == "HEAD" and page.head_status is not None:
+            return None if page.head_status == HEAD_HANGS_UP else (page.head_status, {}, b"", page)
         if page.hang_up:
-            assert request.transport is not None
-            request.transport.abort()
-            raise ConnectionResetError("fake site hung up")
+            return None
+        sent_cookies = next((str(v) for k, v in request_headers.items() if k.lower() == "cookie"), "")
+        if page.requires_cookie and page.requires_cookie not in sent_cookies:
+            return 403, {"Content-Type": "text/plain"}, b"cookie missing", page
+        if page.cloudflare_challenge and "cf_clearance=" not in sent_cookies:
+            return 403, {"Content-Type": "text/html"}, b"<html>Just a moment...</html>", page
         headers = dict(page.headers)
         if page.etag:
             headers["ETag"] = page.etag
         if page.last_modified:
             headers["Last-Modified"] = page.last_modified
+        sent = {k.lower(): str(v) for k, v in request_headers.items()}
         if page.status == 200 and (
-            (page.etag and request.headers.get("If-None-Match") == page.etag)
-            or (page.last_modified and request.headers.get("If-Modified-Since") == page.last_modified)
+            (page.etag and sent.get("if-none-match") == page.etag)
+            or (page.last_modified and sent.get("if-modified-since") == page.last_modified)
         ):
-            if request.method == "GET":
+            if method == "GET":
                 self.not_modified.append(url)
-            return web.Response(status=304, headers=headers)
+            return 304, headers, b"", page
         if page.location:
             headers["Location"] = page.location
         if page.content_type:
             headers["Content-Type"] = page.content_type
-        if page.chunked:
-            response = web.StreamResponse(status=page.status, headers=headers)
+        # A HEAD gets the body too: aiohttp drops it but keeps its Content-Length, as a real server would.
+        return page.status, headers, page.body, page
+
+    async def handle(self, request: web.Request) -> web.StreamResponse:
+        host = (request.host or "").split(":")[0].lower()
+        if host == STORAGE_HOST:
+            return await self._storage(request)
+        answered = self.answer(request.method, f"http://{host}{request.path_qs}", dict(request.headers))
+        if answered is None:
+            assert request.transport is not None
+            request.transport.abort()
+            raise ConnectionResetError("fake site hung up")
+        status, headers, body, page = answered
+        if page.chunked and status == page.status:
+            response = web.StreamResponse(status=status, headers=headers)
             response.enable_chunked_encoding()
             await response.prepare(request)
             if request.method != "HEAD":
-                await response.write(page.body)
+                await response.write(body)
             await response.write_eof()
             return response
-        return web.Response(status=page.status, body=page.body, headers=headers)
+        return web.Response(status=status, body=body, headers=headers)
 
     async def _storage(self, request: web.Request) -> web.StreamResponse:
         if self.storage_down:
@@ -451,3 +474,80 @@ class RecordingNotifications:
 
     async def publish_notification(self, **kwargs: object) -> None:
         self.sent.append(kwargs)
+
+
+class FakeResponse:
+    """The parts of a requests / curl_cffi response the fetcher reads."""
+
+    def __init__(self, status: int, headers: dict, body: bytes, url: str) -> None:
+        self.status_code = status
+        self.headers = headers
+        self.content = body
+        self.url = url
+
+    def iter_content(self, chunk_size: int = 65536) -> Iterator[bytes]:
+        for start in range(0, len(self.content), chunk_size):
+            yield self.content[start:start + chunk_size]
+
+    def close(self) -> None:
+        pass
+
+
+class FakeRequestsClient:
+    """Stands in for a curl_cffi Session (and the base of the cloudscraper fake): a cookie jar and
+    a GET that follows redirects unless told not to, answered by the fake site."""
+
+    def __init__(self, site: "FakeWeb", label: str) -> None:
+        self.site = site
+        self.label = label
+        self.cookies: dict[str, str] = {}
+
+    def __enter__(self) -> "FakeRequestsClient":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def _send(self, url: str, headers: dict | None) -> tuple[int, dict, bytes]:
+        sent = dict(headers or {})
+        if self.cookies:
+            sent["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
+        self.site.clients.append((self.label, url))
+        answered = self.site.answer("GET", url, sent, via=self.label)
+        if answered is None:
+            raise ConnectionError("fake site hung up")
+        status, response_headers, body, _ = answered
+        cookie = next((str(v) for k, v in response_headers.items() if k.lower() == "set-cookie"), None)
+        if cookie:
+            name, _, value = cookie.split(";", 1)[0].partition("=")
+            self.cookies[name.strip()] = value.strip()
+        return status, response_headers, body
+
+    def get(self, url: str, headers: dict | None = None, timeout: object = None,
+            allow_redirects: bool = True, stream: bool = False) -> FakeResponse:
+        for _ in range(11):
+            status, response_headers, body = self._send(url, headers)
+            location = response_headers.get("Location")
+            if allow_redirects and status in (301, 302, 303, 307, 308) and location:
+                url = urljoin(url, location)
+                continue
+            return FakeResponse(status, response_headers, body, url)
+        raise RuntimeError("too many redirects")
+
+
+class FakeScraper(FakeRequestsClient):
+    """cloudscraper 1.2.71's scraper: solving a challenge sets a clearance cookie, and the library
+    then requests the challenge's redirect target itself (with the caller's allow_redirects for
+    that one hop) and hands back whatever that URL answered, at that URL."""
+
+    def get(self, url: str, headers: dict | None = None, timeout: object = None,
+            allow_redirects: bool = True, stream: bool = False) -> FakeResponse:
+        page = self.site._current(url, consume=False)
+        if page.cloudflare_challenge and "cf_clearance" not in self.cookies:
+            self.site.challenges_solved.append(url)
+            self.cookies["cf_clearance"] = "solved"
+            url = urljoin(url, page.cloudflare_challenge_redirect or url)
+        return super().get(url, headers, timeout, allow_redirects, stream)

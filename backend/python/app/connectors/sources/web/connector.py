@@ -77,6 +77,7 @@ from app.connectors.sources.web.fetch_strategy import (
     FetchResponse,
     build_stealth_headers,
     fetch_url_with_fallback,
+    too_many_redirects_response,
 )
 from app.connectors.sources.web.crawl4ai_fetcher import Crawl4AIFetcher, FetchResult, get_shared_fetcher, release_shared_fetcher, resolve_fetch_status_code
 from app.connectors.sources.web.robots import RobotsRules
@@ -164,6 +165,7 @@ MAX_RETRIES = 2
 
 # Finding where a redirect the browser aborted was heading, without following it off the crawl.
 MAX_PROBE_REDIRECTS = 10
+PROBE_UNENDING = -1  # _probe_landing's status for a chain still redirecting after MAX_PROBE_REDIRECTS
 REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 HEAD_NOT_SUPPORTED = frozenset({HTTPStatus.METHOD_NOT_ALLOWED.value, HTTPStatus.NOT_IMPLEMENTED.value})
 PROBE_TIMEOUT_SECONDS = 10
@@ -171,6 +173,10 @@ PROBE_TIMEOUT_SECONDS = 10
 # The name robots.txt groups are matched against; sites without a group for it get their "*" rules.
 ROBOTS_USER_AGENT = "PipesHub"
 ROBOTS_TIMEOUT_SECONDS = 10
+TOO_MANY_REDIRECTS_REASON = (
+    "This page redirects too many times, so it couldn't be fetched. "
+    "Check the address in a browser, then sync again."
+)
 ROBOTS_MAX_BYTES = 512 * 1024
 
 DOCUMENT_MIME_TYPES = {
@@ -1400,6 +1406,8 @@ class WebConnector(BaseConnector):
         # headless won't change the answer.
         if result.status_code in {404, 405, 410, 413}:
             return False
+        if result.headers.get("X-Fetch-Skip-Reason") == "too_many_redirects":
+            return False  # the browser would follow the same chain, without checking each hop
         return True  # Bot-block, rate-limit, or server error — try headless
 
     async def _ensure_crawl4ai_fetcher(self) -> Optional[Crawl4AIFetcher]:
@@ -1553,7 +1561,7 @@ class WebConnector(BaseConnector):
             probed = await self._probe_landing(url)
             if None in self._robots.values():
                 return None  # a redirect onto a site whose robots.txt couldn't be read isn't a refusal
-            return probed is None or probed[1] != 0
+            return probed is None or probed[1] > 0
         finally:
             if not keep_robots:
                 self._robots.clear()
@@ -1660,7 +1668,9 @@ class WebConnector(BaseConnector):
         probed = await self._probe_landing(url)
         if probed is None:
             return None  # the site answered neither HEAD nor GET; recorded as unreachable
-        landing, _status, _content_type = probed
+        landing, status, _content_type = probed
+        if status == PROBE_UNENDING:
+            return too_many_redirects_response(url)
         if self._outside_crawl(landing):
             return self._out_of_scope_response(landing)
         if landing != url and not await self._robots_allows(landing):
@@ -1672,7 +1682,8 @@ class WebConnector(BaseConnector):
             return None
         return await fetch_url_with_fallback(
             url=url, session=self.session, logger=self.logger, timeout=15, max_size_mb=self.max_size_mb,
-            extra_headers=await self._conditional_headers(url, links_needed=False),
+            validators_for=functools.partial(self._conditional_headers, links_needed=False),
+            allow_hop=self._hop_allowed,
         )
 
     @staticmethod
@@ -1743,8 +1754,10 @@ class WebConnector(BaseConnector):
         """The browser follows redirects on its own, so walk them first: a hop outside the crawl or
         disallowed by robots.txt is answered here, never loaded. None means the browser may go."""
         probed = await self._probe_landing(url)
-        if probed is None or probed[1] != 0:
+        if probed is None or probed[1] > 0:
             return None
+        if probed[1] == PROBE_UNENDING:
+            return too_many_redirects_response(url)
         landing = probed[0]
         return self._out_of_scope_response(landing) if self._outside_crawl(landing) else self._robots_skip_response(landing)
 
@@ -1775,6 +1788,8 @@ class WebConnector(BaseConnector):
             if probed is None:
                 return response  # the site didn't answer the probe either; the browser retry stands
             landing, status, content_type = probed
+            if status == PROBE_UNENDING:
+                return too_many_redirects_response(requested_url)
             if self._outside_crawl(landing):
                 return self._out_of_scope_response(landing)
             if landing != requested_url and not await self._robots_allows(landing):
@@ -1881,11 +1896,13 @@ class WebConnector(BaseConnector):
 
         Each hop is asked with HEAD, or with GET (body left unread) when HEAD is refused or fails.
         Returns the landing URL, its status and Content-Type, or the first out-of-scope or
-        disallowed hop, unrequested, with status 0. Returns None if the site doesn't answer or the chain doesn't end.
+        disallowed hop, unrequested, with status 0, or the last hop checked with ``PROBE_UNENDING``
+        when the chain is still redirecting after MAX_PROBE_REDIRECTS redirects, the same limit as
+        a normal crawl's walk. Returns None if the site doesn't answer.
         """
         if self.session is None:
             return None
-        for _ in range(MAX_PROBE_REDIRECTS):
+        for _ in range(MAX_PROBE_REDIRECTS + 1):
             try:
                 status, location, content_type = await self._probe_hop("HEAD", url)
             except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
@@ -1900,7 +1917,7 @@ class WebConnector(BaseConnector):
             url = urljoin(url, location)
             if self._outside_crawl(url) or not await self._robots_allows(url):
                 return url, 0, None  # not requested at all: outside the crawl, or robots.txt disallows it
-        return None
+        return url, PROBE_UNENDING, None
 
     async def _probe_hop(self, method: str, url: str) -> tuple[int, str | None, str | None]:
         async with self.session.request(  # type: ignore[union-attr]
@@ -1973,10 +1990,14 @@ class WebConnector(BaseConnector):
                     retry_after=getattr(result, "retry_after", None),
                 )
             else:
-                size_skip = result.headers.get("X-Fetch-Skip-Reason") == "max_size_exceeded"
+                skip = result.headers.get("X-Fetch-Skip-Reason")
+                reason = (
+                    self._too_large_reason() if skip == "max_size_exceeded"
+                    else TOO_MANY_REDIRECTS_REASON if skip == "too_many_redirects"
+                    else None
+                )
                 self._record_final_failure(
-                    result.final_url or url, depth, referer, result.status_code,
-                    self._too_large_reason() if size_skip else None, queued_url=url,
+                    result.final_url or url, depth, referer, result.status_code, reason, queued_url=url,
                 )
             return None
         elif not result.success:
@@ -2112,8 +2133,8 @@ class WebConnector(BaseConnector):
                     # The 304 vouches for our copy at the new URL; only the old URL's record needs cleaning up.
                     await self._handle_gone_page(url, keep_id=stored_there.id)
                     return None
-                # The validators came from the old URL (a HEAD-refusing site's GET followed the
-                # redirect), so fetch the new URL in full; the redirect cleanup deals with the old record.
+                # The 304 doesn't match our copy at the new URL, so fetch it in full; the redirect
+                # cleanup deals with the old record.
                 refetched = await fetch_url_with_fallback(
                     url=moved_to, session=self.session, logger=self.logger, referer=referer,
                     timeout=15, max_size_mb=self.max_size_mb, allow_hop=self._hop_allowed,

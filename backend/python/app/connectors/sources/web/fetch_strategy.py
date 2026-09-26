@@ -21,13 +21,27 @@ import contextlib
 import logging
 import random
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Coroutine, List, Optional, Tuple, cast
-from urllib.parse import urljoin, urlparse
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Coroutine,
+    List,
+    Optional,
+    Protocol,
+    Tuple,
+    cast,
+)
+from urllib.parse import urldefrag, urljoin, urlparse
 
 import aiohttp
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.services.base_client import parse_retry_after
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
 
 # ---------------------------------------------------------------------------
 # Unified response wrapper
@@ -342,6 +356,229 @@ async def _walk_redirects_with_head(
 
 
 # ---------------------------------------------------------------------------
+# GET one redirect hop at a time, each target checked before it is requested
+# ---------------------------------------------------------------------------
+
+MAX_GET_REDIRECTS = 10
+_READ_CHUNK = 64 * 1024
+
+
+@dataclass
+class _HopWalk:
+    url: str
+    referer: str | None
+    extra_headers: dict | None
+    allow_hop: Callable[[str], Awaitable[bool]]
+    validators_for: Callable[[str], Awaitable[dict | None]] | None
+    max_bytes: int | None
+
+
+class _RequestsLike(Protocol):
+    """A curl_cffi Session or a cloudscraper scraper: a requests-style client with its own cookies."""
+
+    def get(self, url: str, **kwargs: object) -> Any: ...  # noqa: ANN401 -- each library's own Response
+
+
+@dataclass
+class _Hop:
+    status: int
+    headers: dict
+    body: bytes = b""
+    too_large: bool = False
+    # Where the answer came from, when the client followed a redirect on its own (cloudscraper
+    # requests the Location of a solved challenge itself).
+    url: str | None = None
+
+
+def _refused(target: str) -> FetchResponse:
+    return FetchResponse(
+        status_code=200,
+        content_bytes=b"",
+        headers={"X-Fetch-Skip-Reason": "redirect_refused"},
+        final_url=target,
+        strategy="redirect_guard",
+    )
+
+
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    wanted = name.lower()
+    return next((str(v) for k, v in headers.items() if str(k).lower() == wanted), None)
+
+
+def _declared_too_large(headers: Mapping[str, str], max_bytes: int | None) -> bool:
+    length = _header(headers, "Content-Length")
+    return max_bytes is not None and bool(length) and str(length).isdigit() and int(length) > max_bytes
+
+
+def _read_capped(chunks: Iterable[bytes], max_bytes: int | None) -> tuple[bytes, bool]:
+    """Read a streamed body, stopping as soon as it passes ``max_bytes``."""
+    body = bytearray()
+    for chunk in chunks:
+        body.extend(chunk)
+        if max_bytes is not None and len(body) > max_bytes:
+            return b"", True
+    return bytes(body), False
+
+
+async def _walk_hops(
+    walk: _HopWalk,
+    get: Callable[[str, dict], Awaitable[_Hop]],
+    strategy: str,
+) -> FetchResponse | None:
+    """Follow redirects with ``get`` (one request per hop, on one connection), asking
+    ``allow_hop`` before each target is requested. The last hop's answer is the page."""
+    current = walk.url
+    for _ in range(MAX_GET_REDIRECTS + 1):
+        headers = build_stealth_headers(current, referer=walk.referer, extra=walk.extra_headers)
+        if walk.validators_for is not None:
+            headers.update(await walk.validators_for(current) or {})
+        hop = await get(current, headers)
+        if hop.url and urldefrag(hop.url).url != urldefrag(current).url:
+            # The client went somewhere on its own; that page is already fetched, so check it
+            # and drop its bytes if it's refused.
+            if not await walk.allow_hop(hop.url):
+                return _refused(hop.url)
+            current = hop.url
+        location = _header(hop.headers, "Location")
+        if hop.status in _HEAD_REDIRECT_CODES and location:
+            target = urljoin(current, location)  # handles relative and //host/path Locations
+            if not await walk.allow_hop(target):
+                return _refused(target)
+            current = target
+            continue
+        if hop.too_large:
+            return FetchResponse(
+                status_code=413,
+                content_bytes=b"",
+                headers={"X-Fetch-Skip-Reason": "max_size_exceeded"},
+                final_url=current,
+                strategy="size_guard",
+            )
+        return FetchResponse(
+            status_code=hop.status, content_bytes=hop.body, headers=hop.headers,
+            final_url=current, strategy=strategy,
+        )
+    return too_many_redirects_response(walk.url)
+
+
+def too_many_redirects_response(url: str) -> FetchResponse:
+    """A finished answer, filed under the link: None would be retried and sent to the headless
+    browser, which follows redirects without asking."""
+    return FetchResponse(
+        status_code=508,
+        content_bytes=b"",
+        headers={"X-Fetch-Skip-Reason": "too_many_redirects"},
+        final_url=url,
+        strategy="redirect_guard",
+        success=False,
+    )
+
+
+async def _hops_aiohttp(
+    session: aiohttp.ClientSession, walk: _HopWalk, timeout: int, logger: logging.Logger,
+) -> FetchResponse | None:
+    """aiohttp, hop by hop: the crawl's shared session carries cookies between hops."""
+    async def get(url: str, headers: dict) -> _Hop:
+        async with session.get(
+            url, headers=headers, allow_redirects=False, timeout=aiohttp.ClientTimeout(total=timeout)
+        ) as response:
+            hop_headers = dict(response.headers)
+            if response.status in _HEAD_REDIRECT_CODES or _declared_too_large(hop_headers, walk.max_bytes):
+                return _Hop(response.status, hop_headers, too_large=response.status not in _HEAD_REDIRECT_CODES)
+            body = bytearray()
+            async for chunk in response.content.iter_chunked(_READ_CHUNK):
+                body.extend(chunk)
+                if walk.max_bytes is not None and len(body) > walk.max_bytes:
+                    return _Hop(response.status, hop_headers, too_large=True)
+            return _Hop(response.status, hop_headers, bytes(body))
+
+    try:
+        return await _walk_hops(walk, get, "aiohttp")
+    except asyncio.TimeoutError:
+        logger.warning("⚠️ [aiohttp] Timeout fetching %s", walk.url)
+    except (aiohttp.ClientError, OSError) as e:
+        logger.warning(f"⚠️ [aiohttp] Connection error for {walk.url}: {e}")
+    except Exception as e:
+        logger.error(f"❌ [aiohttp] Unexpected error for {walk.url}: {e}", exc_info=True)
+    return None
+
+
+def _sync_hop(client: _RequestsLike, url: str, headers: dict, timeout: int, max_bytes: int | None) -> _Hop:
+    """One GET on a requests-style client (curl_cffi Session, cloudscraper), redirects not followed."""
+    response = client.get(url, headers=headers, timeout=timeout, allow_redirects=False, stream=True)
+    try:
+        hop_headers = dict(response.headers)
+        answered_by = str(response.url) if getattr(response, "url", None) else None
+        if response.status_code in _HEAD_REDIRECT_CODES:
+            return _Hop(response.status_code, hop_headers, url=answered_by)
+        if _declared_too_large(hop_headers, max_bytes):
+            return _Hop(response.status_code, hop_headers, too_large=True, url=answered_by)
+        body, too_large = _read_capped(response.iter_content(_READ_CHUNK), max_bytes)
+        return _Hop(response.status_code, hop_headers, body, too_large, url=answered_by)
+    finally:
+        response.close()
+
+
+async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) -> FetchResponse | None:
+    """curl_cffi, hop by hop. One Session and one impersonation profile carry the whole walk, so
+    cookies set on a redirect and the TLS fingerprint stay the same; another profile is tried
+    only if the connection itself fails."""
+    try:
+        from curl_cffi.requests import Session
+    except ImportError:
+        logger.error("❌ [curl_cffi] Not installed")
+        return None
+    if not _CURL_PROFILES:
+        return None
+    loop = asyncio.get_running_loop()
+    for profile in random.sample(_CURL_PROFILES, min(3, len(_CURL_PROFILES))):
+        session = Session(impersonate=profile, timeout=timeout)
+
+        async def get(url: str, headers: dict, session: _RequestsLike = session) -> _Hop:
+            return await loop.run_in_executor(None, _sync_hop, session, url, headers, timeout, walk.max_bytes)
+
+        try:
+            return await _walk_hops(walk, get, f"curl_cffi({profile}, h2=True)")
+        except Exception:
+            continue  # TLS error, connection reset -> next profile, from the start of the chain
+        finally:
+            with contextlib.suppress(Exception):
+                session.close()
+    logger.warning(f"⚠️ [curl_cffi(h2=True)] All profiles exhausted for {walk.url}")
+    return None
+
+
+async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logger) -> FetchResponse | None:
+    """cloudscraper, hop by hop, on one scraper, which keeps Cloudflare's clearance cookie for the
+    hops after a solved challenge. The scraper requests a challenge's own target itself, so
+    ``_walk_hops`` checks where each answer came from."""
+    try:
+        import cloudscraper
+    except ImportError:
+        logger.error("❌ [cloudscraper] Not installed")
+        return None
+    loop = asyncio.get_running_loop()
+    try:
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        )
+    except Exception:
+        return None
+
+    async def get(url: str, headers: dict) -> _Hop:
+        return await loop.run_in_executor(None, _sync_hop, scraper, url, headers, timeout, walk.max_bytes)
+
+    try:
+        return await _walk_hops(walk, get, "cloudscraper")
+    except Exception:
+        logger.warning(f"⚠️ [cloudscraper] Failed for {walk.url}")
+        return None
+    finally:
+        with contextlib.suppress(Exception):
+            scraper.close()
+
+
+# ---------------------------------------------------------------------------
 # Main fallback orchestrator
 # ---------------------------------------------------------------------------
 
@@ -387,11 +624,12 @@ async def fetch_url_with_fallback(
         timeout:                   Per-request timeout in seconds.
         max_retries_per_strategy:  Max attempts per strategy before moving to next (default 2).
         max_size_mb:               Max size in mb of the response.
-        allow_hop:                 With ``max_size_mb``: asked about each redirect target the size-check
-                                   HEAD finds, before that target is requested. A refusal returns a
+        allow_hop:                 Asked about each redirect target before it is requested, by the
+                                   size-check HEAD and by the GET, which then follows redirects one
+                                   hop at a time on the same connection. A refusal returns a
                                    ``redirect_refused`` skip whose ``final_url`` is the refused target.
         validators_for:            Returns conditional-request headers (If-None-Match and so on) for
-                                   the URL the GET is finally sent to, which is where HEAD landed.
+                                   a URL; sent with the GET to that URL (to each hop, with allow_hop).
         preferred_strategy:        When set, only this strategy is tried (no fallback). Use the
                                    ``strategy`` field from a prior FetchResponse to pin image/asset
                                    fetches to the same strategy that worked for the parent page.
@@ -409,8 +647,7 @@ async def fetch_url_with_fallback(
             logger.info("Not following %s: redirect to %s refused", url, walked.final_url)
             return walked
         if walked is not None:
-            # GET where HEAD landed, so the redirects aren't walked twice. (A site that redirects GET
-            # but not HEAD is still followed by the GET: the same limit as a site that refuses HEAD.)
+            # GET where HEAD landed, so the redirects aren't walked twice.
             url, head_headers = walked
             cl = head_headers.get("Content-Length") or head_headers.get("content-length")
             size = int(cl) if cl and str(cl).isdigit() else None
@@ -431,18 +668,32 @@ async def fetch_url_with_fallback(
                     strategy="size_guard",
                 )
 
-    if validators_for is not None:
-        validators = await validators_for(url)
-        if validators:
-            headers = {**headers, **validators}
-
-    # Define the strategy chain: (name, async callable returning Optional[FetchResponse])
-    all_strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
-        ("curl_cffi(H2)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=True, logger=logger)),
-        # ("curl_cffi(H1)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=False, logger=logger)),
-        ("cloudscraper", lambda: _try_cloudscraper(url, headers, timeout, logger=logger)),
-        ("aiohttp", lambda: _try_aiohttp(session, url, headers, timeout, logger)),
-    ]
+    all_strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]]
+    if allow_hop is not None:
+        # Every GET redirect, including one HEAD didn't show or a site that refuses HEAD, is checked
+        # before it is requested; the last hop's GET is the page fetch, so no request is added.
+        walk = _HopWalk(
+            url=url, referer=referer, extra_headers=extra_headers, allow_hop=allow_hop,
+            validators_for=validators_for,
+            max_bytes=max_size_mb * 1024 * 1024 if max_size_mb is not None else None,
+        )
+        all_strategies = [
+            ("curl_cffi(H2)", lambda: _hops_curl_cffi(walk, timeout, logger)),
+            ("cloudscraper", lambda: _hops_cloudscraper(walk, timeout, logger)),
+            ("aiohttp", lambda: _hops_aiohttp(session, walk, timeout, logger)),
+        ]
+    else:
+        if validators_for is not None:
+            validators = await validators_for(url)
+            if validators:
+                headers = {**headers, **validators}
+        # Define the strategy chain: (name, async callable returning Optional[FetchResponse])
+        all_strategies = [
+            ("curl_cffi(H2)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=True, logger=logger)),
+            # ("curl_cffi(H1)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=False, logger=logger)),
+            ("cloudscraper", lambda: _try_cloudscraper(url, headers, timeout, logger=logger)),
+            ("aiohttp", lambda: _try_aiohttp(session, url, headers, timeout, logger)),
+        ]
 
     # When a preferred strategy is given (e.g. from a cached page-level fetch),
     # use ONLY that strategy — no fallback — to avoid wasted attempts.
