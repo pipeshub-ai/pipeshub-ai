@@ -115,6 +115,23 @@ async def test_a_cloudflare_challenge_that_ends_in_a_redirect_is_followed_by_the
     assert _served_by(site, "cloudscraper", protected)  # no fallback to aiohttp
 
 
+async def test_in_robust_mode_a_document_whose_get_redirects_is_checked_before_it_is_followed(
+    site: FakeWeb, db: FakeRecordsDb, browser: FakeWeb, make_connector: MakeConnector,
+) -> None:
+    # The landing probe asks with HEAD, which this site answers without the redirect.
+    _robots(site)
+    secret_pdf = "http://site.test/private/secret.pdf"
+    site.html(START_URL, "Home", "/manual.pdf")
+    site.add("http://site.test/manual.pdf",
+             Page(status=302, location="/private/secret.pdf", content_type=None, head_status=200))
+    site.add(secret_pdf, Page(body=b"%PDF-1.4 secret", content_type="application/pdf"))
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    assert _requests_to(site, secret_pdf) == []
+    assert set(db.pages()) == {START_URL}
+
+
 @pytest.mark.parametrize("target", [SECRET, "http://elsewhere.test/landing"], ids=["disallowed", "off-site"])
 async def test_a_cloudflare_challenge_that_lands_somewhere_refused_is_not_stored(
     target: str, site: FakeWeb, db: FakeRecordsDb, use_strategy: Callable[[str], None],

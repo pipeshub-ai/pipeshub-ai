@@ -1678,7 +1678,8 @@ class WebConnector(BaseConnector):
             return None
         return await fetch_url_with_fallback(
             url=url, session=self.session, logger=self.logger, timeout=15, max_size_mb=self.max_size_mb,
-            extra_headers=await self._conditional_headers(url, links_needed=False),
+            validators_for=functools.partial(self._conditional_headers, links_needed=False),
+            allow_hop=self._hop_allowed,
         )
 
     @staticmethod
