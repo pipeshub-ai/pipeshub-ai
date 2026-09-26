@@ -403,3 +403,23 @@ async def test_every_url_that_redirects_to_a_gone_page_has_its_record_removed(
     await connector.run_sync()
 
     assert set(db.deleted) == stale
+
+
+@pytest.mark.parametrize("links", [("/old", "/new"), ("/new", "/old")], ids=["source-first", "landing-first"])
+async def test_robust_mode_keeps_a_redirecting_source_when_the_landing_also_fails_directly(
+    links: tuple[str, str], browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old, new = "http://site.test/old", "http://site.test/new"
+    browser.html(START_URL, "Home", *links)
+    browser.html(old, "Old")
+    browser.html(new, "New")
+    connector = await make_connector(use_headless_browser=True)
+    await connector.run_sync()
+    stale = db.pages()[old].id
+
+    browser.redirect(old, "/new", status=301)
+    browser.add(new, Page(status=404))
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert stale in db.deleted
