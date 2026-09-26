@@ -443,8 +443,6 @@ class WebConnector(BaseConnector):
         self.respect_robots_txt: bool = True
         # Per crawl: each site's robots.txt rules, or None when it couldn't be read (RFC 9309: crawl nothing there).
         self._robots: dict[str, RobotsRules | None] = {}
-        # Rules init() just read for the start page, reused by the sync that follows it.
-        self._robots_read_by_init = False
         self._robots_skipped: set[str] = set()
         self.crawl4ai_fetcher: Optional[Crawl4AIFetcher] = None
 
@@ -501,13 +499,9 @@ class WebConnector(BaseConnector):
 
             if self.use_headless_browser:
                 self.crawl4ai_fetcher = await get_shared_fetcher()
-            elif self.url:
-                # The probe loads the start page in a browser, so robots.txt has to allow it first.
-                self._robots.clear()
-                self._robots_read_by_init = True
-                if await self._robots_allows(self.url) and await self._detect_csr(self.url):
-                    # The user didn't ask for a browser, so one that can't start means plain HTTP, not a failed init.
-                    self.use_headless_browser = await self._ensure_crawl4ai_fetcher() is not None
+            elif self.url and await self._start_page_may_open_in_browser(self.url) and await self._detect_csr(self.url):
+                # The user didn't ask for a browser, so one that can't start means plain HTTP, not a failed init.
+                self.use_headless_browser = await self._ensure_crawl4ai_fetcher() is not None
 
             return True
         except Exception as e:
@@ -845,9 +839,7 @@ class WebConnector(BaseConnector):
             self.visited_urls.clear()
             self._landed_urls.clear()
             self._kept_urls.clear()
-            if not self._robots_read_by_init:
-                self._robots.clear()
-            self._robots_read_by_init = False
+            self._robots.clear()
             self._robots_skipped.clear()
             self.retry_urls.clear()
             self._domain_next_retry_at.clear()
@@ -1530,6 +1522,29 @@ class WebConnector(BaseConnector):
     # ------------------------------------------------------------------
     # CSR (client-side rendering) detection
     # ------------------------------------------------------------------
+
+    async def _start_page_may_open_in_browser(self, url: str) -> bool:
+        """Whether the script-rendering check may load the start page, which follows redirects itself.
+
+        Only a robots.txt that was read and disallows the page, or a redirect to a disallowed or
+        out-of-scope address, rules it out: the check runs only here, so a robots.txt that can't be
+        read right now shouldn't settle it. Nothing read here carries over to the sync.
+        """
+        if not self.respect_robots_txt:
+            return True
+        parsed = urlparse(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}".lower()
+        try:
+            allowed = await self._robots_allows(url)
+            if self._robots.get(origin) is None:
+                return True
+            if not allowed:
+                return False
+            probed = await self._probe_landing(url)
+            return probed is None or probed[1] != 0
+        finally:
+            self._robots.clear()
+            self._robots_skipped.clear()
 
     async def _detect_csr(self, url: str) -> bool:
         """Detect whether *url* is client-side rendered.

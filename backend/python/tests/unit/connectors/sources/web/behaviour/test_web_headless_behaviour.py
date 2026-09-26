@@ -106,6 +106,39 @@ async def test_the_script_rendering_check_does_not_load_a_start_page_robots_txt_
     assert db.pages() == {}
 
 
+async def test_the_script_rendering_check_does_not_follow_the_start_page_to_a_disallowed_address(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.add("http://site.test/robots.txt",
+                Page(body=b"User-agent: *\nDisallow: /private/\n", content_type="text/plain"))
+    browser.redirect(START_URL, "/private/")
+    browser.add("http://site.test/private/",
+                Page(body=SHELL, rendered=html_page("App", text=LONG_TEXT), pre_render_text_len=0))
+
+    await make_connector()
+
+    assert browser.browser_visits == []
+
+
+async def test_a_robots_txt_that_cant_be_read_at_setup_leaves_the_script_rendering_check_to_run(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    # The check runs only at setup; the sync reads robots.txt again for itself.
+    browser.add("http://site.test/robots.txt", [
+        Page(status=503, body=b""),
+        Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"),
+    ])
+    browser.add(START_URL, Page(body=SHELL, rendered=html_page("App", "/inside", text=LONG_TEXT),
+                                pre_render_text_len=0))
+    browser.add("http://site.test/inside", Page(body=SHELL, rendered=html_page("Inside", text=LONG_TEXT)))
+
+    connector = await make_connector()
+    assert connector.use_headless_browser is True
+    await connector.run_sync()
+
+    assert db.pages()["http://site.test/inside"].record_name == "Inside"
+
+
 async def test_without_a_working_browser_a_plain_site_still_syncs(
     browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:

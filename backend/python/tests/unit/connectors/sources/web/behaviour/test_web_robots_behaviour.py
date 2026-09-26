@@ -34,12 +34,14 @@ async def test_pages_robots_txt_disallows_are_skipped_and_the_summary_says_how_t
 ) -> None:
     _site(site)
     _robots(site, "User-agent: *\nDisallow: /private/\n")
+    connector = await make_connector()
+    read_by_init = site.gets(ROBOTS)
 
-    await (await make_connector()).run_sync()
+    await connector.run_sync()
 
     assert set(db.pages()) == {START_URL, "http://site.test/public"}
     assert site.gets("http://site.test/private/secret") == 0
-    assert site.gets(ROBOTS) == 1
+    assert site.gets(ROBOTS) - read_by_init == 1
     assert (await notifications.delivered())[-1]["message"].endswith(
         "Skipped 1 pages that the site's robots.txt asks crawlers not to visit. "
         "To include them, turn off Respect robots.txt in the connector settings."
@@ -52,12 +54,14 @@ async def test_each_sync_reads_robots_txt_again(
     _site(site)
     _robots(site, "User-agent: *\nDisallow: /private/\n")
     connector = await make_connector()
+    read_by_init = site.gets(ROBOTS)
     await connector.run_sync()
+    read_by_first_sync = site.gets(ROBOTS) - read_by_init
     _robots(site, "User-agent: *\nDisallow: /public\n")
 
     await connector.run_sync()
 
-    assert site.gets(ROBOTS) == 2
+    assert (read_by_first_sync, site.gets(ROBOTS) - read_by_init) == (1, 2)
     assert site.gets("http://site.test/private/secret") == 1
 
 
@@ -197,10 +201,12 @@ async def test_a_rate_limited_robots_txt_skips_the_site_at_once(
 ) -> None:
     _site(site)
     site.add(ROBOTS, Page(status=status, body=b"", headers={"Retry-After": "120"}))
+    connector = await make_connector()
+    read_by_init = site.gets(ROBOTS)
 
-    await (await make_connector()).run_sync()
+    await connector.run_sync()
 
-    assert site.gets(ROBOTS) == 1
+    assert site.gets(ROBOTS) - read_by_init == 1
     assert clock.sleeps == []
     assert db.pages() == {}
 
