@@ -423,3 +423,26 @@ async def test_robust_mode_keeps_a_redirecting_source_when_the_landing_also_fail
     await connector.run_sync()
 
     assert stale in db.deleted
+
+
+@pytest.mark.parametrize("robust", [False, True], ids=["plain", "robust-mode"])
+async def test_every_url_that_moved_to_the_same_page_has_its_record_removed(
+    robust: bool, browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    sources = ["http://site.test/old.pdf", "http://site.test/also.pdf"]
+    moved = "http://site.test/files/handbook.pdf"
+    browser.html(START_URL, "Home", "/old.pdf", "/also.pdf")
+    for source in sources:
+        browser.add(source, Page(body=source.encode(), content_type="application/pdf"))
+    connector = await make_connector(use_headless_browser=robust)
+    await connector.run_sync()
+    stale = {db.pages()[source].id for source in sources}
+
+    for source in sources:
+        browser.redirect(source, "/files/handbook.pdf", status=301)
+    browser.add(moved, Page(body=b"%PDF-1.4 handbook", content_type="application/pdf"))
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert set(db.deleted) == stale
+    assert set(db.pages()) == {START_URL, moved}

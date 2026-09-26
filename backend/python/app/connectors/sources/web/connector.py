@@ -1243,7 +1243,7 @@ class WebConnector(BaseConnector):
                         if (
                             result is None
                             or not await self._robots_allows_landing(current_url, result)
-                            or not self._keep_crawled_page(normalized_url, current_depth, result, queue)
+                            or not await self._keep_crawled_page(current_url, normalized_url, current_depth, result, queue)
                         ):
                             continue
 
@@ -1312,7 +1312,7 @@ class WebConnector(BaseConnector):
                     if (
                         result is None
                         or not await self._robots_allows_landing(current_url, result)
-                        or not self._keep_crawled_page(normalized_url, current_depth, result, queue)
+                        or not await self._keep_crawled_page(current_url, normalized_url, current_depth, result, queue)
                     ):
                         continue
 
@@ -1328,8 +1328,9 @@ class WebConnector(BaseConnector):
                     continue
 
 
-    def _keep_crawled_page(
+    async def _keep_crawled_page(
         self,
+        requested_url: str,
         normalized_url: str,
         depth: int,
         result: FetchResponse,
@@ -1345,6 +1346,10 @@ class WebConnector(BaseConnector):
         landed = self._normalize_url(final_url)
         redirected = landed != normalized_url
         if redirected and (landed in self.visited_urls or landed in self._landed_urls):
+            # A duplicate of a page this sync already has, but the URL asked for is now an old name for
+            # it: its own record goes the same way as any other redirect source's.
+            landing_record = await self._stored_record(final_url)
+            await self._handle_gone_page(requested_url, keep_id=landing_record.id if landing_record else None)
             return False
 
         if depth < self.max_depth and result.content_bytes:
