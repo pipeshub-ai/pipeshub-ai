@@ -171,6 +171,10 @@ PROBE_TIMEOUT_SECONDS = 10
 # The name robots.txt groups are matched against; sites without a group for it get their "*" rules.
 ROBOTS_USER_AGENT = "PipesHub"
 ROBOTS_TIMEOUT_SECONDS = 10
+TOO_MANY_REDIRECTS_REASON = (
+    "This page redirects too many times, so it couldn't be fetched. "
+    "Check the address in a browser, then sync again."
+)
 ROBOTS_MAX_BYTES = 512 * 1024
 
 DOCUMENT_MIME_TYPES = {
@@ -1400,6 +1404,8 @@ class WebConnector(BaseConnector):
         # headless won't change the answer.
         if result.status_code in {404, 405, 410, 413}:
             return False
+        if result.headers.get("X-Fetch-Skip-Reason") == "too_many_redirects":
+            return False  # the browser would follow the same chain, without checking each hop
         return True  # Bot-block, rate-limit, or server error — try headless
 
     async def _ensure_crawl4ai_fetcher(self) -> Optional[Crawl4AIFetcher]:
@@ -1973,10 +1979,14 @@ class WebConnector(BaseConnector):
                     retry_after=getattr(result, "retry_after", None),
                 )
             else:
-                size_skip = result.headers.get("X-Fetch-Skip-Reason") == "max_size_exceeded"
+                skip = result.headers.get("X-Fetch-Skip-Reason")
+                reason = (
+                    self._too_large_reason() if skip == "max_size_exceeded"
+                    else TOO_MANY_REDIRECTS_REASON if skip == "too_many_redirects"
+                    else None
+                )
                 self._record_final_failure(
-                    result.final_url or url, depth, referer, result.status_code,
-                    self._too_large_reason() if size_skip else None, queued_url=url,
+                    result.final_url or url, depth, referer, result.status_code, reason, queued_url=url,
                 )
             return None
         elif not result.success:

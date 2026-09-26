@@ -134,6 +134,28 @@ async def test_a_cloudflare_challenge_that_lands_somewhere_refused_is_not_stored
     assert "Secret" not in {record.record_name for record in db.pages().values()}
 
 
+@pytest.mark.parametrize("strategy", STRATEGIES)
+async def test_a_redirect_loop_is_one_failed_page_with_no_retries_and_no_browser(
+    strategy: str, site: FakeWeb, db: FakeRecordsDb, browser: FakeWeb,
+    use_strategy: Callable[[str], None], make_connector: MakeConnector,
+) -> None:
+    use_strategy(strategy)
+    chain = [f"http://site.test/r{i}" for i in range(13)]
+    site.html(START_URL, "Home", "/r0")
+    for here, there in zip(chain, chain[1:]):
+        site.add(here, Page(status=302, location=there, content_type=None))
+    site.html(chain[-1], "Landing")
+
+    await (await make_connector()).run_sync()
+
+    failed = db.pages()[chain[0]]
+    assert (failed.reason or "").startswith("This page redirects too many times")
+    assert _requests_to(site, chain[0]).count("GET") == 1
+    assert not set(chain) & set(site.browser_visits)
+    assert [url for _method, url in site.requests if url in chain[11:]] == []
+    assert set(db.pages()) == {START_URL, chain[0]}
+
+
 @pytest.mark.parametrize("chunked", [False, True], ids=["declared-size", "streamed"])
 @pytest.mark.parametrize("strategy", STRATEGIES)
 async def test_a_site_that_refuses_head_still_gets_the_size_limit_at_the_final_hop(
