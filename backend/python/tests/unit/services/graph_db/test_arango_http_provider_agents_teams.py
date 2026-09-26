@@ -1736,7 +1736,7 @@ class TestFindNextQueuedDuplicate:
     @pytest.mark.asyncio
     async def test_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=[
-            [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}],
+            [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100, "orgId": "org-1"}],
             [{"_key": "r2", "indexingStatus": "QUEUED"}],
         ])
         result = await connected_provider.find_next_queued_duplicate("r1")

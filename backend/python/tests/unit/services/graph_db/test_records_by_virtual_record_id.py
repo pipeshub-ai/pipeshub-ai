@@ -85,6 +85,15 @@ class TestNotScopedByTenantOrConnector:
         assert "orgId" not in source
 
 
+class TestNotScopedByStatus:
+    def test_no_indexing_status_filter(self, source):
+        """A duplicate being attached holds the VRID while still QUEUED: its
+        status is written only after the membership sync that has to count it.
+        Filtering by status here would drop its connectorId from the points
+        with every attach unit test still green, since they mock the sync."""
+        assert "indexingStatus" not in source
+
+
 class TestInterfaceContract:
     def test_declared_abstract_on_the_interface(self):
         """Callers reach it through IGraphDBProvider; a provider that omitted it

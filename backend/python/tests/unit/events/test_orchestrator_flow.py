@@ -425,6 +425,7 @@ async def test_duplicate_record_skips_service_pipeline() -> None:
         "extractionStatus": "COMPLETED",
     }])
     graph_provider.copy_document_relationships = AsyncMock(return_value=True)
+    graph_provider.update_record_if = AsyncMock(return_value=True)
     graph_provider.get_departments = AsyncMock(return_value=[])
 
     ep = _make_event_processor(

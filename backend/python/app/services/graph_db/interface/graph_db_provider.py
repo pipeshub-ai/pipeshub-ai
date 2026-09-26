@@ -9,7 +9,7 @@ All methods support optional transaction parameter for atomic operations.
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -2748,12 +2748,43 @@ class IGraphDBProvider(ABC):
         Find the next QUEUED duplicate record with the same md5 hash.
         Works with all record types by querying the RECORDS collection directly.
 
+        Matches the same set as :meth:`find_queued_duplicates` for the reference
+        record, and returns None when the reference record has no orgId.
+
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
             Optional[Dict]: The next queued record if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def find_queued_duplicates(
+        self,
+        record_key: str,
+        md5_checksum: str,
+        org_id: str,
+        record_type: str | None = None,
+        size_in_bytes: int | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """
+        QUEUED records that would have picked this record as their duplicate.
+
+        :meth:`find_duplicate_records` seen from the waiting side. A waiting
+        record applies ``recordType``/``sizeInBytes`` only when it has them, so
+        a candidate matches when its own value is null or equals this record's.
+        Always org-scoped: an empty ``org_id`` returns [] without querying.
+        Soft-deleted records are excluded.
+
+        Returns:
+            List[Dict]: The full RECORDS documents. [] on error unless
+            ``raise_on_error``, which lets a caller tell "none waiting" from
+            "could not tell".
         """
         pass
 
@@ -2769,6 +2800,12 @@ class IGraphDBProvider(ABC):
         """
         Find all QUEUED duplicate records with the same md5 hash and update their status.
 
+        Matches the same set as :meth:`find_queued_duplicates` for the reference
+        record, and updates nothing when the reference record has no orgId.
+        Writes status and ``virtualRecordId`` only, unconditionally: it neither
+        copies relationships nor touches vector membership, so it cannot
+        complete a duplicate — use ``release_queued_duplicates`` for that.
+
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
             new_indexing_status (str): The new indexing status to set
@@ -2778,6 +2815,31 @@ class IGraphDBProvider(ABC):
 
         Returns:
             int: Number of records updated
+        """
+        pass
+
+    @abstractmethod
+    async def update_record_if(
+        self,
+        record_id: str,
+        updates: dict,
+        *,
+        expected_statuses: Sequence[str] | None = None,
+        match_virtual_record_id: bool = False,
+        expected_virtual_record_id: str | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """Merge ``updates`` into a record only while it is in the expected state.
+
+        One statement, so a concurrent write cannot land between the check and
+        the update. ``expected_statuses`` constrains ``indexingStatus``;
+        ``match_virtual_record_id`` requires ``virtualRecordId`` to equal
+        ``expected_virtual_record_id``, where None means "holds none".
+
+        Returns True iff the update applied; False when the record is missing
+        or no longer matches. Raises on database errors — False must only ever
+        mean "moved on". Raises ValueError when no condition is given, since
+        that is ``update_node`` with a misleading name.
         """
         pass
 

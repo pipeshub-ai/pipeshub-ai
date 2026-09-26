@@ -114,6 +114,8 @@ class FakeGraphProvider:
         document_key: str,
         collection: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,  # noqa: ARG002 - this store cannot fail
     ) -> dict[str, object] | None:
         col = self._ensure_collection(collection)
         doc = col.get(document_key)
@@ -749,27 +751,52 @@ class FakeGraphProvider:
             results.append(rec)
         return results
 
+    async def find_queued_duplicates(
+        self,
+        record_key: str,
+        md5_checksum: str,
+        org_id: str,
+        record_type: str | None = None,
+        size_in_bytes: int | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,  # noqa: ARG002 - this store cannot fail
+    ) -> list[dict[str, object]]:
+        """``find_duplicate_records`` from the waiting side: a candidate's own
+        null type/size matches, because it filtered on them only when set."""
+        if not org_id or not md5_checksum:
+            return []
+        return [
+            rec
+            for key, rec in self._ensure_collection(RECORDS).items()
+            if key != record_key
+            and rec.get("md5Checksum") == md5_checksum
+            and rec.get("indexingStatus") == "QUEUED"
+            and rec.get("orgId") == org_id
+            and not rec.get("isDeleted")
+            and rec.get("recordType") in (None, record_type or None)
+            and rec.get("sizeInBytes") in (None, size_in_bytes)
+        ]
+
+    async def _queued_duplicates_of(self, record_id: str) -> list[dict[str, object]]:
+        source = self._ensure_collection(RECORDS).get(record_id)
+        if not source:
+            return []
+        return await self.find_queued_duplicates(
+            record_id,
+            source.get("md5Checksum"),
+            source.get("orgId"),
+            source.get("recordType"),
+            source.get("sizeInBytes"),
+        )
+
     async def find_next_queued_duplicate(
         self,
         record_id: str,
         transaction: str | None = None,
     ) -> dict[str, object] | None:
-        records = self._ensure_collection(RECORDS)
-        source = records.get(record_id)
-        if not source:
-            return None
-        md5 = source.get("md5Checksum")
-        if not md5:
-            return None
-        org_id = source.get("orgId")
-        for key, rec in records.items():
-            if key == record_id:
-                continue
-            if org_id and rec.get("orgId") != org_id:
-                continue
-            if rec.get("md5Checksum") == md5 and rec.get("indexingStatus") == "QUEUED":
-                return rec
-        return None
+        queued = await self._queued_duplicates_of(record_id)
+        return queued[0] if queued else None
 
     async def update_queued_duplicates_status(
         self,
@@ -778,23 +805,34 @@ class FakeGraphProvider:
         virtual_record_id: str | None = None,
         transaction: str | None = None,
     ) -> int:
-        records = self._ensure_collection(RECORDS)
-        source = records.get(record_id)
-        if not source:
-            return 0
-        md5 = source.get("md5Checksum")
-        if not md5:
-            return 0
-        count = 0
-        for key, rec in records.items():
-            if key == record_id:
-                continue
-            if rec.get("md5Checksum") == md5 and rec.get("indexingStatus") == "QUEUED":
-                rec["indexingStatus"] = new_indexing_status
-                if virtual_record_id:
-                    rec["virtualRecordId"] = virtual_record_id
-                count += 1
-        return count
+        queued = await self._queued_duplicates_of(record_id)
+        for rec in queued:
+            rec["indexingStatus"] = new_indexing_status
+            if virtual_record_id:
+                rec["virtualRecordId"] = virtual_record_id
+        return len(queued)
+
+    async def update_record_if(
+        self,
+        record_id: str,
+        updates: dict[str, object],
+        *,
+        expected_statuses: list[str] | None = None,
+        match_virtual_record_id: bool = False,
+        expected_virtual_record_id: str | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        if expected_statuses is None and not match_virtual_record_id:
+            raise ValueError("update_record_if needs at least one condition")
+        rec = self._ensure_collection(RECORDS).get(record_id)
+        if rec is None:
+            return False
+        if expected_statuses is not None and rec.get("indexingStatus") not in expected_statuses:
+            return False
+        if match_virtual_record_id and rec.get("virtualRecordId") != expected_virtual_record_id:
+            return False
+        rec.update(updates)
+        return True
 
     # ==================== Bulk Cleanup ====================
 
@@ -1955,9 +1993,77 @@ class TestRecordDeduplication:
 
     @pytest.mark.asyncio
     async def test_update_queued_duplicates_status(self) -> None:
+        """The TICKET would never have matched the FILE from its own side, so
+        it was not waiting on it either."""
         p, ids = self._build_scenario()
         count = await p.update_queued_duplicates_status(ids["orig_id"], "COMPLETED", virtual_record_id="vr-orig")
-        assert count == 3  # dup1, dup2, same_hash_diff_type
+        assert count == 2  # dup1, dup2
+        ticket = await p.get_document(ids["same_hash_diff_type"], RECORDS)
+        assert ticket is not None
+        assert ticket["indexingStatus"] == "QUEUED"
+
+    @pytest.mark.asyncio
+    async def test_queued_duplicates_in_another_org_are_left_alone(self) -> None:
+        """Another org's primary used to mark this org's QUEUED copy COMPLETED
+        under its own VRID, whose points carry the other org's orgId, so the
+        copy was never found by this org's searches."""
+        p, ids = self._build_scenario()
+        rec_col = p._ensure_collection(RECORDS)
+        rec_col["rec-other-org"] = make_record(
+            "rec-other-org", "org-different", ids["app_id"], "Copy.pdf",
+            indexing_status="QUEUED", md5_checksum="abc123hash", size_in_bytes=1024,
+        )
+
+        await p.update_queued_duplicates_status(ids["orig_id"], "FAILED", virtual_record_id="vr-orig")
+
+        other = await p.get_document("rec-other-org", RECORDS)
+        assert other is not None
+        assert other["indexingStatus"] == "QUEUED"
+        assert other.get("virtualRecordId") != "vr-orig"
+
+    @pytest.mark.asyncio
+    async def test_parked_copy_in_another_kb_is_attached_when_its_twin_finishes(self) -> None:
+        """The reported bug, end to end through the real EventProcessor: a copy
+        parked QUEUED behind its twin gets the twin's VRID, edges and status,
+        and the VRID's membership is recomputed once it holds that VRID."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from app.events.dedup import ReleaseAction
+        from app.events.events import EventProcessor
+
+        p, ids = self._build_scenario()
+        original = await p.get_document(ids["orig_id"], RECORDS)
+        assert original is not None
+        original["extractionStatus"] = "COMPLETED"
+        original["summaryDocumentId"] = "sum-orig"
+        p.copy_document_relationships = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        ep = EventProcessor(MagicMock(), MagicMock(), p)
+
+        holders_at_sync: list[set[str]] = []
+
+        async def _sync(vrid: str) -> None:
+            holders_at_sync.append({
+                key for key, rec in p._ensure_collection(RECORDS).items()
+                if rec.get("virtualRecordId") == vrid
+            })
+
+        with patch.object(ep, "sync_vector_membership", side_effect=_sync):
+            outcomes = await ep.release_queued_duplicates(original)
+
+        assert {o.record["id"]: o.action for o in outcomes} == {
+            ids["dup1_id"]: ReleaseAction.ATTACHED,
+            ids["dup2_id"]: ReleaseAction.ATTACHED,
+        }
+        # One sync, taken after both copies held the VRID it recomputes from.
+        assert holders_at_sync == [{ids["orig_id"], ids["dup1_id"], ids["dup2_id"]}]
+        for dup_id in (ids["dup1_id"], ids["dup2_id"]):
+            dup = await p.get_document(dup_id, RECORDS)
+            assert dup is not None
+            assert dup["virtualRecordId"] == "vr-orig"
+            assert dup["summaryDocumentId"] == "sum-orig"
+            assert dup["indexingStatus"] == "COMPLETED"
+            assert dup["extractionStatus"] == "COMPLETED"
+            p.copy_document_relationships.assert_any_await(ids["orig_id"], dup_id)
 
     @pytest.mark.asyncio
     async def test_update_sets_virtual_record_id(self) -> None:

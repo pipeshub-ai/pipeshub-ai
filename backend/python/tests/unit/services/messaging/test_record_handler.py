@@ -47,6 +47,14 @@ def _make_handler(logger=None, config_service=None, event_processor=None, produc
     if not hasattr(event_processor, "processor") or event_processor.processor is None:
         event_processor.processor = MagicMock()
         event_processor.processor.indexing_pipeline = AsyncMock()
+    if isinstance(event_processor, MagicMock) and not isinstance(
+        event_processor.release_queued_duplicates, AsyncMock
+    ):
+        event_processor.release_queued_duplicates = AsyncMock(return_value=[])
+    if isinstance(event_processor, MagicMock) and not isinstance(
+        event_processor.backfill_early_attached_copies, AsyncMock
+    ):
+        event_processor.backfill_early_attached_copies = AsyncMock(return_value=0)
 
     return RecordEventHandler(
         logger=logger,
@@ -2342,10 +2350,13 @@ class TestProcessEventErrors:
         assert gp.get_document.await_count >= 2
         assert gp.batch_update_nodes.awaited
         gp.update_queued_duplicates_status.assert_awaited_once()
+        handler.event_processor.release_queued_duplicates.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_finally_block_completed_status_updates_queued_duplicates(self):
-        """When processing succeeds and status is COMPLETED, update queued duplicates."""
+    async def test_finally_block_completed_status_releases_queued_duplicates(self):
+        """A COMPLETED record releases its queued duplicates through the attach
+        path. The status-only provider write left them out of the VRID's vector
+        membership and without the record's edges."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         record_initial = {
@@ -2382,13 +2393,12 @@ class TestProcessEventErrors:
             mock_dl.return_value = b"content"
             events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
-        gp.update_queued_duplicates_status.assert_awaited_once_with(
-            "r1", ProgressStatus.COMPLETED.value, "vr1"
-        )
+        ep.release_queued_duplicates.assert_awaited_once_with(record_final)
+        gp.update_queued_duplicates_status.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_finally_block_empty_status_updates_queued_duplicates(self):
-        """When processing succeeds and status is EMPTY, update queued duplicates."""
+    async def test_finally_block_empty_status_releases_queued_duplicates(self):
+        """When processing succeeds and status is EMPTY, release queued duplicates."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         record_initial = {
@@ -2424,9 +2434,8 @@ class TestProcessEventErrors:
             mock_dl.return_value = b"content"
             await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
-        gp.update_queued_duplicates_status.assert_awaited_once_with(
-            "r1", ProgressStatus.EMPTY.value, "vr1"
-        )
+        ep.release_queued_duplicates.assert_awaited_once_with(record_final)
+        gp.update_queued_duplicates_status.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_finally_block_enable_multimodal_triggers_next_duplicate(self):
@@ -2521,6 +2530,7 @@ class TestProcessEventErrors:
 
         assert len(events) == 2
         gp.update_queued_duplicates_status.assert_not_awaited()
+        handler.event_processor.release_queued_duplicates.assert_not_awaited()
 
 
 # ===================================================================
@@ -2722,6 +2732,313 @@ class TestTriggerNextQueuedDuplicate:
         await handler._trigger_next_queued_duplicate("r1", "vr1")
 
         handler.logger.warning.assert_called()
+
+
+class TestReleaseQueuedDuplicatesFromHandler:
+    """The handler's side of releasing duplicates parked behind a record.
+
+    It runs in the ``finally`` of a message that already succeeded, so it must
+    never raise: that would redeliver the message and, for an EMPTY record or an
+    updateRecord, re-run the whole pipeline to retry this one step.
+    """
+
+    _PRIMARY = {
+        "_key": "p1",
+        "indexingStatus": ProgressStatus.COMPLETED.value,
+        "virtualRecordId": "vr1",
+        "connectorName": "KB",
+        "connectorId": "kb-a",
+        "orgId": "org-1",
+    }
+
+    @staticmethod
+    def _outcome(key, action, **record):
+        from app.events.dedup import DuplicateReleaseOutcome
+
+        return DuplicateReleaseOutcome({"_key": key, **record}, action, "because")
+
+    @pytest.mark.asyncio
+    async def test_a_woken_duplicate_gets_its_own_new_record_event(self):
+        from app.events.dedup import ReleaseAction
+
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        handler.event_processor.release_queued_duplicates = AsyncMock(
+            return_value=[self._outcome("d1", ReleaseAction.WAKE, recordType="MAIL")]
+        )
+        gp._create_reindex_event_payload = AsyncMock(return_value={"some": "payload"})
+
+        await handler._release_queued_duplicates(self._PRIMARY)
+
+        handler.producer.send_event.assert_awaited_once_with(
+            topic="record-events",
+            event_type="newRecord",
+            payload={"some": "payload"},
+            key="d1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_woken_file_duplicate_carries_its_file_record(self):
+        from app.events.dedup import ReleaseAction
+
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        outcome = self._outcome("d1", ReleaseAction.WAKE, recordType=RecordTypes.FILE.value)
+        handler.event_processor.release_queued_duplicates = AsyncMock(return_value=[outcome])
+        file_record = {"_key": "d1", "fileName": "doc.pdf"}
+        gp.get_document = AsyncMock(return_value=file_record)
+        gp._create_reindex_event_payload = AsyncMock(return_value={"some": "payload"})
+
+        await handler._release_queued_duplicates(self._PRIMARY)
+
+        gp.get_document.assert_awaited_once_with("d1", CollectionNames.FILES.value)
+        gp._create_reindex_event_payload.assert_awaited_once_with(outcome.record, file_record)
+
+    @pytest.mark.asyncio
+    async def test_each_kb_that_gained_a_searchable_record_is_invalidated_once(self):
+        from app.events.dedup import ReleaseAction
+
+        handler = _make_handler()
+        kb_b = {"connectorName": "KB", "connectorId": "kb-b", "orgId": "org-1"}
+        kb_c = {"connectorName": "KB", "connectorId": "kb-c", "orgId": "org-1"}
+        handler.event_processor.release_queued_duplicates = AsyncMock(return_value=[
+            self._outcome("d1", ReleaseAction.ATTACHED, **kb_b),
+            self._outcome("d2", ReleaseAction.ATTACHED, **kb_b),
+            self._outcome("d3", ReleaseAction.ATTACHED, **kb_c),
+            self._outcome("d4", ReleaseAction.SKIPPED, connectorId="kb-d"),
+        ])
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.notify_record_indexed",
+            new_callable=AsyncMock,
+        ) as notify:
+            await handler._release_queued_duplicates(self._PRIMARY)
+
+        assert sorted(c.kwargs["connector_id"] for c in notify.await_args_list) == [
+            "kb-a", "kb-b", "kb-c",
+        ]
+        handler.producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_empty_primary_invalidates_nothing(self):
+        from app.events.dedup import ReleaseAction
+
+        handler = _make_handler()
+        handler.event_processor.release_queued_duplicates = AsyncMock(
+            return_value=[self._outcome("d1", ReleaseAction.ATTACHED, connectorId="kb-b")]
+        )
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.notify_record_indexed",
+            new_callable=AsyncMock,
+        ) as notify:
+            await handler._release_queued_duplicates(
+                {**self._PRIMARY, "indexingStatus": ProgressStatus.EMPTY.value}
+            )
+
+        notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_release_does_not_escape(self):
+        """The record's own KB is still invalidated: it is searchable either way."""
+        handler = _make_handler()
+        handler.event_processor.release_queued_duplicates = AsyncMock(
+            side_effect=RuntimeError("graph down")
+        )
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.notify_record_indexed",
+            new_callable=AsyncMock,
+        ) as notify:
+            await handler._release_queued_duplicates(self._PRIMARY)
+
+        handler.logger.error.assert_called()
+        assert [c.kwargs["connector_id"] for c in notify.await_args_list] == ["kb-a"]
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_that_cannot_be_woken_is_marked_failed_if_still_queued(self):
+        """A parked KB upload is never swept, so left QUEUED it waits for ever.
+        FAILED shows in the UI, where a reindex recovers it."""
+        from app.events.dedup import ReleaseAction
+
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        handler.event_processor.release_queued_duplicates = AsyncMock(
+            return_value=[self._outcome("d1", ReleaseAction.WAKE, recordType="MAIL")]
+        )
+        gp._create_reindex_event_payload = AsyncMock(return_value={"some": "payload"})
+        handler.producer.send_event = AsyncMock(side_effect=RuntimeError("broker down"))
+        gp.update_record_if = AsyncMock(return_value=True)
+
+        await handler._release_queued_duplicates(self._PRIMARY)
+
+        gp.update_record_if.assert_awaited_once_with(
+            "d1",
+            {
+                "indexingStatus": ProgressStatus.FAILED.value,
+                "reason": user_errors.TEMPORARY_PROBLEM,
+            },
+            expected_statuses=[ProgressStatus.QUEUED.value],
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_wake_and_a_failed_mark_are_both_contained(self):
+        from app.events.dedup import ReleaseAction
+
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        handler.event_processor.release_queued_duplicates = AsyncMock(return_value=[
+            self._outcome("d1", ReleaseAction.WAKE, recordType="MAIL"),
+            self._outcome("d2", ReleaseAction.WAKE, recordType="MAIL"),
+        ])
+        gp._create_reindex_event_payload = AsyncMock(return_value={"some": "payload"})
+        handler.producer.send_event = AsyncMock(side_effect=RuntimeError("broker down"))
+        gp.update_record_if = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        await handler._release_queued_duplicates(self._PRIMARY)
+
+        # One failing duplicate does not stop the next one being tried.
+        assert handler.producer.send_event.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_handler_still_finishes_the_release(self):
+        """Shutdown or a lost lease cancels the handler task. Cut off between a
+        duplicate's VRID write and its status write, the release would leave
+        it QUEUED on this VRID, which the stranded sweep skips as parked."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record_initial = {
+            "_key": "r1", "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value, "mimeType": "application/pdf",
+        }
+        record_final = {**record_initial, "indexingStatus": ProgressStatus.COMPLETED.value}
+        gp.get_document = AsyncMock(side_effect=[record_initial, record_final])
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+        started, proceed, finished = asyncio.Event(), asyncio.Event(), []
+
+        async def _release(primary):
+            started.set()
+            await proceed.wait()
+            finished.append(primary["_key"])
+            return []
+
+        ep.release_queued_duplicates = AsyncMock(side_effect=_release)
+        payload = {
+            "recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1",
+            "mimeType": "application/pdf", "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as dl:
+            dl.return_value = b"content"
+            task = asyncio.create_task(_collect_events(handler, EventTypes.NEW_RECORD.value, payload))
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            proceed.set()
+            for _ in range(10):
+                await asyncio.sleep(0)
+
+        assert finished == ["r1"]
+
+    @staticmethod
+    def _completed_run(handler, final_status):
+        gp = handler.event_processor.graph_provider
+        record_initial = {
+            "_key": "r1", "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value, "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(side_effect=[record_initial, {**record_initial, "indexingStatus": final_status}])
+        handler.event_processor.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+        handler.event_processor.release_queued_duplicates = AsyncMock(
+            side_effect=RuntimeError("graph down")
+        )
+        return {
+            "recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1",
+            "mimeType": "application/pdf", "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_unlisted_release_redelivers_a_completed_new_record(self):
+        """Nothing else would ever release the parked copies. Redelivery is
+        cheap: the COMPLETED guard sends it straight back to the release."""
+        handler = _make_handler()
+        payload = self._completed_run(handler, ProgressStatus.COMPLETED.value)
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as dl:
+            dl.return_value = b"content"
+            with pytest.raises(IndexingError, match="queued behind"):
+                await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("event_type, final_status", [
+        (EventTypes.NEW_RECORD.value, ProgressStatus.EMPTY.value),
+        (EventTypes.UPDATE_RECORD.value, ProgressStatus.COMPLETED.value),
+    ])
+    async def test_an_unlisted_release_does_not_redeliver_what_would_rerun_the_pipeline(
+        self, event_type, final_status
+    ):
+        """The COMPLETED guard does not cover EMPTY or updateRecord: redelivered,
+        those re-run parsing and embedding just to retry this one step."""
+        handler = _make_handler()
+        payload = self._completed_run(handler, final_status)
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as dl:
+            dl.return_value = b"content"
+            events = await _collect_events(handler, event_type, payload)
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_early_attached_copies_are_backfilled_after_the_release(self):
+        handler = _make_handler()
+        order = []
+        ep = handler.event_processor
+        ep.release_queued_duplicates = AsyncMock(side_effect=lambda p: order.append("release") or [])
+        ep.backfill_early_attached_copies = AsyncMock(side_effect=lambda p: order.append("backfill") or 1)
+
+        await handler._release_queued_duplicates(self._PRIMARY)
+
+        assert order == ["release", "backfill"]
+        ep.backfill_early_attached_copies.assert_awaited_once_with(self._PRIMARY)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_backfill_does_not_escape_or_fail_the_release(self):
+        handler = _make_handler()
+        handler.event_processor.backfill_early_attached_copies = AsyncMock(
+            side_effect=RuntimeError("graph down")
+        )
+
+        assert await handler._release_queued_duplicates(self._PRIMARY) is True
+        handler.logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_event_for_a_finished_record_releases_again(self):
+        """The COMPLETED guard path reaches the same finally, which makes any
+        replayed event for the primary a cheap retry of its release."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(return_value=record)
+
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
+        await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        handler.event_processor.release_queued_duplicates.assert_awaited_once_with(record)
 
 
 # ===================================================================
@@ -3056,7 +3373,7 @@ class TestFullHappyPath:
         assert len(events) == 2
         assert events[0].event == "parsing_complete"
         assert events[1].event == "indexing_complete"
-        gp.update_queued_duplicates_status.assert_awaited_once()
+        ep.release_queued_duplicates.assert_awaited_once_with(record_completed)
 
     @pytest.mark.asyncio
     async def test_new_record_connector_streaming_full_flow(self):
@@ -3100,7 +3417,7 @@ class TestFullHappyPath:
                 events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
-        gp.update_queued_duplicates_status.assert_awaited_once()
+        ep.release_queued_duplicates.assert_awaited_once_with(record_completed)
 
 
 # ===================================================================
