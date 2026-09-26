@@ -23,8 +23,14 @@ class INetworkShareDataSource(Protocol):
     async def list_shares(self) -> list[ShareInfo]:
         """List disk/print/ipc shares. Raises ShareListingError on failure."""
 
-    async def stat(self, share: str, path: str) -> DirectoryEntry | None:
-        """Return metadata for one path, or None if it does not exist."""
+    async def stat(
+        self, share: str, path: str, *, follow: bool = True
+    ) -> DirectoryEntry | None:
+        """Return metadata for one path, or None if it does not exist.
+
+        ``follow=False`` opens a reparse point itself. The default follows it,
+        which clears ``FILE_ATTRIBUTE_REPARSE_POINT``.
+        """
 
     async def close(self) -> None:
         """Release the session."""

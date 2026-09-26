@@ -602,11 +602,16 @@ class TestSmbConnectorStreamAndFilters:
             patch.object(client, "_smbclient") as smbclient,
         ):
             smbclient.return_value.stat.return_value = result
-            entry = client.stat("Finance", "deduped.bin")
-        assert entry is not None
-        assert entry.is_symlink is False
-        assert entry.is_reparse is True
-        assert entry.is_directory is False
+            followed = client.stat("Finance", "deduped.bin")
+            opened = client.stat("Finance", "junction", follow=False)
+        assert followed is not None
+        assert followed.is_symlink is False
+        assert followed.is_reparse is True
+        assert followed.is_directory is False
+        assert smbclient.return_value.stat.call_args_list[0].kwargs["follow_symlinks"] is True
+        assert smbclient.return_value.stat.call_args_list[1].kwargs["follow_symlinks"] is False
+        assert opened is not None
+        assert opened.is_reparse is True
 
     async def test_get_filter_options_enum_failure_returns_configured_share(self, smb_connector):
         ds = FakeNetworkShareDataSource(shares=ShareListingError("NetrShareEnum failed"))

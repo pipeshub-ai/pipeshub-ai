@@ -133,7 +133,19 @@ class TestCatchesMistakes(unittest.TestCase):
             pytest_ini=pytest_ini,
         )
         self.assertTrue(any("still selects" in p for p in held_in_shard), held_in_shard)
-        allowed, _ = run(workflow=WORKFLOW + "\n# not cifs\n", pytest_ini=pytest_ini)
+        # A comment is not an exclusion. Both core jobs still select cifs.
+        comment_only = WORKFLOW + (
+            '            core)         MARKERS="integration and not (alpha or beta or gamma)" ;;\n'
+            '            core)         MARKERS="integration and not (alpha or beta or gamma) and not cifs" ;;\n'
+            "# not cifs\n"
+        )
+        commented, _ = run(workflow=comment_only, pytest_ini=pytest_ini)
+        self.assertTrue(any("cifs" in p and "fall into core" in p for p in commented), commented)
+        excluded = WORKFLOW + (
+            '            core)         MARKERS="integration and not (alpha or beta or gamma) and not cifs" ;;\n'
+            '            core)         MARKERS="integration and not (alpha or beta or gamma) and not cifs" ;;\n'
+        )
+        allowed, _ = run(workflow=excluded, pytest_ini=pytest_ini)
         self.assertEqual(allowed, [])
 
     def test_an_unmeasured_suite_is_named_but_allowed(self) -> None:

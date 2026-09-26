@@ -87,7 +87,9 @@ class FakeNetworkShareDataSource:
             raise self.shares
         return list(self.shares)
 
-    async def stat(self, share: str, path: str) -> DirectoryEntry | None:
+    async def stat(
+        self, share: str, path: str, *, follow: bool = True
+    ) -> DirectoryEntry | None:
         if (share, path) in self.stats:
             return self.stats[(share, path)]
         for entries in self.tree.values():
@@ -244,7 +246,9 @@ class TestShareWalker:
 
     async def test_folder_filter_stat_failure_does_not_prune(self):
         class FailingStat(FakeNetworkShareDataSource):
-            async def stat(self, share: str, path: str) -> DirectoryEntry | None:
+            async def stat(
+                self, share: str, path: str, *, follow: bool = True
+            ) -> DirectoryEntry | None:
                 raise DirectoryListingError(share, path, "stat failed")
 
         ds = FailingStat(tree={(SHARE, "keep"): [_entry("in.txt", file_id=4)]})

@@ -222,7 +222,7 @@ class ShareWalker:
             for index in range(len(parts)):
                 path = "/".join(parts[: index + 1])
                 try:
-                    info = await self.data_source.stat(share, path)
+                    info = await self.data_source.stat(share, path, follow=False)
                 except Exception as exc:
                     complete = False
                     self.logger.error(

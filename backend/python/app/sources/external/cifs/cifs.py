@@ -45,9 +45,30 @@ class CifsDataSource:
         async with self._lock, self._rate_limiter:
             return await asyncio.to_thread(self._client.list_shares)
 
-    async def stat(self, share: str, path: str) -> DirectoryEntry | None:
+    async def stat(
+        self, share: str, path: str, *, follow: bool = True
+    ) -> DirectoryEntry | None:
+        # pysmb QUERY_PATH_INFORMATION follows reparse points. The find response
+        # still carries FILE_ATTRIBUTE_REPARSE_POINT on the directory entry.
+        if not follow:
+            return await self._entry_in_parent(share, path)
         async with self._lock, self._rate_limiter:
             return await asyncio.to_thread(self._client.stat, share, path)
+
+    async def _entry_in_parent(self, share: str, path: str) -> DirectoryEntry | None:
+        normalized = path.replace("\\", "/").strip("/")
+        parent, _, name = normalized.rpartition("/")
+        if not name:
+            return None
+        try:
+            entries = await self.list_directory(share, parent)
+        except FileNotFoundError:
+            return None
+        folded = name.casefold()
+        for entry in entries:
+            if entry.name.casefold() == folded:
+                return entry
+        return None
 
     async def close(self) -> None:
         async with self._lock:

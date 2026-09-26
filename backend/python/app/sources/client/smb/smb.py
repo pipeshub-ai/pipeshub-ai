@@ -121,12 +121,12 @@ class SmbClient(IClient):
             raise DirectoryListingError(share, path, str(exc)) from exc
         return entries
 
-    def stat(self, share: str, path: str) -> DirectoryEntry | None:
+    def stat(self, share: str, path: str, *, follow: bool = True) -> DirectoryEntry | None:
         self.register()
         smbclient = self._smbclient()
         target = unc(self.server, share, path)
         try:
-            result = smbclient.stat(target, **self._kwargs())
+            result = smbclient.stat(target, follow_symlinks=follow, **self._kwargs())
         except FileNotFoundError:
             return None
         except Exception as exc:

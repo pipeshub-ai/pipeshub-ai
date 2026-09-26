@@ -41,9 +41,11 @@ class SmbDataSource:
         async with self._rate_limiter:
             return await asyncio.to_thread(self._client.list_shares)
 
-    async def stat(self, share: str, path: str) -> DirectoryEntry | None:
+    async def stat(
+        self, share: str, path: str, *, follow: bool = True
+    ) -> DirectoryEntry | None:
         async with self._rate_limiter:
-            return await asyncio.to_thread(self._client.stat, share, path)
+            return await asyncio.to_thread(self._client.stat, share, path, follow=follow)
 
     async def close(self) -> None:
         await asyncio.to_thread(self._client.close)

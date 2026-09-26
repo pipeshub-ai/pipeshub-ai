@@ -37,6 +37,10 @@ MAX_OVER_MEAN = 1.35
 HELD_OUT_CONNECTORS = frozenset({"cifs"})
 
 _SHARD_LINE = re.compile(r'^\s*CONN_SHARD_(\d+):\s*"([^"]*)"\s*$', re.MULTILINE)
+_CORE_MARKER_LINE = re.compile(
+    r'^[ \t]*core\)[ \t]+MARKERS="([^"]*)"',
+    re.MULTILINE,
+)
 _MARKER_LINE = re.compile(r"^\s{4}(\w+):\s*(.+)$")
 _MATRIX_LINE = re.compile(r"^\s*shard:\s.*$", re.MULTILINE)
 _MATRIX_SHARD = re.compile(r'"(connectors-\d+)"')
@@ -145,13 +149,17 @@ def check(
             seen[name] = shard
 
     held = HELD_OUT_CONNECTORS & connectors
+    core_expressions = _CORE_MARKER_LINE.findall(workflow_text)
     for name in sorted(held):
         if name in seen:
             problems.append(
                 f"'{name}' is held out of the nightly until its connector is registered, "
                 f"but {seen[name]} still selects it."
             )
-        elif f"not {name}" not in workflow_text:
+        elif not core_expressions or any(
+            re.search(rf"\bnot\s+{re.escape(name)}\b", expression) is None
+            for expression in core_expressions
+        ):
             problems.append(
                 f"'{name}' is held out of the shards, but the core job does not exclude "
                 f"it, so those tests fall into core."

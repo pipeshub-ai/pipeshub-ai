@@ -405,6 +405,37 @@ class TestCifsDialectGuard:
         assert chunks == [b"abc"]
         assert limiter.acquires == 1
 
+    async def test_unfollowed_stat_reads_the_directory_entry(self):
+        junction = DirectoryEntry(
+            name="Junction",
+            is_directory=True,
+            is_symlink=False,
+            is_reparse=True,
+            size=0,
+            created_time=None,
+            last_write_time=None,
+            file_id=9,
+        )
+
+        class Client:
+            def __init__(self) -> None:
+                self.stats = 0
+
+            def list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
+                assert share == SHARE
+                assert path == ""
+                return [junction]
+
+            def stat(self, share: str, path: str) -> DirectoryEntry | None:
+                self.stats += 1
+                return None
+
+        client = Client()
+        ds = CifsDataSource(client)  # type: ignore[arg-type]
+        entry = await ds.stat(SHARE, "junction", follow=False)
+        assert entry is junction
+        assert client.stats == 0
+
 
 class TestCifsConnectorInit:
     async def test_init_missing_config_notifies(self, cifs_connector):
