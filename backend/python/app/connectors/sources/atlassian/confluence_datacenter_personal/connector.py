@@ -125,6 +125,22 @@ def _extract_item_last_modified_when(item_data: dict[str, Any]) -> Optional[str]
         return version.get("when") or version.get("createdAt")
     return None
 
+def _item_revision_marker(item_data: dict[str, Any]) -> Optional[str]:
+    """What identifies this revision of an item: its last-modified time, else its version number.
+
+    None when neither is known, so a given-up item can't be matched and is never skipped.
+    """
+    when = _extract_item_last_modified_when(item_data)
+    if when:
+        return when
+    history = item_data.get("history")
+    last_updated = history.get("lastUpdated") if isinstance(history, dict) else None
+    version = item_data.get("version")
+    number = (last_updated.get("number") if isinstance(last_updated, dict) else None) or (
+        version.get("number") if isinstance(version, dict) else None
+    )
+    return f"version:{number}" if number is not None else None
+
 # Expand parameters for fetching pages and blogposts with required metadata
 # Includes: ancestors, history, space, attachments, and comments
 CONTENT_EXPAND_PARAMS = (
@@ -983,9 +999,9 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                             homepage_seen_in_search = True
 
                         # After the homepage check, so a skipped homepage isn't mistaken for one missing from search.
-                        item_when = _extract_item_last_modified_when(item_data) or ""
+                        item_marker = _item_revision_marker(item_data)
                         if str(item_id) in given_up:
-                            if given_up[str(item_id)] == item_when:
+                            if item_marker and given_up[str(item_id)] == item_marker:
                                 continue
                             del given_up[str(item_id)]
 
@@ -1115,7 +1131,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                         failed_items.append((
                             str(item_data.get("id")),
                             str(item_data.get("title")),
-                            _extract_item_last_modified_when(item_data) or "",
+                            _item_revision_marker(item_data) or "",
                         ))
                         continue
 
@@ -1198,7 +1214,8 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
         for item_id, title, when in failed_items:
             attempts = int(attempts_before.get(item_id) or 0) + 1
             if attempts >= MAX_FAILED_PAGE_ATTEMPTS:
-                given_up[item_id] = when
+                if when:
+                    given_up[item_id] = when
                 newly_given_up.append(f"'{title}' ({item_id})")
             else:
                 held[item_id] = attempts
@@ -1238,6 +1255,9 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
 
     @staticmethod
     def _listed_after(when: str, cutoff: datetime) -> bool:
+        # A version-number marker has no time to compare, so it is kept.
+        if when.startswith("version:"):
+            return True
         try:
             return datetime.fromisoformat(when.replace("Z", "+00:00")) >= cutoff
         except (AttributeError, ValueError):

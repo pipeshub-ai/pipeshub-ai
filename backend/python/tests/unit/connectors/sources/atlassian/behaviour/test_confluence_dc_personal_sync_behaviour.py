@@ -550,6 +550,43 @@ class TestPartialFailures:
         assert "p2" in saved(records_db, RecordType.CONFLUENCE_PAGE), "once it changes it is tried afresh"
         assert json.loads(checkpoints.values_for("confluence_pages/ENG")["givenUpPages"]) == {}
 
+    async def test_a_given_up_page_is_matched_only_on_a_known_revision(self, atlassian_api, records_db, checkpoints, search) -> None:
+        undated = {**content("p2"), "history": {"createdDate": "2024-01-01T00:00:00.000Z"}}
+        versioned = {**content("p3"), "history": {"createdDate": "2024-01-01T00:00:00.000Z"}, "version": {"number": 3}}
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([undated, versioned]))
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG")
+        await connector.pages_sync_point.update_sync_point(
+            key, {"last_sync_time": "2024-04-01T00:00:00.000Z", "givenUpPages": json.dumps({"p2": "", "p3": "version:3"})}
+        )
+
+        await connector.run_sync()
+
+        pages = saved(records_db, RecordType.CONFLUENCE_PAGE)
+        assert "p2" in pages, "with no known time or version it is not skipped"
+        assert "p3" not in pages, "an unchanged version number still matches"
+        assert json.loads(checkpoints.values_for("confluence_pages/ENG")["givenUpPages"]) == {"p3": "version:3"}
+
+    async def test_a_page_with_no_known_revision_is_not_remembered_when_given_up(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        undated = {**content("p2"), "history": {"createdDate": "2024-01-01T00:00:00.000Z"}}
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1"), undated, content("p3")]))
+        records_db.fail_lookup_for = {"p2", "p3"}
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        await connector.pages_sync_point.update_sync_point(
+            generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG"),
+            {"failedPages": json.dumps({"p2": 4})},
+        )
+
+        await connector.run_sync()
+
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert json.loads(stored["failedPages"]) == {"p3": 1}, "p2 is given up on, p3 still holds the checkpoint"
+        assert "p2" not in json.loads(stored.get("givenUpPages") or "{}"), "nothing to match it on, so it isn't kept"
+
     async def test_each_failing_page_has_its_own_count(self, atlassian_api, records_db, checkpoints, search) -> None:
         stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
         search.add("page", "ENG", 0, listing([content("p1"), content("p2"), content("p3")]))
