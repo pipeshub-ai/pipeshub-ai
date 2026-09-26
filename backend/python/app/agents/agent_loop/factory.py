@@ -90,6 +90,11 @@ from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import (
 from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
     shape_tool_result_clearing,
 )
+from app.agent_loop_lib.hooks.middleware.builtin.turn_guards import (
+    install_denial_breaker,
+    install_doom_loop_detection,
+    install_stall_detection,
+)
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
@@ -897,6 +902,12 @@ class PipesHubAgentFactory:
         per-request instances matter for `ToolErrorTracker`/`CitationCollector`
         state isolation across concurrent requests)."""
         hooks = HookRegistry()
+
+        # First, so the denial counter wraps every PRE_TOOL_USE middleware
+        # registered below (and by the sandbox/skills/spec wiring after this).
+        install_denial_breaker(hooks)
+        install_doom_loop_detection(hooks)
+        install_stall_detection(hooks)
 
         # Exposed on tool_state so search/fetch tools (retrieval.py,
         # citations.py) can skip stashing into `pending_tool_images` when
