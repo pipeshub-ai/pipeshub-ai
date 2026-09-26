@@ -317,13 +317,24 @@ def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool,
 CHAT_MODES = ("internal_search", "agent")
 
 
-def ask(origin: str, jwt: str, question: str, chat_mode: str = "internal_search") -> tuple[str, list[str]]:
+def ask_body(question: str, chat_mode: str, kb_ids: list[str] | None = None) -> dict:
+    """The stream request. `kb_ids` limits it to the knowledge bases this run
+    loaded, so records another persona's run uploaded can't answer it."""
+    body: dict = {"query": question, "chatMode": chat_mode}
+    if kb_ids:
+        body["filters"] = {"kb": list(kb_ids)}
+    return body
+
+
+def ask(
+    origin: str, jwt: str, question: str, chat_mode: str = "internal_search", kb_ids: list[str] | None = None
+) -> tuple[str, list[str]]:
     """Ask via the raw SSE endpoint; the generated SDK's stream parser mis-types `data` (spec bug)."""
     answer, cited = [], []
     # Agent mode can take a few minutes on a question it has to search around.
     with httpx.Client(base_url=origin, timeout=300) as c, c.stream(
         "POST", "/api/v1/conversations/stream",
-        json={"query": question, "chatMode": chat_mode},
+        json=ask_body(question, chat_mode, kb_ids),
         headers={"Authorization": f"Bearer {jwt}", "Accept": "text/event-stream"},
     ) as resp:
         resp.raise_for_status()
@@ -364,6 +375,8 @@ def main() -> None:
     env = load_env(args.env)
     origin = env["PIPESHUB_ORIGIN"].rstrip("/")
     fx = yaml.safe_load(open(args.fixture))
+    # Checked before any upload, so a typo fails in seconds rather than after indexing.
+    questions = select_questions(fx, set(args.only.split(",")) if args.only else None)
     if args.persona in ("alice", "bob"):
         person = next(p for p in fx["people"] if p["id"] == args.persona)
         password = os.environ.get("DEMO_PERSONA_PASSWORD")
@@ -383,6 +396,8 @@ def main() -> None:
     else:
         sdk = contextlib.nullcontext()
 
+    # Connector mode asks through the Demo connector's own permissions, unscoped.
+    kb_ids: list[str] | None = None
     with sdk as ph:
         if uploading:
             # Knowledge bases stand in for groups: everything the installer can read
@@ -391,27 +406,28 @@ def main() -> None:
             readable = upload_groups(fx, "alice" if args.skip_restricted else "bob")
             names = {g["id"]: g["name"] for g in fx["groups"]}
             shared, restricted = upload_plan(fx)
+            kb_shared = ensure_kb(ph, "Acme Corp (shared)")
+            kb_ids = [kb_shared]
             if not args.skip_shared:
                 print(f"== uploading {len(shared)} shared records")
-                kb_shared = ensure_kb(ph, "Acme Corp (shared)")
                 upload(ph, kb_shared, shared)
             for group in sorted(readable & set(restricted)):
                 print(f"== uploading {len(restricted[group])} records for {names[group]}")
-                upload(ph, ensure_kb(ph, f"Acme Corp ({names[group].lower()})"), restricted[group])
+                kb_ids.append(ensure_kb(ph, f"Acme Corp ({names[group].lower()})"))
+                upload(ph, kb_ids[-1], restricted[group])
             print("== waiting for indexing")
             for probe in wait_probes(shared, restricted, readable):
                 wait_indexed(ph, probe, probe)
 
         persona = args.persona or ("alice" if args.skip_restricted else "bob")
-        only = set(args.only.split(",")) if args.only else None
         summary = []
-        for q in select_questions(fx, only):
+        for q in questions:
             expect = expectation(q, persona, fx)
             passes = 0
             print(f"\n== {q['id']} [{persona}] {q['ask']}")
             for i in range(args.runs):
                 t0 = time.time()
-                answer, cited_names = ask(origin, jwt, q["ask"], args.chat_mode)
+                answer, cited_names = ask(origin, jwt, q["ask"], args.chat_mode, kb_ids)
                 cited_ids = cited_fixture_ids(cited_names, name_to_id, thread_of)
                 ok, verdict = score(q, expect, cited_ids, answer)
                 passes += ok

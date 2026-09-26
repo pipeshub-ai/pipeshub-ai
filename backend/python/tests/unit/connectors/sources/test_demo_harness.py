@@ -201,3 +201,23 @@ def test_q5_still_accepts_the_pricing_documents_own_wording(fx: dict, answer: st
 def test_h1_needs_the_current_five_day_limit(fx: dict, answer: str, ok: bool) -> None:
     q = _question(fx, "h1")
     assert kb_harness.score(q, "cites", {"slack-people-0302"}, answer)[0] is ok
+
+
+def test_an_upload_run_asks_only_the_knowledge_bases_it_loaded() -> None:
+    body = kb_harness.ask_body("What is the salary band?", "agent", ["kb-shared", "kb-launch"])
+    assert body["filters"] == {"kb": ["kb-shared", "kb-launch"]}
+    # Connector mode goes through the Demo connector's permissions, unscoped.
+    assert "filters" not in kb_harness.ask_body("What is the salary band?", "agent")
+
+
+def test_an_unknown_only_id_fails_before_logging_in_or_uploading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env = tmp_path / "bootstrap.env"
+    env.write_text("PIPESHUB_ORIGIN=http://localhost:1\nPIPESHUB_ACCOUNT_EMAIL=a@b.c\nPIPESHUB_ACCOUNT_PASSWORD=x\n")
+
+    def no_login(*_: object) -> str:
+        raise AssertionError("logged in before checking --only")
+
+    monkeypatch.setattr(kb_harness, "login", no_login)
+    monkeypatch.setattr("sys.argv", ["kb_harness.py", "--env", str(env), "--fixture", str(FIXTURE), "--only", "s1,nope"])
+    with pytest.raises(SystemExit, match="nope"):
+        kb_harness.main()
