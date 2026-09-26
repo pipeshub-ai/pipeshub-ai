@@ -91,6 +91,8 @@ HTTP_STATUS_MULTIPLE_CHOICES = 300
 HTTP_NOT_MODIFIED = 304
 # Runs a page of activity is read again when part of it couldn't be applied, before moving on.
 MAX_HELD_ATTEMPTS = 5
+# How many of the changes that couldn't be applied a log line names before summarising the rest.
+MAX_NAMED_FAILURES = 20
 
 APP_PASSWORD_REJECTED_MESSAGE = (
     "Nextcloud rejected the app password, so nothing could be synced. Create a new app password "
@@ -126,6 +128,13 @@ def path_inside_user_home(path: str, user_id: str | None) -> str:
         if not rest or rest.startswith("/"):
             return rest.strip("/")
     return path.strip("/")
+
+
+def describe_failures(failures: dict[str, str]) -> str:
+    """``failures`` (what failed -> why) as one log-friendly line, naming at most MAX_NAMED_FAILURES."""
+    named = [f"{item} ({reason})" for item, reason in list(failures.items())[:MAX_NAMED_FAILURES]]
+    hidden = len(failures) - len(named)
+    return "; ".join(named) + (f"; and {hidden} more" if hidden > 0 else "")
 
 
 def get_path_depth(path: str) -> int:
@@ -1353,6 +1362,7 @@ class NextcloudConnector(BaseConnector):
             # Extract unique file paths that were modified
             modified_paths = set()
             deleted_file_ids = set()
+            deleted_paths: dict[str, str] = {}
             max_activity_id = last_activity_id
 
             for activity in activities:
@@ -1384,6 +1394,7 @@ class NextcloudConnector(BaseConnector):
                         for file_id, file_path in targets:
                             if file_id:
                                 deleted_file_ids.add(str(file_id))
+                                deleted_paths[str(file_id)] = file_path or ""
                                 self.logger.info(f"🗑️  Deletion detected: {file_path} (ID: {file_id})")
                     elif activity_type in ['file_created', 'file_changed', 'file_renamed', 'file_restored']:
                         for _, file_path in targets:
@@ -1391,25 +1402,26 @@ class NextcloudConnector(BaseConnector):
                                 modified_paths.add(file_path)
                                 self.logger.info(f"📝 Modification detected: {file_path} ({activity_type})")
 
-            applied = True
+            failures: dict[str, str] = {}
 
             # Process deletions
             if deleted_file_ids:
                 self.logger.info(f"🗑️  [Incremental Sync] Processing {len(deleted_file_ids)} deletions")
-                applied = await self._process_deletions(deleted_file_ids)
+                for file_id, reason in (await self._process_deletions(deleted_file_ids)).items():
+                    failures[f"deletion of {deleted_paths.get(file_id) or 'file'} (ID {file_id})"] = reason
 
             # Process modifications and new files
             if modified_paths:
                 self.logger.info(f"📝 [Incremental Sync] Processing {len(modified_paths)} modified/new files")
-                applied = await self._process_modified_files(
+                failures.update(await self._process_modified_files(
                     list(modified_paths),
                     user_id,
                     user_email,
                     existing_group.external_group_id
-                ) and applied
+                ))
 
             # The feed won't list these activities again once the cursor moves past them.
-            if not applied:
+            if failures:
                 held_attempts = int(sync_point_data.get("held_attempts") or 0) + 1
                 if held_attempts < MAX_HELD_ATTEMPTS:
                     await self.activity_sync_point.update_sync_point(
@@ -1417,15 +1429,15 @@ class NextcloudConnector(BaseConnector):
                         {"cursor": str(last_activity_id), "held_attempts": held_attempts},
                     )
                     self.logger.warning(
-                        f"⚠️ [Incremental Sync] Some changes could not be applied (attempt {held_attempts} "
-                        f"of {MAX_HELD_ATTEMPTS}); the cursor stays at {last_activity_id} so the next "
-                        "sync reads them again."
+                        f"⚠️ [Incremental Sync] {len(failures)} change(s) could not be applied (attempt "
+                        f"{held_attempts} of {MAX_HELD_ATTEMPTS}); the cursor stays at {last_activity_id} so "
+                        f"the next sync reads them again: {describe_failures(failures)}"
                     )
                     return
                 self.logger.error(
-                    f"❌ [Incremental Sync] Some changes still could not be applied after {held_attempts} "
-                    "attempts; moving on so later changes are not held up. They are picked up again when "
-                    "those files next change in Nextcloud."
+                    f"❌ [Incremental Sync] {len(failures)} change(s) still could not be applied after "
+                    f"{held_attempts} attempts; moving on so later changes are not held up. They are "
+                    f"picked up again when those files next change in Nextcloud: {describe_failures(failures)}"
                 )
 
             # Update cursor to latest activity ID
@@ -1498,15 +1510,15 @@ class NextcloudConnector(BaseConnector):
 
         return activities
 
-    async def _process_deletions(self, file_ids: set) -> bool:
+    async def _process_deletions(self, file_ids: set) -> dict[str, str]:
         """
         Process file deletions from activity feed.
         Args:
             file_ids: Set of external file IDs that were deleted
         Returns:
-            False when any of the deletions could not be applied
+            The IDs whose deletion could not be applied, each with the reason; empty when all were
         """
-        all_applied = True
+        failed: dict[str, str] = {}
         try:
             for file_id in file_ids:
                 try:
@@ -1538,22 +1550,22 @@ class NextcloudConnector(BaseConnector):
                     )
                     # The graph reports a failed cascade in the result rather than raising.
                     if not result or not result.get("success") or result.get("failed_count"):
+                        reason = (result or {}).get('reason') or str(result)
                         self.logger.error(
-                            f"❌ Could not remove deleted folder {file_id} and everything in it: "
-                            f"{(result or {}).get('reason') or result}"
+                            f"❌ Could not remove deleted folder {file_id} and everything in it: {reason}"
                         )
-                        all_applied = False
+                        failed[str(file_id)] = f"folder delete failed: {reason}"
                         continue
                     self.logger.info(f"🗑️ Removed folder {file_id} and everything in it")
 
                 except Exception as e:
                     self.logger.error(f"Error deleting record {file_id}: {e}", exc_info=True)
-                    all_applied = False
+                    failed[str(file_id)] = str(e) or type(e).__name__
 
         except Exception as e:
             self.logger.error(f"Error processing deletions: {e}", exc_info=True)
-            return False
-        return all_applied
+            return dict.fromkeys(map(str, file_ids), str(e) or type(e).__name__)
+        return failed
 
     async def _process_modified_files(
         self,
@@ -1561,11 +1573,11 @@ class NextcloudConnector(BaseConnector):
         user_id: str,
         user_email: str,
         record_group_id: str
-    ) -> bool:
+    ) -> dict[str, str]:
         """
         Process modified files by fetching their latest metadata.
         For incremental sync, sends new records immediately (no batching needed for small changes).
-        Returns False when any of the changes could not be fetched or saved.
+        Returns the paths that could not be fetched or saved, each with the reason; empty when all were.
         Args:
             file_paths: List of file paths that were modified
             user_id: User ID
@@ -1584,7 +1596,7 @@ class NextcloudConnector(BaseConnector):
             # This allows parent folders created during processing to be found by children
             path_to_external_id = {}
 
-            all_applied = True
+            failed: dict[str, str] = {}
             for path in file_paths:
                 try:
                     if not await self._ensure_parent_folders(
@@ -1596,7 +1608,7 @@ class NextcloudConnector(BaseConnector):
                         path_to_external_id,
                         processed_parents,
                     ):
-                        all_applied = False
+                        failed[path] = "a folder above it could not be read or saved"
 
                     # Now fetch and process the actual file
                     async with self.rate_limiter:
@@ -1615,7 +1627,7 @@ class NextcloudConnector(BaseConnector):
                         self.logger.warning(
                             f"Failed to fetch metadata for {path}: {get_response_error(response)}"
                         )
-                        all_applied = False
+                        failed[path] = f"fetch failed: {get_response_error(response)}"
                         continue
 
                     # Parse response
@@ -1623,7 +1635,7 @@ class NextcloudConnector(BaseConnector):
                     entries = parse_webdav_propfind_response(response_body) if response_body else []
                     if not entries:
                         self.logger.warning(f"Could not read the metadata Nextcloud returned for {path}")
-                        all_applied = False
+                        failed[path] = "Nextcloud's answer could not be read"
                         continue
 
                     # Build path-to-external-id map for this file and merge with existing map
@@ -1648,17 +1660,17 @@ class NextcloudConnector(BaseConnector):
                                     [(record_update.record, record_update.new_permissions or [])],
                                 )
                             elif not await self._handle_record_updates(record_update):
-                                all_applied = False
+                                failed[path] = "the change could not be saved"
 
                 except Exception as e:
                     self.logger.error(f"Error processing modified file {path}: {e}", exc_info=True)
-                    all_applied = False
+                    failed[path] = str(e) or type(e).__name__
 
-            return all_applied
+            return failed
 
         except Exception as e:
             self.logger.error(f"Error processing modified files: {e}", exc_info=True)
-            return False
+            return dict.fromkeys(file_paths, str(e) or type(e).__name__)
 
     async def _ensure_parent_folders(
         self,

@@ -34,7 +34,11 @@ from nextcloud_behaviour_fakes import (
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-from app.connectors.sources.nextcloud.connector import NextcloudConnector
+from app.connectors.sources.nextcloud import connector as nextcloud_connector
+from app.connectors.sources.nextcloud.connector import (
+    MAX_HELD_ATTEMPTS,
+    NextcloudConnector,
+)
 from app.models.entities import FileRecord
 from app.models.permission import EntityType, PermissionType
 from app.services.notification.types import NotificationType
@@ -872,6 +876,32 @@ class TestIncrementalSync:
         server.add_file("after.txt")
         await connector.run_sync()
         assert "after.txt" in db.names(), "later changes are no longer held up"
+
+    async def test_the_give_up_error_names_what_could_not_be_applied(self, server, db, store, caplog) -> None:
+        connector = await synced(server, db, store)
+        server.change("Docs/notes.txt")
+        readme = ids_of(server)["readme.txt"]
+        db.fail_delete_for = {readme}
+        server.delete("readme.txt")
+        server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), lambda: httpx.Response(503))
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+
+        gave_up = [r.getMessage() for r in caplog.records
+                   if r.levelno == logging.ERROR and "still could not be applied" in r.getMessage()]
+        assert len(gave_up) == 1
+        assert "/Docs/notes.txt (fetch failed: HTTP 503)" in gave_up[0]
+        assert f"deletion of /readme.txt (ID {readme}) (delete failed for readme.txt)" in gave_up[0]
+
+    def test_a_long_list_of_failures_is_cut_short(self) -> None:
+        limit = nextcloud_connector.MAX_NAMED_FAILURES
+        failures = {f"/file-{i}.txt": "HTTP 503" for i in range(limit + 3)}
+
+        line = nextcloud_connector.describe_failures(failures)
+
+        assert line.count("HTTP 503") == limit
+        assert line.endswith("; and 3 more")
 
     async def test_a_file_gone_before_the_sync_does_not_hold_the_cursor(self, server, db, store) -> None:
         connector = await synced(server, db, store)
