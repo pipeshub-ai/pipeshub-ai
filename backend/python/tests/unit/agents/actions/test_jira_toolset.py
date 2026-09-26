@@ -659,42 +659,35 @@ class TestAddUrlsToIssueReferences:
 
 class TestResolveUserToAccountId:
     @pytest.mark.asyncio
-    async def test_assignable_user_found_first(self):
+    async def test_single_assignable_user_is_found(self):
         client = MagicMock()
         client.find_assignable_users = AsyncMock(
-            return_value=_mock_response(200, [{"accountId": "a1"}]),
+            return_value=_mock_response(200, [{"accountId": "a1", "displayName": "Alice"}]),
         )
         jira = _build_jira()
         jira.client = client
-        assert await jira._resolve_user_to_account_id("P", "alice") == "a1"
+        assert await jira._resolve_user_to_account_id("P", "alice") == ("a1", None)
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_global_search(self):
+    async def test_no_match_is_an_error_not_a_global_guess(self):
         client = MagicMock()
         client.find_assignable_users = AsyncMock(return_value=_mock_response(200, []))
-        client.find_users_by_query = AsyncMock(
-            return_value=_mock_response(200, [{"accountId": "g1"}]),
-        )
+        client.find_users_by_query = AsyncMock(return_value=_mock_response(200, [{"accountId": "g1"}]))
         jira = _build_jira()
         jira.client = client
-        assert await jira._resolve_user_to_account_id("P", "alice") == "g1"
+        account_id, error = await jira._resolve_user_to_account_id("P", "alice")
+        assert account_id is None and "matches 'alice'" in error
+        client.find_users_by_query.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_none_when_no_match(self):
-        client = MagicMock()
-        client.find_assignable_users = AsyncMock(return_value=_mock_response(200, []))
-        client.find_users_by_query = AsyncMock(return_value=_mock_response(200, []))
-        jira = _build_jira()
-        jira.client = client
-        assert await jira._resolve_user_to_account_id("P", "alice") is None
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_is_an_error(self):
         client = MagicMock()
         client.find_assignable_users = AsyncMock(side_effect=RuntimeError("boom"))
         jira = _build_jira()
         jira.client = client
-        assert await jira._resolve_user_to_account_id("P", "alice") is None
+        account_id, error = await jira._resolve_user_to_account_id("P", "alice", "reporter")
+        assert account_id is None
+        assert "could not look up 'alice'" in error and "reporter_account_id" in error and "boom" not in error
 
 
 # ===========================================================================
@@ -855,7 +848,7 @@ class TestCreateIssue:
     async def test_resolves_assignee_query(self):
         jira = _build_jira()
         jira.client.create_issue = AsyncMock(return_value=_mock_response(201, {"key": "P-1"}))
-        with patch.object(jira, "_resolve_user_to_account_id", AsyncMock(return_value="aid")), \
+        with patch.object(jira, "_resolve_user_to_account_id", AsyncMock(return_value=("aid", None))), \
              patch.object(jira, "_get_site_url", AsyncMock(return_value=None)):
             ok, _ = await jira.create_issue("P", "s", "Task", assignee_query="alice")
         assert ok is True
@@ -1045,7 +1038,7 @@ class TestUpdateIssue:
             _mock_response(200, {"key": "P-1"}),                         # final fetch
         ])
         jira.client.edit_issue = AsyncMock(return_value=_mock_response(204))
-        with patch.object(jira, "_resolve_user_to_account_id", AsyncMock(return_value="aid")), \
+        with patch.object(jira, "_resolve_user_to_account_id", AsyncMock(return_value=("aid", None))), \
              patch.object(jira, "_get_site_url", AsyncMock(return_value=None)):
             ok, _ = await jira.update_issue("P-1", assignee_query="alice")
         assert ok is True

@@ -354,6 +354,10 @@ class GetCreateIssueFieldsInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# Enough candidates to tell an exact name from a crowd of partial matches.
+_USER_LOOKUP_LIMIT = 10
+
+
 def _jira_issue_label(issue: dict[str, Any]) -> str:
     key = issue.get("key") or "?"
     fields = issue.get("fields")
@@ -683,45 +687,55 @@ class Jira:
     async def _resolve_user_to_account_id(
         self,
         project_key: str,
-        query: str
-    ) -> Optional[str]:
-        """Resolve a user query to a JIRA account ID.
+        query: str,
+        role: str = "assignee",
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Find the one person in the project that ``query`` names.
 
-        Args:
-            project_key: Project key for assignable user search
-            query: User query (name, email, or ID)
-
-        Returns:
-            Account ID or None if not found
+        Returns ``(account_id, None)``, or ``(None, message)`` when the lookup failed,
+        nobody matched, or several people did. A name must never resolve to a guess:
+        the caller writes nothing unless an account id comes back.
         """
+        not_looked_up = (
+            f"Jira could not look up '{query}' just now, so nothing was changed. Try again in a moment, "
+            f"or pass {role}_account_id (search_users finds it)."
+        )
         try:
-            # First try assignable users for the project
             response = await self.client.find_assignable_users(
                 project=project_key,
                 query=query,
-                maxResults=1
+                maxResults=_USER_LOOKUP_LIMIT,
             )
-
-            if response.status == HttpStatusCode.SUCCESS.value:
-                data = response.json()
-                if data and isinstance(data, list) and len(data) > 0:
-                    return data[0].get('accountId')
-
-            # Fallback: global user search
-            response = await self.client.find_users_by_query(
-                query=query,
-                maxResults=1
-            )
-
-            if response.status == HttpStatusCode.SUCCESS.value:
-                data = response.json()
-                if data and isinstance(data, list) and len(data) > 0:
-                    return data[0].get('accountId')
-
-            return None
+            if response.status != HttpStatusCode.SUCCESS.value:
+                logger.warning("Jira user lookup for %r failed: HTTP %s", query, response.status)
+                return None, not_looked_up
+            candidates = [u for u in (response.json() or []) if isinstance(u, dict) and u.get("accountId")]
         except Exception as e:
-            logger.warning(f"Error resolving user to account ID: {e}")
-            return None
+            logger.warning("Jira user lookup for %r failed: %s", query, e)
+            return None, not_looked_up
+
+        wanted = query.strip().casefold()
+        exact = [
+            u for u in candidates
+            if wanted in {str(u.get(k) or "").casefold() for k in ("accountId", "displayName", "emailAddress")}
+        ]
+        if len(exact) == 1:
+            return exact[0]["accountId"], None
+        matches = exact or candidates
+        if len(matches) == 1:
+            return matches[0]["accountId"], None
+        if not matches:
+            return None, (
+                f"No one who can be assigned issues in {project_key} matches '{query}', so nothing was changed. "
+                f"Check the name with search_users, then pass {role}_account_id."
+            )
+        names = ", ".join(
+            f"{u.get('displayName') or '?'} ({u.get('emailAddress') or u['accountId']})" for u in matches[:5]
+        )
+        return None, (
+            f"Several people match '{query}': {names}. Nothing was changed. Ask the user which one they mean, "
+            f"then pass that person's {role}_account_id."
+        )
 
     def _normalize_description(self, description: str) -> str:
         """Normalize description by removing Slack mention markup.
@@ -1643,12 +1657,10 @@ class Jira:
                 "issuetype": {"name": issue_type_name},
             }
 
-            # Resolve assignee
             if assignee_query and not assignee_account_id:
-                assignee_account_id = await self._resolve_user_to_account_id(
-                    project_key,
-                    assignee_query
-                )
+                assignee_account_id, lookup_error = await self._resolve_user_to_account_id(project_key, assignee_query)
+                if lookup_error:
+                    return False, json.dumps({"error": lookup_error})
 
             if description:
                 fields["description"] = self._normalize_description(description)
@@ -1896,20 +1908,27 @@ class Jira:
                         )
                 fields["issuetype"] = {"name": resolved_type}
 
-            if assignee_query and not assignee_account_id:
-                if project_key:
-                    assignee_account_id = await self._resolve_user_to_account_id(
-                        project_key, assignee_query
-                    )
+            for role, query, given in (
+                ("assignee", assignee_query, assignee_account_id),
+                ("reporter", reporter_query, reporter_account_id),
+            ):
+                if not query or given:
+                    continue
+                if not project_key:
+                    return False, json.dumps({"error": (
+                        f"Jira could not look up '{query}' because issue {issue_key} could not be read, so nothing "
+                        f"was changed. Check the issue key, or pass {role}_account_id (search_users finds it)."
+                    )})
+                account_id, lookup_error = await self._resolve_user_to_account_id(project_key, query, role)
+                if lookup_error:
+                    return False, json.dumps({"error": lookup_error})
+                if role == "assignee":
+                    assignee_account_id = account_id
+                else:
+                    reporter_account_id = account_id
 
             if assignee_account_id:
                 fields["assignee"] = {"accountId": assignee_account_id}
-
-            if reporter_query and not reporter_account_id:
-                if project_key:
-                    reporter_account_id = await self._resolve_user_to_account_id(
-                        project_key, reporter_query
-                    )
 
             if reporter_account_id:
                 fields["reporter"] = {"accountId": reporter_account_id}
