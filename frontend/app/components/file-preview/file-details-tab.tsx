@@ -158,7 +158,7 @@ export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
         </Text>
         
         <Flex direction="column" gap="2">
-          {record.origin !== 'UPLOAD' && (
+          {record.origin !== 'UPLOAD' && !record.hideWeburl && (
             <LinkRow label="Web URL" href={record.webUrl || record.fileRecord?.webUrl} />
           )}
           <DetailRow label="Name" value={record.recordName} />

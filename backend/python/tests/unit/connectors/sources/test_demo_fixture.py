@@ -184,9 +184,10 @@ def test_record_text_carries_no_links(fx: dict) -> None:
     assert not linked, f"records whose text carries a link: {linked}"
 
 
-def test_records_are_sent_without_their_made_up_address(fx: dict) -> None:
-    # "Open in Jira/GitHub/..." on a demo record leads nowhere; without an
-    # address, and with hide_weburl, citations open the record in PipesHub.
+def test_records_hide_their_made_up_address_but_keep_one(fx: dict) -> None:
+    # "Open in Jira/GitHub/..." on a demo record leads nowhere, so hide_weburl
+    # hides it. The address must stay: search drops a ticket, message or pull
+    # request whose record has none, which would empty the demo's answers.
     from types import SimpleNamespace
 
     connector = demo_connector.DemoConnector.__new__(demo_connector.DemoConnector)
@@ -200,6 +201,19 @@ def test_records_are_sent_without_their_made_up_address(fx: dict) -> None:
         if rec["id"] not in connector._bodies:
             continue  # a message inside a thread; the thread is the record
         built = connector._build_record(rec, containers[rec["container"]], people, SimpleNamespace(id="rg-1"), 0)
-        assert built.weburl is None and built.hide_weburl is True, rec["id"]
+        assert built.hide_weburl is True and built.weburl, rec["id"]
         kinds.add(rec["type"])
     assert {"FILE", "TICKET", "PULL_REQUEST", "MESSAGE", "COMMENT"} <= kinds
+
+
+def test_every_record_revision_changes_so_a_resync_reaches_it(fx: dict) -> None:
+    # The processor skips a stored record whose revision is unchanged, so a
+    # change like hide_weburl only reaches existing installs if every revision moves.
+    import hashlib
+
+    bodies = demo_connector.DemoConnector._render_bodies(fx)
+    unchanged = [
+        k for k, body in bodies.items()
+        if demo_connector._revision_of(body) == hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    ]
+    assert not unchanged

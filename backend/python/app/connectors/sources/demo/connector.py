@@ -162,10 +162,16 @@ def _people_to_create(people: list[dict], absent: set[str]) -> list[dict]:
     return [p for p in people if not (p.get("login") and p["email"] in absent)]
 
 
+# Bump when a change must reach records whose text didn't change: the entity
+# processor only rewrites a stored record when its revision differs.
+# v2: hide_weburl on every record.
+_REVISION_SALT = "v2"
+
+
 def _revision_of(body: str) -> str:
     """A content hash the entity processor compares on resync, so an edited
     fixture body re-indexes without deleting and recreating the connector."""
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(f"{_REVISION_SALT}\n{body}".encode("utf-8")).hexdigest()[:16]
 
 
 def _epoch_ms(value: Any) -> int | None:
@@ -482,7 +488,7 @@ class DemoConnector(BaseConnector):
                 connector_id=self.connector_id,
                 mime_type=_MARKDOWN,
                 # The fixture's addresses are made up; see _build_record.
-                weburl=None,
+                weburl=c.get("web_url"),
                 hide_weburl=True,
                 source_created_at=_epoch_ms(msgs[0]["created"]),
                 source_updated_at=_epoch_ms(msgs[-1]["created"]),
@@ -540,9 +546,11 @@ class DemoConnector(BaseConnector):
             connector_name=_SYSTEM_TO_CONNECTOR[container["system"]],
             connector_id=self.connector_id,
             mime_type=_MARKDOWN,
-            # The fixture's addresses are made up, so "Open in Jira/GitHub/..."
-            # would lead nowhere. Without one, citations open the record in PipesHub.
-            weburl=None,
+            # The fixture's addresses are made up, so "Open in Jira/GitHub/..." would
+            # lead nowhere: hide_weburl hides it and citations open the record in
+            # PipesHub. The address itself stays, because search drops a non-file
+            # result whose record has none (retrieval_service).
+            weburl=rec.get("web_url") or container.get("web_url"),
             hide_weburl=True,
             source_created_at=_epoch_ms(rec["created"]),
             source_updated_at=_epoch_ms(rec.get("updated") or rec["created"]),
