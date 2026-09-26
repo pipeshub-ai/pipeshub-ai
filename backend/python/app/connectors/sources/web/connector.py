@@ -205,10 +205,17 @@ class WebApp(App):
 def failed_page_reason(status_code: int | None) -> str:
     """What a person sees as the reason a crawled page failed, with what to do next."""
     try:
-        status = HTTPStatus(int(status_code))
-        label = f"{status.value} {status.phrase}"
+        code = int(status_code)  # type: ignore[arg-type]
     except (TypeError, ValueError):
+        code = 0
+    if code <= 0:
         return "We couldn't reach this page. Check the URL is correct and publicly reachable, then sync again."
+    try:
+        status: HTTPStatus | int = HTTPStatus(code)
+        label = f"{code} {HTTPStatus(code).phrase}"
+    except ValueError:
+        # The site answered, with a code outside the standard (e.g. CDN codes 520-529, or 999).
+        status, label = code, str(code)
     if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
         return (
             f"The page refused access ({label}). It may need a login or block automated visitors; "
@@ -216,7 +223,7 @@ def failed_page_reason(status_code: int | None) -> str:
         )
     if status in (HTTPStatus.NOT_FOUND, HTTPStatus.GONE):
         return f"The page wasn't found ({label}). Check the URL is correct, then sync again."
-    if status in (HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.REQUEST_TIMEOUT) or status.value >= 500:
+    if status in (HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.REQUEST_TIMEOUT) or code >= 500:
         return f"The site didn't respond properly ({label}). PipesHub will try again on the next sync."
     return f"The page returned an error ({label}). Check the URL is correct and publicly reachable, then sync again."
 

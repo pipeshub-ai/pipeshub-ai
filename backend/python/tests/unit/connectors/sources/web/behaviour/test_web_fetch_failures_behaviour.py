@@ -175,3 +175,15 @@ async def test_the_connection_check_passes_for_a_reachable_site(
 
     assert await connector.test_connection_and_access() is True
     assert await notifications.delivered() == []
+
+
+async def test_a_cdn_error_code_is_reported_as_the_site_s_answer_not_as_unreachable(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    _home_linking_to_page(site)
+    site.add(PAGE, Page(status=522, body=b"origin timed out"))
+
+    await (await make_connector()).run_sync()
+
+    reason = db.pages()[PAGE].reason or ""
+    assert "(522" in reason and "couldn't reach" not in reason
