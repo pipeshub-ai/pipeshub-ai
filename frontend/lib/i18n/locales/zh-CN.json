@@ -57,6 +57,7 @@
     "thinkingFallback": "思考中…",
     "refiningResponse": "正在优化回复…",
     "errorFallback": "发生错误。请重试。",
+    "askQuestionResumeFailed": "无法发送你的回答。请再次提交以重试。",
     "copyCode": "复制",
     "copiedCode": "已复制"
   },

@@ -1,4 +1,4 @@
-import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, MessagePart } from '../../types';
+import type { AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, MessagePart } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 
@@ -22,6 +22,7 @@ export interface MessagePair {
   attachments?: AttachmentRef[];
   /** Persisted ask_user_question payload from a historical tool_call (read-only display) */
   persistedAskUserQuestion?: AskUserQuestionPayload;
+  persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
   /** Persisted agent-activity transcript (absent for older / legacy-protocol messages) */
   persistedParts?: MessagePart[];
   /** Set when this response was cut short by a user-initiated Stop. */
@@ -46,6 +47,7 @@ type AssistantCustom = {
   modelInfo?: ModelInfo;
   feedbackInfo?: { value?: 'like' | 'dislike' };
   persistedAskUserQuestion?: AskUserQuestionPayload;
+  persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
   persistedParts?: MessagePart[];
   status?: 'stopped';
 };
@@ -138,14 +140,23 @@ export function buildMessagePairs(
         : 'Question';
 
       // Check if this message is being regenerated
-      const isBeingRegenerated = !!regenerateMessageId && metadata?.messageId === regenerateMessageId;
+      const isBeingRegenerated = Boolean(
+        regenerateMessageId &&
+        (metadata?.messageId === regenerateMessageId || msg.id === regenerateMessageId),
+      );
 
-      // Live stream attaches only to the last assistant in the thread when
-      // its user message matches the query we sent (see placeholder assistant
-      // in `streamMessageForSlot`).
+      // New sends attach to the last assistant. Ask-user resume can target an
+      // older card row when a later turn (e.g. "hiii") is now last — then the
+      // last pair's question is not `streamingQuestion`.
       const isLastAssistant = i === lastAssistantIndex;
+      const lastQuestion = lastAssistantIndex > 0
+        && messages[lastAssistantIndex - 1]?.role === 'user'
+        ? extractTextContent(messages[lastAssistantIndex - 1].content as MessageContent)
+        : '';
       const isCurrentlyStreaming =
-        isStreaming && isLastAssistant && question === streamingQuestion;
+        isStreaming &&
+        question === streamingQuestion &&
+        (isLastAssistant || lastQuestion !== streamingQuestion);
 
       // appliedFilters from the preceding user message metadata
       const userMsgCustom = prevMsg?.metadata?.custom as UserCustom | undefined;
@@ -169,6 +180,7 @@ export function buildMessagePairs(
         createdAt: userMsgCustom?.createdAt,
         attachments: userMsgCustom?.attachments,
         persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
+        persistedAskUserQuestionAnswers: metadata?.persistedAskUserQuestionAnswers,
         persistedParts: metadata?.persistedParts,
         status: metadata?.status,
       });

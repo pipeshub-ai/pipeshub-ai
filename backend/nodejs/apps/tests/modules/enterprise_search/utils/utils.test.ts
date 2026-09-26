@@ -335,6 +335,16 @@ describe('Enterprise Search Utils', () => {
       expect(() => buildAIResponseMessage(aiResponse as any)).to.throw('AI response must include an answer')
     })
 
+    it('should allow an empty answer when status is waiting_input', () => {
+      const result = buildAIResponseMessage({
+        statusCode: 200,
+        data: { answer: '', status: 'waiting_input' },
+      } as any)
+
+      expect(result.messageType).to.equal('bot_response')
+      expect(result.content).to.equal('')
+    })
+
     it('should throw InternalServerError when data is null', () => {
       const aiResponse = {
         statusCode: 200,
@@ -1444,7 +1454,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         (data) => { capturedData = data },
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1467,7 +1476,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         (d) => { capturedData = d },
-        false,
       )
 
       expect(capturedData).to.not.be.null
@@ -1489,7 +1497,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       // Incomplete event should be kept in buffer
@@ -1510,7 +1517,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       // Should forward because parse failed
@@ -1531,7 +1537,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1564,7 +1569,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1583,7 +1587,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1604,7 +1607,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1626,7 +1628,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1659,7 +1660,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -2262,6 +2262,27 @@ describe('Enterprise Search Utils - coverage', () => {
       const result = formatPreviousConversations(messages as any)
       expect(result).to.have.lengthOf(2)
       expect(result.map((m: any) => m.role)).to.not.include('tool_call')
+    })
+
+    it('should attach a regenerate ask_user_question tool_call that follows the bot', () => {
+      const payload = { name: 'ask_user_question', questions: [{ question: 'Which region?' }] }
+      const messages = [
+        { messageType: 'user_query', content: 'ask me question' },
+        { messageType: 'bot_response', content: '', parts: [] },
+        {
+          messageType: 'tool_call',
+          content: '',
+          tools: [{ toolName: 'ask_user_question', toolResult: payload }],
+        },
+      ]
+      const result = formatPreviousConversations(messages as any)
+      expect(result).to.have.lengthOf(2)
+      expect(result[1].tool_results).to.deep.include({
+        tool_id: 'ask_user_question',
+        tool_name: 'internaltools__ask_user_question',
+        result: JSON.stringify(payload),
+        status: 'success',
+      })
     })
 
     it('should include referenceData when present', () => {
@@ -3689,7 +3710,7 @@ describe('AG-UI Protocol', () => {
       let capturedData: any = null
 
       handleRegenerationStreamData(
-        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, false, AGUI_PROTOCOL,
+        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
       )
 
       expect(capturedData).to.deep.equal(result)
@@ -3703,7 +3724,7 @@ describe('AG-UI Protocol', () => {
       let capturedData: any = null
 
       handleRegenerationStreamData(
-        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, false, AGUI_PROTOCOL,
+        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
       )
 
       expect(capturedData).to.deep.equal(payload)
@@ -3714,7 +3735,7 @@ describe('AG-UI Protocol', () => {
       const chunk = Buffer.from('event: RUN_FINISHED\ndata: {invalid json}\n\n')
       const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, false, AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       expect(onComplete.called).to.be.false
       expect(res.write.calledOnce).to.be.true
@@ -3733,7 +3754,7 @@ describe('AG-UI Protocol', () => {
         `event: RUN_ERROR\ndata: ${JSON.stringify({ type: 'RUN_ERROR', message: 'boom' })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, 'm2', null, 'req-1', res, sinon.stub(), false, AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', mockConv, 'm2', null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
 
       expect(res.write.calledOnce).to.be.true
       expect(res.write.firstCall.args[0]).to.include('event: RUN_ERROR')
@@ -3752,7 +3773,7 @@ describe('AG-UI Protocol', () => {
         })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), true, AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
       await Promise.resolve()
       await Promise.resolve()
 
@@ -3771,7 +3792,7 @@ describe('AG-UI Protocol', () => {
         `event: CUSTOM\ndata: ${JSON.stringify({ type: 'CUSTOM', name: 'artifact', value: {} })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), true, AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
 
       expect(res.write.calledOnce).to.be.true
       expect(findByIdAndUpdateStub.called).to.be.false
@@ -3782,7 +3803,7 @@ describe('AG-UI Protocol', () => {
       const onComplete = sinon.stub()
       const chunk = Buffer.from('event: complete\ndata: {"answer":"legacy"}\n\n')
 
-      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, false, AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       // Under `agui`, the legacy `complete` name has no special handling and
       // is forwarded through unchanged rather than being parsed as a completion.

@@ -140,6 +140,7 @@ class AnswerFinalizer:
         reasoning_turns: list[dict[str, Any]] | None = None,
         agent_confidence: str | None = None,
         agent_cancelled: bool = False,
+        agent_needs_input: str | None = None,
     ) -> dict[str, Any]:
         """Produce `completion_data` from the completed agent run.
 
@@ -200,6 +201,7 @@ class AnswerFinalizer:
                     "" if agent_output is None else str(agent_output),
                     streamed_answer, reasoning_turns or [],
                     agent_confidence=agent_confidence,
+                    agent_needs_input=agent_needs_input,
                 )
             except Exception as exc:
                 log.error("AnswerFinalizer failed: %s", exc, exc_info=True)
@@ -276,7 +278,36 @@ class AnswerFinalizer:
         streamed_answer: str,
         reasoning_turns: list[dict[str, Any]],
         agent_confidence: str | None = None,
+        agent_needs_input: str | None = None,
     ) -> dict[str, Any]:
+        streamed = (streamed_answer or "").strip()
+        is_resume = bool(state.get("ask_user_question_resume"))
+        if (
+            not (agent_output or "").strip()
+            and streamed
+            and streamed != _EMPTY_ANSWER_FALLBACK
+            and (is_resume or not agent_needs_input)
+        ):
+            # Resume can stream a follow-up while result.output stays empty.
+            agent_output = streamed
+
+        if (not agent_output or not agent_output.strip()) and agent_needs_input:
+            waiting_response: dict[str, Any] = {
+                "answer": "",
+                "citations": [],
+                "status": "waiting_input",
+            }
+            waiting_response.update(_tool_names_from_state(state))
+            self._attach_parts(waiting_response, final_text="")
+            await self._emit_ask_user_question_fallback(state, event_sink)
+            for evt in self._context.formatter.answer_final(
+                self._context, completion_data=waiting_response,
+            ):
+                await event_sink.write(evt)
+            state["response"] = ""
+            state["completion_data"] = waiting_response
+            return waiting_response
+
         if not agent_output or not agent_output.strip():
             log.warning("AnswerFinalizer: empty response, using fallback")
             answer_text = _EMPTY_ANSWER_FALLBACK

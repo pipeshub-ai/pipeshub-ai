@@ -367,7 +367,10 @@ async def run_agent_loop_stream(
             else:
                 collector = CitationCollector(context)
                 streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
-                async for event in agent.stream(goal):
+                async for event in agent.stream(
+                    goal,
+                    _skip_start=bool(context.tool_state.get("ask_user_question_resume")),
+                ):
                     await streamer.on_event(event)
                 result = agent.last_stream_result
 
@@ -396,6 +399,7 @@ async def run_agent_loop_stream(
                     # a genuinely successful — or independently failed —
                     # result, which would otherwise mislabel it "stopped".
                     agent_cancelled=result.cancelled,
+                    agent_needs_input=result.needs_input,
                 )
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)

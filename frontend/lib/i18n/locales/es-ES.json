@@ -43,6 +43,7 @@
   "chatStream": {
     "thinkingFallback": "Pensando…",
     "refiningResponse": "Refinando la respuesta…",
+    "askQuestionResumeFailed": "No se pudieron enviar tus respuestas. Envía de nuevo para reintentar.",
     "copyCode": "Copiar",
     "copiedCode": "Copiado"
   },

@@ -533,9 +533,18 @@ class PipesHubAgentFactory:
             composition_plan.top_level_names if composition_plan is not None else tool_registry.names()
         )
 
+        resume_answers = query if is_ask_user_question_resume_query(query) else None
+        goal_query = (
+            last_real_user_query(context.previous_conversations, query)
+            if resume_answers
+            else query
+        )
+        if resume_answers:
+            context.tool_state["ask_user_question_resume"] = resume_answers
+
         loop, goal, clarifying_questions, mode = await select_loop_and_goal(
             chat_mode=chat_mode,
-            query=query,
+            query=goal_query,
             llm=llm,
             context=context,
             tool_names=composed_tool_names,
@@ -864,6 +873,11 @@ class PipesHubAgentFactory:
             await self._seed_conversation_history(agent, context.previous_conversations, context)
             _mark("f:seed_history")
 
+        if resume_answers:
+            # User already answered the card — do not re-emit clarification.
+            clarifying_questions = []
+            await inject_ask_user_question_resume(agent, resume_answers)
+
         return agent, runtime, goal, clarifying_questions
 
     @staticmethod
@@ -1155,6 +1169,85 @@ def _inject_images_into_message(
 _V1_NOTE_HEADER = "[SYSTEM NOTE — how to use the findings above in your answer]"
 _V2_NOTE_HEADER = "Guidance for using the findings above in the final answer:"
 _NEUTRAL_NOTE_HEADER = "About these findings:"
+
+ASK_USER_QUESTION_RESUME_PREFIX = "User selections:"
+_EMPTY_ANSWER_FALLBACK = "I wasn't able to generate a response. Please try rephrasing."
+
+
+def is_ask_user_question_resume_query(text: str | None) -> bool:
+    return isinstance(text, str) and text.lstrip().startswith(ASK_USER_QUESTION_RESUME_PREFIX)
+
+
+def _is_empty_fallback_assistant(msg: Message) -> bool:
+    return (
+        isinstance(msg, AssistantMessage)
+        and not msg.tool_calls
+        and (msg.text or "").strip() == _EMPTY_ANSWER_FALLBACK
+    )
+
+
+def last_real_user_query(previous_conversations: list[dict[str, Any]] | None, fallback: str) -> str:
+    """Original user goal when this request is an ask_user_question resume."""
+    for turn in reversed(previous_conversations or []):
+        if turn.get("role") != "user_query":
+            continue
+        content = str(turn.get("content") or "").strip()
+        if content and not is_ask_user_question_resume_query(content):
+            return content
+    return fallback
+
+
+async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
+    """Bind the user's card answers to the parked ask_user_question tool call.
+
+    Web workers cannot keep the first HTTP request blocked (no hil_store).
+    The first turn stops after the terminal tool; this injects the answer
+    as a ToolMessage so the next request continues that tool_use, not a
+    new user goal.
+
+    History replay already has the first request's tool result (the
+    questions payload) plus the empty-answer fallback AssistantMessage.
+    Appending a second ToolMessage after that text is invalid, so the
+    tail after the parked tool-call AssistantMessage is dropped first.
+    """
+    ctx = agent.context
+    if ctx is None:
+        return
+    messages = await ctx.messages()
+    keep_through: int | None = None
+    tool_call_id: str | None = None
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
+            continue
+        for call in reversed(msg.tool_calls):
+            if "ask_user_question" in (call.name or ""):
+                keep_through = i
+                tool_call_id = call.id
+                break
+    if tool_call_id is None:
+        trimmed = list(messages)
+        while trimmed and _is_empty_fallback_assistant(trimmed[-1]):
+            trimmed.pop()
+        tool_call_id = "ask_user_question_resume"
+        await ctx.clear()
+        for msg in trimmed:
+            await ctx.add(msg)
+        await ctx.add(AssistantMessage(
+            content=[],
+            tool_calls=[ToolCall(
+                id=tool_call_id,
+                name="internaltools__ask_user_question",
+                arguments={},
+            )],
+        ))
+    else:
+        await ctx.clear()
+        for msg in messages[: keep_through + 1]:
+            await ctx.add(msg)
+    await ctx.add(ToolMessage(
+        content=json.dumps({"status": "answered", "answers": answers}, ensure_ascii=False),
+        tool_call_id=tool_call_id,
+    ))
 
 
 def _scrub_legacy_system_note(text: str) -> str:

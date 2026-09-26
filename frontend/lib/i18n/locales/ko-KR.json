@@ -57,6 +57,7 @@
     "thinkingFallback": "생각하는 중…",
     "refiningResponse": "응답을 다듬는 중…",
     "errorFallback": "오류가 발생했습니다. 다시 시도해 주세요.",
+    "askQuestionResumeFailed": "답변을 보내지 못했습니다. 다시 제출해 주세요.",
     "copyCode": "복사",
     "copiedCode": "복사됨"
   },

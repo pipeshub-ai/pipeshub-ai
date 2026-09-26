@@ -44,6 +44,7 @@
     "thinkingFallback": "सोच रहा है…",
     "refiningResponse": "उत्तर परिष्कृत हो रहा है…",
     "errorFallback": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।",
+    "askQuestionResumeFailed": "आपके उत्तर भेजे नहीं जा सके। फिर से कोशिश करने के लिए दोबारा सबमिट करें।",
     "copyCode": "कॉपी करें",
     "copiedCode": "कॉपी हो गया"
   },

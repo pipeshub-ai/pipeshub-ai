@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Badge,
   Button,
@@ -36,12 +36,81 @@ function stripCatchAlls(options: AskUserQuestionOption[]): AskUserQuestionOption
   return options.filter((o) => !CATCH_ALL_LABEL.test(o.label.trim()));
 }
 
+function stableId(prefix: string, text: string, index: number): string {
+  const slug = text
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 48);
+  return `${prefix}_${index}_${slug || 'item'}`;
+}
+
+function optionId(opt: AskUserQuestionOption | string): string {
+  if (typeof opt === 'string') return opt;
+  return opt.id || opt.label;
+}
+
+function optionLabel(opt: AskUserQuestionOption | string): string {
+  return typeof opt === 'string' ? opt : opt.label;
+}
+
+function sameText(a: string | undefined, b: string | undefined): boolean {
+  return (a ?? '').trim().toLowerCase() === (b ?? '').trim().toLowerCase();
+}
+
+export function normalizeAskUserQuestionPayload(
+  raw: AskUserQuestionPayload,
+): AskUserQuestionPayload {
+  const questions = (raw.questions ?? []).map((q, qi) => {
+    const question = typeof q.question === 'string' ? q.question : String(q.question ?? '');
+    const options = (q.options ?? []).map((opt, oi) => {
+      if (typeof opt === 'string') {
+        return { id: stableId('opt', opt, oi), label: opt, isUserInput: false };
+      }
+      const label = typeof opt.label === 'string' ? opt.label : String(opt.label ?? '');
+      return {
+        id: opt.id || stableId('opt', label, oi),
+        label,
+        isUserInput: Boolean(opt.isUserInput),
+      };
+    });
+    return {
+      uuid: q.uuid || stableId('q', question, qi),
+      question,
+      options,
+      multiSelect: Boolean(q.multiSelect),
+    };
+  });
+  return {
+    name: 'ask_user_question',
+    ...(raw.userIntent ? { userIntent: raw.userIntent } : {}),
+    questions,
+  };
+}
+
+export function mergeAskUserQuestionPayloads(
+  existing: AskUserQuestionPayload,
+  incoming: AskUserQuestionPayload,
+): AskUserQuestionPayload {
+  const a = normalizeAskUserQuestionPayload(existing);
+  const b = normalizeAskUserQuestionPayload(incoming);
+  const seen = new Set(a.questions.map((q) => q.question.trim().toLowerCase()));
+  const extra = b.questions.filter((q) => !seen.has(q.question.trim().toLowerCase()));
+  return {
+    name: 'ask_user_question',
+    userIntent: a.userIntent || b.userIntent,
+    questions: [...a.questions, ...extra],
+  };
+}
+
 export function buildAnswerMessage(
   payload: AskUserQuestionPayload,
   answers: Record<string, AskUserQuestionAnswer>
 ): string {
-  const lines = payload.questions.map((q, i) => {
-    const a = answers[q.uuid];
+  const questions = normalizeAskUserQuestionPayload(payload).questions;
+  const lines = questions.map((q, i) => {
+    const a = answerForQuestion(q, answers);
     const parts = (a?.selectedOptionIds ?? [])
       .map((optId) => {
         if (optId === NO_PREFERENCE_ID) return '[No preference]';
@@ -57,6 +126,133 @@ export function buildAnswerMessage(
     return `${i + 1}. "${q.question}" → ${parts}`;
   });
   return `User selections:\n${lines.join('\n')}`;
+}
+
+/** True when `text` is the synthetic follow-up query built by `buildAnswerMessage`. */
+export function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
+  return typeof text === 'string' && text.trimStart().startsWith('User selections:');
+}
+
+const SELECTION_LINE = /^\s*\d+\.\s*["“](.+?)["”]\s*(?:→|->)\s*(.*)\s*$/;
+
+function findQuestion(
+  questions: AskUserQuestionItem[],
+  questionText: string,
+  fallbackIndex: number,
+): AskUserQuestionItem | undefined {
+  return (
+    questions.find((item) => item.question === questionText) ??
+    questions.find((item) => sameText(item.question, questionText)) ??
+    questions[fallbackIndex]
+  );
+}
+
+function findOption(
+  options: Array<AskUserQuestionOption | string>,
+  label: string,
+): AskUserQuestionOption | string | undefined {
+  return (
+    options.find((o) => optionLabel(o) === label) ??
+    options.find((o) => sameText(optionLabel(o), label)) ??
+    options.find((o) => sameText(optionId(o), label))
+  );
+}
+
+/** Inverse of `buildAnswerMessage` — recover structured answers from the saved resume query. */
+export function parseAnswerMessage(
+  text: string,
+  payload: AskUserQuestionPayload,
+): Record<string, AskUserQuestionAnswer> {
+  const questions = normalizeAskUserQuestionPayload(payload).questions;
+  const result: Record<string, AskUserQuestionAnswer> = {};
+  if (!text) return result;
+  for (const line of text.split('\n')) {
+    const match = line.match(SELECTION_LINE);
+    if (!match) continue;
+    const questionText = match[1];
+    const rawParts = match[2];
+    const q = findQuestion(questions, questionText, Object.keys(result).length);
+    if (!q?.uuid) continue;
+    const selectedOptionIds: string[] = [];
+    const userInputs: Record<string, string> = {};
+    for (const label of rawParts.split(', ').map((s) => s.trim()).filter(Boolean)) {
+      if (label === '[No preference]') {
+        selectedOptionIds.push(NO_PREFERENCE_ID);
+        continue;
+      }
+      const opt = findOption(q.options, label);
+      if (opt) {
+        selectedOptionIds.push(optionId(opt));
+      } else {
+        selectedOptionIds.push(SOMETHING_ELSE_ID);
+        userInputs[SOMETHING_ELSE_ID] = label;
+      }
+    }
+    result[q.uuid] = { questionUuid: q.uuid, selectedOptionIds, userInputs };
+  }
+  return result;
+}
+
+function answerForQuestion(
+  q: AskUserQuestionItem,
+  answers: Record<string, AskUserQuestionAnswer>,
+): AskUserQuestionAnswer | undefined {
+  if (q.uuid && answers[q.uuid]) return answers[q.uuid];
+  const values = Object.values(answers);
+  const byUuid = values.find((a) => a.questionUuid === q.uuid);
+  if (byUuid) return byUuid;
+  const labels = new Set(
+    (q.options ?? []).map((o) => optionLabel(o).trim().toLowerCase()).filter(Boolean),
+  );
+  const ids = new Set((q.options ?? []).map((o) => optionId(o)));
+  return values.find((a) =>
+    (a.selectedOptionIds ?? []).some((id) => {
+      if (id === SOMETHING_ELSE_ID || id === NO_PREFERENCE_ID) return false;
+      if (ids.has(id)) return true;
+      return labels.has(id.trim().toLowerCase());
+    }),
+  );
+}
+
+function isOptionSelected(selected: Set<string>, opt: AskUserQuestionOption | string): boolean {
+  const id = optionId(opt);
+  const label = optionLabel(opt);
+  if (selected.has(id) || selected.has(label)) return true;
+  for (const value of selected) {
+    if (sameText(value, id) || sameText(value, label)) return true;
+  }
+  return false;
+}
+
+function answeredOptions(
+  q: AskUserQuestionItem,
+  a: AskUserQuestionAnswer | undefined,
+  somethingElseLabel: string,
+  noPreferenceLabel: string,
+): Array<{ id: string; label: string; selected: boolean }> {
+  const selected = new Set(a?.selectedOptionIds ?? []);
+  const rows = stripCatchAlls(q.options).map((opt) => {
+    const id = optionId(opt);
+    const ut = a?.userInputs?.[id]?.trim();
+    const base = optionLabel(opt);
+    return {
+      id,
+      label: ut && typeof opt !== 'string' && opt.isUserInput ? `${base}: ${ut}` : base,
+      selected: isOptionSelected(selected, opt),
+    };
+  });
+  if (selected.has(SOMETHING_ELSE_ID)) {
+    const custom = a?.userInputs?.[SOMETHING_ELSE_ID]?.trim();
+    rows.push({
+      id: SOMETHING_ELSE_ID,
+      label: custom || somethingElseLabel,
+      selected: true,
+    });
+  }
+  if (selected.has(NO_PREFERENCE_ID)) {
+    rows.push({ id: NO_PREFERENCE_ID, label: noPreferenceLabel, selected: true });
+  }
+  return rows;
 }
 
 function validateQuestion(
@@ -81,6 +277,26 @@ function validateQuestion(
   return true;
 }
 
+function firstUnansweredStep(
+  questions: AskUserQuestionItem[],
+  answers: Record<string, AskUserQuestionAnswer>,
+): number {
+  const idx = questions.findIndex((q) =>
+    !validateQuestion(q, answerForQuestion(q, answers), [SOMETHING_ELSE_OPTION]),
+  );
+  return idx >= 0 ? idx : Math.max(0, questions.length - 1);
+}
+
+function hasVisibleSelections(
+  questions: AskUserQuestionItem[],
+  answers: Record<string, AskUserQuestionAnswer>,
+): boolean {
+  return questions.some((q) => {
+    const a = answerForQuestion(q, answers);
+    return (a?.selectedOptionIds?.length ?? 0) > 0;
+  });
+}
+
 export interface AskUserQuestionCardProps {
   payload: AskUserQuestionPayload;
   initialAnswers: Record<string, AskUserQuestionAnswer>;
@@ -97,12 +313,40 @@ export function AskUserQuestionCard({
   onSubmit,
 }: AskUserQuestionCardProps) {
   const { t } = useTranslation();
-  const questions = payload.questions;
-  const [step, setStep] = useState(0);
-  const [showAnswers, setShowAnswers] = useState(false);
+  const normalized = useMemo(() => normalizeAskUserQuestionPayload(payload), [payload]);
+  const questions = normalized.questions;
   const [answers, setAnswers] = useState<Record<string, AskUserQuestionAnswer>>(() => ({
     ...initialAnswers,
   }));
+  const [step, setStep] = useState(() =>
+    firstUnansweredStep(questions, initialAnswers),
+  );
+  const [showAnswers, setShowAnswers] = useState(true);
+  const questionKey = questions.map((q) => q.uuid).join('|');
+  const initialAnswersKey = JSON.stringify(initialAnswers);
+
+  useEffect(() => {
+    if (status === 'pending') return;
+    setAnswers(JSON.parse(initialAnswersKey) as Record<string, AskUserQuestionAnswer>);
+  }, [status, initialAnswersKey]);
+
+  useEffect(() => {
+    if (status !== 'pending') return;
+    setStep((current) => {
+      const currentQ = questions[current];
+      if (
+        currentQ &&
+        !validateQuestion(
+          currentQ,
+          answerForQuestion(currentQ, answers),
+          [SOMETHING_ELSE_OPTION],
+        )
+      ) {
+        return current;
+      }
+      return firstUnansweredStep(questions, answers);
+    });
+  }, [questionKey, status]);
 
   const syncAnswers = useCallback(
     (next: Record<string, AskUserQuestionAnswer>) => {
@@ -121,7 +365,7 @@ export function AskUserQuestionCard({
       currentQ
         ? validateQuestion(
           currentQ,
-          answers[currentQ.uuid],
+          answerForQuestion(currentQ, answers),
           [SOMETHING_ELSE_OPTION]
         )
         : false,
@@ -209,9 +453,9 @@ export function AskUserQuestionCard({
 
   const handleSubmit = useCallback(() => {
     if (!stepValid || status !== 'pending') return;
-    const msg = buildAnswerMessage(payload, answers);
+    const msg = buildAnswerMessage(normalized, answers);
     onSubmit?.(msg, answers);
-  }, [stepValid, status, payload, answers, onSubmit]);
+  }, [stepValid, status, normalized, answers, onSubmit]);
 
   const handleSkip = useCallback(() => {
     if (!currentQ || status !== 'pending') return;
@@ -225,28 +469,34 @@ export function AskUserQuestionCard({
     };
     syncAnswers(next);
     if (isLast) {
-      const msg = buildAnswerMessage(payload, next);
+      const msg = buildAnswerMessage(normalized, next);
       onSubmit?.(msg, next);
     } else {
       setStep((s) => Math.min(s + 1, total - 1));
     }
-  }, [currentQ, status, answers, syncAnswers, isLast, payload, onSubmit, total]);
+  }, [currentQ, status, answers, syncAnswers, isLast, normalized, onSubmit, total]);
 
-  if (status === 'submitted') {
+  if (status === 'submitted' || status === 'persisted') {
+    const heading =
+      status === 'submitted'
+        ? questions.length === 1
+          ? t('askUserQuestion.questionsHeadingSingular')
+          : t('askUserQuestion.questionsHeadingPlural')
+        : questions.length === 1
+          ? t('askUserQuestion.questionAskedSingular')
+          : t('askUserQuestion.questionAskedPlural');
     return (
       <Card size="2">
         <Flex direction="column" gap="3" p="4">
           <Flex direction="column" gap="1">
-            {payload.userIntent ? (
+            {normalized.userIntent ? (
               <Text size="2" color="gray">
-                {payload.userIntent}
+                {normalized.userIntent}
               </Text>
             ) : null}
             <Flex align="center" justify="between" gap="3" wrap="wrap">
               <Heading size="4" style={{ margin: 0 }}>
-                {questions.length === 1
-                  ? t('askUserQuestion.questionsHeadingSingular')
-                  : t('askUserQuestion.questionsHeadingPlural')}
+                {heading}
               </Heading>
               <Flex
                 align="center"
@@ -254,7 +504,7 @@ export function AskUserQuestionCard({
                 wrap="nowrap"
                 style={{ flexShrink: 0 }}
               >
-                {showAnswers ? (
+                {showAnswers && hasVisibleSelections(questions, answers) ? (
                   <Badge color="jade" size="1">
                     {t('askUserQuestion.answered')}
                   </Badge>
@@ -274,34 +524,43 @@ export function AskUserQuestionCard({
                     />
                   </Flex>
                 </Button>
-
               </Flex>
             </Flex>
           </Flex>
           {showAnswers ? (
             <Flex direction="column" gap="4">
               {questions.map((q, i) => {
-                const a = answers[q.uuid];
-                const labels = (a?.selectedOptionIds ?? []).map((id) => {
-                  if (id === NO_PREFERENCE_ID) return t('askUserQuestion.noPreference');
-                  if (id === SOMETHING_ELSE_ID) {
-                    return a?.userInputs?.[id]?.trim() || t('askUserQuestion.somethingElse');
-                  }
-                  const opt = q.options.find((o) => o.id === id);
-                  const ut = a?.userInputs?.[id]?.trim();
-                  if (opt?.isUserInput && ut) return `${opt.label}: ${ut}`;
-                  return opt?.label ?? id;
-                });
+                const rows = answeredOptions(
+                  q,
+                  answerForQuestion(q, answers),
+                  t('askUserQuestion.somethingElse'),
+                  t('askUserQuestion.noPreference'),
+                );
                 return (
                   <Flex key={q.uuid} direction="column" gap="2">
-                    <Text size="2">
+                    <Text size="2" weight="medium">
                       {i + 1}. {q.question}
                     </Text>
-                    <Flex gap="2" wrap="wrap">
-                      {labels.map((label, i) => (
-                        <Badge key={`${q.uuid}-${i}`} size="1" variant="soft">
-                          {label}
-                        </Badge>
+                    <Flex direction="column" gap="2">
+                      {rows.map((row) => (
+                        <Flex key={row.id} align="start" gap="2">
+                          <MaterialIcon
+                            name={
+                              row.selected
+                                ? (q.multiSelect ? 'check_box' : 'radio_button_checked')
+                                : (q.multiSelect ? 'check_box_outline_blank' : 'radio_button_unchecked')
+                            }
+                            size={18}
+                            color={row.selected ? 'var(--jade-11)' : 'var(--slate-8)'}
+                          />
+                          <Text
+                            size="2"
+                            weight={row.selected ? 'medium' : 'regular'}
+                            color={row.selected ? undefined : 'gray'}
+                          >
+                            {row.label}
+                          </Text>
+                        </Flex>
                       ))}
                     </Flex>
                   </Flex>
@@ -314,79 +573,10 @@ export function AskUserQuestionCard({
     );
   }
 
-  if (status === 'persisted') {
-    return (
-      <Card size="2">
-        <Flex direction="column" gap="3" p="4">
-          <Flex direction="column" gap="1">
-            {payload.userIntent ? (
-              <Text size="2" color="gray">
-                {payload.userIntent}
-              </Text>
-            ) : null}
-            <Flex align="center" justify="between" gap="3" wrap="wrap">
-              <Heading size="4" style={{ margin: 0 }}>
-                {payload.questions.length === 1
-                  ? t('askUserQuestion.questionAskedSingular')
-                  : t('askUserQuestion.questionAskedPlural')}
-              </Heading>
-              <Flex
-                align="center"
-                gap="3"
-                wrap="nowrap"
-                style={{ flexShrink: 0 }}
-              >
-                {showAnswers ? (
-                  <Badge color="gray" size="1" variant="outline">
-                    {t('askUserQuestion.answered')}
-                  </Badge>
-                ) : null}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="1"
-                  color="gray"
-                  onClick={() => setShowAnswers((v) => !v)}
-                >
-                  <Flex align="center" gap="1">
-                    {showAnswers ? t('askUserQuestion.showLess') : t('askUserQuestion.showMore')}
-                    <MaterialIcon
-                      name={showAnswers ? 'expand_less' : 'expand_more'}
-                      size={16}
-                    />
-                  </Flex>
-                </Button>
-
-              </Flex>
-            </Flex>
-          </Flex>
-          {showAnswers ? (
-            <Flex direction="column" gap="4">
-              {questions.map((q, i) => (
-                <Flex key={q.uuid} direction="column" gap="2">
-                  <Text size="2" weight="medium">
-                    {i + 1}. {q.question}
-                  </Text>
-                  <Flex direction="column" gap="1" style={{ paddingLeft: 'var(--space-3)' }}>
-                    {q.options.map((opt) => (
-                      <Flex key={opt.id} align="start" gap="2">
-                        <Text size="1" color="gray" style={{ lineHeight: '1.5' }}>•</Text>
-                        <Text size="2">{opt.label}</Text>
-                      </Flex>
-                    ))}
-                  </Flex>
-                </Flex>
-              ))}
-            </Flex>
-          ) : null}
-        </Flex>
-      </Card>
-    );
-  }
-
   if (!currentQ) return null;
 
-  const selectedIds = answers[currentQ.uuid]?.selectedOptionIds ?? [];
+  const currentAnswer = answerForQuestion(currentQ, answers);
+  const selectedIds = currentAnswer?.selectedOptionIds ?? [];
   const cleanOptions = stripCatchAlls(currentQ.options);
   const augmentedOptions = [...cleanOptions, SOMETHING_ELSE_OPTION];
   const selectedRadioIndex = currentQ.multiSelect
@@ -397,7 +587,7 @@ export function AskUserQuestionCard({
     ? selectedIds.includes(SOMETHING_ELSE_ID)
     : selectedIds[0] === SOMETHING_ELSE_ID;
   const somethingElseText =
-    (answers[currentQ.uuid]?.userInputs?.[SOMETHING_ELSE_ID] ?? '').trim();
+    (currentAnswer?.userInputs?.[SOMETHING_ELSE_ID] ?? '').trim();
   const isSomethingElseSelected = somethingElseChosen && somethingElseText.length > 0;
 
   return (
@@ -413,9 +603,9 @@ export function AskUserQuestionCard({
       <Flex direction="column" gap="4" p="4">
         <Flex direction="column" gap="1">
           <Flex align="center" justify="between" gap="3" wrap="wrap">
-            {payload.userIntent ? (
+            {normalized.userIntent ? (
               <Text size="2" color="gray" style={{ marginTop: 'var(--space-1)' }}>
-                {payload.userIntent}
+                {normalized.userIntent}
               </Text>
             ) : null}
             <Heading size="4" style={{ margin: 0 }}>

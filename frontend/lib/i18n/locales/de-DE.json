@@ -44,6 +44,7 @@
     "thinkingFallback": "Denkt nach…",
     "refiningResponse": "Antwort wird verfeinert…",
     "errorFallback": "Ein Fehler ist aufgetreten. Bitte erneut versuchen.",
+    "askQuestionResumeFailed": "Antworten konnten nicht gesendet werden. Zum Wiederholen erneut senden.",
     "copyCode": "Kopieren",
     "copiedCode": "Kopiert"
   },

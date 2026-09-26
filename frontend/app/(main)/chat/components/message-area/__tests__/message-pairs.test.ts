@@ -98,4 +98,20 @@ describe('buildMessagePairs', () => {
     expect(pairs[0].isStreaming).toBe(true);
     expect(pairs[0].unanswered).toBeUndefined();
   });
+
+  it('streams a resume onto the matching older card row, not the last greeting', () => {
+    const pairs = buildMessagePairs(
+      [
+        user('u1', 'ask me question'),
+        assistant('a1', ''),
+        user('u2', 'hiii'),
+        assistant('a2', 'Hi! How can I help you today?'),
+      ],
+      { ...OPTIONS, isStreaming: true, streamingQuestion: 'ask me question' }
+    );
+
+    expect(pairs).toHaveLength(2);
+    expect(pairs[0].isStreaming).toBe(true);
+    expect(pairs[1].isStreaming).toBe(false);
+  });
 });

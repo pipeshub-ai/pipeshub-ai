@@ -167,6 +167,75 @@ class TestSuccessPath:
         assert result["answer"] == "I wasn't able to generate a response. Please try rephrasing."
         assert sink.events[0]["data"]["accumulated"] == result["answer"]
 
+    async def test_needs_input_empty_output_skips_fallback(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=True,
+            agent_error=None,
+            agent_output="",
+            event_sink=sink,
+            agent_needs_input="Waiting for user answers",
+        )
+
+        assert result["answer"] == ""
+        assert result["status"] == "waiting_input"
+        assert "I wasn't able" not in (result.get("answer") or "")
+        assert all(e["event"] != "answer_chunk" or not (e.get("data") or {}).get("accumulated") for e in sink.events)
+
+    async def test_empty_output_keeps_streamed_follow_up(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=True,
+            agent_error=None,
+            agent_output="",
+            event_sink=sink,
+            streamed_answer="Busy but manageable — try batching the next three tasks.",
+        )
+
+        assert result["answer"] == "Busy but manageable — try batching the next three tasks."
+        assert "wasn't able" not in result["answer"]
+
+    async def test_needs_input_does_not_drop_streamed_follow_up(self) -> None:
+        context = make_context()
+        context.tool_state["ask_user_question_resume"] = True
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=True,
+            agent_error=None,
+            agent_output="",
+            event_sink=sink,
+            streamed_answer="Here is the follow-up after your selection.",
+            agent_needs_input="Waiting for user answers",
+        )
+
+        assert result["answer"] == "Here is the follow-up after your selection."
+        assert result.get("status") != "waiting_input"
+
+    async def test_first_ask_needs_input_ignores_streamed_narration(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=True,
+            agent_error=None,
+            agent_output="",
+            event_sink=sink,
+            streamed_answer="Let me ask you a quick question.",
+            agent_needs_input="Waiting for user answers",
+        )
+
+        assert result["answer"] == ""
+        assert result["status"] == "waiting_input"
+
     async def test_post_normalization_fallback_resets_answer_metadata(self) -> None:
         """Same strip-to-nothing path, but with a confidence the fallback has
         to overwrite: the parsed `High` described the answer just discarded, so

@@ -57,6 +57,7 @@
     "thinkingFallback": "Thinking…",
     "refiningResponse": "Refining response…",
     "errorFallback": "An error occurred. Please try again.",
+    "askQuestionResumeFailed": "Couldn't send your answers. Submit again to retry.",
     "copyCode": "Copy",
     "copiedCode": "Copied"
   },
