@@ -985,18 +985,26 @@ class Jira:
         issue_type_id: Optional[str] = None
         available_types: list[str] = []
         issue_types_raw: list[dict[str, Any]] = []
+        types_unreadable = (
+            f"Jira could not list the issue types of project '{project_key}' just now. Try again in a moment."
+        )
         try:
             r = await self.client.get_create_issue_meta_issue_types(projectIdOrKey=project_key)
-            if r.status == HttpStatusCode.SUCCESS.value:
-                issue_types_raw = r.json().get("issueTypes", [])
-                for it in issue_types_raw:
-                    name = it.get("name", "")
-                    if name:
-                        available_types.append(name)
-                    if name.lower() == issue_type_name.lower():
-                        issue_type_id = it.get("id")
+            if r.status == HttpStatusCode.NOT_FOUND.value:
+                return [], f"Project '{project_key}' was not found, or the signed-in account cannot create issues in it."
+            if r.status != HttpStatusCode.SUCCESS.value:
+                logger.warning(f"createmeta issue types HTTP {r.status} for {project_key}")
+                return [], types_unreadable
+            issue_types_raw = r.json().get("issueTypes", [])
+            for it in issue_types_raw:
+                name = it.get("name", "")
+                if name:
+                    available_types.append(name)
+                if name.lower() == issue_type_name.lower():
+                    issue_type_id = it.get("id")
         except Exception as e:
             logger.warning(f"Error fetching issue types for {project_key}: {e}")
+            return [], types_unreadable
 
         # Fuzzy fallback: LLM may pass an approximate name (e.g. "story" for "User Story").
         # difflib.get_close_matches returns the best match above the cutoff threshold.
@@ -1029,6 +1037,11 @@ class Jira:
         fields_by_id: dict[str, dict[str, Any]] = {}
         start_at = 0
         page_size = 50
+        # A partial field list would hide required fields, so an unread page fails the whole lookup.
+        fields_unreadable = (
+            f"Jira could not list every field of a {issue_type_name} in project '{project_key}' just now, "
+            "so the required fields are not known yet. Try again in a moment."
+        )
 
         while True:
             try:
@@ -1040,18 +1053,18 @@ class Jira:
                 )
             except Exception as e:
                 logger.error(f"createmeta fields error for {project_key}/{issue_type_name}: {e}")
-                break
+                return [], fields_unreadable
 
             if response.status != HttpStatusCode.SUCCESS.value:
                 logger.warning(
                     f"createmeta HTTP {response.status} for {project_key}/{issue_type_name}"
                 )
-                break
+                return [], fields_unreadable
 
             try:
                 data = response.json()
             except Exception:
-                break
+                return [], fields_unreadable
 
             page_fields = data.get("fields", [])
             if not isinstance(page_fields, list):

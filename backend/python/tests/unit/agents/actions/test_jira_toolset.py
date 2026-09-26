@@ -1526,10 +1526,10 @@ class TestFetchCreateFields:
         )
         fields, err = await jira._fetch_create_fields("PROJ", "Bug")
         assert fields == []
-        assert "not found" in err
+        assert "could not list the issue types" in err
 
     @pytest.mark.asyncio
-    async def test_fields_http_error_returns_partial(self):
+    async def test_fields_http_error_is_an_error_not_a_short_list(self):
         jira = _build_jira()
         jira.client.get_create_issue_meta_issue_types = AsyncMock(
             return_value=_mock_response(200, {"issueTypes": [{"id": "1", "name": "Bug"}]}),
@@ -1538,8 +1538,9 @@ class TestFetchCreateFields:
             return_value=_mock_response(500, {}),
         )
         fields, err = await jira._fetch_create_fields("PROJ", "Bug")
-        assert err is None
         assert fields == []
+        assert "required fields are not known yet" in err
+        assert jira._create_fields_cache == {}
 
     @pytest.mark.asyncio
     async def test_fields_json_parse_failure(self):
@@ -1551,8 +1552,9 @@ class TestFetchCreateFields:
         bad.json = MagicMock(side_effect=ValueError("bad json"))
         jira.client.get_create_issue_meta_issue_type_id = AsyncMock(return_value=bad)
         fields, err = await jira._fetch_create_fields("PROJ", "Bug")
-        assert err is None
         assert fields == []
+        assert "required fields are not known yet" in err
+        assert jira._create_fields_cache == {}
 
     @pytest.mark.asyncio
     async def test_skips_fields_without_id(self):
@@ -1807,7 +1809,7 @@ class TestSearchIssuesExtended:
 
 class TestFetchCreateFieldsExtended:
     @pytest.mark.asyncio
-    async def test_fields_fetch_exception_breaks_pagination(self):
+    async def test_fields_fetch_exception_is_an_error(self):
         jira = _build_jira()
         jira.client.get_create_issue_meta_issue_types = AsyncMock(
             return_value=_mock_response(200, {"issueTypes": [{"id": "1", "name": "Bug"}]}),
@@ -1816,8 +1818,9 @@ class TestFetchCreateFieldsExtended:
             side_effect=RuntimeError("network"),
         )
         fields, err = await jira._fetch_create_fields("PROJ", "Bug")
-        assert err is None
         assert fields == []
+        assert "required fields are not known yet" in err
+        assert jira._create_fields_cache == {}
 
     @pytest.mark.asyncio
     async def test_non_list_fields_payload_stops_pagination(self):

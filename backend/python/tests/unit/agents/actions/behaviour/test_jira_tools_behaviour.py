@@ -521,3 +521,74 @@ class TestUpdateIssue:
 
         assert ok is True
         assert data["data"] == {"key": "PA-7", "url": f"{SITE}/browse/PA-7"}
+
+
+CREATEMETA = "/issue/createmeta/PA/issuetypes"
+BUG_TYPES = {"issueTypes": [{"id": "1", "name": "Bug"}, {"id": "2", "name": "User Story"}]}
+
+
+def meta_field(field_id: str, name: str, *, required: bool, kind: str = "string", **extra: object) -> dict[str, Any]:
+    return {"fieldId": field_id, "name": name, "required": required, "schema": {"type": kind}, **extra}
+
+
+class TestCreateIssueFields:
+    async def test_required_and_optional_fields_across_pages(self, jira, api) -> None:
+        api.on("GET", CREATEMETA, BUG_TYPES)
+        api.on("GET", f"{CREATEMETA}/1",
+               {"fields": [meta_field("summary", "Summary", required=True),
+                           meta_field("customfield_10020", "Team", required=True, kind="option",
+                                      allowedValues=[{"id": "31", "value": "Payments"}])],
+                "total": 3},
+               {"fields": [meta_field("customfield_10016", "Story Points", required=False, kind="number")], "total": 3})
+
+        ok, data = result(await jira.get_create_issue_fields("PA", "bug"))
+
+        assert ok is True, data
+        starts = [c.query["startAt"] for c in api.calls("GET", f"{CREATEMETA}/1")]
+        assert starts == ["0", "2"]
+        blob = json_text(data)
+        assert "customfield_10020" in blob and "Payments" in blob and "customfield_10016" in blob
+
+    async def test_an_unread_page_of_fields_is_a_failure_not_a_short_list(self, jira, api) -> None:
+        api.on("GET", CREATEMETA, BUG_TYPES)
+        api.on("GET", f"{CREATEMETA}/1",
+               {"fields": [meta_field("summary", "Summary", required=True)], "total": 2},
+               (503, {"errorMessages": ["busy"]}))
+
+        ok, data = result(await jira.get_create_issue_fields("PA", "Bug"))
+
+        assert ok is False
+        assert "required fields are not known yet" in assert_safe_error(data)
+
+    async def test_a_failed_read_is_not_remembered(self, jira, api) -> None:
+        api.on("GET", CREATEMETA, BUG_TYPES)
+        api.on("GET", f"{CREATEMETA}/1", (503, {"errorMessages": ["busy"]}),
+               {"fields": [meta_field("customfield_10020", "Team", required=True)], "total": 1})
+
+        first_ok, _ = result(await jira.get_create_issue_fields("PA", "Bug"))
+        second_ok, data = result(await jira.get_create_issue_fields("PA", "Bug"))
+
+        assert (first_ok, second_ok) == (False, True)
+        assert "customfield_10020" in json_text(data)
+
+    async def test_unreadable_issue_types_are_not_reported_as_a_missing_type(self, jira, api) -> None:
+        api.on("GET", CREATEMETA, (503, {"errorMessages": ["busy"]}))
+
+        ok, data = result(await jira.get_create_issue_fields("PA", "Bug"))
+
+        assert ok is False
+        message = assert_safe_error(data)
+        assert "could not list the issue types" in message and "not found" not in message
+
+    async def test_an_unknown_type_lists_the_projects_types(self, jira, api) -> None:
+        api.on("GET", CREATEMETA, BUG_TYPES)
+
+        ok, data = result(await jira.get_create_issue_fields("PA", "Initiative"))
+
+        assert ok is False
+        assert assert_safe_error(data) == "Issue type 'Initiative' not found in project 'PA'. Available: Bug, User Story"
+
+
+def json_text(payload: dict[str, Any]) -> str:
+    import json
+    return json.dumps(payload)
