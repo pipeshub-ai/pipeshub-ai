@@ -16,6 +16,7 @@ Only two things are faked:
 from __future__ import annotations
 
 import base64
+import copy
 import itertools
 import json
 import re
@@ -487,6 +488,7 @@ class FakeConfigService:
         self.connector_id = connector_id
         self.config = config
         self.shared_apps = shared_apps or {}
+        self.writes: list[dict[str, Any]] = []
 
     async def get_config(self, path: str, default: object = None, **_: object) -> object:
         if path == f"/services/connectors/{self.connector_id}/config":
@@ -494,3 +496,12 @@ class FakeConfigService:
         if path.startswith("/services/oauth/"):
             return self.shared_apps.get(path.rsplit("/", 1)[-1], default)
         return default
+
+    async def set_config(self, path: str, value: dict[str, Any]) -> bool:
+        """Replace the connector config in place, so a harness holding ``config`` sees the write."""
+        assert path == f"/services/connectors/{self.connector_id}/config", f"unexpected config write to {path}"
+        written = copy.deepcopy(value)
+        self.writes.append(written)
+        self.config.clear()
+        self.config.update(copy.deepcopy(written))
+        return True
