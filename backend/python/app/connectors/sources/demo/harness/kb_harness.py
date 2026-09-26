@@ -350,15 +350,25 @@ def mentions(answer: str, phrase: str) -> bool:
 
 # Sentence ends, not clause breaks: "Up to $250 per purchase: no approval needed" is one statement.
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
+# Clauses inside a sentence; a colon joins, and "$2,500" is one number.
+_CLAUSE = re.compile(r";|,(?=\s)|\bbut\b")
 
 
-def states_together(answer: str, first: list[str], second: list[str]) -> bool:
+def states_together(answer: str, first: list[str], second: list[str], against: list[str] = ()) -> bool:
     """Whether one sentence states a phrase from each list, so both facts are about
-    the same thing: "$250 needs your manager. No approval above $2,500" is two."""
-    return any(
-        any(mentions(s, m) for m in first) and any(mentions(s, m) for m in second)
-        for s in _SENTENCE_END.split(answer)
-    )
+    the same thing: "$250 needs your manager. No approval above $2,500" is two. A
+    first-list hit whose own clause says one of `against` ("up to $250 needs your
+    manager's approval; none above $2,500") is about something else, unless that
+    clause also states the second fact ("up to $250 without your manager's approval")."""
+    for sentence in _SENTENCE_END.split(answer):
+        if not any(mentions(sentence, m) for m in second):
+            continue
+        for clause in _CLAUSE.split(sentence):
+            if any(mentions(clause, m) for m in first) and (
+                not any(mentions(clause, c) for c in against) or any(mentions(clause, m) for m in second)
+            ):
+                return True
+    return False
 
 
 def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool, str]:
@@ -382,7 +392,8 @@ def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool,
         unmentioned.append(" | ".join(mention_any))
     # A second fact about the same thing, stated in the same sentence (f2: the amount needs no approval).
     mention_any2 = q.get("answer_must_mention_any_of_2", [])
-    if mention_any2 and not states_together(answer, mention_any or [""], mention_any2):
+    against = q.get("answer_any_of_contradicted_by", [])
+    if mention_any2 and not states_together(answer, mention_any or [""], mention_any2, against):
         unmentioned.append(" | ".join(mention_any2) + " (in the same sentence)")
     # Statements that make an answer wrong however well it cites ("still open").
     unmentioned += [f"not: {m}" for m in q.get("answer_must_not_mention", []) if mentions(answer, m)]

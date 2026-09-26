@@ -1701,6 +1701,8 @@ pack_questions:
       # and it needs no approval ("up to $250 needs your manager" fits the amount alone).
       answer_must_mention_any_of: ["up to $250", "$250 or less", "$250 and under", "$250 or under", "up to 250 dollars"]
       answer_must_mention_any_of_2: ["no approval", "without approval", "without any approval", "without any manager approval", "without manager approval", "without your manager's approval", "without a manager's approval", "without needing approval", "no manager approval", "no need for approval", "don't need approval", "do not need approval", "doesn't need approval", "does not need approval", "approval isn't needed", "approval is not needed", "approval isn't required", "approval is not required"]
+      # The amount's own clause says the manager approves it: the manager band, not the answer.
+      answer_any_of_contradicted_by: ["manager's approval", "manager approval", "manager approves", "manager must approve", "manager to approve", "requires approval", "require approval", "needs approval", "need approval", "approval is required", "approval required"]
       personas: { alice: cites, bob: cites }
     - id: f3
       ask: "What rate do we pay for card processing?"
