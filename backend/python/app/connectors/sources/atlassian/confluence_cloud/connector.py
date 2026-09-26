@@ -3937,6 +3937,7 @@ class ConfluenceConnector(BaseConnector):
         attachments: list[dict[str, Any]] = []
         base_url: str | None = None
         cursor: str | None = None
+        visited_cursors: set[str] = set()
         while True:
             kwargs: dict[str, Any] = {"id": int(content_id), "status": ["current"], "limit": limit}
             if cursor:
@@ -3961,12 +3962,13 @@ class ConfluenceConnector(BaseConnector):
             if not links.get("next"):
                 return attachments, base_url, False
             next_cursor = self._extract_cursor_from_next_link(links["next"])
-            if not next_cursor or next_cursor == cursor:
+            if not next_cursor or next_cursor == cursor or next_cursor in visited_cursors:
                 self.logger.warning(
                     f"Can't follow the next link of the attachment list of {content_type} {content_id} "
                     f"after {len(attachments)} attachments; the rest are read again next sync"
                 )
                 return attachments, base_url, True
+            visited_cursors.add(next_cursor)
             cursor = next_cursor
 
     async def _fetch_page_attachments_list(
