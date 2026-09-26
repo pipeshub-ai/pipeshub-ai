@@ -25,6 +25,7 @@ from app.sources.client.clickup.clickup import ClickUpClient, ClickUpRESTClientV
 
 V2 = "/api/v2"
 V3 = "/api/v3"
+TOKEN = "pk_fake-clickup-token-must-never-leak"
 
 
 @dataclass
@@ -85,7 +86,7 @@ def api() -> FakeClickUpAPI:
 
 @pytest.fixture
 async def clickup(api: FakeClickUpAPI) -> AsyncIterator[ClickUp]:
-    http = ClickUpRESTClientViaOAuth("oauth-token")
+    http = ClickUpRESTClientViaOAuth(TOKEN)
     http.client = httpx.AsyncClient(transport=httpx.MockTransport(api.handler), headers=http.headers)
     yield ClickUp(ClickUpClient(http))
     await http.close()
@@ -98,9 +99,14 @@ def ok(result: tuple[bool, str]) -> dict:
 
 
 def fail(result: tuple[bool, str]) -> dict:
+    """The failed result, whose error is checked to be plain text the agent can relay safely."""
     success, payload = result
     assert success is False, f"expected failure, got success: {payload}"
-    return json.loads(payload)
+    data = json.loads(payload)
+    message = data["error"]
+    for leaked in (TOKEN, "Bearer", "{", "Traceback"):
+        assert leaked not in message, f"{leaked!r} leaked into: {message}"
+    return data
 
 
 # ===========================================================================
@@ -113,7 +119,7 @@ class TestUserAndWorkspaces:
     async def test_authorized_user_sends_bearer_token(self, clickup, api) -> None:
         api.on("GET", f"{V2}/user", (200, {"user": {"id": 7, "username": "ann"}}))
         assert ok(await clickup.get_authorized_user())["data"]["user"]["id"] == 7
-        assert api.requests[0].headers["authorization"] == "Bearer oauth-token"
+        assert api.requests[0].headers["authorization"] == f"Bearer {TOKEN}"
 
     @pytest.mark.asyncio
     async def test_expired_token_is_reported_with_clickup_reason(self, clickup, api) -> None:
@@ -125,7 +131,7 @@ class TestUserAndWorkspaces:
     @pytest.mark.asyncio
     async def test_network_failure_is_a_failed_result(self, clickup, api) -> None:
         api.on("GET", f"{V2}/user", httpx.ConnectError("connection refused"))
-        assert "connection refused" in fail(await clickup.get_authorized_user())["error"]
+        assert fail(await clickup.get_authorized_user())["error"] == "ClickUp could not be reached. Try again in a moment."
 
     @pytest.mark.asyncio
     async def test_workspaces_get_web_urls(self, clickup, api) -> None:
@@ -287,7 +293,7 @@ class TestSearchTasks:
         api.on("POST", f"{V2}/team/9001/view", (200, {"view": {"id": "v-1"}}))
         api.on("GET", f"{V2}/view/v-1/task", httpx.ReadTimeout("timed out"))
         api.on("DELETE", f"{V2}/view/v-1", (200, {}))
-        assert "timed out" in fail(await clickup.search_tasks("9001", "invoice"))["error"]
+        assert "could not be reached" in fail(await clickup.search_tasks("9001", "invoice"))["error"]
         assert api.calls("DELETE", f"{V2}/view/v-1")
 
     @pytest.mark.asyncio
@@ -552,3 +558,41 @@ class TestUpdatesWithNothingToChange:
         api.on("PUT", f"{V2}/checklist/cl1/checklist_item/i1", (200, {}))
         ok(await clickup.update_checklist_item("cl1", "i1", resolved=False))
         assert api.requests[0].body == {"resolved": False}
+
+
+
+class TestFailuresInPlainLanguage:
+    @pytest.mark.asyncio
+    async def test_rate_limit_says_to_wait(self, clickup, api) -> None:
+        api.on("GET", f"{V2}/task/t1", (429, {"err": "Rate limit reached", "ECODE": "APP_002"}))
+        assert fail(await clickup.get_task("t1"))["error"] == "ClickUp's rate limit has been reached. Wait a minute and try again."
+
+    @pytest.mark.asyncio
+    async def test_rejected_sign_in_says_to_reconnect(self, clickup, api) -> None:
+        api.on("GET", f"{V2}/user", (401, {"err": "Token invalid", "ECODE": "OAUTH_025"}))
+        message = fail(await clickup.get_authorized_user())["error"]
+        assert message == (
+            "ClickUp did not accept the saved sign-in. ClickUp said: Token invalid. "
+            "Reconnect the ClickUp toolset in Settings > Toolsets and try again."
+        )
+
+    @pytest.mark.asyncio
+    async def test_forbidden_says_to_ask_an_admin(self, clickup, api) -> None:
+        api.on("POST", f"{V2}/list/l1/task", (403, {"err": "Team not authorized", "ECODE": "OAUTH_027"}))
+        assert "Ask a workspace admin" in fail(await clickup.create_task("l1", "Ship it"))["error"]
+
+    @pytest.mark.asyncio
+    async def test_missing_task_says_how_to_find_it(self, clickup, api) -> None:
+        message = fail(await clickup.get_task("nope"))["error"]
+        assert "could not find it" in message and "search_tasks" in message
+
+    @pytest.mark.asyncio
+    async def test_bad_request_relays_clickups_reason(self, clickup, api) -> None:
+        api.on("PUT", f"{V2}/task/t1", (400, {"err": "Status not found", "ECODE": "ITEM_156"}))
+        message = fail(await clickup.update_task("t1", status="Shipped"))["error"]
+        assert message == "ClickUp rejected the request. ClickUp said: Status not found. Correct it and try again."
+
+    @pytest.mark.asyncio
+    async def test_server_error_says_to_try_again(self, clickup, api) -> None:
+        api.on("GET", f"{V2}/team", (502, {}))
+        assert "temporary problem" in fail(await clickup.get_authorized_teams_workspaces())["error"]
