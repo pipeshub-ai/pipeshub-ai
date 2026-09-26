@@ -12,7 +12,6 @@ STUB_EDGE_COLLECTIONS = (
     CollectionNames.PERMISSION.value,
     CollectionNames.BELONGS_TO.value,
     CollectionNames.USER_APP_RELATION.value,
-    CollectionNames.USER_DRIVE_RELATION.value,
 )
 
 VERIFIED_EMAIL_WRITE_COLLECTIONS = (

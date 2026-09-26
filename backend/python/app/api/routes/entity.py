@@ -1,10 +1,11 @@
 import json
+import re
 import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.api.middlewares.auth import require_scopes, require_service_token
 from app.config.constants.arangodb import CollectionNames
@@ -18,8 +19,19 @@ router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
 
 
+_GRAPH_EMAIL = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+
+
 class UserEmailUpdateRequest(BaseModel):
     email: str = Field(..., min_length=3, max_length=320)
+
+    @field_validator("email")
+    @classmethod
+    def require_mailbox_shape(cls, value: str) -> str:
+        email = value.lower().strip()
+        if not _GRAPH_EMAIL.fullmatch(email):
+            raise ValueError("Invalid email")
+        return email
 
 
 async def get_services(request: Request) -> Dict[str, Any]:
@@ -766,11 +778,9 @@ async def update_user_email(
 
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    email = body.email.lower().strip()
+    email = body.email
     if not user_id or not org_id:
         raise HTTPException(status_code=400, detail="userId and orgId are required")
-    if "@" not in email:
-        raise HTTPException(status_code=400, detail="Invalid email")
 
     try:
         result = await graph_provider.apply_verified_user_email(user_id, org_id, email)
