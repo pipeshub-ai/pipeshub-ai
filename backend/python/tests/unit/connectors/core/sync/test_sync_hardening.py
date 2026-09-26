@@ -46,6 +46,17 @@ class TestStopSignalsTheLease:
         coordinator = LocalSyncCoordinator(LOG)
         assert await coordinator.request_stop("c1") is False
 
+    @pytest.mark.asyncio
+    async def test_a_second_stop_moves_the_stop_time(self) -> None:
+        """A request made between two stops of a sync slow to wind down was kept
+        against the first stop's time, and re-issued after the second."""
+        coordinator = LocalSyncCoordinator(LOG)
+        await coordinator.begin("c1")
+        with patch("app.connectors.core.sync.sync_coordinator._now_ms", side_effect=[1_000, 5_000]):
+            await coordinator.request_stop("c1")
+            await coordinator.request_stop("c1")
+        assert coordinator.stopped_at_ms("c1") == 5_000
+
 
 class TestAdmittedButNotSpawnedCounts:
     @pytest.mark.asyncio

@@ -7891,7 +7891,7 @@ async def delete_connector_instance(
             },
             "timestamp": get_epoch_timestamp_in_ms(),
         }
-        await producer.send_message(topic="sync-events", message=delete_message)
+        await producer.send_message(topic="sync-events", message=delete_message, key=connector_id)
         logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")
 
         # 7. Mark connector as DELETING in the graph DB so the UI can reflect it

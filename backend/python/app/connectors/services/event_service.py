@@ -666,7 +666,10 @@ class EventService:
             # row QUEUED; /sync/stop saw the lease and did not repair it, so the
             # drain's stale arm would start it again two minutes later.
             self.logger.info(f"Sync for {connector_id} stopped before it started")
-            await self._drop_queued_intent(connector_id, connector_doc)
+            # Re-read: connector_doc predates _ensure_connector, and a delete in
+            # that window both stops this lease and writes DELETING, which the
+            # stale QUEUED would overwrite with IDLE.
+            await self._drop_queued_intent(connector_id)
             return True, False
 
         if effective_full_sync:
@@ -916,8 +919,22 @@ class EventService:
         except Exception as e:
             self.logger.error(f"Failed to mark {connector_id} queued: {e}")
 
-    async def _drop_queued_intent(self, connector_id: str, doc: dict[str, Any]) -> None:
-        """Clear a queue entry or a pending request that must no longer run."""
+    async def _drop_queued_intent(
+        self, connector_id: str, doc: dict[str, Any] | None = None
+    ) -> None:
+        """Clear a queue entry or a pending request that must no longer run.
+
+        Without `doc` the current one is read; pass one only when it was read
+        just before, with nothing awaited in between.
+        """
+        if doc is None:
+            try:
+                doc = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value
+                )
+            except Exception as e:
+                self.logger.error(f"Could not read {connector_id} to clear its queue entry: {e}")
+                return
         if not isinstance(doc, dict):
             return
         queued = doc.get("status") == AppStatus.QUEUED.value
@@ -1226,11 +1243,17 @@ class EventService:
             # rows are gone, fail to build, and be redelivered forever. The stop
             # endpoint clears it first for exactly this reason.
             try:
-                await self.graph_provider.update_node(
-                    connector_id,
-                    CollectionNames.APPS.value,
-                    {ConnectorStateKeys.PENDING_RESYNC: False},
+                # Only when set: a failed delete reverts and keeps this doc, and
+                # main's strict Arango app schema rejects the field on rollback.
+                current = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value
                 )
+                if (current or {}).get(ConnectorStateKeys.PENDING_RESYNC):
+                    await self.graph_provider.update_node(
+                        connector_id,
+                        CollectionNames.APPS.value,
+                        {ConnectorStateKeys.PENDING_RESYNC: False},
+                    )
             except Exception as clear_err:
                 self.logger.warning(
                     f"Could not clear pendingResync for {connector_id} "
