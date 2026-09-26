@@ -147,6 +147,19 @@ class TestCatchesMistakes(unittest.TestCase):
         )
         allowed, _ = run(workflow=excluded, pytest_ini=pytest_ini)
         self.assertEqual(allowed, [])
+        # "not cifs" as text is not enough: the or-branch still selects it.
+        disjunction = WORKFLOW + (
+            '            core)         MARKERS="not cifs or cifs" ;;\n'
+            '            core)         MARKERS="integration and not cifs" ;;\n'
+        )
+        or_selects, _ = run(workflow=disjunction, pytest_ini=pytest_ini)
+        self.assertTrue(any("cifs" in p and "fall into core" in p for p in or_selects), or_selects)
+        stronger = WORKFLOW + (
+            '            core)         MARKERS="integration and not (alpha or cifs)" ;;\n'
+            '            core)         MARKERS="integration and not (alpha or cifs)" ;;\n'
+        )
+        strong_ok, _ = run(workflow=stronger, pytest_ini=pytest_ini)
+        self.assertEqual(strong_ok, [])
 
     def test_an_unmeasured_suite_is_named_but_allowed(self) -> None:
         # beta has no measured time; the two shards still weigh the same without it.
