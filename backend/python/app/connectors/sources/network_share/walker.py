@@ -214,8 +214,40 @@ class ShareWalker:
                         directory_path,
                     )
 
+        async def selected_prefix_is_walkable(directory_path: str) -> bool:
+            # Listing starts at the chosen path, so a reparse prefix is invisible
+            # to the child check. A failed stat must not prune.
+            nonlocal complete
+            parts = [part for part in directory_path.split("/") if part]
+            for index in range(len(parts)):
+                path = "/".join(parts[: index + 1])
+                try:
+                    info = await self.data_source.stat(share, path)
+                except Exception as exc:
+                    complete = False
+                    self.logger.error(
+                        "Failed to stat %s/%s before walking a selected folder: %s",
+                        share,
+                        path,
+                        exc,
+                    )
+                    return False
+                if info is None:
+                    return True
+                if info.is_symlink or info.is_reparse:
+                    self.logger.warning(
+                        "Not walking %s/%s: the path is a reparse point",
+                        share,
+                        path,
+                    )
+                    return False
+            return True
+
         for prefix in scope.list_prefixes:
-            await traverse(prefix.rstrip("/"), prefix=bool(prefix))
+            directory = prefix.rstrip("/")
+            if directory and not await selected_prefix_is_walkable(directory):
+                continue
+            await traverse(directory, prefix=bool(prefix))
 
         await flush()
         return WalkResult(seen=seen, complete=complete, max_timestamp_ms=max_ts)

@@ -212,6 +212,48 @@ class TestShareWalker:
         assert (SHARE, "junction") not in ds.list_calls
         assert f"{SHARE}/junction/secret.txt" not in result.seen
 
+    async def test_folder_filter_does_not_list_a_reparse_prefix(self):
+        junction = _entry("junction", is_directory=True, file_id=9, is_reparse=True)
+        ds = FakeNetworkShareDataSource(
+            tree={(SHARE, "junction"): [_entry("secret.txt", file_id=10)]},
+            stats={(SHARE, "junction"): junction},
+        )
+        result, upserts, _moves = await _walk(
+            ds, sync_filters=_filters(_folder_filter("junction"))
+        )
+        assert (SHARE, "junction") not in ds.list_calls
+        assert f"{SHARE}/junction/secret.txt" not in result.seen
+        assert f"{SHARE}/junction/secret.txt" not in _ids(upserts)
+        assert result.complete is True
+
+    async def test_folder_filter_does_not_list_through_a_reparse_ancestor(self):
+        ds = FakeNetworkShareDataSource(
+            tree={(SHARE, "junction/nested"): [_entry("secret.txt", file_id=10)]},
+            stats={
+                (SHARE, "junction"): _entry(
+                    "junction", is_directory=True, file_id=9, is_reparse=True
+                ),
+            },
+        )
+        result, _upserts, _moves = await _walk(
+            ds, sync_filters=_filters(_folder_filter("junction/nested"))
+        )
+        assert (SHARE, "junction/nested") not in ds.list_calls
+        assert f"{SHARE}/junction/nested/secret.txt" not in result.seen
+        assert result.complete is True
+
+    async def test_folder_filter_stat_failure_does_not_prune(self):
+        class FailingStat(FakeNetworkShareDataSource):
+            async def stat(self, share: str, path: str) -> DirectoryEntry | None:
+                raise DirectoryListingError(share, path, "stat failed")
+
+        ds = FailingStat(tree={(SHARE, "keep"): [_entry("in.txt", file_id=4)]})
+        result, _upserts, _moves = await _walk(
+            ds, sync_filters=_filters(_folder_filter("keep"))
+        )
+        assert (SHARE, "keep") not in ds.list_calls
+        assert result.complete is False
+
     async def test_recurses_into_nested_directories(self):
         ds = FakeNetworkShareDataSource(
             tree={

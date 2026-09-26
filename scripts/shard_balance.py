@@ -32,6 +32,10 @@ DURATIONS = REPO / "scripts/shard_durations.json"
 # nightly ends when the slowest shard ends, so drift here is wasted wall clock.
 MAX_OVER_MEAN = 1.35
 
+# Connectors that are not registered yet. A shard must not select them, and the
+# core job must exclude them, or the nightly tries to construct a missing type.
+HELD_OUT_CONNECTORS = frozenset({"cifs"})
+
 _SHARD_LINE = re.compile(r'^\s*CONN_SHARD_(\d+):\s*"([^"]*)"\s*$', re.MULTILINE)
 _MARKER_LINE = re.compile(r"^\s{4}(\w+):\s*(.+)$")
 _MATRIX_LINE = re.compile(r"^\s*shard:\s.*$", re.MULTILINE)
@@ -140,7 +144,20 @@ def check(
                 )
             seen[name] = shard
 
-    for name in sorted(connectors - set(seen)):
+    held = HELD_OUT_CONNECTORS & connectors
+    for name in sorted(held):
+        if name in seen:
+            problems.append(
+                f"'{name}' is held out of the nightly until its connector is registered, "
+                f"but {seen[name]} still selects it."
+            )
+        elif f"not {name}" not in workflow_text:
+            problems.append(
+                f"'{name}' is held out of the shards, but the core job does not exclude "
+                f"it, so those tests fall into core."
+            )
+
+    for name in sorted(connectors - set(seen) - held):
         problems.append(
             f"Connector marker '{name}' is in no shard. Its tests are marked "
             f"`integration`, so they fall into `core` instead of their own shard, making "

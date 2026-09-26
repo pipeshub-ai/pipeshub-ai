@@ -121,6 +121,21 @@ class TestCatchesMistakes(unittest.TestCase):
                 f"{broad}: {problems}",
             )
 
+    def test_a_held_out_connector_must_stay_out_of_core(self) -> None:
+        pytest_ini = PYTEST_INI.replace(
+            "    cleanup:",
+            "    cifs: marks tests specific to the CIFS/SMB1 connector\n    cleanup:",
+        )
+        missing, _ = run(pytest_ini=pytest_ini)
+        self.assertTrue(any("cifs" in p and "fall into core" in p for p in missing), missing)
+        held_in_shard, _ = run(
+            workflow=WORKFLOW.replace('"gamma"', '"gamma or cifs"') + "\n# not cifs\n",
+            pytest_ini=pytest_ini,
+        )
+        self.assertTrue(any("still selects" in p for p in held_in_shard), held_in_shard)
+        allowed, _ = run(workflow=WORKFLOW + "\n# not cifs\n", pytest_ini=pytest_ini)
+        self.assertEqual(allowed, [])
+
     def test_an_unmeasured_suite_is_named_but_allowed(self) -> None:
         # beta has no measured time; the two shards still weigh the same without it.
         problems, report = run(minutes={"alpha": 30.0, "gamma": 30.0})
