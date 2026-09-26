@@ -954,22 +954,17 @@ class TestFiltersAndIndexingSwitches:
         for rid in ("p1", "att1", "c1file"):
             assert db.records[rid].indexing_status == "AUTO_INDEX_OFF", rid
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: the 'Index Page Comments' "
-            "switch is read but never applied, so comments are indexed even when an admin turns "
-            "comment indexing off."
-        ),
-    )
     async def test_switching_off_comment_indexing_is_respected(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store, filters=_filters(indexing={"page_comments": False}))
         search.add("page", 0, listing([content("p1")]))
         atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/c1/child/attachment", {"results": [attachment("c1file")], "_links": {"base": BASE}})
 
         await connector.run_sync()
 
         assert db.records["c1"].indexing_status == "AUTO_INDEX_OFF"
+        assert db.records["p1"].indexing_status != "AUTO_INDEX_OFF"
+        assert db.records["c1file"].indexing_status != "AUTO_INDEX_OFF", "a comment's files follow the attachments switch"
 
     async def test_truncated_attachment_list_and_offsetless_next_link_are_followed(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)

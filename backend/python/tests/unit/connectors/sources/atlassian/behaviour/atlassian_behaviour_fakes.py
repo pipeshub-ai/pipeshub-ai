@@ -174,6 +174,11 @@ class FakeCheckpointStore:
         return self.sync_points.get(key)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
+        # Neo4j (the default DATA_STORE) only stores primitives or lists of primitives as properties.
+        for field, value in data.items():
+            items = value if isinstance(value, list) else [value]
+            if any(isinstance(item, (dict, list, tuple, set)) for item in items):
+                raise TypeError(f"sync point field {field!r} is not a primitive: {value!r}")
         self.sync_points[key] = dict(data)
 
     async def delete_sync_point(self, key: str) -> None:

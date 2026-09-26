@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import json
 import re
 from collections import defaultdict
 from collections.abc import AsyncGenerator
@@ -96,6 +97,8 @@ from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
 )
+from app.sources.client.http.http_response import HTTPResponse
+from app.sources.client.http.http_retry import call_with_retry
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
@@ -105,6 +108,25 @@ from app.utils.streaming import create_stream_record_response
 # Pagination/constants
 DEFAULT_MAX_RESULTS: int = 50
 BATCH_PROCESSING_SIZE: int = 100
+# How many runs an issue that fails to process holds its project's checkpoint
+# before it is given up on, so one broken issue can't stop a project for good.
+MAX_FAILED_ISSUE_ATTEMPTS: int = 5
+# A given-up issue is remembered while the search can still return it: the search
+# re-reads about a minute before the checkpoint, so a day is ample.
+GIVEN_UP_ISSUE_MEMORY_MS: int = 24 * 60 * 60 * 1000
+
+
+def _stored_map(value: object) -> dict[str, Any]:
+    """A map kept in a sync point as JSON text (graph stores such as Neo4j can't hold nested maps)."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 USER_PAGE_SIZE: int = 50
 # /user/list supports up to 2000; use a moderate page to cut round-trips vs USER_PAGE_SIZE.
 USER_LIST_PAGE_SIZE: int = 100
@@ -394,6 +416,12 @@ class JiraDataCenterConnector(BaseConnector):
         self._parent_link_field_id: str | None = None
         # Issue key -> numeric id; cleared at start of each project sync
         self._issue_key_to_id_cache: dict[str, str] = {}
+        # Issues that failed to process in the project being synced: attempts so far
+        # (from the checkpoint) and the ones this run holds, id -> (attempts, updated ms).
+        self._failed_issue_attempts_before: dict[str, int] = {}
+        self._held_issues: dict[str, tuple[int, int | None]] = {}
+        # Issues given up on, id -> the ``updated`` value seen then; skipped until it changes.
+        self._given_up_issues: dict[str, str] = {}
 
     def _notification_title(self, event: str) -> str:
         return f"{self.connector_instance_name or 'Jira Data Center'} connector {event}"
@@ -793,7 +821,9 @@ class JiraDataCenterConnector(BaseConnector):
         self,
         project_key: str,
         last_sync_time: Optional[int] = None,
-        last_issue_updated: Optional[int] = None
+        last_issue_updated: Optional[int] = None,
+        failed_issue_attempts: dict[str, int] | None = None,
+        given_up_issues: dict[str, str] | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -802,6 +832,8 @@ class JiraDataCenterConnector(BaseConnector):
             project_key: Project key (e.g., "PROJ")
             last_sync_time: Timestamp when checkpoint was updated (metadata only)
             last_issue_updated: Updated timestamp of last processed issue (used for resume AND next incremental sync)
+            failed_issue_attempts: Issue id -> runs it has failed to process, for issues holding the checkpoint
+            given_up_issues: Issue id -> updated value when it was given up on, for issues skipped until they change
         """
         sync_point_key = f"project_{project_key}"
 
@@ -812,6 +844,11 @@ class JiraDataCenterConnector(BaseConnector):
             "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
             "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated")
         }
+        # Written even when empty: Neo4j merges sync point fields, so an omitted field would keep its old value.
+        for field, value in (("failed_issue_attempts", failed_issue_attempts), ("given_up_issues", given_up_issues)):
+            stored = value if value is not None else _stored_map(existing.get(field))
+            if stored or existing.get(field):
+                sync_point_data[field] = json.dumps(stored, sort_keys=True)
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
@@ -2677,6 +2714,18 @@ class JiraDataCenterConnector(BaseConnector):
 
         # Per-project sync: reset Epic Link key→id cache
         self._issue_key_to_id_cache.clear()
+        self._failed_issue_attempts_before = _stored_map((project_sync_data or {}).get("failed_issue_attempts"))
+        self._held_issues = {}
+        self._given_up_issues = _stored_map((project_sync_data or {}).get("given_up_issues"))
+
+        def checkpoint_at(last_seen: int | None) -> int | None:
+            # A failed issue keeps the checkpoint at its own updated time so the next search finds it again.
+            held = [updated for _, updated in self._held_issues.values()]
+            if not held:
+                return last_seen
+            if None in held:
+                return resume_from_timestamp
+            return min(held + ([last_seen] if last_seen else []))
 
         # Fetch and process issues in batches
         total_issues_processed = 0
@@ -2708,7 +2757,9 @@ class JiraDataCenterConnector(BaseConnector):
                     await self._update_project_sync_checkpoint(
                         project_key,
                         last_sync_time=current_time,
-                        last_issue_updated=last_issue_updated_in_batch
+                        last_issue_updated=checkpoint_at(last_issue_updated_in_batch),
+                        failed_issue_attempts=self._held_issue_attempts(),
+                        given_up_issues=self._given_up_issues_to_keep(checkpoint_at(last_issue_updated_in_batch)),
                     )
                 continue
 
@@ -2724,7 +2775,9 @@ class JiraDataCenterConnector(BaseConnector):
                 await self._update_project_sync_checkpoint(
                     project_key,
                     last_sync_time=current_time,
-                    last_issue_updated=last_issue_updated_in_batch
+                    last_issue_updated=checkpoint_at(last_issue_updated_in_batch),
+                    failed_issue_attempts=self._held_issue_attempts(),
+                    given_up_issues=self._given_up_issues_to_keep(checkpoint_at(last_issue_updated_in_batch)),
                 )
 
         # Final checkpoint update if we processed any issues (ensures last_sync_time stays close to last_issue_updated)
@@ -2733,7 +2786,9 @@ class JiraDataCenterConnector(BaseConnector):
             await self._update_project_sync_checkpoint(
                 project_key,
                 last_sync_time=current_time,
-                last_issue_updated=last_issue_updated_in_batch
+                last_issue_updated=checkpoint_at(last_issue_updated_in_batch),
+                failed_issue_attempts=self._held_issue_attempts(),
+                given_up_issues=self._given_up_issues_to_keep(checkpoint_at(last_issue_updated_in_batch)),
             )
 
         if total_issues_processed == 0:
@@ -3652,6 +3707,52 @@ class JiraDataCenterConnector(BaseConnector):
             "updated_at": updated_at,
         }
 
+    def _held_issue_attempts(self) -> dict[str, int]:
+        return {issue_id: attempts for issue_id, (attempts, _) in self._held_issues.items()}
+
+    def _given_up_issues_to_keep(self, checkpoint_ms: int | None) -> dict[str, str]:
+        """Given-up issues the search can still return; older ones are forgotten so the record stays small."""
+        if not checkpoint_ms:
+            return dict(self._given_up_issues)
+        return {
+            issue_id: updated
+            for issue_id, updated in self._given_up_issues.items()
+            if self._parse_jira_timestamp(updated) >= checkpoint_ms - GIVEN_UP_ISSUE_MEMORY_MS
+        }
+
+    def _is_given_up_issue(self, issue: dict[str, Any]) -> bool:
+        """True for an issue given up on that hasn't changed since; a changed one is tried afresh."""
+        issue_id = str(issue.get("id") or "")
+        if issue_id not in self._given_up_issues:
+            return False
+        if self._given_up_issues[issue_id] == (issue.get("fields") or {}).get("updated"):
+            return True
+        del self._given_up_issues[issue_id]
+        return False
+
+    def _note_failed_issue(self, issue: dict[str, Any], error: Exception) -> None:
+        """Hold the checkpoint for an issue that failed to process, until it has failed too many runs."""
+        issue_id = str(issue.get("id") or "") if isinstance(issue, dict) else ""
+        issue_key = (issue.get("key") if isinstance(issue, dict) else None) or issue_id or "unknown"
+        attempts = self._failed_issue_attempts_before.get(issue_id, 0) + 1
+        if attempts >= MAX_FAILED_ISSUE_ATTEMPTS:
+            self.logger.error(
+                f"❌ Issue {issue_key} still could not be processed after {attempts} syncs; moving on without it. "
+                f"It is read again when it next changes. Last error: {error}"
+            )
+            self._given_up_issues[issue_id] = str((issue.get("fields") or {}).get("updated") or "")
+            return
+        try:
+            updated: int | None = self._parse_jira_timestamp((issue.get("fields") or {}).get("updated")) or None
+        except Exception:
+            updated = None
+        self._held_issues[issue_id] = (attempts, updated)
+        self.logger.error(
+            f"❌ Failed to process issue {issue_key}; it is read again next sync "
+            f"(attempt {attempts} of {MAX_FAILED_ISSUE_ATTEMPTS}): {error}",
+            exc_info=True,
+        )
+
     async def _build_issue_records(
         self,
         issues: list[dict[str, Any]],
@@ -3677,137 +3778,143 @@ class JiraDataCenterConnector(BaseConnector):
         user_by_account_id = {user.source_user_id: user for user in users if user.source_user_id}
 
         for issue in issues:
-            issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
-
-            issue_id = issue_data["issue_id"]
-            issue_key = issue_data["issue_key"]
-            issue_name = issue_data["issue_name"]
-            issue_type = issue_data["issue_type"]
-            parent_external_id = issue_data["parent_external_id"]
-            status = issue_data["status"]
-            priority = issue_data["priority"]
-            creator_email = issue_data["creator_email"]
-            creator_name = issue_data["creator_name"]
-            reporter_email = issue_data["reporter_email"]
-            reporter_name = issue_data["reporter_name"]
-            assignee_email = issue_data["assignee_email"]
-            assignee_name = issue_data["assignee_name"]
-            created_at = issue_data["created_at"]
-            updated_at = issue_data["updated_at"]
-
-            # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
-            permissions = []
-
-            fields = issue.get("fields", {})
-
-            # Check for existing record (works for both Epics and regular issues)
-            existing_record = await self.data_entities_processor.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_record_id=issue_id
-            )
-
-            record_id = existing_record.id if existing_record else str(uuid4())
-            is_new = existing_record is None
-            # Stub created by _handle_parent_record when a child arrived before this
-            # ancestor was in scope — promote it like a new record so revision/content
-            # replace the placeholder breadcrumb.
-            is_placeholder = bool(existing_record and existing_record.is_placeholder)
-
-            # Only increment version if issue content actually changed
-            is_issue_changed = False
-            if is_new or is_placeholder:
-                version = 0
-                is_issue_changed = True
-                self.logger.debug(f"🆕 New issue found: {issue_key} (external_id: {issue_id})")
-            elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
-                version = existing_record.version + 1
-                is_issue_changed = True
-                self.logger.debug(f"📝 Issue {issue_key} updated, incrementing version to {version}")
-            else:
-                version = existing_record.version if existing_record else 0
-                # Skip unchanged issues silently - no need to log every unchanged issue
-
-            # Skip processing if issue is unchanged, unless this is a full sync
-            # (is_new_project=True means sync points were wiped, so edges need to be
-            # recreated even for unchanged issues; _process_record is idempotent).
-            if not is_issue_changed and not is_new_project:
+            if isinstance(issue, dict) and self._is_given_up_issue(issue):
                 skipped_unchanged_count += 1
                 continue
-
-            # Set parent relationships and record group
-            external_record_group_id = project_id
-            record_group_type = RecordGroupType.PROJECT
-            parent_record_id = None
-            parent_record_type = None
-
-            if parent_external_id:
-                parent_record_id = parent_external_id
-                parent_record_type = RecordType.TICKET
-
-            # Every ticket is a root node
-            issue_record = TicketRecord(
-                id=record_id,
-                org_id=self.data_entities_processor.org_id,
-                priority=priority,
-                status=status,
-                type=issue_type,
-                creator_email=creator_email,
-                creator_name=creator_name,
-                reporter_email=reporter_email,
-                reporter_name=reporter_name,
-                assignee=assignee_name,
-                assignee_email=assignee_email,
-                external_record_id=issue_id,
-                external_revision_id=str(updated_at) if updated_at else None,
-                record_name=issue_name,
-                record_type=RecordType.TICKET,
-                origin=OriginTypes.CONNECTOR,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-                record_group_type=record_group_type,
-                external_record_group_id=external_record_group_id,
-                parent_external_record_id=parent_record_id,
-                parent_record_type=parent_record_type,
-                version=version,
-                mime_type=MimeTypes.BLOCKS.value,
-                weburl=f"{atlassian_domain}/browse/{issue_key}" if atlassian_domain else None,
-                source_created_at=created_at,
-                source_updated_at=updated_at,
-                created_at=created_at,
-                updated_at=updated_at,
-                inherit_permissions=True,
-                preview_renderable=False,
-                is_dependent_node=False,  # Tickets are not dependent
-                parent_node_id=None,  # Tickets have no parent node
-            )
-
-            # Set indexing status based on filters
-            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
-                issue_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-            # Parse issue links and set related_external_records for creating LINKED_TO edges
-            related_external_records = self._parse_issue_links(issue)
-            if related_external_records:
-                issue_record.related_external_records = related_external_records
-                self.logger.debug(f"🔗 Issue {issue_key} has {len(related_external_records)} linked issues")
-
-            all_records.append((issue_record, permissions))
-
-            # Fetch attachments and create FileRecords
             try:
-                attachment_records = await self._fetch_issue_attachments(
-                    issue_id,
-                    issue_key,
-                    fields,
-                    permissions,
-                    external_record_group_id,
-                    record_group_type,
-                    parent_node_id=issue_record.id,
+                issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
+
+                issue_id = issue_data["issue_id"]
+                issue_key = issue_data["issue_key"]
+                issue_name = issue_data["issue_name"]
+                issue_type = issue_data["issue_type"]
+                parent_external_id = issue_data["parent_external_id"]
+                status = issue_data["status"]
+                priority = issue_data["priority"]
+                creator_email = issue_data["creator_email"]
+                creator_name = issue_data["creator_name"]
+                reporter_email = issue_data["reporter_email"]
+                reporter_name = issue_data["reporter_name"]
+                assignee_email = issue_data["assignee_email"]
+                assignee_name = issue_data["assignee_name"]
+                created_at = issue_data["created_at"]
+                updated_at = issue_data["updated_at"]
+
+                # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
+                permissions = []
+
+                fields = issue.get("fields", {})
+
+                # Check for existing record (works for both Epics and regular issues)
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=issue_id
                 )
-                if attachment_records:
-                    all_records.extend(attachment_records)
+
+                record_id = existing_record.id if existing_record else str(uuid4())
+                is_new = existing_record is None
+                # Stub created by _handle_parent_record when a child arrived before this
+                # ancestor was in scope — promote it like a new record so revision/content
+                # replace the placeholder breadcrumb.
+                is_placeholder = bool(existing_record and existing_record.is_placeholder)
+
+                # Only increment version if issue content actually changed
+                is_issue_changed = False
+                if is_new or is_placeholder:
+                    version = 0
+                    is_issue_changed = True
+                    self.logger.debug(f"🆕 New issue found: {issue_key} (external_id: {issue_id})")
+                elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
+                    version = existing_record.version + 1
+                    is_issue_changed = True
+                    self.logger.debug(f"📝 Issue {issue_key} updated, incrementing version to {version}")
+                else:
+                    version = existing_record.version if existing_record else 0
+                    # Skip unchanged issues silently - no need to log every unchanged issue
+
+                # Skip processing if issue is unchanged, unless this is a full sync
+                # (is_new_project=True means sync points were wiped, so edges need to be
+                # recreated even for unchanged issues; _process_record is idempotent).
+                if not is_issue_changed and not is_new_project:
+                    skipped_unchanged_count += 1
+                    continue
+
+                # Set parent relationships and record group
+                external_record_group_id = project_id
+                record_group_type = RecordGroupType.PROJECT
+                parent_record_id = None
+                parent_record_type = None
+
+                if parent_external_id:
+                    parent_record_id = parent_external_id
+                    parent_record_type = RecordType.TICKET
+
+                # Every ticket is a root node
+                issue_record = TicketRecord(
+                    id=record_id,
+                    org_id=self.data_entities_processor.org_id,
+                    priority=priority,
+                    status=status,
+                    type=issue_type,
+                    creator_email=creator_email,
+                    creator_name=creator_name,
+                    reporter_email=reporter_email,
+                    reporter_name=reporter_name,
+                    assignee=assignee_name,
+                    assignee_email=assignee_email,
+                    external_record_id=issue_id,
+                    external_revision_id=str(updated_at) if updated_at else None,
+                    record_name=issue_name,
+                    record_type=RecordType.TICKET,
+                    origin=OriginTypes.CONNECTOR,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    record_group_type=record_group_type,
+                    external_record_group_id=external_record_group_id,
+                    parent_external_record_id=parent_record_id,
+                    parent_record_type=parent_record_type,
+                    version=version,
+                    mime_type=MimeTypes.BLOCKS.value,
+                    weburl=f"{atlassian_domain}/browse/{issue_key}" if atlassian_domain else None,
+                    source_created_at=created_at,
+                    source_updated_at=updated_at,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    inherit_permissions=True,
+                    preview_renderable=False,
+                    is_dependent_node=False,  # Tickets are not dependent
+                    parent_node_id=None,  # Tickets have no parent node
+                )
+
+                # Set indexing status based on filters
+                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
+                    issue_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+                # Parse issue links and set related_external_records for creating LINKED_TO edges
+                related_external_records = self._parse_issue_links(issue)
+                if related_external_records:
+                    issue_record.related_external_records = related_external_records
+                    self.logger.debug(f"🔗 Issue {issue_key} has {len(related_external_records)} linked issues")
+
+                all_records.append((issue_record, permissions))
+
+                # Fetch attachments and create FileRecords
+                try:
+                    attachment_records = await self._fetch_issue_attachments(
+                        issue_id,
+                        issue_key,
+                        fields,
+                        permissions,
+                        external_record_group_id,
+                        record_group_type,
+                        parent_node_id=issue_record.id,
+                    )
+                    if attachment_records:
+                        all_records.extend(attachment_records)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to fetch attachments for issue {issue_key}: {e}")
             except Exception as e:
-                self.logger.error(f"❌ Failed to fetch attachments for issue {issue_key}: {e}")
+                self._note_failed_issue(issue, e)
 
         # Log summary only if there were skipped issues
         if skipped_unchanged_count > 0:
@@ -4275,46 +4382,32 @@ class JiraDataCenterConnector(BaseConnector):
         fields: list[str],
         max_attempts: int = 3,
     ) -> Any:
-        """Search Jira issues, retrying on transient httpx transport errors.
+        """Search Jira issues, retrying transport errors and 429 / 5xx answers with backoff.
 
-        Targeted at stale keep-alive sockets that raise ``RemoteProtocolError``
-        before any HTTP response is received during paginated sync. Replaying the
-        same JQL and ``startAt`` is safe when no response was received — search is
-        read-only and httpx evicts the broken connection on failure.
+        Honours ``Retry-After`` on 429. Replaying the same JQL and ``startAt`` is safe:
+        search is read-only and httpx evicts a broken connection on failure.
         """
-        last_exc: Exception | None = None
-        for attempt in range(max_attempts):
-            try:
-                datasource = await self._get_fresh_datasource()
-                return await datasource.search_issues_post_v2(
-                    jql=jql,
-                    startAt=start_at,
-                    maxResults=max_results,
-                    fields=fields,
-                )
-            except (
-                httpx.RemoteProtocolError,
-                httpx.ReadError,
-                httpx.WriteError,
-                httpx.ConnectError,
-                httpx.PoolTimeout,
-                httpx.ReadTimeout,
-            ) as e:
-                last_exc = e
-                if attempt == max_attempts - 1:
-                    break
-                backoff = 0.5 * (2 ** attempt)  # 0.5s, 1.0s, ...
-                self.logger.warning(
-                    "Transient transport error searching issues for project %s "
-                    "(startAt=%s, attempt %s/%s): %s — retrying in %.1fs",
-                    project_key, start_at, attempt + 1, max_attempts, e, backoff,
-                )
-                await asyncio.sleep(backoff)
+        async def _search() -> HTTPResponse:
+            datasource = await self._get_fresh_datasource()
+            return await datasource.search_issues_post_v2(
+                jql=jql,
+                startAt=start_at,
+                maxResults=max_results,
+                fields=fields,
+            )
 
-        raise Exception(
-            f"Failed to fetch issues for {project_key} (startAt={start_at}) "
-            f"after {max_attempts} attempts: {last_exc}"
-        ) from last_exc
+        try:
+            return await call_with_retry(
+                _search,
+                logger=self.logger,
+                label=f"issue search {project_key} startAt={start_at}",
+                max_attempts=max_attempts,
+            )
+        except httpx.HTTPError as e:
+            raise Exception(
+                f"Failed to fetch issues for {project_key} (startAt={start_at}) "
+                f"after {max_attempts} attempts: {e}"
+            ) from e
 
     async def _get_issue_with_retry(
         self,
