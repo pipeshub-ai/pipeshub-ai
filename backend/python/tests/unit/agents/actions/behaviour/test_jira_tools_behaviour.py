@@ -718,3 +718,34 @@ class TestCreateIssueFieldErrors:
         assert ok is False
         assert data["validation_error"] == "Summary is required"
         assert api.requests == []
+
+
+EVERY_TOOL = [
+    ("validate_connection", {}),
+    ("get_current_user", {}),
+    ("get_create_issue_fields", {"project_key": "PA", "issue_type_name": "Bug"}),
+    ("create_issue", {"project_key": "PA", "summary": "Login fails", "issue_type_name": "Bug"}),
+    ("update_issue", {"issue_key": "PA-7", "summary": "New title"}),
+    ("get_projects", {}),
+    ("get_project", {"project_key": "PA"}),
+    ("get_issues", {"project_key": "PA"}),
+    ("get_issue", {"issue_key": "PA-7"}),
+    ("search_issues", {"jql": 'project = "PA"'}),
+    ("add_comment", {"issue_key": "PA-7", "comment": "On it"}),
+    ("get_comments", {"issue_key": "PA-7"}),
+    ("search_users", {"query": "ann"}),
+    ("get_project_metadata", {"project_key": "PA"}),
+]
+
+
+class TestEveryToolFailsHonestly:
+    @pytest.mark.parametrize(("tool_name", "args"), EVERY_TOOL, ids=[t[0] for t in EVERY_TOOL])
+    async def test_a_rate_limit_is_never_reported_as_success(self, jira, api, tool_name, args) -> None:
+        for verb in ("GET", "POST", "PUT"):
+            api.on(verb, ".*", (429, {"errorMessages": ["Rate limit exceeded."]}, {"Retry-After": "9"}))
+
+        ok, data = result(await getattr(jira, tool_name)(**args))
+
+        assert ok is False
+        message = assert_safe_error(data)
+        assert "try again" in message.lower()
