@@ -92,9 +92,10 @@ _COMMENTS_PAGE_SIZE = 25
 
 def _mark_older_comments(data: dict[str, Any]) -> None:
     """A full page of comments may not be all of them: say so, and how to read the older ones."""
-    comments = [c for c in data.get("comments") or [] if isinstance(c, dict)]
-    data["has_more"] = len(comments) >= _COMMENTS_PAGE_SIZE
-    if not data["has_more"]:
+    page = data["comments"]
+    data["has_more"] = len(page) >= _COMMENTS_PAGE_SIZE
+    comments = [c for c in page if isinstance(c, dict)]
+    if not data["has_more"] or not comments:
         return
     oldest = comments[-1]
     data["next_start"] = int(oldest["date"]) if str(oldest.get("date", "")).isdigit() else None
@@ -1314,16 +1315,21 @@ class ClickUp:
                 )
                 if not response.success:
                     return self._handle_response(response)
-                data = response.data if response.data is not None else {}
-                if isinstance(data, dict) and task_id:
-                    for item in data.get("comments") or []:
+                data = response.data
+                # Treating an unreadable page as empty would claim there are no more comments.
+                if not isinstance(data, dict) or not isinstance(data.get("comments"), list):
+                    return False, json.dumps({
+                        "error": "ClickUp's reply did not include a readable list of comments. Try again in a moment.",
+                    })
+                if task_id:
+                    for item in data["comments"]:
                         if isinstance(item, dict) and item.get("id") is not None:
                             item["web_url"] = _build_clickup_web_url(
                                 ClickUpEntityType.COMMENT,
                                 task_id=task_id,
                                 comment_id=str(item["id"]),
                             )
-                    _mark_older_comments(data)
+                _mark_older_comments(data)
                 return self._handle_response(response, data_override=data)
         except Exception as e:
             return _unexpected_failure("get_comments", e)
