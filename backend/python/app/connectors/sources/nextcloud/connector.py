@@ -1259,9 +1259,10 @@ class NextcloudConnector(BaseConnector):
                         latest_activity_id = activities[0].get('activity_id')
                         if latest_activity_id:
                             sync_point_key = "activity_cursor"
+                            # The store merges writes, so a count left from an earlier cursor is reset here.
                             await self.activity_sync_point.update_sync_point(
                                 sync_point_key,
-                                {"cursor": str(latest_activity_id)}
+                                {"cursor": str(latest_activity_id), "held_attempts": 0}
                             )
                             self.logger.info(f"⚓ [Full Sync] Anchored activity cursor to: {latest_activity_id}")
                     else:
@@ -1319,6 +1320,10 @@ class NextcloudConnector(BaseConnector):
                 self.logger.warning("⚠️ [Incremental Sync] No cursor found. Falling back to full sync.")
                 await self._run_full_sync_internal()
                 return
+
+            pending_deletes = await self._retry_pending_deletes(
+                sync_point_key, [str(i) for i in sync_point_data.get("pending_deletes") or []]
+            )
 
             self.logger.info(f"📋 [Incremental Sync] Fetching activities since ID: {last_activity_id}")
 
@@ -1403,11 +1408,13 @@ class NextcloudConnector(BaseConnector):
                                 self.logger.info(f"📝 Modification detected: {file_path} ({activity_type})")
 
             failures: dict[str, str] = {}
+            failed_deletes: dict[str, str] = {}
 
             # Process deletions
             if deleted_file_ids:
                 self.logger.info(f"🗑️  [Incremental Sync] Processing {len(deleted_file_ids)} deletions")
-                for file_id, reason in (await self._process_deletions(deleted_file_ids)).items():
+                failed_deletes = await self._process_deletions(deleted_file_ids)
+                for file_id, reason in failed_deletes.items():
                     failures[f"deletion of {deleted_paths.get(file_id) or 'file'} (ID {file_id})"] = reason
 
             # Process modifications and new files
@@ -1426,7 +1433,8 @@ class NextcloudConnector(BaseConnector):
                 if held_attempts < MAX_HELD_ATTEMPTS:
                     await self.activity_sync_point.update_sync_point(
                         sync_point_key,
-                        {"cursor": str(last_activity_id), "held_attempts": held_attempts},
+                        {"cursor": str(last_activity_id), "held_attempts": held_attempts,
+                         "pending_deletes": pending_deletes},
                     )
                     self.logger.warning(
                         f"⚠️ [Incremental Sync] {len(failures)} change(s) could not be applied (attempt "
@@ -1436,14 +1444,17 @@ class NextcloudConnector(BaseConnector):
                     return
                 self.logger.error(
                     f"❌ [Incremental Sync] {len(failures)} change(s) still could not be applied after "
-                    f"{held_attempts} attempts; moving on so later changes are not held up. They are "
-                    f"picked up again when those files next change in Nextcloud: {describe_failures(failures)}"
+                    f"{held_attempts} attempts; moving on so later changes are not held up. Changed files "
+                    "are picked up again when they next change in Nextcloud; deletions are retried at the "
+                    f"start of every sync until they apply: {describe_failures(failures)}"
                 )
+                # A deleted file never changes again, so nothing else would bring its deletion back.
+                pending_deletes = sorted(set(pending_deletes) | set(failed_deletes))
 
             # Update cursor to latest activity ID
             await self.activity_sync_point.update_sync_point(
                 sync_point_key,
-                {"cursor": str(max_activity_id), "held_attempts": 0}
+                {"cursor": str(max_activity_id), "held_attempts": 0, "pending_deletes": pending_deletes}
             )
 
             self.logger.info(
@@ -1455,6 +1466,24 @@ class NextcloudConnector(BaseConnector):
             self.logger.error(f"❌ [Incremental Sync] Error: {ex}", exc_info=True)
             # Don't fall back to full sync on every error - let the scheduler retry
             raise
+
+    async def _retry_pending_deletes(self, sync_point_key: str, pending: list[str]) -> list[str]:
+        """Apply the deletions an earlier run gave up on; returns the ones still owed.
+
+        An ID whose record is already gone counts as applied and leaves the list.
+        """
+        if not pending:
+            return []
+        still_failing = await self._process_deletions(set(pending))
+        remaining = sorted(i for i in set(pending) if i in still_failing)
+        if remaining != sorted(set(pending)):
+            await self.activity_sync_point.update_sync_point(sync_point_key, {"pending_deletes": remaining})
+        if remaining:
+            self.logger.warning(
+                f"⚠️ [Incremental Sync] {len(remaining)} earlier deletion(s) still could not be applied; "
+                f"they are retried next sync: {describe_failures({f'ID {i}': still_failing[i] for i in remaining})}"
+            )
+        return remaining
 
     async def run_incremental_sync(self) -> None:
         """

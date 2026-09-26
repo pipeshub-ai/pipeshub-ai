@@ -515,7 +515,17 @@ class FakeStore:
         return self.sync_points.get(key)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
-        self.sync_points[key] = dict(data)
+        """Merges into the stored document, as Arango's UPDATE and Neo4j's ``SET +=`` do.
+
+        A field that is left out keeps its stored value; clearing one takes an explicit write.
+        """
+        self.sync_points.setdefault(key, {}).update(data)
+
+    def checkpoint(self) -> dict[str, Any]:
+        for key, value in self.sync_points.items():
+            if key.endswith("/activity_cursor"):
+                return value
+        return {}
 
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> Optional[Record]:
         """Same signature as ``GraphDataStore.get_record_by_path``; Nextcloud records store no path."""

@@ -877,6 +877,38 @@ class TestIncrementalSync:
         await connector.run_sync()
         assert "after.txt" in db.names(), "later changes are no longer held up"
 
+    async def test_a_deletion_that_fails_five_times_is_applied_once_the_fault_clears(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notes = ids_of(server)["notes.txt"]
+        db.fail_delete_for = {notes}
+        server.delete("Docs/notes.txt")
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        assert store.cursor() == str(server.latest_activity_id), "the page is given up on after 5 runs"
+        assert store.checkpoint()["pending_deletes"] == [notes]
+        assert "notes.txt" in db.names()
+
+        await connector.run_sync()
+        assert store.checkpoint()["pending_deletes"] == [notes], "kept while it still fails"
+
+        db.fail_delete_for.clear()
+        await connector.run_sync()  # no new activity: the retry runs before the feed is read
+        assert "notes.txt" not in db.names()
+        assert store.checkpoint()["pending_deletes"] == []
+
+    async def test_a_pending_deletion_whose_record_is_gone_is_dropped_quietly(self, server, db, store, caplog) -> None:
+        connector = await synced(server, db, store)
+        cursor = store.cursor()
+        store.checkpoint()["pending_deletes"] = ["99999"]
+        caplog.clear()
+
+        await connector.run_sync()
+
+        assert store.checkpoint()["pending_deletes"] == [] and store.cursor() == cursor
+        assert db.deleted == []
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
     async def test_the_give_up_error_names_what_could_not_be_applied(self, server, db, store, caplog) -> None:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")
