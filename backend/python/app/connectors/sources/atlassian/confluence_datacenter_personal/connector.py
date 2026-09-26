@@ -90,6 +90,10 @@ from app.connectors.core.base.error.stream_errors import (
 # between the application and Confluence server, ensuring no data is missed during sync
 TIME_OFFSET_HOURS = 24
 
+# How many runs the checkpoint is held for pages that failed to save before they
+# are given up on, so one broken page can't stop a space from ever moving on.
+MAX_FAILED_PAGE_ATTEMPTS = 5
+
 def _extract_item_last_modified_when(item_data: dict[str, Any]) -> Optional[str]:
     """Extract last modified timestamp from Confluence item data.
     
@@ -867,6 +871,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             total_attachments_synced = 0
             total_comments_synced = 0
             listing_complete = True
+            failed_items: list[str] = []
 
             if record_type == RecordType.CONFLUENCE_PAGE and space_homepage_id:
                 homepage_in_db = await self.data_entities_processor.get_record_by_external_id(
@@ -1079,6 +1084,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
 
                     except Exception as item_error:
                         self.logger.error(f"❌ Failed to process {content_type} {item_data.get('title')}: {item_error}")
+                        failed_items.append(f"'{item_data.get('title')}' ({item_data.get('id')})")
                         continue
 
                 # Save batch to database
@@ -1125,9 +1131,16 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
                     "this window could be read, so the next sync reads it again"
                 )
-            elif total_synced > 0:
+            elif failed_items and await self._hold_checkpoint_for_failed_items(
+                sync_point_key, last_sync_data, failed_items, content_type, space_key
+            ):
+                pass
+            elif total_synced > 0 or failed_items:
                 current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-                await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
+                checkpoint: dict[str, Any] = {"last_sync_time": current_sync_time}
+                if (last_sync_data or {}).get("failedPageAttempts"):
+                    checkpoint["failedPageAttempts"] = 0
+                await self.pages_sync_point.update_sync_point(sync_point_key, checkpoint)
                 self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
 
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}")
@@ -1135,6 +1148,32 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
             raise
+
+    async def _hold_checkpoint_for_failed_items(
+        self,
+        sync_point_key: str,
+        last_sync_data: dict[str, Any] | None,
+        failed_items: list[str],
+        content_type: str,
+        space_key: str,
+    ) -> bool:
+        """Keep the checkpoint where it is so the failed items are listed again; False once the attempts run out."""
+        attempts = int((last_sync_data or {}).get("failedPageAttempts") or 0) + 1
+        if attempts >= MAX_FAILED_PAGE_ATTEMPTS:
+            self.logger.error(
+                f"❌ {content_type.capitalize()}s {', '.join(failed_items)} in space {space_key} still could not be "
+                f"saved after {attempts} syncs; moving on without them. They are read again when they next change"
+            )
+            return False
+        held: dict[str, Any] = {"failedPageAttempts": attempts}
+        if (last_sync_data or {}).get("last_sync_time"):
+            held["last_sync_time"] = last_sync_data["last_sync_time"]
+        await self.pages_sync_point.update_sync_point(sync_point_key, held)
+        self.logger.warning(
+            f"Keeping the {content_type}s checkpoint for space {space_key}: {', '.join(failed_items)} could not be "
+            f"saved and will be read again next sync (attempt {attempts} of {MAX_FAILED_PAGE_ATTEMPTS})"
+        )
+        return True
 
     async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """
