@@ -104,9 +104,18 @@ export const iamJwtGenerator = (email: string, scopedJwtSecret: string) => {
   );
 };
 
-export const slackJwtGenerator = (email: string, scopedJwtSecret: string,scopes?: TokenScopes[]) => {
+export const slackJwtGenerator = (
+  email: string,
+  scopedJwtSecret: string,
+  scopes?: TokenScopes[],
+  orgId?: string,
+) => {
   return jwt.sign(
-    { email: email, scopes: scopes || [TokenScopes.CONVERSATION_CREATE] },
+    {
+      email: email,
+      scopes: scopes || [TokenScopes.CONVERSATION_CREATE],
+      ...(orgId ? { orgId } : {}),
+    },
     scopedJwtSecret,
     { expiresIn: '1h' },
   );

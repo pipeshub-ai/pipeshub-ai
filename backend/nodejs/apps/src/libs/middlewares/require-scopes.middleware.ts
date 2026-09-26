@@ -55,3 +55,20 @@ export function requireScopes(...requiredScopes: OAuthScopeNames[]) {
     }
   };
 }
+
+/**
+ * The scopes of the token behind this request, or undefined for a session.
+ *
+ * Anything that mints or re-arms a credential for an OAuth/PAT caller must keep
+ * the new credential within these, or a narrow token can mint itself a broader
+ * one. Sessions are unbounded here for the same reason requireScopes lets them
+ * through: they are the signed-in person, not a delegated grant.
+ */
+export function getCallerTokenScopes(
+  user: Record<string, any> | undefined,
+): string[] | undefined {
+  if (!user?.isOAuth) {
+    return undefined;
+  }
+  return Array.isArray(user.oauthScopes) ? user.oauthScopes : [];
+}

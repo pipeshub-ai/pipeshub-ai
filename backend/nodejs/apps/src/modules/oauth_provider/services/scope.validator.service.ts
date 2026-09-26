@@ -9,6 +9,7 @@ import {
   getScopeDefinition,
 } from '../config/scopes.config'
 import { InvalidScopeError } from '../../../libs/errors/oauth.errors'
+import { ForbiddenError } from '../../../libs/errors/http.errors'
 
 @injectable()
 export class ScopeValidatorService {
@@ -59,6 +60,27 @@ export class ScopeValidatorService {
       throw new InvalidScopeError(
         `Scopes not allowed for this app: ${disallowed.join(', ')}`,
         { disallowedScopes: disallowed },
+      )
+    }
+  }
+
+  /**
+   * Refuse a credential that would carry scopes the calling token lacks.
+   * `callerScopes` comes from getCallerTokenScopes: undefined means a session
+   * caller, which is not bounded here.
+   */
+  assertWithinCallerScopes(
+    scopes: readonly string[],
+    callerScopes: readonly string[] | undefined,
+  ): void {
+    if (callerScopes === undefined) {
+      return
+    }
+    const exceeding = scopes.filter((scope) => !callerScopes.includes(scope))
+    if (exceeding.length > 0) {
+      throw new ForbiddenError(
+        `Requested scopes exceed those of the calling token: ${exceeding.join(', ')}`,
+        { exceedingScopes: exceeding },
       )
     }
   }

@@ -2,6 +2,10 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { PatController } from '../../../../src/modules/oauth_provider/controller/pat.controller'
+import { PatService } from '../../../../src/modules/oauth_provider/services/pat.service'
+import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
+import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
+import { DefaultMcpScopes } from '../../../../src/modules/oauth_provider/config/scopes.config'
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
 import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend'
 
@@ -55,9 +59,52 @@ describe('PatController', () => {
         'user-1',
         'Test User',
         { name: 'my token' },
+        undefined,
       ])
       expect(mockRes.status.calledWith(201)).to.be.true
       expect(mockRes.json.calledWith({ message: 'Personal access token created successfully', token })).to.be.true
+    })
+
+    it('bounds the new token by the calling token\'s scopes when called with an OAuth/PAT bearer', async () => {
+      mockPatService.createToken.resolves({ id: 't', name: 'n', scopes: ['kb:read'], createdAt: new Date(), expiresAt: new Date(), accessToken: 'x' })
+      mockReq.user = { ...mockReq.user, isOAuth: true, oauthScopes: ['kb:read'] }
+      mockReq.body = { name: 'n', scopes: ['kb:read'] }
+
+      await controller.createToken(mockReq, mockRes, mockNext)
+
+      expect(mockPatService.createToken.firstCall.args[4]).to.deep.equal(['kb:read'])
+    })
+
+    it('treats an OAuth caller without a scope claim as holding no scopes', async () => {
+      mockPatService.createToken.resolves({ id: 't', name: 'n', scopes: [], createdAt: new Date(), expiresAt: new Date(), accessToken: 'x' })
+      mockReq.user = { ...mockReq.user, isOAuth: true }
+      mockReq.body = { name: 'n' }
+
+      await controller.createToken(mockReq, mockRes, mockNext)
+
+      expect(mockPatService.createToken.firstCall.args[4]).to.deep.equal([])
+    })
+
+    it('T19 a kb:read PAT asking for a broader PAT gets 403 and nothing is minted', async () => {
+      const generateTokens = sinon.stub()
+      const realService = new PatService(
+        mockLogger,
+        { encrypt: sinon.stub().returns('enc') } as any,
+        { getMcpScopes: sinon.stub().resolves(DefaultMcpScopes) } as any,
+        { generateTokens } as any,
+        new ScopeValidatorService(),
+      )
+      const realController = new PatController(mockLogger, realService, new ScopeValidatorService())
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: 'pat-system:org-1' } as any)
+      mockReq.user = { ...mockReq.user, isOAuth: true, oauthScopes: ['kb:read'] }
+      mockReq.body = { name: 'broader', scopes: ['kb:read', 'conversation:chat', 'agent:execute'] }
+
+      await realController.createToken(mockReq, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0].statusCode).to.equal(403)
+      expect(generateTokens.called).to.be.false
+      expect(mockRes.status.called).to.be.false
     })
 
     it('calls next on service error', async () => {

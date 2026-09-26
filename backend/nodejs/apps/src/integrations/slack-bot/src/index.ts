@@ -308,7 +308,12 @@ async function processSlackMessage(
   // instead of falling back to the server clock.
   const userTimezone = lookupResult.user.tz || undefined;
   const configService = ConfigService.getInstance();
-  const accessToken = slackJwtGenerator(email, await configService.getScopedJwtSecret());
+  const accessToken = slackJwtGenerator(
+    email,
+    await configService.getScopedJwtSecret(),
+    undefined,
+    resolvedSlackBot?.orgId,
+  );
 
   const currentAgentId = resolvedSlackBot?.agentId || null;
   console.log("currentAgentId", currentAgentId);

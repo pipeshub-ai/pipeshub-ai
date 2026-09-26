@@ -5,6 +5,7 @@ import { PatService } from '../services/pat.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
 import { CreatePatRequest } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
+import { getCallerTokenScopes } from '../../../libs/middlewares/require-scopes.middleware'
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer'
 import { domainFromEmail } from '../../../libs/services/telemetry/identity'
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics'
@@ -22,7 +23,8 @@ export class PatController {
    * Create a new personal access token for the calling user.
    *
    * Deliberately not admin-gated — any authenticated org member can mint
-   * their own PAT, unlike OAuth-app scope selection.
+   * their own PAT, unlike OAuth-app scope selection. A caller holding an
+   * OAuth/PAT token can only mint within that token's scopes.
    */
   async createToken(
     req: AuthenticatedUserRequest,
@@ -40,6 +42,7 @@ export class PatController {
         userId,
         fullName,
         data,
+        getCallerTokenScopes(req.user),
       )
 
       this.logger.info('Personal access token created via API', {
@@ -123,17 +126,21 @@ export class PatController {
 
   /**
    * List the scopes a new personal access token can be granted — the
-   * org's configured MCP scope set, with human-readable labels for the
-   * picker UI.
+   * org's configured MCP scope set (narrowed to the calling token's scopes
+   * for an OAuth/PAT caller), with human-readable labels for the picker UI.
    */
   async listScopes(
-    _req: AuthenticatedUserRequest,
+    req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> {
     try {
       const mcpScopes = await this.patService.getDefaultScopes()
-      const scopes = this.scopeValidatorService.getScopeDefinitions(mcpScopes)
+      const callerScopes = getCallerTokenScopes(req.user)
+      const grantable = callerScopes
+        ? mcpScopes.filter((scope) => callerScopes.includes(scope))
+        : mcpScopes
+      const scopes = this.scopeValidatorService.getScopeDefinitions(grantable)
 
       res.json({ scopes })
     } catch (error) {
