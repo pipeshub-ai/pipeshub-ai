@@ -4,6 +4,7 @@ The connector, its Confluence client and its request builder are all real; the
 Confluence server is an in-memory stub and our databases are in-memory fakes.
 """
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -514,20 +515,55 @@ class TestPartialFailures:
     async def test_a_page_that_keeps_failing_is_given_up_on_after_five_syncs(
         self, atlassian_api, records_db, checkpoints, search, caplog
     ) -> None:
+        recent = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
-        search.add("page", "ENG", 0, listing([content("p1"), content("p2")]))
+        search.add("page", "ENG", 0, listing([content("p1"), content("p2", when=recent)]))
         records_db.fail_lookup_for = {"p2"}
         connector = await make_connector(atlassian_api, records_db, checkpoints)
 
-        for _ in range(4):
+        for attempt in range(1, 5):
             await connector.run_sync()
-            assert "last_sync_time" not in checkpoints.values_for("confluence_pages/ENG")
+            stored = checkpoints.values_for("confluence_pages/ENG")
+            assert "last_sync_time" not in stored
+            assert json.loads(stored["failedPages"]) == {"p2": attempt}
 
         with caplog.at_level(logging.ERROR):
             await connector.run_sync()
 
-        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] > "2024-05-01T10:00:00.000Z"
+        given_up_at = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        assert given_up_at > recent
         assert any("p2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
+
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            await connector.run_sync()
+
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert not any("p2" in r.getMessage() for r in caplog.records), "an unchanged given-up page is not tried again"
+        assert stored["last_sync_time"] >= given_up_at and json.loads(stored["failedPages"]) == {}
+        assert json.loads(stored["givenUpPages"]) == {"p2": recent}
+
+        search.add("page", "ENG", 0, listing([content("p2", version=2, when=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"))]))
+        records_db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert "p2" in saved(records_db, RecordType.CONFLUENCE_PAGE), "once it changes it is tried afresh"
+        assert json.loads(checkpoints.values_for("confluence_pages/ENG")["givenUpPages"]) == {}
+
+    async def test_each_failing_page_has_its_own_count(self, atlassian_api, records_db, checkpoints, search) -> None:
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1"), content("p2"), content("p3")]))
+        records_db.fail_lookup_for = {"p2"}
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        for _ in range(4):
+            await connector.run_sync()
+
+        records_db.fail_lookup_for = {"p2", "p3"}
+        await connector.run_sync()
+
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert json.loads(stored["failedPages"]) == {"p3": 1}, "p3 failed once, so it is not given up with p2"
+        assert "last_sync_time" not in stored, "the checkpoint stays held for p3"
 
 
 class TestSpaceHomepage:
