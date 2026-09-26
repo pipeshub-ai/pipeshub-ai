@@ -154,6 +154,30 @@ async def test_while_robots_txt_cant_be_read_the_browser_never_opens_the_start_p
     assert browser.browser_visits == []
 
 
+async def test_a_start_page_redirect_onto_a_site_whose_robots_txt_cant_be_read_keeps_the_check_pending(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    landing = "http://www.site.test/"
+    browser.add("http://site.test/robots.txt", Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"))
+    browser.add("http://www.site.test/robots.txt", [
+        Page(status=503, body=b""),
+        Page(status=503, body=b""),
+        Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"),
+    ])
+    browser.add(START_URL, Page(status=301, location=landing, content_type=None))
+    browser.add(landing, Page(body=SHELL, rendered=html_page("App", text=LONG_TEXT), pre_render_text_len=0))
+
+    connector = await make_connector(follow_external=True)
+    await connector.run_sync()
+    assert connector._script_check_pending is True
+    assert browser.browser_visits == []
+
+    await connector.run_sync()
+
+    assert connector._script_check_pending is False
+    assert connector.use_headless_browser is True
+
+
 async def test_without_a_working_browser_a_plain_site_still_syncs(
     browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:

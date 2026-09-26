@@ -1551,6 +1551,8 @@ class WebConnector(BaseConnector):
             if not allowed:
                 return False
             probed = await self._probe_landing(url)
+            if None in self._robots.values():
+                return None  # a redirect onto a site whose robots.txt couldn't be read isn't a refusal
             return probed is None or probed[1] != 0
         finally:
             if not keep_robots:
