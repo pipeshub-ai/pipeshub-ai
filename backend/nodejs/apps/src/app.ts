@@ -506,6 +506,8 @@ export class Application {
               imgSrc: ["'self'", 'data:', 'blob:', 'https:'], // Images in PDFs
               fontSrc: ["'self'", 'data:', 'https:'], // Fonts in PDFs
               mediaSrc: ["'self'", 'blob:', 'data:'], // Media in PDFs
+              // Answers render model output; a form in one must not post off-origin.
+              formAction: ["'self'"],
             },
           },
         }),

@@ -669,6 +669,45 @@ describe('Application', () => {
       }
     });
 
+    // Forms rendered from model output must not post off-origin.
+    it("should send a CSP with form-action 'self' when STRICT_MODE=true", async () => {
+      const original = process.env.STRICT_MODE;
+      process.env.STRICT_MODE = 'true';
+      try {
+        const strictApp = new Application();
+        await strictApp.initialize();
+
+        interface MiddlewareLayer {
+          name: string;
+          handle: (req: { headers: Record<string, string> }, res: HeaderSink, next: (err?: unknown) => void) => void;
+        }
+        interface HeaderSink {
+          setHeader: (name: string, value: string) => void;
+          removeHeader: (name: string) => void;
+          getHeader: (name: string) => string | undefined;
+        }
+        const expressApp = (strictApp as unknown as { app: { _router: { stack: MiddlewareLayer[] } } }).app;
+        const helmetLayer = expressApp._router.stack.find((layer) => layer.name === 'helmetMiddleware');
+        expect(helmetLayer, 'helmet middleware layer').to.exist;
+
+        const headers: Record<string, string> = {};
+        const res: HeaderSink = {
+          setHeader: (name, value) => { headers[name.toLowerCase()] = value; },
+          removeHeader: () => {},
+          getHeader: (name) => headers[name.toLowerCase()],
+        };
+        await new Promise<void>((resolve, reject) =>
+          helmetLayer!.handle({ headers: {} }, res, (err?: unknown) => (err ? reject(err) : resolve())),
+        );
+
+        const csp = headers['content-security-policy'];
+        expect(csp).to.be.a('string');
+        expect(csp).to.include("form-action 'self'");
+      } finally {
+        restoreEnv('STRICT_MODE', original);
+      }
+    });
+
     it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
       const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
       sandbox.stub(rateLimitModule, 'createGlobalRateLimiter').returns(globalRateLimiter);

