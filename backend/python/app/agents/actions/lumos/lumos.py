@@ -2,7 +2,7 @@ import json
 import logging
 from collections.abc import Awaitable
 from http import HTTPStatus
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -22,6 +22,28 @@ from app.sources.external.lumos.lumos import LumosDataSource
 logger = logging.getLogger(__name__)
 
 _MAX_DETAIL_CHARS = 300
+
+
+class _LumosInputError(ValueError):
+    """Bad tool arguments; the message says what to change and is safe to show the agent."""
+
+
+def _as_object(value: dict[str, Any] | str | None, field: str) -> dict[str, Any] | None:
+    """Lumos needs a JSON object here; models often send one as JSON text."""
+    if value is None or isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        parsed = None
+    if not isinstance(parsed, dict):
+        raise _LumosInputError(
+            f"{field} must be a JSON object, not plain text. Pass it as an object built from "
+            "Lumos condition operators such as equals, in, and, or."
+            if field == "access_condition"
+            else f"{field} must be a JSON object, not plain text. Pass it as an object and try again."
+        )
+    return parsed
 
 
 def _failure(message: str) -> tuple[bool, str]:
@@ -313,7 +335,7 @@ tools.extend([
         parameters=[
             {"name": "permission_id", "type": "string", "description": "Permission ID", "required": True},
             {"name": "label", "type": "string", "description": "Optional new label", "required": False},
-            {"name": "request_config", "type": "string", "description": "Optional request config", "required": False},
+            {"name": "request_config", "type": "object", "description": "Optional request config", "required": False},
             {"name": "confirm", "type": "boolean", "description": "Set true to execute mutation", "required": False},
         ],
         tags=["permissions", "write", "admin"],
@@ -785,7 +807,7 @@ class Lumos:
             ToolParameter(name="name", type=ParameterType.STRING, description="Policy name", required=True),
             ToolParameter(name="business_justification", type=ParameterType.STRING, description="Policy justification", required=True),
             ToolParameter(name="apps", type=ParameterType.ARRAY, description="App policy definitions", required=True, items={"type": "object"}),
-            ToolParameter(name="access_condition", type=ParameterType.STRING, description="Access condition", required=False),
+            ToolParameter(name="access_condition", type=ParameterType.OBJECT, description="Lumos condition object deciding who the policy applies to (operators such as equals, in, and, or, not). Required unless is_everyone_condition is true.", required=False),
             ToolParameter(name="is_everyone_condition", type=ParameterType.BOOLEAN, description="Whether policy applies to everyone", required=False),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
@@ -796,13 +818,17 @@ class Lumos:
         name: str,
         business_justification: str,
         apps: list[dict],
-        access_condition: Optional[str] = None,
+        access_condition: Optional[dict[str, Any] | str] = None,
         is_everyone_condition: Optional[bool] = None,
         confirm: bool = False,
     ) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "create_access_policy")
         if blocked:
             return blocked
+        try:
+            access_condition = _as_object(access_condition, "access_condition")
+        except _LumosInputError as exc:
+            return _failure(str(exc))
         return await self._call(
             self.client.create_access_policy(
                 name=name,
@@ -823,7 +849,7 @@ class Lumos:
             ToolParameter(name="name", type=ParameterType.STRING, description="Policy name", required=True),
             ToolParameter(name="business_justification", type=ParameterType.STRING, description="Policy justification", required=True),
             ToolParameter(name="apps", type=ParameterType.ARRAY, description="App policy definitions", required=True, items={"type": "object"}),
-            ToolParameter(name="access_condition", type=ParameterType.STRING, description="Access condition", required=False),
+            ToolParameter(name="access_condition", type=ParameterType.OBJECT, description="Lumos condition object deciding who the policy applies to (operators such as equals, in, and, or, not). Required unless is_everyone_condition is true.", required=False),
             ToolParameter(name="is_everyone_condition", type=ParameterType.BOOLEAN, description="Whether policy applies to everyone", required=False),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
@@ -835,13 +861,17 @@ class Lumos:
         name: str,
         business_justification: str,
         apps: list[dict],
-        access_condition: Optional[str] = None,
+        access_condition: Optional[dict[str, Any] | str] = None,
         is_everyone_condition: Optional[bool] = None,
         confirm: bool = False,
     ) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "update_access_policy")
         if blocked:
             return blocked
+        try:
+            access_condition = _as_object(access_condition, "access_condition")
+        except _LumosInputError as exc:
+            return _failure(str(exc))
         return await self._call(
             self.client.update_access_policy(
                 access_policy_id=access_policy_id,
@@ -883,7 +913,7 @@ class Lumos:
             ToolParameter(name="include_inherited_configs", type=ParameterType.BOOLEAN, description="Include inherited configurations", required=False),
             ToolParameter(name="app_class_id", type=ParameterType.STRING, description="App class ID", required=False),
             ToolParameter(name="app_instance_id", type=ParameterType.STRING, description="App instance ID", required=False),
-            ToolParameter(name="request_config", type=ParameterType.STRING, description="Request configuration", required=False),
+            ToolParameter(name="request_config", type=ParameterType.OBJECT, description="Request configuration object (approval, provisioning and access-length settings)", required=False),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
         tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
@@ -895,12 +925,16 @@ class Lumos:
         include_inherited_configs: Optional[bool] = None,
         app_class_id: Optional[str] = None,
         app_instance_id: Optional[str] = None,
-        request_config: Optional[str] = None,
+        request_config: Optional[dict[str, Any] | str] = None,
         confirm: bool = False,
     ) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "create_requestable_permission")
         if blocked:
             return blocked
+        try:
+            request_config = _as_object(request_config, "request_config")
+        except _LumosInputError as exc:
+            return _failure(str(exc))
         return await self._call(
             self.client.create_appstore_requestable_permission_appstore_requestable_permissions_post(
                 app_id=app_id,
@@ -947,7 +981,7 @@ class Lumos:
             ToolParameter(name="app_class_id", type=ParameterType.STRING, description="App class ID", required=False),
             ToolParameter(name="app_instance_id", type=ParameterType.STRING, description="App instance ID", required=False),
             ToolParameter(name="label", type=ParameterType.STRING, description="Permission label", required=False),
-            ToolParameter(name="request_config", type=ParameterType.STRING, description="Request configuration", required=False),
+            ToolParameter(name="request_config", type=ParameterType.OBJECT, description="Request configuration object (approval, provisioning and access-length settings)", required=False),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
         tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
@@ -960,12 +994,16 @@ class Lumos:
         app_class_id: Optional[str] = None,
         app_instance_id: Optional[str] = None,
         label: Optional[str] = None,
-        request_config: Optional[str] = None,
+        request_config: Optional[dict[str, Any] | str] = None,
         confirm: bool = False,
     ) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "update_requestable_permission")
         if blocked:
             return blocked
+        try:
+            request_config = _as_object(request_config, "request_config")
+        except _LumosInputError as exc:
+            return _failure(str(exc))
         return await self._call(
             self.client.update_appstore_permission_appstore_requestable_permissions_permission_id_patch(
                 permission_id=permission_id,

@@ -263,7 +263,6 @@ class TestWrites:
             "access_condition": condition,
         }
 
-    @pending("objects")
     @pytest.mark.parametrize(("tool", "field"), [
         ("create_access_policy", "access_condition"),
         ("update_access_policy", "access_condition"),
@@ -274,7 +273,6 @@ class TestWrites:
         schema = as_agent_tool(lumos, tool).to_schema().input_schema
         assert schema["properties"][field]["type"] == "object"
 
-    @pending("objects")
     async def test_a_condition_given_as_json_text_is_sent_as_an_object(self, lumos, api) -> None:
         api.on("PUT", "/access_policies/p-1", {"id": "p-1"})
 
@@ -288,7 +286,6 @@ class TestWrites:
         assert body["access_condition"] == {"in": {"field": "team", "values": ["sre"]}}
         assert body["is_everyone_condition"] is False
 
-    @pending("objects")
     async def test_a_condition_that_is_not_json_is_refused_before_calling_lumos(self, lumos, api) -> None:
         ok, data = result(await lumos.create_access_policy(
             name="VPN", business_justification="x", apps=POLICY_APPS, access_condition="department is eng", confirm=True,
@@ -311,7 +308,6 @@ class TestWrites:
         assert single_query(call) == {"include_inherited_configs": "true"}
         assert call.body == {"app_id": "app-1", "label": "Admin", "request_config": config}
 
-    @pending("objects")
     async def test_update_requestable_permission_patches_only_what_was_given(self, lumos, api) -> None:
         api.on("PATCH", "/appstore/requestable_permissions/perm-1", {"id": "perm-1"})
 
