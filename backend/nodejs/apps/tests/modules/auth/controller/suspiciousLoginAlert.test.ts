@@ -2,7 +2,11 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import bcrypt from 'bcryptjs';
-import { UserAccountController } from '../../../../src/modules/auth/controller/userAccount.controller';
+import {
+  UserAccountController,
+  WRONG_EMAIL_OR_PASSWORD,
+  WRONG_SIGN_IN_CODE,
+} from '../../../../src/modules/auth/controller/userAccount.controller';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
@@ -118,13 +122,29 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
       '127.0.0.1',
     );
 
+  // notifyAccountLocked is fire-and-forget; drain until sendMail has been hit.
+  const waitForAlertMail = async () => {
+    for (let i = 0; i < 50; i++) {
+      if (mockMailService.sendMail.called) {
+        const pending = mockMailService.sendMail.firstCall.returnValue;
+        if (pending && typeof pending.then === 'function') {
+          await pending.catch(() => undefined);
+        }
+        await Promise.resolve();
+        return;
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+
   it('raises the security error and sends one alert when mail succeeds', async () => {
     setupWrongPassword(controller);
 
     let surfaced: Error | undefined;
     try { await runPasswordLogin(); } catch (e) { surfaced = e as Error; }
+    await waitForAlertMail();
 
-    expect(surfaced!.message).to.contain('Incorrect password');
+    expect(surfaced!.message).to.equal(WRONG_EMAIL_OR_PASSWORD);
     expect(mockMailService.sendMail.calledOnce).to.be.true;
   });
 
@@ -135,10 +155,11 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
 
     let surfaced: Error | undefined;
     try { await runOtpLogin(); } catch (e) { surfaced = e as Error; }
+    await waitForAlertMail();
 
     expect(surfaced, 'a security error must still be raised').to.exist;
     expect(surfaced!.message).to.not.contain('timeout of 30000ms');
-    expect(surfaced!.message).to.contain('Account Blocked');
+    expect(surfaced!.message).to.equal(WRONG_SIGN_IN_CODE);
     expect(mockLogger.error.called).to.be.true;
     expect(mockMailService.sendMail.callCount).to.equal(1);
   });
