@@ -181,3 +181,21 @@ async def test_a_304_carrying_the_old_url_s_etag_does_not_vouch_for_an_older_cop
     await connector.run_sync()
 
     assert site.storage_docs[db.pages()[new].storage_document_id] == b"%PDF-1.4 v2"
+
+
+async def test_a_matching_last_modified_does_not_vouch_for_a_copy_whose_etag_differs(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old, new = "http://site.test/old.pdf", "http://site.test/new.pdf"
+    site.html(START_URL, "Home", "/old.pdf", "/new.pdf")
+    site.add(old, Page(body=b"%PDF-1.4 v2", content_type="application/pdf", etag='"v2"', last_modified=LAST_MODIFIED))
+    site.add(new, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"', last_modified=LAST_MODIFIED))
+    connector = await make_connector()
+    await connector.run_sync()
+
+    site.html(START_URL, "Home", "/old.pdf")
+    site.add(old, Page(status=301, location="/new.pdf", content_type=None, head_status=405))
+    site.add(new, Page(body=b"%PDF-1.4 v2", content_type="application/pdf", etag='"v2"', last_modified=LAST_MODIFIED))
+    await connector.run_sync()
+
+    assert site.storage_docs[db.pages()[new].storage_document_id] == b"%PDF-1.4 v2"

@@ -2464,13 +2464,16 @@ class WebConnector(BaseConnector):
             await self._handle_gone_page(requested_url, keep_id=record.id)
 
     def _validators_match(self, response: FetchResponse, record: Record) -> bool:
-        """Whether a 304 answered the validators stored with ``record``, and not another URL's."""
+        """Whether a 304 answered the validators stored with ``record``, and not another URL's.
+
+        Both validators are sent together, so a Last-Modified that happens to match says nothing
+        when the ETag doesn't: the ETag decides whenever the 304 carries one.
+        """
         etag = self._header(response.headers, "ETag")
+        if etag:
+            return etag == getattr(record, "etag", None)
         last_modified = self._header(response.headers, "Last-Modified")
-        return bool(
-            (etag and etag == getattr(record, "etag", None))
-            or (last_modified and last_modified == getattr(record, "ctag", None))
-        )
+        return bool(last_modified) and last_modified == getattr(record, "ctag", None)
 
     async def _stored_record(self, url: str) -> Record | None:
         for candidate in self._stored_ids_for(url):
