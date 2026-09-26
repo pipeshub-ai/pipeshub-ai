@@ -176,7 +176,6 @@ class TestSend:
 
 
 class TestReply:
-    @pending("reply")
     async def test_a_reply_joins_the_original_thread_with_its_message_id_headers(self, gmail, http) -> None:
         original = {
             "id": "m-1", "threadId": "thread-7",
@@ -198,7 +197,6 @@ class TestReply:
         assert mime["In-Reply-To"] == "<orig@mail.example.com>"
         assert mime["References"] == "<first@mail.example.com> <orig@mail.example.com>"
 
-    @pending("reply")
     async def test_a_reply_to_a_message_that_cannot_be_read_is_not_sent(self, gmail, http) -> None:
         http.on("GET", f"{MESSAGES}/m-gone", google_error(404, "Requested entity was not found.", "notFound"), base=GMAIL)
 
@@ -207,6 +205,20 @@ class TestReply:
         assert ok is False
         assert "search_emails" in assert_safe_error(data)
         assert sends(http) == []
+
+    async def test_an_email_sent_in_answer_to_a_message_threads_the_same_way(self, gmail, http) -> None:
+        http.on("GET", f"{MESSAGES}/m-1", {"id": "m-1", "threadId": "thread-7", "payload": {
+            "headers": headers(("Message-ID", "<orig@mail.example.com>"))}}, base=GMAIL)
+        http.on("POST", SEND, {"id": "sent-3"}, base=GMAIL)
+
+        ok, _ = result(await gmail.send_email(mail_to=["ada@example.com"], mail_subject="Re: Budget",
+                                              thread_id="thread-7", message_id="m-1"))
+
+        assert ok is True
+        [send] = sends(http)
+        assert send.body["threadId"] == "thread-7"
+        assert (sent_mime(send.body)["In-Reply-To"], sent_mime(send.body)["References"]) == (
+            "<orig@mail.example.com>", "<orig@mail.example.com>")
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from googleapiclient.errors import HttpError
@@ -77,6 +78,13 @@ def _attachments_in(part: dict[str, Any]) -> list[dict[str, Any]]:
     for child in part.get("parts") or []:
         found.extend(_attachments_in(child))
     return found
+
+
+@dataclass(frozen=True)
+class _ReplyContext:
+    thread_id: str | None = None
+    rfc_message_id: str | None = None
+    references: str | None = None
 
 
 def _refuse_file_paths() -> tuple[bool, str]:
@@ -208,6 +216,24 @@ class Gmail:
         self.client = GoogleGmailDataSource(client)
         self.chat_state = state
 
+    async def _reply_context(self, message_id: str, thread_id: str | None) -> "_ReplyContext":
+        """Threading comes from the original's RFC 822 headers; Gmail's own message id is not one."""
+        original = await self.client.users_messages_get(
+            userId="me", id=message_id, format="metadata", metadataHeaders=["Message-ID", "References"],
+        )
+        found = {
+            str(h.get("name", "")).lower(): h.get("value")
+            for h in (original.get("payload") or {}).get("headers") or []
+            if isinstance(h, dict)
+        }
+        rfc_message_id = found.get("message-id")
+        chain = " ".join(v for v in (found.get("references"), rfc_message_id) if v)
+        return _ReplyContext(
+            thread_id=original.get("threadId") or thread_id,
+            rfc_message_id=rfc_message_id,
+            references=chain or None,
+        )
+
     async def _resolve_in_memory_attachments(
         self,
         attachment_record_ids: Optional[List[str]],
@@ -306,6 +332,10 @@ class Gmail:
         if mail_attachments:
             return _refuse_file_paths()
         try:
+            context = await self._reply_context(message_id, thread_id)
+        except Exception as e:
+            return _gmail_failure(e, "read the email being replied to, so no reply was sent")
+        try:
             destination = ", ".join(mail_to) if mail_to else ""
             in_memory = await self._resolve_in_memory_attachments(attachment_record_ids, destination=destination)
             message_body = GmailUtils.transform_message_body(
@@ -315,9 +345,10 @@ class Gmail:
                 mail_bcc,
                 mail_body,
                 None,
-                thread_id,
-                message_id,
+                context.thread_id,
+                context.rfc_message_id,
                 in_memory_attachments=in_memory,
+                references=context.references,
             )
             message = await self.client.users_messages_send(userId="me", body=message_body)
             return True, json.dumps({"message_id": message.get("id", ""), "message": message})
@@ -414,6 +445,12 @@ class Gmail:
         """Send an email, optionally attaching PipesHub records."""
         if mail_attachments:
             return _refuse_file_paths()
+        context = _ReplyContext(thread_id=thread_id)
+        if message_id:
+            try:
+                context = await self._reply_context(message_id, thread_id)
+            except Exception as e:
+                return _gmail_failure(e, "read the email this one answers, so nothing was sent")
         try:
             destination = ", ".join(mail_to) if mail_to else ""
             in_memory = await self._resolve_in_memory_attachments(attachment_record_ids, destination=destination)
@@ -424,9 +461,10 @@ class Gmail:
                 mail_bcc,
                 mail_body,
                 None,
-                thread_id,
-                message_id,
+                context.thread_id,
+                context.rfc_message_id,
                 in_memory_attachments=in_memory,
+                references=context.references,
             )
             message = await self.client.users_messages_send(userId="me", body=message_body)
             return True, json.dumps({"message_id": message.get("id", ""), "message": message})
