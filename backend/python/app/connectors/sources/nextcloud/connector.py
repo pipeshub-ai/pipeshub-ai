@@ -1718,8 +1718,9 @@ class NextcloudConnector(BaseConnector):
         no path to look a parent up by, so each folder is created right after
         the one above it, whose id is then in ``path_to_external_id``.
         Returns False when a folder that still exists could not be read or saved.
+        Stops there: a folder created below it would have no parent, and a later
+        run skips folders that already have a record, so it would stay detached.
         """
-        all_ready = True
         parts = [p for p in path.strip("/").split("/") if p][:-1]
         for depth in range(1, len(parts) + 1):
             folder_path = "/" + "/".join(parts[:depth])
@@ -1736,13 +1737,12 @@ class NextcloudConnector(BaseConnector):
                     self.logger.warning(
                         f"Failed to fetch folder {folder_path}: {get_response_error(response)}"
                     )
-                    all_ready = False
-                    continue
+                    return False
                 body = extract_response_body(response)
                 entries = parse_webdav_propfind_response(body) if body else []
                 if not entries or not entries[0].get('file_id'):
-                    all_ready = False
-                    continue
+                    self.logger.warning(f"Could not read the folder Nextcloud returned for {folder_path}")
+                    return False
                 entry = entries[0]
 
                 existing = await self.data_entities_processor.get_record_by_external_id(
@@ -1767,8 +1767,8 @@ class NextcloudConnector(BaseConnector):
                 processed_parents.add(folder_path)
             except Exception as e:
                 self.logger.warning(f"⚠️ [Incremental Sync] Failed to fetch/process folder {folder_path}: {e}")
-                all_ready = False
-        return all_ready
+                return False
+        return True
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """

@@ -910,6 +910,20 @@ class TestIncrementalSync:
         assert db.deleted == []
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
+    async def test_a_folder_below_one_that_failed_is_parented_after_the_retry(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.add_file("New/Deep/inside.txt")
+        # Only the file's own activity is on the page, so its folders exist nowhere but above it.
+        server.activities[:] = [a for a in server.activities if a["object_name"] not in ("/New", "/New/Deep")]
+        outage = server.outage("PROPFIND", lambda p: p.rstrip("/").endswith("/New"), lambda: httpx.Response(503))
+
+        await connector.run_sync()
+        outage.end()
+        await connector.run_sync()
+
+        assert db.path_of("Deep") == "New/Deep"
+        assert db.path_of("inside.txt") == "New/Deep/inside.txt"
+
     async def test_the_give_up_error_names_what_could_not_be_applied(self, server, db, store, caplog) -> None:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")
