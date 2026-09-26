@@ -211,6 +211,7 @@ async def test_a_redirect_onto_a_disallowed_page_is_skipped_with_its_links(
     await (await make_connector()).run_sync()
 
     assert set(db.pages()) == {START_URL}
+    assert [method for method, url in site.requests if url == "http://site.test/private/secret"] == []
     assert site.gets("http://site.test/leaked") == 0
     assert "Skipped 1 pages that the site's robots.txt" in (await notifications.delivered())[-1]["message"]
 
@@ -256,6 +257,7 @@ async def test_a_single_page_that_redirects_onto_a_disallowed_page_is_not_stored
     await (await make_connector("http://site.test/go", crawl_type="single")).run_sync()
 
     assert db.pages() == {}
+    assert [method for method, url in site.requests if url == "http://site.test/private/secret"] == []
 
 
 async def test_a_redirect_that_only_adds_a_trailing_slash_is_still_checked(
@@ -299,3 +301,35 @@ async def test_robust_mode_sends_no_request_to_a_disallowed_file_a_linked_file_r
 
     assert [method for method, url in browser.requests if url == target] == []
     assert set(db.pages()) == {START_URL}
+
+
+async def test_an_allowed_redirect_costs_no_more_requests_than_before(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/go")
+    site.redirect("http://site.test/go", "/public/page")
+    site.html("http://site.test/public/page", "Page")
+    _robots(site, "User-agent: *\nDisallow: /private/\n")
+
+    await (await make_connector()).run_sync()
+
+    assert "http://site.test/public/page" in db.pages()
+    hops = [(method, url) for method, url in site.requests if url.endswith(("/go", "/public/page"))]
+    # One HEAD per hop, then one GET where HEAD landed; the redirect isn't walked again by GET.
+    assert hops == [("HEAD", "http://site.test/go"), ("HEAD", "http://site.test/public/page"),
+                    ("GET", "http://site.test/public/page")]
+
+
+@pytest.mark.parametrize("target", ["/public/page", "/private/secret"], ids=["allowed", "disallowed"])
+async def test_a_site_that_refuses_head_still_crawls_as_before(
+    target: str, site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/go")
+    site.add("http://site.test/go", Page(status=302, location=target, content_type=None, head_status=405))
+    site.html(f"http://site.test{target}", "Target")
+    _robots(site, "User-agent: *\nDisallow: /private/\n")
+
+    await (await make_connector()).run_sync()
+
+    stored = f"http://site.test{target}" in db.pages()
+    assert stored is (target == "/public/page")

@@ -1286,6 +1286,7 @@ class WebConnector(BaseConnector):
                         ),
                         timeout=15,
                         max_size_mb=self.max_size_mb,
+                        allow_hop=self._hop_allowed,
                     )
 
                     if self._should_try_crawl4ai_fallback(raw_result, current_url):
@@ -1405,6 +1406,14 @@ class WebConnector(BaseConnector):
             # Never fetched, so never retried either: a queued retry would come back here forever.
             self.retry_urls.pop(normalized, None)
         return allowed
+
+    async def _hop_allowed(self, url: str) -> bool:
+        """Whether a redirect target may be requested at all: inside the crawl, and allowed by robots.txt.
+
+        A refused target comes back as an empty response at that URL, which validation (scope)
+        or the landing check (robots.txt) then drops, the same as a target that was fetched.
+        """
+        return not self._outside_crawl(url) and await self._robots_allows(url)
 
     async def _robots_allows_landing(self, requested_url: str, result: FetchResponse) -> bool:
         """robots.txt applies to where a redirect landed as well; the queued URL was checked before fetching."""
@@ -1987,6 +1996,7 @@ class WebConnector(BaseConnector):
                         extra_headers=await self._conditional_headers(url, links_needed=False),
                         timeout=15,
                         max_size_mb=self.max_size_mb,
+                        allow_hop=self._hop_allowed,
                     )
                     if self._should_try_crawl4ai_fallback(raw, url):
                         fetcher = await self._ensure_crawl4ai_fetcher()

@@ -21,8 +21,8 @@ import contextlib
 import logging
 import random
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine, List, Optional, Tuple, cast
-from urllib.parse import urlparse
+from typing import Any, Awaitable, Callable, Coroutine, List, Optional, Tuple, cast
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
@@ -289,6 +289,59 @@ async def _try_cloudscraper(
 
 
 # ---------------------------------------------------------------------------
+# Size-check HEAD, walking redirects one hop at a time
+# ---------------------------------------------------------------------------
+
+MAX_HEAD_REDIRECTS = 10
+_HEAD_REDIRECT_CODES = {301, 302, 303, 307, 308}
+_HEAD_REFUSED_CODES = {405, 501}
+
+
+async def _walk_redirects_with_head(
+    session: aiohttp.ClientSession,
+    url: str,
+    headers: dict,
+    allow_hop: Callable[[str], Awaitable[bool]] | None,
+) -> tuple[str, dict] | FetchResponse | None:
+    """HEAD ``url`` and its redirects one hop at a time.
+
+    Returns the landing URL and its headers; a ``redirect_refused`` skip when ``allow_hop`` turns
+    a target down before it is requested; or None when HEAD is refused, fails, times out or loops,
+    in which case the caller falls back to a GET that follows redirects itself.
+    """
+    current = url
+    try:
+        for _ in range(MAX_HEAD_REDIRECTS):
+            async with session.head(
+                current,
+                headers=headers,
+                allow_redirects=False,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as head_resp:
+                status = head_resp.status
+                head_headers = dict(head_resp.headers)
+            location = head_headers.get("Location") or head_headers.get("location")
+            if status in _HEAD_REFUSED_CODES:
+                return None
+            if status not in _HEAD_REDIRECT_CODES or not location:
+                return current, head_headers
+            target = urljoin(current, location)
+            if allow_hop is not None and not await allow_hop(target):
+                return FetchResponse(
+                    status_code=200,
+                    content_bytes=b"",
+                    headers={"X-Fetch-Skip-Reason": "redirect_refused"},
+                    final_url=target,
+                    strategy="redirect_guard",
+                )
+            current = target
+    except Exception:
+        # HEAD not supported, connection error, timeout: proceed with GET, as before
+        return None
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Main fallback orchestrator
 # ---------------------------------------------------------------------------
 
@@ -303,6 +356,7 @@ async def fetch_url_with_fallback(
     max_retries_per_strategy: int = 2,
     max_size_mb: Optional[int] = None,
     preferred_strategy: Optional[str] = None,
+    allow_hop: Callable[[str], Awaitable[bool]] | None = None,
 ) -> Optional[FetchResponse]:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -332,6 +386,9 @@ async def fetch_url_with_fallback(
         timeout:                   Per-request timeout in seconds.
         max_retries_per_strategy:  Max attempts per strategy before moving to next (default 2).
         max_size_mb:               Max size in mb of the response.
+        allow_hop:                 With ``max_size_mb``: asked about each redirect target the size-check
+                                   HEAD finds, before that target is requested. A refusal returns a
+                                   ``redirect_refused`` skip whose ``final_url`` is the refused target.
         preferred_strategy:        When set, only this strategy is tried (no fallback). Use the
                                    ``strategy`` field from a prior FetchResponse to pin image/asset
                                    fetches to the same strategy that worked for the parent page.
@@ -344,40 +401,31 @@ async def fetch_url_with_fallback(
 
     if max_size_mb is not None:
         max_size_bytes = max_size_mb * 1024 * 1024
-
-        try:
-            async with session.head(
-                url,
-                headers=headers,
-                allow_redirects=True,
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as head_resp:
-                cl = (
-                    head_resp.headers.get("Content-Length")
-                    or head_resp.headers.get("content-length")
+        walked = await _walk_redirects_with_head(session, url, headers, allow_hop)
+        if isinstance(walked, FetchResponse):
+            logger.info("Not following %s: redirect to %s refused", url, walked.final_url)
+            return walked
+        if walked is not None:
+            # GET where HEAD landed, so the redirects aren't walked twice and GET can't go elsewhere.
+            url, head_headers = walked
+            cl = head_headers.get("Content-Length") or head_headers.get("content-length")
+            size = int(cl) if cl and str(cl).isdigit() else None
+            if size is not None and size > max_size_bytes:
+                logger.warning(
+                    "⚠️ Skipping %s: Content-Length %.1fMB exceeds limit of %.0fMB",
+                    url,
+                    size / (1024 * 1024),
+                    max_size_bytes / (1024 * 1024),
                 )
-                if cl:
-                    size = int(cl)
-                    if size > max_size_bytes:
-                        logger.warning(
-                            "⚠️ Skipping %s: Content-Length %.1fMB exceeds limit of %.0fMB",
-                            url,
-                            size / (1024 * 1024),
-                            max_size_bytes / (1024 * 1024),
-                        )
-                        # Return a concrete response so callers can distinguish
-                        # an intentional size skip from a connection failure.
-                        return FetchResponse(
-                            status_code=413,
-                            content_bytes=b"",
-                            headers={"X-Fetch-Skip-Reason": "max_size_exceeded"},
-                            # Where HEAD's redirects led: the file skipped, not the URL that pointed at it.
-                            final_url=str(head_resp.url),
-                            strategy="size_guard",
-                        )
-        except Exception:
-            # HEAD not supported (405), connection error, timeout — proceed with GET
-            pass
+                # Return a concrete response so callers can distinguish
+                # an intentional size skip from a connection failure.
+                return FetchResponse(
+                    status_code=413,
+                    content_bytes=b"",
+                    headers={"X-Fetch-Skip-Reason": "max_size_exceeded"},
+                    final_url=url,
+                    strategy="size_guard",
+                )
 
     # Define the strategy chain: (name, async callable returning Optional[FetchResponse])
     all_strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
