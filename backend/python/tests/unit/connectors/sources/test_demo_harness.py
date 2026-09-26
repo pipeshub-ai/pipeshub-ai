@@ -144,6 +144,8 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
         "You can spend up to **$250** per purchase without approval.",
         "You don\u2019t need approval for purchases up to $250.",
         "Anything $250 or less: approval isn't required, just submit the receipt.",
+        # The chat's own wording on the demo instance.
+        "You can spend up to **$250 per purchase** without any approval.",
     ],
 )
 def test_f2_passes_the_amount_with_no_approval_however_the_chat_formats_it(fx: dict, answer: str) -> None:
