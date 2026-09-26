@@ -1514,7 +1514,13 @@ class NextcloudConnector(BaseConnector):
             if record is None:
                 # Nothing is stored under this ID; the delete only clears anything left below it.
                 return True, ""
-            path = await self.data_entities_processor.get_record_path(record.id) or record.record_name
+            # A 404 proves the file gone only at its full stored path. The graph returns None
+            # when the path read fails, and a bare name for a file with a parent isn't that path.
+            path = await self.data_entities_processor.get_record_path(record.id)
+            if not path:
+                return None, "could not read its stored path"
+            if record.parent_external_record_id and "/" not in path.strip("/"):
+                return None, "its stored path is incomplete"
             async with self.rate_limiter:
                 response = await self.data_source.list_directory(
                     user_id=self.current_user_id, path=path, depth=0

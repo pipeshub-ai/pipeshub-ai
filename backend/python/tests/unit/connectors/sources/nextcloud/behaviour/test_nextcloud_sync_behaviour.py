@@ -957,6 +957,30 @@ class TestIncrementalSync:
         assert db.by_name("notes.txt").id == kept and "notes.txt" not in db.deleted
         assert store.checkpoint()["pending_deletes"] == []
 
+    @pytest.mark.parametrize("break_path", [
+        pytest.param(lambda db, record: db.unreadable_paths.add(record.id), id="path-read-fails"),
+        pytest.param(lambda db, record: db.edges.pop(record.id), id="path-is-only-the-name"),
+    ])
+    async def test_a_queued_deletion_waits_when_the_stored_path_is_not_known(self, server, db, store, break_path) -> None:
+        connector = await synced(server, db, store)
+        notes = db.by_name("notes.txt")
+        db.fail_delete_for = {notes.external_record_id}
+        server.delete("Docs/notes.txt")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        db.fail_delete_for.clear()
+        break_path(db, notes)
+
+        await connector.run_sync()
+        assert notes.external_record_id in {r.external_record_id for r in db.records.values()}
+        assert store.checkpoint()["pending_deletes"] == [notes.external_record_id], "kept queued, not guessed"
+
+        db.unreadable_paths.clear()
+        db.edges[notes.id] = db.by_name("Docs").id
+        await connector.run_sync()
+        assert notes.external_record_id not in {r.external_record_id for r in db.records.values()}
+        assert store.checkpoint()["pending_deletes"] == []
+
     async def test_the_give_up_error_names_what_could_not_be_applied(self, server, db, store, caplog) -> None:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")

@@ -370,6 +370,7 @@ class FakeRecordsDb:
         self.fail_lookup_for: set[str] = set()
         self.fail_write_for: set[str] = set()
         self.fail_delete_for: set[str] = set()
+        self.unreadable_paths: set[str] = set()
         self.messaging_producer: Any = None
 
     def _by_id(self, record_id: str) -> Optional[FileRecord]:
@@ -492,6 +493,9 @@ class FakeRecordsDb:
         return "/".join(n for n in names if n)
 
     async def get_record_path(self, record_id: str) -> Optional[str]:
+        """Like the graph providers, a path read that fails comes back as None, not an error."""
+        if record_id in self.unreadable_paths:
+            return None
         return self._path(record_id)
 
     async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[SimpleNamespace]:
