@@ -779,23 +779,19 @@ class TestIncrementalSync:
 
         assert len(db.batches) == writes
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when the saved cursor can't "
-            "be read, the run falls back to a full sync, which doesn't notice deletions and then "
-            "moves the cursor past them, so files deleted in Nextcloud stay searchable for good."
-        ),
-    )
     async def test_an_unreadable_cursor_does_not_skip_deletions(self, server, db, store) -> None:
         connector = await synced(server, db, store)
+        cursor, listings = store.cursor(), len(server.calls("PROPFIND"))
         server.delete("Docs/notes.txt")
         store.fail_reads = 1
 
-        await connector.run_sync()
-        await connector.run_sync()
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector.run_sync()
+        assert store.cursor() == cursor and len(server.calls("PROPFIND")) == listings, "no full sync in its place"
 
+        await connector.run_sync()
         assert "notes.txt" not in db.names()
+        assert store.cursor() == str(server.latest_activity_id)
 
     @pytest.mark.xfail(
         strict=True,

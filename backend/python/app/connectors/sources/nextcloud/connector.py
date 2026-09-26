@@ -1118,11 +1118,15 @@ class NextcloudConnector(BaseConnector):
 
             # 1. Check if we have an existing activity cursor
             sync_point_key = "activity_cursor"
-            cursor_data = None
             try:
                 cursor_data = await self.activity_sync_point.read_sync_point(sync_point_key)
-            except Exception as e:
-                self.logger.debug(f"⚠️ [Smart Sync] Could not read cursor (first run?): {e}")
+            except Exception:
+                # A full sync in its place can't see deletions and would move the cursor past them.
+                self.logger.error(
+                    "❌ [Smart Sync] Could not read the saved activity cursor. This sync stops here "
+                    "and the next one will try again."
+                )
+                raise
 
             # 2. DECISION LOGIC: Incremental vs Full
             if cursor_data and cursor_data.get('cursor'):
