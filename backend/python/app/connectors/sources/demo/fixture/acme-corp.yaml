@@ -987,12 +987,13 @@ records:
     body: |
       **Status:** Done
 
-      Contoso's April invoice shows VAT on a line that should be exempt. Finance to
-      reissue; the VAT rule for reverse-charge customers to be checked.
+      Contoso's April invoice shows VAT on a line that should be exempt. Handed to
+      finance: the invoice needs reissuing, and the VAT rule for reverse-charge
+      customers needs checking.
 
       ## Resolution
-      Finance reissued the invoice on 22 April (FIN-37). The billing rule was
-      fixed on 6 May (FIN-38). Contoso has been told. Closed.
+      Resolved by finance. What was done, and when, is in their tickets: FIN-37
+      for the invoice and FIN-38 for the VAT rule. Contoso has been told. Closed.
 
   - id: sn-4455
     container: servicenow
@@ -1537,17 +1538,20 @@ records:
   - id: drive-people-onboarding-eng
     container: drive-people
     type: FILE
-    title: "Onboarding checklist — engineers"
+    title: "New engineer onboarding: first week checklist"
     author: tomas
     created: 2025-08-01T10:00:00Z
     updated: 2026-02-10T10:00:00Z
     web_url: https://docs.acme-demo.example/document/d/acme-onboarding-engineers
     body: |
+      What every new engineer does on day one, in their first week and in their
+      first month. Your manager and your onboarding buddy go through it with you.
+
       ## Day 1
       Laptop, accounts (GitHub, Jira, Slack), and a welcome session with your
       manager and your onboarding buddy.
 
-      ## Week 1
+      ## First week
       - Ship a small change to production with your buddy.
       - Read the engineering on-call handbook; you shadow an on-call week in your
         second month, not your first.
@@ -1657,9 +1661,11 @@ pack_questions:
   support:
     - id: u2
       ask: "What happened with Contoso's invoice that showed VAT on an exempt line?"
-      # The resolution lives in finance's tickets; SUP-121 alone is the report.
+      # SUP-121 is the report and points to finance's tickets for what was done.
       must_cite_any_of: [jira-fin-37, jira-fin-38]
-      answer_must_mention: ["Contoso", "reissue"]
+      answer_must_mention: ["Contoso"]
+      answer_must_mention_any_of: ["reissue", "reissuing", "credit note", "new invoice", "corrected invoice"]
+      answer_must_not_mention: ["still open", "remains open"]
       must_not_cite: [drive-pricing-2026]
       personas: { alice: cites, bob: cites }
   marketing:

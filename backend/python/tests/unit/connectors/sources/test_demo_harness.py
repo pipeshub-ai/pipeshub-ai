@@ -152,3 +152,19 @@ def test_the_upload_waits_for_every_knowledge_base_the_persona_loads(fx: dict) -
         assert probes[0] == shared[-1][0].removesuffix(".md")
         assert probes[1:] == [restricted[g][-1][0].removesuffix(".md") for g in sorted(groups)]
         assert all(any(kb_harness.safe_name(t) == p for t in records) for p in probes)
+
+
+@pytest.mark.parametrize(
+    ("answer", "ok"),
+    [
+        ("Finance reissued Contoso's invoice on 22 April and fixed the VAT rule on 6 May.", True),
+        ("Finance is reissuing Contoso's April invoice and issued a credit note.", True),
+        ("Contoso got a credit note and a new invoice without VAT on the exempt line.", True),
+        ("Contoso's invoice has not yet been reissued; the case is still open.", False),
+        ("Contoso's invoice was not reissued.", False),
+        ("Contoso reported it; SUP-121 remains open with finance.", False),
+    ],
+)
+def test_u2_accepts_every_way_of_saying_it_was_reissued_but_not_still_open(fx: dict, answer: str, ok: bool) -> None:
+    q = _question(fx, "u2")
+    assert kb_harness.score(q, "cites", {"jira-fin-37", "jira-fin-38"}, answer)[0] is ok

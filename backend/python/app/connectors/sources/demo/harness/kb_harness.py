@@ -291,6 +291,8 @@ def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool,
     mention_any = q.get("answer_must_mention_any_of", [])
     if mention_any and not any(mentions(answer, m) for m in mention_any):
         unmentioned.append(" | ".join(mention_any))
+    # Statements that make an answer wrong however well it cites ("still open").
+    unmentioned += [f"not: {m}" for m in q.get("answer_must_not_mention", []) if mentions(answer, m)]
     if expect == "none":
         # A failed run proves nothing about access, so it is not a pass.
         if answer.startswith("ERROR:"):

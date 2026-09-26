@@ -138,3 +138,19 @@ def test_closed_stories_say_so(fx: dict) -> None:
     records = {r["id"]: r for r in fx["records"]}
     assert "**On track.**" in records["drive-sales-northwind-plan"]["body"]
     assert "**Status:** Done" in records["jira-sup-121"]["body"]
+
+
+
+def test_sup_121_points_to_finance_instead_of_answering_for_it(fx: dict) -> None:
+    # If the support ticket repeats finance's resolution, an answer stops there and
+    # never cites FIN-37 or FIN-38, which u2 requires.
+    body = next(r for r in fx["records"] if r["id"] == "jira-sup-121")["body"]
+    assert "FIN-37" in body and "FIN-38" in body
+    assert "22 April" not in body and "6 May" not in body
+
+
+def test_the_onboarding_checklist_is_named_for_the_first_week(fx: dict) -> None:
+    # h2 asks what a new engineer does "in their first week"; the record should say so.
+    rec = next(r for r in fx["records"] if r["id"] == "drive-people-onboarding-eng")
+    assert "first week" in rec["title"].lower()
+    assert "## First week" in rec["body"]
