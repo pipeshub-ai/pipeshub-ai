@@ -307,6 +307,7 @@ class TestAppPasswordAuth:
             await connector.run_sync()
 
         assert "Create a new app password" in str(rejected.value)
+        assert "turn this connector off, enter the new password in its settings, save, and turn it back on" in str(rejected.value)
         assert connector.data_source is None
         assert db.records == {} and store.cursor() is None
         sent = await notifications()

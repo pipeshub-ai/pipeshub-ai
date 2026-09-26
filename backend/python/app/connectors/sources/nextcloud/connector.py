@@ -94,10 +94,11 @@ MAX_HELD_ATTEMPTS = 5
 # How many of the changes that couldn't be applied a log line names before summarising the rest.
 MAX_NAMED_FAILURES = 20
 
+# Auth settings can't be saved while the connector is on, and only turning it on checks the password.
 APP_PASSWORD_REJECTED_MESSAGE = (
     "Nextcloud rejected the app password, so nothing could be synced. Create a new app password "
-    "in Nextcloud (Personal settings > Security > Devices & sessions), then enter it in this "
-    "connector's settings and save to reconnect."
+    "in Nextcloud (Personal settings > Security > Devices & sessions). Then turn this connector "
+    "off, enter the new password in its settings, save, and turn it back on."
 )
 
 
