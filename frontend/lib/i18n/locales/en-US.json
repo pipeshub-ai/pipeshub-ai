@@ -23,7 +23,9 @@
     "form": {
       "title": "Change Password",
       "newPasswordLabel": "New Password*",
-      "newPasswordPlaceholder": "Enter your new password"
+      "newPasswordPlaceholder": "Enter your new password",
+      "confirmPasswordLabel": "Confirm Password*",
+      "confirmPasswordPlaceholder": "Confirm your password"
     }
   },
   "agents": {
@@ -287,7 +289,9 @@
     "saving": "Saving...",
     "processing": "Processing...",
     "reindexing": "Reindexing...",
-    "tryAgain": "Try again"
+    "tryAgain": "Try again",
+    "edit": "Edit",
+    "remove": "Remove"
   },
   "filter": {
     "type": "Type",
@@ -938,6 +942,7 @@
       },
       "workspace": {
         "failedToLoad": "Failed to load this project",
+        "failedToLoadFiles": "Failed to load files",
         "instructionsTitle": "Instructions",
         "instructionsPlaceholder": "Add instructions the assistant should follow for every chat in this project…",
         "noInstructions": "No instructions added yet",
@@ -1013,7 +1018,8 @@
         "title": "Move to project",
         "noProjects": "You don't have any projects yet",
         "removeOption": "No project",
-        "moving": "Moving…"
+        "moving": "Moving…",
+        "moveFailed": "Failed to move conversation"
       },
       "deleteDialog": {
         "title": "Delete this project?",
@@ -1044,7 +1050,6 @@
       "uploading": "Uploading…",
       "retry": "Retry upload",
       "pastedText": "Pasted text",
-      "pasteMeta": "{{chars}} chars · {{count}} lines",
       "uploadingNamed": "Uploading pasted text",
       "removePastedText": "Remove pasted text",
       "showInTextField": "Show in text field",
@@ -1066,7 +1071,7 @@
     "plusMenu": {
       "ariaLabelFiltersApplied": "Attach files and capabilities. Search filters applied",
       "ariaLabel": "Attach files and capabilities",
-      "title": "Add & capabilities"
+      "title": "Add files & capabilities"
     },
     "stopListening": "Stop listening",
     "voiceInput": "Voice input",
@@ -1093,7 +1098,6 @@
       "noActions": "No authenticated actions found. Connect integrations in Workspace → Actions.",
       "loadingMcp": "Loading MCP servers…",
       "noMcpServers": "No authenticated MCP servers found. Connect one in Workspace → MCP Servers.",
-      "toolCount": "{{count}} tools",
       "toolCount_one": "{{count}} tool",
       "toolCount_other": "{{count}} tools"
     },
@@ -1149,7 +1153,7 @@
         "changeRoleError": "Failed to change role",
         "maxAdminsReachedTitle": "Cannot add another admin",
         "maxAdminsReached": "An organization can have at most 5 admins.",
-        "removeFromWorkspace": "Remove from Workplace",
+        "removeFromWorkspace": "Remove from Workspace",
         "demoteAdminBeforeRemoveTitle": "Cannot remove admin",
         "demoteAdminBeforeRemove": "Demote the admin to member, then remove them.",
         "removeUserTitle": "Remove user?",
@@ -1247,17 +1251,11 @@
         "smtpNotConfiguredTooltip": "SMTP is not configured. Set up email settings before sending invites."
       },
       "bulk": {
-        "removeSuccess": "{{count}} user(s) removed from workspace",
-        "removePartialError": "Failed to remove {{count}} user(s)",
-        "resendSuccess": "Invite resent to {{count}} user(s)",
-        "resendPartialError": "Failed to resend invite to {{count}} user(s)",
-        "cancelSuccess": "{{count}} invite(s) cancelled",
-        "cancelPartialError": "Failed to cancel {{count}} invite(s)",
         "resendInvite": "Resend Invite",
         "adminInviteCantBeCancelled": "Admin invites cannot be cancelled",
         "cancelInvite": "Cancel Invite",
         "adminCantBeRemoved": "Admin users cannot be removed",
-        "removeFromWorkspace": "Remove from Workplace",
+        "removeFromWorkspace": "Remove from Workspace",
         "removeSuccess_one": "{{count}} user removed from workspace",
         "removeSuccess_other": "{{count}} users removed from workspace",
         "removePartialError_one": "Failed to remove {{count}} user",
@@ -1596,7 +1594,6 @@
       "columnCreated": "Created",
       "columnExpires": "Expires",
       "columnLastUsed": "Last used",
-      "scopeCount": "{{count}} scopes",
       "neverUsed": "Never",
       "neverExpires": "Never",
       "revokeAria": "Revoke {{name}}",
@@ -2261,7 +2258,8 @@
         "alreadyRemovingTitle": "Already being removed",
         "alreadyRemovingDescription": "This connector is already being removed.",
         "successTitle": "Connector removed",
-        "errorTitle": "Failed to remove connector"
+        "errorTitle": "Failed to remove connector",
+        "errorDescription": "Please try again; if it keeps happening, contact your workspace admin."
       },
       "selectRecords": {
         "title": "Select Records",
@@ -2904,8 +2902,6 @@
         "previewError": "Failed to preview this skill",
         "confirmImport": "Import Skill",
         "source": "Source: {{source}}",
-        "resourceCount": "{{count}} resource(s)",
-        "skippedBinary": "{{count}} binary file(s) were skipped (not supported yet)",
         "nameHint": "Lowercase kebab-case. Change this if the original name is already a built-in skill (for example pptx).",
         "nameInvalid": "Name must be lowercase letters, numbers, and single hyphens.",
         "originalName": "Original name: {{name}}",
@@ -3843,12 +3839,10 @@
     "toolInlineSuffix": "{{name}} tool",
     "paletteToolGroupLabel": "{{app}} tools",
     "nodeTemplateChatResponseDesc": "Sends the reply to the user",
-    "deprecatedToolsBanner": "{{count}} tool(s) on this agent are deprecated remove them : {{tools}}",
     "removeDeprecatedTools": "Remove Deprecated Tools",
     "showMore": "Show more",
     "showLess": "Show less",
     "mcpServerAlreadyAttachedNotify": "{{name}} is already attached to this agent",
-    "mcpServerWithToolCount": "MCP server with {{count}} tool(s)",
     "webSearchOnlyOne": "Only one web search provider can be attached",
     "mcpServerNodeSubtitle": "Tools from an MCP server",
     "noMcpServersAvailable": "No MCP servers available",

@@ -49,27 +49,74 @@ export const locales: Record<Language, unknown> = {
 
 That's it — the i18n config, language store type, and switcher UI all derive from `SUPPORTED_LANGUAGES` automatically.
 
-## Maintaining German translations
+## Maintaining translations
 
-`en-US.json` is the structural source of truth for `de-DE.json`. Add new UI
-strings to both files and reuse existing keys where appropriate. German uses
-formal **Sie** and the terms **Arbeitsbereich**, **Konnektor**, **Service-Agent**,
-**Skill**, **Tool**, **Toolset**, **MCP-Server**, **OAuth-App**, and **Reasoning-Aufwand**.
-Keep interpolation names unchanged and provide `_one` / `_other` forms for
-count-dependent messages.
+`en-US.json` is the structural source of truth. Add new UI strings to it and to
+every other locale, and reuse existing keys where appropriate. Keep interpolation
+names unchanged.
 
-From `frontend/`, run:
+German uses formal **Sie** and the terms **Arbeitsbereich**, **Konnektor**,
+**Service-Agent**, **Skill**, **Tool**, **Toolset**, **MCP-Server**, **OAuth-App**
+and **Reasoning-Aufwand**. Product names, protocol names and third-party service
+names stay as they are in every language.
 
-```sh
-npm run i18n:check
-npm run test:i18n
+### Plural forms
+
+Each language needs the plural categories CLDR defines for it, not the ones
+English happens to use:
+
+| Language | Cardinal categories |
+| --- | --- |
+| en-US, de-DE, en-IN, hi-IN | `_one`, `_other` |
+| es-ES | `_one`, `_many`, `_other` |
+| ko-KR, zh-CN, zh-TW | `_other` |
+
+So a counted message needs `_many` in Spanish, and needs only `_other` in Chinese
+and Korean. A `_zero` override is always optional. The parity check works this
+out per language; do not copy English's set.
+
+### Regional variants
+
+Every locale is a complete file of its own, including close pairs such as
+`zh-CN` and `zh-SG`. They hold the same text today, but they are separate
+catalogues and are free to diverge: change one without touching the other.
+A locale never inherits from another locale — anything it is missing falls back
+to `en-US`, and the parity check requires it to be complete, so nothing is
+missing for long.
+
+### Casing
+
+Do not call `.toLowerCase()` on a value you interpolate: German capitalises
+nouns, so casing belongs in the translation. Use the `lowercase` formatter
+instead, and let each language opt in:
+
+```json
+"selectFieldInline": "Select {{field, lowercase}}"
 ```
 
-The dependency-free check compares nested objects and arrays, missing and
-orphaned leaves, value types, interpolation variables, and German plural forms.
-It exits with status 1 on parity errors or invalid JSON. The frontend CI job and
-`scripts/verify.sh frontend` also run it. Structural parity does not detect every
-hardcoded UI string or replace a browser check with German selected.
+## Checks
+
+From `frontend/`:
+
+```sh
+npm run i18n:check   # every locale against en-US
+npm run i18n:keys    # every t('...') in the source resolves in en-US
+npm run test:i18n    # the checkers' own tests
+```
+
+`i18n:check` compares nested objects and arrays, missing and orphaned leaves,
+value types, interpolation variables and plural categories, for every locale it
+finds in `lib/i18n/locales/`. Locales listed under `gated` in
+`locale-policy.json` fail the build; anything else is reported as a warning, so a
+new language can land and be filled in over several changes.
+
+`i18n:keys` exists because parity alone cannot see a key deleted from en-US while
+code still asks for it: both catalogues agree, and the UI renders the raw key
+name. Pass one or more locale names to `i18n:check` to narrow it.
+
+The frontend CI job and `scripts/verify.sh frontend` run all three. None of them
+detects a hardcoded UI string, and none replaces opening the app in the language
+you changed.
 
 Keep reusable validation utilities free of presentation strings: return stable
 error codes and translate them in the UI. Backend-provided connector/schema

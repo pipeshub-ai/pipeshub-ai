@@ -10,7 +10,9 @@
     "form": {
       "title": "Passwort ändern",
       "newPasswordLabel": "Neues Passwort*",
-      "newPasswordPlaceholder": "Geben Sie Ihr neues Passwort ein"
+      "newPasswordPlaceholder": "Geben Sie Ihr neues Passwort ein",
+      "confirmPasswordLabel": "Passwort bestätigen*",
+      "confirmPasswordPlaceholder": "Passwort bestätigen"
     }
   },
   "agents": {
@@ -274,7 +276,9 @@
     "saving": "Speichern...",
     "processing": "Verarbeiten...",
     "reindexing": "Neu indizieren...",
-    "tryAgain": "Erneut versuchen"
+    "tryAgain": "Erneut versuchen",
+    "edit": "Bearbeiten",
+    "remove": "Entfernen"
   },
   "filter": {
     "type": "Typ",
@@ -881,6 +885,7 @@
       },
       "workspace": {
         "failedToLoad": "Dieses Projekt konnte nicht geladen werden",
+        "failedToLoadFiles": "Die Dateien konnten nicht geladen werden",
         "instructionsTitle": "Anweisungen",
         "instructionsPlaceholder": "Anweisungen hinzufügen, die der Assistent bei jedem Chat in diesem Projekt befolgen soll…",
         "noInstructions": "Noch keine Anweisungen hinzugefügt",
@@ -956,7 +961,8 @@
         "title": "In Projekt verschieben",
         "noProjects": "Sie haben noch keine Projekte",
         "removeOption": "Kein Projekt",
-        "moving": "Wird verschoben…"
+        "moving": "Wird verschoben…",
+        "moveFailed": "Die Unterhaltung konnte nicht verschoben werden"
       },
       "deleteDialog": {
         "title": "Dieses Projekt löschen?",
@@ -987,7 +993,6 @@
       "uploading": "Wird hochgeladen…",
       "retry": "Upload erneut versuchen",
       "pastedText": "Eingefügter Text",
-      "pasteMeta": "{{chars}} Zeichen · {{count}} Zeilen",
       "uploadingNamed": "Eingefügter Text wird hochgeladen",
       "removePastedText": "Eingefügten Text entfernen",
       "showInTextField": "Im Textfeld anzeigen",
@@ -1009,7 +1014,7 @@
     "plusMenu": {
       "ariaLabelFiltersApplied": "Dateien und Funktionen hinzufügen. Suchfilter sind aktiv",
       "ariaLabel": "Dateien und Funktionen hinzufügen",
-      "title": "Hinzufügen und Funktionen"
+      "title": "Dateien & Funktionen hinzufügen"
     },
     "stopListening": "Sprachaufnahme stoppen",
     "voiceInput": "Spracheingabe",
@@ -1036,7 +1041,6 @@
       "noActions": "Keine authentifizierten Aktionen gefunden. Verbinden Sie Integrationen unter „Arbeitsbereich → Aktionen“.",
       "loadingMcp": "MCP-Server werden geladen…",
       "noMcpServers": "Keine authentifizierten MCP-Server gefunden. Verbinden Sie einen unter „Arbeitsbereich → MCP-Server“.",
-      "toolCount": "{{count}} Tools",
       "toolCount_one": "{{count}} Tool",
       "toolCount_other": "{{count}} Tools"
     },
@@ -1229,12 +1233,6 @@
         "smtpNotConfiguredTooltip": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Einladungen versenden."
       },
       "bulk": {
-        "removeSuccess": "{{count}} Benutzer aus dem Arbeitsbereich entfernt",
-        "removePartialError": "{{count}} Benutzer konnten nicht entfernt werden",
-        "resendSuccess": "Einladung an {{count}} Benutzer erneut gesendet",
-        "resendPartialError": "Einladung an {{count}} Benutzer konnte nicht erneut gesendet werden",
-        "cancelSuccess": "{{count}} Einladung(en) zurückgezogen",
-        "cancelPartialError": "{{count}} Einladung(en) konnten nicht zurückgezogen werden",
         "resendInvite": "Einladung erneut senden",
         "adminInviteCantBeCancelled": "Administratoreinladungen können nicht zurückgezogen werden",
         "cancelInvite": "Einladung zurückziehen",
@@ -2181,7 +2179,8 @@
         "alreadyRemovingTitle": "Wird bereits entfernt",
         "alreadyRemovingDescription": "Dieser Konnektor wird bereits entfernt.",
         "successTitle": "Konnektor entfernt",
-        "errorTitle": "Konnektor konnte nicht entfernt werden"
+        "errorTitle": "Konnektor konnte nicht entfernt werden",
+        "errorDescription": "Bitte versuchen Sie es erneut. Wenn es weiterhin auftritt, wenden Sie sich an Ihren Administrator."
       },
       "selectRecords": {
         "title": "Datensätze auswählen",
@@ -3221,7 +3220,6 @@
       "columnCreated": "Erstellt",
       "columnExpires": "Läuft ab",
       "columnLastUsed": "Zuletzt verwendet",
-      "scopeCount": "{{count}} Berechtigungsbereiche",
       "neverUsed": "Nie",
       "neverExpires": "Nie",
       "revokeAria": "{{name}} widerrufen",
@@ -3397,8 +3395,6 @@
         "previewError": "Vorschau dieses Skills konnte nicht geladen werden",
         "confirmImport": "Skill importieren",
         "source": "Quelle: {{source}}",
-        "resourceCount": "{{count}} Ressource(n)",
-        "skippedBinary": "{{count}} Binärdatei(en) wurden übersprungen (noch nicht unterstützt)",
         "resourceCount_one": "{{count}} Ressource",
         "resourceCount_other": "{{count}} Ressourcen",
         "skippedBinary_one": "{{count}} Binärdatei wurde übersprungen (noch nicht unterstützt)",
@@ -3821,7 +3817,6 @@
     "toolInlineSuffix": "{{name}}-Tool",
     "paletteToolGroupLabel": "{{app}}-Tools",
     "nodeTemplateChatResponseDesc": "Sendet die Antwort an den Nutzer",
-    "deprecatedToolsBanner": "{{count}} Tool(s) dieses Agenten sind veraltet. Entfernen Sie diese: {{tools}}",
     "removeDeprecatedTools": "Veraltete Tools entfernen",
     "showMore": "Mehr anzeigen",
     "showLess": "Weniger anzeigen",
@@ -3829,7 +3824,6 @@
     "connectionSkillToSkillsHandle": "Skills müssen mit dem Skills-Anschluss des Agenten verbunden werden",
     "dropDuplicateSkill": "{{name}} wurde diesem Agenten bereits hinzugefügt",
     "mcpServerAlreadyAttachedNotify": "{{name}} wurde diesem Agenten bereits hinzugefügt",
-    "mcpServerWithToolCount": "MCP-Server mit {{count}} Tool(s)",
     "webSearchOnlyOne": "Es kann nur ein Websuchanbieter hinzugefügt werden",
     "mcpServerNodeSubtitle": "Tools eines MCP-Servers",
     "noMcpServersAvailable": "Keine MCP-Server verfügbar",

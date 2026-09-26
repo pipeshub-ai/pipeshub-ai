@@ -6,6 +6,13 @@
       "resetExpiredMessage": "यह पासवर्ड रीसेट लिंक समाप्त हो गया है। कृपया साइन-इन पृष्ठ पर पासवर्ड भूल गए विकल्प से नया अनुरोध करें।",
       "backToSignIn": "साइन इन पर वापस जाएं",
       "genericLinkInvalidMessage": "यह लिंक समाप्त हो गया होगा। कृपया अपने संगठन व्यवस्थापक से नया आमंत्रण भेजने के लिए कहें।"
+    },
+    "form": {
+      "title": "पासवर्ड बदलें",
+      "newPasswordLabel": "नया पासवर्ड*",
+      "newPasswordPlaceholder": "अपना नया पासवर्ड दर्ज करें",
+      "confirmPasswordLabel": "पासवर्ड की पुष्टि करें*",
+      "confirmPasswordPlaceholder": "अपने पासवर्ड की पुष्टि करें"
     }
   },
   "agents": {
@@ -204,6 +211,10 @@
       "visitDocs": "देखें",
       "docsLabel": "दस्तावेज़ीकरण",
       "toLearnMore": "अधिक जानने के लिए।"
+    },
+    "tour": {
+      "dismiss": "टूर बंद करें",
+      "completedDescription": "अब सब तैयार है। अधिक जानने के लिए <docs>दस्तावेज़ीकरण</docs> देखें।"
     }
   },
   "nav": {
@@ -264,7 +275,10 @@
     "uploading": "अपलोड हो रहा है...",
     "saving": "सहेजा जा रहा है...",
     "processing": "प्रोसेस किया जा रहा है...",
-    "reindexing": "री-इंडेक्स किया जा रहा है..."
+    "reindexing": "री-इंडेक्स किया जा रहा है...",
+    "tryAgain": "पुनः प्रयास करें",
+    "edit": "संपादित करें",
+    "remove": "हटाएँ"
   },
   "filter": {
     "type": "प्रकार",
@@ -420,7 +434,15 @@
     "beta": {
       "label": "बीटा",
       "tooltip": "यह सुविधा बीटा में है और इसमें बदलाव हो सकता है।"
-    }
+    },
+    "you": "आप",
+    "refreshing": "ताज़ा किया जा रहा है...",
+    "clear": "साफ़ करें",
+    "current": "वर्तमान",
+    "openProfile": "प्रोफ़ाइल खोलें",
+    "loading": "लोड हो रहा है...",
+    "moreOptions": "अधिक विकल्प",
+    "docs": "दस्तावेज़"
   },
   "units": {
     "bytes": "बाइट",
@@ -459,7 +481,11 @@
     "more": "और",
     "loadMore": "और लोड करें",
     "moreCollections": "और कलेक्शन",
-    "searchCollections": "खोजें"
+    "searchCollections": "खोजें",
+    "open": "साइडबार खोलें",
+    "expand": "साइडबार विस्तृत करें",
+    "close": "साइडबार बंद करें",
+    "collapse": "साइडबार संक्षिप्त करें"
   },
   "menu": {
     "reindex": "री-इंडेक्स",
@@ -490,7 +516,15 @@
     "folderEmpty": "यह फ़ोल्डर खाली है",
     "itemStats": "आपके पास {{collections}} कलेक्शन हैं, इस कलेक्शन फ़ोल्डर में {{files}} फ़ाइलें हैं",
     "searchPlaceholder": "उदा: बिक्री दस्तावेज़",
-    "searchMinChars": "खोज के लिए कम से कम 2 अक्षर आवश्यक हैं"
+    "searchMinChars": "खोज के लिए कम से कम 2 अक्षर आवश्यक हैं",
+    "createFolder": "फ़ोल्डर बनाएँ",
+    "goToCollections": "संग्रहों पर जाएँ",
+    "namedEmpty": "{{name}} खाली है",
+    "noRecords": "कोई रिकॉर्ड नहीं मिला",
+    "searchEmptyHint": "आप जो खोज रहे हैं वह नहीं मिला। कुछ और खोजकर देखें।",
+    "adjustFiltersHint": "कोई दूसरा स्रोत चुनें या अपने फ़िल्टर समायोजित करें",
+    "addFromCollectionsHint": "आप अपनी कंपनी की फ़ाइलें या फ़ोल्डर संग्रहों से जोड़ सकते हैं",
+    "addFilesHint": "अपनी फ़ाइलें या फ़ोल्डर जोड़ें"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -551,7 +585,15 @@
       "browseWorkspaceActionsAria": "एकीकरण जोड़ने या प्रबंधित करने के लिए वर्कस्पेस कार्य खोलें",
       "actionsCount": "{{count}} कार्य",
       "resetDefaults": "डिफ़ॉल्ट पर रीसेट करें",
-      "knowledgeScopeClearedWarning": "इस रन के लिए कोई ज्ञान स्रोत शामिल नहीं हैं, इसलिए एजेंट आपके कनेक्टर या संग्रह में उत्तर खोजेगा नहीं।"
+      "knowledgeScopeClearedWarning": "इस रन के लिए कोई ज्ञान स्रोत शामिल नहीं हैं, इसलिए एजेंट आपके कनेक्टर या संग्रह में उत्तर खोजेगा नहीं।",
+      "searchMcp": "MCP सर्वर खोजें",
+      "mcpTab": "MCP",
+      "noMcpServers": "इस एजेंट के लिए कोई MCP सर्वर कॉन्फ़िगर नहीं है।",
+      "configureMoreMcp": "और MCP सर्वर कॉन्फ़िगर करें",
+      "browseWorkspaceMcp": "MCP सर्वर ब्राउज़ करें",
+      "browseWorkspaceMcpAria": "कनेक्शन जोड़ने या प्रबंधित करने के लिए MCP सर्वर खोलें",
+      "noActionMatches": "आपकी खोज से कोई क्रिया मेल नहीं खाती।",
+      "noMcpMatches": "आपकी खोज से कोई MCP सर्वर मेल नहीं खाता।"
     },
     "projectResources": {
       "noConnectors": "इस प्रोजेक्ट के लिए कोई कनेक्टर सक्षम नहीं है।",
@@ -747,6 +789,8 @@
         ]
       }
     },
+    "demoBanner": "आप Acme Corp देख रहे हैं, एक छोटी काल्पनिक कंपनी जो डेमो डेटा के रूप में लोड की गई है। इनमें से कोई आज़माएँ, या",
+    "demoConnectYourOwn": "अपने स्वयं के स्रोत कनेक्ट करें",
     "askMoreQuestionSets": [
       [
         "मुख्य चुनौतियाँ क्या हैं और उन्हें कैसे संबोधित किया जा रहा है?",
@@ -844,6 +888,7 @@
       },
       "workspace": {
         "failedToLoad": "यह प्रोजेक्ट लोड करने में विफल",
+        "failedToLoadFiles": "फ़ाइलें लोड नहीं हो सकीं",
         "instructionsTitle": "निर्देश",
         "instructionsPlaceholder": "निर्देश जोड़ें जो सहायक को इस प्रोजेक्ट की प्रत्येक चैट में पालन करने चाहिए…",
         "noInstructions": "अभी तक कोई निर्देश नहीं जोड़े गए",
@@ -919,7 +964,8 @@
         "title": "प्रोजेक्ट में ले जाएँ",
         "noProjects": "आपके पास अभी तक कोई प्रोजेक्ट नहीं है",
         "removeOption": "कोई प्रोजेक्ट नहीं",
-        "moving": "ले जाया जा रहा है…"
+        "moving": "ले जाया जा रहा है…",
+        "moveFailed": "बातचीत स्थानांतरित नहीं हो सकी"
       },
       "deleteDialog": {
         "title": "क्या यह प्रोजेक्ट हटाना है?",
@@ -933,10 +979,121 @@
         "editor": "संपादक",
         "viewer": "दर्शक"
       }
-    }
-  },
-  "workspaceSettings": {
-    "title": "वर्कस्पेस सेटिंग्स"
+    },
+    "demoHide": "डेमो डेटा छिपाएँ",
+    "scrollAttachmentsLeft": "अटैचमेंट बाईं ओर स्क्रॉल करें",
+    "scrollAttachmentsRight": "अटैचमेंट दाईं ओर स्क्रॉल करें",
+    "demoSuggestions": {
+      "1": {
+        "text": "पेमेंट सर्विस की आर्किटेक्चर क्यों बदली गई, और यह निर्णय कैसे लिया गया?",
+        "icons": [
+          "github",
+          "jira",
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "किन ग्राहकों ने एक्सपोर्ट टाइमआउट की शिकायत की, और इसे किससे ठीक किया गया?",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      },
+      "3": {
+        "text": "सार्वजनिक अवकाश पर ऑन-कॉल रहने को लेकर हमारी नीति क्या है?",
+        "icons": [
+          "sheets"
+        ]
+      },
+      "4": {
+        "text": "बिलिंग वर्कर में PR #482 की समीक्षा और मंज़ूरी किसने दी, और मर्ज होने से पहले Dana ने क्या माँगा था?",
+        "icons": [
+          "github"
+        ]
+      },
+      "5": {
+        "text": "2026 के लिए एंटरप्राइज़ प्राइसिंग रणनीति क्या है?",
+        "icons": [
+          "sheets",
+          "slack"
+        ],
+        "restricted": true
+      }
+    },
+    "demoRestrictedHint": "यह केवल प्राइसिंग समिति के लिए है, इसलिए यहाँ आपको कोई उत्तर नहीं मिलेगा। यही अनुमतियों का काम है।",
+    "demoRestrictedHintSignIn": "यह केवल प्राइसिंग समिति के लिए है, इसलिए यहाँ आपको कोई उत्तर नहीं मिलेगा। उत्तर देखने के लिए {{email}} के रूप में साइन इन करें।",
+    "toolValidation": {
+      "tooManyTools": "बहुत अधिक टूल चुने गए हैं। प्रदर्शन सीमाओं के कारण प्रति अनुरोध अधिकतम 1024 टूल की अनुमति है।",
+      "multipleInstances": "एक ही क्रिया प्रकार ({{types}}) के कई इंस्टेंस एक साथ उपयोग नहीं किए जा सकते। क्रियाएँ पैनल खोलें और प्रति प्रकार केवल एक इंस्टेंस चुनें।"
+    },
+    "attachments": {
+      "uploadFailed": "अपलोड विफल",
+      "uploadFailedNamed": "{{name}} अपलोड नहीं हो सका: {{error}}",
+      "unsupportedType": "असमर्थित फ़ाइल प्रकार: {{names}}. समर्थित प्रकार: {{types}}.",
+      "fileTooLarge": "फ़ाइल बहुत बड़ी है: {{names}}. अधिकतम आकार प्रति फ़ाइल {{maxMb}} MB है।",
+      "tooManyFiles": "प्रति संदेश अधिकतम {{max}} अटैचमेंट।",
+      "pasteTruncated": "\n\n[सामग्री छोटी कर दी गई — चिपकाया गया टेक्स्ट अधिकतम अटैचमेंट आकार से बड़ा था।]",
+      "uploading": "अपलोड हो रहा है…",
+      "retry": "अपलोड पुनः करें",
+      "pastedText": "चिपकाया गया टेक्स्ट",
+      "uploadingNamed": "चिपकाया गया टेक्स्ट अपलोड हो रहा है",
+      "removePastedText": "चिपकाया गया टेक्स्ट हटाएँ",
+      "showInTextField": "टेक्स्ट फ़ील्ड में दिखाएँ",
+      "previewLoadFailed": "सामग्री लोड नहीं हो सकी",
+      "copyText": "कॉपी करें",
+      "closePreview": "बंद करें",
+      "loadingPreview": "लोड हो रहा है…",
+      "pasteMeta_one": "{{chars}} अक्षर · {{count}} पंक्ति",
+      "pasteMeta_other": "{{chars}} अक्षर · {{count}} पंक्तियाँ"
+    },
+    "voiceSttNotConfigured": "वॉइस इनपुट सक्षम करने के लिए एआई मॉडल सेटिंग्स में स्पीच-टू-टेक्स्ट (STT) मॉडल कॉन्फ़िगर करें।",
+    "voiceSttLoading": "वाक् क्षमताओं की जाँच की जा रही है…",
+    "expandComposer": "कंपोज़र विस्तृत करें",
+    "stopGenerating": "जनरेट करना रोकें",
+    "backToChat": "चैट पर वापस जाएँ",
+    "searchToggle": {
+      "ariaLabel": "खोज दृश्य पर स्विच करें"
+    },
+    "plusMenu": {
+      "ariaLabelFiltersApplied": "फ़ाइलें और क्षमताएँ संलग्न करें। खोज फ़िल्टर लागू हैं",
+      "ariaLabel": "फ़ाइलें और क्षमताएँ संलग्न करें",
+      "title": "फ़ाइलें और क्षमताएँ जोड़ें"
+    },
+    "stopListening": "सुनना बंद करें",
+    "voiceInput": "वॉइस इनपुट",
+    "regenerateResponse": "उत्तर पुनः जनरेट करें",
+    "editQuery": "क्वेरी संपादित करें",
+    "queryOptions": "क्वेरी विकल्प",
+    "models": "मॉडल",
+    "manage": "प्रबंधित करें",
+    "configuredModels": "कॉन्फ़िगर किए गए मॉडल",
+    "reasoningEffort": {
+      "label": "रीज़निंग प्रयास",
+      "overrideHint": "डिफ़ॉल्ट उपयोग करने के लिए फिर से क्लिक करें।",
+      "defaultHintWithLevel": "सेट न होने पर डिफ़ॉल्ट {{level}} रहता है।",
+      "low": "कम",
+      "medium": "मध्यम",
+      "high": "अधिक",
+      "max": "अधिकतम"
+    },
+    "universalAgent": {
+      "toolsLoadError": "उपलब्ध क्रियाएँ लोड नहीं हो सकीं।",
+      "mcpLoadError": "MCP सर्वर लोड नहीं हो सके।",
+      "noReasoningModel": "रीज़निंग में सक्षम कोई मॉडल कॉन्फ़िगर नहीं है। एजेंट मोड उपयोग करने से पहले सेटिंग्स → एआई मॉडल में एक कॉन्फ़िगर करें।",
+      "loadingTools": "क्रियाएँ लोड हो रही हैं…",
+      "noActions": "कोई प्रमाणित क्रिया नहीं मिली। वर्कस्पेस → क्रियाएँ में इंटीग्रेशन कनेक्ट करें।",
+      "loadingMcp": "MCP सर्वर लोड हो रहे हैं…",
+      "noMcpServers": "कोई प्रमाणित MCP सर्वर नहीं मिला। वर्कस्पेस → MCP सर्वर में एक कनेक्ट करें।",
+      "toolCount_one": "{{count}} टूल",
+      "toolCount_other": "{{count}} टूल"
+    },
+    "agentCapabilities": {
+      "notConfiguredOnAgent": "इस एजेंट पर कॉन्फ़िगर नहीं है",
+      "internalSearch": "आंतरिक खोज",
+      "webSearch": "वेब खोज"
+    },
+    "resizePanels": "चैट और पूर्वावलोकन पैनल का आकार बदलें",
+    "mobileProfileComingSoon": "मोबाइल पर प्रोफ़ाइल पेज जल्द ही आ रहा है।"
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",
@@ -979,6 +1136,8 @@
         "maxAdminsReachedTitle": "एक और एडमिन नहीं जोड़ सकते",
         "maxAdminsReached": "एक संगठन में अधिकतम 5 एडमिन हो सकते हैं।",
         "removeFromWorkspace": "कार्यक्षेत्र से हटाएं",
+        "demoteAdminBeforeRemoveTitle": "व्यवस्थापक को हटाया नहीं जा सकता",
+        "demoteAdminBeforeRemove": "व्यवस्थापक को सदस्य बनाएँ, फिर उन्हें हटाएँ।",
         "removeUserTitle": "उपयोगकर्ता हटाएं?",
         "removeUserMessage": "क्या आप वाकई {{email}} को {{workspace}} कार्यक्षेत्र से हटाना चाहते हैं?",
         "removeButton": "हटाएं",
@@ -1007,7 +1166,10 @@
         "unblockSuccess": "उपयोगकर्ता सफलतापूर्वक अनब्लॉक किया गया",
         "unblockError": "उपयोगकर्ता को अनब्लॉक करने में विफल",
         "unblocking": "अनब्लॉक हो रहा है…",
-        "edit": "संपादित करें"
+        "edit": "संपादित करें",
+        "resendInviteSuccess": "आमंत्रण पुनः भेजा गया",
+        "resendInviteSuccessDescription": "{{email}} को आमंत्रण पुनः भेज दिया गया है",
+        "resendInviteError": "आमंत्रण पुनः नहीं भेजा जा सका"
       },
       "profile": {
         "title": "प्रोफ़ाइल",
@@ -1040,12 +1202,9 @@
         "roleLabel": "भूमिका",
         "rolePlaceholder": "भूमिका चुनें",
         "roleAdmin": "प्रशासक",
-        "roleAdminDescription": "वर्कस्पेस के सभी पहलुओं को प्रबंधित कर सकते हैं",
         "roleMember": "सदस्य",
-        "roleMemberDescription": "वर्कस्पेस देख और उपयोग कर सकते हैं",
         "groupLabel": "समूह (वैकल्पिक)",
         "groupPlaceholder": "समूह चुनें",
-        "groupSearchPlaceholder": "समूह खोजें...",
         "import": "आयात करें",
         "importFormatTitle": "CSV या Excel — कोई भी लेआउट काम करता है",
         "importHintHeader": "हेडर पंक्ति वैकल्पिक — अतिरिक्त कॉलम अनदेखे किए जाते हैं",
@@ -1065,8 +1224,35 @@
         "importSkippedDescription": "अमान्य प्रविष्टियाँ चिह्नित हैं — भेजने से पहले हटाएँ।",
         "importFailed": "आयात विफल",
         "importFailedDescription": "फ़ाइल पढ़ी नहीं जा सकी। मान्य CSV या Excel फ़ाइल अपलोड करें।",
-        "adminGroupWarning": "यहाँ आमंत्रित सभी लोग पूर्ण संगठन एडमिन बन जाएंगे — फ़ाइल से आयात किया गया हर पता भी। एडमिन उपयोगकर्ता, समूह और संगठन सेटिंग्स प्रबंधित कर सकते हैं।"
-      }
+        "adminGroupWarning": "यहाँ आमंत्रित सभी लोग पूर्ण संगठन एडमिन बन जाएंगे — फ़ाइल से आयात किया गया हर पता भी। एडमिन उपयोगकर्ता, समूह और संगठन सेटिंग्स प्रबंधित कर सकते हैं।",
+        "editSuccessTitle": "आमंत्रण अपडेट किया गया",
+        "editSuccessDescription": "{{email}} का आमंत्रण अपडेट कर दिया गया है",
+        "editError": "आमंत्रण अपडेट नहीं हो सका",
+        "editTitle": "आमंत्रण संपादित करें",
+        "update": "आमंत्रण अपडेट करें",
+        "smtpNotConfiguredTooltip": "SMTP कॉन्फ़िगर नहीं है। आमंत्रण भेजने से पहले ईमेल सेटिंग्स सेट करें।"
+      },
+      "bulk": {
+        "resendInvite": "आमंत्रण पुनः भेजें",
+        "adminInviteCantBeCancelled": "व्यवस्थापक आमंत्रण रद्द नहीं किए जा सकते",
+        "cancelInvite": "आमंत्रण रद्द करें",
+        "adminCantBeRemoved": "व्यवस्थापक उपयोगकर्ता हटाए नहीं जा सकते",
+        "removeFromWorkspace": "वर्कस्पेस से हटाएँ",
+        "removeSuccess_one": "{{count}} उपयोगकर्ता वर्कस्पेस से हटाया गया",
+        "removeSuccess_other": "{{count}} उपयोगकर्ता वर्कस्पेस से हटाए गए",
+        "removePartialError_one": "{{count}} उपयोगकर्ता हटाया नहीं जा सका",
+        "removePartialError_other": "{{count}} उपयोगकर्ता हटाए नहीं जा सके",
+        "resendSuccess_one": "{{count}} उपयोगकर्ता को आमंत्रण पुनः भेजा गया",
+        "resendSuccess_other": "{{count}} उपयोगकर्ताओं को आमंत्रण पुनः भेजा गया",
+        "resendPartialError_one": "{{count}} उपयोगकर्ता को आमंत्रण पुनः नहीं भेजा जा सका",
+        "resendPartialError_other": "{{count}} उपयोगकर्ताओं को आमंत्रण पुनः नहीं भेजा जा सका",
+        "cancelSuccess_one": "{{count}} आमंत्रण रद्द किया गया",
+        "cancelSuccess_other": "{{count}} आमंत्रण रद्द किए गए",
+        "cancelPartialError_one": "{{count}} आमंत्रण रद्द नहीं किया जा सका",
+        "cancelPartialError_other": "{{count}} आमंत्रण रद्द नहीं किए जा सके"
+      },
+      "inviteDisabledSmtp": "SMTP कॉन्फ़िगर नहीं है। उपयोगकर्ताओं को आमंत्रित करने से पहले ईमेल सेटिंग्स सेट करें।",
+      "bulkLabel": "उपयोगकर्ता"
     },
     "groups": {
       "title": "समूह",
@@ -1091,6 +1277,8 @@
         "viewGroup": "समूह देखें",
         "delete": "हटाएँ",
         "deleteError": "समूह हटाने में विफल",
+        "managePermissions": "अनुमतियाँ प्रबंधित करें",
+        "deleteSystemTooltip": "केवल कस्टम समूह हटाए जा सकते हैं",
         "deleteSuccess": "समूह हटाया गया"
       },
       "create": {
@@ -1111,6 +1299,7 @@
       },
       "detail": {
         "accessComingSoon": "पहुंच अनुमतियां जल्द आ रही हैं",
+        "searchUsers": "उपयोगकर्ता खोजें...",
         "accessPermissions": "पहुंच अनुमतियां",
         "createdBy": "द्वारा बनाया गया",
         "descriptionLabel": "समूह विवरण",
@@ -1126,6 +1315,7 @@
         "deleteButton": "समूह हटाएं",
         "deleteDescription": "इस समूह को कार्यक्षेत्र से स्थायी रूप से हटाएं",
         "deleteError": "समूह हटाने में विफल",
+        "nameRequired": "समूह का नाम आवश्यक है",
         "deleteSuccess": "समूह हटाया गया",
         "deleteSuccessDescription": "\"{{name}}\" हटा दिया गया है",
         "deleteTitle": "'{{name}}' समूह हटाएं",
@@ -1138,6 +1328,18 @@
         "saveSuccess": "समूह अपडेट किया गया!",
         "saveSuccessDescription": "'{{name}}' में परिवर्तन सफलतापूर्वक सहेजे गए",
         "undo": "पूर्ववत करें"
+      },
+      "permissions": {
+        "title": "पहुँच अनुमतियाँ",
+        "titleWithName": "{{name}} — पहुँच अनुमतियाँ",
+        "subtitle": "नियंत्रित करें कि इस समूह के सदस्य क्या कर सकते हैं।",
+        "save": "परिवर्तन सहेजें",
+        "saving": "सहेजा जा रहा है...",
+        "discard": "छोड़ें",
+        "saveSuccess": "अनुमतियाँ सहेजी गईं",
+        "saveError": "अनुमतियाँ सहेजी नहीं जा सकीं",
+        "loadError": "अनुमतियाँ लोड नहीं हो सकीं",
+        "empty": "अभी तक कोई अनुमति परिभाषित नहीं है।"
       }
     },
     "teams": {
@@ -1171,6 +1373,8 @@
         "descriptionLabel": "टीम विवरण",
         "descriptionPlaceholder": "इस टीम का उद्देश्य वर्णन करें",
         "errorGeneric": "टीम बनाने में विफल",
+        "applyToAll": "सभी पर लागू करें",
+        "memberRoles": "सदस्य भूमिकाएँ",
         "nameLabel": "टीम का नाम",
         "namePlaceholder": "उदा. प्रोडक्ट इंजीनियरिंग",
         "roleLabel": "भूमिका",
@@ -1181,6 +1385,7 @@
       },
       "detail": {
         "accessComingSoon": "पहुंच अनुमतियां जल्द आ रही हैं",
+        "searchMembers": "सदस्य खोजें...",
         "accessPermissions": "पहुंच अनुमतियां",
         "createdBy": "द्वारा बनाया गया",
         "descriptionLabel": "टीम विवरण",
@@ -1197,6 +1402,9 @@
         "deleteButton": "टीम हटाएं",
         "deleteDescription": "इस टीम को कार्यक्षेत्र से स्थायी रूप से हटाएं",
         "deleteError": "टीम हटाने में विफल",
+        "saveErrorDescription": "टीम अपडेट नहीं हो सकी। कृपया पुनः प्रयास करें।",
+        "applyToAll": "सभी पर लागू करें",
+        "newMemberRoles": "नई सदस्य भूमिकाएँ",
         "deleteSuccess": "टीम हटाई गई",
         "deleteSuccessDescription": "\"{{name}}\" हटा दिया गया है",
         "deleteTitle": "'{{name}}' टीम हटाएं",
@@ -1519,6 +1727,7 @@
         "prompts": "प्रॉम्प्ट",
         "developerSettings": "डेवलपर सेटिंग्स",
         "oauth2": "OAuth 2.0 Apps",
+        "personalAccessTokens": "व्यक्तिगत एक्सेस टोकन",
         "profile": "प्रोफ़ाइल",
         "yourConnectors": "आपके व्यक्तिगत कनेक्टर्स",
         "yourActions": "आपकी कार्रवाइयाँ",
@@ -1531,7 +1740,8 @@
         "webSearch": "वेब खोज",
         "tenants": "किरायेदार",
         "superOrgs": "संगठन",
-        "oauthApps": "OAuth Apps"
+        "oauthApps": "OAuth Apps",
+        "serviceAccounts": "सेवा खाते"
       }
     },
     "actions": {
@@ -1555,8 +1765,10 @@
         "setup": "सेटअप",
         "configure": "कॉन्फ़िगर करें",
         "authenticate": "प्रमाणित करें",
+        "manage": "प्रबंधित करें",
         "unavailable": "उपलब्ध नहीं",
-        "notConfigured": "कॉन्फ़िगर नहीं"
+        "notConfigured": "कॉन्फ़िगर नहीं",
+        "adminSetupRequired": "व्यवस्थापक द्वारा सेटअप आवश्यक"
       },
       "trailingYourActions": "आपकी कार्रवाइयाँ",
       "loading": "कार्रवाइयाँ लोड हो रही हैं…",
@@ -1658,7 +1870,11 @@
         "saveSuccess": "परिवर्तन सहेजे गए।",
         "saveDeauthNotice": "सहेजा गया। {{count}} उपयोगकर्ता साइन आउट हो गए और उन्हें फिर से प्रमाणित करना होगा।",
         "missingInstance": "इस कार्रवाई में इंस्टेंस id गायब है। पृष्ठ ताज़ा करके देखें।",
-        "copyFailed": "क्लिपबोर्ड पर कॉपी नहीं हो सका।"
+        "copyFailed": "क्लिपबोर्ड पर कॉपी नहीं हो सका।",
+        "loadingOauthApps": "OAuth ऐप्स लोड हो रहे हैं…",
+        "noOauthApps": "कोई OAuth ऐप कॉन्फ़िगर नहीं है",
+        "personalActionsHint": "उपयोगकर्ता क्रेडेंशियल मेरी क्रियाएँ में प्रबंधित किए जाते हैं।",
+        "openPersonalActionsCta": "मेरी क्रियाएँ खोलें"
       },
       "errors": {
         "instanceNameRequired": "इंस्टेंस नाम दर्ज करें।"
@@ -1666,8 +1882,15 @@
       "validation": {
         "fieldRequired": "{{field}} आवश्यक है",
         "fieldMustBeTrue": "{{field}} सही होना चाहिए",
-        "fixErrorsAbove": "जारी रखने के लिए ऊपर हाइलाइट किए गए फ़ील्ड ठीक करें।"
-      }
+        "fixErrorsAbove": "जारी रखने के लिए ऊपर हाइलाइट किए गए फ़ील्ड ठीक करें।",
+        "minLength": "{{field}} में कम से कम {{minLength}} अक्षर होने चाहिए",
+        "maxLength": "{{field}} में {{maxLength}} से अधिक अक्षर नहीं हो सकते",
+        "email": "{{field}} एक मान्य ईमेल पता होना चाहिए",
+        "url": "{{field}} एक मान्य URL होना चाहिए",
+        "urlProtocol": "{{field}} में http या https का उपयोग होना चाहिए"
+      },
+      "adminRequiredToast": "केवल व्यवस्थापक नई क्रियाएँ जोड़ सकते हैं। अपने व्यवस्थापक से पहले यह क्रिया कॉन्फ़िगर करने को कहें।",
+      "personalNonAdminHint": "\"कॉन्फ़िगर नहीं\" चिह्नित क्रियाओं को उपयोग करने से पहले व्यवस्थापक द्वारा सेट किया जाना आवश्यक है।"
     },
     "rightPanel": {
       "primaryDisabledHint": "जारी रखने के लिए ऊपर स्क्रॉल करें और आवश्यक फ़ील्ड (* चिह्न वाले) पूरे करें।",
@@ -1684,7 +1907,11 @@
       "restoreError": "चैट पुनर्स्थापित नहीं हो सकी",
       "deleteSuccess": "सफलतापूर्वक हटाया गया",
       "deleteSuccessDescription": "आपकी चैट स्थायी रूप से हटा दी गई",
-      "deleteError": "चैट हटाने में विफल"
+      "deleteError": "चैट हटाने में विफल",
+      "assistantChat": "असिस्टेंट चैट",
+      "agents": "एजेंट",
+      "showMore": "और दिखाएँ",
+      "moreAgents": "और एजेंट"
     },
     "general": {
       "subtitle": "Your company general information",
@@ -1781,6 +2008,14 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue Editing"
+      },
+      "featureFlags": {
+        "title": "फ़ीचर फ़्लैग",
+        "subtitle": "इस वर्कस्पेस के हर एजेंट के लिए प्रयोगात्मक क्षमताएँ चालू या बंद करें।"
+      },
+      "vectorStore": {
+        "title": "वेक्टर स्टोर",
+        "subtitle": "सभी एम्बेडिंग हटाएँ या संग्रहीत सामग्री से हर रिकॉर्ड की एम्बेडिंग दोबारा बनाएँ।"
       }
     },
     "authentication": {
@@ -1831,6 +2066,10 @@
         "body": "आपने <bold>पासवर्ड</bold> और <bold>वन-टाइम पासवर्ड</bold> अक्षम कर दिया है। उपयोगकर्ता केवल इनका उपयोग करके साइन इन कर सकेंगे:",
         "warningSingle": "सहेजने से पहले सुनिश्चित करें कि {{method}} पूरी तरह से कॉन्फ़िगर और कार्यशील है। यदि गलत कॉन्फ़िगरेशन के कारण SSO विफल हो जाता है, तो उपयोगकर्ता लॉक हो सकते हैं।",
         "warningMultiple": "सहेजने से पहले सुनिश्चित करें कि सभी चयनित विधियाँ पूरी तरह से कॉन्फ़िगर और कार्यशील हैं। यदि गलत कॉन्फ़िगरेशन के कारण SSO विफल हो जाता है, तो उपयोगकर्ता लॉक हो सकते हैं।"
+      },
+      "userMethods": {
+        "heading": "उपयोगकर्ता साइन-इन विधियाँ",
+        "subtitle": "नियंत्रित करता है कि हर संगठन में हर उपयोगकर्ता के लिए कौन-सी साइन-इन विधियाँ उपलब्ध हैं।"
       }
     },
     "connectors": {
@@ -1871,7 +2110,8 @@
       },
       "tabs": {
         "authenticate": "Authenticate Instance",
-        "configureRecords": "Configure Records"
+        "configureRecords": "Configure Records",
+        "authorize": "अधिकृत करें"
       },
       "tooltips": {
         "authFirst": "Complete authentication first to save configuration"
@@ -1934,7 +2174,8 @@
         "alreadyRemovingTitle": "पहले से हटाया जा रहा है",
         "alreadyRemovingDescription": "यह कनेक्टर पहले से हटाया जा रहा है।",
         "successTitle": "कनेक्टर हटाया गया",
-        "errorTitle": "कनेक्टर हटाने में विफल"
+        "errorTitle": "कनेक्टर हटाने में विफल",
+        "errorDescription": "कृपया पुनः प्रयास करें; यदि यह बार-बार हो, तो अपने वर्कस्पेस व्यवस्थापक से संपर्क करें।"
       },
       "selectRecords": {
         "title": "रिकॉर्ड चुनें",
@@ -2043,13 +2284,21 @@
         "syncSettings": "Sync Settings",
         "syncStrategySettingsHint": "आप <bold>{{manageConfig}}</bold> पर जाकर सिंक रणनीति बदल सकते हैं।",
         "syncInterval": "Sync Interval",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "removeInstance": "कनेक्टर इंस्टेंस हटाएँ",
+        "removeInstanceDescription": "इस कनेक्टर इंस्टेंस को स्थायी रूप से हटाएँ और इसके डेटा का सिंक रोकें। यह पूर्ववत नहीं किया जा सकता।"
       },
       "instanceCard": {
         "recordsSelected": "चयनित रिकॉर्ड",
         "syncStrategy": "सिंक रणनीति",
         "authBannerTitle": "Authenticate Personal Account",
-        "authBannerDescription": "Connect your account to enable access and workspace configuration"
+        "authBannerDescription": "Connect your account to enable access and workspace configuration",
+        "lastSynced": "अंतिम सिंक",
+        "syncEnabled": "सिंक सक्षम",
+        "removing": "यह कनेक्टर हटाया जा रहा है।",
+        "configureFirst": "सिंक सक्षम करने से पहले कॉन्फ़िगरेशन पूरा करें।",
+        "authenticateFirst": "सिंक सक्षम करने से पहले इस कनेक्टर को प्रमाणित करें।",
+        "selected": "{{field}} चयनित"
       },
       "instanceStatus": {
         "setup": {
@@ -2099,6 +2348,109 @@
         "syncing": "Syncing Records...",
         "synced": "Records Synced",
         "failed": "Sync Failed"
+      },
+      "errors": {
+        "missingCreatedId": "निर्माण सफल रहा, लेकिन कोई कनेक्टर आईडी नहीं मिली",
+        "createdConfigUnavailable": "कनेक्टर बन गया, लेकिन उसका कॉन्फ़िगरेशन लोड नहीं हो सका। पैनल दोबारा खोलकर देखें।",
+        "authenticateFirst": "कोई कनेक्टर आईडी नहीं मिली। कृपया पहले प्रमाणीकरण पूरा करें।"
+      },
+      "syncIntervals": {
+        "5": "हर 5 मिनट",
+        "15": "हर 15 मिनट",
+        "30": "हर 30 मिनट",
+        "60": "हर 1 घंटे",
+        "240": "हर 4 घंटे",
+        "480": "हर 8 घंटे",
+        "720": "हर 12 घंटे",
+        "1440": "हर 1 दिन",
+        "10080": "हर 1 सप्ताह",
+        "other": "हर {{minutes}} मिनट"
+      },
+      "filters": {
+        "selectField": "{{field}} चुनें",
+        "addFieldValue": "{{field}} जोड़ें…",
+        "authenticateForOptions": "इस फ़िल्टर के विकल्प लोड करने के लिए प्रमाणीकरण पूरा करें और कनेक्टर सहेजें।",
+        "manualIndexingInfo": "मैन्युअल इंडेक्सिंग के बारे में",
+        "manualIndexingTooltip": "बंद (डिफ़ॉल्ट): नीचे दिए गए इंडेक्सिंग फ़िल्टर के आधार पर रिकॉर्ड अपने आप इंडेक्स होते हैं।\n\nचालू: कोई रिकॉर्ड अपने आप इंडेक्स नहीं होता। आप ज्ञान आधार से मैन्युअल रूप से चुनते हैं कि कौन-से रिकॉर्ड इंडेक्स करने हैं।",
+        "title": "इंडेक्सिंग और सिंक फ़िल्टर",
+        "description": "इंडेक्सिंग फ़िल्टर हमेशा लागू होते हैं — आवश्यकतानुसार बूलियन बदलें या मान समायोजित करें। सिंक फ़िल्टर में केवल वही जोड़ें जिनकी आपको ज़रूरत है; सूची और दिनांक फ़िल्टर एक ऑपरेटर और मान का उपयोग करते हैं, और जब आप वह प्रतिबंध नहीं चाहते तो सिंक फ़िल्टर हटा सकते हैं।",
+        "syncTitle": "सिंक फ़िल्टर",
+        "indexingTitle": "इंडेक्सिंग फ़िल्टर",
+        "add": "फ़िल्टर जोड़ें",
+        "incomplete": "यहाँ सारांश देखने के लिए नीचे हर फ़िल्टर का ऑपरेटर और मान पूरा करें।",
+        "empty": "अभी कोई फ़िल्टर नहीं है। समर्थित फ़िल्टरों में से एक चुनने के लिए \"फ़िल्टर जोड़ें\" का उपयोग करें।",
+        "operator": "ऑपरेटर",
+        "chooseOperator": "ऑपरेटर चुनें…",
+        "value": "मान",
+        "rollingWindow": "यह ऑपरेटर एक चलती अवधि का उपयोग करता है — कोई निश्चित दिनांक सेट नहीं करनी।",
+        "dateRange": "दिनांक सीमा",
+        "operators": {
+          "is": "है",
+          "is_not": "नहीं है",
+          "is_empty": "खाली है",
+          "is_not_empty": "खाली नहीं है",
+          "contains": "शामिल है",
+          "does_not_contain": "शामिल नहीं है",
+          "is_after": "इसके बाद है",
+          "is_before": "इससे पहले है",
+          "is_between": "इनके बीच है",
+          "in": "इसमें",
+          "not_in": "इसमें नहीं",
+          "greater_than_or_equal": "इससे बड़ा या बराबर",
+          "greater_than": "इससे बड़ा",
+          "equal": "बराबर",
+          "less_than": "इससे छोटा",
+          "less_than_or_equal": "इससे छोटा या बराबर",
+          "last_7_days": "पिछले 7 दिन",
+          "last_14_days": "पिछले 14 दिन",
+          "last_30_days": "पिछले 30 दिन",
+          "last_90_days": "पिछले 90 दिन",
+          "last_180_days": "पिछले 180 दिन",
+          "last_365_days": "पिछले 365 दिन"
+        },
+        "fieldValues": "{{field}} के मान",
+        "loadingOptions": "विकल्प लोड हो रहे हैं…",
+        "noResults": "कोई परिणाम नहीं मिला",
+        "optionsLoadFailed": "हम इस फ़िल्टर के विकल्प लोड नहीं कर सके। यह सूची बंद करके दोबारा खोलें और फिर से कोशिश करें।",
+        "loadingMore": "और लोड हो रहा है…"
+      },
+      "syncStrategies": {
+        "SCHEDULED": "निर्धारित",
+        "MANUAL": "मैन्युअल",
+        "WEBHOOK": "वेबहुक",
+        "REALTIME": "रीयल-टाइम"
+      },
+      "syncIntervalOptions": {
+        "5": "5 मिनट",
+        "15": "15 मिनट",
+        "30": "30 मिनट",
+        "60": "1 घंटा",
+        "240": "4 घंटे",
+        "480": "8 घंटे",
+        "720": "12 घंटे",
+        "1440": "1 दिन",
+        "10080": "1 सप्ताह"
+      },
+      "vectorStore": {
+        "cleanup": {
+          "label": "एम्बेडिंग साफ़ करें",
+          "rowDescription": "सभी एम्बेडिंग हटाकर वेक्टर संग्रह को खाली बनाता है। रिकॉर्ड नहीं हटाए जाते।",
+          "buttonLabel": "साफ़ करें",
+          "title": "सभी एम्बेडिंग हटाएँ?",
+          "body": "यह साझा वेक्टर संग्रह को हटाकर खाली बनाता है।",
+          "warning": "खोज सभी के लिए परिणाम देना बंद कर देगी और पुनः इंडेक्सिंग पूरी होने तक ऐसी ही रहेगी। बड़े परिनियोजन में पुनः इंडेक्सिंग में घंटों लग सकते हैं। आपके रिकॉर्ड नहीं हटाए जाते — केवल उनकी एम्बेडिंग।",
+          "confirm": "एम्बेडिंग हटाएँ"
+        },
+        "reindex": {
+          "label": "एम्बेडिंग पुनः इंडेक्स करें",
+          "rowDescription": "संग्रहीत सामग्री से हर रिकॉर्ड की एम्बेडिंग दोबारा बनाता है। स्रोत दोबारा डाउनलोड या पार्स नहीं किए जाते।",
+          "buttonLabel": "पुनः इंडेक्स करें",
+          "title": "सभी रिकॉर्ड पुनः इंडेक्स करें?",
+          "body": "यह हर रिकॉर्ड की एम्बेडिंग उसकी संग्रहीत सामग्री से दोबारा बनाता है। स्रोत दोबारा डाउनलोड या पार्स नहीं किए जाते।",
+          "warning": "बड़े परिनियोजन में इसमें लंबा समय लग सकता है और यह पृष्ठभूमि में चलता है।",
+          "confirm": "पुनः इंडेक्सिंग शुरू करें"
+        },
+        "typePrompt": "पुष्टि के लिए {{token}} टाइप करें।"
       }
     },
     "mcpServers": {
@@ -2156,7 +2508,8 @@
         "authBannerTitle": "प्रमाणीकरण आवश्यक",
         "authBannerDescription": "इस MCP सर्वर को प्रमाणित करें ताकि आपकी टीम के एजेंट इसका उपयोग कर सकें।",
         "authBannerAuthenticatedTitle": "कनेक्टेड",
-        "authBannerAuthenticatedDescription": "आप इस MCP सर्वर को फिर से प्रमाणित या डिस्कनेक्ट कर सकते हैं।"
+        "authBannerAuthenticatedDescription": "आप इस MCP सर्वर को फिर से प्रमाणित या डिस्कनेक्ट कर सकते हैं।",
+        "createdBy": "किसने बनाया"
       },
       "deleteDialog": {
         "title": "MCP सर्वर हटाएं?",
@@ -2244,7 +2597,8 @@
         "noCode": "कोई प्रमाणीकरण कोड नहीं मिला।",
         "noState": "कोई state पैरामीटर नहीं मिला।",
         "backendRejected": "सर्वर ने प्रमाणीकरण अनुरोध को अस्वीकार कर दिया।"
-      }
+      },
+      "deleteDisabledTooltip": "यह सर्वर हटाया नहीं जा सकता"
     },
     "bots": {
       "subtitle": "Configure bot credentials and optionally map each bot to an agent",
@@ -2325,7 +2679,12 @@
         "typeNameToConfirm": "पुष्टि करने के लिए \"{{name}}\" टाइप करें",
         "deleteBotBodyLine1": "क्या आप वाकई {{name}} को हटाना चाहते हैं? यह क्रिया पूर्ववत नहीं की जा सकती।",
         "deleteBotBodyLine2": "इस बॉट से जुड़ी सभी कॉन्फ़िगरेशन और क्रेडेंशियल स्थायी रूप से हटा दिए जाएंगे।"
-      }
+      },
+      "errors": {
+        "loadConfigs": "बॉट कॉन्फ़िगरेशन लोड नहीं हो सके",
+        "loadData": "डेटा लोड नहीं हो सका"
+      },
+      "refreshed": "ताज़ा किया गया"
     },
     "mail": {
       "subtitle": "Email server configuration for OTP and notifications",
@@ -2414,7 +2773,15 @@
       "systemPrompt": "System Prompt",
       "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
       "configCalloutTitle": "Prompt Configuration",
-      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
+      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs.",
+      "resetToDefault": "डिफ़ॉल्ट पर रीसेट करें",
+      "customInstructionsTitle": "कस्टम निर्देश",
+      "customInstructionsDescription": "चैट असिस्टेंट के लिए कस्टम निर्देश जोड़ें — जैसे किसी विशेष भाषा में उत्तर देना, कोई फ़ॉर्मेटिंग शैली अपनाना, या कोई भी व्यवहार लागू करना। नीचे दिए गए हर मोड के अपने निर्देश हैं, क्योंकि वे अलग-अलग तरीके से उत्तर देते हैं।",
+      "scopeHint": "ये निर्देश केवल <bold>चैट असिस्टेंट</bold> (नीचे एजेंट मोड) पर लागू होते हैं। <bold>Agent Builder</bold> में बनाए गए कस्टम एजेंट प्रभावित नहीं होते — हर एजेंट अपना सिस्टम प्रॉम्प्ट और एजेंट पर कॉन्फ़िगर किए गए निर्देश उपयोग करता है।",
+      "agentTitle": "एजेंट",
+      "agentDescription": "तब लागू होता है जब कोई उपयोगकर्ता एजेंट मोड में चैट करता है — असिस्टेंट हर प्रश्न पर तय करता है कि आंतरिक ज्ञान, वेब खोज या दोनों का उपयोग करना है।",
+      "agentPlaceholder": "जैसे कंपनी-विशिष्ट प्रश्नों के लिए आंतरिक ज्ञान को प्राथमिकता दें। विवरण देने से पहले हमेशा सारांश दें।",
+      "agentHelperText": "यह प्रॉम्प्ट एआई का मार्गदर्शन करता है जब वह आंतरिक ज्ञान और वेब खोज के बीच स्वतंत्र रूप से चुन सकता है। बदलाव नई बातचीत पर तुरंत लागू होते हैं।"
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -2554,7 +2921,32 @@
       "discardTitle": "Discard changes?",
       "discardMessage": "If you discard, your edits won't be saved",
       "discardConfirm": "Discard",
-      "discardCancel": "Continue Editing"
+      "discardCancel": "Continue Editing",
+      "deleteError": "चैट हटाई नहीं जा सकी",
+      "assistantChat": "असिस्टेंट चैट",
+      "agents": "एजेंट",
+      "seeMore": "और देखें",
+      "showMore": "और दिखाएँ",
+      "moreAgents": "और एजेंट",
+      "moreChats": "और चैट",
+      "authentication": {
+        "title": "प्रमाणीकरण",
+        "subtitle": "आपके खाते के लिए सक्षम साइन-इन विधियाँ। इन्हें आपका वर्कस्पेस व्यवस्थापक प्रबंधित करता है।",
+        "methodsLabel": "सक्षम साइन-इन विधियाँ",
+        "loading": "लोड हो रहा है…",
+        "none": "कोई साइन-इन विधि सक्षम नहीं है"
+      },
+      "demoData": {
+        "title": "डेमो डेटा",
+        "description": "Acme Corp एक काल्पनिक कंपनी है जिसे इसलिए लोड किया गया है ताकि आप PipesHub आज़मा सकें। इससे केवल वही बदलता है जो आप देखते हैं; कुछ भी हटाया नहीं जाता।",
+        "label": "मेरे उत्तरों, खोज और रिकॉर्ड में Acme Corp डेमो डेटा दिखाएँ",
+        "followingDefault": "डिफ़ॉल्ट का पालन: तब तक दिखता है जब तक आपके संगठन का अपना डेटा न हो, उसके बाद छिप जाता है।",
+        "yourChoice": "आपकी अपनी पसंद।",
+        "useDefault": "डिफ़ॉल्ट उपयोग करें",
+        "offForEveryone": "एक व्यवस्थापक ने इसे सभी के लिए बंद कर दिया है।",
+        "everyoneLabel": "डेमो सभी को उपलब्ध कराएँ",
+        "everyoneDescription": "इसे बंद करने पर डेमो सभी के उत्तरों, खोज और रिकॉर्ड से छिप जाता है, और नमूना खाते साइन इन नहीं कर पाते। कुछ भी हटाया नहीं जाता।"
+      }
     },
     "services": {
       "pageTitle": "सेवाएँ",
@@ -2802,7 +3194,307 @@
         "loadConnectors": "कनेक्टर OAuth ऐप्स लोड करने में विफल।",
         "loadToolsets": "एक्शन OAuth ऐप्स लोड करने में विफल।",
         "deleteGeneric": "OAuth ऐप हटाने में विफल।"
+      },
+      "card": {
+        "default": "डिफ़ॉल्ट",
+        "locked": "लॉक",
+        "edit": "संपादित करें",
+        "delete": "हटाएँ"
       }
+    },
+    "personalAccessTokens": {
+      "title": "व्यक्तिगत एक्सेस टोकन",
+      "subtitle": "अपनी स्क्रिप्ट और इंटीग्रेशन के लिए लंबी अवधि के टोकन बनाएँ, जैसे MCP सर्वर के लिए। यहाँ आपके टोकन केवल आपको दिखते हैं।",
+      "newToken": "नया टोकन",
+      "emptyTitle": "कोई व्यक्तिगत एक्सेस टोकन नहीं",
+      "emptyDescription": "PipesHub MCP सर्वर या अपनी स्क्रिप्ट कनेक्ट करने के लिए एक टोकन बनाएँ।",
+      "errorGeneric": "व्यक्तिगत एक्सेस टोकन लोड नहीं हो सके",
+      "retry": "फिर से कोशिश करें",
+      "columnName": "नाम",
+      "columnScopes": "स्कोप",
+      "columnCreated": "बनाया गया",
+      "columnExpires": "समाप्ति",
+      "columnLastUsed": "अंतिम उपयोग",
+      "neverUsed": "कभी नहीं",
+      "neverExpires": "कभी नहीं",
+      "revokeAria": "{{name}} रद्द करें",
+      "revoke": {
+        "confirmTitle": "टोकन रद्द करें?",
+        "confirmMessage": "क्या आप वाकई \"{{name}}\" रद्द करना चाहते हैं? इस टोकन का उपयोग करने वाली हर चीज़ तुरंत काम करना बंद कर देगी। यह क्रिया पूर्ववत नहीं की जा सकती।",
+        "confirmButton": "रद्द करें",
+        "confirmLoading": "रद्द किया जा रहा है...",
+        "successTitle": "टोकन रद्द किया गया",
+        "errorTitle": "टोकन रद्द नहीं हो सका"
+      },
+      "create": {
+        "panelTitle": "व्यक्तिगत एक्सेस टोकन बनाएँ",
+        "successPanelTitle": "टोकन बनाया गया",
+        "createButton": "टोकन बनाएँ",
+        "doneButton": "हो गया",
+        "cancel": "रद्द करें",
+        "nameLabel": "टोकन का नाम",
+        "namePlaceholder": "जैसे MCP सर्वर",
+        "errorNameRequired": "इस टोकन के लिए एक नाम दर्ज करें।",
+        "errorCreateTitle": "टोकन नहीं बनाया जा सका",
+        "expiryHeading": "समाप्ति",
+        "expiry30Days": "30 दिन",
+        "expiry90Days": "90 दिन",
+        "expiry365Days": "365 दिन",
+        "expiryNever": "कभी नहीं",
+        "permissionsHeading": "स्कोप",
+        "errorScopeRequired": "कम से कम एक स्कोप चुनें।",
+        "selectAllScopes": "सभी चुनें",
+        "clearAllScopes": "सभी साफ़ करें",
+        "scopesLoading": "स्कोप लोड हो रहे हैं...",
+        "scopesLoadError": "स्कोप लोड नहीं हो सके।",
+        "scopesRetry": "फिर से कोशिश करें",
+        "successScreenTitle": "टोकन बनाया गया",
+        "successScreenSubtitle": "अपना टोकन अभी कॉपी करें — आप इसे दोबारा नहीं देख पाएँगे।",
+        "tokenLabel": "एक्सेस टोकन",
+        "tokenShownOnceWarning": "यह टोकन केवल एक बार दिखाया जाता है। इसे कहीं सुरक्षित रखें।",
+        "showTokenAria": "टोकन दिखाएँ",
+        "hideTokenAria": "टोकन छिपाएँ",
+        "copyTokenAria": "टोकन कॉपी करें",
+        "pasteBlockLabel": "आपके MCP कॉन्फ़िग में चिपकाने के लिए तैयार",
+        "copyPasteBlockAria": "पेस्ट ब्लॉक कॉपी करें",
+        "copySuccessTitle": "कॉपी किया गया",
+        "copyErrorTitle": "कॉपी नहीं हो सका"
+      },
+      "scopeCount_one": "{{count}} स्कोप",
+      "scopeCount_other": "{{count}} स्कोप"
+    },
+    "common": {
+      "loadingUsers": "उपयोगकर्ता लोड हो रहे हैं...",
+      "noUsersAvailable": "कोई उपयोगकर्ता उपलब्ध नहीं",
+      "selected": "{{count}} चयनित"
+    },
+    "skills": {
+      "title": "Skills",
+      "subtitle": "अपने एजेंट के उपयोग के लिए कस्टम skills बनाएँ — markdown निर्देश, वैकल्पिक स्क्रिप्ट और संदर्भ फ़ाइलें, जो Agent Builder की बाकी हर चीज़ की तरह संस्करणबद्ध और नियंत्रित होती हैं।",
+      "loading": "Skills लोड हो रही हैं…",
+      "refreshed": "ताज़ा किया गया",
+      "createSkill": "Skill बनाएँ",
+      "importSkill": "आयात करें",
+      "reviewCandidates": "उम्मीदवारों की समीक्षा करें",
+      "searchPlaceholder": "Skills खोजें…",
+      "noResults": "आपकी खोज से कोई skill मेल नहीं खाती",
+      "emptyTitle": "अभी कोई Skills नहीं",
+      "emptyDescription": "अपनी पहली skill बनाएँ, या npm, URL या zip फ़ाइल से एक आयात करें",
+      "status": {
+        "active": "सक्रिय",
+        "deprecated": "अप्रचलित",
+        "candidate": "उम्मीदवार",
+        "disabled": "निष्क्रिय"
+      },
+      "availability": {
+        "label": "एजेंट के लिए उपलब्ध",
+        "description": "बंद होने पर यह skill आपकी लाइब्रेरी में रहती है, लेकिन एजेंट इसे खोज या लोड नहीं कर सकते।",
+        "descriptionBuiltin": "बंद होने पर यह अंतर्निहित skill लाइब्रेरी में रहती है, लेकिन पूरे संगठन के एजेंट इसे खोज या लोड नहीं कर सकते।"
+      },
+      "cta": {
+        "manage": "प्रबंधित करें",
+        "view": "देखें"
+      },
+      "errors": {
+        "loadSkills": "Skills लोड नहीं हो सकीं",
+        "loadData": "डेटा लोड नहीं हो सका"
+      },
+      "toasts": {
+        "loadError": "Skills लोड नहीं हो सकीं",
+        "updated": "Skill \"{{name}}\" अपडेट की गई",
+        "created": "Skill \"{{name}}\" बनाई गई",
+        "updateError": "Skill अपडेट नहीं हो सकी",
+        "createError": "Skill नहीं बनाई जा सकी",
+        "deprecated": "Skill \"{{name}}\" अप्रचलित की गई",
+        "deprecateError": "Skill अप्रचलित नहीं की जा सकी",
+        "disabled": "Skill \"{{name}}\" निष्क्रिय की गई",
+        "enabled": "Skill \"{{name}}\" सक्रिय की गई",
+        "toggleError": "Skill की उपलब्धता अपडेट नहीं हो सकी",
+        "deleted": "Skill \"{{name}}\" हटाई गई",
+        "deleteError": "Skill हटाई नहीं जा सकी",
+        "imported": "Skill \"{{name}}\" आयात की गई",
+        "importError": "Skill आयात नहीं की जा सकी",
+        "resourceAdded": "संसाधन जोड़ा गया",
+        "resourceError": "संसाधन अपडेट नहीं हो सका",
+        "rolledBack": "v{{version}} पर वापस लौटा",
+        "rollbackError": "वापस नहीं लौटा जा सका",
+        "candidateApproved": "\"{{name}}\" स्वीकृत",
+        "candidateRejected": "\"{{name}}\" अस्वीकृत",
+        "candidateActionError": "उम्मीदवार अपडेट नहीं हो सका",
+        "conflict": "यह skill कहीं और बदली गई थी",
+        "conflictDescription": "नवीनतम संस्करण फिर से लोड करें, फिर अपने बदलाव दोबारा लागू करें।",
+        "conflictReload": "पुनः लोड करें"
+      },
+      "builtinReadOnly": "यह एक अंतर्निहित skill है और इसे संपादित नहीं किया जा सकता।",
+      "editorPanel": {
+        "createTitle": "नई Skill",
+        "reviewTitle": "उम्मीदवार की समीक्षा और संपादन",
+        "requiredHint": "आवश्यक: {{fields}}",
+        "bodyHint": "वे निर्देश लिखें जिनका एजेंट इस skill का उपयोग करते समय पालन करेगा। markdown शीर्षक, सूचियाँ और कोड ब्लॉक उपयोग करें।"
+      },
+      "tabs": {
+        "content": "सामग्री",
+        "metadata": "मेटाडेटा",
+        "resources": "संसाधन",
+        "versions": "संस्करण"
+      },
+      "form": {
+        "name": "नाम",
+        "namePlaceholder": "जैसे pdf-table-extractor",
+        "bodyPlaceholder": "बताएँ कि यह skill कैसे निष्पादित करनी है…",
+        "description": "विवरण",
+        "descriptionPlaceholder": "यह skill क्या करती है और इसे कब उपयोग करना है (कैसे नहीं — वह मुख्य भाग में जाता है)",
+        "category": "श्रेणी",
+        "subcategory": "उपश्रेणी",
+        "tags": "टैग",
+        "tagsPlaceholder": "एक टैग जोड़ें…",
+        "related": "संबंधित skills",
+        "relatedPlaceholder": "किसी संबंधित skill का नाम जोड़ें…",
+        "requires": "आवश्यक",
+        "requiresPlaceholder": "किसी आवश्यक skill का नाम जोड़ें…",
+        "license": "लाइसेंस",
+        "compatibility": "संगतता",
+        "deprecateReason": "कारण",
+        "replacedBy": "इससे प्रतिस्थापित",
+        "noReplacement": "कोई प्रतिस्थापन नहीं",
+        "typeNameToConfirm": "पुष्टि के लिए \"{{name}}\" टाइप करें",
+        "replacedBy_withName": "{{name}} से प्रतिस्थापित"
+      },
+      "dangerZone": {
+        "title": "जोखिम क्षेत्र",
+        "deprecate": "अप्रचलित करें",
+        "delete": "हटाएँ",
+        "deprecateTitle": "\"{{name}}\" को अप्रचलित करें?",
+        "deleteTitle": "\"{{name}}\" हटाएँ?",
+        "deleteBody": "क्या आप वाकई यह skill हटाना चाहते हैं? यह क्रिया पूर्ववत नहीं की जा सकती।",
+        "cannotDeleteTitle": "यह skill हटाई नहीं जा सकती",
+        "requiredBy": "यह skill अन्य skills के लिए आवश्यक है: {{names}}. इसके बजाय इसे अप्रचलित करें ताकि निर्भर skills हल होती रहें।",
+        "usedByAgents": "यह skill इन्हें सौंपी गई है: {{names}}. हटाने पर यह उनसे हटा दी जाएगी।"
+      },
+      "resources": {
+        "empty": "अभी तक कोई बंडल किया गया संसाधन नहीं।",
+        "addNew": "संसाधन जोड़ें",
+        "path": "पथ",
+        "content": "सामग्री"
+      },
+      "versions": {
+        "empty": "अभी तक कोई संस्करण इतिहास नहीं।",
+        "current": "वर्तमान",
+        "updatedBy": "{{who}} द्वारा अपडेट किया गया",
+        "rollback": "वापस लौटें",
+        "rollbackTitle": "v{{version}} पर वापस लौटें?",
+        "rollbackBody": "यह v{{version}} की सामग्री के साथ एक नया संस्करण बनाता है। संस्करण इतिहास सुरक्षित रहता है।"
+      },
+      "import": {
+        "title": "एक Skill आयात करें",
+        "description": "किसी npm पैकेज, URL या अपलोड किए गए संग्रह से एक skill आयात करें।",
+        "tabNpm": "npm",
+        "tabUrl": "URL",
+        "tabUpload": "अपलोड",
+        "npmLabel": "npm इंस्टॉल कमांड या पैकेज का नाम",
+        "npmHint": "npm/npx/yarn/pnpm इंस्टॉल कमांड चिपकाएँ, या केवल पैकेज का नाम — इसे पार्स किया जाता है, कभी चलाया नहीं जाता।",
+        "urlLabel": "संग्रह का URL",
+        "uploadLabel": "Skill संग्रह (.zip, .tar.gz)",
+        "chooseFile": "फ़ाइल चुनें…",
+        "preview": "पूर्वावलोकन",
+        "previewError": "इस skill का पूर्वावलोकन नहीं हो सका",
+        "confirmImport": "Skill आयात करें",
+        "source": "स्रोत: {{source}}",
+        "nameHint": "छोटे अक्षरों में kebab-case। यदि मूल नाम पहले से किसी अंतर्निहित skill का है (उदाहरण के लिए pptx) तो इसे बदलें।",
+        "nameInvalid": "नाम में केवल छोटे अक्षर, अंक और एकल हाइफ़न हो सकते हैं।",
+        "originalName": "मूल नाम: {{name}}",
+        "resourceCount_one": "{{count}} संसाधन",
+        "resourceCount_other": "{{count}} संसाधन",
+        "skippedBinary_one": "{{count}} बाइनरी फ़ाइल छोड़ दी गई (अभी समर्थित नहीं)",
+        "skippedBinary_other": "{{count}} बाइनरी फ़ाइलें छोड़ दी गईं (अभी समर्थित नहीं)"
+      },
+      "candidates": {
+        "title": "लंबित Skill उम्मीदवार",
+        "subtitle": "आपके एजेंट ने काम करते समय जो skills प्रस्तावित कीं। समीक्षा करके स्वीकृत करें ताकि वे आपके कैटलॉग में जुड़ जाएँ, या अस्वीकार करें।",
+        "empty": "कोई लंबित उम्मीदवार नहीं",
+        "approve": "स्वीकृत करें",
+        "reject": "अस्वीकार करें",
+        "view": "देखें",
+        "hide": "छिपाएँ",
+        "editAndApprove": "संपादित करें और स्वीकृत करें"
+      }
+    },
+    "serviceAccounts": {
+      "title": "सेवा खाते",
+      "subtitle": "मशीन पहचान, ताकि ऑटोमेशन किसी की पहचान उधार लेने के बजाय अपनी अनुमतियों से पढ़े।",
+      "newAccount": "नया सेवा खाता",
+      "errorGeneric": "सेवा खाते लोड नहीं हो सके।",
+      "retry": "पुनः प्रयास करें",
+      "emptyTitle": "अभी तक कोई सेवा खाता नहीं",
+      "emptyDescription": "सेवा खाता वह तरीका है जिससे कोई स्क्रिप्ट किसी सहकर्मी के रूप में साइन इन किए बिना PipesHub से पढ़ती है। यह केवल वही देखता है जो आप इसे देते हैं, और लोगों के जाने पर भी काम करता रहता है।",
+      "columnName": "नाम",
+      "columnDescription": "यह किसलिए है",
+      "columnStatus": "स्थिति",
+      "statusActive": "सक्रिय",
+      "statusDisabled": "निष्क्रिय",
+      "manageTokens": "टोकन",
+      "enable": "सक्षम करें",
+      "disable": "अक्षम करें",
+      "delete": "हटाएँ",
+      "enabledTitle": "सेवा खाता सक्षम किया गया",
+      "disabledTitle": "सेवा खाता अक्षम किया गया",
+      "disabledBody": "इसके टोकन तुरंत काम करना बंद कर देते हैं, न कि केवल अगले साइन-इन पर।",
+      "updateErrorTitle": "सेवा खाता अपडेट नहीं हो सका",
+      "deleteTitle": "यह सेवा खाता हटाएँ?",
+      "deleteDescription": "{{name}} तुरंत काम करना बंद कर देगा, और उसके पास मौजूद हर टोकन रद्द हो जाएगा। उन टोकनों में से किसी का उपयोग करने वाली हर चीज़ विफल होने लगेगी।",
+      "deleteSuccessTitle": "सेवा खाता हटाया गया",
+      "deleteErrorTitle": "सेवा खाता हटाया नहीं जा सका",
+      "create": {
+        "title": "नया सेवा खाता",
+        "intro": "ऑटोमेशन किसी व्यक्ति के बजाय इस खाते के रूप में प्रमाणित होता है, इसलिए वह क्या पढ़ सकता है यह यहाँ तय होता है, न कि इसे सेट करने वाले से विरासत में मिलता है।",
+        "slugLabel": "संक्षिप्त नाम",
+        "slugHelp": "छोटे अक्षर, अंक और एकल हाइफ़न। यह खाते के पते का हिस्सा बन जाता है और बाद में बदला नहीं जा सकता।",
+        "slugLengthError": "3 से 48 अक्षरों के बीच उपयोग करें।",
+        "slugFormatError": "छोटे अक्षर, अंक और एकल हाइफ़न उपयोग करें; हाइफ़न से शुरू या समाप्त न करें।",
+        "nameLabel": "प्रदर्शित नाम",
+        "namePlaceholder": "रात्रिकालीन सिंक",
+        "descriptionLabel": "यह किसलिए है",
+        "descriptionPlaceholder": "रिलीज़ डाइजेस्ट के लिए हैंडबुक पढ़ता है",
+        "note": "कोई भी सेवा खाते के रूप में साइन इन नहीं कर सकता, और यह हमेशा एक सदस्य होता है, व्यवस्थापक कभी नहीं। इसे वैसे ही पहुँच दें जैसे किसी सहकर्मी को देते हैं: समूहों और टीमों के माध्यम से।",
+        "submit": "बनाएँ",
+        "successTitle": "सेवा खाता बनाया गया",
+        "errorTitle": "सेवा खाता नहीं बनाया जा सका"
+      },
+      "tokens": {
+        "title": "टोकन",
+        "newToken": "नया टोकन",
+        "mint": "टोकन बनाएँ",
+        "nameLabel": "यह टोकन किसलिए है",
+        "namePlaceholder": "रिलीज़ डाइजेस्ट जॉब",
+        "scopesLabel": "स्कोप",
+        "scopesHelp": "चुनें कि यह टोकन क्या कर सकता है। कोई डिफ़ॉल्ट नहीं है: बिना निगरानी चलने वाले क्रेडेंशियल के पास वही पहुँच होनी चाहिए जो किसी ने उसके लिए चुनी हो।",
+        "expiryLabel": "इतने समय बाद समाप्त",
+        "expiryDays": "{{count}} दिन",
+        "existing": "टोकन",
+        "none": "इस खाते के पास अभी कोई टोकन नहीं है।",
+        "lastUsed": "अंतिम उपयोग {{date}}",
+        "neverUsed": "कभी उपयोग नहीं हुआ",
+        "expiresOn": "{{date}} को समाप्त",
+        "expiresInDays": "{{count}} दिन शेष",
+        "expired": "समाप्त",
+        "expiringSoon": "{{count}} टोकन जल्द समाप्त हो रहे हैं। प्रतिस्थापन बनाएँ, इंटीग्रेशन उस पर ले जाएँ, फिर पुराना रद्द करें।",
+        "revoke": "रद्द करें",
+        "revokeSuccessTitle": "टोकन रद्द किया गया",
+        "revokeErrorTitle": "टोकन रद्द नहीं हो सका",
+        "mintErrorTitle": "टोकन नहीं बनाया जा सका",
+        "loadErrorTitle": "टोकन लोड नहीं हो सके",
+        "copyNowTitle": "यह टोकन अभी कॉपी करें",
+        "copyNowBody": "यह केवल इसी बार दिखाया जाता है। केवल इसका हैश संग्रहीत होता है, इसलिए इसे दोबारा प्राप्त नहीं किया जा सकता।",
+        "disabledNote": "यह खाता अक्षम है, इसलिए नए टोकन नहीं बनाए जा सकते। मौजूदा टोकन नीचे सूचीबद्ध हैं और अब भी रद्द किए जा सकते हैं।",
+        "rotationHelp": "रोटेट करने के लिए: नया टोकन बनाएँ, दोनों के काम करते हुए इंटीग्रेशन को उस पर ले जाएँ, फिर पुराना रद्द करें। पहले रद्द करने से उसका उपयोग करने वाली चीज़ टूट जाएगी।",
+        "loading": "टोकन लोड हो रहे हैं…",
+        "copy": "टोकन कॉपी करें",
+        "revokeTitle": "यह टोकन रद्द करें?",
+        "revokeDescription": "\"{{name}}\" तुरंत काम करना बंद कर देता है और वापस नहीं लाया जा सकता। इसका उपयोग करने वाली हर चीज़ विफल होने लगेगी। यदि आप रोटेट कर रहे हैं, तो पहले प्रतिस्थापन बनाएँ और इंटीग्रेशन उस पर ले जाएँ।"
+      },
+      "disableTitle": "यह सेवा खाता अक्षम करें?",
+      "disableDescription": "{{name}} तुरंत काम करना बंद कर देता है — इसमें उसके पास पहले से मौजूद हर टोकन शामिल है, न कि केवल अगला साइन-इन। उन टोकनों में से किसी का उपयोग करने वाली हर चीज़ तब तक विफल होती रहेगी जब तक आप इसे दोबारा सक्षम न करें।",
+      "disableConfirm": "अक्षम करें"
     }
   },
   "filePreview": {
@@ -2813,7 +3505,18 @@
     "showMore": "अधिक दिखाएं",
     "showLess": "कम दिखाएं",
     "lockZoom": "ज़ूम स्तर लॉक करें",
-    "unlockZoom": "ज़ूम स्तर अनलॉक करें"
+    "unlockZoom": "ज़ूम स्तर अनलॉक करें",
+    "closePreview": "पूर्वावलोकन बंद करें",
+    "openWebUrl": "वेब URL खोलें",
+    "openInSource": "स्रोत में खोलें",
+    "noDetails": "फ़ाइल का कोई विवरण उपलब्ध नहीं",
+    "metadata": "मेटाडेटा",
+    "webUrl": "वेब URL",
+    "fitToScreen": "स्क्रीन पर फ़िट करें",
+    "resizeCitations": "उद्धरण पैनल का आकार बदलें",
+    "resizePreview": "फ़ाइल पूर्वावलोकन पैनल का आकार बदलें",
+    "viewCitations": "उद्धरण देखें",
+    "openNamedInSource": "{{name}} को स्रोत में खोलें"
   },
   "agentBuilder": {
     "goBack": "वापस जाएं",
@@ -2866,6 +3569,7 @@
     "tools": "टूल",
     "noConnectors": "कोई कनेक्टर कॉन्फ़िगर नहीं",
     "noCollections": "कोई संग्रह उपलब्ध नहीं",
+    "noSkills": "अभी कोई skills नहीं — आपकी Skills में जाकर एक बनाएँ या आयात करें",
     "collapse": "संकुचित करें",
     "expand": "विस्तार करें",
     "serviceAccountCreated": "सर्विस एजेंट बनाया गया। पैलेट में कुंजी आइकन से प्रत्येक टूलसेट कॉन्फ़िगर करें।",
@@ -2889,6 +3593,7 @@
     "skillNodeTemplateDescription": "कस्टम स्किल जिसे आपका एजेंट आह्वान कर सकता है",
     "skillDeprecated": "यह स्किल बंद कर दी गई है",
     "skillDeprecatedReplacedBy": "यह स्किल बंद कर दी गई है। इसके बजाय {{name}} का उपयोग करें।",
+    "skillDisabled": "यह skill निष्क्रिय है और दोबारा सक्षम होने तक एजेंट के लिए उपलब्ध नहीं होगी",
     "inputSection": "इनपुट",
     "responseSection": "प्रतिक्रिया",
     "connectModel": "मॉडल कनेक्ट करें",
@@ -2935,12 +3640,6 @@
     "notConfiguredTooltip": "कॉन्फ़िगर नहीं (केवल रजिस्ट्री लिस्टिंग)",
     "configureToolsetTooltip": "टूलसेट कॉन्फ़िगर करें",
     "authenticateToolsetTooltip": "इस टूलसेट को प्रमाणित करें",
-    "svcAcctConvertNextSteps": "एजेंट सहेजें, फिर पैलेट में प्रत्येक टूलसेट के बगल में कुंजी आइकन का उपयोग करके एजेंट-स्तरीय क्रेडेंशियल सेट करें। मौजूदा प्रति-उपयोगकर्ता टूलसेट कनेक्शन स्थानांतरित नहीं किए जाते।",
-    "svcAcctCreateNextSteps": "एजेंट सहेजें, फिर पैलेट में कुंजी आइकन का उपयोग करके इस सर्विस अकाउंट के प्रत्येक टूलसेट के लिए क्रेडेंशियल कॉन्फ़िगर करें। ज्ञान जोड़ें, मॉडल सेट करें और आवश्यकतानुसार फ्लो को परिष्कृत करें।",
-    "svcAcctDescSuffix": "इसका अर्थ यहां है:",
-    "svcAcctKnowledgeNote3": "जो कोई भी इस एजेंट का उपयोग करता है, वह उस सामग्री के उत्तर देख सकता है जिसे आप देखने की अनुमति रखते हैं, भले ही उनकी अपनी अनुमतियां इसे शामिल न करें।",
-    "svcAcctToolsetsDesc": "टूलसेट पूरे एजेंट के लिए क्रेडेंशियल का एक सेट उपयोग करते हैं, जिसे इसका उपयोग करने वाले सभी लोग साझा करते हैं — प्रत्येक उपयोगकर्ता के व्यक्तिगत टूलसेट साइन-इन नहीं।",
-    "svcAcctToolsetsNote2Create": "जब तक आप पैलेट में उनके लिए एजेंट-स्तरीय क्रेडेंशियल प्रदान करने के लिए तैयार न हों, तब तक प्रति-उपयोगकर्ता साइन-इन की आवश्यकता वाले टूलसेट न जोड़ें।",
     "svcAcctConvertTitle": "सर्विस एजेंट में बदलें",
     "svcAcctCreateTitle": "सर्विस एजेंट बनाएं",
     "svcAcctConvertDesc": "यह एजेंट एक साझा सर्विस एजेंट बन जाएगा: पूरे संगठन में उपलब्ध, प्रत्येक टूलसेट एजेंट स्तर पर एक बार प्रमाणित होगा, और ज्ञान केवल उसी तक सीमित रहेगा जो आप फ्लो पर जोड़ते हैं।",
@@ -3055,6 +3754,7 @@
     "connectionToolGroupToToolsets": "टूल समूह को एजेंट के टूलसेट हैंडल से जोड़ना होगा",
     "connectionToolsetToToolsets": "टूलसेट को एजेंट के टूलसेट हैंडल से जोड़ना होगा",
     "connectionToolToToolsets": "टूल को एजेंट के टूलसेट हैंडल से जोड़ना होगा",
+    "connectionSkillToSkillsHandle": "Skills को एजेंट के skills हैंडल से जुड़ना चाहिए",
     "connectionAgentResponseToOutput": "एजेंट की प्रतिक्रिया हैंडल को चैट आउटपुट से जोड़ें",
     "connectionThroughAgent": "नोड को एजेंट के माध्यम से जोड़ना होगा",
     "defaultSystemPrompt": "आप एक सहायक सहायक हैं।",
@@ -3084,6 +3784,7 @@
     "dropOnlyOneToolGroup": "केवल एक {{type}} टूल समूह की अनुमति है। पहले मौजूदा नोड हटाएं।",
     "dropDuplicateConnector": "{{name}} पहले से ही इस एजेंट में जोड़ा गया है",
     "dropDuplicateKB": "{{name}} पहले से ही इस एजेंट में जोड़ा गया है",
+    "dropDuplicateSkill": "{{name}} पहले से इस एजेंट में जोड़ी गई है",
     "toolsetStatusAuthenticated": "प्रमाणित और उपयोग के लिए तैयार",
     "toolsetStatusNeedsAuth": "कॉन्फ़िगर किया गया — प्रमाणित करने के लिए साइन इन करें",
     "toolsetStatusRegistry": "रजिस्ट्री सूची — आपके वर्कस्पेस के लिए कॉन्फ़िगर नहीं",
@@ -3120,10 +3821,23 @@
     "toolInlineSuffix": "{{name}} टूल",
     "paletteToolGroupLabel": "{{app}} टूल",
     "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है",
-    "deprecatedToolsBanner": "इस एजेंट पर {{count}} टूल(s) पुराने हैं, इन्हें हटाएं: {{tools}}",
     "removeDeprecatedTools": "पुराने टूल हटाएं",
     "showMore": "और दिखाएं",
-    "showLess": "कम दिखाएं"
+    "showLess": "कम दिखाएं",
+    "mcpServerAlreadyAttachedNotify": "{{name}} पहले से इस एजेंट से संलग्न है",
+    "webSearchOnlyOne": "केवल एक वेब खोज प्रदाता संलग्न किया जा सकता है",
+    "mcpServerNodeSubtitle": "किसी MCP सर्वर के टूल",
+    "noMcpServersAvailable": "कोई MCP सर्वर उपलब्ध नहीं",
+    "webSearchLocked": "इस एजेंट के लिए वेब खोज नहीं बदली जा सकती",
+    "webSearchLoading": "वेब खोज प्रदाता लोड हो रहे हैं…",
+    "webSearchConfigureFirst": "पहले {{name}} कॉन्फ़िगर करें",
+    "webSearch": "वेब खोज",
+    "toolsetOAuthServerError": "प्रमाणीकरण विफल रहा। कृपया पुनः प्रयास करें या अपने व्यवस्थापक से संपर्क करें।",
+    "attached": "संलग्न",
+    "mcpServerWithToolCount_one": "{{count}} टूल वाला MCP सर्वर",
+    "mcpServerWithToolCount_other": "{{count}} टूल वाला MCP सर्वर",
+    "deprecatedToolsBanner_one": "इस एजेंट का {{count}} टूल अप्रचलित है। इसे हटाएँ: {{tools}}",
+    "deprecatedToolsBanner_other": "इस एजेंट के {{count}} टूल अप्रचलित हैं। उन्हें हटाएँ: {{tools}}"
   },
   "recordView": {
     "sections": {
@@ -3165,6 +3879,9 @@
     "reindexLoading": "पुनः अनुक्रमण अनुरोध भेजा जा रहा है…",
     "reindexSuccess": "पुनः अनुक्रमण अनुरोध सफलतापूर्वक भेजा गया",
     "reindexError": "पुनः अनुक्रमण अनुरोध भेजने में विफल",
+    "forceReindexTitle": "बलपूर्वक पुनः इंडेक्सिंग शुरू करें?",
+    "forceReindexDescription": "यह दस्तावेज़ को शुरू से पुनः इंडेक्स करता है और इसमें अतिरिक्त लागत लग सकती है। इसका उपयोग तब करें जब खोज परिणाम पुराने हों, या इंडेक्सिंग पूरी होने के बाद भी दस्तावेज़ खोजा न जा सके।",
+    "deleteRecord": "रिकॉर्ड हटाएँ",
     "loading": "लोड हो रहा है…",
     "loadFailed": "यह रिकॉर्ड लोड नहीं हो सका।",
     "externalSource": "बाहरी स्रोत",
@@ -3194,16 +3911,45 @@
       "folder": "फ़ोल्डर",
       "connectorId": "कनेक्टर ID",
       "notAvailable": "लागू नहीं",
-      "typeEmail": "ईमेल",
-      "typeFile": "फ़ाइल",
-      "typeArtifact": "आर्टिफ़ैक्ट",
-      "typeTicket": "टिकट",
-      "typeWebpage": "वेब पृष्ठ",
-      "typeMessage": "संदेश",
       "mailSubject": "विषय",
       "ticketSummary": "सारांश",
-      "ticketDescription": "विवरण"
-    }
+      "ticketDescription": "विवरण",
+      "recordTypes": {
+        "FILE": "फ़ाइल",
+        "DRIVE": "ड्राइव",
+        "WEBPAGE": "वेब पेज",
+        "DATABASE": "डेटाबेस",
+        "DATASOURCE": "डेटा स्रोत",
+        "MESSAGE": "संदेश",
+        "MAIL": "ईमेल",
+        "EMAIL": "ईमेल",
+        "GROUP_MAIL": "समूह ईमेल",
+        "TICKET": "टिकट",
+        "COMMENT": "टिप्पणी",
+        "INLINE_COMMENT": "इनलाइन टिप्पणी",
+        "CONFLUENCE_PAGE": "Confluence पेज",
+        "CONFLUENCE_BLOGPOST": "Confluence ब्लॉग पोस्ट",
+        "SHAREPOINT_PAGE": "SharePoint पेज",
+        "SHAREPOINT_LIST": "SharePoint सूची",
+        "SHAREPOINT_LIST_ITEM": "SharePoint सूची आइटम",
+        "SHAREPOINT_DOCUMENT_LIBRARY": "SharePoint दस्तावेज़ लाइब्रेरी",
+        "LINK": "लिंक",
+        "PROJECT": "प्रोजेक्ट",
+        "PULL_REQUEST": "पुल रिक्वेस्ट",
+        "MEETING": "मीटिंग",
+        "PRODUCT": "उत्पाद",
+        "DEAL": "डील",
+        "CASE": "केस",
+        "TASK": "कार्य",
+        "ARTIFACT": "आर्टिफ़ैक्ट",
+        "CODE_FILE": "कोड फ़ाइल",
+        "SQL_TABLE": "SQL टेबल",
+        "SQL_VIEW": "SQL व्यू",
+        "OTHERS": "अन्य"
+      }
+    },
+    "previewConversionFailed": "पूर्वावलोकन रूपांतरण विफल रहा। आप फिर भी फ़ाइल डाउनलोड कर सकते हैं।",
+    "missingRecordId": "रिकॉर्ड आईडी अनुपलब्ध"
   },
   "oauthConsent": {
     "loading": "प्राधिकरण अनुरोध लोड हो रहा है…",
@@ -3213,6 +3959,7 @@
     "errorTitle": "प्राधिकरण त्रुटि",
     "signedInAs": "{{display}} के रूप में साइन इन",
     "requestHeading": "यह ऐप्लिकेशन इस तक पहुँच माँग रहा है:",
+    "unreviewedApp": "इस एप्लिकेशन ने स्वयं को पंजीकृत किया है। किसी व्यवस्थापक ने इसकी समीक्षा नहीं की।",
     "legalNotice": "“अनुमति दें” पर क्लिक करके, आप {{appName}} को ऊपर वर्णित अनुसार अपने डेटा तक पहुँच की अनुमति देते हैं।",
     "privacyPolicy": "गोपनीयता नीति",
     "deny": "अस्वीकार करें",
@@ -3347,7 +4094,9 @@
       "microsoftUnavailable": "Microsoft साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
       "oauthUnavailable": "OAuth साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
       "showPassword": "पासवर्ड दिखाएं",
-      "hidePassword": "पासवर्ड छुपाएं"
+      "hidePassword": "पासवर्ड छुपाएं",
+      "accountDisabled": "आपका खाता अक्षम कर दिया गया है।",
+      "tooManyIncorrectCredentials": "आपने बहुत बार ग़लत क्रेडेंशियल दर्ज किए हैं"
     }
   },
   "healthGate": {
@@ -3375,5 +4124,138 @@
     "skip": "छोड़ें",
     "next": "अगला",
     "submit": "जमा करें"
+  },
+  "collections": {
+    "stats": {
+      "title": "विश्लेषण",
+      "menuLabel": "विश्लेषण",
+      "fetchError": "इंडेक्सिंग आँकड़े लोड नहीं हो सके",
+      "refreshSuccess": "आँकड़े ताज़ा किए गए",
+      "refreshError": "आँकड़े ताज़ा नहीं हो सके",
+      "reindexFailedStart": "विफल रिकॉर्ड पुनः इंडेक्स किए जा रहे हैं…",
+      "reindexFailedError": "विफल रिकॉर्ड पुनः इंडेक्स नहीं हो सके",
+      "manualIndexStart": "मैन्युअल इंडेक्सिंग वाले रिकॉर्ड इंडेक्स किए जा रहे हैं…",
+      "manualIndexError": "मैन्युअल इंडेक्सिंग शुरू नहीं हो सकी"
+    }
+  },
+  "reindexScope": {
+    "description": "चुनें कि \"{{name}}\" के लिए क्या इंडेक्स करना है।",
+    "thisItemOnly": "केवल यह आइटम",
+    "withChildren": "यह आइटम और इसके सभी उप-आइटम"
+  },
+  "oauthDevice": {
+    "title": "एक डिवाइस कनेक्ट करें",
+    "codeLabel": "अपने टर्मिनल में दिखाया गया कोड दर्ज करें",
+    "phishingWarning": "केवल तभी आगे बढ़ें जब आपने यह स्वयं अपने नियंत्रण वाले डिवाइस पर शुरू किया हो। यदि किसी ने आपको यह कोड भेजा है, तो यह पेज बंद कर दें।",
+    "codePlaceholder": "ABCD-EFGH",
+    "continue": "जारी रखें",
+    "loading": "यह डिवाइस खोजा जा रहा है…",
+    "doneTitle": "डिवाइस कनेक्ट हो गया",
+    "doneLine": "आप टर्मिनल पर वापस जा सकते हैं। यह विंडो बंद की जा सकती है।",
+    "deniedTitle": "अनुरोध अस्वीकृत",
+    "deniedLine": "डिवाइस को पहुँच नहीं दी गई।"
+  },
+  "validation": {
+    "password": {
+      "rules": "कम से कम 8 अक्षर: छोटा अक्षर, बड़ा अक्षर, अंक, चिह्न।",
+      "minLength": "पासवर्ड में कम से कम 8 अक्षर होने चाहिए।",
+      "lowercase": "पासवर्ड में एक छोटा अक्षर होना चाहिए।",
+      "uppercase": "पासवर्ड में एक बड़ा अक्षर होना चाहिए।",
+      "number": "पासवर्ड में एक अंक होना चाहिए।",
+      "symbol": "पासवर्ड में एक चिह्न होना चाहिए।",
+      "mismatch": "पासवर्ड मेल नहीं खाते।"
+    }
+  },
+  "filterDropdown": {
+    "selectedCount": "{{count}} चयनित",
+    "is": "है",
+    "isAnyOf": "इनमें से कोई है",
+    "loadingOptions": "विकल्प लोड हो रहे हैं…",
+    "refreshingOptions": "विकल्प ताज़ा हो रहे हैं…",
+    "loadingMore": "और लोड हो रहा है…"
+  },
+  "moveFolder": {
+    "moving": "स्थानांतरित किया जा रहा है...",
+    "noFolders": "कोई फ़ोल्डर नहीं मिला"
+  },
+  "shareSidebar": {
+    "suggestedTeams": "सुझाई गई टीमें",
+    "suggestedMembers": "सुझाए गए सदस्य",
+    "loadingMoreUsers": "और उपयोगकर्ता लोड हो रहे हैं...",
+    "noResults": "कोई उपयोगकर्ता या टीम नहीं मिली",
+    "createNewTeam": "नई टीम बनाएँ",
+    "sharing": "साझा किया जा रहा है...",
+    "accessShared": "पहुँच साझा की गई",
+    "sharedWith": "{{names}} के साथ साझा किया गया",
+    "shareFailed": "साझा नहीं किया जा सका",
+    "shareError": "पहुँच साझा नहीं की जा सकी। कृपया पुनः प्रयास करें।",
+    "roleUpdated": "भूमिका अपडेट की गई",
+    "roleUpdatedDescription": "{{name}} अब {{role}} हैं",
+    "member": "सदस्य",
+    "roleError": "भूमिका अपडेट नहीं हो सकी। कृपया पुनः प्रयास करें।",
+    "roleFailed": "भूमिका अपडेट नहीं हो सकी",
+    "accessRevoked": "पहुँच रद्द की गई",
+    "accessRevokedDescription": "{{name}} के पास अब पहुँच नहीं है",
+    "revokeError": "पहुँच हटाई नहीं जा सकी। कृपया पुनः प्रयास करें।",
+    "revokeFailed": "पहुँच रद्द नहीं की जा सकी",
+    "memberCount_one": "{{count}} सदस्य",
+    "memberCount_other": "{{count}} सदस्य",
+    "roles": {
+      "owner": {
+        "label": "पूर्ण पहुँच",
+        "description": "संग्रह का साझा स्वामित्व"
+      },
+      "writer": {
+        "label": "संपादित कर सकते हैं",
+        "description": "केवल फ़ाइलें और फ़ोल्डर संपादित और व्यवस्थित करना"
+      },
+      "reader": {
+        "label": "देख सकते हैं",
+        "description": "केवल देखने की पहुँच"
+      }
+    },
+    "team": "टीम",
+    "teamsNoRoles": "टीमों की कोई भूमिकाएँ नहीं होतीं",
+    "invite": "Pipeshub में आमंत्रित करें"
+  },
+  "demoData": {
+    "badge": {
+      "label": "डेमो",
+      "tooltip": "Acme Corp डेमो का नमूना डेटा, आपकी कंपनी का रिकॉर्ड नहीं"
+    },
+    "removalNotice": {
+      "title": "Acme Corp डेमो डेटा अब भी आपके वर्कस्पेस में है",
+      "description": "आपकी कंपनी का अपना डेटा अब PipesHub में है। डेमो डिफ़ॉल्ट रूप से उत्तरों से छिपा रहता है, लेकिन कोई भी इसे वापस चालू कर सकता है, और इसके नमूना खाते अब भी साइन इन कर सकते हैं। इसे सभी के लिए बंद करें, या स्थायी रूप से हटाएँ।",
+      "remove": "स्थायी रूप से हटाएँ",
+      "keep": "अभी रखें",
+      "turnOff": "सभी के लिए बंद करें"
+    },
+    "removeDialog": {
+      "title": "Acme Corp डेमो डेटा स्थायी रूप से हटाएँ?",
+      "description": "यह Demo कनेक्टर को उसके सभी रिकॉर्ड, समूहों और अनुमतियों सहित हटा देता है। कुछ भी हटाए बिना इसे छिपाने के लिए, इसके बजाय इसे सभी के लिए बंद करें। आप इसे बाद में कनेक्टर पेज से दोबारा जोड़ सकते हैं।",
+      "deleteAccounts": "नमूना खाते भी हटाएँ: {{names}}",
+      "deleteAccountsHint": "उन्हें एक प्रारंभिक पासवर्ड के साथ बनाया गया था, इसलिए जो भी उसे जानता है वह उनके रूप में साइन इन कर सकता है।",
+      "cancel": "रद्द करें",
+      "confirm": "स्थायी रूप से हटाएँ",
+      "successTitle": "डेमो डेटा हटाया गया",
+      "successAccounts": "नमूना खाते भी हटा दिए गए।",
+      "partialTitle": "डेमो डेटा हटाया गया, लेकिन कुछ नमूना खाते बचे हैं",
+      "partialDescription": "वर्कस्पेस → उपयोगकर्ता में {{emails}} हटाएँ।",
+      "errorTitle": "डेमो डेटा हटाया नहीं जा सका",
+      "errorDescription": "कृपया पुनः प्रयास करें। यदि यह बार-बार हो, तो कनेक्टर पेज से Demo कनेक्टर हटाएँ।"
+    },
+    "switch": {
+      "errorTitle": "डेमो डेटा सेटिंग बदली नहीं जा सकी",
+      "errorDescription": "कुछ नहीं बदला। थोड़ी देर में पुनः प्रयास करें।",
+      "hiddenTitle": "Acme Corp डेमो डेटा छिपाया गया",
+      "hiddenDescription": "यह आपके उत्तरों, खोज और रिकॉर्ड से हट गया है। आप इसे कभी भी प्रोफ़ाइल → डेमो डेटा में वापस चालू कर सकते हैं।",
+      "undo": "पूर्ववत करें"
+    },
+    "everyone": {
+      "offTitle": "डेमो डेटा सभी के लिए बंद किया गया",
+      "offDescription": "यह सभी के उत्तरों, खोज और रिकॉर्ड से हट गया है, और नमूना खाते साइन इन नहीं कर सकते। इसे प्रोफ़ाइल → डेमो डेटा में वापस चालू करें।",
+      "onTitle": "डेमो डेटा सभी के लिए वापस चालू किया गया",
+      "errorTitle": "सभी के लिए डेमो डेटा बदला नहीं जा सका"
+    }
   }
 }
