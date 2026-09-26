@@ -913,6 +913,23 @@ class TestIncrementalSync:
         assert "notes.txt" not in db.names()
         assert store.checkpoint()["pending_deletes"] == []
 
+    async def test_the_checkpoint_holds_only_values_neo4j_can_store(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notes = ids_of(server)["notes.txt"]
+        db.fail_delete_for = {notes}
+        server.delete("Docs/notes.txt")
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+
+        checkpoint = store.checkpoint()
+        assert store.cursor() == str(server.latest_activity_id), "the give-up write went through"
+        assert checkpoint["pending_deletes"] == [notes]
+        assert checkpoint["pending_delete_paths"] == ["/Docs/notes.txt"], "parallel to pending_deletes"
+        for name, value in checkpoint.items():
+            items = value if isinstance(value, list) else [value]
+            assert all(isinstance(v, (str, int, float, bool)) for v in items if v is not None), name
+
     async def test_a_pending_deletion_whose_record_is_gone_is_dropped_quietly(self, server, db, store, caplog) -> None:
         connector = await synced(server, db, store)
         cursor = store.cursor()

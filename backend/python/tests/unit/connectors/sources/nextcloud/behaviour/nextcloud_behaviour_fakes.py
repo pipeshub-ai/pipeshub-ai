@@ -510,6 +510,13 @@ class FakeRecordsDb:
         return SimpleNamespace(email=self.permissions[record.external_record_id][0].email, source_user_id=None)
 
 
+def _neo4j_property(value: object) -> bool:
+    primitive = (str, int, float, bool, type(None))
+    if isinstance(value, list):
+        return all(isinstance(v, primitive) and v is not None for v in value)
+    return isinstance(value, primitive)
+
+
 class FakeStore:
     """In-memory sync-point collection behind ``DataStoreProvider.transaction()``."""
 
@@ -527,7 +534,12 @@ class FakeStore:
         """Merges into the stored document, as Arango's UPDATE and Neo4j's ``SET +=`` do.
 
         A field that is left out keeps its stored value; clearing one takes an explicit write.
+        Values Neo4j can't hold as a node property (a map, or a list of anything but
+        primitives) are refused, as Neo4j refuses them.
         """
+        for field_name, value in data.items():
+            if not _neo4j_property(value):
+                raise TypeError(f"Neo4j cannot store {field_name!r} as a property: {value!r}")
         self.sync_points.setdefault(key, {}).update(data)
 
     def checkpoint(self) -> dict[str, Any]:

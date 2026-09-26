@@ -138,16 +138,23 @@ def describe_failures(failures: dict[str, str]) -> str:
     return "; ".join(named) + (f"; and {hidden} more" if hidden > 0 else "")
 
 
-def pending_delete_fields(pending: list[str], paths: dict[str, str]) -> dict[str, list]:
-    """The checkpoint fields for queued deletions, both written in full.
+def pending_delete_fields(pending: list[str], paths: dict[str, str]) -> dict[str, list[str]]:
+    """The checkpoint fields for queued deletions: IDs and their paths as parallel lists.
 
-    The store merges writes, and it merges nested objects too, so the paths are
-    kept as a list, which a write replaces whole.
+    Neo4j stores each field as a node property, which may be a list of strings
+    but not a list of maps; both lists are written together so they stay aligned.
     """
     return {
         "pending_deletes": pending,
-        "pending_delete_paths": [{"id": i, "path": paths.get(i, "")} for i in pending],
+        "pending_delete_paths": [paths.get(i, "") for i in pending],
     }
+
+
+def read_pending_deletes(checkpoint: dict) -> tuple[list[str], dict[str, str]]:
+    """The queued deletion IDs and each one's path, from the fields ``pending_delete_fields`` writes."""
+    ids = [str(i) for i in checkpoint.get("pending_deletes") or []]
+    paths = [str(p or "") for p in checkpoint.get("pending_delete_paths") or []]
+    return ids, dict(zip(ids, paths))
 
 
 def get_path_depth(path: str) -> int:
@@ -1334,13 +1341,8 @@ class NextcloudConnector(BaseConnector):
                 await self._run_full_sync_internal()
                 return
 
-            pending_paths = {
-                str(e.get("id")): str(e.get("path") or "")
-                for e in sync_point_data.get("pending_delete_paths") or [] if isinstance(e, dict)
-            }
-            pending_deletes = await self._retry_pending_deletes(
-                sync_point_key, [str(i) for i in sync_point_data.get("pending_deletes") or []], pending_paths
-            )
+            queued, pending_paths = read_pending_deletes(sync_point_data)
+            pending_deletes = await self._retry_pending_deletes(sync_point_key, queued, pending_paths)
 
             self.logger.info(f"📋 [Incremental Sync] Fetching activities since ID: {last_activity_id}")
 
