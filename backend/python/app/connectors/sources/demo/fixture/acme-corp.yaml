@@ -22,6 +22,28 @@ groups:
     installer_joins: true
   - id: pricing-committee
     name: Pricing committee
+  # One team per Build Pack. Each has a readers group the installer joins, and one
+  # restricted group it doesn't, so every pack has its own "who can see this" lesson.
+  - id: sales-readers
+    name: Sales readers
+    installer_joins: true
+  - id: deal-desk
+    name: Deal desk
+  - id: marketing-readers
+    name: Marketing readers
+    installer_joins: true
+  - id: launch-core
+    name: Launch core team
+  - id: finance-readers
+    name: Finance readers
+    installer_joins: true
+  - id: payments-contract
+    name: Payments contract readers
+  - id: people-readers
+    name: People readers
+    installer_joins: true
+  - id: people-managers
+    name: People managers
 
 people:
   - id: alice
@@ -29,13 +51,13 @@ people:
     email: alice@acme-demo.example
     title: Senior engineer, Payments
     login: true
-    groups: [engineering-readers, support-readers]
+    groups: [engineering-readers, support-readers, sales-readers, marketing-readers, finance-readers, people-readers, launch-core, payments-contract]
   - id: bob
     name: Bob Okafor
     email: bob@acme-demo.example
     title: Support lead
     login: true
-    groups: [engineering-readers, support-readers, pricing-committee]
+    groups: [engineering-readers, support-readers, pricing-committee, sales-readers, marketing-readers, finance-readers, people-readers, deal-desk, people-managers]
   - id: priya
     name: Priya Natarajan
     email: priya@acme-demo.example
@@ -60,7 +82,28 @@ people:
     name: Lena Fischer
     email: lena@acme-demo.example
     title: VP Sales
-    groups: [pricing-committee]
+    groups: [pricing-committee, sales-readers, deal-desk]
+
+  - id: omar
+    name: Omar Haddad
+    email: omar@acme-demo.example
+    title: Account executive
+    groups: [sales-readers]
+  - id: nina
+    name: Nina Park
+    email: nina@acme-demo.example
+    title: Product marketing manager
+    groups: [marketing-readers, launch-core]
+  - id: ingrid
+    name: Ingrid Larsen
+    email: ingrid@acme-demo.example
+    title: Finance controller
+    groups: [finance-readers, payments-contract]
+  - id: tomas
+    name: Tomás Rivera
+    email: tomas@acme-demo.example
+    title: People partner
+    groups: [people-readers, people-managers]
 
 containers:
   - id: gh-svc-billing-worker
@@ -135,6 +178,86 @@ containers:
     name: Acme Customer Service
     group: support-readers
     web_url: https://servicenow.acme-demo.example/nav_to.do?uri=sn_customerservice_case_list.do
+  - id: slack-deals
+    system: SLACK
+    kind: channel
+    name: "#deals"
+    group: sales-readers
+    web_url: https://slack.acme-demo.example/archives/C01DEALS
+  - id: drive-sales
+    system: DRIVE
+    kind: folder
+    name: Sales
+    group: sales-readers
+    web_url: https://drive.acme-demo.example/drive/folders/acme-sales
+  - id: slack-launch
+    system: SLACK
+    kind: channel
+    name: "#launch"
+    group: marketing-readers
+    web_url: https://slack.acme-demo.example/archives/C01LAUNCH
+  - id: drive-marketing
+    system: DRIVE
+    kind: folder
+    name: Marketing
+    group: marketing-readers
+    web_url: https://drive.acme-demo.example/drive/folders/acme-marketing
+  - id: jira-fin
+    system: JIRA
+    kind: project
+    name: FIN — Finance operations
+    group: finance-readers
+    web_url: https://jira.acme-demo.example/browse/FIN
+  - id: drive-finance
+    system: DRIVE
+    kind: folder
+    name: Finance
+    group: finance-readers
+    web_url: https://drive.acme-demo.example/drive/folders/acme-finance
+  - id: slack-people
+    system: SLACK
+    kind: channel
+    name: "#people"
+    group: people-readers
+    web_url: https://slack.acme-demo.example/archives/C01PEOPLE
+  - id: drive-people
+    system: DRIVE
+    kind: folder
+    name: People
+    group: people-readers
+    web_url: https://drive.acme-demo.example/drive/folders/acme-people
+  # A record inherits its container's readers, so each lesson's restricted document
+  # sits in a folder only its group can read, as the pricing documents do.
+  - id: drive-deal-desk
+    system: DRIVE
+    kind: folder
+    name: Deal desk (restricted)
+    group: deal-desk
+    web_url: https://drive.acme-demo.example/drive/folders/acme-deal-desk
+  - id: drive-launch-core
+    system: DRIVE
+    kind: folder
+    name: Launch core (restricted)
+    group: launch-core
+    web_url: https://drive.acme-demo.example/drive/folders/acme-launch-core
+  - id: drive-payments-contract
+    system: DRIVE
+    kind: folder
+    name: Payments contracts (restricted)
+    group: payments-contract
+    web_url: https://drive.acme-demo.example/drive/folders/acme-payments-contracts
+  - id: drive-people-managers
+    system: DRIVE
+    kind: folder
+    name: People managers (restricted)
+    group: people-managers
+    web_url: https://drive.acme-demo.example/drive/folders/acme-people-managers
+  - id: servicenow-hr
+    system: SERVICENOW
+    kind: desk
+    name: Acme HR Service Desk
+    group: people-readers
+    web_url: https://servicenow.acme-demo.example/nav_to.do?uri=sn_hr_core_case_list.do
 
 # Slack messages that share a `thread` are indexed as one record per thread,
 # titled here, because that is how the Slack connector groups message bursts.
@@ -148,6 +271,15 @@ threads:
   - id: slack-pricing-0402
     container: slack-pricing-committee
     title: "#pricing-committee thread: 2026 enterprise pricing draft (2026-04-02)"
+  - id: slack-deals-0410
+    container: slack-deals
+    title: "#deals thread: Northwind Traders renewal risk after the export outages (2026-04-10)"
+  - id: slack-launch-0416
+    container: slack-launch
+    title: "#launch thread: go/no-go for the background exports launch (2026-04-16)"
+  - id: slack-people-0302
+    container: slack-people
+    title: "#people thread: holiday carry-over changes for 2026 (2026-03-02)"
 
 records:
 
@@ -850,10 +982,18 @@ records:
     title: "SUP-121: Invoice PDF shows wrong VAT line (Contoso)"
     author: sam
     created: 2026-04-20T11:15:00Z
+    updated: 2026-05-06T16:00:00Z
     web_url: https://jira.acme-demo.example/browse/SUP-121
     body: |
-      Contoso's April invoice shows VAT on a line that should be exempt. Finance is
-      reissuing; engineering to check the VAT rule for reverse-charge customers. Open.
+      **Status:** Done
+
+      Contoso's April invoice shows VAT on a line that should be exempt. Handed to
+      finance: the invoice needs reissuing, and the VAT rule for reverse-charge
+      customers needs checking.
+
+      ## Resolution
+      Resolved by finance. What was done, and when, is in their tickets: FIN-37
+      for the invoice and FIN-38 for the VAT rule. Contoso has been told. Closed.
 
   - id: sn-4455
     container: servicenow
@@ -957,6 +1097,496 @@ records:
       New one: SUP-121, Contoso's invoice has VAT on an exempt line. Finance is
       reissuing; flagging in case it's a rule bug.
 
+  # ---------------------------------------------------------------------------
+  # Story 4 — the Northwind renewal (Sales, fed by the export outages)
+  # ---------------------------------------------------------------------------
+
+  - id: drive-sales-northwind-plan
+    container: drive-sales
+    type: FILE
+    title: "Account plan — Northwind Traders"
+    author: omar
+    created: 2026-01-12T10:00:00Z
+    updated: 2026-04-16T18:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-account-northwind
+    body: |
+      **Owner:** Omar Haddad (account executive) · **Exec sponsor:** Lena Fischer
+
+      ## Account
+      Northwind Traders, Enterprise plan since 2024. 420 seats today. Annual
+      contract renews on **30 June 2026**. Champion: their head of operations,
+      whose team runs the monthly full-workspace export into their reporting.
+
+      ## Renewal status (updated 16 April)
+      **On track.** Their monthly reporting is back on schedule after the
+      engineering fix, and they are no longer evaluating alternatives: renewal
+      expected on time. See the call notes from 16 April.
+
+      ## History
+      From early April the renewal was **at risk**: the April export problem
+      (tracked by support) broke their monthly reporting, and on 9 April the
+      champion said they were evaluating alternatives.
+
+      ## Plan
+      1. Done: got the fix date from engineering and shared it with the champion.
+      2. Done: joint check of their first export after the fix (16 April call).
+      3. Bring a renewal proposal to the deal desk that reflects the disruption.
+      4. Expansion to ~600 seats is realistic now that reporting is stable.
+
+  - id: slack-deals-0410-1
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Omar Haddad, 2026-04-10 15:02"
+    author: omar
+    created: 2026-04-10T15:02:00Z
+    thread: slack-deals-0410
+    body: |
+      Northwind renewal is now at risk. Their ops lead says exports have failed all
+      month and they're "looking at options" before 30 June. Does anyone know when
+      the export fix lands?
+
+  - id: slack-deals-0410-2
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Bob Okafor, 2026-04-10 15:20"
+    author: bob
+    created: 2026-04-10T15:20:00Z
+    thread: slack-deals-0410
+    body: |
+      Support side: it's SUP-114. Engineering is moving large exports to a
+      background job (PR #211) and expects to ship on 14 April. Until then the
+      per-project export workaround works for them.
+
+  - id: slack-deals-0410-3
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Lena Fischer, 2026-04-10 15:34"
+    author: lena
+    created: 2026-04-10T15:34:00Z
+    thread: slack-deals-0410
+    body: |
+      Omar, book a joint check of their first export after the fix, and take the
+      renewal proposal to the deal desk. Bob, please join the call so they hear it
+      from support too.
+
+  - id: drive-sales-northwind-call-0416
+    container: drive-sales
+    type: FILE
+    title: "Call notes — Northwind Traders, 2026-04-16"
+    author: omar
+    created: 2026-04-16T17:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-call-northwind-0416
+    body: |
+      **Attendees:** Omar Haddad, Bob Okafor (Acme); Northwind head of operations.
+
+      - Their full-workspace export ran on 15 April as a background job and the
+        download link arrived by email. Monthly reporting is back on schedule.
+      - They are no longer evaluating alternatives. Renewal expected on time.
+      - They asked about SSO group sync for their larger rollout.
+      - Next step: renewal proposal after deal desk review, target signature by
+        31 May.
+
+  - id: drive-sales-contoso-plan
+    container: drive-sales
+    type: FILE
+    title: "Account plan — Contoso"
+    author: omar
+    created: 2026-02-03T10:00:00Z
+    updated: 2026-04-22T09:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-account-contoso
+    body: |
+      **Owner:** Omar Haddad · Enterprise, 610 seats · renews 30 September 2026.
+
+      ## Watch items
+      - Affected by the April export problem; told when the fix shipped, no
+        complaints since.
+      - Received an invoice with VAT on an exempt line (SUP-121, April). Finance
+        reissued it; keep an eye on their accounts-payable team's mood.
+
+      ## Plan
+      Quarterly business review in June; propose the analytics add-on if it is
+      announced by then.
+
+  - id: drive-sales-renewal-playbook
+    container: drive-sales
+    type: FILE
+    title: "Renewal playbook"
+    author: lena
+    created: 2025-10-01T10:00:00Z
+    updated: 2026-04-20T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-renewal-playbook
+    body: |
+      **Owner:** Lena Fischer
+
+      ## 90 days before renewal
+      Review usage, open support cases and escalations for the account. If there is
+      an open escalation, the renewal is **at risk** until it is closed.
+
+      ## When the customer has an open support escalation
+      1. Ask the support lead for the escalation's status and expected fix date.
+      2. Tell the customer what is being done and when, in writing.
+      3. After the fix, confirm with the customer that it works for them.
+      4. Any concession tied to a service problem goes to the deal desk; do not
+         promise one on a call.
+
+      ## 30 days before renewal
+      Proposal sent; signature path agreed with procurement.
+
+  - id: drive-dealdesk-northwind
+    container: drive-deal-desk
+    type: FILE
+    title: "Deal desk decision — Northwind Traders renewal"
+    author: lena
+    created: 2026-04-24T11:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-dealdesk-northwind
+    group: deal-desk
+    body: |
+      **Deal desk members only** · Decided 24 April 2026 · Lena Fischer, Bob Okafor
+
+      Approved: a 14% discount on the Northwind Traders renewal, conditional on a
+      three-year term and an expansion to 600 seats. Reason: the April export
+      outage disrupted their monthly reporting for a month. The concession is
+      not to be repeated at the next renewal.
+
+  - id: slack-deals-0422
+    container: slack-deals
+    type: MESSAGE
+    title: "#deals — Omar Haddad, 2026-04-22 12:10"
+    author: omar
+    created: 2026-04-22T12:10:00Z
+    body: |
+      Fabrikam signed their expansion: +80 seats from 1 May. They mentioned the
+      export fix and SSO group sync as the two things that tipped it.
+
+  # ---------------------------------------------------------------------------
+  # Story 5 — launching background exports (Marketing, gated on engineering)
+  # ---------------------------------------------------------------------------
+
+  - id: drive-mkt-exports-launch-plan
+    container: drive-marketing
+    type: FILE
+    title: "Launch plan — background exports"
+    author: nina
+    created: 2026-04-08T10:00:00Z
+    updated: 2026-04-17T09:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-launch-exports
+    body: |
+      **Owner:** Nina Park · **Launch date:** 21 April 2026
+
+      ## What we're launching
+      Large workspace exports now run in the background and arrive as a download
+      link by email.
+
+      ## Why 21 April
+      The launch waits for engineering: the change (PR #211) had to be in
+      production for a week of real customer exports first. It shipped on 14 April,
+      so we launch the following Tuesday.
+
+      ## Channels
+      Blog post, an email to Enterprise admins, the in-app release note, and a note
+      for account executives to share with customers who had asked about exports.
+
+      ## Success measures
+      Email open rate, exports scheduled in the first week, and support tickets
+      about exports in the first two weeks.
+
+  - id: slack-launch-0416-1
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Nina Park, 2026-04-16 10:05"
+    author: nina
+    created: 2026-04-16T10:05:00Z
+    thread: slack-launch-0416
+    body: |
+      Go/no-go for background exports on the 21st. Alice, is the fix holding up in
+      production?
+
+  - id: slack-launch-0416-2
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Alice Chen, 2026-04-16 10:20"
+    author: alice
+    created: 2026-04-16T10:20:00Z
+    thread: slack-launch-0416
+    body: |
+      Yes. PR #211 has been live since the 14th; Northwind ran a full export last
+      night without a problem. Go from engineering.
+
+  - id: slack-launch-0416-3
+    container: slack-launch
+    type: MESSAGE
+    title: "#launch — Nina Park, 2026-04-16 10:24"
+    author: nina
+    created: 2026-04-16T10:24:00Z
+    thread: slack-launch-0416
+    body: |
+      Great — we're go for Tuesday 21 April. Blog and admin email are scheduled.
+
+  - id: drive-mkt-exports-results
+    container: drive-marketing
+    type: FILE
+    title: "Launch results — background exports"
+    author: nina
+    created: 2026-05-05T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-launch-exports-results
+    body: |
+      **Two weeks after launch (21 April – 5 May)**
+
+      - Admin email: 41% open rate, 9% click-through.
+      - 312 background exports scheduled in the first week.
+      - 2 support tickets about exports in two weeks, down from 14 in the two
+        weeks before the fix.
+      - Account executives shared the note with every customer who had asked about
+        exports.
+
+      ## Learnings
+      Waiting a week after the engineering release cost nothing and meant the
+      launch had a real customer story to tell.
+
+  - id: drive-mkt-messaging
+    container: drive-marketing
+    type: FILE
+    title: "Messaging guide 2026"
+    author: nina
+    created: 2026-01-20T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-messaging-2026
+    body: |
+      Describe features by what the customer can now do, not by how it works.
+      Name customers only with their written permission. Avoid "revolutionary",
+      "seamless" and "game-changing".
+
+  - id: drive-mkt-insights-embargo
+    container: drive-launch-core
+    type: FILE
+    title: "Next launch — embargoed brief"
+    author: nina
+    created: 2026-04-28T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-next-launch
+    group: launch-core
+    body: |
+      **Launch core team only — embargoed**
+
+      Our next launch is Acme Insights, an analytics add-on built on the export
+      pipeline. Announcement date: September 9. Engineering lead: Alice Chen.
+      Do not share outside the launch core team before the announcement.
+
+  # ---------------------------------------------------------------------------
+  # Story 6 — the Contoso VAT invoice (Finance, from a support ticket)
+  # ---------------------------------------------------------------------------
+
+  - id: jira-fin-37
+    container: jira-fin
+    type: TICKET
+    title: "FIN-37: Reissue Contoso invoice INV-2026-0412 without VAT on the exempt line"
+    author: ingrid
+    created: 2026-04-20T14:00:00Z
+    updated: 2026-04-22T10:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-37
+    body: |
+      **Status:** Done · **Related:** SUP-121
+
+      Contoso's April invoice charged VAT on a line that is exempt for them as an
+      EU business customer with a valid VAT number. Credit note issued and the
+      invoice reissued on 22 April. Root cause tracked in FIN-38.
+
+  - id: jira-fin-38
+    container: jira-fin
+    type: TICKET
+    title: "FIN-38: Billing applies VAT to reverse-charge EU customers"
+    author: ingrid
+    created: 2026-04-21T09:00:00Z
+    updated: 2026-05-06T15:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-38
+    body: |
+      **Status:** Done · **Related:** FIN-37, SUP-121
+
+      The billing system's VAT rule ignored the reverse-charge flag for EU business
+      customers when a line was added mid-term. Fixed on 6 May: the rule now
+      checks the customer's validated VAT number for every line. Three other
+      affected invoices (all April) were found and reissued.
+
+  - id: jira-fin-40
+    container: jira-fin
+    type: TICKET
+    title: "FIN-40: Renew the monitoring vendor contract"
+    author: ingrid
+    created: 2026-03-10T10:00:00Z
+    web_url: https://jira.acme-demo.example/browse/FIN-40
+    body: |
+      **Status:** In progress. Annual renewal due 1 June; engineering confirmed the
+      same plan size. Awaiting the vendor's quote.
+
+  - id: drive-fin-expense-policy
+    container: drive-finance
+    type: FILE
+    title: "Expense policy"
+    author: ingrid
+    created: 2025-07-01T10:00:00Z
+    updated: 2026-01-15T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-expense-policy
+    body: |
+      **Owner:** Ingrid Larsen (finance)
+
+      ## Approvals
+      - Up to **$250** per purchase: no approval needed; submit the receipt within
+        30 days.
+      - More than $250, up to $2,500: your manager approves.
+      - Over $2,500, and any software subscription: finance approves, via a FIN
+        ticket.
+
+      ## Travel
+      Book through the travel tool. Economy class for flights under six hours.
+
+  - id: drive-fin-q2-budget
+    container: drive-finance
+    type: FILE
+    title: "Q2 2026 budget review"
+    author: ingrid
+    created: 2026-05-08T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-budget-q2-2026
+    body: |
+      ## Summary
+      Spend is 4% under budget for the quarter to date. Card processing fees rose
+      with renewal volume, in line with forecast. The April invoice reissues
+      (Contoso in FIN-37, and three more found when FIN-38 was fixed on 6 May)
+      cost about $1,900 in credit notes.
+
+      ## Watch items
+      Monitoring vendor renewal (FIN-40) and travel for the June customer reviews.
+
+  - id: drive-fin-stripe-agreement
+    container: drive-payments-contract
+    type: FILE
+    title: "Payment processing agreement 2026"
+    author: ingrid
+    created: 2026-02-01T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-processing-agreement
+    group: payments-contract
+    body: |
+      **Payments contract readers only**
+
+      Our card processing rate from 1 February 2026 is 2.2% + 20 cents per
+      successful charge, on interchange-plus pricing for cards issued in the EU.
+      Failed retries are not charged. The agreement renews every two years.
+
+  # ---------------------------------------------------------------------------
+  # Story 7 — holiday carry-over and onboarding (HR)
+  # ---------------------------------------------------------------------------
+
+  - id: drive-people-handbook
+    container: drive-people
+    type: FILE
+    title: "Employee handbook"
+    author: tomas
+    created: 2025-06-01T10:00:00Z
+    updated: 2025-12-01T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-handbook
+    body: |
+      **Owner:** Tomás Rivera (People)
+
+      ## Working hours
+      Core hours are 10:00 to 16:00 in your time zone.
+
+      ## Annual leave
+      Everyone gets 25 days of paid annual leave a year. You can bring up to three
+      days of unused leave into the next year; anything above that is lost on
+      31 December.
+
+      ## Remote work
+      Work from anywhere in your country of employment. Working abroad for more than
+      four weeks needs People approval.
+
+  - id: slack-people-0302-1
+    container: slack-people
+    type: MESSAGE
+    title: "#people — Tomás Rivera, 2026-03-02 09:30"
+    author: tomas
+    created: 2026-03-02T09:30:00Z
+    thread: slack-people-0302
+    body: |
+      Change for 2026: you can now carry up to five days of unused annual leave
+      into the next year (it was three). The handbook will be updated next month;
+      this message is the policy until then.
+
+  - id: slack-people-0302-2
+    container: slack-people
+    type: MESSAGE
+    title: "#people — Tomás Rivera, 2026-03-02 09:34"
+    author: tomas
+    created: 2026-03-02T09:34:00Z
+    thread: slack-people-0302
+    body: |
+      To answer the first question: yes, it applies to leave left over at the end
+      of 2026, so the first carry-over under the new limit happens in January 2027.
+
+  - id: sn-hr-1203
+    container: servicenow-hr
+    type: TICKET
+    title: "ServiceNow HR0001203: How much leave can I carry into next year?"
+    author: sam
+    created: 2026-03-11T10:00:00Z
+    updated: 2026-03-12T09:00:00Z
+    web_url: https://servicenow.acme-demo.example/sn_hr_core_case.do?number=HR0001203
+    body: |
+      **Status:** Closed
+
+      Question: the handbook says three days, but I heard it changed.
+      Answer (People team): it changed on 2 March 2026 — up to five days now. The
+      handbook update is pending; the #people announcement is the current policy.
+
+  - id: drive-people-onboarding-eng
+    container: drive-people
+    type: FILE
+    title: "New engineer onboarding: first week checklist"
+    author: tomas
+    created: 2025-08-01T10:00:00Z
+    updated: 2026-02-10T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-onboarding-engineers
+    body: |
+      What every new engineer does on day one, in their first week and in their
+      first month. Your manager and your onboarding buddy go through it with you.
+
+      ## Day 1
+      Laptop, accounts (GitHub, Jira, Slack), and a welcome session with your
+      manager and your onboarding buddy.
+
+      ## First week
+      - Ship a small change to production with your buddy.
+      - Read the engineering on-call handbook; you shadow an on-call week in your
+        second month, not your first.
+      - Read the last two postmortems from your team.
+
+      ## Month 1
+      Take ownership of one small project; agree your 90-day goals with your manager.
+
+  - id: drive-people-parental-leave
+    container: drive-people
+    type: FILE
+    title: "Parental leave policy"
+    author: tomas
+    created: 2025-05-01T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-parental-leave
+    body: |
+      Every new parent gets 20 weeks of fully paid leave, to be taken within 12
+      months of the birth or adoption. Tell your manager and the People team at
+      least eight weeks before your leave starts.
+
+  - id: drive-people-comp-bands
+    container: drive-people-managers
+    type: FILE
+    title: "Compensation bands 2026"
+    author: tomas
+    created: 2026-01-05T10:00:00Z
+    web_url: https://docs.acme-demo.example/document/d/acme-comp-bands-2026
+    group: people-managers
+    body: |
+      **People managers only**
+
+      Engineering, United States base salary bands for 2026:
+      - L4 (engineer): $128,000 to $150,000
+      - L5 (senior engineer): $152,000 to $168,000
+      - L6 (staff engineer): $175,000 to $205,000
+
 questions:
   - id: q1
     ask: "Why was the payment service architecture changed, and how was the decision made?"
@@ -1000,3 +1630,101 @@ questions:
     # Phrases only the restricted records contain; an answer that repeats one has leaked.
     restricted_facts: ["platform fee", "usage band", "$48,000", "$48k", "early-migration"]
     personas: { alice: none, bob: cites }
+
+# Golden questions for the vertical Build Packs (pipeshub-ai/examples, packs/).
+# Kept apart from `questions`, which the chat landing and the nightly acceptance
+# test use; same schema, scored by the same harness.
+pack_questions:
+  sales:
+    - id: s1
+      ask: "Is the Northwind Traders renewal at risk, and what is being done about it?"
+      # The current answer is the recovery after the 16 April call; the 10 April
+      # #deals thread is the at-risk moment, so it can't stand in for the call notes.
+      must_cite: [drive-sales-northwind-plan, drive-sales-northwind-call-0416]
+      answer_must_mention: ["Northwind"]
+      answer_must_mention_any_of: ["on time", "on track", "no longer at risk", "not at risk", "back on schedule", "no longer evaluating"]
+      must_not_cite: [drive-pricing-2026, drive-billing-resilience]
+      personas: { alice: cites, bob: cites }
+    - id: s2
+      ask: "What discount did the deal desk approve for the Northwind renewal?"
+      must_cite: [drive-dealdesk-northwind]
+      answer_must_mention: ["14%"]
+      restricted: [drive-dealdesk-northwind]
+      restricted_facts: ["14%", "three-year"]
+      personas: { alice: none, bob: cites }
+    - id: s3
+      ask: "How should I handle a renewal when the customer has an open support escalation?"
+      must_cite: [drive-sales-renewal-playbook]
+      must_not_cite: [drive-pricing-2026]
+      personas: { alice: cites, bob: cites }
+  support:
+    - id: u2
+      ask: "What happened with Contoso's invoice that showed VAT on an exempt line?"
+      # SUP-121 is the report and points to finance's tickets for what was done.
+      must_cite_any_of: [jira-fin-37, jira-fin-38]
+      answer_must_mention: ["Contoso"]
+      answer_must_mention_any_of: ["reissue", "reissuing", "credit note", "new invoice", "corrected invoice"]
+      answer_must_not_mention: ["still open", "remains open"]
+      must_not_cite: [drive-pricing-2026]
+      personas: { alice: cites, bob: cites }
+  marketing:
+    - id: m1
+      ask: "When did we launch background exports, and why did we pick that date?"
+      # The launch plan states both the date and the reason; the go/no-go thread
+      # and the engineering change are corroboration, tracked as a stretch.
+      must_cite: [drive-mkt-exports-launch-plan]
+      stretch_cite_any_of: [slack-launch-0416, gh-pr-211, drive-release-notes-q2]
+      answer_must_mention_any_of: ["21 April", "April 21", "Apr 21", "21 Apr", "21st"]
+      personas: { alice: cites, bob: cites }
+    - id: m2
+      ask: "How did the background exports launch campaign perform?"
+      must_cite: [drive-mkt-exports-results]
+      answer_must_mention: ["41%"]
+      personas: { alice: cites, bob: cites }
+    - id: m3
+      ask: "What is the next product we are launching after background exports?"
+      must_cite: [drive-mkt-insights-embargo]
+      answer_must_mention: ["Acme Insights"]
+      restricted: [drive-mkt-insights-embargo]
+      restricted_facts: ["Acme Insights", "September 9"]
+      personas: { alice: cites, bob: none }
+  finance:
+    - id: f1
+      ask: "Why was Contoso's invoice wrong, and has the billing rule been fixed?"
+      must_cite: [jira-fin-38]
+      must_cite_any_of: [jira-fin-37, jira-sup-121]
+      personas: { alice: cites, bob: cites }
+    - id: f2
+      ask: "How much can I spend on a purchase without my manager's approval?"
+      must_cite: [drive-fin-expense-policy]
+      # Both facts: the band includes $250 itself ("under $250" is wrong at the edge),
+      # and it needs no approval ("up to $250 needs your manager" fits the amount alone).
+      answer_must_mention_any_of: ["up to $250", "$250 or less", "$250 and under", "$250 or under", "up to 250 dollars"]
+      answer_must_mention_any_of_2: ["no approval", "without approval", "without any approval", "without any manager approval", "without manager approval", "without your manager's approval", "without a manager's approval", "without needing approval", "no manager approval", "no need for approval", "don't need approval", "do not need approval", "doesn't need approval", "does not need approval", "approval isn't needed", "approval is not needed", "approval isn't required", "approval is not required"]
+      personas: { alice: cites, bob: cites }
+    - id: f3
+      ask: "What rate do we pay for card processing?"
+      must_cite: [drive-fin-stripe-agreement]
+      answer_must_mention: ["2.2%"]
+      restricted: [drive-fin-stripe-agreement]
+      restricted_facts: ["2.2%", "interchange-plus"]
+      personas: { alice: cites, bob: none }
+  hr:
+    - id: h1
+      ask: "How many days of unused annual leave can I carry over into next year?"
+      # Either says the limit is now five days; the handbook's three is out of date.
+      must_cite_any_of: [slack-people-0302, sn-hr-1203]
+      answer_must_mention_any_of: ["five", "5"]
+      personas: { alice: cites, bob: cites }
+    - id: h2
+      ask: "What should a new engineer do in their first week?"
+      must_cite: [drive-people-onboarding-eng]
+      must_not_cite: [drive-pricing-2026]
+      personas: { alice: cites, bob: cites }
+    - id: h3
+      ask: "What is the salary band for a senior engineer?"
+      must_cite: [drive-people-comp-bands]
+      answer_must_mention: ["152,000"]
+      restricted: [drive-people-comp-bands]
+      restricted_facts: ["152,000", "168,000"]
+      personas: { alice: none, bob: cites }
