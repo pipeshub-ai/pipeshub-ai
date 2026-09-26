@@ -260,7 +260,6 @@ class TestSearch:
 
         assert ok is True and data["messages"] == []
 
-    @pending("search")
     async def test_messages_whose_details_could_not_be_read_are_called_out(self, gmail, http) -> None:
         http.on("GET", MESSAGES, {"messages": [{"id": "m-1"}, {"id": "m-2"}]}, base=GMAIL)
         http.on("GET", f"{MESSAGES}/m-1", metadata("m-1", "Kept"), base=GMAIL)

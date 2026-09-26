@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import Any, Dict, List, Optional
 
 from googleapiclient.errors import HttpError
@@ -85,6 +86,20 @@ class _ReplyContext:
     thread_id: str | None = None
     rfc_message_id: str | None = None
     references: str | None = None
+
+
+def _unreadable(msg: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": msg["id"],
+        "threadId": msg.get("threadId", ""),
+        "subject": "(metadata unavailable)",
+        "from": "",
+        "to": "",
+        "date": "",
+        "snippet": "",
+        "labelIds": [],
+        "unreadable": True,
+    }
 
 
 def _refuse_file_paths() -> tuple[bool, str]:
@@ -505,7 +520,6 @@ class Gmail:
             tuple[bool, str]: True if the emails are searched, False otherwise
         """
         try:
-            # Use GoogleGmailDataSource method
             result = await self.client.users_messages_list(
                 userId="me",
                 q=query,
@@ -541,38 +555,27 @@ class Gmail:
                         "labelIds": meta.get("labelIds", []),
                     }
                 except HttpError as e:
-                    if e.resp.status == 404:
+                    if e.resp.status == HTTPStatus.NOT_FOUND:
                         logger.debug("Gmail message %s no longer exists, skipping", msg["id"])
                         return None
-                    return {
-                        "id": msg["id"],
-                        "threadId": msg.get("threadId", ""),
-                        "subject": "(metadata unavailable)",
-                        "from": "",
-                        "to": "",
-                        "date": "",
-                        "snippet": "",
-                        "labelIds": [],
-                    }
+                    return _unreadable(msg)
                 except Exception:
-                    return {
-                        "id": msg["id"],
-                        "threadId": msg.get("threadId", ""),
-                        "subject": "(metadata unavailable)",
-                        "from": "",
-                        "to": "",
-                        "date": "",
-                        "snippet": "",
-                        "labelIds": [],
-                    }
+                    return _unreadable(msg)
 
             enriched = [m for m in await asyncio.gather(*[fetch_metadata(m) for m in messages]) if m is not None]
-
-            return True, json.dumps({
-                "messages": list(enriched),
+            payload: dict[str, Any] = {
+                "messages": enriched,
                 "nextPageToken": next_page_token,
                 "resultSizeEstimate": result_size_estimate,
-            })
+            }
+            unreadable = [m["id"] for m in enriched if m.get("unreadable")]
+            if unreadable:
+                payload["unreadable_message_ids"] = unreadable
+                payload["note"] = (
+                    f"The details of {len(unreadable)} of {len(enriched)} messages could not be read, so their "
+                    "subject, sender and date are missing. Call get_email_details with those ids to read them."
+                )
+            return True, json.dumps(payload)
         except Exception as e:
             return _gmail_failure(e, "search emails")
 
