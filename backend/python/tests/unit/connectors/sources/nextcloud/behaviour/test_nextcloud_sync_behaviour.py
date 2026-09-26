@@ -9,6 +9,7 @@ databases are in-memory fakes.
 import asyncio
 import base64
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock
@@ -31,10 +32,12 @@ from nextcloud_behaviour_fakes import (
 )
 
 from app.config.constants.arangodb import MimeTypes
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.models.entities import FileRecord
 from app.models.permission import EntityType, PermissionType
+from app.services.notification.types import NotificationType
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
 from app.sources.client.nextcloud.nextcloud import (
@@ -123,6 +126,19 @@ def owners(db: FakeRecordsDb, name: str) -> list[tuple[str, str, str]]:
 
 def ids_of(server: FakeNextcloud) -> dict[str, str]:
     return {node.name: node.file_id for node in server.nodes.values() if node.path}
+
+
+def listen_for_notifications(connector: NextcloudConnector) -> Callable[[], Awaitable[list[dict[str, Any]]]]:
+    """Capture what the connector publishes; the returned coroutine waits for the fire-and-forget sends."""
+    publish = AsyncMock()
+    connector._notification_service = MagicMock(publish_notification=publish)
+    connector._notification_cache = {}  # the class-wide repeat filter would carry over between tests
+
+    async def sent() -> list[dict[str, Any]]:
+        await asyncio.gather(*connector._background_tasks)
+        return [call.kwargs for call in publish.await_args_list]
+
+    return sent
 
 
 async def synced(server: FakeNextcloud, db: FakeRecordsDb, store: FakeStore) -> NextcloudConnector:
@@ -267,27 +283,40 @@ class TestAppPasswordAuth:
 
         assert await connector.test_connection_and_access() is False
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when Nextcloud rejects the "
-            "app password, init still reports success and every sync finishes 'successfully' with "
-            "nothing in it, so the user is never told to fix the password."
-        ),
-    )
     async def test_a_rejected_app_password_is_reported(self, server, db, store) -> None:
         seed_drive(server)
         connector = build(server, db, store, config=auth_config(server, password="wrong-app-password"))
+        notifications = listen_for_notifications(connector)
 
-        initialised = await connector.init()
-        raised = False
-        if initialised:
-            try:
-                await connector.run_sync()
-            except Exception:
-                raised = True
+        with pytest.raises(ConnectorInitError, match="rejected the app password") as rejected:
+            await connector.init()
+        with pytest.raises(ConnectorInitError, match="rejected the app password"):
+            await connector.run_sync()
 
-        assert not initialised or raised
+        assert "Create a new app password" in str(rejected.value)
+        assert connector.data_source is None
+        assert db.records == {} and store.cursor() is None
+        sent = await notifications()
+        assert [n["type"] for n in sent] == [NotificationType.CONNECTOR_AUTH_ERROR], "the repeat is held back"
+        assert sent[0]["message"] == str(rejected.value)
+
+    @pytest.mark.parametrize("cursor", [pytest.param(True, id="incremental"), pytest.param(False, id="full")])
+    async def test_an_app_password_revoked_after_setup_fails_the_sync(self, server, db, store, cursor) -> None:
+        connector = await synced(server, db, store)
+        if not cursor:
+            store.sync_points.clear()
+        kept = {r.external_record_id for r in db.records.values()}
+        before = store.cursor()
+        server.change("Docs/notes.txt")
+        server.app_password = "revoked"
+        notifications = listen_for_notifications(connector)
+
+        with pytest.raises(ConnectorInitError, match="rejected the app password"):
+            await connector.run_sync()
+
+        assert {r.external_record_id for r in db.records.values()} == kept
+        assert store.cursor() == before
+        assert [n["type"] for n in await notifications()] == [NotificationType.CONNECTOR_AUTH_ERROR]
 
     @pytest.mark.xfail(
         strict=True,

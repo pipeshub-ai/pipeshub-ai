@@ -23,7 +23,10 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
@@ -73,6 +76,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.nextcloud.nextcloud import (
     NextcloudClient,
     NextcloudRESTClientViaUsernamePassword,
@@ -85,6 +89,18 @@ NEXTCLOUD_PERM_MASK_ALL = 31
 HTTP_STATUS_OK = 200
 HTTP_STATUS_MULTIPLE_CHOICES = 300
 HTTP_NOT_MODIFIED = 304
+
+APP_PASSWORD_REJECTED_MESSAGE = (
+    "Nextcloud rejected the app password, so nothing could be synced. Create a new app password "
+    "in Nextcloud (Personal settings > Security > Devices & sessions), then enter it in this "
+    "connector's settings and save to reconnect."
+)
+
+
+class NextcloudAppPasswordRejectedError(ConnectorInitError):
+    """Nextcloud answered 401: the app password was revoked, expired or mistyped."""
+
+
 # Helper functions
 def get_parent_path_from_path(path: str) -> Optional[str]:
     """Extracts the parent path from a file/folder path."""
@@ -531,19 +547,14 @@ class NextcloudConnector(BaseConnector):
                 self.logger.error("Username and Password are required for Nextcloud")
                 return False
 
-            # Build client directly
             client = NextcloudRESTClientViaUsernamePassword(base_url, username, password)
-            nextcloud_client = NextcloudClient(client)
-
-            # Initialize data source
-            self.data_source = NextcloudDataSource(nextcloud_client)
-
-            # Store current user info
+            data_source = NextcloudDataSource(NextcloudClient(client))
             self.current_user_id = username
 
             # Try to get user email from Nextcloud
             try:
-                response = await self.data_source.get_user_details(self.current_user_id)
+                response = await data_source.get_user_details(self.current_user_id)
+                await self._raise_if_app_password_rejected(response)
                 if is_response_successful(response):
                     body = extract_response_body(response)
                     if body:
@@ -552,16 +563,32 @@ class NextcloudConnector(BaseConnector):
                         self.current_user_email = user_data.get('email') or f"{self.current_user_id}@nextcloud.local"
                 else:
                     self.current_user_email = f"{self.current_user_id}@nextcloud.local"
+            except NextcloudAppPasswordRejectedError:
+                raise
             except Exception as e:
                 self.logger.warning(f"Could not fetch user email: {e}")
                 self.current_user_email = f"{self.current_user_id}@nextcloud.local"
 
+            self.data_source = data_source
             self.logger.info(f"Nextcloud client initialized for user: {self.current_user_id}")
             return True
+        except NextcloudAppPasswordRejectedError:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to initialize Nextcloud client: {e}", exc_info=True)
             return False
 
+    async def _raise_if_app_password_rejected(self, response: object) -> None:
+        if getattr(response, "status", None) != HttpStatusCode.UNAUTHORIZED.value:
+            return
+        self.logger.error("❌ Nextcloud rejected the app password (HTTP 401)")
+        await self.notify(
+            type=NotificationType.CONNECTOR_AUTH_ERROR,
+            severity=NotificationSeverity.ERROR,
+            title="Nextcloud app password rejected",
+            message=APP_PASSWORD_REJECTED_MESSAGE,
+        )
+        raise NextcloudAppPasswordRejectedError(APP_PASSWORD_REJECTED_MESSAGE)
 
     def _sort_entries_by_hierarchy(self, entries: List[Dict]) -> List[Dict]:
         """
@@ -943,6 +970,7 @@ class NextcloudConnector(BaseConnector):
                     depth=100
                 )
 
+            await self._raise_if_app_password_rejected(response)
             if not is_response_successful(response):
                 self.logger.error(
                     f"Failed to list directory for {user_email}: {get_response_error(response)}"
@@ -1027,6 +1055,8 @@ class NextcloudConnector(BaseConnector):
                 f"Sync complete for {user_email}: {new_count} new, {updated_count} updated"
             )
 
+        except NextcloudAppPasswordRejectedError:
+            raise
         except Exception as e:
             self.logger.error(f"Error syncing files for {user_email}: {e}", exc_info=True)
 
@@ -1232,6 +1262,8 @@ class NextcloudConnector(BaseConnector):
             if status_code == HTTP_NOT_MODIFIED:
                 self.logger.info("✅ [Incremental Sync] HTTP 304 - No new activities. Database is up to date.")
                 return
+
+            await self._raise_if_app_password_rejected(response)
 
             if not is_response_successful(response):
                 error_msg = get_response_error(response)
