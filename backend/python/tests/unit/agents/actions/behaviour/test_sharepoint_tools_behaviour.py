@@ -34,20 +34,6 @@ from tests.unit.connectors.sources.microsoft.behaviour.ms_graph_fakes import (
 if TYPE_CHECKING:
     from app.agents.actions.microsoft.sharepoint.sharepoint import SharePoint
 
-PENDING = {
-    "errors": "Graph failures reach the agent without a next step, and a rate limit without a wait",
-    "files": "list_files drops Graph's next-page link, so a partial folder listing reads as complete",
-    "pages": "get_pages drops Graph's next-page link, so a partial page list reads as complete",
-    "notebooks": "find_notebook resolves from the first 50 notebooks only, and a nameless notebook matches anything",
-    "sections": "list_notebook_pages shows a section whose pages could not be read as an empty section",
-    "content": "get_notebook_page_content drops ids past 20 silently and reports success when every page failed",
-}
-
-
-def pending(key: str) -> pytest.MarkDecorator:
-    return pytest.mark.xfail(strict=True, reason=PENDING[key])
-
-
 SITE_PATH = f"{V1}/sites/{SITE}"
 NOTEBOOKS = f"{SITE_PATH}/onenote/notebooks"
 
@@ -323,7 +309,6 @@ class TestNotebooks:
         assert "Agenda" in data["pages"][0]["content_text"]
         assert data["failed_page_ids"] == ["pg-2"]
 
-    @pending("content")
     async def test_page_content_that_failed_for_every_page_is_a_failure(self, sp, stub) -> None:
         stub.on("GET", f"{SITE_PATH}/onenote/pages/pg-1", graph_error(403, "accessDenied", "Access denied"))
 

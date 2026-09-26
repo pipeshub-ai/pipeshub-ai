@@ -1729,6 +1729,14 @@ class SharePoint:
                     results.append(content_resp.data)
                 else:
                     failed_page_ids.append(pid)
+            if failed_page_ids and not results:
+                return False, json.dumps({
+                    "error": (
+                        f"None of the requested OneNote pages could be read ({', '.join(failed_page_ids)}). "
+                        "Check the ids with list_notebook_pages, or try again in a moment."
+                    ),
+                    "failed_page_ids": failed_page_ids,
+                })
             out: dict[str, Any] = {
                 "pages": results,
                 "count": len(results),
