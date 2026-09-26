@@ -420,6 +420,27 @@ export const agentAddMessageParamsSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Agent non-streaming: create + add message (`chatMode` defaults to `quick`)
+// ---------------------------------------------------------------------------
+
+export const agentCreateConversationSchema = z.object({
+  params: z.object(agentKeyParam),
+  body: agentStreamCreateBodySchema.extend({
+    chatMode: agentChatModeSchema.optional(),
+  }),
+});
+
+export const agentAddMessageSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
+  }),
+  body: agentAddMessageBodySchema.extend({
+    chatMode: agentChatModeSchema.optional(),
+  }),
+});
+
+// ---------------------------------------------------------------------------
 // Agent create (POST /agents/create) — gateway guardrails; Python enforces semantics
 // ---------------------------------------------------------------------------
 

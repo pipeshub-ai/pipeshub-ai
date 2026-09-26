@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from io import BytesIO
 
 import pdfplumber
@@ -23,6 +23,7 @@ from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry,
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
+from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.api.middlewares.auth import require_scopes, require_service_token
@@ -1397,21 +1398,14 @@ async def _generate_chat_stream_via_agent_loop(
         yield event
 
 
-@router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
-@inject
-async def askAIStream(
+async def _parse_chat_query(
     request: Request,
-    retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    config_service: ConfigurationService = Depends(get_config_service),
-    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
-) -> StreamingResponse:
-    """Perform semantic search across documents with streaming events and tool support.
-
-    Every mode (`internal_search`, `web_search`, `agent`) routes through the
-    agent loop (`app.agents.chat_modes.run_chat_stream`) — see that package
-    for the mode → tool/prefetch behavior.
-    """
+    cancellation_registry: RunCancellationRegistry,
+    *,
+    streaming: bool,
+) -> "ChatQuery":
+    """Request prelude shared by `/chat` and `/chat/stream`: parse, validate,
+    reject a `runId` that is already running, and record the session."""
     try:
         body = await request.json()
     except Exception:
@@ -1428,7 +1422,6 @@ async def askAIStream(
     if query_info.runId and await cancellation_registry.is_active(query_info.runId):
         raise HTTPException(status_code=409, detail=f"runId '{query_info.runId}' is already active")
 
-
     _chat_user = getattr(request.state, "user", {}) or {}
     _chat_email = _chat_user.get("email")
     _search_type = "web_search" if query_info.chatMode == "web_search" else "internal_search"
@@ -1439,7 +1432,55 @@ async def askAIStream(
         "domain": domain_from_email(_chat_email),
         "mode": query_info.chatMode,
         "search_type": _search_type,
+        "streaming": streaming,
     })
+    return query_info
+
+
+@router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@inject
+async def askAI(
+    request: Request,
+    retrieval_service: RetrievalService = Depends(get_retrieval_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
+) -> JSONResponse:
+    """Non-streaming twin of `/chat/stream`: runs the same agent-loop stream
+    and returns its final `completion_data` as JSON (see `stream_collector`).
+
+    Called by Node's `POST /api/v1/conversations/create` and
+    `POST /api/v1/conversations/:id/messages`.
+    """
+    query_info = await _parse_chat_query(request, cancellation_registry, streaming=False)
+    stream = _generate_chat_stream_via_agent_loop(
+        request=request,
+        query_info=query_info,
+        retrieval_service=retrieval_service,
+        graph_provider=graph_provider,
+        config_service=config_service,
+        cancellation_registry=cancellation_registry,
+    )
+    outcome = await collect_stream_outcome(stream, request.is_disconnected)
+    return outcome.to_response()
+
+
+@router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@inject
+async def askAIStream(
+    request: Request,
+    retrieval_service: RetrievalService = Depends(get_retrieval_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
+) -> StreamingResponse:
+    """Perform semantic search across documents with streaming events and tool support.
+
+    Every mode (`internal_search`, `web_search`, `agent`) routes through the
+    agent loop (`app.agents.chat_modes.run_chat_stream`) — see that package
+    for the mode → tool/prefetch behavior.
+    """
+    query_info = await _parse_chat_query(request, cancellation_registry, streaming=True)
 
     stream = _generate_chat_stream_via_agent_loop(
         request=request,

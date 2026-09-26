@@ -1,7 +1,7 @@
 """Coverage for `agent.py`'s non-streaming `POST /{agent_id}/chat`, which
-runs `chat_stream()` and drains its `body_iterator` (see `chat()`'s own
-docstring for why this is deliberately not a second copy of that setup
-logic) rather than duplicating the agent-loop pipeline."""
+runs `chat_stream()` and drains its `body_iterator` through
+`stream_collector` rather than duplicating the agent-loop pipeline.
+Frame-level parsing is covered in `test_stream_collector.py`."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +16,12 @@ def _sse_stream(*frames: str) -> StreamingResponse:
     return StreamingResponse(_gen(), media_type="text/event-stream")
 
 
+def _request() -> MagicMock:
+    request = MagicMock()
+    request.is_disconnected = AsyncMock(return_value=False)
+    return request
+
+
 class TestChatNonStreaming:
     async def test_returns_completion_data_from_complete_event(self):
         from app.api.routes.agent import chat
@@ -26,7 +32,7 @@ class TestChatNonStreaming:
         )
 
         with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
-            response = await chat(MagicMock(), "agent-1")
+            response = await chat(_request(), "agent-1")
 
         assert isinstance(response, JSONResponse)
         assert response.status_code == 200
@@ -40,7 +46,7 @@ class TestChatNonStreaming:
         )
 
         with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
-            response = await chat(MagicMock(), "agent-1")
+            response = await chat(_request(), "agent-1")
 
         assert isinstance(response, JSONResponse)
         assert response.status_code == 429
@@ -51,15 +57,15 @@ class TestChatNonStreaming:
         assert body["searchResults"] == []
         assert body["records"] == []
 
-    async def test_error_event_without_status_code_defaults_to_400(self):
+    async def test_error_event_without_status_code_or_code_is_a_500(self):
         from app.api.routes.agent import chat
 
         stream = _sse_stream('event: error\ndata: {"error": "boom"}\n\n')
 
         with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
-            response = await chat(MagicMock(), "agent-1")
+            response = await chat(_request(), "agent-1")
 
-        assert response.status_code == 400
+        assert response.status_code == 500
         import json
         body = json.loads(response.body)
         assert body["message"] == "boom"
@@ -70,16 +76,17 @@ class TestChatNonStreaming:
         stream = _sse_stream('event: status\ndata: {"status": "planning", "message": "..."}\n\n')
 
         with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
-            response = await chat(MagicMock(), "agent-1")
+            response = await chat(_request(), "agent-1")
 
         assert response.status_code == 500
         import json
         body = json.loads(response.body)
         assert "did not produce a response" in body["message"]
+        assert body["code"] == "no_response"
 
     async def test_multiple_frames_in_one_chunk_are_all_parsed(self):
-        """`_parse_sse_events` must split a single `body_iterator` chunk
-        containing more than one `event:`/`data:` frame."""
+        """A single `body_iterator` chunk
+        containing more than one `event:`/`data:` frame is fully parsed."""
         from app.api.routes.agent import chat
 
         combined_chunk = (
@@ -89,7 +96,7 @@ class TestChatNonStreaming:
         stream = _sse_stream(combined_chunk)
 
         with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
-            response = await chat(MagicMock(), "agent-1")
+            response = await chat(_request(), "agent-1")
 
         import json
         assert json.loads(response.body) == {"answer": "combined"}
@@ -103,7 +110,7 @@ class TestChatNonStreaming:
         stream = StreamingResponse(_gen(), media_type="text/event-stream")
 
         with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
-            response = await chat(MagicMock(), "agent-1")
+            response = await chat(_request(), "agent-1")
 
         import json
         assert json.loads(response.body) == {"answer": "from-bytes"}
@@ -117,7 +124,7 @@ class TestChatNonStreaming:
         )
 
         with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
-            response = await chat(MagicMock(), "agent-1")
+            response = await chat(_request(), "agent-1")
 
         import json
         assert json.loads(response.body) == {"answer": "second"}
@@ -131,6 +138,60 @@ class TestChatNonStreaming:
         passthrough = JSONResponse(status_code=403, content={"message": "forbidden"})
 
         with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=passthrough)):
-            response = await chat(MagicMock(), "agent-1")
+            response = await chat(_request(), "agent-1")
 
         assert response is passthrough
+
+    async def test_agui_run_finished_result_is_returned(self):
+        from app.api.routes.agent import chat
+
+        stream = _sse_stream(
+            'event: RUN_STARTED\ndata: {"type": "RUN_STARTED", "runId": "r1"}\n\n',
+            'event: RUN_FINISHED\ndata: {"type": "RUN_FINISHED", "runId": "r1", '
+            '"result": {"answer": "agui", "citations": []}}\n\n',
+        )
+
+        with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
+            response = await chat(_request(), "agent-1")
+
+        import json
+        assert response.status_code == 200
+        assert json.loads(response.body) == {"answer": "agui", "citations": []}
+
+    async def test_frame_split_across_chunks_is_not_lost(self):
+        from app.api.routes.agent import chat
+
+        whole = 'event: RUN_FINISHED\ndata: {"type": "RUN_FINISHED", "result": {"answer": "split"}}\n\n'
+        stream = _sse_stream(whole[:25], whole[25:])
+
+        with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
+            response = await chat(_request(), "agent-1")
+
+        import json
+        assert json.loads(response.body) == {"answer": "split"}
+
+    async def test_root_run_error_code_maps_to_status(self):
+        from app.api.routes.agent import chat
+
+        stream = _sse_stream(
+            'event: RUN_ERROR\ndata: {"type": "RUN_ERROR", "runId": "r1", '
+            '"message": "No LLM is configured.", "code": "llm_not_configured"}\n\n',
+        )
+
+        with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
+            response = await chat(_request(), "agent-1")
+
+        import json
+        assert response.status_code == 424
+        assert json.loads(response.body)["message"] == "No LLM is configured."
+
+    async def test_marks_request_as_non_streaming_for_telemetry(self):
+        from app.api.routes.agent import chat
+
+        request = _request()
+        stream = _sse_stream('event: complete\ndata: {"answer": "x"}\n\n')
+
+        with patch("app.api.routes.agent.chat_stream", new=AsyncMock(return_value=stream)):
+            await chat(request, "agent-1")
+
+        assert request.state.chat_streaming is False
