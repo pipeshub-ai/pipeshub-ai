@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 _MAX_FILE_CONTENT_BYTES = 50 * 1024 * 1024  # 50 MB — matches OneDrive
 _NOTEBOOK_PAGE_SIZE = 50
 _MAX_NOTEBOOK_PAGES = 20
+_MAX_NOTEBOOK_PAGES_PER_CALL = 20
 
 
 def _sharepoint_file_label(entry: dict) -> str:
@@ -1714,8 +1715,8 @@ class SharePoint:
     ) -> tuple[bool, str]:
         """Get content for selected OneNote pages."""
         try:
-            cap = min(len(page_ids), 20)
-            page_ids = page_ids[:cap]
+            skipped_page_ids = page_ids[_MAX_NOTEBOOK_PAGES_PER_CALL:]
+            page_ids = page_ids[:_MAX_NOTEBOOK_PAGES_PER_CALL]
             results: list[dict[str, Any]] = []
             failed_page_ids: list[str] = []
             for pid in page_ids:
@@ -1735,6 +1736,12 @@ class SharePoint:
             }
             if failed_page_ids:
                 out["failed_page_ids"] = failed_page_ids
+            if skipped_page_ids:
+                out["skipped_page_ids"] = skipped_page_ids
+                out["note"] = (
+                    f"Only the first {_MAX_NOTEBOOK_PAGES_PER_CALL} pages are read per call. Call again with the "
+                    f"remaining page_ids to read them: {', '.join(skipped_page_ids)}."
+                )
             return True, json.dumps(out)
         except Exception as e:
             return self._handle_error(e, "get notebook page content")

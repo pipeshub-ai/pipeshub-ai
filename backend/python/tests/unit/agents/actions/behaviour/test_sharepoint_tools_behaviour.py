@@ -332,7 +332,6 @@ class TestNotebooks:
         assert ok is False
         assert "pg-1" in assert_safe_error(data)
 
-    @pending("content")
     async def test_page_ids_past_the_limit_are_named_not_dropped(self, sp, stub) -> None:
         ids = [f"pg-{i}" for i in range(22)]
         for pid in ids:
