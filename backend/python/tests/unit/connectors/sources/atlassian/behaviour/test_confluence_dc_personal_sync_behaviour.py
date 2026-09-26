@@ -895,13 +895,6 @@ class TestMoreReindexShapes:
         assert updated.weburl == f"{BASE}/c2"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Bug, left alone because an open PR edits this connector: the 'Index Page Comments' "
-        "switch is read but never applied, so comments are indexed even when it is off."
-    ),
-)
 async def test_switching_off_comment_indexing_is_respected(
     atlassian_api: AtlassianApiStub, records_db: FakeRecordsDb, checkpoints: FakeCheckpointStore, search: ContentSearch
 ) -> None:
