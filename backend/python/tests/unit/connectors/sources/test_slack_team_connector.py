@@ -7786,14 +7786,14 @@ class TestStreamFileBytesEdgeCases:
             await anext(c._stream_file_bytes(fr))
 
     @pytest.mark.asyncio
-    async def test_no_token_logs_warning(self):
+    async def test_download_uses_the_token_the_file_lookup_used(self):
         from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
         from app.connectors.sources.slack.team.connector import SlackConnector
         from app.models.entities import FileRecord, RecordType
 
         c = _connector_pipeline_ready()
         inner = MagicMock()
-        inner.get_token = MagicMock(return_value=None)
+        inner.get_token = MagicMock(return_value="xoxb-changed-by-another-call")
         c.external_client.get_client = MagicMock(return_value=inner)
         fr = FileRecord(
             org_id="org-test",
@@ -7810,6 +7810,7 @@ class TestStreamFileBytesEdgeCases:
             is_file=True,
         )
         ds = MagicMock()
+        ds.access_token = "xoxb-used-for-files-info"
         ds.files_info = AsyncMock(return_value=MagicMock(
             success=True,
             data={"file": {"url_private_download": "https://files.slack.com/f"}},
@@ -7829,6 +7830,8 @@ class TestStreamFileBytesEdgeCases:
             async def __aexit__(self, *a):
                 return None
 
+        sent_headers: list = []
+
         class _Http:
             async def __aenter__(self):
                 return self
@@ -7836,7 +7839,8 @@ class TestStreamFileBytesEdgeCases:
             async def __aexit__(self, *a):
                 return None
 
-            def stream(self, *_a, **_k):
+            def stream(self, *_a, **k):
+                sent_headers.append(k.get("headers"))
                 return _StreamCM()
 
         with (
@@ -7847,7 +7851,7 @@ class TestStreamFileBytesEdgeCases:
             async for chunk in c._stream_file_bytes(fr):
                 out += chunk
         assert out == b"data"
-        c.logger.warning.assert_called()
+        assert sent_headers == [{"Authorization": "Bearer xoxb-used-for-files-info"}]
 
     @pytest.mark.asyncio
     async def test_download_status_error(self):
