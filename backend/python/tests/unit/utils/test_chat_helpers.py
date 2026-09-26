@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
 
+import aiohttp
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
@@ -2678,6 +2679,32 @@ class TestGetFlattenedResults:
         assert len(results) >= 1
         assert results[0]["content"] == "Hello world"
         assert results[0]["block_type"] == BlockType.TEXT.value
+
+    @pytest.mark.asyncio
+    async def test_one_unreadable_record_does_not_fail_the_rest(self):
+        """A storage 404 for one hit must drop that record, not the whole search."""
+        good = _make_record_blob()
+        good["block_containers"]["blocks"] = [_make_text_block(index=0, data="still here")]
+
+        async def fetch(virtual_record_id, **_kwargs):
+            if virtual_record_id == "vr-missing":
+                raise aiohttp.ClientError("Failed to retrieve record from storage")
+            return good
+
+        blob_store = self._make_blob_store()
+        blob_store.get_record_from_storage = AsyncMock(side_effect=fetch)
+        vr_map: dict = {}
+        result_set = [
+            {"content": "gone", "score": 0.9,
+             "metadata": {"virtualRecordId": "vr-missing", "blockIndex": 0, "isBlockGroup": False}},
+            {"content": "still here", "score": 0.8,
+             "metadata": {"virtualRecordId": "vr-ok", "blockIndex": 0, "isBlockGroup": False}},
+        ]
+
+        results = await get_flattened_results(result_set, blob_store, "org-1", False, vr_map)
+
+        assert vr_map["vr-missing"] is None
+        assert [r["virtual_record_id"] for r in results] == ["vr-ok"]
 
     @pytest.mark.asyncio
     async def test_image_block_multimodal(self):

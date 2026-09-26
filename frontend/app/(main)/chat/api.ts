@@ -329,6 +329,8 @@ export const ChatApi = {
         ...(request.agentCapabilities ? { agentCapabilities: request.agentCapabilities } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
         ...(request.projectId ? { projectId: request.projectId } : {}),
+        ...(request.disableSemantic ? { disableSemantic: true } : {}),
+        ...(request.disablePatternMatch ? { disablePatternMatch: true } : {}),
       };
     } else {
       endpoint = request.conversationId
@@ -377,6 +379,8 @@ export const ChatApi = {
       agentCapabilities?: StreamChatRequest['agentCapabilities'];
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
       runId?: string;
+      disableSemantic?: boolean;
+      disablePatternMatch?: boolean;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -402,6 +406,12 @@ export const ChatApi = {
     if (request.runId) {
       body.runId = request.runId;
     }
+    if (request.disableSemantic) {
+      body.disableSemantic = true;
+    }
+    if (request.disablePatternMatch) {
+      body.disablePatternMatch = true;
+    }
 
     await runChatStream(endpoint, body, callbacks);
   },
@@ -426,6 +436,8 @@ export const ChatApi = {
       agentCapabilities?: AgentCapabilities;
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
       runId?: string;
+      disableSemantic?: boolean;
+      disablePatternMatch?: boolean;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -450,6 +462,12 @@ export const ChatApi = {
     }
     if (model.runId) {
       agentRegenBody.runId = model.runId;
+    }
+    if (model.disableSemantic) {
+      agentRegenBody.disableSemantic = true;
+    }
+    if (model.disablePatternMatch) {
+      agentRegenBody.disablePatternMatch = true;
     }
 
     await runChatStream(endpoint, agentRegenBody, callbacks);

@@ -1890,6 +1890,43 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_path(
+        self,
+        record_id: str,
+        transaction: str | None = None
+    ) -> str | None:
+        pass
+
+    @abstractmethod
+    async def get_record_path_segments(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return individual record names from root ancestor to the given record.
+
+        Unlike ``get_record_path`` (which joins names with ``/``), this
+        returns each name as a separate list element so names that
+        themselves contain ``/`` are preserved correctly.
+
+        Returns an empty list when the record is not found.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_group_path(
+        self,
+        record_group_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """Return record group names from root ancestor to the given group (inclusive).
+
+        Walks BELONGS_TO edges from the group through parent record groups.
+        Returns an empty list when the group is not found.
+        """
+        pass
+
+    @abstractmethod
     async def get_file_record_by_id(
         self,
         record_id: str,
@@ -2909,6 +2946,26 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def get_virtual_record_ids_shared_outside_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """VRIDs of this connector's records that a live record elsewhere also holds.
+
+        Deduplicated content is stored once, under whichever connector indexed
+        it first, and every other record with that VRID reads the same storage
+        documents. Before a connector's storage is deleted, these are the VRIDs
+        whose documents must survive.
+
+        Same liveness rule as ``get_records_by_virtual_record_id``: soft-deleted
+        records do not count, and the lookup is not scoped by connector type.
+
+        Raises on failure rather than returning an empty list — an empty answer
+        tells the caller it may delete shared storage.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     async def get_records_by_virtual_record_id(
         self,
@@ -3059,6 +3116,66 @@ class IGraphDBProvider(ABC):
         return AccessibleContainers(
             fallback_reason="provider does not implement container filtering"
         )
+
+    @abstractmethod
+    async def check_vrids_accessible(
+        self,
+        user_id: str,
+        org_id: str,
+        virtual_record_ids: list[str],
+    ) -> dict[str, str]:
+        """
+        Check which virtual record IDs are accessible to a user.
+
+        Unlike get_accessible_virtual_record_ids which scans ALL records for
+        given apps/filters, this checks only the specified virtualRecordIds —
+        much cheaper when the candidate set is small (e.g. pattern match results).
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): Organization ID
+            virtual_record_ids (list[str]): Specific virtualRecordIds to check
+
+        Returns:
+            Dict[str, str]: Mapping of virtualRecordId -> recordId for accessible records only
+        """
+        pass
+
+    async def resolve_vrids_to_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        org_id: str,
+    ) -> dict[str, str]:
+        """Resolve virtualRecordIds to record _keys without permission checks.
+
+        Used when the caller has already established access at the container
+        level (APP_LEVEL connector or RECORD_GROUP_LEVEL-scoped grep). Skips the
+        expensive permission-path traversal that ``check_vrids_accessible``
+        performs.
+
+        Raises ``NotImplementedError`` by default so callers can fall back to
+        ``check_vrids_accessible`` gracefully.  Override in concrete providers
+        for a lightweight query.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_accessible_record_groups_for_connector(
+        self,
+        user_id: str,
+        org_id: str,
+        connector_id: str,
+    ) -> list[dict[str, str]]:
+        """Return record groups accessible to the user for one connector.
+
+        Checks permission paths 5-7 (the RecordGroup-mediated paths):
+        - Path 5: User → Organization → RecordGroup
+        - Path 6: User → Group/Role → RecordGroup
+        - Path 7: User → RecordGroup (direct)
+
+        Each entry is ``{"id": "<rgId>", "group_name": "<groupName>"}``.
+        """
+        pass
 
     @abstractmethod
     async def get_records_by_record_ids(

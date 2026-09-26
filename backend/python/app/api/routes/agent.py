@@ -173,6 +173,8 @@ class ChatQuery(BaseModel):
     # project-context.ts). Threaded into `filters["strictScope"]` below —
     # see `ChatQuery.strictScope` in chatbot.py for the full rationale.
     strictScope: bool = False
+    disableSemantic: bool = False
+    disablePatternMatch: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
@@ -3961,6 +3963,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "attachments": chat_query.attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,
                     "runId": chat_query.runId,
+                    "disable_semantic": chat_query.disableSemantic,
+                    "disable_pattern_match": chat_query.disablePatternMatch,
                 }
 
                 client_name = request.headers.get("client-name")

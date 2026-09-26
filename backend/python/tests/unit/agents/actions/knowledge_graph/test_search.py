@@ -667,3 +667,21 @@ class TestEmptyNarrowedSearch:
         assert retrieval.search_with_filters.await_count == 1
         assert result.startswith("Top 1 block")
         assert "source_ids omitted" not in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_grep_hits_all_dropped_by_the_merge_still_report_an_empty_narrowed_search(
+        self, mock_parse,
+    ) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_empty()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"_key": "r9"}])), \
+                patch(f"{search_mod}.merge_pattern_match_results", AsyncMock(return_value=[])), \
+                patch(f"{search_mod}.get_flattened_results", AsyncMock(return_value=[])):
+            parsed = json.loads(
+                await execute_search(_state(retrieval), "pricing", source_ids=["private-kb-app"])
+            )
+
+        assert parsed["result_count"] == 0
+        assert parsed["message"] == NARROWED_SEARCH_EMPTY_MESSAGE

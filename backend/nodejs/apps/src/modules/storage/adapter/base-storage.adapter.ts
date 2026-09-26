@@ -175,4 +175,53 @@ export class StorageServiceAdapter {
       ? this.adapter.deleteObject(document)
       : Promise.reject(new Error('Method not implemented'));
   }
+
+  deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
+    return this.adapter.deleteTree
+      ? this.adapter.deleteTree(storagePath)
+      : Promise.reject(new Error('deleteTree not implemented for this storage provider'));
+  }
+
+  copyObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    return this.adapter.copyObject
+      ? this.adapter.copyObject(sourcePath, destinationPath)
+      : Promise.reject(new Error('copyObject not implemented for this storage provider'));
+  }
+
+  copyTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    return this.adapter.copyTree
+      ? this.adapter.copyTree(sourcePrefix, destinationPrefix)
+      : Promise.reject(new Error('copyTree not implemented for this storage provider'));
+  }
+
+  renameTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    return this.adapter.renameTree
+      ? this.adapter.renameTree(sourcePrefix, destinationPrefix)
+      : Promise.reject(new Error('renameTree not implemented for this storage provider'));
+  }
+
+  renameObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    return this.adapter.renameObject
+      ? this.adapter.renameObject(sourcePath, destinationPath)
+      : this.copyObject(sourcePath, destinationPath);
+  }
+
+  getObjectUrl(storageKey: string): string {
+    if (!this.adapter.getObjectUrl) {
+      throw new Error('getObjectUrl not implemented for this storage provider');
+    }
+    return this.adapter.getObjectUrl(storageKey);
+  }
 }

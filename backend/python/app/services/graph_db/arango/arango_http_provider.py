@@ -3403,12 +3403,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query = """
             LET start_record = DOCUMENT(@records_collection, @record_id)
             FILTER start_record != null
-            // Only follow the canonical parent (externalParentId) so duplicate/stale edges don't produce wrong paths
+            // Follow PARENT_CHILD and ATTACHMENT edges to build hierarchical paths for both pages and attachments
             LET ancestors = (
                 FOR v, e, p IN 1..100 INBOUND start_record
                     GRAPH @graph_name
-                    FILTER e.relationshipType == 'PARENT_CHILD'
+                    FILTER e.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
                     FILTER v.externalRecordId == p.vertices[LENGTH(p.vertices)-2].externalParentId
+                        OR v._key == p.vertices[LENGTH(p.vertices)-2].externalParentId
                     RETURN v.recordName
             )
             LET path_order = REVERSE(ancestors)
@@ -3440,6 +3441,103 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to get record path for {record_id}: {str(e)}")
             return None
+
+    async def get_record_path_segments(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return individual record names from root ancestor to *record_id*.
+
+        Identical traversal logic to ``get_record_path`` (same edge/node
+        filters, same depth), but returns the names as a list instead of
+        joining them with ``CONCAT_SEPARATOR``.  This avoids ambiguity
+        when a record name itself contains ``/``.
+        """
+        try:
+            query = """
+            LET start_record = DOCUMENT(@records_collection, @record_id)
+            FILTER start_record != null
+
+            // Follow PARENT_CHILD and ATTACHMENT edges to build hierarchical paths
+            LET ancestors = (
+                FOR v, e, p IN 1..100 INBOUND start_record
+                    GRAPH @graph_name
+                    FILTER e.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                    FILTER v.externalRecordId == p.vertices[LENGTH(p.vertices)-2].externalParentId
+                        OR v._key == p.vertices[LENGTH(p.vertices)-2].externalParentId
+                    RETURN v.recordName
+            )
+            LET path_order = REVERSE(ancestors)
+            LET full_path_list = APPEND(path_order, start_record.recordName)
+
+            // Return as list — NOT joined with '/' — so names containing '/' stay intact
+            RETURN (
+                FOR name IN full_path_list
+                FILTER name != null AND name != ""
+                RETURN name
+            )
+            """
+
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "record_id": record_id,
+                    "records_collection": CollectionNames.RECORDS.value,
+                    "graph_name": GraphNames.KNOWLEDGE_GRAPH.value,
+                },
+                txn_id=transaction,
+            )
+
+            if result and len(result) > 0 and isinstance(result[0], list):
+                return result[0]
+            return []
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get record path segments for {record_id}: {str(e)}")
+            return []
+
+    async def get_record_group_path(
+        self,
+        record_group_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        try:
+            query = """
+            LET start_rg = DOCUMENT(@rg_collection, @record_group_id)
+            FILTER start_rg != null
+
+            LET ancestors = (
+                FOR v IN 1..50 OUTBOUND start_rg
+                    GRAPH @graph_name
+                    OPTIONS { edgeCollections: [@belongs_to_collection] }
+                    PRUNE NOT IS_SAME_COLLECTION(@rg_collection, v)
+                    FILTER IS_SAME_COLLECTION(@rg_collection, v)
+                    RETURN v.groupName || v.name
+            )
+
+            LET start_name = start_rg.groupName || start_rg.name
+            LET ordered = APPEND(REVERSE(ancestors), [start_name])
+            LET clean = (FOR n IN ordered FILTER n != null AND n != "" RETURN n)
+            RETURN clean
+            """
+
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "record_group_id": record_group_id,
+                    "rg_collection": CollectionNames.RECORD_GROUPS.value,
+                    "graph_name": GraphNames.KNOWLEDGE_GRAPH.value,
+                    "belongs_to_collection": CollectionNames.BELONGS_TO.value,
+                },
+                txn_id=transaction
+            )
+
+            if result and result[0]:
+                return result[0]
+            return []
+        except Exception as e:
+            self.logger.error(f"❌ Get record group path failed: {str(e)}")
+            return []
 
     async def get_record_by_external_revision_id(
         self,
@@ -12025,11 +12123,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
                 return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
             if not await self.kb_exists(kb_id):
+                self.logger.warning(f"❌ kb_exists returned false for KB {kb_id} during folder creation by user {user_id}")
                 return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
                 if user_role is None:
-                    # No role at all → hide existence (404), same as the read path.
+                    self.logger.warning(
+                        f"❌ Permission check returned None for user {user_key} on KB {kb_id} "
+                        f"(KB exists but no permission found or permission query failed)"
+                    )
                     return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
                 kb_name = await self._fetch_kb_name(kb_id)
                 kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
@@ -12040,6 +12142,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return {"valid": False, "success": False, "code": 403, "reason": reason}
             return {"valid": True, "user": user, "user_key": user_key, "user_role": user_role}
         except Exception as e:
+            self.logger.error(f"❌ Unexpected error in folder creation validation for KB {kb_id}: {e}")
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
 
     async def find_folder_by_name_in_parent(
@@ -20244,6 +20347,290 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 raise
             return {}
 
+    async def check_vrids_accessible(
+        self,
+        user_id: str,
+        org_id: str,
+        virtual_record_ids: list[str],
+    ) -> dict[str, str]:
+        """
+        Check which virtual record IDs are accessible to a user.
+
+        Targeted permission check: instead of scanning all records for an app,
+        this checks only the specified virtualRecordIds via the same 8 permission
+        paths as get_accessible_virtual_record_ids but anchor-filtered to a small
+        candidate set.
+
+        Args:
+            user_id: The userId field value
+            org_id: Organization ID
+            virtual_record_ids: Specific virtualRecordIds to check (typically 5-10)
+
+        Returns:
+            Dict mapping virtualRecordId -> recordId for accessible records only
+        """
+        if not virtual_record_ids:
+            return {}
+
+        start_time = time.time()
+        try:
+            user_app_ids = await self._get_user_app_ids(user_id)
+
+            query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+
+            FOR record IN @@records
+                FILTER record.virtualRecordId IN @vrids
+                FILTER record.indexingStatus == @completedStatus
+                FILTER record.isDeleted != true
+                FILTER record.orgId == @orgId
+                FILTER record.origin != "CONNECTOR" OR record.connectorId IN @userAppIds
+
+                LET directAccess = (
+                    FOR v IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET groupBelongsAccess = (
+                    FOR grp IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FOR v IN 1..1 ANY grp._id {CollectionNames.PERMISSION.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET groupPermAccess = (
+                    FOR grp IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("groups", grp) OR IS_SAME_COLLECTION("roles", grp)
+                    FOR v IN 1..1 ANY grp._id {CollectionNames.PERMISSION.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET orgAccess = (
+                    FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("organizations", org)
+                    FOR v IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET orgRecordGroupAccess = (
+                    FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("organizations", org)
+                    FOR rg IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                    FOR v IN 0..20 INBOUND rg._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET recordGroupAccess = (
+                    FOR grp IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("groups", grp) OR IS_SAME_COLLECTION("roles", grp)
+                    FOR rg IN 1..1 ANY grp._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                    FOR v IN 0..20 INBOUND rg._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET inheritedRecordGroupAccess = (
+                    FOR rg IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                    FOR v IN 0..20 INBOUND rg._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET kbDirectAccess = record.connectorName == @kbConnectorName ? (
+                    FOR kb IN 1..1 OUTBOUND record._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("apps", kb) AND kb.type == "KB"
+                    FOR perm IN {CollectionNames.PERMISSION.value}
+                        FILTER perm._from == userDoc._id AND perm._to == kb._id
+                        FILTER perm.type == "USER"
+                        LIMIT 1 RETURN true
+                ) : []
+
+                LET kbTeamAccess = record.connectorName == @kbConnectorName ? (
+                    FOR kb IN 1..1 OUTBOUND record._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("apps", kb) AND kb.type == "KB"
+                    FOR teamPerm IN {CollectionNames.PERMISSION.value}
+                        FILTER teamPerm._to == kb._id AND teamPerm.type == "TEAM"
+                        FOR userTeamPerm IN {CollectionNames.PERMISSION.value}
+                            FILTER userTeamPerm._from == userDoc._id
+                            FILTER userTeamPerm._to == teamPerm._from
+                            FILTER userTeamPerm.type == "USER"
+                            LIMIT 1 RETURN true
+                ) : []
+
+                LET anyoneAccess = (
+                    FOR a IN @@anyone
+                    FILTER a.file_key == record._key
+                    FILTER a.organization == @orgId
+                    LIMIT 1 RETURN true
+                )
+
+                FILTER LENGTH(directAccess) > 0
+                    OR LENGTH(groupBelongsAccess) > 0
+                    OR LENGTH(groupPermAccess) > 0
+                    OR LENGTH(orgAccess) > 0
+                    OR LENGTH(orgRecordGroupAccess) > 0
+                    OR LENGTH(recordGroupAccess) > 0
+                    OR LENGTH(inheritedRecordGroupAccess) > 0
+                    OR LENGTH(kbDirectAccess) > 0
+                    OR LENGTH(kbTeamAccess) > 0
+                    OR LENGTH(anyoneAccess) > 0
+
+                COLLECT virtualRecordId = record.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).record._key
+                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
+            """
+
+            bind_vars = {
+                "userId": user_id,
+                "orgId": org_id,
+                "vrids": virtual_record_ids,
+                "userAppIds": user_app_ids or [],
+                "completedStatus": ProgressStatus.COMPLETED.value,
+                "kbConnectorName": Connectors.KNOWLEDGE_BASE.value,
+                "@users": CollectionNames.USERS.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@anyone": CollectionNames.ANYONE.value,
+            }
+
+            result = await self.execute_query(query, bind_vars=bind_vars)
+
+            virtual_id_to_record_id: dict[str, str] = {}
+            if result:
+                for row in result:
+                    vid = row.get("virtualRecordId")
+                    rid = row.get("recordId")
+                    if vid and rid:
+                        virtual_id_to_record_id[vid] = rid
+
+            total_time = time.time() - start_time
+            self.logger.debug(
+                "check_vrids_accessible: %d/%d accessible in %.3fs",
+                len(virtual_id_to_record_id), len(virtual_record_ids), total_time,
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(f"check_vrids_accessible failed: {e}", exc_info=True)
+            return {}
+
+    async def resolve_vrids_to_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        org_id: str,
+    ) -> dict[str, str]:
+        if not virtual_record_ids:
+            return {}
+        try:
+            query = f"""
+            FOR record IN @@records
+                FILTER record.virtualRecordId IN @vrids
+                FILTER record.indexingStatus == @completedStatus
+                FILTER record.isDeleted != true
+                FILTER record.orgId == @orgId
+                COLLECT virtualRecordId = record.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).record._key
+                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
+            """
+            bind_vars = {
+                "vrids": virtual_record_ids,
+                "completedStatus": ProgressStatus.COMPLETED.value,
+                "orgId": org_id,
+                "@records": CollectionNames.RECORDS.value,
+            }
+            result = await self.execute_query(query, bind_vars=bind_vars)
+            mapping: dict[str, str] = {}
+            if result:
+                for row in result:
+                    vid = row.get("virtualRecordId")
+                    rid = row.get("recordId")
+                    if vid and rid:
+                        mapping[vid] = rid
+            return mapping
+        except Exception as e:
+            self.logger.error(f"resolve_vrids_to_record_ids failed: {e}", exc_info=True)
+            return {}
+
+    async def get_accessible_record_groups_for_connector(
+        self,
+        user_id: str,
+        org_id: str,
+        connector_id: str,
+    ) -> list[dict[str, str]]:
+        if not user_id or not org_id or not connector_id:
+            return []
+        try:
+            query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+
+            LET orgRgs = (
+                FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FILTER IS_SAME_COLLECTION("organizations", org)
+                FOR rg IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                FILTER rg.orgId == @orgId AND rg.connectorId == @connectorId
+                RETURN DISTINCT {{id: rg._key, groupName: rg.groupName}}
+            )
+
+            LET groupRoleRgs = (
+                FOR grp IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER IS_SAME_COLLECTION("groups", grp) OR IS_SAME_COLLECTION("roles", grp)
+                FOR rg IN 1..1 ANY grp._id {CollectionNames.PERMISSION.value}
+                FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                FILTER rg.orgId == @orgId AND rg.connectorId == @connectorId
+                RETURN DISTINCT {{id: rg._key, groupName: rg.groupName}}
+            )
+
+            LET directRgs = (
+                FOR rg IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                FILTER rg.orgId == @orgId AND rg.connectorId == @connectorId
+                RETURN DISTINCT {{id: rg._key, groupName: rg.groupName}}
+            )
+
+            FOR rg IN UNION_DISTINCT(orgRgs, groupRoleRgs, directRgs)
+            FILTER rg.id != null
+            RETURN rg
+            """
+
+            bind_vars = {
+                "userId": user_id,
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "@users": CollectionNames.USERS.value,
+            }
+
+            result = await self.execute_query(query, bind_vars=bind_vars)
+            seen: set[str] = set()
+            out: list[dict[str, str]] = []
+            for row in result or []:
+                rg_id = row.get("id")
+                gname = row.get("groupName")
+                if rg_id and gname and rg_id not in seen:
+                    seen.add(rg_id)
+                    out.append({"id": rg_id, "group_name": gname})
+            return out
+        except Exception:
+            self.logger.warning(
+                "get_accessible_record_groups_for_connector failed for user=%s connector=%s",
+                user_id, connector_id, exc_info=True,
+            )
+            return []
+
     async def get_records_by_record_ids(
         self,
         record_ids: list[str],
@@ -20288,6 +20675,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
             return []
+
+    async def get_virtual_record_ids_shared_outside_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        query = f"""
+        LET vids = UNIQUE(
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @connector_id AND r.virtualRecordId != null
+                RETURN r.virtualRecordId
+        )
+        FOR vid IN vids
+            LET other = FIRST(
+                FOR o IN {CollectionNames.RECORDS.value}
+                    FILTER o.virtualRecordId == vid
+                    AND o.connectorId != @connector_id
+                    AND o.isDeleted != true
+                    LIMIT 1
+                    RETURN 1
+            )
+            FILTER other != null
+            RETURN vid
+        """
+        results = await self.http_client.execute_aql(
+            query, {"connector_id": connector_id}, transaction
+        )
+        return [vid for vid in results or [] if vid]
 
     async def get_records_by_virtual_record_id(
         self,

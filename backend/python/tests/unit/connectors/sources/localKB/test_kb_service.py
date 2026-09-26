@@ -477,6 +477,109 @@ class TestDeleteKnowledgeBase:
         service.logger.error.assert_called()
 
 
+class TestDeleteKBStorageCleanup:
+    """Tests for the background blob-storage cleanup on KB delete."""
+
+    @pytest.mark.asyncio
+    async def test_cleanup_task_is_spawned(self, service, mock_config_service):
+        """delete_knowledge_base must schedule _cleanup_kb_storage as a background task."""
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+
+        with patch("app.connectors.sources.localKB.handlers.kb_service.asyncio") as mock_asyncio:
+            mock_asyncio.create_task = MagicMock()
+            result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is True
+        mock_asyncio.create_task.assert_called_once()
+        coro = mock_asyncio.create_task.call_args[0][0]
+        coro.close()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_deletes_blob_storage_then_repairs_shared_records(
+        self, service, mock_config_service,
+    ):
+        helper = AsyncMock()
+        helper.delete_connector_storage = AsyncMock(return_value=5)
+
+        await service._cleanup_kb_storage(helper, "org1", "kb1", ["v-shared"])
+
+        helper.delete_connector_storage.assert_awaited_once_with("org1", "kb1")
+        helper.repair_shared_records.assert_awaited_once_with(
+            "org1", ["v-shared"], service.kafka_service.publish_event
+        )
+
+    @pytest.mark.asyncio
+    async def test_blob_failure_logs_error_and_still_repairs(self, service, mock_config_service):
+        helper = AsyncMock()
+        helper.delete_connector_storage = AsyncMock(side_effect=RuntimeError("storage unreachable"))
+
+        await service._cleanup_kb_storage(helper, "org1", "kb1", ["v-shared"])
+
+        service.logger.error.assert_called()
+        helper.repair_shared_records.assert_awaited_once()
+        helper.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_nothing_shared_still_deletes_storage(self, service, mock_config_service):
+        helper = AsyncMock()
+        helper.repair_shared_records = AsyncMock(return_value=0)
+
+        await service._cleanup_kb_storage(helper, "org1", "kb1", [])
+
+        helper.delete_connector_storage.assert_awaited_once_with("org1", "kb1")
+
+    @pytest.mark.asyncio
+    async def test_unknown_shared_content_keeps_storage(self, service, mock_config_service):
+        helper = AsyncMock()
+
+        await service._cleanup_kb_storage(helper, "org1", "kb1", None)
+
+        helper.delete_connector_storage.assert_not_awaited()
+        helper.repair_shared_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_shared_vrids_are_read_before_the_kb_records_are_deleted(
+        self, service, mock_config_service,
+    ):
+        _setup_kb_owner_resolve(service)
+        calls = []
+        service.graph_provider.get_virtual_record_ids_shared_outside_connector = AsyncMock(
+            side_effect=lambda cid: calls.append("shared") or ["v1"]
+        )
+        service.graph_provider.delete_connector_instance = AsyncMock(
+            side_effect=lambda **kw: calls.append("delete") or {"success": True}
+        )
+
+        with patch("app.connectors.sources.localKB.handlers.kb_service.asyncio") as mock_asyncio:
+            mock_asyncio.create_task = MagicMock()
+            await service.delete_knowledge_base("kb1", "user1", "org1")
+            mock_asyncio.create_task.call_args[0][0].close()
+
+        assert calls == ["shared", "delete"]
+
+    @pytest.mark.asyncio
+    async def test_delete_response_not_blocked_by_cleanup(self, service, mock_config_service):
+        """The API returns success immediately; cleanup runs asynchronously."""
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": ["v1"],
+        })
+
+        with patch("app.connectors.sources.localKB.handlers.kb_service.asyncio") as mock_asyncio:
+            mock_asyncio.create_task = MagicMock()
+            result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is True
+        assert result["code"] == 200
+        mock_asyncio.create_task.assert_called_once()
+        assert mock_asyncio.create_task.call_args[1]["name"] == "kb-cleanup-kb1"
+        coro = mock_asyncio.create_task.call_args[0][0]
+        coro.close()
+
+
 class TestCreateFolderInKb:
     @pytest.mark.asyncio
     async def test_success(self, service):

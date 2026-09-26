@@ -74,6 +74,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_record_path(self, record_id):
         return None
 
+    async def get_record_path_segments(self, record_id):
+        return []
+
     async def get_records_by_status(self, org_id, connector_id, status_filters, limit=None, offset=0, after_key=None, exclude_statuses=None):
         return []
 

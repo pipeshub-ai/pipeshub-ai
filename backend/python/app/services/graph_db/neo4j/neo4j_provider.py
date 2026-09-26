@@ -2222,6 +2222,27 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record key by external ID failed: {str(e)}")
             return None
 
+    async def get_virtual_record_ids_shared_outside_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        # coalesce on both sides: `null <> x` is null in Cypher, which WHERE
+        # reads as false and would hide records lacking either field.
+        query = """
+        MATCH (r:Record {connectorId: $connector_id})
+        WHERE r.virtualRecordId IS NOT NULL
+        WITH DISTINCT r.virtualRecordId AS vid
+        MATCH (o:Record {virtualRecordId: vid})
+        WHERE coalesce(o.connectorId, '') <> $connector_id
+          AND coalesce(o.isDeleted, false) = false
+        RETURN DISTINCT vid
+        """
+        results = await self.client.execute_query(
+            query, parameters={"connector_id": connector_id}, txn_id=transaction
+        )
+        return [row["vid"] for row in results or [] if row.get("vid")]
+
     async def get_records_by_virtual_record_id(
         self,
         virtual_record_id: str,
@@ -3175,12 +3196,13 @@ class Neo4jProvider(IGraphDBProvider):
             // PROFILE
             MATCH path = (start_record:Record {id: $record_id})<-[:RECORD_RELATION*0..100]-(ancestor)
 
-            // 1. Edge Filter: Ensure the edge acts as a parent-child link
-            WHERE all(r IN relationships(path) WHERE r.relationshipType = 'PARENT_CHILD')
+            // 1. Edge Filter: Follow PARENT_CHILD and ATTACHMENT edges for hierarchical paths
+            WHERE all(r IN relationships(path) WHERE r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
 
             // 2. Node Filter: Ensure it follows the strict canonical path
-            AND all(i IN range(0, length(path)-1) 
-                    WHERE nodes(path)[i].externalParentId = nodes(path)[i+1].externalRecordId)
+            AND all(i IN range(0, length(path)-1)
+                    WHERE nodes(path)[i].externalParentId = nodes(path)[i+1].externalRecordId
+                       OR nodes(path)[i].externalParentId = nodes(path)[i+1].id)
 
             // 3. Grab the longest valid path up to the root as above query returns all path lengths incrementally from 0,1,2,3 .....
             WITH nodes(path) AS path_nodes
@@ -3207,6 +3229,87 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get record path failed: {str(e)}")
             return None
+
+    async def get_record_path_segments(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return individual record names from root ancestor to *record_id*.
+
+        Identical traversal logic to ``get_record_path`` (same edge/node
+        filters, same depth, same longest-path selection), but returns the
+        names as a list instead of joining them with ``/``.  This avoids
+        ambiguity when a record name itself contains ``/``.
+        """
+        try:
+            query = """
+            // PROFILE
+            MATCH path = (start_record:Record {id: $record_id})<-[:RECORD_RELATION*0..100]-(ancestor)
+
+            // 1. Edge Filter: Follow PARENT_CHILD and ATTACHMENT edges for hierarchical paths
+            WHERE all(r IN relationships(path) WHERE r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+
+            // 2. Node Filter: Ensure it follows the strict canonical path
+            AND all(i IN range(0, length(path)-1)
+                    WHERE nodes(path)[i].externalParentId = nodes(path)[i+1].externalRecordId
+                       OR nodes(path)[i].externalParentId = nodes(path)[i+1].id)
+
+            // 3. Grab the longest valid path up to the root
+            WITH nodes(path) AS path_nodes
+            ORDER BY size(path_nodes) DESC
+            LIMIT 1
+
+            // 4. Extract names (root first) as a list — NOT joined with '/'
+            WITH [node IN reverse(path_nodes)
+                WHERE node.recordName IS NOT NULL AND node.recordName <> "" | node.recordName] AS segments
+            RETURN segments
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id},
+                txn_id=transaction,
+            )
+            if results and results[0].get("segments"):
+                return results[0]["segments"]
+            return []
+        except Exception as e:
+            self.logger.error(f"❌ Get record path segments failed: {str(e)}")
+            return []
+
+    async def get_record_group_path(
+        self,
+        record_group_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        try:
+            query = """
+            MATCH (start_rg:RecordGroup {id: $record_group_id})
+            OPTIONAL MATCH path = (start_rg)-[:BELONGS_TO*1..50]->(ancestor:RecordGroup)
+            WITH start_rg, path
+            ORDER BY CASE WHEN path IS NULL THEN 0 ELSE length(path) END DESC
+            LIMIT 1
+            WITH CASE
+                WHEN path IS NULL THEN [start_rg]
+                ELSE nodes(path)
+            END AS path_nodes
+            RETURN [node IN REVERSE(path_nodes)
+                WHERE COALESCE(node.groupName, node.name) IS NOT NULL
+                  AND COALESCE(node.groupName, node.name) <> ''
+                | COALESCE(node.groupName, node.name)] AS group_path
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_group_id": record_group_id},
+                txn_id=transaction
+            )
+            if results and results[0].get("group_path"):
+                return results[0]["group_path"]
+            return []
+        except Exception as e:
+            self.logger.error(f"❌ Get record group path failed: {str(e)}")
+            return []
+
     # ==================== Record Group Operations ====================
 
     async def get_record_group_by_external_id(
@@ -5641,6 +5744,242 @@ class Neo4jProvider(IGraphDBProvider):
             if raise_on_error:
                 raise
             return {}
+
+    async def check_vrids_accessible(
+        self,
+        user_id: str,
+        org_id: str,
+        virtual_record_ids: list[str],
+    ) -> dict[str, str]:
+        """Targeted permission check for specific virtualRecordIds.
+
+        Instead of scanning all records for a connector, checks only the
+        specified vrids via EXISTS subqueries that short-circuit on first
+        match — orders of magnitude cheaper for large connectors.
+        """
+        if not virtual_record_ids:
+            return {}
+
+        start_time = time.time()
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return {}
+
+            user_key = user.get("id") or user.get("_key")
+            user_app_ids = await self._get_user_app_ids(user_key)
+
+            query = """
+            MATCH (u:User {id: $userKey})
+
+            // Find candidate records by virtualRecordId
+            UNWIND $vrids AS targetVrid
+            OPTIONAL MATCH (r:Record {virtualRecordId: targetVrid, orgId: $orgId})
+            WHERE r.indexingStatus = $completedStatus
+              AND (r.isDeleted IS NULL OR r.isDeleted <> true)
+              AND (r.origin <> "CONNECTOR" OR r.connectorId IN $userAppIds)
+            WITH u, r, targetVrid
+            WHERE r IS NOT NULL
+
+            // Check all permission paths via EXISTS (short-circuits on first match)
+            WITH u, r, targetVrid
+            WHERE
+                // Path 1: Direct user → record permission
+                EXISTS { MATCH (u)-[:PERMISSION]->(r) }
+                OR
+                // Path 2: User → group (BELONGS_TO) → record
+                EXISTS { MATCH (u)-[:BELONGS_TO]->(:Group)-[:PERMISSION]->(r) }
+                OR
+                // Path 3: User → group/role (PERMISSION) → record
+                EXISTS {
+                    MATCH (u)-[:PERMISSION]->(g)-[:PERMISSION]->(r)
+                    WHERE g:Group OR g:Role
+                }
+                OR
+                // Path 4: User → organization → record
+                EXISTS {
+                    MATCH (u)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(r)
+                }
+                OR
+                // Path 5: User → organization → recordGroup → record (inherit 0..20)
+                EXISTS {
+                    MATCH (u)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(rg:RecordGroup),
+                          (r)-[:INHERIT_PERMISSIONS*0..20]->(rg)
+                }
+                OR
+                // Path 6: User → group/role → recordGroup → record (inherit 0..20)
+                EXISTS {
+                    MATCH (u)-[:PERMISSION]->(g)-[:PERMISSION]->(rg:RecordGroup),
+                          (r)-[:INHERIT_PERMISSIONS*0..20]->(rg)
+                    WHERE g:Group OR g:Role
+                }
+                OR
+                // Path 7: User → recordGroup (direct) → record (inherit 0..20)
+                EXISTS {
+                    MATCH (u)-[:PERMISSION]->(rg:RecordGroup),
+                          (r)-[:INHERIT_PERMISSIONS*0..20]->(rg)
+                }
+                OR
+                // Path 8: KB direct access (KB is an App node, not RecordGroup)
+                EXISTS {
+                    MATCH (r)-[:BELONGS_TO]->(kb:App),
+                          (u)-[:PERMISSION {type: "USER"}]->(kb)
+                    WHERE kb.type = "KB" AND r.connectorName = $kbConnectorName
+                }
+                OR
+                // Path 9: KB team access
+                EXISTS {
+                    MATCH (r)-[:BELONGS_TO]->(kb:App),
+                          (team:Teams)-[:PERMISSION {type: "TEAM"}]->(kb),
+                          (u)-[:PERMISSION {type: "USER"}]->(team)
+                    WHERE kb.type = "KB" AND r.connectorName = $kbConnectorName
+                }
+                OR
+                // Path 10: Anyone access
+                EXISTS {
+                    MATCH (a:Anyone {organization: $orgId, file_key: r.id})
+                }
+
+            RETURN r.virtualRecordId AS virtualRecordId, r.id AS recordId
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "userKey": user_key,
+                    "orgId": org_id,
+                    "vrids": virtual_record_ids,
+                    "userAppIds": user_app_ids or [],
+                    "completedStatus": ProgressStatus.COMPLETED.value,
+                    "kbConnectorName": Connectors.KNOWLEDGE_BASE.value,
+                },
+            )
+
+            virtual_id_to_record_id: dict[str, str] = {}
+            if results:
+                for row in results:
+                    vid = row.get("virtualRecordId")
+                    rid = row.get("recordId")
+                    if vid and rid and vid not in virtual_id_to_record_id:
+                        virtual_id_to_record_id[vid] = rid
+
+            total_time = time.time() - start_time
+            self.logger.debug(
+                "check_vrids_accessible: %d/%d accessible in %.3fs",
+                len(virtual_id_to_record_id), len(virtual_record_ids), total_time,
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(f"check_vrids_accessible failed: {e}", exc_info=True)
+            return {}
+
+    async def resolve_vrids_to_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        org_id: str,
+    ) -> dict[str, str]:
+        if not virtual_record_ids:
+            return {}
+        try:
+            query = """
+            UNWIND $vrids AS targetVrid
+            MATCH (r:Record {virtualRecordId: targetVrid, orgId: $orgId})
+            WHERE r.indexingStatus = $completedStatus
+              AND (r.isDeleted IS NULL OR r.isDeleted <> true)
+            RETURN r.virtualRecordId AS virtualRecordId, r.id AS recordId
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "vrids": virtual_record_ids,
+                    "orgId": org_id,
+                    "completedStatus": ProgressStatus.COMPLETED.value,
+                },
+            )
+            mapping: dict[str, str] = {}
+            if results:
+                for row in results:
+                    vid = row.get("virtualRecordId")
+                    rid = row.get("recordId")
+                    if vid and rid and vid not in mapping:
+                        mapping[vid] = rid
+            return mapping
+        except Exception as e:
+            self.logger.error(f"resolve_vrids_to_record_ids failed: {e}", exc_info=True)
+            return {}
+
+    async def get_accessible_record_groups_for_connector(
+        self,
+        user_id: str,
+        org_id: str,
+        connector_id: str,
+    ) -> list[dict[str, str]]:
+        if not user_id or not org_id or not connector_id:
+            return []
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return []
+            user_key = user.get("id") or user.get("_key")
+
+            query = """
+            MATCH (userDoc:User {id: $userKey})
+
+            CALL {
+                WITH userDoc
+                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(:Organization)
+                               -[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.orgId = $orgId AND rg.connectorId = $connectorId
+                RETURN collect(DISTINCT {id: rg.id, groupName: rg.groupName}) AS rgs5
+            }
+
+            CALL {
+                WITH userDoc
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(gr)
+                WHERE gr:Group OR gr:Role
+                OPTIONAL MATCH (gr)-[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.orgId = $orgId AND rg.connectorId = $connectorId
+                RETURN collect(DISTINCT {id: rg.id, groupName: rg.groupName}) AS rgs6
+            }
+
+            CALL {
+                WITH userDoc
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.orgId = $orgId AND rg.connectorId = $connectorId
+                RETURN collect(DISTINCT {id: rg.id, groupName: rg.groupName}) AS rgs7
+            }
+
+            WITH rgs5 + rgs6 + rgs7 AS allRgs
+            UNWIND allRgs AS rg
+            WITH rg WHERE rg.id IS NOT NULL
+            RETURN DISTINCT rg.id AS rgId, rg.groupName AS groupName
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "userKey": user_key,
+                    "orgId": org_id,
+                    "connectorId": connector_id,
+                },
+            )
+            seen: set[str] = set()
+            out: list[dict[str, str]] = []
+            for row in results or []:
+                rg_id = row.get("rgId")
+                gname = row.get("groupName")
+                if rg_id and gname and rg_id not in seen:
+                    seen.add(rg_id)
+                    out.append({"id": rg_id, "group_name": gname})
+            return out
+        except Exception:
+            self.logger.warning(
+                "get_accessible_record_groups_for_connector failed for user=%s connector=%s",
+                user_id, connector_id, exc_info=True,
+            )
+            return []
 
     async def get_records_by_record_ids(
         self,
@@ -11257,12 +11596,16 @@ class Neo4jProvider(IGraphDBProvider):
                 return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
 
             if not await self.kb_exists(kb_id):
+                self.logger.warning(f"❌ kb_exists returned false for KB {kb_id} during folder creation by user {user_id}")
                 return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
 
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
                 if user_role is None:
-                    # No role at all → hide existence (404), same as the read path.
+                    self.logger.warning(
+                        f"❌ Permission check returned None for user {user_key} on KB {kb_id} "
+                        f"(KB exists but no permission found or permission query failed)"
+                    )
                     return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
                 kb_name = await self._fetch_kb_name(kb_id)
                 kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
@@ -11280,6 +11623,7 @@ class Neo4jProvider(IGraphDBProvider):
             }
 
         except Exception as e:
+            self.logger.error(f"❌ Unexpected error in folder creation validation for KB {kb_id}: {e}")
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
 
 

@@ -108,6 +108,8 @@ class ChatQuery(BaseModel):
     # project scope must stay empty, never widen. Threaded into `filters`
     # below rather than passed as a separate retrieval parameter.
     strictScope: bool = False
+    disableSemantic: bool = False
+    disablePatternMatch: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
@@ -1143,6 +1145,8 @@ async def _generate_chat_stream_via_agent_loop(
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
         "runId": query_info.runId,
+        "disable_semantic": query_info.disableSemantic,
+        "disable_pattern_match": query_info.disablePatternMatch,
     }
     user_info = {
         "userId": user_id,

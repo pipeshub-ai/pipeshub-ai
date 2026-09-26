@@ -23,6 +23,9 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.base.data_processor.storage_cleanup import (
+    StorageCleanupHelper,
+)
 from app.connectors.services.vector_cleanup_events import (
     build_connector_vector_cleanup_events,
     log_cleanup_publish_failure,
@@ -758,6 +761,24 @@ class EventService:
 
         self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
 
+    async def _repair_shared_records(
+        self,
+        cleanup_helper: StorageCleanupHelper,
+        org_id: str,
+        connector_id: str,
+        shared_vrids: list[str],
+    ) -> None:
+        async def publish(topic: str, event: dict) -> bool:
+            return await self.app_container.messaging_producer.send_message(topic=topic, message=event)
+
+        try:
+            await cleanup_helper.repair_shared_records(org_id, shared_vrids, publish)
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to re-index records sharing content with deleted connector "
+                f"{connector_id}: {e}. Re-index them to restore their stored content."
+            )
+
     async def _handle_delete(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """
         Handle the async connector deletion event.
@@ -782,6 +803,14 @@ class EventService:
             # so neither keeps touching records that are about to disappear.
             await sync_task_manager.cancel_sync(connector_id)
             await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
+
+            # Deduplicated content may be stored under this connector while other
+            # connectors' records read it. Only answerable while this connector's
+            # records are still in the graph, so it is asked before deleting them.
+            cleanup_helper = StorageCleanupHelper(
+                self.logger, self.graph_provider, self.app_container.config_service()
+            )
+            shared_vrids = await cleanup_helper.find_shared_virtual_record_ids(connector_id)
 
             # Delete from graph DB
             result = await self.graph_provider.delete_connector_instance(
@@ -846,6 +875,29 @@ class EventService:
                     f"❌ Failed to delete etcd config for connector {connector_id}: {config_err}. "
                     f"Orphaned configuration may remain."
                 )
+
+            # Delete blob storage and MongoDB storage documents
+            if shared_vrids is None:
+                self.logger.error(
+                    f"❌ Skipped blob storage deletion for connector {connector_id}: "
+                    f"content shared with other connectors could not be determined."
+                )
+            else:
+                try:
+                    deleted = await cleanup_helper.delete_connector_storage(
+                        org_id, connector_id
+                    )
+                    self.logger.info(
+                        f"✅ Deleted {deleted} storage documents for connector {connector_id}"
+                    )
+                except Exception as storage_err:
+                    self.logger.error(
+                        f"❌ Failed to delete blob storage for connector {connector_id}: {storage_err}. "
+                        f"Orphaned blobs may remain in storage."
+                    )
+                # Runs even after a failed delete: part of it may have gone through.
+                await self._repair_shared_records(cleanup_helper, org_id, connector_id, shared_vrids)
+            await cleanup_helper.close()
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
             return True

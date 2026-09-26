@@ -1440,3 +1440,37 @@ describe('StorageController', () => {
     })
   })
 })
+
+describe('StorageController.moveTree collision handling', () => {
+  afterEach(() => sinon.restore())
+
+  it('moves only the named record\'s documents and never deletes the others at that path', async () => {
+    const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
+    const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
+    const orgId = makeOrgId()
+    const oldFullPath = `${orgId}/PipesHub/records/c1/Folder`
+    const mine = { _id: new mongoose.Types.ObjectId(), documentPath: oldFullPath, documentName: 'record_v1' }
+    const sibling = { _id: new mongoose.Types.ObjectId(), documentPath: oldFullPath, documentName: 'record_v2' }
+    const unnamed = { _id: new mongoose.Types.ObjectId(), documentPath: oldFullPath, documentName: 'report' }
+    sinon.stub(DocumentModel, 'find').returns({
+      select: () => ({ lean: () => Promise.resolve([mine, sibling, unnamed]) }),
+    } as any)
+    const deleteOne = sinon.stub(DocumentModel, 'deleteOne')
+    sinon.stub(controller, 'initializeStorageAdapter').resolves({ deleteTree: sinon.stub() } as any)
+    sinon.stub(controller as any, 'getConfiguredStorageType').resolves('local')
+    const moveRemote = sinon.stub(controller as any, 'moveTreeRemote').resolves({ failedIds: [] })
+    const req = makeReq({
+      orgId,
+      body: { oldPath: 'records/c1/Folder', newPath: 'records/c1/Renamed', virtualRecordId: 'v1' },
+    })
+    const res = makeRes()
+    const next = sinon.stub()
+
+    await controller.moveTree(req, res, next)
+
+    expect(next.called).to.be.false
+    expect(deleteOne.called).to.be.false
+    expect(moveRemote.firstCall.args[4]).to.deep.equal([mine])
+    expect(res.body).to.deep.equal({ moved: 1, collision: true })
+  })
+})
