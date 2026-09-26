@@ -71,12 +71,21 @@ class TestTheQueuedRequestIsAlwaysCleared:
     @pytest.mark.asyncio
     async def test_pending_resync_is_cleared_before_any_branch(self) -> None:
         """Otherwise the finalizer or the sweep re-issues what was just stopped."""
-        gp = _graph()
+        gp = _graph({"id": "c1", ConnectorStateKeys.PENDING_RESYNC: True})
         await _call(gp, running=True)
         first = gp.update_node.await_args_list[0]
         assert first.args[0] == "c1"
         assert first.args[1] == CollectionNames.APPS.value
         assert first.args[2] == {ConnectorStateKeys.PENDING_RESYNC: False}
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_written_when_nothing_was_flagged(self) -> None:
+        """main's strict Arango app schema has no pendingResync; writing it on
+        every stop made every stopped connector unwritable after a rollback."""
+        gp = _graph({"id": "c1", "status": "IDLE"})
+        await _call(gp, running=True)
+        for call in gp.update_node.await_args_list:
+            assert ConnectorStateKeys.PENDING_RESYNC not in call.args[2]
 
     @pytest.mark.asyncio
     async def test_a_full_sync_owed_by_a_filter_change_survives_the_stop(self) -> None:

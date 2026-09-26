@@ -4537,17 +4537,19 @@ async def stop_connector_sync(
     # be re-issued the moment it ends, by the finalizer or a later sweep, and
     # the connector the user just stopped would start again.
     try:
-        await graph_provider.update_node(
-            connector_id,
-            CollectionNames.APPS.value,
-            # pendingFullSync is deliberately kept. A filter change sets it, and
-            # the sync that changes a connector's scope is owed until one runs:
-            # clearing it here made the next sync incremental, so content the
-            # new filter includes was never fetched and content it excludes
-            # stayed searchable. The cost is that a stopped full-sync request
-            # runs as a full sync next time.
-            {ConnectorStateKeys.PENDING_RESYNC: False},
-        )
+        current = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        # Written only when set: main's strict Arango app schema has no such
+        # field, so writing it on every stop broke a rollback for every
+        # connector anyone had stopped. pendingFullSync is deliberately kept:
+        # a filter change sets it, and the sync that applies a connector's new
+        # scope is owed until one runs. The cost is that a stopped full-sync
+        # request runs as a full sync next time.
+        if (current or {}).get(ConnectorStateKeys.PENDING_RESYNC):
+            await graph_provider.update_node(
+                connector_id,
+                CollectionNames.APPS.value,
+                {ConnectorStateKeys.PENDING_RESYNC: False},
+            )
     except Exception as e:
         logger.warning(
             f"Could not clear pending resync flags for {connector_id} "
