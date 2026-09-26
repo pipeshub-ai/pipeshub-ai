@@ -7,6 +7,7 @@ real; every HTTP request is answered by ``DriveWorld`` and our databases are in-
 
 import logging
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import pytest
@@ -656,6 +657,19 @@ async def test_a_selected_folder_that_recovers_on_the_third_run_is_synced_and_it
 # --- tokens -------------------------------------------------------------------
 
 
+def refresh_grants(http: FakeGoogleHttp) -> list[dict[str, str]]:
+    return [t for t in http.token_requests if t.get("grant_type") == "refresh_token"]
+
+
+def saved_token(config: dict[str, Any], access_token: str, *, age: timedelta, lifetime_s: int = 3600) -> None:
+    """Put a token in settings the way the OAuth flow and the token refresher save one."""
+    config["credentials"].update(
+        access_token=access_token,
+        created_at=(datetime.now() - age).isoformat(),  # noqa: DTZ005 - OAuthToken saves local time
+        expires_in=lifetime_s,
+    )
+
+
 async def test_a_rotated_access_token_in_config_is_used_on_the_next_call(drive: Harness) -> None:
     my_file(drive.world, "f1", "one.txt")
     await drive.sync()
@@ -680,9 +694,81 @@ async def test_a_rejected_access_token_is_refreshed_once_and_the_call_retried(dr
     await drive.sync()
 
     assert drive.names() == {"one.txt"}
-    refreshes = [t for t in drive.http.token_requests if t.get("grant_type") == "refresh_token"]
-    assert refreshes and refreshes[0]["refresh_token"] == "refresh-1"
+    refreshes = refresh_grants(drive.http)
+    assert len(refreshes) == 1, f"{len(refreshes)} refreshes over {len(drive.http.requests)} requests"
+    assert refreshes[0]["refresh_token"] == "refresh-1"
     assert refreshes[0]["client_id"] == "client-1"
+
+
+async def test_an_expired_saved_token_is_refreshed_once_for_the_whole_sync(drive: Harness) -> None:
+    for n in range(6):
+        my_file(drive.world, f"f{n}", f"file-{n}.txt")
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+
+    await drive.sync()
+
+    assert drive.names() == {f"file-{n}.txt" for n in range(6)}
+    refreshes = refresh_grants(drive.http)
+    assert len(refreshes) == 1, f"{len(refreshes)} refreshes over {len(drive.http.requests)} requests"
+    assert [r.path for r in drive.http.requests if r.identity is None] == []
+
+
+async def test_a_refreshed_token_is_saved_back_to_settings(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    scope = drive.config["credentials"]["scope"]
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+
+    await drive.sync()
+
+    saved = drive.config["credentials"]
+    issued = drive.http.requests[-1].headers["authorization"].removeprefix("Bearer ")
+    assert issued != "expired-token"
+    assert saved["access_token"] == issued
+    assert saved["refresh_token"] == "refresh-1"
+    assert saved["scope"] == scope
+    assert 3500 <= saved["expires_in"] <= 3600
+    assert datetime.now() - datetime.fromisoformat(saved["created_at"]) < timedelta(minutes=1)  # noqa: DTZ005
+    assert drive.config["auth"] == {"oauthConfigId": "oauth-app-1", "connectorScope": "personal"}
+
+    # A restarted connector signs in with the saved token and has nothing to refresh.
+    await drive.connector.cleanup()
+    drive.connector = None
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    assert drive.names() == {"one.txt", "two.txt"}
+    assert len(refresh_grants(drive.http)) == 1
+
+
+async def test_a_newer_token_saved_by_another_process_is_adopted(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+    await drive.sync()
+    refreshes_before = len(refresh_grants(drive.http))
+    drive.http.accept_token("access-2", ME)
+    saved_token(drive.config, "access-2", age=timedelta(0), lifetime_s=7200)
+
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    assert drive.http.requests[-1].headers["authorization"] == "Bearer access-2"
+    assert len(refresh_grants(drive.http)) == refreshes_before
+    assert drive.config["credentials"]["access_token"] == "access-2"
+
+
+async def test_an_older_saved_token_does_not_replace_a_fresher_one_in_memory(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+    await drive.sync()
+    fresh = drive.config["credentials"]["access_token"]
+    drive.http.accept_token("older-token", ME)
+    saved_token(drive.config, "older-token", age=timedelta(minutes=30))
+
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    assert drive.http.requests[-1].headers["authorization"] == f"Bearer {fresh}"
+    assert drive.config["credentials"]["access_token"] == fresh
 
 
 async def test_a_revoked_refresh_token_fails_the_run_without_a_checkpoint(drive: Harness) -> None:
