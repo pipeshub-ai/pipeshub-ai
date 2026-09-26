@@ -592,3 +592,129 @@ class TestCreateIssueFields:
 def json_text(payload: dict[str, Any]) -> str:
     import json
     return json.dumps(payload)
+
+
+class TestReadingIssues:
+    async def test_issue_details_keep_comments_and_attachments_and_link_back(self, jira, api) -> None:
+        comments = [{"id": str(n), "body": f"note {n}", "author": {"displayName": "Ann", "accountId": "x"}, "created": f"2026-09-0{n}"}
+                    for n in range(1, 6)]
+        api.on("GET", "/issue/PA-7", issue(
+            "PA-7",
+            status={"name": "In Progress", "statusCategory": {"key": "indeterminate"}},
+            comment={"comments": comments, "total": 5},
+            attachment=[{"id": "a1", "filename": "trace.log", "size": 10, "mimeType": "text/plain", "created": "2026-09-01",
+                         "content": "https://x/att", "author": {"displayName": "Ann"}}],
+            customfield_10014="PA-1", customfield_10099=None, labels=[],
+        ))
+        api.on("GET", "/field", [{"id": "customfield_10014", "name": "Epic Link"}])
+
+        ok, data = result(await jira.get_issue("PA-7"))
+
+        assert ok is True
+        fields = data["data"]["fields"]
+        assert "note 5" in [c["body"] for c in fields["comment"]["comments"]]
+        assert fields["attachment"][0]["filename"] == "trace.log"
+        assert "customfield_10099" not in fields
+        assert data["data"]["url"] == f"{SITE}/browse/PA-7"
+        assert fields["epic_link"] == "PA-1"
+
+    async def test_jql_resolution_unresolved_is_rewritten_and_reported(self, jira, api) -> None:
+        api.on("POST", SEARCH, search_pages((["PA-1"], None)))
+
+        ok, data = result(await jira.search_issues("project = PA AND resolution = Unresolved AND status = Open"))
+
+        assert ok is True
+        sent = api.calls("POST", SEARCH)[0].body["jql"]
+        assert "resolution IS EMPTY" in sent
+        assert data["fixed_jql"] == sent and "resolution IS EMPTY" in data["warning"]
+
+    async def test_projects_link_to_their_pages(self, jira, api) -> None:
+        api.on("GET", "/project", [{"id": "1", "key": "PA", "name": "Payments", "avatarUrls": {"48x48": "x"}}])
+
+        ok, data = result(await jira.get_projects())
+
+        assert ok is True
+        assert data["data"] == [{"id": "1", "key": "PA", "name": "Payments", "url": f"{SITE}/projects/PA"}]
+
+    async def test_project_and_its_metadata(self, jira, api) -> None:
+        api.on("GET", "/project/PA", {
+            "key": "PA", "name": "Payments", "lead": {"displayName": "Ann Lee"},
+            "issueTypes": [{"id": "1", "name": "Bug", "subtask": False}], "components": [{"id": "9", "name": "API"}],
+        })
+
+        ok, project = result(await jira.get_project("PA"))
+        ok_meta, meta = result(await jira.get_project_metadata("PA"))
+
+        assert (ok, ok_meta) == (True, True)
+        assert project["data"]["url"] == f"{SITE}/projects/PA"
+        assert meta["metadata"]["lead"] == "Ann Lee"
+        assert meta["metadata"]["issue_types"][0]["name"] == "Bug"
+        assert meta["metadata"]["components"] == [{"id": "9", "name": "API", "description": None}]
+
+
+class TestComments:
+    async def test_plain_text_comment_is_sent_as_a_document(self, jira, api) -> None:
+        api.on("POST", "/issue/PA-7/comment", (201, {"id": "100", "body": {"type": "doc"}, "self": "x"}))
+
+        ok, data = result(await jira.add_comment("PA-7", "Fixed in 2.3"))
+
+        assert ok is True
+        sent = api.calls("POST", "/issue/PA-7/comment")[0].body["body"]
+        assert sent["content"][0]["content"][0]["text"] == "Fixed in 2.3"
+        assert data["data"]["id"] == "100"
+
+    async def test_empty_comment_is_refused_before_jira(self, jira, api) -> None:
+        ok, data = result(await jira.add_comment("PA-7", ""))
+
+        assert ok is False
+        assert "cannot be empty" in data["guidance"]
+        assert api.requests == []
+
+    async def test_comment_already_in_document_format_is_sent_as_is(self, jira, api) -> None:
+        doc = {"type": "doc", "version": 1, "content": []}
+        api.on("POST", "/issue/PA-7/comment", (201, {"id": "101"}))
+
+        ok, _ = result(await jira.add_comment("PA-7", doc))
+
+        assert ok is True
+        assert api.calls("POST", "/issue/PA-7/comment")[0].body["body"] == doc
+
+    async def test_comments_are_listed(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7/comment", {"comments": [{"id": "1", "body": "hi", "self": "x"}], "total": 1, "startAt": 0})
+
+        ok, data = result(await jira.get_comments("PA-7"))
+
+        assert ok is True
+        assert data["data"]["comments"] == [{"id": "1", "body": "hi"}]
+
+
+class TestSignedInUser:
+    async def test_current_user_and_connection_check_read_myself(self, jira, api) -> None:
+        api.on("GET", "/myself", user("acc-me", "Me Person", "me@acme.test"))
+
+        ok, me = result(await jira.get_current_user())
+        ok_conn, conn = result(await jira.validate_connection())
+
+        assert (ok, ok_conn) == (True, True)
+        assert me["data"]["accountId"] == "acc-me"
+        assert conn["message"] == "JIRA connection is valid"
+        assert {c.path for c in api.requests} == {"/rest/api/3/myself"}
+
+
+class TestCreateIssueFieldErrors:
+    async def test_missing_fields_are_named_with_a_way_to_find_them(self, jira, api) -> None:
+        api.on("POST", "/issue", (400, {"errorMessages": [], "errors": {"customfield_10020": "Team is required."}}))
+        api.on("GET", "/field", [{"id": "customfield_10020", "name": "Team"}])
+
+        ok, data = result(await jira.create_issue("PA", "Login fails", "Bug"))
+
+        assert ok is False
+        assert data["field_errors"] == {"Team (customfield_10020)": "Team is required."}
+        assert "get_create_issue_fields(project_key='PA', issue_type_name='Bug')" in data["guidance"]
+
+    async def test_blank_summary_is_refused_before_jira(self, jira, api) -> None:
+        ok, data = result(await jira.create_issue("PA", "", "Bug"))
+
+        assert ok is False
+        assert data["validation_error"] == "Summary is required"
+        assert api.requests == []
