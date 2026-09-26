@@ -296,7 +296,6 @@ class TestReadOne:
         assert ok is True
         assert data == [{"attachment_id": "att-1", "filename": "report.pdf", "mime_type": "application/pdf", "size": 2048}]
 
-    @pending("attachments")
     async def test_attachments_inside_nested_parts_are_listed(self, gmail, http) -> None:
         http.on("GET", f"{MESSAGES}/m-1", {"id": "m-1", "payload": {"mimeType": "multipart/mixed", "parts": [
             {"mimeType": "multipart/related", "parts": [
@@ -311,7 +310,6 @@ class TestReadOne:
         assert ok is True
         assert sorted(a["filename"] for a in data) == ["logo.png", "report.pdf"]
 
-    @pending("attachments")
     async def test_a_small_attachment_carried_inline_does_not_break_the_list(self, gmail, http) -> None:
         http.on("GET", f"{MESSAGES}/m-1", {"id": "m-1", "payload": {"parts": [
             {"filename": "note.txt", "mimeType": "text/plain", "body": {"data": "aGk=", "size": 2}},
@@ -323,7 +321,6 @@ class TestReadOne:
         assert ok is True
         assert [(a["filename"], a["attachment_id"]) for a in data] == [("note.txt", None), ("report.pdf", "att-1")]
 
-    @pending("attachments")
     async def test_a_message_that_is_itself_one_attachment_lists_it(self, gmail, http) -> None:
         http.on("GET", f"{MESSAGES}/m-1", {"id": "m-1", "payload": attachment_part("scan.pdf", "att-9")}, base=GMAIL)
 

@@ -63,6 +63,22 @@ def _gmail_failure(error: Exception, action: str) -> tuple[bool, str]:
     return False, json.dumps({"error": google_error_message(error, action, _GMAIL_WORDING)})
 
 
+def _attachments_in(part: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every named part at any depth: mail clients nest attachments inside multipart/related and /mixed."""
+    found: list[dict[str, Any]] = []
+    if part.get("filename"):
+        body = part.get("body") or {}
+        found.append({
+            "attachment_id": body.get("attachmentId"),
+            "filename": part["filename"],
+            "mime_type": part.get("mimeType"),
+            "size": body.get("size"),
+        })
+    for child in part.get("parts") or []:
+        found.extend(_attachments_in(child))
+    return found
+
+
 def _refuse_file_paths() -> tuple[bool, str]:
     # Paths would be read from the server's own disk, so the model could mail out any file there.
     return False, json.dumps({
@@ -583,18 +599,7 @@ class Gmail:
                 format="full",
             )
 
-            attachments = []
-            if "payload" in message and "parts" in message["payload"]:
-                for part in message["payload"]["parts"]:
-                    if part.get("filename"):
-                        attachments.append({
-                            "attachment_id": part["body"]["attachmentId"],
-                            "filename": part["filename"],
-                            "mime_type": part["mimeType"],
-                            "size": part["body"]["size"]
-                        })
-
-            return True, json.dumps(attachments)
+            return True, json.dumps(_attachments_in(message.get("payload") or {}))
         except Exception as e:
             return _gmail_failure(e, "list that email's attachments")
 
