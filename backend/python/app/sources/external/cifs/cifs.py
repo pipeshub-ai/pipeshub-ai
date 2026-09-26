@@ -25,11 +25,14 @@ class CifsDataSource:
             return await asyncio.to_thread(self._client.list_directory, share, path)
 
     async def read_file(
-        self, share: str, path: str, chunk_size: int = 8192
+        self, share: str, path: str, chunk_size: int = 1024 * 1024
     ) -> AsyncIterator[bytes]:
+        # One permit per file. Each read_chunk opens, reads, and closes the file,
+        # so an 8 KiB chunk under AsyncLimiter(10, 1) caps a stream at ~80 KiB/s.
+        await self._rate_limiter.acquire()
         offset = 0
         while True:
-            async with self._lock, self._rate_limiter:
+            async with self._lock:
                 chunk = await asyncio.to_thread(
                     self._client.read_chunk, share, path, offset, chunk_size
                 )

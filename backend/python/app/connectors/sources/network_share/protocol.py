@@ -14,10 +14,10 @@ class INetworkShareDataSource(Protocol):
     async def list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
         """List one directory. Raises DirectoryListingError or FileNotFoundError."""
 
-    async def read_file(
+    def read_file(
         self, share: str, path: str, chunk_size: int = 8192
     ) -> AsyncIterator[bytes]:
-        """Yield file bytes. Raises OSError / ConnectionError on failure."""
+        """Return an async iterator of file bytes. Not a coroutine."""
         ...
 
     async def list_shares(self) -> list[ShareInfo]:

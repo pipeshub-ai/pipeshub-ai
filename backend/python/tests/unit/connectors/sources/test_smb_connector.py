@@ -11,6 +11,9 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
+from app.connectors.core.base.sync_point.sync_point import (
+    generate_record_sync_point_key,
+)
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.network_share.entry import DirectoryEntry, ShareInfo
@@ -21,7 +24,7 @@ from app.connectors.sources.network_share.errors import (
 from app.connectors.sources.network_share.record_mapper import revision_id
 from app.connectors.sources.smb.connector import SmbConnector
 from app.models.entities import FileRecord, RecordGroupType, RecordType, User
-from app.models.permission import PermissionType
+from app.models.permission import EntityType, PermissionType
 from tests.unit.connectors.sources.test_network_share_walker import (
     FakeNetworkShareDataSource,
 )
@@ -203,6 +206,12 @@ class TestSmbConnectorConnection:
         smb_connector.configured_share = SHARE
         assert await smb_connector.test_connection_and_access() is True
 
+    async def test_test_connection_share_listing_failure_notifies(self, smb_connector):
+        smb_connector.data_source = _ds(shares=ShareListingError("NetrShareEnum failed"))
+        smb_connector.configured_share = None
+        assert await smb_connector.test_connection_and_access() is False
+        smb_connector.notify.assert_awaited()
+
     async def test_test_connection_auth_failure_notifies(self, smb_connector):
         ds = _ds(fail_dirs={(SHARE, "")})
         smb_connector.data_source = ds
@@ -254,6 +263,8 @@ class TestSmbConnectorSync:
         mock_processor.on_new_record_groups.assert_awaited()
         mock_processor.on_new_records.assert_awaited()
         mock_processor.on_record_deleted.assert_awaited_with(stale.id)
+        written = smb_connector.record_sync_point.update_sync_point.await_args.args[1]
+        assert written["last_sync_time"] == int(NOW.timestamp() * 1000)
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_skips_prune_when_listing_incomplete(self, mock_filters, smb_connector, mock_processor):
@@ -264,6 +275,7 @@ class TestSmbConnectorSync:
         await smb_connector.run_sync()
         mock_processor.get_records_by_record_type.assert_not_awaited()
         mock_processor.on_record_deleted.assert_not_awaited()
+        smb_connector.record_sync_point.update_sync_point.assert_not_awaited()
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_same_revision_reuses_existing_id(self, mock_filters, smb_connector, mock_processor):
@@ -327,9 +339,11 @@ class TestSmbConnectorSync:
         smb_connector.configured_share = SHARE
         await smb_connector.run_sync()
         mock_processor.on_new_app_users.assert_awaited()
+        mock_processor.ensure_team_app_edge.assert_not_awaited()
         batch = mock_processor.on_new_records.await_args.args[0]
         _record, perms = batch[0]
         assert perms[0].type == PermissionType.OWNER
+        assert perms[0].entity_type == EntityType.USER
         assert perms[0].email == "user@test.com"
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
@@ -345,9 +359,61 @@ class TestSmbConnectorSync:
         connector.configured_share = SHARE
         await connector.run_sync()
         mock_processor.ensure_team_app_edge.assert_awaited_with("smb-1")
+        mock_processor.on_new_app_users.assert_not_awaited()
         batch = mock_processor.on_new_records.await_args.args[0]
         _record, perms = batch[0]
         assert perms[0].type == PermissionType.READ
+        assert perms[0].entity_type == EntityType.ORG
+        assert perms[0].external_id == "org-1"
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_incremental_sync_lists_directories_older_than_the_checkpoint(
+        self, mock_filters, smb_connector, mock_processor
+    ):
+        mock_filters.return_value = _empty_filters()
+        checkpoint = int(datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        smb_connector.record_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_sync_time": checkpoint}
+        )
+        old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        newer = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        folder = _entry("docs", is_directory=True, file_id=2, last_write_time=old)
+        created = _entry("new.txt", file_id=8, last_write_time=newer)
+        renamed = _entry("renamed.txt", file_id=44, size=10, last_write_time=old)
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, ""): [folder, renamed],
+                (SHARE, "docs"): [created],
+            },
+            shares=[ShareInfo(name=SHARE, share_type="disk")],
+        )
+        smb_connector.data_source = ds
+        smb_connector.configured_share = SHARE
+        moved = _file_record(
+            ext_id=f"{SHARE}/old.txt",
+            revision=revision_id(SHARE, renamed, "renamed.txt"),
+            record_id="keep-me",
+        )
+        stale = _file_record(ext_id=f"{SHARE}/gone.txt", revision="old", record_id="gone")
+        mock_processor.get_record_by_external_revision_id = AsyncMock(
+            side_effect=lambda _connector_id, rev: moved if rev == moved.external_revision_id else None
+        )
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[stale])
+        await smb_connector.run_incremental_sync()
+        assert (SHARE, "docs") in ds.list_calls
+        upserted = [
+            record.external_record_id
+            for call in mock_processor.on_new_records.await_args_list
+            for record, _perms in call.args[0]
+        ]
+        assert f"{SHARE}/docs/new.txt" in upserted
+        old_id, record, _perms = mock_processor.on_records_moved.await_args.args[0][0]
+        assert old_id == f"{SHARE}/old.txt"
+        assert record.external_record_id == f"{SHARE}/renamed.txt"
+        mock_processor.on_record_deleted.assert_awaited_with(stale.id)
+        key, payload = smb_connector.record_sync_point.update_sync_point.await_args.args
+        assert key == generate_record_sync_point_key(RecordType.FILE.value, "share", SHARE)
+        assert payload["last_sync_time"] == checkpoint
 
 
 class TestSmbConnectorStreamAndFilters:

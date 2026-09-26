@@ -120,7 +120,7 @@ class TestPathNormalization:
         decision = _classify(_entry(decomposed, file_id=1))
         assert isinstance(decision, UpsertDecision)
         assert decision.record.external_record_id == f"{SHARE}/caf\u00e9.txt"
-        assert decision.record.path == "caf\u00e9.txt"
+        assert decision.record.path == decomposed
 
         slash = _classify(_entry("dir\\nested\\file.txt"))
         assert isinstance(slash, UpsertDecision)

@@ -95,7 +95,6 @@ from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
 from app.connectors.sources.mariadb.connector import MariaDBConnector
 from app.connectors.sources.smb.connector import SmbConnector
-from app.connectors.sources.cifs.connector import CifsConnector
 
 
 class ConnectorFactory:
@@ -150,7 +149,7 @@ class ConnectorFactory:
         "slackworkspace": SlackConnector,
         "slack": SlackIndividualConnector,
         "smb": SmbConnector,
-        "cifs": CifsConnector,
+        # CIFS stays out of the registry until SMB1 is tested against a real server.
     }
 
     # Beta connector definitions - single source of truth

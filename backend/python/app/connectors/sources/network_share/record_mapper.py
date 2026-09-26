@@ -16,10 +16,11 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.sources.network_share.pathing import (
     file_extension,
+    identity_rel_path,
     is_ads_name,
     is_dot_entry,
     is_lock_file,
-    normalize_rel_path,
+    join_rel_path,
     parent_of,
 )
 from app.models.entities import FileRecord, RecordGroupType, RecordType
@@ -126,9 +127,10 @@ class RecordMapper:
         if reason:
             return SkipDecision(reason)
 
-        nfc_path = normalize_rel_path(parent_dir, entry.name)
-        if nfc_path is None or not nfc_path:
+        server_path = join_rel_path(parent_dir, entry.name)
+        if server_path is None or not server_path:
             return SkipDecision("invalid-path")
+        nfc_path = identity_rel_path(server_path)
 
         ext_id = external_record_id(share, nfc_path)
         rev = revision_id(share, entry, nfc_path)
@@ -153,6 +155,7 @@ class RecordMapper:
             indexing_manual=indexing_manual,
             revision=rev,
             ext_id=ext_id,
+            server_path=server_path,
         )
         if is_move and existing_by_revision is not None:
             return MoveDecision(
@@ -173,6 +176,7 @@ class RecordMapper:
         indexing_manual: bool,
         revision: str,
         ext_id: str,
+        server_path: str | None = None,
     ) -> FileRecord:
         now_ms = get_epoch_timestamp_in_ms()
         updated_ms = _epoch_ms(entry.last_write_time, now_ms)
@@ -211,7 +215,7 @@ class RecordMapper:
             size_in_bytes=entry.size if is_file else 0,
             is_file=is_file,
             extension=file_extension(nfc_path) if is_file else None,
-            path=nfc_path,
+            path=server_path or nfc_path,
             mime_type=mime_for(nfc_path, is_directory=entry.is_directory),
             indexing_status=indexing_status,
         )

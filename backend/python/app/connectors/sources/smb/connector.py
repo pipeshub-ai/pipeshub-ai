@@ -45,6 +45,7 @@ from app.connectors.sources.network_share.entities_processor import (
 from app.connectors.sources.network_share.errors import (
     DirectoryListingError,
     NetworkShareAuthError,
+    ShareListingError,
 )
 from app.connectors.sources.network_share.operations import (
     create_share_groups,
@@ -262,7 +263,7 @@ class SmbConnector(BaseConnector):
             else:
                 await self.data_source.list_shares()
             return True
-        except (NetworkShareAuthError, DirectoryListingError, OSError, FileNotFoundError) as exc:
+        except (NetworkShareAuthError, DirectoryListingError, ShareListingError, OSError, FileNotFoundError) as exc:
             await self._auth_error("Connection test failed", str(exc))
             return False
 
@@ -282,7 +283,9 @@ class SmbConnector(BaseConnector):
         await self._sync(prune=True)
 
     async def run_incremental_sync(self) -> None:
-        await self._sync(prune=False)
+        # The scheduler calls run_sync. There is no change journal, and a
+        # rename keeps timestamps, so this is the same complete listing.
+        await self.run_sync()
 
     async def _sync(self, *, prune: bool) -> None:
         if not self.data_source:

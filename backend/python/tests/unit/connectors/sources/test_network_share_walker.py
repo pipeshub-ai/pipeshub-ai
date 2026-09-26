@@ -145,13 +145,18 @@ async def _walk(
     batch_size: int = 100,
     existing_by_id: dict[str, FileRecord] | None = None,
     existing_by_revision: dict[str, FileRecord] | None = None,
+    fail_ids: set[str] | None = None,
 ):
     upserts: list[list[tuple[FileRecord, list]]] = []
     moves: list[list[tuple[str, FileRecord, list]]] = []
     by_id = existing_by_id or {}
     by_rev = existing_by_revision or {}
 
+    broken = fail_ids or set()
+
     async def get_by_id(ext_id: str):
+        if ext_id in broken:
+            raise RuntimeError("lookup failed")
         return by_id.get(ext_id)
 
     async def get_by_rev(rev: str):
@@ -319,3 +324,26 @@ class TestShareWalker:
             f"{SHARE}/a/b",
             f"{SHARE}/a/b/c.txt",
         }
+
+    async def test_listing_uses_stored_name_and_identity_is_nfc(self):
+        decomposed = "cafe\u0301"
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, ""): [_entry(decomposed, is_directory=True, file_id=1)],
+                (SHARE, decomposed): [_entry("a.txt", file_id=2)],
+            }
+        )
+        result, upserts, _ = await _walk(ds)
+        assert (SHARE, decomposed) in ds.list_calls
+        assert (SHARE, "caf\u00e9") not in ds.list_calls
+        ids = _ids(upserts)
+        assert f"{SHARE}/caf\u00e9" in ids
+        assert f"{SHARE}/caf\u00e9/a.txt" in ids
+        assert result.complete is True
+
+    async def test_entry_failure_marks_walk_incomplete(self):
+        ds = FakeNetworkShareDataSource(
+            tree={(SHARE, ""): [_entry("docs", is_directory=True, file_id=1)]}
+        )
+        result, _upserts, _ = await _walk(ds, fail_ids={f"{SHARE}/docs"})
+        assert result.complete is False

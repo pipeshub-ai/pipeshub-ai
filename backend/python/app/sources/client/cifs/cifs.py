@@ -7,6 +7,7 @@ must not import this package.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import suppress
 from datetime import datetime, timezone
 from io import BytesIO
@@ -26,6 +27,7 @@ from app.sources.client.iclient import IClient
 
 smb_structs.SUPPORT_SMB2 = False
 
+from smb.base import NotConnectedError  # noqa: E402
 from smb.SMBConnection import SMBConnection  # noqa: E402
 
 if TYPE_CHECKING:
@@ -36,7 +38,18 @@ if TYPE_CHECKING:
 
 CLIENT_NETBIOS_NAME = "PIPESHUB"
 REPARSE_POINT = 0x0400
+_SMB1_REJECTED = "Server rejected SMB1. Use the SMB connector instead of CIFS."
 _T = TypeVar("_T")
+
+
+def _dialect_mismatch(exc: BaseException) -> bool:
+    """SMB1-only negotiate was refused. Bad passwords return False instead of raising."""
+    if isinstance(exc, (NotConnectedError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+        return True
+    if isinstance(exc, smb_structs.ProtocolError):
+        text = str(exc).lower()
+        return any(token in text for token in ("dialect", "smb2", "smb 2", "protocol field", "negotiate"))
+    return False
 
 
 def _as_datetime(value: object) -> datetime | None:
@@ -130,6 +143,10 @@ class CifsClient(IClient):
         try:
             ok = conn.connect(self.server, self.port)
         except Exception as exc:
+            with suppress(Exception):
+                conn.close()
+            if _dialect_mismatch(exc):
+                raise DialectError(_SMB1_REJECTED) from exc
             raise NetworkShareAuthError(str(exc)) from exc
         if not ok:
             conn.close()
@@ -290,5 +307,5 @@ class CifsClient(IClient):
             use_ntlm_v2=ntlm != "v1",
             logger=logger,
         )
-        client.connect()
+        await asyncio.to_thread(client.connect)
         return client

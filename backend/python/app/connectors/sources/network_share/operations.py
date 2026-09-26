@@ -56,7 +56,7 @@ if TYPE_CHECKING:
 def _disk_shares(shares: list[ShareInfo]) -> list[str]:
     names: list[str] = []
     for share in shares:
-        if share.share_type in {"ipc", "print"}:
+        if share.share_type in {"ipc", "print", "device"}:
             continue
         name = share.name.strip()
         if not name:
@@ -198,6 +198,30 @@ def make_walker(
     )
 
 
+def _checkpoint_ms(stored: object) -> int:
+    if not isinstance(stored, dict):
+        return 0
+    raw = stored.get("last_sync_time") or 0
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _save_share_checkpoint(
+    record_sync_point: SyncPoint,
+    share_name: str,
+    max_timestamp_ms: int,
+) -> None:
+    """Keep the watermark from moving backward. An unfinished walk does not call this."""
+    key = generate_record_sync_point_key(RecordType.FILE.value, "share", share_name)
+    previous = _checkpoint_ms(await record_sync_point.read_sync_point(key))
+    watermark = max(previous, max_timestamp_ms)
+    if watermark <= 0:
+        return
+    await record_sync_point.update_sync_point(key, {"last_sync_time": watermark})
+
+
 async def walk_shares(
     *,
     data_source: INetworkShareDataSource,
@@ -249,12 +273,11 @@ async def walk_shares(
                     folder_scope,
                     logger,
                 )
-            if result.max_timestamp_ms > 0:
-                key = generate_record_sync_point_key(
-                    RecordType.FILE.value, "share", share_name
-                )
-                await record_sync_point.update_sync_point(
-                    key, {"last_sync_time": result.max_timestamp_ms}
+                # A rename keeps the file's timestamps, and a directory's mtime
+                # does not change when a file inside it is edited. The checkpoint
+                # is a watermark, not a listing filter.
+                await _save_share_checkpoint(
+                    record_sync_point, share_name, result.max_timestamp_ms
                 )
         except Exception:
             complete = False
@@ -265,6 +288,15 @@ async def walk_shares(
         logger.warning(
             "Some listings failed; not removing records that were not seen this sync"
         )
+
+
+def io_share_and_path(record: Record) -> tuple[str, str] | None:
+    """Path the server stored. ``record.path`` keeps that name; the external id is NFC."""
+    share_name = record.external_record_group_id
+    raw = getattr(record, "path", None)
+    if share_name and isinstance(raw, str) and raw:
+        return share_name, raw
+    return extract_share_and_path(record)
 
 
 def extract_share_and_path(record: Record) -> tuple[str, str] | None:
@@ -294,7 +326,7 @@ async def stream_file(
         )
     if not data_source:
         raise connector_not_ready(display_name)
-    path_info = extract_share_and_path(record)
+    path_info = io_share_and_path(record)
     if not path_info:
         raise not_downloadable(
             "This item is missing the share and path it belongs to and cannot be downloaded.",
@@ -337,16 +369,18 @@ async def reindex_records(
     unchanged: list[Record] = []
     for record in records:
         try:
-            path_info = extract_share_and_path(record)
-            if not path_info:
+            identity = extract_share_and_path(record)
+            io_path = io_share_and_path(record)
+            if not identity or not io_path:
                 unchanged.append(record)
                 continue
-            share_name, file_path = path_info
-            entry = await data_source.stat(share_name, file_path)
+            share_name, identity_path = identity
+            _share, server_path = io_path
+            entry = await data_source.stat(share_name, server_path)
             if entry is None:
                 unchanged.append(record)
                 continue
-            rev = revision_id(share_name, entry, file_path)
+            rev = revision_id(share_name, entry, identity_path)
             if rev == record.external_revision_id:
                 unchanged.append(record)
                 continue
@@ -354,13 +388,14 @@ async def reindex_records(
             built = mapper.build_record(
                 entry=entry,
                 share=share_name,
-                nfc_path=file_path,
+                nfc_path=identity_path,
                 connector_name=connector_name,
                 connector_id=connector_id,
                 existing=existing,
                 indexing_manual=indexing_manual,
                 revision=rev,
-                ext_id=f"{share_name}/{file_path}",
+                ext_id=f"{share_name}/{identity_path}",
+                server_path=server_path,
             )
             if existing:
                 built.id = existing.id

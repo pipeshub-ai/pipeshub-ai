@@ -14,6 +14,9 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
+from app.connectors.core.base.sync_point.sync_point import (
+    generate_record_sync_point_key,
+)
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.cifs.connector import CifsConnector
@@ -26,7 +29,7 @@ from app.connectors.sources.network_share.errors import (
 )
 from app.connectors.sources.network_share.record_mapper import revision_id
 from app.models.entities import FileRecord, RecordGroupType, RecordType, User
-from app.models.permission import PermissionType
+from app.models.permission import EntityType, PermissionType
 from app.sources.client.cifs.cifs import CLIENT_NETBIOS_NAME, CifsClient
 from app.sources.external.cifs.cifs import CifsDataSource
 from tests.unit.connectors.sources.test_network_share_walker import (
@@ -193,6 +196,65 @@ class TestCifsDialectGuard:
                 client.connect()
             conn.close.assert_called()
 
+    def test_smb1_rejection_is_a_dialect_error(self):
+        from smb.base import NotConnectedError
+        from smb.smb_structs import ProtocolError
+
+        cases = [
+            ProtocolError(
+                "Server does not support any of the pysmb dialects. Please email pysmb to add in support for your OS"
+            ),
+            ProtocolError("Invalid 4-byte protocol field"),
+            NotConnectedError("Server disconnected"),
+            ConnectionResetError("Connection reset by peer"),
+        ]
+        for exc in cases:
+            with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
+                conn = MagicMock()
+                conn.connect.side_effect = exc
+                cls.return_value = conn
+                client = CifsClient(
+                    server="192.168.1.10",
+                    username="u",
+                    password="p",
+                    remote_name="FILESERVER",
+                )
+                with pytest.raises(DialectError, match="SMB connector"):
+                    client.connect()
+                conn.close.assert_called()
+
+    def test_session_setup_failure_stays_an_auth_error(self):
+        from smb.smb_structs import ProtocolError
+
+        with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
+            conn = MagicMock()
+            conn.connect.side_effect = ProtocolError(
+                "Unknown status value (0xC000006D) in SMB_COM_SESSION_SETUP_ANDX (with extended security)"
+            )
+            cls.return_value = conn
+            client = CifsClient(
+                server="192.168.1.10",
+                username="u",
+                password="p",
+                remote_name="FILESERVER",
+            )
+            with pytest.raises(NetworkShareAuthError):
+                client.connect()
+
+    def test_unreachable_host_stays_an_auth_error(self):
+        with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
+            conn = MagicMock()
+            conn.connect.side_effect = ConnectionRefusedError("refused")
+            cls.return_value = conn
+            client = CifsClient(
+                server="192.168.1.10",
+                username="u",
+                password="p",
+                remote_name="FILESERVER",
+            )
+            with pytest.raises(NetworkShareAuthError):
+                client.connect()
+
     def test_netbios_name_and_ports_and_ntlm(self):
         with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
             conn = MagicMock()
@@ -318,6 +380,31 @@ class TestCifsDialectGuard:
         await asyncio.gather(ds.list_directory(SHARE, ""), ds.read_file(SHARE, "a.txt").__anext__())
         assert client.max_in_flight == 1
 
+    async def test_read_file_acquires_the_limiter_once(self):
+        class Client:
+            def read_chunk(self, share: str, path: str, offset: int, chunk_size: int) -> bytes:
+                assert chunk_size == 1024 * 1024
+                return b"" if offset else b"abc"
+
+        class Limiter:
+            def __init__(self) -> None:
+                self.acquires = 0
+
+            async def acquire(self, amount: float = 1) -> None:
+                self.acquires += 1
+
+            async def __aenter__(self) -> None:
+                self.acquires += 1
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+        limiter = Limiter()
+        ds = CifsDataSource(Client(), rate_limiter=limiter)  # type: ignore[arg-type]
+        chunks = [chunk async for chunk in ds.read_file(SHARE, "a.txt")]
+        assert chunks == [b"abc"]
+        assert limiter.acquires == 1
+
 
 class TestCifsConnectorInit:
     async def test_init_missing_config_notifies(self, cifs_connector):
@@ -339,6 +426,12 @@ class TestCifsConnectorInit:
         mock_build.side_effect = NetworkShareAuthError("ACCESS_DENIED")
         mock_filters.return_value = _empty_filters()
         assert await cifs_connector.init() is False
+
+    async def test_test_connection_share_listing_failure_notifies(self, cifs_connector):
+        cifs_connector.data_source = FakeNetworkShareDataSource(shares=ShareListingError("listShares failed"))
+        cifs_connector.configured_share = None
+        assert await cifs_connector.test_connection_and_access() is False
+        cifs_connector.notify.assert_awaited()
 
     async def test_test_connection_rejects_smb2(self, cifs_connector):
         ds = FakeNetworkShareDataSource()
@@ -376,6 +469,8 @@ class TestCifsConnectorSync:
         await cifs_connector.run_sync()
         mock_processor.on_new_record_groups.assert_awaited()
         mock_processor.on_record_deleted.assert_awaited_with(stale.id)
+        written = cifs_connector.record_sync_point.update_sync_point.await_args.args[1]
+        assert written["last_sync_time"] == int(NOW.timestamp() * 1000)
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_incomplete_listing_skips_prune(self, mock_filters, cifs_connector, mock_processor):
@@ -385,6 +480,7 @@ class TestCifsConnectorSync:
         cifs_connector.configured_share = SHARE
         await cifs_connector.run_sync()
         mock_processor.get_records_by_record_type.assert_not_awaited()
+        cifs_connector.record_sync_point.update_sync_point.assert_not_awaited()
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_same_revision_reuses_id(self, mock_filters, cifs_connector, mock_processor):
@@ -440,9 +536,13 @@ class TestCifsConnectorSync:
         cifs_connector.configured_share = SHARE
         await cifs_connector.run_sync()
         mock_processor.on_new_app_users.assert_awaited()
+        mock_processor.ensure_team_app_edge.assert_not_awaited()
         _record, perms = mock_processor.on_new_records.await_args.args[0][0]
         assert perms[0].type == PermissionType.OWNER
+        assert perms[0].entity_type == EntityType.USER
+        assert perms[0].email == "user@test.com"
 
+        mock_processor.on_new_app_users.reset_mock()
         team = _connector(
             mock_logger, mock_processor, mock_data_store_provider, mock_config_service, scope=ConnectorScope.TEAM.value
         )
@@ -450,6 +550,60 @@ class TestCifsConnectorSync:
         team.configured_share = SHARE
         await team.run_sync()
         mock_processor.ensure_team_app_edge.assert_awaited_with("cifs-1")
+        mock_processor.on_new_app_users.assert_not_awaited()
+        _record, perms = mock_processor.on_new_records.await_args.args[0][0]
+        assert perms[0].type == PermissionType.READ
+        assert perms[0].entity_type == EntityType.ORG
+        assert perms[0].external_id == "org-1"
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_incremental_sync_lists_directories_older_than_the_checkpoint(
+        self, mock_filters, cifs_connector, mock_processor
+    ):
+        mock_filters.return_value = _empty_filters()
+        checkpoint = int(datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        cifs_connector.record_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_sync_time": checkpoint}
+        )
+        old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        newer = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        folder = _entry("docs", is_directory=True, file_id=2, last_write_time=old)
+        created = _entry("new.txt", file_id=8, last_write_time=newer)
+        renamed = _entry("renamed.txt", file_id=44, size=10, last_write_time=old)
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, ""): [folder, renamed],
+                (SHARE, "docs"): [created],
+            },
+            shares=[ShareInfo(name=SHARE, share_type="disk")],
+        )
+        cifs_connector.data_source = ds
+        cifs_connector.configured_share = SHARE
+        moved = _file_record(
+            ext_id=f"{SHARE}/old.txt",
+            revision=revision_id(SHARE, renamed, "renamed.txt"),
+            record_id="keep-me",
+        )
+        stale = _file_record(ext_id=f"{SHARE}/gone.txt", revision="old", record_id="gone")
+        mock_processor.get_record_by_external_revision_id = AsyncMock(
+            side_effect=lambda _connector_id, rev: moved if rev == moved.external_revision_id else None
+        )
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[stale])
+        await cifs_connector.run_incremental_sync()
+        assert (SHARE, "docs") in ds.list_calls
+        upserted = [
+            record.external_record_id
+            for call in mock_processor.on_new_records.await_args_list
+            for record, _perms in call.args[0]
+        ]
+        assert f"{SHARE}/docs/new.txt" in upserted
+        old_id, record, _perms = mock_processor.on_records_moved.await_args.args[0][0]
+        assert old_id == f"{SHARE}/old.txt"
+        assert record.external_record_id == f"{SHARE}/renamed.txt"
+        mock_processor.on_record_deleted.assert_awaited_with(stale.id)
+        key, payload = cifs_connector.record_sync_point.update_sync_point.await_args.args
+        assert key == generate_record_sync_point_key(RecordType.FILE.value, "share", SHARE)
+        assert payload["last_sync_time"] == checkpoint
 
 
 class TestCifsConnectorStreamAndFilters:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import stat
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, BinaryIO
@@ -214,5 +215,5 @@ class SmbClient(IClient):
             share=share,
             logger=logger,
         )
-        client.register()
+        await asyncio.to_thread(client.register)
         return client

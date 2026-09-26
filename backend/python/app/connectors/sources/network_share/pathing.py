@@ -7,14 +7,15 @@ import unicodedata
 LOCK_PREFIX = "~$"
 
 
-def normalize_rel_path(parent_dir: str, name: str) -> str | None:
-    """Join parent and name into an NFC path inside a share.
+def join_rel_path(parent_dir: str, name: str) -> str | None:
+    """Join parent and name without changing Unicode normalization.
 
-    Backslashes become slashes. ``.`` segments are dropped. ``..`` pops a
-    segment; escaping the share returns None. Casing is preserved.
+    NTFS and Samba look up the stored name. NFC and NFD are different names
+    there. Backslashes become slashes. ``.`` segments are dropped. ``..`` pops
+    a segment; escaping the share returns None. Casing is preserved.
     """
     raw = f"{parent_dir}/{name}" if parent_dir else name
-    raw = unicodedata.normalize("NFC", raw.replace("\\", "/"))
+    raw = raw.replace("\\", "/")
     parts: list[str] = []
     for segment in raw.split("/"):
         if segment in ("", "."):
@@ -26,6 +27,19 @@ def normalize_rel_path(parent_dir: str, name: str) -> str | None:
             continue
         parts.append(segment)
     return "/".join(parts)
+
+
+def identity_rel_path(server_path: str) -> str:
+    """NFC form used only for record ids, not for share I/O."""
+    return unicodedata.normalize("NFC", server_path)
+
+
+def normalize_rel_path(parent_dir: str, name: str) -> str | None:
+    """Joined server path, then NFC. Prefer join_rel_path for share I/O."""
+    joined = join_rel_path(parent_dir, name)
+    if not joined:
+        return joined
+    return identity_rel_path(joined)
 
 
 def parent_of(rel_path: str) -> str | None:

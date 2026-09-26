@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import struct
 import uuid
-from typing import Any
+from typing import Any, Protocol
 
 from app.connectors.sources.network_share.entry import ShareInfo
 from app.connectors.sources.network_share.errors import ShareListingError
@@ -85,42 +85,159 @@ def _share_kind(stype: int) -> str:
     )
 
 
-def parse_share_enum_response(data: bytes) -> list[ShareInfo]:
-    if len(data) < 16:
+def _response_stub(data: bytes) -> bytes:
+    if len(data) < 24:
         raise ShareListingError("NetrShareEnum response too short")
-    ptype = data[2]
-    if ptype not in (RESPONSE_PTYPE, 3):  # 3 = fault
-        raise ShareListingError(f"Unexpected RPC ptype {ptype}")
-    if ptype == 3:
-        raise ShareListingError("RPC fault from NetrShareEnum")
-    stub = data[24:] if len(data) > 24 else data[16:]
-    # Collect UTF-16LE strings of plausible share names plus a following DWORD type.
-    # NDR layout for SHARE_INFO_1 is pointer, type, pointer; names live in the
-    # deferred referent array. Pull null-terminated UTF-16 strings and skip IPC.
-    names: list[str] = []
-    decoded = stub.decode("utf-16le", errors="ignore")
-    current: list[str] = []
-    for ch in decoded:
-        if ch == "\x00":
-            token = "".join(current)
-            current = []
-            if token and all(c.isalnum() or c in ("$", "-", "_", ".") for c in token) and len(token) <= 80:
-                names.append(token)
-        else:
-            current.append(ch)
-    # Pairing names with types is unreliable from a string scan. Treat unknown
-    # as disk; callers drop IPC$ / ADMIN$.
+    stub = bytearray()
+    offset = 0
+    saw_last = False
+    while offset + 16 <= len(data):
+        ptype = data[offset + 2]
+        flags = data[offset + 3]
+        frag_len = struct.unpack_from("<H", data, offset + 8)[0]
+        auth_len = struct.unpack_from("<H", data, offset + 10)[0]
+        if frag_len < 24 or offset + frag_len > len(data):
+            raise ShareListingError("Truncated NetrShareEnum response")
+        if ptype == 3:
+            raise ShareListingError("RPC fault from NetrShareEnum")
+        if ptype != RESPONSE_PTYPE:
+            raise ShareListingError(f"Unexpected RPC ptype {ptype}")
+        stub_end = offset + frag_len - auth_len
+        if stub_end < offset + 24:
+            raise ShareListingError("Truncated NetrShareEnum response")
+        stub.extend(data[offset + 24:stub_end])
+        offset += frag_len
+        if flags & PFC_LAST:
+            saw_last = True
+            break
+    if not saw_last:
+        raise ShareListingError("Truncated NetrShareEnum response")
+    return bytes(stub)
+
+
+def _u32(buf: bytes, offset: int) -> tuple[int, int]:
+    if offset + 4 > len(buf):
+        raise ShareListingError("Truncated NetrShareEnum response")
+    return struct.unpack_from("<I", buf, offset)[0], offset + 4
+
+
+def _read_conformant_string(buf: bytes, offset: int) -> tuple[str, int]:
+    max_count, offset = _u32(buf, offset)
+    varying_offset, offset = _u32(buf, offset)
+    actual, offset = _u32(buf, offset)
+    if varying_offset != 0 or actual == 0 or actual > max_count or actual > 256:
+        raise ShareListingError("Invalid NetrShareEnum string")
+    nbytes = actual * 2
+    if offset + nbytes > len(buf):
+        raise ShareListingError("Truncated NetrShareEnum response")
+    raw = buf[offset:offset + nbytes]
+    offset += nbytes
+    pad = (4 - (nbytes % 4)) % 4
+    if pad and offset + pad <= len(buf):
+        offset += pad
+    try:
+        text = raw.decode("utf-16le").rstrip("\x00")
+    except UnicodeDecodeError as exc:
+        raise ShareListingError("Invalid NetrShareEnum string") from exc
+    return text, offset
+
+
+def parse_share_enum_response(data: bytes) -> list[ShareInfo]:
+    """Decode a NetrShareEnum level-1 response.
+
+    SHARE_INFO_1 on the wire is a fixed (netname pointer, type, remark pointer)
+    array, then the deferred wchar strings in that same order. Remarks and the
+    type DWORD are not share names. A structural failure raises ShareListingError
+    so the caller can fall back to the configured share.
+    """
+    offset = 0
+    stub = _response_stub(data)
+    level, offset = _u32(stub, offset)
+    discriminant, offset = _u32(stub, offset)
+    if level != 1 or discriminant != 1:
+        raise ShareListingError("NetrShareEnum response was not SHARE_INFO_1")
+    container, offset = _u32(stub, offset)
+    if container == 0:
+        raise ShareListingError("NetrShareEnum returned no share names")
+    count, offset = _u32(stub, offset)
+    if count == 0:
+        raise ShareListingError("NetrShareEnum returned no share names")
+    if count > 4096:
+        raise ShareListingError("NetrShareEnum entry count is not plausible")
+    buffer_ptr, offset = _u32(stub, offset)
+    max_count, offset = _u32(stub, offset)
+    if buffer_ptr == 0 or max_count != count:
+        raise ShareListingError("NetrShareEnum conformant array does not match EntriesRead")
+
+    fixed: list[tuple[int, int, int]] = []
+    for _ in range(count):
+        name_ptr, offset = _u32(stub, offset)
+        stype, offset = _u32(stub, offset)
+        remark_ptr, offset = _u32(stub, offset)
+        fixed.append((name_ptr, stype, remark_ptr))
+
     shares: list[ShareInfo] = []
     seen: set[str] = set()
-    for name in names:
+    for name_ptr, stype, remark_ptr in fixed:
+        if name_ptr == 0:
+            raise ShareListingError("NetrShareEnum entry is missing a share name")
+        name, offset = _read_conformant_string(stub, offset)
+        if remark_ptr:
+            _, offset = _read_conformant_string(stub, offset)
+        if not name:
+            raise ShareListingError("NetrShareEnum entry is missing a share name")
         if name in seen:
             continue
         seen.add(name)
-        kind = "ipc" if name.upper() == "IPC$" else "disk"
-        shares.append(ShareInfo(name=name, share_type=kind))
+        shares.append(ShareInfo(name=name, share_type=_share_kind(stype)))
     if not shares:
         raise ShareListingError("NetrShareEnum returned no share names")
+
+    _total, offset = _u32(stub, offset)
+    resume_ptr, offset = _u32(stub, offset)
+    if resume_ptr:
+        _, offset = _u32(stub, offset)
+    status, _offset = _u32(stub, offset)
+    if status == 234:  # ERROR_MORE_DATA: a partial list must not be treated as complete
+        raise ShareListingError("NetrShareEnum returned a partial share list")
+    if status != 0:
+        raise ShareListingError(f"NetrShareEnum failed with status {status}")
     return shares
+
+
+class _RpcPipe(Protocol):
+    def read(self, size: int) -> bytes: ...
+
+
+def _read_rpc_pdus(pipe: _RpcPipe) -> bytes:
+    """Read response fragments and return them concatenated, headers included.
+
+    smbclient's pipe read issues one SMB2 Read and returns that payload. On a
+    message-mode pipe that is one message, which may be one fragment or only
+    part of one, and a further read blocks until the server writes again.
+    Stop on the fragment whose own flags include PFC_LAST.
+    """
+    buf = b""
+    pdus = bytearray()
+    while True:
+        while len(buf) < 16:
+            chunk = pipe.read(8192)
+            if not chunk:
+                raise ShareListingError("Truncated NetrShareEnum response")
+            buf += chunk
+        frag_len = struct.unpack_from("<H", buf, 8)[0]
+        if frag_len < 24 or frag_len > 1024 * 1024:
+            raise ShareListingError("Invalid NetrShareEnum fragment length")
+        while len(buf) < frag_len:
+            chunk = pipe.read(8192)
+            if not chunk:
+                raise ShareListingError("Truncated NetrShareEnum fragment")
+            buf += chunk
+        frag = buf[:frag_len]
+        buf = buf[frag_len:]
+        pdus.extend(frag)
+        if frag[3] & PFC_LAST:
+            return bytes(pdus)
 
 
 def enumerate_shares(
@@ -149,16 +266,7 @@ def enumerate_shares(
             if not ack or (len(ack) > 2 and ack[2] not in (BIND_ACK_PTYPE, BIND_PTYPE)):
                 raise ShareListingError("RPC bind to srvsvc failed")
             pipe.write(netr_share_enum_pdu(server))
-            chunks = [pipe.read(8192)]
-            data = b"".join(chunk for chunk in chunks if chunk)
-            if not data:
-                raise ShareListingError("Empty NetrShareEnum response")
-            # Continue reading while LAST_FRAG is unset
-            while data and (data[3] & PFC_LAST) == 0:
-                more = pipe.read(8192)
-                if not more:
-                    break
-                data += more
+            data = _read_rpc_pdus(pipe)
     except ShareListingError:
         raise
     except Exception as exc:

@@ -15,7 +15,10 @@ from app.connectors.sources.network_share.filters import (
     passes_date_filters,
     passes_extension_filter,
 )
-from app.connectors.sources.network_share.pathing import normalize_rel_path
+from app.connectors.sources.network_share.pathing import (
+    identity_rel_path,
+    join_rel_path,
+)
 from app.connectors.sources.network_share.record_mapper import (
     MoveDecision,
     RecordMapper,
@@ -94,9 +97,10 @@ class ShareWalker:
             nonlocal max_ts
             if self.mapper.skip_reason(entry):
                 return None
-            nfc_path = normalize_rel_path(parent_dir, entry.name)
-            if nfc_path is None:
+            server_path = join_rel_path(parent_dir, entry.name)
+            if server_path is None or not server_path:
                 return None
+            nfc_path = identity_rel_path(server_path)
             in_scope = (
                 scope.includes_folder(nfc_path)
                 if entry.is_directory
@@ -160,7 +164,7 @@ class ShareWalker:
                 upserts.append((decision.record, perms))
                 if len(upserts) >= self.batch_size:
                     await flush()
-            return nfc_path if entry.is_directory else None
+            return server_path if entry.is_directory else None
 
         async def traverse(directory_path: str, *, prefix: bool = False) -> None:
             nonlocal complete
@@ -197,6 +201,7 @@ class ShareWalker:
                     if child_dir is not None and entry.is_directory and not entry.is_symlink:
                         await traverse(child_dir)
                 except Exception:
+                    complete = False
                     self.logger.exception(
                         "Error processing %s in %s/%s",
                         entry.name,

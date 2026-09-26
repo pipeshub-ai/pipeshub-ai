@@ -329,7 +329,7 @@ jobs:
       # nextcloud and bookstack, the only suites needing selfhosted-sources.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files"
+      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files or smb or cifs"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
