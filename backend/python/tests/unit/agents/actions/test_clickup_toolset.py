@@ -596,3 +596,25 @@ class TestFailuresInPlainLanguage:
     async def test_server_error_says_to_try_again(self, clickup, api) -> None:
         api.on("GET", f"{V2}/team", (502, {}))
         assert "temporary problem" in fail(await clickup.get_authorized_teams_workspaces())["error"]
+
+
+class TestCommentPaging:
+    @staticmethod
+    def _comments(count: int, newest: int = 100) -> list[dict]:
+        return [{"id": str(newest - i), "comment_text": f"c{newest - i}", "date": str(1_700_000_000_000 + newest - i)}
+                for i in range(count)]
+
+    @pytest.mark.asyncio
+    async def test_a_full_page_of_comments_says_how_to_read_older_ones(self, clickup, api) -> None:
+        api.on("GET", f"{V2}/task/t1/comment", (200, {"comments": self._comments(25)}))
+        data = ok(await clickup.get_comments(task_id="t1"))["data"]
+        assert data["has_more"] is True
+        assert (data["next_start"], data["next_start_id"]) == (1_700_000_000_076, "76")
+        assert "there may be older ones" in data["note"]
+
+    @pytest.mark.asyncio
+    async def test_older_comments_are_read_from_where_the_last_page_ended(self, clickup, api) -> None:
+        api.on("GET", f"{V2}/task/t1/comment", (200, {"comments": self._comments(3, newest=75)}))
+        data = ok(await clickup.get_comments(task_id="t1", start=1_700_000_000_076, start_id="76"))["data"]
+        assert api.calls("GET", f"{V2}/task/t1/comment")[0].query == {"start": ["1700000000076"], "start_id": ["76"]}
+        assert data["has_more"] is False and "note" not in data

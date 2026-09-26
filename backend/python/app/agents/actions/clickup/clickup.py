@@ -86,6 +86,25 @@ def _unexpected_failure(tool_name: str, error: Exception) -> tuple[bool, str]:
     )})
 
 
+# ClickUp returns at most this many task comments per request, newest first.
+_COMMENTS_PAGE_SIZE = 25
+
+
+def _mark_older_comments(data: dict[str, Any]) -> None:
+    """A full page of comments may not be all of them: say so, and how to read the older ones."""
+    comments = [c for c in data.get("comments") or [] if isinstance(c, dict)]
+    data["has_more"] = len(comments) >= _COMMENTS_PAGE_SIZE
+    if not data["has_more"]:
+        return
+    oldest = comments[-1]
+    data["next_start"] = int(oldest["date"]) if str(oldest.get("date", "")).isdigit() else None
+    data["next_start_id"] = str(oldest["id"]) if oldest.get("id") is not None else None
+    data["note"] = (
+        f"These are the {len(comments)} most recent comments; there may be older ones. To read them, call "
+        "get_comments again with start=next_start and start_id=next_start_id."
+    )
+
+
 def _no_update_fields(*values: object, empty_is_unset: bool = False) -> Optional[str]:
     """Message for an update with nothing to change.
 
@@ -1291,6 +1310,7 @@ class ClickUp:
                                 task_id=task_id,
                                 comment_id=str(item["id"]),
                             )
+                    _mark_older_comments(data)
                 return self._handle_response(response, data_override=data)
         except Exception as e:
             return _unexpected_failure("get_comments", e)
