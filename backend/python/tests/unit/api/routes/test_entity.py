@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app.api.routes.entity import (
     UserEmailUpdateRequest,
@@ -1284,11 +1285,10 @@ class TestUpdateUserEmail:
         asyncio.run(_run())
 
     def test_400_when_email_invalid(self):
-        async def _run() -> None:
-            req = _make_request()
-            with pytest.raises(HTTPException) as exc:
-                await update_user_email(req, UserEmailUpdateRequest(email="not-an-email"))
-            assert exc.value.status_code == 400
-
-        asyncio.run(_run())
+        with pytest.raises(ValidationError):
+            UserEmailUpdateRequest(email="not-an-email")
+        with pytest.raises(ValidationError):
+            UserEmailUpdateRequest(email="user@")
+        with pytest.raises(ValidationError):
+            UserEmailUpdateRequest(email="@example.com")
 
