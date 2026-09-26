@@ -6,7 +6,7 @@ import re
 import uuid
 from http import HTTPStatus
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from io import BytesIO
 from logging import Logger
@@ -135,7 +135,8 @@ class RetryUrl:
     deferred: bool = False  # site asked to wait longer than we hold a sync open
     reason: str | None = None  # shown on the failed page instead of the status-based reason
     site_url: str | None = None  # the URL as the site gave it, which is what a stored record is keyed by
-    queued_url: str | None = None  # the URL that was asked for, when a redirect led to ``site_url``
+    # URLs that redirected to ``site_url`` this sync; each may still hold an older record.
+    queued_urls: list[str] = field(default_factory=list)
 
 class Status(Enum):
     PENDING = "PENDING"
@@ -1925,8 +1926,13 @@ class WebConnector(BaseConnector):
 
         ``url`` is where the answer came from, after any redirect: the URL the page is stored under.
         ``queued_url`` is the URL that redirected there, whose own older record may need removing too.
+        Several URLs can redirect to the same page in one sync, so they are collected, not replaced.
         """
         normalized = self._normalize_url(url)
+        earlier = self.retry_urls.get(normalized)
+        sources = list(earlier.queued_urls) if earlier else []
+        if queued_url and urldefrag(queued_url).url != urldefrag(url).url and queued_url not in sources:
+            sources.append(queued_url)
         self.retry_urls[normalized] = RetryUrl(
             url=normalized,
             status=Status.PENDING.value,
@@ -1937,7 +1943,7 @@ class WebConnector(BaseConnector):
             referer=referer,
             reason=reason,
             site_url=url,
-            queued_url=queued_url if queued_url and urldefrag(queued_url).url != urldefrag(url).url else None,
+            queued_urls=sources,
         )
 
     def _too_large_reason(self) -> str:
@@ -2376,16 +2382,16 @@ class WebConnector(BaseConnector):
         # misconfigured: delete nothing.
         site_gone = any(
             r.status_code in GONE_STATUS_CODES
-            and start_key in (r.url, self._normalize_url(r.queued_url or ""))
+            and start_key in (r.url, *(self._normalize_url(q) for q in r.queued_urls))
             for r in snapshot
         )
 
         for retry_url in snapshot:
             if retry_url.status_code in GONE_STATUS_CODES and not site_gone:
                 await self._handle_gone_page(retry_url.site_url or retry_url.url)
-                if retry_url.queued_url:
-                    # An older record may still sit under the URL that redirected here.
-                    await self._handle_gone_page(retry_url.queued_url)
+                for source in retry_url.queued_urls:
+                    # An older record may still sit under a URL that redirected here.
+                    await self._handle_gone_page(source)
             placeholder, perms = await self._create_failed_placeholder_record(
                 retry_url.url, retry_url.status_code, retry_url.reason, retry_url.site_url
             )

@@ -383,3 +383,23 @@ async def test_a_redirect_onto_a_gone_page_leaves_one_failed_page_only(
 
     failed = [r for r in db.pages().values() if r.indexing_status == ProgressStatus.FAILED.value]
     assert [r.weburl for r in failed] == ["http://site.test/new"]
+
+
+async def test_every_url_that_redirects_to_a_gone_page_has_its_record_removed(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    sources = ["http://site.test/old", "http://site.test/also"]
+    site.html(START_URL, "Home", "/old", "/also")
+    for source in sources:
+        site.html(source, source.rsplit("/", 1)[-1].title())
+    connector = await make_connector()
+    await connector.run_sync()
+    stale = {db.pages()[source].id for source in sources}
+
+    for source in sources:
+        site.redirect(source, "/new", status=301)
+    site.add("http://site.test/new", Page(status=404))
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert set(db.deleted) == stale
