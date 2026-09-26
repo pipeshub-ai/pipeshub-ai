@@ -1479,20 +1479,58 @@ class NextcloudConnector(BaseConnector):
     async def _retry_pending_deletes(self, sync_point_key: str, pending: list[str]) -> list[str]:
         """Apply the deletions an earlier run gave up on; returns the ones still owed.
 
-        An ID whose record is already gone counts as applied and leaves the list.
+        Each is applied only once Nextcloud confirms the file is gone, since it may
+        have been restored after the deletion was queued. One whose record is
+        already gone leaves the list.
         """
         if not pending:
             return []
-        still_failing = await self._process_deletions(set(pending))
-        remaining = sorted(i for i in set(pending) if i in still_failing)
+        confirmed: set[str] = set()
+        still_owed: dict[str, str] = {}
+        for file_id in sorted(set(pending)):
+            gone, reason = await self._is_gone_from_nextcloud(file_id)
+            if gone is None:
+                still_owed[file_id] = reason
+            elif gone:
+                confirmed.add(file_id)
+            else:
+                self.logger.info(f"File {file_id} exists in Nextcloud again; its earlier deletion is dropped")
+        if confirmed:
+            still_owed.update(await self._process_deletions(confirmed))
+        remaining = sorted(still_owed)
         if remaining != sorted(set(pending)):
             await self.activity_sync_point.update_sync_point(sync_point_key, {"pending_deletes": remaining})
         if remaining:
             self.logger.warning(
                 f"⚠️ [Incremental Sync] {len(remaining)} earlier deletion(s) still could not be applied; "
-                f"they are retried next sync: {describe_failures({f'ID {i}': still_failing[i] for i in remaining})}"
+                f"they are retried next sync: {describe_failures({f'ID {i}': still_owed[i] for i in remaining})}"
             )
         return remaining
+
+    async def _is_gone_from_nextcloud(self, file_id: str) -> tuple[bool | None, str]:
+        """(True, "") when the file is gone, (False, "") when it is still there, (None, why) when unknown."""
+        try:
+            record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, file_id)
+            if record is None:
+                # Nothing is stored under this ID; the delete only clears anything left below it.
+                return True, ""
+            path = await self.data_entities_processor.get_record_path(record.id) or record.record_name
+            async with self.rate_limiter:
+                response = await self.data_source.list_directory(
+                    user_id=self.current_user_id, path=path, depth=0
+                )
+            if getattr(response, "status", None) == HttpStatusCode.NOT_FOUND.value:
+                return True, ""
+            if not is_response_successful(response):
+                return None, f"could not check Nextcloud: {get_response_error(response)}"
+            body = extract_response_body(response)
+            entries = parse_webdav_propfind_response(body) if body else []
+            if not entries:
+                return None, "could not read Nextcloud's answer"
+            # Another file now at the same path means this one is still gone.
+            return entries[0].get("file_id") != file_id, ""
+        except Exception as e:
+            return None, f"could not check Nextcloud: {str(e) or type(e).__name__}"
 
     async def run_incremental_sync(self) -> None:
         """

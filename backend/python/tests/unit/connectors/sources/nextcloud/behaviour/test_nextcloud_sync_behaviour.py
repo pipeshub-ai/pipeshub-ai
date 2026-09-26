@@ -938,6 +938,25 @@ class TestIncrementalSync:
         assert db.by_name("notes.txt").id == kept and "notes.txt" not in db.deleted
         assert store.checkpoint()["pending_deletes"] == [], "a later restore on the page cancels the deletion"
 
+    async def test_a_pending_deletion_of_a_file_that_exists_again_is_dropped(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notes = server.nodes["Docs/notes.txt"]
+        kept = db.by_name("notes.txt").id
+        db.fail_delete_for = {notes.file_id}
+        server.delete("Docs/notes.txt")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        assert store.checkpoint()["pending_deletes"] == [notes.file_id]
+        db.fail_delete_for.clear()
+        server.restore(notes)
+        db.record_groups.clear()  # the next run falls back to a full sync, which moves the cursor past the restore
+
+        await connector.run_sync()
+        await connector.run_sync()
+
+        assert db.by_name("notes.txt").id == kept and "notes.txt" not in db.deleted
+        assert store.checkpoint()["pending_deletes"] == []
+
     async def test_the_give_up_error_names_what_could_not_be_applied(self, server, db, store, caplog) -> None:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")
