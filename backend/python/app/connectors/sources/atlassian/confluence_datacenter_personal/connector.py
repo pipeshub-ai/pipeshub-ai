@@ -6,10 +6,11 @@ Single-user sync without permission APIs. Inherits from BaseConnector directly.
 Authentication: API token (personal access token or HTTP basic with API token).
 """
 
+import json
 import uuid
 import re
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
@@ -93,6 +94,19 @@ TIME_OFFSET_HOURS = 24
 # How many runs the checkpoint is held for pages that failed to save before they
 # are given up on, so one broken page can't stop a space from ever moving on.
 MAX_FAILED_PAGE_ATTEMPTS = 5
+
+
+def _stored_map(value: object) -> dict[str, Any]:
+    """A map kept in a sync point as JSON text (graph stores such as Neo4j can't hold nested maps)."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 def _extract_item_last_modified_when(item_data: dict[str, Any]) -> Optional[str]:
     """Extract last modified timestamp from Confluence item data.
@@ -871,7 +885,10 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             total_attachments_synced = 0
             total_comments_synced = 0
             listing_complete = True
-            failed_items: list[str] = []
+            # (id, title, last modified) of items that failed to save this run.
+            failed_items: list[tuple[str, str, str]] = []
+            # Items given up on, id -> last modified then; skipped until it changes.
+            given_up = _stored_map((last_sync_data or {}).get("givenUpPages"))
 
             if record_type == RecordType.CONFLUENCE_PAGE and space_homepage_id:
                 homepage_in_db = await self.data_entities_processor.get_record_by_external_id(
@@ -957,6 +974,12 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
 
                         if not item_id or not item_title:
                             continue
+
+                        item_when = _extract_item_last_modified_when(item_data) or ""
+                        if str(item_id) in given_up:
+                            if given_up[str(item_id)] == item_when:
+                                continue
+                            del given_up[str(item_id)]
 
                         if (
                             record_type == RecordType.CONFLUENCE_PAGE
@@ -1088,7 +1111,11 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
 
                     except Exception as item_error:
                         self.logger.error(f"❌ Failed to process {content_type} {item_data.get('title')}: {item_error}")
-                        failed_items.append(f"'{item_data.get('title')}' ({item_data.get('id')})")
+                        failed_items.append((
+                            str(item_data.get("id")),
+                            str(item_data.get("title")),
+                            _extract_item_last_modified_when(item_data) or "",
+                        ))
                         continue
 
                 # Save batch to database
@@ -1135,17 +1162,11 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
                     "this window could be read, so the next sync reads it again"
                 )
-            elif failed_items and await self._hold_checkpoint_for_failed_items(
-                sync_point_key, last_sync_data, failed_items, content_type, space_key
-            ):
-                pass
-            elif total_synced > 0 or failed_items:
-                current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-                checkpoint: dict[str, Any] = {"last_sync_time": current_sync_time}
-                if (last_sync_data or {}).get("failedPageAttempts"):
-                    checkpoint["failedPageAttempts"] = 0
-                await self.pages_sync_point.update_sync_point(sync_point_key, checkpoint)
-                self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
+            else:
+                await self._save_content_checkpoint(
+                    sync_point_key, last_sync_data, failed_items, given_up, content_type, space_key,
+                    synced_any=total_synced > 0,
+                )
 
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}")
 
@@ -1153,31 +1174,73 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
             raise
 
-    async def _hold_checkpoint_for_failed_items(
+    async def _save_content_checkpoint(
         self,
         sync_point_key: str,
         last_sync_data: dict[str, Any] | None,
-        failed_items: list[str],
+        failed_items: list[tuple[str, str, str]],
+        given_up: dict[str, str],
         content_type: str,
         space_key: str,
-    ) -> bool:
-        """Keep the checkpoint where it is so the failed items are listed again; False once the attempts run out."""
-        attempts = int((last_sync_data or {}).get("failedPageAttempts") or 0) + 1
-        if attempts >= MAX_FAILED_PAGE_ATTEMPTS:
+        *,
+        synced_any: bool,
+    ) -> None:
+        """Move the checkpoint to now, or keep it while any item that failed still has attempts left.
+
+        Each failed item has its own count. One that fails ``MAX_FAILED_PAGE_ATTEMPTS`` syncs
+        in a row is given up on and skipped until its last-modified time changes.
+        """
+        stored = last_sync_data or {}
+        attempts_before = _stored_map(stored.get("failedPages"))
+        held: dict[str, int] = {}
+        newly_given_up: list[str] = []
+        for item_id, title, when in failed_items:
+            attempts = int(attempts_before.get(item_id) or 0) + 1
+            if attempts >= MAX_FAILED_PAGE_ATTEMPTS:
+                given_up[item_id] = when
+                newly_given_up.append(f"'{title}' ({item_id})")
+            else:
+                held[item_id] = attempts
+        if newly_given_up:
             self.logger.error(
-                f"❌ {content_type.capitalize()}s {', '.join(failed_items)} in space {space_key} still could not be "
-                f"saved after {attempts} syncs; moving on without them. They are read again when they next change"
+                f"❌ {content_type.capitalize()}s {', '.join(newly_given_up)} in space {space_key} still could not be "
+                f"saved after {MAX_FAILED_PAGE_ATTEMPTS} syncs; moving on without them. They are read again when "
+                "they next change"
             )
+
+        if held:
+            checkpoint: dict[str, Any] = {}
+            if stored.get("last_sync_time"):
+                checkpoint["last_sync_time"] = stored["last_sync_time"]
+            titles = {item_id: title for item_id, title, _ in failed_items}
+            self.logger.warning(
+                f"Keeping the {content_type}s checkpoint for space {space_key}: "
+                + ", ".join(f"'{titles[i]}' ({i}, attempt {n} of {MAX_FAILED_PAGE_ATTEMPTS})" for i, n in held.items())
+                + " could not be saved and will be read again next sync"
+            )
+        elif synced_any or failed_items or stored.get("failedPages") or given_up != _stored_map(stored.get("givenUpPages")):
+            now = datetime.now(timezone.utc)
+            checkpoint = {"last_sync_time": now.strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+            # The listing re-reads TIME_OFFSET_HOURS before the checkpoint; older given-up items can't come back.
+            forget_before = now - timedelta(hours=TIME_OFFSET_HOURS * 2)
+            given_up = {i: when for i, when in given_up.items() if self._listed_after(when, forget_before)}
+            self.logger.info(f"Updated {content_type}s sync checkpoint to {checkpoint['last_sync_time']}")
+        else:
+            return
+
+        # Written even when empty: Neo4j merges sync point fields, so an omitted field would keep its old value.
+        if held or stored.get("failedPages"):
+            checkpoint["failedPages"] = json.dumps(held, sort_keys=True)
+        if given_up or stored.get("givenUpPages"):
+            checkpoint["givenUpPages"] = json.dumps(given_up, sort_keys=True)
+        await self.pages_sync_point.update_sync_point(sync_point_key, checkpoint)
+
+    @staticmethod
+    def _listed_after(when: str, cutoff: datetime) -> bool:
+        try:
+            return datetime.fromisoformat(when.replace("Z", "+00:00")) >= cutoff
+        except (AttributeError, ValueError):
             return False
-        held: dict[str, Any] = {"failedPageAttempts": attempts}
-        if (last_sync_data or {}).get("last_sync_time"):
-            held["last_sync_time"] = last_sync_data["last_sync_time"]
-        await self.pages_sync_point.update_sync_point(sync_point_key, held)
-        self.logger.warning(
-            f"Keeping the {content_type}s checkpoint for space {space_key}: {', '.join(failed_items)} could not be "
-            f"saved and will be read again next sync (attempt {attempts} of {MAX_FAILED_PAGE_ATTEMPTS})"
-        )
-        return True
 
     async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """
