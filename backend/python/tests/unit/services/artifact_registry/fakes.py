@@ -101,6 +101,7 @@ class FakeGraphProvider:
 
     async def get_documents_paginated(
         self, collection: str, *, skip: int = 0, limit: int = 100, filters: dict[str, Any] | None = None,
+        **_ignored: Any,
     ) -> list[dict]:
         filters = filters or {}
         matches = [
@@ -132,10 +133,12 @@ class FakeBlobStore:
     representative of production behaviour (see `storage.controller.ts`'s
     `uploadNextVersionDocument`)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, signs_urls: bool = True) -> None:
         self.config_service = object()
         self._next_id = 0
         self.documents: dict[str, dict[str, Any]] = {}
+        # False mimics local storage, which cannot issue signed URLs.
+        self.signs_urls = signs_urls
 
     def _new_document_id(self) -> str:
         self._next_id += 1
@@ -191,6 +194,12 @@ class FakeBlobStore:
     async def get_direct_upload_url(self, org_id: str, document_id: str) -> str:
         return f"https://blob.example/upload/{document_id}"
 
-    async def get_download_url(self, org_id: str, document_id: str, version: int | None = None) -> str:
+    async def get_download_url(self, org_id: str, document_id: str, version: int | None = None) -> str | None:
+        if not self.signs_urls:
+            return None
         suffix = f"?version={version}" if version is not None else ""
         return f"https://blob.example/download/{document_id}{suffix}"
+
+    async def get_record_stream_url(self, record_id: str, version: int | None = None) -> str:
+        suffix = f"?version={version}" if version is not None else ""
+        return f"https://app.example/api/v1/knowledgeBase/stream/record/{record_id}{suffix}"

@@ -25,7 +25,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.modules.agents.qna.chat_state import ChatState
-from app.sandbox.artifact_upload import create_artifact_record
+from app.sandbox.artifact_upload import save_query_result_csv
 from app.sandbox.manager import get_executor
 from app.sandbox.models import SandboxLanguage
 from app.sandbox.redact import redact_sandbox_paths
@@ -95,62 +95,25 @@ class DatabaseSandbox:
         row_tuples = [tuple(r.get(c) for c in columns) for r in rows]
 
         async def _save() -> Optional[dict[str, Any]]:
-            try:
-                blob_store = self.chat_state.get("blob_store")
-                if blob_store is None:
-                    from app.modules.transformers.blob_storage import BlobStorage
-                    blob_store = BlobStorage(
-                        logger=logger,
-                        config_service=self.chat_state.get("config_service"),
-                        graph_provider=graph_provider,
-                    )
-
-                csv_bytes = _rows_to_csv_bytes(columns, row_tuples)
-                file_name = f"{label}_{uuid4().hex[:8]}.csv"
-
-                upload_info = await blob_store.save_conversation_file_to_storage(
-                    org_id=org_id,
-                    conversation_id=conversation_id,
-                    file_name=file_name,
-                    file_bytes=csv_bytes,
+            blob_store = self.chat_state.get("blob_store")
+            if blob_store is None:
+                from app.modules.transformers.blob_storage import BlobStorage
+                blob_store = BlobStorage(
+                    logger=logger,
+                    config_service=self.chat_state.get("config_service"),
+                    graph_provider=graph_provider,
                 )
-
-                result_entry: dict[str, Any] = {
-                    **upload_info,
-                    "mimeType": "text/csv",
-                    "sizeBytes": len(csv_bytes),
-                }
-
-                document_id = upload_info.get("documentId", "")
-                if document_id and user_id and graph_provider:
-                    try:
-                        from app.config.constants.arangodb import Connectors
-
-                        record_id = await create_artifact_record(
-                            graph_provider=graph_provider,
-                            document_id=document_id,
-                            file_name=file_name,
-                            mime_type="text/csv",
-                            size_bytes=len(csv_bytes),
-                            org_id=org_id,
-                            user_id=user_id,
-                            conversation_id=conversation_id,
-                            connector_name=Connectors.DATABASE_SANDBOX,
-                            source_tool=f"database_sandbox.{label.split('_')[0]}",
-                        )
-                        result_entry["recordId"] = record_id
-                    except (OSError, ConnectionError, RuntimeError, ValueError):
-                        logger.exception(
-                            "Failed to create ArtifactRecord for CSV export %s", file_name,
-                        )
-
-                return {
-                    "type": "artifacts",
-                    "artifacts": [result_entry],
-                }
-            except (OSError, ConnectionError, RuntimeError, ValueError):
-                logger.exception("Background CSV export failed for %s", label)
-                return None
+            return await save_query_result_csv(
+                blob_store=blob_store,
+                graph_provider=graph_provider,
+                org_id=org_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                columns=columns,
+                rows=row_tuples,
+                file_name=f"{label}_{uuid4().hex[:8]}.csv",
+                source_tool=f"database_sandbox.{label.split('_')[0]}",
+            )
 
         task = asyncio.create_task(_save())
         register_task(conversation_id, task)
@@ -289,14 +252,6 @@ class DatabaseSandbox:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
-
-def _rows_to_csv_bytes(columns: list[str], rows: list[tuple]) -> bytes:
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(columns)
-    writer.writerows(rows)
-    return buf.getvalue().encode("utf-8")
-
 
 def _parse_csv_output(stdout: str) -> list[dict[str, Any]]:
     """Parse CSV-formatted stdout (from sqlite3 -header -csv or psql --csv) into dicts."""

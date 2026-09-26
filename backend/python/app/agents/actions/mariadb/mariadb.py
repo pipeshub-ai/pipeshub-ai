@@ -486,31 +486,19 @@ class MariaDB:
                 raw_columns = columns
                 raw_rows = row_tuples
 
-                async def _save_csv_to_blob() -> Optional[dict[str, Any]]:
-                    try:
-                        from app.utils.conversation_tasks import _rows_to_csv_bytes
-                        csv_bytes = _rows_to_csv_bytes(raw_columns, raw_rows)
-                        file_name = f"query_result_{int(time.time())}.csv"
-                        upload_info = await blob_store.save_conversation_file_to_storage(
-                            org_id=org_id,
-                            conversation_id=conversation_id,
-                            file_name=file_name,
-                            file_bytes=csv_bytes,
-                        )
-                        logger.info(
-                            "MariaDB CSV export complete for conversation %s (%d rows)",
-                            conversation_id,
-                            len(raw_rows),
-                        )
-                        return {"type": "csv_download", **upload_info}
-                    except Exception:
-                        logger.exception(
-                            "Background MariaDB CSV export failed for conversation %s",
-                            conversation_id,
-                        )
-                        return None
+                from app.sandbox.artifact_upload import save_query_result_csv
 
-                task = asyncio.create_task(_save_csv_to_blob())
+                task = asyncio.create_task(save_query_result_csv(
+                    blob_store=blob_store,
+                    graph_provider=self.chat_state.get("graph_provider"),
+                    org_id=org_id,
+                    user_id=self.chat_state.get("user_id"),
+                    conversation_id=conversation_id,
+                    columns=raw_columns,
+                    rows=raw_rows,
+                    file_name=f"query_result_{int(time.time())}.csv",
+                    source_tool="mariadb.execute_query",
+                ))
                 register_task(conversation_id, task)
 
             return self._result(True, result_payload)

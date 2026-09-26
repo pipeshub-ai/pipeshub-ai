@@ -73,7 +73,7 @@ _load_env()
 from local_auth import obtain_local_oauth_credentials
 from pipeshub_client import PipeshubClient
 from storage_backends import available_backends, parked_notice
-from storage_client import StorageClient
+from storage_client import StorageClient, mint_storage_token, scoped_jwt_secret
 
 # ---------------------------------------------------------------------------
 # Storage backend configuration helpers
@@ -220,9 +220,10 @@ def s3_cleanup_tracker(
     object_keys: set[str] = set()
     for doc_id in document_ids:
         try:
+            token = mint_storage_token(pipeshub_client.org_id, pipeshub_client.user_id)
             resp = requests.get(
-                pipeshub_client._url(f"/api/v1/document/{doc_id}"),
-                headers=pipeshub_client._headers(),
+                pipeshub_client._url(f"/api/v1/document/internal/{doc_id}"),
+                headers={"Authorization": f"Bearer {token}"},
                 timeout=pipeshub_client.timeout_seconds,
             )
             if resp.status_code != 200:
@@ -300,6 +301,11 @@ def sc(
     storage_backend: str,
     s3_cleanup_tracker: _S3CleanupTracker,
 ) -> StorageClient:
+    if not scoped_jwt_secret():
+        pytest.skip(
+            "Storage routes are service-to-service only; set SCOPED_JWT_SECRET to "
+            "the deployment's scoped JWT secret to run the storage suite."
+        )
     return StorageClient(
         pipeshub_client,
         register_document_id=s3_cleanup_tracker.add_document_id,

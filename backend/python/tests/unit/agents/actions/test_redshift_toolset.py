@@ -9,7 +9,7 @@ import json
 import logging
 from collections.abc import Callable
 from typing import Any
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 import redshift_connector
@@ -291,16 +291,38 @@ class TestExecuteQuery:
 
     async def test_full_result_is_exported_as_csv(self, make_tool) -> None:
         blob = create_autospec(BlobStorage, instance=True)
-        blob.save_conversation_file_to_storage.return_value = {"url": "https://files/r.csv"}
+        blob.save_conversation_file_to_storage.return_value = {"signedUrl": "https://files/r.csv"}
         state = {"conversation_id": "conv-rs", "org_id": "org-1", "blob_storage": blob}
         tool, _ = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(150)), state=state)
 
         await tool.execute_query(query="SELECT * FROM public.customers")
         tasks = pop_tasks("conv-rs")
         assert len(tasks) == 1
-        assert await tasks[0] == {"type": "csv_download", "url": "https://files/r.csv"}
+        result = await tasks[0]
+        assert result["type"] == "artifacts"
+        (entry,) = result["artifacts"]
+        assert (entry["signedUrl"], entry["mimeType"]) == ("https://files/r.csv", "text/csv")
+        assert "recordId" not in entry
         lines = blob.save_conversation_file_to_storage.await_args.kwargs["file_bytes"].decode().splitlines()
         assert (lines[0], len(lines)) == ("id,email", 151)
+
+    async def test_export_is_an_artifact_owned_by_the_user(self, make_tool) -> None:
+        blob = create_autospec(BlobStorage, instance=True)
+        blob.save_versioned_artifact_to_storage.return_value = {"documentId": "doc-rs", "fileName": "q.csv"}
+        graph = MagicMock()
+        state = {
+            "conversation_id": "conv-rs-own", "org_id": "org-1", "user_id": "user-7",
+            "blob_storage": blob, "graph_provider": graph,
+        }
+        tool, _ = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(2)), state=state)
+
+        with patch("app.sandbox.artifact_upload.create_artifact_record", AsyncMock(return_value="rec-rs")) as create:
+            await tool.execute_query(query="SELECT * FROM public.customers")
+            (entry,) = (await pop_tasks("conv-rs-own")[0])["artifacts"]
+
+        assert entry["recordId"] == "rec-rs"
+        kwargs = create.await_args.kwargs
+        assert (kwargs["document_id"], kwargs["user_id"], kwargs["source_tool"]) == ("doc-rs", "user-7", "redshift.execute_query")
 
     async def test_failed_export_does_not_fail_the_query(self, make_tool) -> None:
         blob = create_autospec(BlobStorage, instance=True)
