@@ -21,6 +21,9 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.core.base.sync_point.sync_point import (
+    generate_record_sync_point_key,
+)
 from app.connectors.sources.atlassian.confluence_datacenter_personal.connector import (
     ConfluenceDataCenterPersonalConnector,
 )
@@ -487,24 +490,44 @@ class TestPartialFailures:
         saved_time = checkpoints.values_for("confluence_pages/ENG")
         assert saved_time is None or saved_time["last_sync_time"] <= "2024-05-01T10:00:00.000Z"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a page that fails to save "
-            "is not retried, because the checkpoint moves past its last-modified time."
-        ),
-    )
     async def test_a_page_that_failed_is_listed_again_next_time(self, atlassian_api, records_db, checkpoints, search) -> None:
         old = "2024-05-01T10:00:00.000Z"
+        earlier = "2024-04-01T00:00:00.000Z"
         stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
         search.add("page", "ENG", 0, listing([content("p1", when=old), content("p2", when=old)]))
         records_db.fail_lookup_for = {"p2"}
         connector = await make_connector(atlassian_api, records_db, checkpoints)
+        await connector.pages_sync_point.update_sync_point(
+            generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG"), {"last_sync_time": earlier}
+        )
 
         await connector.run_sync()
 
-        saved_time = checkpoints.values_for("confluence_pages/ENG")
-        assert saved_time is None or saved_time["last_sync_time"] <= old
+        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] == earlier
+
+        records_db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert "p2" in saved(records_db, RecordType.CONFLUENCE_PAGE)
+        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] > old
+
+    async def test_a_page_that_keeps_failing_is_given_up_on_after_five_syncs(
+        self, atlassian_api, records_db, checkpoints, search, caplog
+    ) -> None:
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1"), content("p2")]))
+        records_db.fail_lookup_for = {"p2"}
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+
+        for _ in range(4):
+            await connector.run_sync()
+            assert "last_sync_time" not in checkpoints.values_for("confluence_pages/ENG")
+
+        with caplog.at_level(logging.ERROR):
+            await connector.run_sync()
+
+        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] > "2024-05-01T10:00:00.000Z"
+        assert any("p2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
 
 
 class TestSpaceHomepage:
