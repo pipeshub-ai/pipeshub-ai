@@ -3059,6 +3059,12 @@ class TestAgentChat:
     of."""
 
     @staticmethod
+    def _request() -> MagicMock:
+        request = MagicMock()
+        request.is_disconnected = AsyncMock(return_value=False)
+        return request
+
+    @staticmethod
     def _sse_streaming_response(frames: list[str]):
         from fastapi.responses import StreamingResponse
 
@@ -3079,7 +3085,7 @@ class TestAgentChat:
             f"event: complete\ndata: {json.dumps(completion_data)}\n\n",
         ])
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response) as mock_chat_stream:
             result = await chat(request, "a1")
 
@@ -3098,7 +3104,7 @@ class TestAgentChat:
             f"event: error\ndata: {json.dumps(error_payload)}\n\n",
         ])
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response):
             result = await chat(request, "a1")
 
@@ -3116,7 +3122,7 @@ class TestAgentChat:
 
         streaming_response = self._sse_streaming_response([])
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response):
             result = await chat(request, "a1")
 
@@ -3133,7 +3139,7 @@ class TestAgentChat:
 
         passthrough = JSONResponse(status_code=400, content={"status": "error", "message": "bad"})
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=passthrough):
             result = await chat(request, "a1")
 

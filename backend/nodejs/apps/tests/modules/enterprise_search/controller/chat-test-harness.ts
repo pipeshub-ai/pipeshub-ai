@@ -389,6 +389,7 @@ export class FakeSSEResponse extends EventEmitter {
   body = ''
   jsonBody: unknown
   writesAfterEnd = 0
+  readonly headers: Record<string, string> = {}
   private resolveEnded: () => void = () => undefined
   readonly ended: Promise<void> = new Promise((resolve) => {
     this.resolveEnded = resolve
@@ -397,6 +398,10 @@ export class FakeSSEResponse extends EventEmitter {
   writeHead(statusCode: number): this {
     this.statusCode = statusCode
     this.headersSent = true
+    return this
+  }
+  setHeader(name: string, value: string): this {
+    this.headers[name.toLowerCase()] = value
     return this
   }
   status(statusCode: number): this {
@@ -458,6 +463,7 @@ export class FakeSSEResponse extends EventEmitter {
 interface RecordedCall {
   url: string
   method: string
+  headers: Record<string, string>
   body: Record<string, unknown>
 }
 
@@ -479,7 +485,8 @@ export class FakeAIBackend {
     sinon.stub(globalThis, 'fetch').callsFake((input: string | URL | Request, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : input.toString()
       const rawBody = typeof init?.body === 'string' ? init.body : '{}'
-      this.calls.push({ url, method: init?.method ?? 'GET', body: JSON.parse(rawBody) as Record<string, unknown> })
+      const headers = Object.fromEntries(new Headers(init?.headers).entries())
+      this.calls.push({ url, method: init?.method ?? 'GET', headers, body: JSON.parse(rawBody) as Record<string, unknown> })
       const registered = this.replies.find((r) => r.path.test(url))
       const isStream = /\/stream(\?|$)/.test(url)
       const reply = registered?.reply ?? (isStream ? this.streamReply : null)
@@ -507,6 +514,11 @@ export class FakeAIBackend {
   /** Answer any request whose URL matches `path` with this JSON status and body. */
   reply(path: RegExp, status: number, body: unknown): void {
     this.replies.push({ path, reply: { kind: 'json', status, body } })
+  }
+
+  /** Forget every registered reply, so the next turn of a multi-turn test can answer differently. */
+  resetReplies(): void {
+    this.replies.length = 0
   }
 
   /** The next stream request is refused before any frame is sent. */
