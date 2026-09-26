@@ -121,6 +121,28 @@ def _github_error_message(response: GitHubResponse, action: str) -> str:
     return f"GitHub refused to {action}.{said} Correct the request and try again."
 
 
+def _with_paging(result: Tuple[bool, str], page: int, per_page: int) -> Tuple[bool, str]:
+    """Say whether this page is the last, so one page is never read as the whole list."""
+    success, text = result
+    if not success:
+        return result
+    payload = json.loads(text)
+    items = payload.get("data")
+    if not isinstance(items, list):
+        return result
+    more = len(items) >= per_page
+    payload.update({"page": page, "per_page": per_page, "has_more": more})
+    if more:
+        payload["next_page"] = page + 1
+        payload["message"] += (
+            f". This is page {page} with {len(items)} results; there may be more. "
+            f"Call again with page={page + 1} to see them."
+        )
+    else:
+        payload["message"] += f". This is the last page ({len(items)} results on page {page})."
+    return True, json.dumps(payload)
+
+
 def _unexpected_failure(doing: str, error: Exception) -> Tuple[bool, str]:
     logger.error("Error %s: %s", doing, error)
     return False, json.dumps({
@@ -676,7 +698,7 @@ class GitHub:
                 self.client.list_user_repos,
                 user=user, type=type, per_page=per_page, page=page
             )
-            return self._handle_response(response, "Repositories fetched successfully", "list the repositories")
+            return _with_paging(self._handle_response(response, "Repositories fetched successfully", "list the repositories"), page, per_page)
         except Exception as e:
             return _unexpected_failure("listing repositories", e)
 
@@ -812,7 +834,7 @@ class GitHub:
                 per_page=_per_page,
                 page=_page,
             )
-            return self._handle_response(response, "Issues fetched successfully", "list the issues")
+            return _with_paging(self._handle_response(response, "Issues fetched successfully", "list the issues"), _page, _per_page)
         except Exception as e:
             return _unexpected_failure("listing issues", e)
 
@@ -1252,7 +1274,7 @@ class GitHub:
                 per_page=_per_page,
                 page=_page,
             )
-            return self._handle_response(response, "Pull requests fetched successfully", "list the pull requests")
+            return _with_paging(self._handle_response(response, "Pull requests fetched successfully", "list the pull requests"), _page, _per_page)
         except Exception as e:
             return _unexpected_failure("listing pull requests", e)
 
@@ -1494,6 +1516,6 @@ class GitHub:
                 self.client.search_repositories,
                 query=query, per_page=per_page, page=page
             )
-            return self._handle_response(response, "Repository search completed successfully", "search repositories")
+            return _with_paging(self._handle_response(response, "Repository search completed successfully", "search repositories"), page, per_page)
         except Exception as e:
             return _unexpected_failure("searching repositories", e)

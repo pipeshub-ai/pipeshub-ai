@@ -662,3 +662,43 @@ class TestEventLoop:
         ok(await github.get_repository("acme", "web"))
         await other_work
         assert waited == [True]
+
+
+class TestPaging:
+    """A list tool returns one page; the agent must be told when there may be more."""
+
+    @pytest.mark.asyncio
+    async def test_full_page_of_repositories_points_to_the_next_page(self, github, api) -> None:
+        api.on("GET", r"/users/ann", (200, {"login": "ann", "url": f"{API}/users/ann"}))
+        api.on("GET", r"/users/ann/repos", (200, [repo("ann", f"r{i}") for i in range(25)]))
+        data = ok(await github.list_repositories("ann", per_page=10, page=1))
+        assert (data["has_more"], data["next_page"]) == (True, 2)
+        assert "Call again with page=2" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_short_page_of_repositories_is_the_last(self, github, api) -> None:
+        api.on("GET", r"/users/ann", (200, {"login": "ann", "url": f"{API}/users/ann"}))
+        api.on("GET", r"/users/ann/repos", (200, [repo("ann", f"r{i}") for i in range(25)]))
+        data = ok(await github.list_repositories("ann", per_page=10, page=3))
+        assert len(data["data"]) == 5
+        assert data["has_more"] is False and "next_page" not in data
+        assert "last page" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_issues_page_says_more_may_exist(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("GET", rf"{REPO_PATH}/issues", (200, [issue(n) for n in range(1, 8)]))
+        assert ok(await github.list_issues("acme", "web", per_page=3))["has_more"] is True
+        assert ok(await github.list_issues("acme", "web", per_page=3, page=3))["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_pull_requests_page_says_more_may_exist(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("GET", rf"{REPO_PATH}/pulls", (200, [pull(7), pull(8)]))
+        assert ok(await github.list_pull_requests("acme", "web", per_page=1))["next_page"] == 2
+
+    @pytest.mark.asyncio
+    async def test_search_results_say_more_may_exist(self, github, api) -> None:
+        api.on("GET", r"/search/repositories", (200, {"total_count": 40, "items": [repo("acme", f"ml{i}") for i in range(30)]}))
+        data = ok(await github.search_repositories("ml", per_page=5))
+        assert (data["page"], data["per_page"], data["has_more"]) == (1, 5, True)
