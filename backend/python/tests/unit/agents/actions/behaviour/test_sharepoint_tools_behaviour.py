@@ -107,7 +107,6 @@ class TestReads:
         assert stub.query(stub.graph_calls()[0])["$top"] == "5"
         assert data.get("has_more") in (None, False)
 
-    @pending("pages")
     async def test_get_pages_says_when_graph_has_more(self, sp, stub) -> None:
         stub.on("GET", f"{SITE_PATH}/pages", page(
             [{"@odata.type": "#microsoft.graph.sitePage", "id": "p-1", "title": "Home"}],

@@ -622,11 +622,21 @@ class SharePoint:
                     item["page_id"] = item["id"]
 
             logger.info(f"✅ Retrieved {len(items)} pages from site")
+            more = {}
+            if getattr(response, "odata_next_link", None):
+                more = {
+                    "has_more": True,
+                    "note": (
+                        f"The site has more than {query_params.top} pages, so this list is not complete. "
+                        "Use search_pages to find a page by name."
+                    ),
+                }
             return True, json.dumps({
                 "pages": items,
                 "results": items,
                 "value": items,
                 "count": len(items),
+                **more,
             })
 
         except Exception as e:
