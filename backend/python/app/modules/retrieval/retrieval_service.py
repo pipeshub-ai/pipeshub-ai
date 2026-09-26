@@ -809,7 +809,12 @@ class RetrievalService:
                     fallback_mimetype = "text/html"
 
                 if weburl:
-                    result["metadata"]["webUrl"] = substitute_user_email(weburl, user_email)
+                    resolved_weburl = substitute_user_email(weburl, user_email)
+                    result["metadata"]["webUrl"] = resolved_weburl
+                    # `record` is the same object virtual_to_record_map holds (see
+                    # record_id_to_record_map / _create_virtual_to_record_mapping),
+                    # so citation building via chat_helpers.get_record() needs this too.
+                    record["webUrl"] = resolved_weburl
 
                 if fallback_mimetype:
                     result["metadata"]["mimeType"] = fallback_mimetype
