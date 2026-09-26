@@ -129,4 +129,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('local-fs/open-record-source', payload)
     ),
   },
+  /**
+   * Desktop sign-in: the OAuth screen runs in the default browser and the
+   * result comes back as a pipeshub:// deep link. See lib/electron/oauth-deep-link.ts.
+   */
+  oauth: {
+    openExternal: (url: string) => ipcRenderer.invoke('oauth/open-external', { url }),
+    /** Drains a link that arrived before this renderer had a listener. */
+    consumePending: () => ipcRenderer.invoke('oauth/pending'),
+    /** Redeems a code where the Origin header has to be set (see main.ts). */
+    exchangeToken: (payload: { url: string; body: string; origin?: string }) =>
+      ipcRenderer.invoke('oauth/token-exchange', payload),
+    onCallback: (callback: (payload: unknown) => void): (() => void) => {
+      const listener = (_event: IpcRendererEvent, payload: unknown) => callback(payload);
+      ipcRenderer.on('oauth/callback', listener);
+      return () => ipcRenderer.removeListener('oauth/callback', listener);
+    },
+  },
 });

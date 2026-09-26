@@ -17330,6 +17330,55 @@ paths:
                 $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   # ==================== AUTHENTICATION ENDPOINTS ====================
+  /userAccount/frontend-url:
+    get:
+      tags:
+        - User Account
+      summary: Get the configured frontend URL (desktop app only)
+      description: |
+        Returns the server's configured public frontend URL.
+
+        The PipesHub desktop app builds its OAuth redirect URI from this value. It cannot
+        derive it: the app knows only the API base URL the operator typed into it, and the
+        two are different origins whenever the UI is served separately from the API. The
+        app calls this as the sign-in screen loads, before any provider button renders.
+
+        Requires the `client-name: desktop` request header. That is a filter, not an
+        access control: the header is client-supplied and the desktop app is a public
+        client, so nothing it ships could prove its identity. It exists so browsers, which
+        have `window.location` and never need this, do not receive the value.
+      operationId: getDesktopFrontendUrl
+      security: []
+      parameters:
+        - in: header
+          name: client-name
+          required: true
+          description: Must be `desktop`. Any other value is rejected with 403.
+          schema:
+            type: string
+            enum: [desktop]
+      responses:
+        '200':
+          description: The configured frontend URL
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  frontendUrl:
+                    type: string
+                    format: uri
+                    example: "https://pipeshub.example.com"
+                required:
+                  - frontendUrl
+        '403':
+          description: Called without the desktop client header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /userAccount/initAuth:
     post:
       tags:

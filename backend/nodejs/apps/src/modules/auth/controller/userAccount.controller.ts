@@ -139,6 +139,40 @@ export class UserAccountController {
   ) { }
 
   /**
+   * The configured public frontend URL, for the desktop app only.
+   *
+   * The desktop app's OAuth redirect URI has to point at the frontend origin,
+   * but the app knows only the API base URL the user typed, and those are
+   * different origins whenever the UI is served separately from the API. It
+   * calls this once as the sign-in screen loads, before any provider button
+   * renders.
+   *
+   * The `client-name: desktop` check is not a security boundary: the header is
+   * client-supplied, and the desktop app is a public client, so nothing it
+   * ships could prove its identity. It only keeps the value off responses to
+   * browsers, which have `window.location` and never need it.
+   *
+   * GitHub's authorization code is redeemed against this same config value, so
+   * both must read it from one place or they drift apart.
+   */
+  async getDesktopFrontendUrl(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      if (req.headers['client-name'] !== 'desktop') {
+        throw new ForbiddenError(
+          'This endpoint is only available to the PipesHub desktop app.',
+        );
+      }
+      res.json({ frontendUrl: this.config.frontendUrl });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * If the verified token contains an 'email' claim (e.g. the mail attribute in Entra ID)
    * that differs from the stored/session email (which may be the UPN), correct it.
    * When a userId is provided the DB record is updated; the in-memory object is always mutated.
@@ -521,7 +555,6 @@ export class UserAccountController {
         message: 'Authentication initialized',
         authProviders,
         jitEnabled: jitEnabledMethods.length > 0,
-
       });
 
     } catch (error) {
