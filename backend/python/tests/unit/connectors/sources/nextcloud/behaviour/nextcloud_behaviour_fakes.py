@@ -352,7 +352,8 @@ class FakeRecordsDb:
     and adds one only when the parent record already exists. ``get_record_path``
     follows the Arango query: it walks those edges, keeping only the ancestor each
     record names as its parent. ``on_record_deleted`` removes one record and
-    nothing below it, as production does.
+    nothing below it, as production does; ``on_records_deleted_cascade`` removes
+    the subtree below each record too.
     """
 
     def __init__(self, org_id: str = "org-1") -> None:
@@ -430,6 +431,34 @@ class FakeRecordsDb:
         if record is not None:
             del self.records[record.external_record_id]
             self.deleted.append(record.record_name)
+
+    async def on_records_deleted_cascade(self, record_ids: list[str], connector_id: str,
+                                         cascade_children: bool = True) -> dict[str, Any]:
+        """Deletes each record with everything below it along parent edges, all or nothing."""
+        doomed: list[str] = []
+        pending = list(record_ids)
+        while pending:
+            record_id = pending.pop()
+            if record_id in doomed or self._by_id(record_id) is None:
+                continue
+            doomed.append(record_id)
+            pending.extend(child for child, parent in self.edges.items() if parent == record_id)
+        failed = [rid for rid in doomed if self._by_id(rid).external_record_id in self.fail_delete_for]
+        if failed:
+            return {"success": False, "reason": "delete failed", "deleted_records": [],
+                    "failed_records": failed, "successfully_deleted": 0, "failed_count": len(failed)}
+        for record_id in doomed:
+            record = self._by_id(record_id)
+            self.edges.pop(record_id, None)
+            del self.records[record.external_record_id]
+            self.deleted.append(record.record_name)
+        return {"success": True, "deleted_records": doomed, "failed_records": [],
+                "successfully_deleted": len(doomed), "failed_count": 0}
+
+    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str,
+                                    record_type: str | None = None) -> list[FileRecord]:
+        return [r.model_copy(deep=True) for r in self.records.values()
+                if r.parent_external_record_id == parent_external_record_id]
 
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         return 1 if self.edges.pop(record_id, None) else 0

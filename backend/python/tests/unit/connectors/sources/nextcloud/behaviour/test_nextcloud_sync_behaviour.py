@@ -652,13 +652,6 @@ class TestIncrementalSync:
 
         assert db.deleted == [] and store.cursor() == str(server.latest_activity_id)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: deleting a folder in "
-            "Nextcloud removes only the folder's own record; the files inside it stay searchable."
-        ),
-    )
     async def test_deleting_a_folder_removes_what_was_inside(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         server.delete("Docs")
@@ -666,6 +659,17 @@ class TestIncrementalSync:
         await connector.run_sync()
 
         assert not {"Docs", "Reports", "q1.pdf", "notes.txt"} & db.names()
+        assert {"Photos", "cat.png", "readme.txt"} <= db.names(), "only what was inside goes"
+
+    async def test_what_a_half_finished_folder_delete_left_behind_is_removed(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        folder = db.by_name("Docs")
+        del db.records[folder.external_record_id]  # the folder went, its contents did not
+        server.delete("Docs")
+
+        await connector.run_sync()
+
+        assert not {"Reports", "q1.pdf", "notes.txt"} & db.names()
 
     async def test_a_backlog_longer_than_one_page_is_caught_up_over_runs(self, server, db, store) -> None:
         connector = await synced(server, db, store)

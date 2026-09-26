@@ -1456,13 +1456,36 @@ class NextcloudConnector(BaseConnector):
                         self.connector_id, str(file_id)
                     )
 
-                    if record:
+                    if record and record.mime_type != MimeTypes.FOLDER.value:
                         self.logger.info(f"Deleting record: {record.record_name} (ID: {file_id})")
                         await self.data_entities_processor.on_record_deleted(
                             record_id=record.id
                         )
+                        continue
+
+                    # Nextcloud logs one activity for a deleted folder, none for what it held.
+                    if record:
+                        root_ids = [record.id]
                     else:
+                        # A cascade can commit partway, removing the folder but not all it held.
+                        children = await self.data_entities_processor.get_records_by_parent(
+                            connector_id=self.connector_id, parent_external_record_id=str(file_id)
+                        )
+                        root_ids = [child.id for child in children or []]
+                    if not root_ids:
                         self.logger.debug(f"Record not found for deletion: {file_id}")
+                        continue
+                    result = await self.data_entities_processor.on_records_deleted_cascade(
+                        root_ids, self.connector_id
+                    )
+                    # The graph reports a failed cascade in the result rather than raising.
+                    if not result or not result.get("success") or result.get("failed_count"):
+                        self.logger.error(
+                            f"❌ Could not remove deleted folder {file_id} and everything in it: "
+                            f"{(result or {}).get('reason') or result}"
+                        )
+                        continue
+                    self.logger.info(f"🗑️ Removed folder {file_id} and everything in it")
 
                 except Exception as e:
                     self.logger.error(f"Error deleting record {file_id}: {e}", exc_info=True)
