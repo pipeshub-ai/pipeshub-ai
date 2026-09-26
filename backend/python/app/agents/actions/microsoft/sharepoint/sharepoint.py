@@ -1643,6 +1643,7 @@ class SharePoint:
             sections_data = (sec_resp.data or {}).get("results") or (sec_resp.data or {}).get("sections") or []
             sections_with_pages: list[dict[str, Any]] = []
             flat_pages: list[dict[str, Any]] = []
+            unreadable_sections: list[dict[str, Any]] = []
             for sec in sections_data:
                 if not isinstance(sec, dict):
                     continue
@@ -1656,7 +1657,10 @@ class SharePoint:
                     top=50,
                     skip=0,
                 )
-                raw_pages = (page_resp.data.get("results") or page_resp.data.get("pages") or []) if (page_resp.success and page_resp.data) else []
+                if not page_resp.success:
+                    unreadable_sections.append({"section_id": sec_id, "section_name": sec_name})
+                    continue
+                raw_pages = (page_resp.data.get("results") or page_resp.data.get("pages") or []) if page_resp.data else []
                 section_pages: list[dict[str, Any]] = []
                 for p in raw_pages:
                     if not isinstance(p, dict):
@@ -1675,13 +1679,21 @@ class SharePoint:
                     "section_name": sec_name,
                     "pages": section_pages,
                 })
-            return True, json.dumps({
+            out: dict[str, Any] = {
                 "notebook_id": notebook_id,
                 "site_id": site_id,
                 "sections": sections_with_pages,
                 "pages": flat_pages,
                 "usage_hint": "Use sharepoint_get_notebook_page_content(site_id, page_ids=[...]) for selected page_ids.",
-            })
+            }
+            if unreadable_sections:
+                names = ", ".join(str(sec["section_name"] or sec["section_id"]) for sec in unreadable_sections)
+                out["unreadable_sections"] = unreadable_sections
+                out["note"] = (
+                    f"The pages of these sections could not be read, so they are missing from this list: {names}. "
+                    "Try again in a moment, or tell the user those sections could not be opened."
+                )
+            return True, json.dumps(out)
         except Exception as e:
             return self._handle_error(e, f"list notebook pages {notebook_id}")
 

@@ -298,7 +298,6 @@ class TestNotebooks:
         assert ok is True
         assert [(p["page_id"], p["section_name"]) for p in data["pages"]] == [("pg-1", "Q1"), ("pg-2", "Q2")]
 
-    @pending("sections")
     async def test_a_section_whose_pages_could_not_be_read_is_not_shown_as_empty(self, sp, stub) -> None:
         stub.on("GET", f"{NOTEBOOKS}/nb-1/sections", page([section("s-1", "Q1"), section("s-2", "Q2")]))
         stub.on("GET", f"{SITE_PATH}/onenote/sections/s-1/pages", page([onenote_page("pg-1", "Kickoff")]))
