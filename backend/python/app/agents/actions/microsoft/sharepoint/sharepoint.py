@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from typing import Any, Optional
 
@@ -323,6 +324,22 @@ class SharePoint:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _all_onenote_items(
+        fetch: Callable[[int], Awaitable[SharePointResponse]], key: str,
+    ) -> tuple[list[Any], SharePointResponse | None, bool]:
+        """Every page of a OneNote listing: (items, the failed response if one failed, whether the list is complete)."""
+        items: list[Any] = []
+        for page_number in range(_MAX_NOTEBOOK_PAGES):
+            response = await fetch(page_number * _NOTEBOOK_PAGE_SIZE)
+            if not response.success:
+                return items, response, False
+            data = response.data or {}
+            items.extend(data.get("results") or data.get(key) or [])
+            if not data.get("has_more"):
+                return items, None, True
+        return items, None, False
 
     def _failed(self, response: SharePointResponse, action: str, fallback: str) -> tuple[bool, str]:
         return False, json.dumps({"error": _failure_text(response, action, fallback)})
@@ -1633,18 +1650,18 @@ class SharePoint:
     ) -> tuple[bool, str]:
         """List sections and pages of a OneNote notebook (metadata only, no content)."""
         try:
-            sec_resp = await self.client.list_onenote_sections(
-                site_id=site_id,
-                notebook_id=notebook_id,
-                top=50,
-                skip=0,
+            sections_data, sec_failure, sections_complete = await self._all_onenote_items(
+                lambda skip: self.client.list_onenote_sections(
+                    site_id=site_id, notebook_id=notebook_id, top=_NOTEBOOK_PAGE_SIZE, skip=skip,
+                ),
+                "sections",
             )
-            if not sec_resp.success:
-                return self._failed(sec_resp, "list the notebook's sections", "Failed to list sections")
-            sections_data = (sec_resp.data or {}).get("results") or (sec_resp.data or {}).get("sections") or []
+            if sec_failure is not None and not sections_data:
+                return self._failed(sec_failure, "list the notebook's sections", "Failed to list sections")
             sections_with_pages: list[dict[str, Any]] = []
             flat_pages: list[dict[str, Any]] = []
             unreadable_sections: list[dict[str, Any]] = []
+            capped_sections: list[str] = []
             for sec in sections_data:
                 if not isinstance(sec, dict):
                     continue
@@ -1652,16 +1669,17 @@ class SharePoint:
                 sec_name = sec.get("display_name") or sec.get("displayName")
                 if not sec_id:
                     continue
-                page_resp = await self.client.list_onenote_pages(
-                    site_id=site_id,
-                    section_id=sec_id,
-                    top=50,
-                    skip=0,
+                raw_pages, page_failure, pages_complete = await self._all_onenote_items(
+                    lambda skip, sec_id=sec_id: self.client.list_onenote_pages(
+                        site_id=site_id, section_id=sec_id, top=_NOTEBOOK_PAGE_SIZE, skip=skip,
+                    ),
+                    "pages",
                 )
-                if not page_resp.success:
+                if page_failure is not None:
                     unreadable_sections.append({"section_id": sec_id, "section_name": sec_name})
                     continue
-                raw_pages = (page_resp.data.get("results") or page_resp.data.get("pages") or []) if page_resp.data else []
+                if not pages_complete:
+                    capped_sections.append(sec_name or sec_id)
                 section_pages: list[dict[str, Any]] = []
                 for p in raw_pages:
                     if not isinstance(p, dict):
@@ -1687,13 +1705,28 @@ class SharePoint:
                 "pages": flat_pages,
                 "usage_hint": "Use sharepoint_get_notebook_page_content(site_id, page_ids=[...]) for selected page_ids.",
             }
+            notes: list[str] = []
             if unreadable_sections:
                 names = ", ".join(str(sec["section_name"] or sec["section_id"]) for sec in unreadable_sections)
                 out["unreadable_sections"] = unreadable_sections
-                out["note"] = (
+                notes.append(
                     f"The pages of these sections could not be read, so they are missing from this list: {names}. "
                     "Try again in a moment, or tell the user those sections could not be opened."
                 )
+            if not sections_complete:
+                out["has_more"] = True
+                notes.append(
+                    "Not every section of this notebook could be listed, so some sections are missing. "
+                    "Tell the user the list is incomplete."
+                )
+            if capped_sections:
+                out["has_more"] = True
+                notes.append(
+                    f"These sections hold more pages than could be listed, so some of their pages are missing: "
+                    f"{', '.join(str(n) for n in capped_sections)}."
+                )
+            if notes:
+                out["note"] = " ".join(notes)
             return True, json.dumps(out)
         except Exception as e:
             return self._handle_error(e, f"list notebook pages {notebook_id}")

@@ -346,6 +346,55 @@ class TestNotebooks:
         assert ok is True
         assert [(p["page_id"], p["section_name"]) for p in data["pages"]] == [("pg-1", "Q1"), ("pg-2", "Q2")]
 
+    async def test_a_notebook_with_more_than_fifty_sections_lists_them_all(self, sp, stub) -> None:
+        first = [section(f"s-{i}", f"Week {i}") for i in range(50)]
+        stub.on("GET", f"{NOTEBOOKS}/nb-1/sections", notebooks_by_skip({"0": page(first), "50": page([section("s-50", "Week 50")])}))
+        for i in range(51):
+            stub.on("GET", f"{SITE_PATH}/onenote/sections/s-{i}/pages", page([onenote_page(f"pg-{i}", f"Notes {i}")]))
+
+        ok, data = result(await sp.list_notebook_pages(site_id=SITE, notebook_id="nb-1"))
+
+        assert ok is True
+        assert len(data["sections"]) == 51 and data["pages"][-1]["page_id"] == "pg-50"
+        assert "has_more" not in data
+
+    async def test_a_section_with_more_than_fifty_pages_lists_them_all(self, sp, stub) -> None:
+        stub.on("GET", f"{NOTEBOOKS}/nb-1/sections", page([section("s-1", "Q1")]))
+        stub.on("GET", f"{SITE_PATH}/onenote/sections/s-1/pages", notebooks_by_skip({
+            "0": page([onenote_page(f"pg-{i}", f"P{i}") for i in range(50)]), "50": page([onenote_page("pg-50", "P50")]),
+        }))
+
+        ok, data = result(await sp.list_notebook_pages(site_id=SITE, notebook_id="nb-1"))
+
+        assert ok is True
+        assert [p["page_id"] for p in data["pages"]][-2:] == ["pg-49", "pg-50"]
+        assert "has_more" not in data
+
+    async def test_a_section_too_large_to_list_says_pages_are_missing(self, sp, stub) -> None:
+        stub.on("GET", f"{NOTEBOOKS}/nb-1/sections", page([section("s-1", "Archive")]))
+        stub.on("GET", f"{SITE_PATH}/onenote/sections/s-1/pages",
+                lambda request: httpx.Response(200, json=page([onenote_page("pg-x", "P")] * 50)))
+
+        ok, data = result(await sp.list_notebook_pages(site_id=SITE, notebook_id="nb-1"))
+
+        assert ok is True
+        assert data["has_more"] is True
+        assert "Archive" in data["note"]
+
+    async def test_sections_past_a_failed_page_are_called_missing(self, sp, stub) -> None:
+        stub.on("GET", f"{NOTEBOOKS}/nb-1/sections", notebooks_by_skip({
+            "0": page([section(f"s-{i}", f"W{i}") for i in range(50)]),
+            "50": graph_error(503, "serviceNotAvailable", "Service unavailable"),
+        }))
+        for i in range(50):
+            stub.on("GET", f"{SITE_PATH}/onenote/sections/s-{i}/pages", page([]))
+
+        ok, data = result(await sp.list_notebook_pages(site_id=SITE, notebook_id="nb-1"))
+
+        assert ok is True
+        assert data["has_more"] is True
+        assert "some sections are missing" in data["note"]
+
     async def test_a_section_whose_pages_could_not_be_read_is_not_shown_as_empty(self, sp, stub) -> None:
         stub.on("GET", f"{NOTEBOOKS}/nb-1/sections", page([section("s-1", "Q1"), section("s-2", "Q2")]))
         stub.on("GET", f"{SITE_PATH}/onenote/sections/s-1/pages", page([onenote_page("pg-1", "Kickoff")]))
