@@ -16,11 +16,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+import httpx
 import pytest
 import yaml
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 import app.connectors.sources.demo.connector as demo_connector
 from app.connectors.sources.demo.harness import kb_harness
@@ -138,6 +139,18 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
 
 
 @pytest.mark.parametrize(
+    "answer",
+    [
+        "You can spend up to **$250** per purchase without approval.",
+        "You don\u2019t need approval for purchases up to $250.",
+        "Anything $250 or less: approval isn't required, just submit the receipt.",
+    ],
+)
+def test_f2_passes_the_amount_with_no_approval_however_the_chat_formats_it(fx: dict, answer: str) -> None:
+    assert kb_harness.score(_question(fx, "f2"), "cites", {"drive-fin-expense-policy"}, answer)[0] is True
+
+
+@pytest.mark.parametrize(
     ("answer", "ok"),
     [
         ("Up to $250 per purchase needs no approval.", True),
@@ -149,20 +162,6 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
 def test_f2_does_not_read_250_inside_2500(fx: dict, answer: str, ok: bool) -> None:
     q = _question(fx, "f2")
     assert kb_harness.score(q, "cites", {"drive-fin-expense-policy"}, answer)[0] is ok
-
-
-def test_the_upload_waits_for_every_knowledge_base_the_persona_loads(fx: dict) -> None:
-    shared, restricted = kb_harness.upload_plan(fx)
-    records = {r["title"] for r in fx["records"]} | {t["title"] for t in fx.get("threads", [])}
-    for persona, groups in (("alice", {"launch-core", "payments-contract"}),
-                            ("bob", {"pricing-committee", "deal-desk", "people-managers"})):
-        readable = kb_harness.upload_groups(fx, persona)
-        probes = kb_harness.wait_probes(shared, restricted, readable)
-        # One per loaded knowledge base, each the last file uploaded to it.
-        assert len(probes) == 1 + len(groups), (persona, probes)
-        assert probes[0] == shared[-1][0].removesuffix(".md")
-        assert probes[1:] == [restricted[g][-1][0].removesuffix(".md") for g in sorted(groups)]
-        assert all(any(kb_harness.safe_name(t) == p for t in records) for p in probes)
 
 
 @pytest.mark.parametrize(
@@ -180,7 +179,6 @@ def test_the_upload_waits_for_every_knowledge_base_the_persona_loads(fx: dict) -
 def test_u2_accepts_every_way_of_saying_it_was_reissued_but_not_still_open(fx: dict, answer: str, ok: bool) -> None:
     q = _question(fx, "u2")
     assert kb_harness.score(q, "cites", {"jira-fin-37", "jira-fin-38"}, answer)[0] is ok
-
 
 
 @pytest.mark.parametrize(
@@ -243,8 +241,15 @@ def test_an_unknown_only_id_fails_before_logging_in_or_uploading(tmp_path: Path,
         ("s1", {"drive-sales-northwind-plan", "drive-sales-northwind-call-0416"}, "Northwind is no longer on time.", False),
         ("s1", {"drive-sales-northwind-plan", "drive-sales-northwind-call-0416"}, "Northwind is no longer at risk and is back on track.", True),
         ("h1", {"slack-people-0302"}, "The limit is no longer five days; it is three.", False),
-        # A comparative is a limit, not a denial.
+        ("h1", {"slack-people-0302"}, "You cannot carry over five days; the handbook still says three.", False),
+        # "and" keeps the clause, so the negation still reaches the phrase after it.
+        ("s1", {"drive-sales-northwind-plan", "drive-sales-northwind-call-0416"}, "Northwind is not healthy and on track for renewal.", False),
+        ("u2", {"jira-fin-37", "jira-fin-38"}, "Contoso's invoice was not checked and reissued.", False),
+        # A cap is a limit, not a denial; a minimum is not the cap.
         ("h1", {"slack-people-0302"}, "You can carry over no more than five days.", True),
+        ("h1", {"slack-people-0302"}, "You cannot carry over more than five days.", True),
+        ("h1", {"slack-people-0302"}, "You can carry over no less than five days.", False),
+        ("h1", {"slack-people-0302"}, "You can carry over not fewer than five days.", False),
         # "no" further back doesn't cancel a stated limit.
         ("f2", {"drive-fin-expense-policy"}, "You need no approval for purchases up to $250.", True),
     ],
@@ -261,6 +266,11 @@ def test_negation_reaches_three_words_back_and_includes_no(
         "There is no approval above $2,500; your manager approves from $250.",
         "No approval is needed for a $5,000 purchase.",
         "Purchases without approval are not allowed above the manager band.",
+        # The amount alone: the manager is the one approving it.
+        "Purchases of up to $250 require your manager's approval.",
+        "Your manager must approve every purchase up to $250.",
+        # $250 itself needs no approval, so "under" gets the edge wrong.
+        "Purchases under $250 need no approval.",
     ],
 )
 def test_f2_needs_the_no_approval_amount_not_just_the_words(fx: dict, answer: str) -> None:
@@ -291,8 +301,11 @@ class _FakeKbs:
         self.kbs = {n: i for n, i in self.kbs.items() if i != kb_id}
 
 
-def _run_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kbs: _FakeKbs, extra: list[str]) -> list[list[str] | None]:
-
+def _run_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kbs: _FakeKbs, extra: list[str],
+    waited: list[tuple[str, int]] | None = None,
+) -> list[list[str] | None]:
+    waited = [] if waited is None else waited
     env = tmp_path / "bootstrap.env"
     env.write_text("PIPESHUB_ORIGIN=http://localhost:1\nPIPESHUB_ACCOUNT_EMAIL=a@b.c\nPIPESHUB_ACCOUNT_PASSWORD=x\n")
 
@@ -312,7 +325,7 @@ def _run_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kbs: _FakeKbs, ex
     monkeypatch.setitem(sys.modules, "pipeshub_sdk", sdk)
     monkeypatch.setattr(kb_harness, "login", lambda *_: "jwt")
     monkeypatch.setattr(kb_harness, "upload", lambda *_: None)
-    monkeypatch.setattr(kb_harness, "wait_indexed", lambda *_: None)
+    monkeypatch.setattr(kb_harness, "wait_kb_indexed", lambda _o, _j, kb_id, n: waited.append((kb_id, n)))
     asked: list[list[str] | None] = []
 
     def ask(*args: object) -> tuple[str, list[str]]:
@@ -330,6 +343,31 @@ def test_an_upload_run_asks_exactly_the_knowledge_bases_it_created(tmp_path: Pat
     asked = _run_main(tmp_path, monkeypatch, kbs, ["--only", "q1"])
     assert asked == [kbs.created]
     assert len(kbs.created) == 4  # shared, plus Bob's pricing, deal-desk and people-managers
+
+
+def test_an_upload_run_waits_for_every_file_in_every_knowledge_base_it_loads(
+    fx: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kbs, waited = _FakeKbs(), []
+    _run_main(tmp_path, monkeypatch, kbs, ["--only", "q1"], waited)
+    shared, restricted = kb_harness.upload_plan(fx)
+    groups = sorted(kb_harness.upload_groups(fx, "bob") & set(restricted))
+    assert waited == list(zip(kbs.created, [len(shared)] + [len(restricted[g]) for g in groups], strict=True))
+
+
+def test_a_skip_shared_run_reuses_the_shared_knowledge_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    kbs, waited = _FakeKbs({"Acme Corp (shared)": "old-shared"}), []
+    asked = _run_main(tmp_path, monkeypatch, kbs, ["--only", "q1", "--skip-shared"], waited)
+    assert "old-shared" not in kbs.deleted
+    assert asked == [["old-shared", *kbs.created]]
+    assert waited[0][0] == "old-shared"
+
+
+def test_a_skip_shared_run_without_the_shared_knowledge_base_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    kbs = _FakeKbs()
+    with pytest.raises(SystemExit, match="--skip-shared"):
+        _run_main(tmp_path, monkeypatch, kbs, ["--only", "q1", "--skip-shared"])
+    assert kbs.created == []
 
 
 def test_an_upload_run_replaces_knowledge_bases_left_by_an_earlier_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -368,3 +406,49 @@ def test_an_incomplete_upload_stops_the_run(monkeypatch: pytest.MonkeyPatch) -> 
     ph = SimpleNamespace(knowledge_base=SimpleNamespace(upload_records=one_of_two))
     with pytest.raises(SystemExit, match="1 of 2"):
         kb_harness.upload(ph, "kb", [("a.md", "a"), ("b.md", "b")])
+
+
+def _states(*rounds: list[str]) -> Callable[[str, str, str], list[str]]:
+    it = iter(rounds)
+    return lambda *_: next(it)
+
+
+def test_waiting_for_a_knowledge_base_needs_every_file_indexed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kb_harness.time, "sleep", lambda _: None)
+    rounds = [["COMPLETED"], ["COMPLETED", "IN_PROGRESS", "QUEUED"], ["COMPLETED"] * 3]
+    polls: list[str] = []
+
+    def states(*_: str) -> list[str]:
+        polls.append("poll")
+        return rounds[len(polls) - 1]
+
+    kb_harness.wait_kb_indexed("o", "j", "kb", 3, states=states)
+    assert len(polls) == 3  # kept waiting through the partial rounds, stopped once all three were done
+
+
+def test_waiting_stops_when_a_file_fails_to_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kb_harness.time, "sleep", lambda _: None)
+    with pytest.raises(SystemExit, match="did not index"):
+        kb_harness.wait_kb_indexed("o", "j", "kb", 2, states=_states(["COMPLETED", "FAILED"]))
+
+
+def test_waiting_gives_up_after_the_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kb_harness.time, "sleep", lambda _: None)
+    with pytest.raises(SystemExit, match="1 of 2"):
+        kb_harness.wait_kb_indexed("o", "j", "kb", 2, timeout=0, states=lambda *_: ["COMPLETED", "QUEUED"])
+
+
+def test_record_states_read_every_page_of_the_knowledge_base() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        page = int(request.url.params["page"])
+        items = [{"indexingStatus": "COMPLETED"}] * (100 if page == 1 else 7)
+        return httpx.Response(200, json={"items": items, "pagination": {"hasNext": page == 1}})
+
+    states = kb_harness.kb_record_states("http://pipeshub", "jwt", "kb-1", transport=httpx.MockTransport(handler))
+    assert len(states) == 107
+    assert [r.url.path for r in seen] == ["/api/v1/knowledgeBase/knowledge-hub/nodes/app/kb-1"] * 2
+    assert all(r.headers["Authorization"] == "Bearer jwt" for r in seen)
+    assert seen[0].url.params["nodeTypes"] == "record" and seen[0].url.params["flattened"] == "true"

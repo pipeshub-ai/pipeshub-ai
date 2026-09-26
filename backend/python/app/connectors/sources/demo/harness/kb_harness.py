@@ -38,6 +38,8 @@ import httpx
 import yaml
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pipeshub_sdk import Pipeshub
 
 SYSTEM_LABEL = {"GITHUB": "GitHub", "JIRA": "Jira", "SLACK": "Slack", "DRIVE": "Google Drive", "SERVICENOW": "ServiceNow"}
@@ -171,15 +173,6 @@ def upload_plan(fx: dict) -> tuple[list[tuple[str, str]], dict[str, list[tuple[s
     return shared, dict(restricted)
 
 
-def wait_probes(
-    shared: list[tuple[str, str]], restricted: dict[str, list[tuple[str, str]]], readable: set[str]
-) -> list[str]:
-    """One record name per knowledge base the run loaded: the last file uploaded to
-    it, so a hit means that batch has been indexed, not just its first file."""
-    batches = ([shared] if shared else []) + [restricted[g] for g in sorted(readable & set(restricted))]
-    return [batch[-1][0].removesuffix(".md") for batch in batches]
-
-
 def find_kb(ph: Pipeshub, name: str) -> str | None:
     listing = ph.knowledge_base.list_knowledge_bases()
     for kb in getattr(listing, "knowledge_bases", None) or getattr(listing, "knowledgeBases", None) or []:
@@ -234,18 +227,49 @@ def upload(ph: Pipeshub, kb_id: str, files: list[tuple[str, str]]) -> None:
         sys.exit(f"upload incomplete: {ok} of {len(files)} files uploaded")
 
 
-def wait_indexed(ph: Pipeshub, probe_query: str, expect_substr: str, timeout: int = 900) -> None:
+def kb_record_states(origin: str, jwt: str, kb_id: str, transport: httpx.BaseTransport | None = None) -> list[str]:
+    """The indexing status of every record in a knowledge base, as the web app lists it."""
+    states: list[str] = []
+    page = 1
+    with httpx.Client(base_url=origin, timeout=60, transport=transport) as c:
+        while True:
+            r = c.get(
+                f"/api/v1/knowledgeBase/knowledge-hub/nodes/app/{kb_id}",
+                params={"flattened": "true", "nodeTypes": "record", "limit": 100, "page": page},
+                headers={"Authorization": f"Bearer {jwt}"},
+            )
+            r.raise_for_status()
+            body = r.json()
+            states += [n.get("indexingStatus") or "" for n in body.get("items") or []]
+            if not (body.get("pagination") or {}).get("hasNext"):
+                return states
+            page += 1
+
+
+# Still on its way to COMPLETED; any other status means it won't get there.
+_INDEXING = {"", "NOT_STARTED", "QUEUED", "IN_PROGRESS"}
+
+
+def wait_kb_indexed(
+    origin: str, jwt: str, kb_id: str, expected: int, timeout: int = 900, poll: int = 15,
+    states: Callable[[str, str, str], list[str]] = kb_record_states,
+) -> None:
+    """Wait until all `expected` files uploaded to a knowledge base are indexed. It asks
+    the knowledge base itself, so a connector record with the same name can't stand in."""
     deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            s = ph.semantic_search.search(query=probe_query, limit=5)
-            names = [h.metadata.record_name or "" for h in (s.search_response.search_results or []) if h.metadata]
-            if any(expect_substr.lower() in n.lower() for n in names):
-                print("   indexed"); return
-        except Exception as e:
-            print("   waiting…", str(e)[:70])
-        time.sleep(15)
-    sys.exit("indexing did not complete in time")
+    while True:
+        now = states(origin, jwt, kb_id)
+        stuck = [s for s in now if s != "COMPLETED" and s not in _INDEXING]
+        if stuck:
+            sys.exit(f"{len(stuck)} records in the knowledge base did not index: {sorted(set(stuck))}")
+        done = sum(s == "COMPLETED" for s in now)
+        if done >= expected:
+            print(f"   indexed {done} of {expected}")
+            return
+        if time.time() >= deadline:
+            sys.exit(f"indexing did not complete in time: {done} of {expected} records")
+        print(f"   waiting… {done} of {expected} indexed")
+        time.sleep(poll)
 
 
 def iter_sse(resp: httpx.Response):
@@ -290,10 +314,12 @@ def cited_fixture_ids(cited_names: list[str], name_to_id: dict[str, str], thread
     return ids
 
 
-_CLAUSE_BREAK = re.compile(r"[.;:,!?]|\b(?:but|and)\b")
-_NEGATION = re.compile(r"^(?:not|never|no|nor)$|n't$")
-# A limit, not a denial: "no more than five days", "not later than Friday".
-_COMPARATIVE = re.compile(r"\b(?:no|not)\s+(?:more|less|fewer|later|earlier|sooner)\s+than\s*$")
+# "but" turns the sentence; "and" doesn't, so "not healthy and on track" stays negated.
+_CLAUSE_BREAK = re.compile(r"[.;:,!?]|\bbut\b")
+_NEGATION = re.compile(r"^(?:not|never|no|nor|cannot)$|n't$")
+# A cap, not a denial: "no more than five days", "not later than Friday". "No less
+# than five" is a minimum, so it stays a negation.
+_COMPARATIVE = re.compile(r"\b(?:no|not)\s+(?:more|later|earlier|sooner)\s+than\s*$")
 _NEGATION_WINDOW = 3
 
 
@@ -314,7 +340,9 @@ def mentions(answer: str, phrase: str) -> bool:
     number is not read inside another ("21" in "#211", "250" in "$2500" or "$250,000").
     Used for the pack questions' any-of and must-not phrases; `answer_must_mention`
     stays a plain substring check, as the chat landing's questions were scored."""
-    text, p = answer.lower(), phrase.lower()
+    # Markdown emphasis and curly apostrophes are how the chat writes "up to **$250**" and "don’t".
+    text = answer.lower().replace("*", "").replace("\u2019", "'")
+    p = phrase.lower().replace("\u2019", "'")
     before = r"(?<![\d#.,])" if p[:1].isdigit() else ""
     after = r"(?!\d|[.,]\d)" if p[-1:].isdigit() else ""
     return any(not _negated(text[:m.start()]) for m in re.finditer(before + re.escape(p) + after, text))
@@ -336,9 +364,11 @@ def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool,
     mention = q.get("answer_must_mention", [])
     unmentioned = [m for m in mention if m.lower() not in answer.lower()]
     # At least one of these, for a fact the model can phrase several ways.
-    mention_any = q.get("answer_must_mention_any_of", [])
-    if mention_any and not any(mentions(answer, m) for m in mention_any):
-        unmentioned.append(" | ".join(mention_any))
+    # A second list is a second fact the answer must also state (f2: the amount, and no approval).
+    for key in ("answer_must_mention_any_of", "answer_must_mention_any_of_2"):
+        mention_any = q.get(key, [])
+        if mention_any and not any(mentions(answer, m) for m in mention_any):
+            unmentioned.append(" | ".join(mention_any))
     # Statements that make an answer wrong however well it cites ("still open").
     unmentioned += [f"not: {m}" for m in q.get("answer_must_not_mention", []) if mentions(answer, m)]
     if expect == "none":
@@ -450,18 +480,24 @@ def main() -> None:
             readable = upload_groups(fx, "alice" if args.skip_restricted else "bob")
             names = {g["id"]: g["name"] for g in fx["groups"]}
             shared, restricted = upload_plan(fx)
-            kb_shared = ensure_kb(ph, "Acme Corp (shared)", fresh=not args.skip_shared)
-            kb_ids = [kb_shared]
-            if not args.skip_shared:
+            if args.skip_shared:
+                kb_shared = find_kb(ph, "Acme Corp (shared)") or sys.exit(
+                    "--skip-shared: no knowledge base named 'Acme Corp (shared)'; run once without --skip-shared"
+                )
+            else:
+                kb_shared = ensure_kb(ph, "Acme Corp (shared)", fresh=True)
                 print(f"== uploading {len(shared)} shared records")
                 upload(ph, kb_shared, shared)
+            kb_ids = [kb_shared]
+            expected = [len(shared)]
             for group in sorted(readable & set(restricted)):
                 print(f"== uploading {len(restricted[group])} records for {names[group]}")
                 kb_ids.append(ensure_kb(ph, f"Acme Corp ({names[group].lower()})", fresh=True))
                 upload(ph, kb_ids[-1], restricted[group])
+                expected.append(len(restricted[group]))
             print("== waiting for indexing")
-            for probe in wait_probes(shared, restricted, readable):
-                wait_indexed(ph, probe, probe)
+            for kb_id, n in zip(kb_ids, expected, strict=True):
+                wait_kb_indexed(origin, jwt, kb_id, n)
         elif using_kbs:
             kb_ids = existing_kb_ids(ph, fx, "alice" if args.skip_restricted else "bob")
 
