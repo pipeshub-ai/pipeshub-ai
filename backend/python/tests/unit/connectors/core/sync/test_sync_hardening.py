@@ -266,3 +266,21 @@ class TestAFullSyncOwedToAnIncrementalRun:
                   if c.args[2] == {ConnectorStateKeys.PENDING_RESYNC: False}]
         assert clears == []
         reissue.assert_awaited_once()
+
+
+class TestAnUnflaggedSyncLeavesTheDocShapeAlone:
+    @pytest.mark.asyncio
+    async def test_no_pending_resync_write_when_nothing_was_flagged(self) -> None:
+        """main's strict Arango app schema has no pendingResync: writing it on every
+        sync made every connector's doc unwritable after a rollback (errorNum 1620)."""
+        from app.connectors.core.sync.sync_coordinator import SyncLease
+
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(return_value={"id": "c1", "status": "IDLE"})
+        connector = MagicMock()
+        connector.run_sync = AsyncMock()
+        with patch.object(sync_runner, "drain_queued_syncs", AsyncMock(return_value=[])):
+            await sync_runner.run_sync_task(connector, "c1", graph, LOG,
+                                            lease=SyncLease("c1", "t", 1), coordinator=AsyncMock())
+        written = [c.args[2] for c in graph.update_node.await_args_list]
+        assert not any(ConnectorStateKeys.PENDING_RESYNC in w for w in written), written

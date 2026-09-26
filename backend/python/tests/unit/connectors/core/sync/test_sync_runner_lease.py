@@ -373,7 +373,8 @@ class TestDeclinedResyncIsReissued:
             )
 
         dispatcher.submit.assert_not_awaited()
-        assert _resync_clears(gp) == 1
+        # Nothing flagged, so nothing is written at run start either.
+        assert _resync_clears(gp) == 0
 
     @pytest.mark.asyncio
     async def test_without_a_spec_nothing_is_reissued(self) -> None:
