@@ -335,6 +335,64 @@ class LocalStorageAdapter implements StorageServiceInterface {
     }
   }
 
+  async deleteObject(document: Document): Promise<void> {
+    let localPath = this.getLocalPathFromUrl(
+      document.local?.localPath || document.local?.url,
+    );
+    if (!localPath && document.documentPath) {
+      try {
+        localPath = this.sanitizePath(document.documentPath);
+      } catch {
+        localPath = document.documentPath;
+      }
+    }
+    if (!localPath) {
+      throw new StorageNotFoundError('Local file path not found for document');
+    }
+
+    const fullPath = this.assertInsideMount(
+      path.join(this.mountPath, localPath),
+    );
+    try {
+      await fs.rm(fullPath, { force: true, recursive: true });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('Local storage deleteObject successful', {
+          path: fullPath,
+        });
+      }
+    } catch (error) {
+      this.logger.error('Local storage deleteObject failed', {
+        path: fullPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (error instanceof StorageError) {
+        throw error;
+      }
+      throw new StorageUploadError(
+        'Failed to delete object from local storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
+    }
+  }
+
+  async objectExists(document: Document): Promise<boolean> {
+    let localPath = this.getLocalPathFromUrl(
+      document.local?.localPath || document.local?.url,
+    );
+    if (!localPath && document.documentPath) {
+      try {
+        localPath = this.sanitizePath(document.documentPath);
+      } catch {
+        localPath = document.documentPath;
+      }
+    }
+    if (!localPath) return false;
+    return await this.objectExistsAtPath(localPath);
+  }
+
   // These methods are not implemented for local storage
   async getMultipartUploadId(): Promise<
     StorageServiceResponse<{ uploadId: string }>

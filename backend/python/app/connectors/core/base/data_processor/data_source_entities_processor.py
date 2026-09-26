@@ -138,7 +138,7 @@ class DataSourceEntitiesProcessor:
         if self.org_id:
             return
 
-        async with self.data_store_provider.transaction() as tx_store:
+        async with (await self.data_store_provider.transaction()) as tx_store:
             orgs = await tx_store.get_all_orgs()
             if not orgs:
                 self.logger.warning(
@@ -1791,6 +1791,21 @@ class DataSourceEntitiesProcessor:
                     exc_info=True,
                 )
                 unpublished_record_ids.append(record_id)
+
+            # Clean up Blob Storage files & MongoDB storage documents for this record
+            org_id = (payload.get("orgId") if isinstance(payload, dict) else None) or self.org_id
+            virtual_record_id = payload.get("virtualRecordId") if isinstance(payload, dict) else None
+            if org_id and virtual_record_id:
+                path_prefix = f"{org_id}/PipesHub/records/{virtual_record_id}"
+                try:
+                    from app.utils.storage_cleanup import cleanup_storage_and_mongo_for_prefix
+                    await cleanup_storage_and_mongo_for_prefix(
+                        path_prefix, org_id=org_id, config_service=self.config_service
+                    )
+                except Exception as cleanup_err:
+                    self.logger.warning(
+                        f"Storage and Mongo cleanup failed for {path_prefix}: {cleanup_err}"
+                    )
         return unpublished_record_ids
 
     @retry_on_deadlock()

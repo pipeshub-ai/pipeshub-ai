@@ -743,6 +743,22 @@ class KnowledgeBaseService:
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
 
+                if org_id:
+                    from app.utils.storage_cleanup import cleanup_storage_and_mongo_for_prefix
+                    for vrid in virtual_record_ids:
+                        if vrid:
+                            path_prefix = f"{org_id}/PipesHub/records/{vrid}"
+                            try:
+                                await cleanup_storage_and_mongo_for_prefix(
+                                    path_prefix,
+                                    org_id=org_id,
+                                    config_service=self.config_service,
+                                )
+                            except Exception as cleanup_err:
+                                self.logger.warning(
+                                    f"Storage and Mongo cleanup failed for {path_prefix}: {cleanup_err}"
+                                )
+
             self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by user_key={user_key}")
             return {
                 "success": True,

@@ -559,6 +559,27 @@ export function createStorageRouter(container: Container): Router {
       }
     },
   );
+
+  router.delete(
+    '/internal/by-path-prefix',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        return await storageController.deleteDocumentsByPathPrefix(
+          req,
+          res,
+          next,
+        );
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.post(
     '/updateAppConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),

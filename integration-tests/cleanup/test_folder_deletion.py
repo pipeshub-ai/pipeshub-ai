@@ -75,7 +75,6 @@ class TestDeletingAFolder:
 
         await vector_store.assert_embeddings_gone(virtual_id, timeout=120)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Folder delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_records_files_are_removed(
         self, record_in_a_folder, kb_client, blob_store
@@ -88,7 +87,6 @@ class TestDeletingAFolder:
 
         await blob_store.assert_blobs_gone(prefix, vendor, timeout=120)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Folder delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_records_storage_documents_are_removed(
         self, record_in_a_folder, kb_client, mongo_store
