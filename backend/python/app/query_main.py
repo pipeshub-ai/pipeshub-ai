@@ -190,6 +190,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
 
+    from app.services.cache.mcp_tool_schema_cache import (
+        MCPToolSchemaCache,
+        set_mcp_tool_schema_cache,
+    )
+    set_mcp_tool_schema_cache(
+        await MCPToolSchemaCache.create(logger, app_container.config_service())
+    )
+
     # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
@@ -402,6 +410,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("✅ Accessible-records cache closed")
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
+
+    try:
+        from app.services.cache.mcp_tool_schema_cache import get_mcp_tool_schema_cache
+        await get_mcp_tool_schema_cache().close()
+    except Exception as e:
+        logger.error(f"❌ Error closing MCP tool-schema cache: {e}")
 
 
 # Create FastAPI app with lifespan
