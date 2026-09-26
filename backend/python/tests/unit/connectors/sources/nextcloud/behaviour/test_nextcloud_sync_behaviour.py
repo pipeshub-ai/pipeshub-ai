@@ -9,6 +9,7 @@ databases are in-memory fakes.
 import asyncio
 import base64
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock
@@ -31,10 +32,16 @@ from nextcloud_behaviour_fakes import (
 )
 
 from app.config.constants.arangodb import MimeTypes
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-from app.connectors.sources.nextcloud.connector import NextcloudConnector
+from app.connectors.sources.nextcloud import connector as nextcloud_connector
+from app.connectors.sources.nextcloud.connector import (
+    MAX_HELD_ATTEMPTS,
+    NextcloudConnector,
+)
 from app.models.entities import FileRecord
 from app.models.permission import EntityType, PermissionType
+from app.services.notification.types import NotificationType
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
 from app.sources.client.nextcloud.nextcloud import (
@@ -48,12 +55,13 @@ CONNECTOR_ID = "nextcloud-1"
 BASE = "https://cloud.example.com"
 MADE_UP_DOMAIN = "@nextcloud.local"
 ALICE_OWNER = [(EntityType.USER, PermissionType.OWNER, "alice@example.com")]
+# Each makes a fresh answer, so an outage can give one to every retry.
 BAD_ANSWERS = [
-    pytest.param(httpx.Response(503), id="server-error"),
-    pytest.param(httpx.Response(207, content=b""), id="empty-body"),
-    pytest.param(httpx.Response(207, content=b"<d:multistatus"), id="garbled-xml"),
-    pytest.param(httpx.Response(207, content=b'<d:multistatus xmlns:d="DAV:"/>'), id="no-entries"),
-    pytest.param(httpx.ConnectError("connection reset"), id="network-error"),
+    pytest.param(lambda: httpx.Response(503), id="server-error"),
+    pytest.param(lambda: httpx.Response(207, content=b""), id="empty-body"),
+    pytest.param(lambda: httpx.Response(207, content=b"<d:multistatus"), id="garbled-xml"),
+    pytest.param(lambda: httpx.Response(207, content=b'<d:multistatus xmlns:d="DAV:"/>'), id="no-entries"),
+    pytest.param(lambda: httpx.ConnectError("connection reset"), id="network-error"),
 ]
 
 
@@ -75,14 +83,21 @@ def store() -> FakeStore:
 
 
 @pytest.fixture(autouse=True)
-def no_real_pauses(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The connector pauses between batches; the pause is kept but made instant."""
+def no_real_pauses(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Pauses are kept but made instant: the connector's between batches, and the retry policy's backoff.
+
+    The policy's backoff gate is recorded instead of armed, so a test can check how
+    long a retry would have waited without waiting it out.
+    """
     real_sleep = asyncio.sleep
 
     async def _sleep(delay: float, *args: object, **kwargs: object) -> None:
         await real_sleep(0)
 
     monkeypatch.setattr("app.connectors.sources.nextcloud.connector.asyncio.sleep", _sleep)
+    pauses: list[float] = []
+    monkeypatch.setattr(ResiliencePolicy, "pause", lambda _policy, seconds: pauses.append(seconds))
+    return pauses
 
 
 def auth_config(server: FakeNextcloud, **overrides: str) -> dict[str, Any]:
@@ -125,6 +140,19 @@ def ids_of(server: FakeNextcloud) -> dict[str, str]:
     return {node.name: node.file_id for node in server.nodes.values() if node.path}
 
 
+def listen_for_notifications(connector: NextcloudConnector) -> Callable[[], Awaitable[list[dict[str, Any]]]]:
+    """Capture what the connector publishes; the returned coroutine waits for the fire-and-forget sends."""
+    publish = AsyncMock()
+    connector._notification_service = MagicMock(publish_notification=publish)
+    connector._notification_cache = {}  # the class-wide repeat filter would carry over between tests
+
+    async def sent() -> list[dict[str, Any]]:
+        await asyncio.gather(*connector._background_tasks)
+        return [call.kwargs for call in publish.await_args_list]
+
+    return sent
+
+
 async def synced(server: FakeNextcloud, db: FakeRecordsDb, store: FakeStore) -> NextcloudConnector:
     """A connector that has finished its first full sync and anchored its activity cursor."""
     seed_drive(server)
@@ -146,12 +174,13 @@ class TestRealClientStack:
         assert type(connector.rate_limiter) is AsyncLimiter
         assert [r.url.path for r in server.requests] == [f"{USERS_PREFIX}alice"], "init reads the user over HTTP"
 
-    async def test_the_production_client_is_built_without_a_retrying_transport(self, server, db, store) -> None:
+    async def test_the_production_client_retries_through_the_shared_policy(self, server, db, store) -> None:
         connector = await make_connector(server, db, store)
 
         http = connector.data_source.client
-        assert http.resilience is None
-        assert type(http.client._transport) is httpx.AsyncHTTPTransport, "a plain transport: no retries on 429"
+        assert http.resilience is connector.resilience
+        assert (http.resilience.max_retries, http.resilience.rate_limit) == (3, 50)
+        assert type(http.client._transport) is ResilientHTTPTransport
 
     async def test_the_fake_server_keeps_a_retrying_transport_working(self, server) -> None:
         """Guards the fake: a client that does configure retries must see them run for real."""
@@ -263,50 +292,68 @@ class TestAppPasswordAuth:
 
     async def test_connection_check_survives_a_network_error(self, server, db, store) -> None:
         connector = await make_connector(server, db, store)
-        server.fail("GET", lambda p: p == CAPABILITIES_PATH, httpx.ConnectError("refused"))
+        server.outage("GET", lambda p: p == CAPABILITIES_PATH, lambda: httpx.ConnectError("refused"))
 
         assert await connector.test_connection_and_access() is False
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when Nextcloud rejects the "
-            "app password, init still reports success and every sync finishes 'successfully' with "
-            "nothing in it, so the user is never told to fix the password."
-        ),
-    )
     async def test_a_rejected_app_password_is_reported(self, server, db, store) -> None:
         seed_drive(server)
         connector = build(server, db, store, config=auth_config(server, password="wrong-app-password"))
+        notifications = listen_for_notifications(connector)
 
-        initialised = await connector.init()
-        raised = False
-        if initialised:
-            try:
-                await connector.run_sync()
-            except Exception:
-                raised = True
-
-        assert not initialised or raised
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a temporary error reading the "
-            "user's profile is treated like 'this user has no email', so files are saved as owned "
-            "by a made-up address and the real user can't see them."
-        ),
-    )
-    async def test_a_temporary_profile_error_does_not_invent_an_owner(self, server, db, store) -> None:
-        seed_drive(server)
-        server.fail("GET", lambda p: p.startswith(USERS_PREFIX), httpx.Response(503))
-        connector = build(server, db, store)
-
-        if await connector.init():
+        with pytest.raises(ConnectorInitError, match="rejected the app password") as rejected:
+            await connector.init()
+        with pytest.raises(ConnectorInitError, match="rejected the app password"):
             await connector.run_sync()
 
+        assert "Create a new app password" in str(rejected.value)
+        assert "turn this connector off, enter the new password in its settings, save, and turn it back on" in str(rejected.value)
+        assert connector.data_source is None
+        assert db.records == {} and store.cursor() is None
+        sent = await notifications()
+        assert [n["type"] for n in sent] == [NotificationType.CONNECTOR_AUTH_ERROR], "the repeat is held back"
+        assert sent[0]["message"] == str(rejected.value)
+
+    @pytest.mark.parametrize("cursor", [pytest.param(True, id="incremental"), pytest.param(False, id="full")])
+    async def test_an_app_password_revoked_after_setup_fails_the_sync(self, server, db, store, cursor) -> None:
+        connector = await synced(server, db, store)
+        if not cursor:
+            store.sync_points.clear()
+        kept = {r.external_record_id for r in db.records.values()}
+        before = store.cursor()
+        server.change("Docs/notes.txt")
+        server.app_password = "revoked"
+        notifications = listen_for_notifications(connector)
+
+        with pytest.raises(ConnectorInitError, match="rejected the app password"):
+            await connector.run_sync()
+
+        assert {r.external_record_id for r in db.records.values()} == kept
+        assert store.cursor() == before
+        assert [n["type"] for n in await notifications()] == [NotificationType.CONNECTOR_AUTH_ERROR]
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            pytest.param(lambda: httpx.Response(503), id="server-error"),
+            pytest.param(lambda: httpx.ConnectError("connection reset"), id="network-error"),
+            pytest.param(lambda: httpx.Response(200, content=b"{not json"), id="garbled"),
+        ],
+    )
+    async def test_a_temporary_profile_error_does_not_invent_an_owner(self, server, db, store, make) -> None:
+        seed_drive(server)
+        outage = server.outage("GET", lambda p: p.startswith(USERS_PREFIX), make)
+        connector = await make_connector(server, db, store)
+
+        await connector.run_sync()
+        assert connector.current_user_email is None
+        assert db.records == {} and db.app_users == [] and store.cursor() is None, "the run is held, not guessed"
+
+        outage.end()
+        await connector.run_sync()
         emails = {p.email for perms in db.permissions.values() for p in perms}
-        assert not any(e.endswith(MADE_UP_DOMAIN) for e in emails)
+        assert emails == {"alice@example.com"}
+        assert owners(db, "q1.pdf") == ALICE_OWNER
 
 
 class TestFullSync:
@@ -372,27 +419,24 @@ class TestFullSync:
         connector = await make_connector(server, db, store)
 
         await connector.run_sync()
-
         assert db.names() == {"Docs", "Reports", "Photos", "q1.pdf", "cat.png", "readme.txt"}
+        assert store.cursor() is None, "the entry that failed would never be read again past a cursor"
+
+        db.fail_lookup_for.clear()
+        await connector.run_sync()
+        assert db.path_of("notes.txt") == "Docs/notes.txt"
+        assert store.cursor() == str(server.latest_activity_id)
 
     @pytest.mark.parametrize(
         "break_it",
         [
-            pytest.param(lambda server, db: server.fail("PROPFIND", lambda p: True, httpx.Response(503)), id="listing-fails"),
-            pytest.param(lambda server, db: server.fail("PROPFIND", lambda p: True, httpx.Response(429, headers={"Retry-After": "1"})), id="listing-rate-limited"),
-            pytest.param(lambda server, db: server.fail("PROPFIND", lambda p: True, httpx.Response(207, content=b"<not xml")), id="listing-garbled"),
-            pytest.param(lambda server, db: server.fail("PROPFIND", lambda p: True, httpx.Response(207, content=b"")), id="listing-empty"),
+            pytest.param(lambda server, db: server.outage("PROPFIND", lambda p: True, lambda: httpx.Response(503)), id="listing-fails"),
+            pytest.param(lambda server, db: server.outage("PROPFIND", lambda p: True, lambda: httpx.Response(429, headers={"Retry-After": "1"})), id="listing-rate-limited"),
+            pytest.param(lambda server, db: server.outage("PROPFIND", lambda p: True, lambda: httpx.Response(207, content=b"<not xml")), id="listing-garbled"),
+            pytest.param(lambda server, db: server.outage("PROPFIND", lambda p: True, lambda: httpx.Response(207, content=b"")), id="listing-empty"),
+            pytest.param(lambda server, db: server.outage("PROPFIND", lambda p: True, lambda: httpx.ConnectError("reset")), id="listing-unreachable"),
             pytest.param(lambda server, db: db.fail_write_for.add("Docs"), id="first-write-fails"),
         ],
-    )
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when the first full sync "
-            "can't list or save the drive, the error is swallowed and the activity cursor is still "
-            "anchored to 'now', so later runs only look for newer changes and the files that were "
-            "missed are never synced."
-        ),
     )
     async def test_a_failed_first_sync_is_retried_on_the_next_run(self, server, db, store, break_it) -> None:
         seed_drive(server)
@@ -400,14 +444,81 @@ class TestFullSync:
         break_it(server, db)
 
         await connector.run_sync()
+        assert store.cursor() is None, "nothing may be anchored over files that were never saved"
+
+        server.faults.clear()
         db.fail_write_for.clear()
         await connector.run_sync()
 
         assert {"q1.pdf", "notes.txt", "cat.png", "readme.txt"} <= db.names()
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_a_folder_that_fails_during_a_full_sync_takes_its_contents_with_it(self, server, db, store) -> None:
+        seed_drive(server)
+        db.fail_lookup_for = {ids_of(server)["Docs"]}
+        connector = await make_connector(server, db, store)
+
+        await connector.run_sync()
+        assert store.cursor() is None
+        assert not {"Docs", "Reports", "q1.pdf", "notes.txt"} & db.names(), "nothing saved below a folder that wasn't"
+        assert {"Photos", "cat.png", "readme.txt"} <= db.names()
+
+        db.fail_lookup_for.clear()
+        await connector.run_sync()
+        assert db.path_of("notes.txt") == "Docs/notes.txt"
+        assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_a_full_sync_relinks_stored_files_under_a_folder_it_stores_again(self, server, db, store) -> None:
+        seed_drive(server)
+        server.activities.clear()  # activity app disabled: every run is a full sync
+        connector = await make_connector(server, db, store)
+        await connector.run_sync()
+        del db.records[ids_of(server)["Docs"]]  # the folder record went, what it held did not
+
+        await connector.run_sync()
+
+        assert db.path_of("notes.txt") == "Docs/notes.txt"
+        assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
+
+    async def test_a_failed_relink_during_a_full_sync_is_retried_by_the_next(self, server, db, store) -> None:
+        seed_drive(server)
+        server.add_file("later.txt")  # gives the run an activity to anchor the cursor to
+        connector = await make_connector(server, db, store)
+        await connector.run_sync()
+        store.sync_points.clear()  # back to full syncs
+        del db.records[ids_of(server)["Docs"]]  # the folder record went, what it held did not
+        db.fail_write_for.add("notes.txt")
+
+        await connector.run_sync()
+        assert store.cursor() is None
+
+        db.fail_write_for.clear()
+        await connector.run_sync()
+        assert db.path_of("notes.txt") == "Docs/notes.txt"
+        assert store.cursor() == str(server.latest_activity_id)
+        assert store.checkpoint()["full_sync_resave"] == []
+
+    async def test_an_update_that_fails_to_save_during_a_full_sync_is_retried(self, server, db, store) -> None:
+        seed_drive(server)
+        server.activities.clear()  # activity app disabled: every run is a full sync
+        connector = await make_connector(server, db, store)
+        await connector.run_sync()
+        server.change("Docs/notes.txt", b"v2")
+        server.add_file("later.txt")  # gives the run something to anchor to
+        db.fail_write_for.add("notes.txt")
+
+        await connector.run_sync()
+        assert store.cursor() is None
+
+        db.fail_write_for.clear()
+        await connector.run_sync()
+        assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+        assert store.cursor() == str(server.latest_activity_id)
 
     async def test_a_failed_cursor_anchor_leaves_the_next_run_a_full_sync(self, server, db, store) -> None:
         seed_drive(server)
-        server.fail("GET", lambda p: p == ACTIVITY_PATH, httpx.Response(503))
+        server.outage("GET", lambda p: p == ACTIVITY_PATH, lambda: httpx.Response(503))
         connector = await make_connector(server, db, store)
 
         await connector.run_sync()
@@ -418,7 +529,7 @@ class TestFullSync:
     async def test_a_cursor_anchor_that_raises_is_not_fatal(self, server, db, store) -> None:
         seed_drive(server)
         connector = await make_connector(server, db, store)
-        server.fail("GET", lambda p: p == ACTIVITY_PATH, httpx.ReadTimeout("slow"))
+        server.outage("GET", lambda p: p == ACTIVITY_PATH, lambda: httpx.ReadTimeout("slow"))
 
         await connector.run_sync()
 
@@ -597,6 +708,21 @@ class TestIncrementalSync:
         assert db.by_name("notes.txt").external_record_id == node.file_id
         assert db.path_of("notes.txt") == "Docs/notes.txt"
 
+    @pytest.mark.parametrize("same_page", [pytest.param(False, id="next-sync"), pytest.param(True, id="same-page")])
+    async def test_a_restored_folder_comes_back_with_its_contents(self, server, db, store, same_page) -> None:
+        connector = await synced(server, db, store)
+        docs = server.delete("Docs")
+        if not same_page:
+            await connector.run_sync()
+            assert not {"Docs", "Reports", "q1.pdf", "notes.txt"} & db.names()
+
+        server.restore(docs)
+        await connector.run_sync()
+
+        assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
+        assert db.path_of("notes.txt") == "Docs/notes.txt"
+        assert store.cursor() == str(server.latest_activity_id)
+
     async def test_deleting_a_file_the_index_never_had_is_harmless(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         server.add_file("tmp.txt", log=False)
@@ -606,13 +732,6 @@ class TestIncrementalSync:
 
         assert db.deleted == [] and store.cursor() == str(server.latest_activity_id)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: deleting a folder in "
-            "Nextcloud removes only the folder's own record; the files inside it stay searchable."
-        ),
-    )
     async def test_deleting_a_folder_removes_what_was_inside(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         server.delete("Docs")
@@ -620,6 +739,17 @@ class TestIncrementalSync:
         await connector.run_sync()
 
         assert not {"Docs", "Reports", "q1.pdf", "notes.txt"} & db.names()
+        assert {"Photos", "cat.png", "readme.txt"} <= db.names(), "only what was inside goes"
+
+    async def test_what_a_half_finished_folder_delete_left_behind_is_removed(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        folder = db.by_name("Docs")
+        del db.records[folder.external_record_id]  # the folder went, its contents did not
+        server.delete("Docs")
+
+        await connector.run_sync()
+
+        assert not {"Reports", "q1.pdf", "notes.txt"} & db.names()
 
     async def test_a_backlog_longer_than_one_page_is_caught_up_over_runs(self, server, db, store) -> None:
         connector = await synced(server, db, store)
@@ -641,7 +771,7 @@ class TestIncrementalSync:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")
         server.change("readme.txt")
-        server.fail("PROPFIND", lambda p: p.endswith("/notes.txt"), httpx.Response(503))
+        server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), lambda: httpx.Response(503))
 
         await connector.run_sync()
 
@@ -652,7 +782,7 @@ class TestIncrementalSync:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")
         server.change("readme.txt")
-        server.fail("PROPFIND", lambda p: p.endswith("/notes.txt"), bad)
+        server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), bad)
 
         await connector.run_sync()
 
@@ -662,7 +792,7 @@ class TestIncrementalSync:
     async def test_a_bad_answer_for_a_new_folder_still_saves_the_file(self, server, db, store, bad) -> None:
         connector = await synced(server, db, store)
         server.add_file("New/inside.txt")
-        server.fail("PROPFIND", lambda p: p.rstrip("/").endswith("/New"), bad, bad)
+        server.outage("PROPFIND", lambda p: p.rstrip("/").endswith("/New"), bad)
 
         await connector.run_sync()
 
@@ -714,7 +844,7 @@ class TestIncrementalSync:
 
     async def test_an_activity_feed_that_raises_fails_the_run(self, server, db, store) -> None:
         connector = await synced(server, db, store)
-        server.fail("GET", lambda p: p == ACTIVITY_PATH, httpx.ReadTimeout("slow"))
+        server.outage("GET", lambda p: p == ACTIVITY_PATH, lambda: httpx.ReadTimeout("slow"))
 
         with pytest.raises(httpx.ReadTimeout):
             await connector.run_sync()
@@ -729,94 +859,444 @@ class TestIncrementalSync:
 
         assert len(db.batches) == writes
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when the saved cursor can't "
-            "be read, the run falls back to a full sync, which doesn't notice deletions and then "
-            "moves the cursor past them, so files deleted in Nextcloud stay searchable for good."
-        ),
-    )
     async def test_an_unreadable_cursor_does_not_skip_deletions(self, server, db, store) -> None:
         connector = await synced(server, db, store)
+        cursor, listings = store.cursor(), len(server.calls("PROPFIND"))
         server.delete("Docs/notes.txt")
         store.fail_reads = 1
 
-        await connector.run_sync()
-        await connector.run_sync()
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector.run_sync()
+        assert store.cursor() == cursor and len(server.calls("PROPFIND")) == listings, "no full sync in its place"
 
+        await connector.run_sync()
         assert "notes.txt" not in db.names()
+        assert store.cursor() == str(server.latest_activity_id)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when the activity feed fails "
-            "(an outage or a 429 rate limit), the run falls back to a full sync, which doesn't notice "
-            "deletions and then moves the cursor past them, so deleted files stay searchable."
-        ),
-    )
     @pytest.mark.parametrize("status", [503, 429])
     async def test_a_failed_activity_feed_does_not_skip_deletions(self, server, db, store, status) -> None:
         connector = await synced(server, db, store)
+        cursor, listings = store.cursor(), len(server.calls("PROPFIND"))
         server.delete("Docs/notes.txt")
-        server.fail("GET", lambda p: p == ACTIVITY_PATH, httpx.Response(status, headers={"Retry-After": "1"}))
+        outage = server.outage("GET", lambda p: p == ACTIVITY_PATH,
+                               lambda: httpx.Response(status, headers={"Retry-After": "1"}))
 
         await connector.run_sync()
-        await connector.run_sync()
+        assert store.cursor() == cursor and len(server.calls("PROPFIND")) == listings, "no full sync in its place"
 
+        outage.end()
+        await connector.run_sync()
         assert "notes.txt" not in db.names()
+        assert store.cursor() == str(server.latest_activity_id)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: the cursor moves past a change "
-            "whose file couldn't be fetched, so that change is never retried."
-        ),
-    )
-    async def test_a_change_that_failed_to_fetch_is_retried_next_run(self, server, db, store) -> None:
+    @pytest.mark.parametrize("bad", [
+        pytest.param(lambda: httpx.Response(503), id="server-error"),
+        pytest.param(lambda: httpx.Response(207, content=b"<d:multistatus"), id="garbled-xml"),
+        pytest.param(lambda: httpx.ConnectError("connection reset"), id="network-error"),
+    ])
+    async def test_a_change_that_failed_to_fetch_is_retried_next_run(self, server, db, store, bad) -> None:
         connector = await synced(server, db, store)
+        cursor = store.cursor()
         server.change("Docs/notes.txt")
-        server.fail("PROPFIND", lambda p: p.endswith("/notes.txt"), httpx.Response(503))
+        server.change("readme.txt")
+        outage = server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), bad)
 
         await connector.run_sync()
-        await connector.run_sync()
+        assert store.cursor() == cursor, "held until the change is applied"
+        assert db.by_name("readme.txt").external_revision_id == server.nodes["readme.txt"].etag
 
+        outage.end()
+        await connector.run_sync()
+        assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_a_change_that_fails_to_save_is_retried_next_run(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        cursor = store.cursor()
+        server.change("Docs/notes.txt")
+        db.fail_write_for.add("notes.txt")
+
+        await connector.run_sync()
+        assert store.cursor() == cursor
+
+        db.fail_write_for.clear()
+        await connector.run_sync()
         assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: the cursor moves past a "
-            "deletion that failed to apply, so the deleted file stays searchable."
-        ),
-    )
-    async def test_a_deletion_that_failed_to_apply_is_retried_next_run(self, server, db, store) -> None:
+    async def test_a_change_that_never_applies_is_passed_over_after_five_runs(self, server, db, store) -> None:
         connector = await synced(server, db, store)
-        db.fail_delete_for = {ids_of(server)["notes.txt"]}
+        cursor = store.cursor()
+        server.change("Docs/notes.txt")
+        server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), lambda: httpx.Response(503))
+
+        for _ in range(4):
+            await connector.run_sync()
+            assert store.cursor() == cursor
+        await connector.run_sync()
+
+        assert store.cursor() == str(server.latest_activity_id)
+        server.add_file("after.txt")
+        await connector.run_sync()
+        assert "after.txt" in db.names(), "later changes are no longer held up"
+
+    async def test_a_deletion_that_fails_five_times_is_applied_once_the_fault_clears(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notes = ids_of(server)["notes.txt"]
+        db.fail_delete_for = {notes}
         server.delete("Docs/notes.txt")
 
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        assert store.cursor() == str(server.latest_activity_id), "the page is given up on after 5 runs"
+        assert store.checkpoint()["pending_deletes"] == [notes]
+        assert "notes.txt" in db.names()
+
         await connector.run_sync()
+        assert store.checkpoint()["pending_deletes"] == [notes], "kept while it still fails"
+
+        db.fail_delete_for.clear()
+        await connector.run_sync()  # no new activity: the retry runs before the feed is read
+        assert "notes.txt" not in db.names()
+        assert store.checkpoint()["pending_deletes"] == []
+
+    async def test_the_checkpoint_holds_only_values_neo4j_can_store(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notes = ids_of(server)["notes.txt"]
+        db.fail_delete_for = {notes}
+        server.delete("Docs/notes.txt")
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+
+        checkpoint = store.checkpoint()
+        assert store.cursor() == str(server.latest_activity_id), "the give-up write went through"
+        assert checkpoint["pending_deletes"] == [notes]
+        assert checkpoint["pending_delete_paths"] == ["/Docs/notes.txt"], "parallel to pending_deletes"
+        for name, value in checkpoint.items():
+            items = value if isinstance(value, list) else [value]
+            assert all(isinstance(v, (str, int, float, bool)) for v in items if v is not None), name
+
+    async def test_a_requeued_deletion_keeps_the_path_it_was_deleted_from(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        docs = ids_of(server)["Docs"]
+        store.checkpoint().update(pending_deletes=[docs], pending_delete_paths=["/Old/Docs"], held_attempts=4)
+        db.fail_delete_for = {ids_of(server)["notes.txt"]}
+        server.delete("Docs")
+
+        await connector.run_sync()
+
+        assert store.checkpoint()["pending_deletes"] == [docs]
+        assert store.checkpoint()["pending_delete_paths"] == ["/Docs"]
+
+    async def test_a_pending_deletion_whose_record_is_gone_is_dropped_quietly(self, server, db, store, caplog) -> None:
+        connector = await synced(server, db, store)
+        cursor = store.cursor()
+        store.checkpoint()["pending_deletes"] = ["99999"]
+        caplog.clear()
+
+        await connector.run_sync()
+
+        assert store.checkpoint()["pending_deletes"] == [] and store.cursor() == cursor
+        assert db.deleted == []
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    async def test_a_folder_below_one_that_failed_is_parented_after_the_retry(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.add_file("New/Deep/inside.txt")
+        # Only the file's own activity is on the page, so its folders exist nowhere but above it.
+        server.activities[:] = [a for a in server.activities if a["object_name"] not in ("/New", "/New/Deep")]
+        outage = server.outage("PROPFIND", lambda p: p.rstrip("/").endswith("/New"), lambda: httpx.Response(503))
+
+        await connector.run_sync()
+        outage.end()
+        await connector.run_sync()
+
+        assert db.path_of("Deep") == "New/Deep"
+        assert db.path_of("inside.txt") == "New/Deep/inside.txt"
+
+    async def test_a_changed_file_keeps_its_folder_when_that_folder_cannot_be_read(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.change("Docs/notes.txt", b"v2")
+        server.outage("PROPFIND", lambda p: p.rstrip("/").endswith("/Docs"), lambda: httpx.Response(503))
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+            assert db.path_of("notes.txt") == "Docs/notes.txt"
+
+        assert store.cursor() == str(server.latest_activity_id), "given up on, and still in its folder"
+        assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+
+    async def test_a_file_restored_after_its_failed_delete_is_kept(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        kept = db.by_name("notes.txt").id
+        db.fail_delete_for = {ids_of(server)["notes.txt"]}
+        server.restore(server.delete("Docs/notes.txt"))
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
         db.fail_delete_for.clear()
         await connector.run_sync()
 
-        assert "notes.txt" not in db.names()
+        assert db.by_name("notes.txt").id == kept and "notes.txt" not in db.deleted
+        assert store.checkpoint()["pending_deletes"] == [], "a later restore on the page cancels the deletion"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a 429 (rate limited) answer "
-            "is not retried after the Retry-After wait, because the connector builds its client "
-            "without a retry policy; the change is skipped for this run."
-        ),
-    )
-    async def test_a_rate_limited_fetch_is_retried_after_waiting(self, server, db, store) -> None:
+    async def test_a_pending_deletion_of_a_file_that_exists_again_is_dropped(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notes = server.nodes["Docs/notes.txt"]
+        kept = db.by_name("notes.txt").id
+        db.fail_delete_for = {notes.file_id}
+        server.delete("Docs/notes.txt")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        assert store.checkpoint()["pending_deletes"] == [notes.file_id]
+        db.fail_delete_for.clear()
+        server.restore(notes)
+        db.record_groups.clear()  # the next run falls back to a full sync, which moves the cursor past the restore
+
+        await connector.run_sync()
+        await connector.run_sync()
+
+        assert db.by_name("notes.txt").id == kept and "notes.txt" not in db.deleted
+        assert store.checkpoint()["pending_deletes"] == []
+
+    async def test_a_later_change_to_a_file_that_is_still_gone_keeps_its_deletion_queued(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notes = server.nodes["Docs/notes.txt"]
+        db.fail_delete_for = {notes.file_id}
+        server.delete("Docs/notes.txt")
+        # An activity for the file after its deletion, whose fetch now finds nothing.
+        server.activities.append({"activity_id": server.latest_activity_id + 1, "type": "file_changed",
+                                  "object_type": "files", "object_id": int(notes.file_id),
+                                  "object_name": "/Docs/notes.txt", "objects": {notes.file_id: "/Docs/notes.txt"}})
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        assert store.checkpoint()["pending_deletes"] == [notes.file_id]
+
+        db.fail_delete_for.clear()
+        await connector.run_sync()
+        assert "notes.txt" not in db.names()
+        assert store.checkpoint()["pending_deletes"] == []
+
+    @pytest.mark.parametrize("restored", [pytest.param(True, id="folder-restored"), pytest.param(False, id="folder-gone")])
+    async def test_a_queued_folder_whose_record_is_gone_is_checked_before_its_contents_go(
+            self, server, db, store, restored) -> None:
+        connector = await synced(server, db, store)
+        docs = server.nodes["Docs"]
+        reports = db.by_name("Reports").external_record_id
+        inside = {db.by_name(n).id for n in ("q1.pdf", "notes.txt")}
+        db.fail_delete_for = {docs.file_id}
+        server.delete("Docs")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        assert store.checkpoint()["pending_deletes"] == [docs.file_id]
+        db.fail_delete_for.clear()
+        del db.records[docs.file_id]  # a cascade that committed partway: the folder went, its contents did not
+        if restored:
+            del db.records[reports]  # a folder inside it went too, so it comes back as a new record as well
+            server.restore(docs)  # the queue is retried before the feed that reports this is read
+
+        await connector.run_sync()
+
+        still_there = {r.id for r in db.records.values()} & inside
+        assert still_there == (inside if restored else set()), "restored contents keep their records"
+        assert store.checkpoint()["pending_deletes"] == []
+        if restored:
+            assert db.path_of("notes.txt") == "Docs/notes.txt"
+            assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
+
+    @pytest.mark.parametrize("answer", [
+        pytest.param(b"<not xml", id="garbled"),
+        pytest.param(b'<?xml version="1.0"?><d:error xmlns:d="DAV:"/>', id="not-a-multistatus"),
+    ])
+    async def test_a_search_answer_that_cannot_be_read_keeps_a_folder_queued(self, server, db, store, answer) -> None:
+        connector = await synced(server, db, store)
+        docs = server.nodes["Docs"]
+        inside = {db.by_name(n).id for n in ("Reports", "q1.pdf", "notes.txt")}
+        db.fail_delete_for = {docs.file_id}
+        server.delete("Docs")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        db.fail_delete_for.clear()
+        del db.records[docs.file_id]  # a cascade that committed partway: the folder went, its contents did not
+        server.outage("SEARCH", lambda p: True, lambda: httpx.Response(207, content=answer))
+
+        await connector.run_sync()
+
+        assert {r.id for r in db.records.values()} >= inside
+        assert store.checkpoint()["pending_deletes"] == [docs.file_id]
+
+    @pytest.mark.parametrize("search", [pytest.param(True, id="found-by-id"), pytest.param(False, id="no-search")])
+    async def test_a_queued_folder_that_moved_keeps_its_contents(self, server, db, store, search) -> None:
+        connector = await synced(server, db, store)
+        docs = server.nodes["Docs"]
+        inside = {db.by_name(n).id for n in ("Reports", "q1.pdf", "notes.txt")}
+        db.fail_delete_for = {docs.file_id}
+        server.delete("Docs")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        db.fail_delete_for.clear()
+        del db.records[docs.file_id]  # a cascade that committed partway: the folder went, its contents did not
+        server.restore(docs)
+        server.move("Docs", "Archive/Docs")  # back, but not where it was deleted from, so that path 404s
+        server.search_supported = search
+        if search:
+            db.fail_write_for.add("notes.txt")  # the folder is saved, then a file inside it isn't
+            await connector.run_sync()
+            assert store.checkpoint()["pending_deletes"] == [docs.file_id], "kept until everything is relinked"
+            db.fail_write_for.clear()
+
+        await connector.run_sync()
+
+        assert {r.id for r in db.records.values()} >= inside, "a 404 at the old path is not proof"
+        assert store.checkpoint()["pending_deletes"] == ([] if search else [docs.file_id])
+        if search:
+            assert db.path_of("notes.txt") == "Archive/Docs/notes.txt"
+            assert db.path_of("q1.pdf") == "Archive/Docs/Reports/q1.pdf"
+
+    async def test_a_queued_folder_that_moved_keeps_its_contents_without_a_search(self, server, db, store) -> None:
+        server.search_supported = False
+        connector = await synced(server, db, store)
+        docs = server.nodes["Docs"]
+        inside = {db.by_name(n).id for n in ("Reports", "q1.pdf", "notes.txt")}
+        db.fail_delete_for = {docs.file_id}
+        server.delete("Docs")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        db.fail_delete_for.clear()
+        server.restore(docs)
+        server.move("Docs", "Archive/Docs")  # its record is still stored, and its old path 404s
+
+        await connector.run_sync()
+
+        assert {r.id for r in db.records.values()} >= inside
+        assert store.checkpoint()["pending_deletes"] == [docs.file_id]
+
+    @pytest.mark.parametrize("break_path", [
+        pytest.param(lambda db, record: db.unreadable_paths.add(record.id), id="path-read-fails"),
+        pytest.param(lambda db, record: db.edges.pop(record.id), id="path-is-only-the-name"),
+    ])
+    async def test_a_queued_deletion_waits_when_the_stored_path_is_not_known(self, server, db, store, break_path) -> None:
+        server.search_supported = False  # without a lookup by ID, the stored path is all there is to check
+        connector = await synced(server, db, store)
+        notes = db.by_name("notes.txt")
+        db.fail_delete_for = {notes.external_record_id}
+        server.delete("Docs/notes.txt")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        db.fail_delete_for.clear()
+        break_path(db, notes)
+
+        await connector.run_sync()
+        assert notes.external_record_id in {r.external_record_id for r in db.records.values()}
+        assert store.checkpoint()["pending_deletes"] == [notes.external_record_id], "kept queued, not guessed"
+
+        db.unreadable_paths.clear()
+        db.edges[notes.id] = db.by_name("Docs").id
+        await connector.run_sync()
+        assert notes.external_record_id not in {r.external_record_id for r in db.records.values()}
+        assert store.checkpoint()["pending_deletes"] == []
+
+    async def test_the_give_up_error_names_what_could_not_be_applied(self, server, db, store, caplog) -> None:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")
-        server.fail("PROPFIND", lambda p: p.endswith("/notes.txt"), httpx.Response(429, headers={"Retry-After": "1"}))
+        readme = ids_of(server)["readme.txt"]
+        db.fail_delete_for = {readme}
+        server.delete("readme.txt")
+        server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), lambda: httpx.Response(503))
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+
+        gave_up = [r.getMessage() for r in caplog.records
+                   if r.levelno == logging.ERROR and "still could not be applied" in r.getMessage()]
+        assert len(gave_up) == 1
+        assert "/Docs/notes.txt (fetch failed: HTTP 503)" in gave_up[0]
+        assert f"deletion of /readme.txt (ID {readme}) (delete failed for readme.txt)" in gave_up[0]
+
+    def test_a_long_list_of_failures_is_cut_short(self) -> None:
+        limit = nextcloud_connector.MAX_NAMED_FAILURES
+        failures = {f"/file-{i}.txt": "HTTP 503" for i in range(limit + 3)}
+
+        line = nextcloud_connector.describe_failures(failures)
+
+        assert line.count("HTTP 503") == limit
+        assert line.endswith("; and 3 more")
+
+    async def test_a_file_gone_before_the_sync_does_not_hold_the_cursor(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.add_file("New/brief.txt")
+        server.delete("New")
+
+        await connector.run_sync()
+
+        assert store.cursor() == str(server.latest_activity_id)
+        assert not {"New", "brief.txt"} & db.names()
+
+    @pytest.mark.parametrize(("deleted", "gone"), [
+        pytest.param("Docs/notes.txt", {"notes.txt"}, id="file"),
+        pytest.param("Docs", {"Docs", "Reports", "q1.pdf", "notes.txt"}, id="folder"),
+    ])
+    async def test_a_deletion_that_failed_to_apply_is_retried_next_run(self, server, db, store, deleted, gone) -> None:
+        connector = await synced(server, db, store)
+        cursor = store.cursor()
+        db.fail_delete_for = {ids_of(server)["notes.txt"]}
+        server.delete(deleted)
+        server.add_file("new.txt")
+
+        await connector.run_sync()
+        assert store.cursor() == cursor, "held until the deletion is applied"
+        assert "new.txt" in db.names(), "the rest of the page is still applied"
+
+        db.fail_delete_for.clear()
+        await connector.run_sync()
+        assert not gone & db.names()
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_a_deletion_whose_lookup_fails_is_retried_next_run(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notes = ids_of(server)["notes.txt"]
+        server.delete("Docs/notes.txt")
+        db.fail_lookup_for = {notes}
+
+        await connector.run_sync()
+        db.fail_lookup_for.clear()
+        await connector.run_sync()
+
+        assert "notes.txt" not in db.names()
+
+    @pytest.mark.parametrize("answer", [
+        pytest.param(httpx.Response(429, headers={"Retry-After": "7"}), id="rate-limited"),
+        pytest.param(httpx.Response(503, headers={"Retry-After": "7"}), id="unavailable"),
+    ])
+    async def test_a_rate_limited_fetch_is_retried_after_waiting(self, server, db, store, no_real_pauses, answer) -> None:
+        connector = await synced(server, db, store)
+        server.change("Docs/notes.txt")
+        fault = server.fail("PROPFIND", lambda p: p.endswith("/notes.txt"), answer)
 
         await connector.run_sync()
 
         assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+        assert fault.hits == 1 and len([r for r in server.calls("PROPFIND") if r.url.path.endswith("/notes.txt")]) == 2
+        assert [p for p in no_real_pauses if p >= 7] != [], "the retry waited as long as Retry-After asked"
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_a_rate_limited_activity_feed_is_retried_in_the_same_run(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.delete("Docs/notes.txt")
+        server.fail("GET", lambda p: p == ACTIVITY_PATH, httpx.Response(429, headers={"Retry-After": "2"}))
+
+        await connector.run_sync()
+
+        assert "notes.txt" not in db.names()
+
+    async def test_retries_give_up_after_four_attempts(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.change("Docs/notes.txt")
+        outage = server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), lambda: httpx.Response(429))
+
+        await connector.run_sync()
+
+        assert outage.hits == 4
 
 
 class TestRateLimiting:
@@ -853,7 +1333,7 @@ class TestPermissions:
     async def test_a_failed_fetch_writes_no_record_and_no_access(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         server.add_file("secret.txt")
-        server.fail("PROPFIND", lambda p: p.endswith("/secret.txt"), httpx.Response(500))
+        server.outage("PROPFIND", lambda p: p.endswith("/secret.txt"), lambda: httpx.Response(500))
         permission_sets = len(db.permissions)
 
         await connector.run_sync()
@@ -908,7 +1388,7 @@ class TestDownloadAndReindex:
             await connector.stream_record(unknown)
         assert missing.value.status_code == 404
 
-        server.fail("GET", lambda p: p.endswith("/cat.png"), httpx.ConnectError("refused"))
+        server.outage("GET", lambda p: p.endswith("/cat.png"), lambda: httpx.ConnectError("refused"))
         with pytest.raises(HTTPException) as network:
             await connector.stream_record(db.by_name("cat.png"))
         assert network.value.status_code >= 500
@@ -918,22 +1398,15 @@ class TestDownloadAndReindex:
             await connector.stream_record(db.by_name("cat.png"))
         assert not_ready.value.status_code == 409
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: the 'cannot download a "
-            "folder' check compares the stored MIME type text with an enum, so it never matches "
-            "and a folder download request is sent to Nextcloud instead of being refused."
-        ),
-    )
-    async def test_a_folder_download_is_refused(self, server, db, store) -> None:
+    @pytest.mark.parametrize("name", ["Docs", "Reports"])
+    async def test_a_folder_download_is_refused(self, server, db, store, name) -> None:
         connector = await synced(server, db, store)
         downloads = len(server.calls("GET", WEBDAV_PREFIX))
 
         with pytest.raises(HTTPException) as folder:
-            await connector.stream_record(db.by_name("Docs"))
+            await connector.stream_record(db.by_name(name))
 
-        assert folder.value.status_code == 400
+        assert (folder.value.status_code, folder.value.detail) == (400, "Cannot download folders")
         assert len(server.calls("GET", WEBDAV_PREFIX)) == downloads
 
     @pytest.mark.parametrize("name", ["report #1.txt", "why?.txt", "50% off.txt", "résumé ✓.txt", "a&b.txt"])
@@ -946,16 +1419,8 @@ class TestDownloadAndReindex:
         assert db.path_of(name) == f"Docs/{name}"
         assert await body_of(await connector.stream_record(db.by_name(name))) == b"special"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a file inside a folder named "
-            "'files' is downloaded from the wrong place (the path is cut at '/files/', which is "
-            "meant to match only Nextcloud's own URL prefix), so it can't be opened, or another "
-            "file with the same name is served instead."
-        ),
-    )
-    @pytest.mark.parametrize("path", ["Work/files/report.txt", "Work/files/2026/report.txt"])
+    @pytest.mark.parametrize("path", ["Work/files/report.txt", "Work/files/2026/report.txt", "files/report.txt",
+                                      "files/alice/report.txt"])
     async def test_a_file_under_a_folder_named_files_downloads(self, server, db, store, path) -> None:
         server.add_file("report.txt", b"a different file at the top level")
         server.add_file(path, b"the real report")
@@ -966,6 +1431,14 @@ class TestDownloadAndReindex:
         response = await connector.stream_record(record)
 
         assert await body_of(response) == b"the real report"
+        assert server.calls("GET", WEBDAV_PREFIX)[-1].url.path == f"{WEBDAV_PREFIX}alice/{path}"
+
+    async def test_share_lookup_keeps_a_folder_named_files(self, server, db, store) -> None:
+        connector = await make_connector(server, db, store)
+
+        await connector._get_file_shares(f"{WEBDAV_PREFIX}alice/Work/files/report.txt", "alice")
+
+        assert [r.url.params["path"] for r in server.calls("GET", SHARES_PATH)] == ["/Work/files/report.txt"]
 
     async def test_reindex_refreshes_a_top_level_file(self, server, db, store) -> None:
         connector = await synced(server, db, store)
@@ -983,25 +1456,25 @@ class TestDownloadAndReindex:
         server.delete("Docs/notes.txt")
         unknown = db.by_name("cat.png").model_copy(update={"id": "not-in-db"})
         server.fail("PROPFIND", lambda p: p.endswith("/readme.txt"), httpx.Response(207, content=b""))
-        server.fail("PROPFIND", lambda p: p.endswith("/cat.png"), httpx.ConnectError("reset"))
+        server.outage("PROPFIND", lambda p: p.endswith("/cat.png"), lambda: httpx.ConnectError("reset"))
 
         await connector.reindex_records([gone, unknown, db.by_name("readme.txt"), db.by_name("cat.png"), db.by_name("Docs")])
 
         assert [r.record_name for r in db.content_updates] == ["Docs"], "one failure doesn't stop the rest"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: reindexing a file inside a "
-            "folder saves it with no folder, which detaches it; its path then points at the top "
-            "level, so opening or re-indexing it fails with 'not found'."
-        ),
-    )
-    async def test_reindex_keeps_a_nested_file_in_its_folder(self, server, db, store) -> None:
+    @pytest.mark.parametrize(("name", "path"), [("q1.pdf", "Docs/Reports/q1.pdf"), ("Reports", "Docs/Reports"),
+                                                 ("notes.txt", "Docs/notes.txt")])
+    async def test_reindex_keeps_a_nested_file_in_its_folder(self, server, db, store, name, path) -> None:
         connector = await synced(server, db, store)
+        before = db.by_name(name)
 
-        await connector.reindex_records([db.by_name("q1.pdf")])
+        await connector.reindex_records([before])
 
+        assert [r.record_name for r in db.content_updates] == [name]
+        assert db.path_of(name) == path
+        after = db.by_name(name)
+        assert after.parent_external_record_id == before.parent_external_record_id
+        assert after.external_revision_id == server.nodes[path].etag, "not mistaken for a move"
         assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
 
 
