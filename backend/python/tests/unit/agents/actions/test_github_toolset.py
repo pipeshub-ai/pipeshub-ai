@@ -22,7 +22,14 @@ from github.Requester import Requester
 
 from app.agents.actions.github.github import (
     GitHub,
+    ListIssuesInput,
+    ListPullRequestsInput,
+    UpdateIssueInput,
+    _github_comment_label,
     _github_commit_label,
+    _github_file_change_label,
+    _github_owner_label,
+    _github_repo_label,
     _github_review_label,
 )
 from app.sources.client.github.github import GitHubClient, GitHubClientViaToken
@@ -761,3 +768,100 @@ class TestInputValidation:
         message = err(await github.create_pull_request_review_comment("acme", "web", 7, body="nit", commit_id=" ", path="app.py"))
         assert message.startswith("commit_id cannot be empty")
         assert api.requests == []
+
+
+
+# Every tool, with arguments that pass its own checks, and the data-source method it calls.
+EVERY_TOOL = [
+    ("create_repository", {"name": "notes"}, "create_repo"),
+    ("get_repository", {"owner": "acme", "repo": "web"}, "get_repo"),
+    ("get_owner", {"owner": "me"}, "get_owner"),
+    ("list_repositories", {"user": "ann"}, "list_user_repos"),
+    ("create_issue", {"owner": "acme", "repo": "web", "title": "Crash"}, "create_issue"),
+    ("get_issue", {"owner": "acme", "repo": "web", "number": 1}, "get_issue"),
+    ("list_issues", {"owner": "acme", "repo": "web"}, "list_issues_only"),
+    ("close_issue", {"owner": "acme", "repo": "web", "number": 1}, "close_issue"),
+    ("update_issue", {"owner": "acme", "repo": "web", "number": 1, "title": "New"}, "update_issue"),
+    ("list_issue_comments", {"owner": "acme", "repo": "web", "number": 1}, "list_issue_comments"),
+    ("get_issue_comment", {"owner": "acme", "repo": "web", "number": 1, "comment_id": 9}, "get_issue_comment"),
+    ("create_issue_comment", {"owner": "acme", "repo": "web", "number": 1, "body": "Hi"}, "create_issue_comment"),
+    ("create_pull_request", {"owner": "acme", "repo": "web", "title": "T", "head": "f", "base": "main"}, "create_pull"),
+    ("get_pull_request", {"owner": "acme", "repo": "web", "number": 7}, "get_pull"),
+    ("get_pull_request_commits", {"owner": "acme", "repo": "web", "number": 7}, "get_pull_commits"),
+    ("get_pull_request_file_changes", {"owner": "acme", "repo": "web", "number": 7}, "get_pull_file_changes"),
+    ("list_pull_requests", {"owner": "acme", "repo": "web"}, "list_pulls"),
+    ("merge_pull_request", {"owner": "acme", "repo": "web", "number": 7}, "merge_pull"),
+    ("get_pull_request_reviews", {"owner": "acme", "repo": "web", "number": 7}, "get_pull_reviews"),
+    ("create_pull_request_review", {"owner": "acme", "repo": "web", "number": 7}, "create_pull_request_review"),
+    ("list_pull_request_comments", {"owner": "acme", "repo": "web", "number": 7}, "get_pull_review_comments"),
+    ("create_pull_request_review_comment",
+     {"owner": "acme", "repo": "web", "number": 7, "body": "nit", "commit_id": "abc", "path": "a.py"},
+     "create_pull_request_review_comment"),
+    ("search_repositories", {"query": "ml"}, "search_repositories"),
+]
+
+
+class TestUnexpectedCrashes:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool_name", "args", "method"), EVERY_TOOL, ids=[t[0] for t in EVERY_TOOL])
+    async def test_a_crash_is_a_plain_failure_without_the_exception_text(self, github, api, monkeypatch, tool_name, args, method) -> None:
+        def crash(**kwargs: object) -> None:
+            raise RuntimeError(f"Authorization: token {TOKEN}")
+
+        monkeypatch.setattr(github.client, method, crash)
+        message = err(await getattr(github, tool_name)(**args))
+        assert message.startswith("Something unexpected went wrong while")
+        assert "Authorization" not in message
+
+    @pytest.mark.asyncio
+    async def test_a_failed_list_page_carries_no_paging_hints(self, github, api) -> None:
+        success, payload = await github.list_repositories("ghost")
+        assert success is False
+        assert set(json.loads(payload)) == {"error"}
+
+
+class TestInputSchemas:
+    def test_blank_assignee_filter_is_dropped(self) -> None:
+        assert ListIssuesInput(owner="a", repo="b", assignee="  ").assignee is None
+        assert ListIssuesInput(owner="a", repo="b", assignee=" ann ").assignee == "ann"
+        assert ListIssuesInput(owner="a", repo="b", assignee=None).assignee is None
+
+    def test_blank_branch_filters_are_dropped(self) -> None:
+        data = ListPullRequestsInput(owner="a", repo="b", head=" ", base=" main ")
+        assert (data.head, data.base) == (None, "main")
+        assert ListPullRequestsInput(owner="a", repo="b", head=None).head is None
+
+    def test_update_schema_reads_objects_from_get_issue(self) -> None:
+        data = UpdateIssueInput(
+            owner="a", repo="b", number=1, title="  ", body=None,
+            assignees=[{"login": "ann"}, {"id": 3}, "bo", 7], labels="bug",
+        )
+        assert data.title is None and data.body is None
+        assert data.assignees == ["ann", "{'id': 3}", "bo", "7"]
+        assert data.labels == ["bug"]
+
+    def test_update_schema_label_shapes(self) -> None:
+        data = UpdateIssueInput(owner="a", repo="b", number=1, assignees="ann", labels=[{"name": "p1"}, {"color": "f00"}, 5])
+        assert data.assignees == ["ann"]
+        assert data.labels == ["p1", "{'color': 'f00'}", "5"]
+        assert UpdateIssueInput(owner="a", repo="b", number=1, labels={"name": "x"}).labels is None
+        assert UpdateIssueInput(owner="a", repo="b", number=1, assignees=42).assignees is None
+
+
+class TestActivityLabels:
+    def test_repository_label_falls_back_to_name(self) -> None:
+        assert _github_repo_label({"full_name": "acme/web"}) == "acme/web"
+        assert _github_repo_label({"name": "web"}) == "web"
+        assert _github_repo_label({}) == "?"
+
+    def test_comment_label_uses_author_and_first_line(self) -> None:
+        assert _github_comment_label({"user": {"login": "bo"}, "body": "Same here\nmore"}) == "bo: Same here"
+        assert _github_comment_label({"user": "not-a-dict", "body": "Only text"}) == "Only text"
+        assert _github_comment_label({"user": {"login": "bo"}}) == "bo"
+        assert _github_comment_label({}) == "?"
+
+    def test_owner_and_file_labels(self) -> None:
+        assert _github_owner_label({"login": "ann"}) == "ann"
+        assert _github_owner_label({}) == "?"
+        assert _github_file_change_label({"filename": "a.py", "status": "added"}) == "a.py (added)"
+        assert _github_file_change_label({}) == "? (?)"
