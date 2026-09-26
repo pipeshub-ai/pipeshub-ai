@@ -1036,7 +1036,8 @@ class TestIncrementalSync:
             self, server, db, store, restored) -> None:
         connector = await synced(server, db, store)
         docs = server.nodes["Docs"]
-        inside = {db.by_name(n).id for n in ("Reports", "q1.pdf", "notes.txt")}
+        reports = db.by_name("Reports").external_record_id
+        inside = {db.by_name(n).id for n in ("q1.pdf", "notes.txt")}
         db.fail_delete_for = {docs.file_id}
         server.delete("Docs")
         for _ in range(MAX_HELD_ATTEMPTS):
@@ -1045,6 +1046,7 @@ class TestIncrementalSync:
         db.fail_delete_for.clear()
         del db.records[docs.file_id]  # a cascade that committed partway: the folder went, its contents did not
         if restored:
+            del db.records[reports]  # a folder inside it went too, so it comes back as a new record as well
             server.restore(docs)  # the queue is retried before the feed that reports this is read
 
         await connector.run_sync()
