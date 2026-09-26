@@ -159,20 +159,23 @@ async def test_a_redirect_loop_is_one_failed_page_with_no_retries_and_no_browser
     strategy: str, site: FakeWeb, db: FakeRecordsDb, browser: FakeWeb,
     use_strategy: Callable[[str], None], make_connector: MakeConnector,
 ) -> None:
+    # 11 allowed redirects, then one to a disallowed page: the walk stops at the cap, before the
+    # last check, so nothing else (a retry, or the browser) may follow the rest of the chain.
     use_strategy(strategy)
-    chain = [f"http://site.test/r{i}" for i in range(13)]
+    _robots(site)
+    chain = [f"http://site.test/r{i}" for i in range(12)]
     site.html(START_URL, "Home", "/r0")
-    for here, there in zip(chain, chain[1:]):
+    for here, there in zip(chain, [*chain[1:], SECRET]):
         site.add(here, Page(status=302, location=there, content_type=None))
-    site.html(chain[-1], "Landing")
+    site.html(SECRET, "Secret")
 
     await (await make_connector()).run_sync()
 
     failed = db.pages()[chain[0]]
     assert (failed.reason or "").startswith("This page redirects too many times")
     assert _requests_to(site, chain[0]).count("GET") == 1
-    assert not set(chain) & set(site.browser_visits)
-    assert [url for _method, url in site.requests if url in chain[11:]] == []
+    assert _requests_to(site, SECRET) == []
+    assert not {*chain, SECRET} & set(browser.browser_loaded)
     assert set(db.pages()) == {START_URL, chain[0]}
 
 
