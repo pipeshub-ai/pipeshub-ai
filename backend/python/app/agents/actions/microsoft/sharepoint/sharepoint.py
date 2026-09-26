@@ -1581,7 +1581,7 @@ class SharePoint:
                 if not query_norm:
                     matches.append({**nb, "site_id": site_id})
                     continue
-                if nb_norm == query_norm or (query_norm in nb_norm) or (nb_norm in query_norm):
+                if nb_norm and (nb_norm == query_norm or (query_norm in nb_norm) or (nb_norm in query_norm)):
                     matches.append({**nb, "site_id": site_id})
             if len(matches) == 1:
                 m = matches[0]

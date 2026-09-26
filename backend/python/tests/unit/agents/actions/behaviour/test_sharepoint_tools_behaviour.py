@@ -38,7 +38,7 @@ PENDING = {
     "errors": "Graph failures reach the agent without a next step, and a rate limit without a wait",
     "files": "list_files drops Graph's next-page link, so a partial folder listing reads as complete",
     "pages": "get_pages drops Graph's next-page link, so a partial page list reads as complete",
-    "notebooks": "a notebook with no name matches every query",
+    "notebooks": "find_notebook resolves from the first 50 notebooks only, and a nameless notebook matches anything",
     "sections": "list_notebook_pages shows a section whose pages could not be read as an empty section",
     "content": "get_notebook_page_content drops ids past 20 silently and reports success when every page failed",
 }
@@ -280,7 +280,6 @@ class TestNotebooks:
         assert data["resolved"] is False
         assert "notebook_id" not in data
 
-    @pending("notebooks")
     async def test_a_notebook_without_a_name_matches_nothing(self, sp, stub) -> None:
         stub.on("GET", NOTEBOOKS, page([notebook("nb-0", ""), notebook("nb-1", "Roadmap")]))
 
