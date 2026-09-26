@@ -122,6 +122,7 @@ from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
 from app.sources.external.common.atlassian import AtlassianMultiSiteError
+from app.sources.client.http.http_retry import is_retryable_status
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
 from app.connectors.core.base.error.stream_errors import (
@@ -3925,9 +3926,10 @@ class ConfluenceConnector(BaseConnector):
     ) -> tuple[list[dict[str, Any]], str | None, bool]:
         """Every current attachment of a page or blog post, following the v2 cursor.
 
-        Returns the attachments, the listing's base URL, and whether a page after the
-        first could not be read, so the caller keeps its checkpoint. When the first
-        page fails nothing is returned and the caller keeps its fallback.
+        Returns the attachments, the listing's base URL, and whether the list was cut
+        short, so the caller keeps its checkpoint. It is cut short when a later page
+        fails, when the first page fails for a temporary reason (the caller's fallback
+        may then be partial), or when a next link can't be followed.
         """
         list_attachments = (
             datasource.get_page_attachments if content_type == "page" else datasource.get_blogpost_attachments
@@ -3945,19 +3947,26 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.warning(f"Could not list attachments of {content_type} {content_id}: {e}")
                 response = None
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                if attachments:
+                temporary = not response or is_retryable_status(response.status)
+                if attachments or temporary:
                     self.logger.warning(
                         f"Listed only {len(attachments)} attachments of {content_type} {content_id} before the "
                         "listing failed; the rest are read again next sync"
                     )
-                return attachments, base_url, bool(attachments)
+                return attachments, base_url, bool(attachments) or temporary
             data = response.json() or {}
             attachments.extend(data.get("results") or [])
             links = data.get("_links") or {}
             base_url = base_url or links.get("base")
-            next_cursor = self._extract_cursor_from_next_link(links["next"]) if links.get("next") else None
-            if not next_cursor or next_cursor == cursor:
+            if not links.get("next"):
                 return attachments, base_url, False
+            next_cursor = self._extract_cursor_from_next_link(links["next"])
+            if not next_cursor or next_cursor == cursor:
+                self.logger.warning(
+                    f"Can't follow the next link of the attachment list of {content_type} {content_id} "
+                    f"after {len(attachments)} attachments; the rest are read again next sync"
+                )
+                return attachments, base_url, True
             cursor = next_cursor
 
     async def _fetch_page_attachments_list(
