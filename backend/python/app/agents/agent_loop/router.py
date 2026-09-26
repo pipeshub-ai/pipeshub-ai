@@ -294,6 +294,7 @@ async def select_loop_and_goal(
         from app.modules.agents.record_escalation.policy import needs_whole_document
         context.needs_whole_document = needs_whole_document(None, query)
         context.tool_state["needs_whole_document"] = context.needs_whole_document
+        context.tool_state["corpus_census_marker"] = None
     else:
         include_routing = mode is None
 
@@ -324,6 +325,9 @@ async def select_loop_and_goal(
         else:
             context.needs_whole_document = needs_whole_document(None, query, goal.description)
         context.tool_state["needs_whole_document"] = context.needs_whole_document
+        # None means the model did not answer, which the census classifier
+        # treats differently from "no" -- its regex fallback only runs then.
+        context.tool_state["corpus_census_marker"] = decision.corpus_census
 
         if mode is None:
             # "auto" (or any unrecognized mode) -- `decision.route` was

@@ -29,6 +29,7 @@ Modes differ only in:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -482,6 +483,33 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 query=query_info.get("query", ""), model_name=model_name or "",
                 model_key=model_key,
             )
+
+            # A corpus-wide census ("how many documents do we have", "list all
+            # the files") is answered from the permission-filtered record set
+            # rather than by a model reading a sample of passages. A sample
+            # cannot say how many records exist, and a model asked to count from
+            # one produces a number with no passage to attribute it to, taking
+            # the citations off the rest of the answer with it (#2975).
+            #
+            # It runs after `factory.create()`, whose intent call stores the
+            # CORPUS_CENSUS marker; before it, a model "no" could not decline a
+            # pattern match. A question that needs clarifying is not a census.
+            from app.modules.agents.enumeration.run import answer_census_if_asked
+            if (
+                not clarifying_questions
+                and policy.has_knowledge
+                and await answer_census_if_asked(
+                    query=query_info.get("query", ""), context=context,
+                    retrieval_service=retrieval_service, graph_provider=graph_provider,
+                    filters=query_info.get("filters"),
+                    event_sink=context.event_sink, log=log,
+                )
+            ):
+                if prefetch_task is not None:
+                    prefetch_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await prefetch_task
+                return
 
             prefetch_result = await prefetch_task if prefetch_task is not None else None
             if prefetch_result is not None and not prefetch_result.is_empty:

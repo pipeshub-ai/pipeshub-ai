@@ -363,6 +363,25 @@ async def run_agent_loop_stream(
             if stage_timer:
                 stage_timer.mark("factory.create")
 
+            # Same census short-circuit as the chat bridge, and after
+            # `factory.create()` for the same reason: that is where the
+            # CORPUS_CENSUS marker is stored. Without it, asking a custom agent
+            # "how many documents do we have" falls to the model, which counts
+            # from a sample of passages and can answer "none" for a knowledge
+            # base that has documents in it (#2975).
+            from app.modules.agents.enumeration.run import answer_census_if_asked
+            if (
+                not clarifying_questions
+                and context.has_knowledge
+                and await answer_census_if_asked(
+                    query=query_info.get("query", ""), context=context,
+                    retrieval_service=retrieval_service, graph_provider=graph_provider,
+                    filters=query_info.get("filters"),
+                    event_sink=event_sink, log=log,
+                )
+            ):
+                return
+
             if clarifying_questions:
                 # Too ambiguous to safely reorganize into a Goal — skip
                 # Agent.run()/AnswerFinalizer entirely and end the turn
