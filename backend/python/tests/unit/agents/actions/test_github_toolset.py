@@ -698,7 +698,6 @@ class TestEventLoop:
         assert all(r[0] for r in results)
         assert peak[0] == 1
 
-    @pytest.mark.xfail(strict=True, reason="get_owner('me') returns a lazy user fetched on the event loop")
     @pytest.mark.asyncio
     async def test_the_signed_in_user_is_fetched_off_the_event_loop(self, github, api) -> None:
         loop_thread = threading.get_ident()

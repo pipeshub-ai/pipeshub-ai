@@ -273,6 +273,8 @@ class GitHubDataSource:
                 obj = self._sdk.get_organization(login)
             else:
                 obj = self._sdk.get_user() if (login or "").strip().lower() == "me" else self._sdk.get_user(login)
+            # A lazy object would make its GET on whichever thread first reads it; as in get_authenticated, read it here.
+            _ = obj.id
             return GitHubResponse(success=True, data=obj)
         except Exception as e:
             return self._err(e)
