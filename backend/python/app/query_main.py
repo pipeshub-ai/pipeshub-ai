@@ -235,6 +235,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.embedding_warmup_task = asyncio.create_task(_warmup_embedding_model())
 
+        # Builtin skill packs are seeded here, once per org per pack version,
+        # instead of being checked on every agent request.
+        try:
+            from app.agents.agent_loop.skills_wiring import skills_enabled
+            from app.services.featureflag.platform_settings import is_skills_enabled
+
+            if skills_enabled() and await is_skills_enabled(container.config_service()):
+                from app.agents.agent_loop.skills.manager_factory import (
+                    reconcile_builtin_skills_for_orgs,
+                )
+
+                app.state.skills_seed_task = asyncio.create_task(
+                    reconcile_builtin_skills_for_orgs(graph_provider, orgs)
+                )
+        except Exception as e:
+            logger.warning(f"Builtin skill seeding not scheduled at startup (requests will retry): {e}")
+
         # For OpenSearch: pre-load the k-NN HNSW graphs into the OS page cache
         # so that the first search after a restart or force-merge is not blocked
         # by mmap I/O. This is a best-effort operation — a non-OpenSearch provider
@@ -362,7 +379,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
-        "lexical_reconcile_task",
+        "lexical_reconcile_task", "skills_seed_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
