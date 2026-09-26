@@ -60,6 +60,7 @@ from app.utils.attachment_utils import (
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
 from app.utils.llm import LLM_MISSING_FOR_CHAT
+from app.utils.sse_events import parse_sse_events
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
@@ -3219,34 +3220,6 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
 # Agent Chat Endpoints
 # ============================================================================
 
-def _parse_sse_events(chunk: str) -> list[tuple[str, Any]]:
-    """Parses one or more `event: X\\ndata: Y\\n\\n` frames out of a raw SSE
-    text chunk. Tolerant of a chunk containing multiple frames or a partial
-    trailing one (returns only whole frames found) -- `chat()` drains the
-    WHOLE stream before deciding anything, so a frame boundary split across
-    two `body_iterator` chunks is completed by the next chunk's data before
-    any frame is parsed here, not lost."""
-    events: list[tuple[str, Any]] = []
-    for block in chunk.split("\n\n"):
-        block = block.strip()
-        if not block:
-            continue
-        event_name = None
-        data_line = None
-        for line in block.split("\n"):
-            if line.startswith("event:"):
-                event_name = line[len("event:"):].strip()
-            elif line.startswith("data:"):
-                data_line = line[len("data:"):].strip()
-        if event_name is None or data_line is None:
-            continue
-        try:
-            events.append((event_name, json.loads(data_line)))
-        except json.JSONDecodeError:
-            continue
-    return events
-
-
 @router.post("/{agent_id}/chat", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def chat(request: Request, agent_id: str) -> JSONResponse:
     """Chat with an agent (non-streaming).
@@ -3279,7 +3252,7 @@ async def chat(request: Request, agent_id: str) -> JSONResponse:
     error_payload: dict[str, Any] | None = None
     async for raw_chunk in streaming_response.body_iterator:
         text = raw_chunk.decode("utf-8") if isinstance(raw_chunk, bytes) else raw_chunk
-        for event_name, data in _parse_sse_events(text):
+        for event_name, data in parse_sse_events(text):
             if not isinstance(data, dict):
                 continue
             # chat_stream always speaks AG-UI. A frame with parentRunId belongs to a

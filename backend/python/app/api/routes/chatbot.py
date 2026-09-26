@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from io import BytesIO
 
 import pdfplumber
@@ -51,6 +51,7 @@ from app.utils.attachment_mime_types import (
     TEXT_ATTACHMENT_MIME_TYPES,
 )
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
+from app.utils.sse_events import parse_sse_events
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -1267,6 +1268,89 @@ async def askAIStream(
             "Access-Control-Allow-Headers": "Cache-Control",
         },
     )
+
+
+@router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@inject
+async def askAI(
+    request: Request,
+    retrieval_service: RetrievalService = Depends(get_retrieval_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
+) -> JSONResponse:
+    """Answer a question in one response, rather than as a stream.
+
+    Runs the very same pipeline `askAIStream()` does -- same agent loop, same
+    retrieval, same permission checks -- by calling that route function and
+    draining its `StreamingResponse.body_iterator` instead of forwarding it to
+    the client. Deliberately not a second copy of that pipeline: there is no
+    non-streaming path through the agent loop to reuse, and duplicating the
+    streaming one would leave two versions of security-sensitive setup to keep
+    in step.
+
+    This mirrors `agent.py::chat`, which answers the agent equivalent the same
+    way for the same reason.
+
+    Node's `createConversation` and `addMessage`
+    (`POST /api/v1/conversations/create`, `POST /api/v1/conversations/
+    :conversationId/messages`) are the callers. They read the fields of
+    `completion_data` (`answer` required, the rest optional -- see
+    `buildAIResponseMessage` in `enterprise_search/utils/utils.ts`), so the
+    agent loop's `completion_data` is returned as-is.
+    """
+    streaming_response = await askAIStream(
+        request,
+        retrieval_service=retrieval_service,
+        graph_provider=graph_provider,
+        config_service=config_service,
+        cancellation_registry=cancellation_registry,
+    )
+    if not isinstance(streaming_response, StreamingResponse):
+        return streaming_response  # pragma: no cover - askAIStream only returns StreamingResponse today
+
+    completion_data: dict[str, Any] | None = None
+    error_payload: dict[str, Any] | None = None
+    async for raw_chunk in streaming_response.body_iterator:
+        text = raw_chunk.decode("utf-8") if isinstance(raw_chunk, bytes) else raw_chunk
+        for event_name, data in parse_sse_events(text):
+            if not isinstance(data, dict):
+                continue
+            # A frame carrying parentRunId belongs to a sub-agent. Its failure is
+            # handed back to the parent as a tool result and the parent still
+            # answers, so only root-run frames decide the outcome.
+            if data.get("parentRunId") is not None:
+                continue
+            if event_name == "complete":
+                completion_data = data
+            elif event_name == AGUIEventType.RUN_FINISHED.value and isinstance(data.get("result"), dict):
+                completion_data = data["result"]
+            elif event_name in ("error", AGUIEventType.RUN_ERROR.value):
+                error_payload = data
+
+    if error_payload is not None:
+        return JSONResponse(
+            status_code=error_payload.get("status_code", 400),
+            content={
+                "status": error_payload.get("status", "error"),
+                "message": error_payload.get("message") or error_payload.get("error") or "An error occurred",
+                "searchResults": [],
+                "records": [],
+            },
+        )
+    if completion_data is None:
+        # Ending with no answer and no error is not an empty answer. Callers
+        # cannot tell those apart, and only one of them is true.
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "No answer was produced.",
+                "searchResults": [],
+                "records": [],
+            },
+        )
+    return JSONResponse(content=completion_data)
 
 
 @router.post("/chat/cancel", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
