@@ -662,6 +662,21 @@ class TestIncrementalSync:
         assert db.by_name("notes.txt").external_record_id == node.file_id
         assert db.path_of("notes.txt") == "Docs/notes.txt"
 
+    @pytest.mark.parametrize("same_page", [pytest.param(False, id="next-sync"), pytest.param(True, id="same-page")])
+    async def test_a_restored_folder_comes_back_with_its_contents(self, server, db, store, same_page) -> None:
+        connector = await synced(server, db, store)
+        docs = server.delete("Docs")
+        if not same_page:
+            await connector.run_sync()
+            assert not {"Docs", "Reports", "q1.pdf", "notes.txt"} & db.names()
+
+        server.restore(docs)
+        await connector.run_sync()
+
+        assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
+        assert db.path_of("notes.txt") == "Docs/notes.txt"
+        assert store.cursor() == str(server.latest_activity_id)
+
     async def test_deleting_a_file_the_index_never_had_is_harmless(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         server.add_file("tmp.txt", log=False)

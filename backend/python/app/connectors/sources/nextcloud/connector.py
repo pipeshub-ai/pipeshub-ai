@@ -1369,6 +1369,7 @@ class NextcloudConnector(BaseConnector):
             modified_paths = set()
             deleted_file_ids = set()
             deleted_paths: dict[str, str] = {}
+            restored_paths: set[str] = set()
             max_activity_id = last_activity_id
 
             for activity in activities:
@@ -1406,6 +1407,8 @@ class NextcloudConnector(BaseConnector):
                         for _, file_path in targets:
                             if file_path:
                                 modified_paths.add(file_path)
+                                if activity_type == 'file_restored':
+                                    restored_paths.add(file_path)
                                 self.logger.info(f"📝 Modification detected: {file_path} ({activity_type})")
 
             failures: dict[str, str] = {}
@@ -1428,6 +1431,7 @@ class NextcloudConnector(BaseConnector):
                     user_email,
                     existing_group.external_group_id,
                     found_ids,
+                    restored_paths,
                 ))
 
             # The feed won't list these activities again once the cursor moves past them.
@@ -1654,12 +1658,14 @@ class NextcloudConnector(BaseConnector):
         user_email: str,
         record_group_id: str,
         found_ids: set[str] | None = None,
+        restored_paths: set[str] | None = None,
     ) -> dict[str, str]:
         """
         Process modified files by fetching their latest metadata.
         For incremental sync, sends new records immediately (no batching needed for small changes).
         Returns the paths that could not be fetched or saved, each with the reason; empty when all were.
-        Adds the file ID of every entry Nextcloud listed to ``found_ids``.
+        Adds the file ID of every entry Nextcloud listed to ``found_ids``. A folder in
+        ``restored_paths`` is saved with everything below it.
         Args:
             file_paths: List of file paths that were modified
             user_id: User ID
@@ -1750,6 +1756,16 @@ class NextcloudConnector(BaseConnector):
                             elif not await self._handle_record_updates(record_update):
                                 failed[path] = "the change could not be saved"
 
+                    # Nextcloud logs one activity for a restored folder and none for what it held,
+                    # which the folder's deletion removed from the index.
+                    if restored_paths and path in restored_paths and entries[0].get('is_collection'):
+                        reason = await self._save_folder_contents(
+                            path, user_id, user_email, record_group_id, user_root_path,
+                            path_to_external_id, found_ids,
+                        )
+                        if reason:
+                            failed[path] = reason
+
                 except Exception as e:
                     self.logger.error(f"Error processing modified file {path}: {e}", exc_info=True)
                     failed[path] = str(e) or type(e).__name__
@@ -1760,7 +1776,51 @@ class NextcloudConnector(BaseConnector):
             self.logger.error(f"Error processing modified files: {e}", exc_info=True)
             return dict.fromkeys(file_paths, str(e) or type(e).__name__)
 
-    async def _with_stored_parent(self, entry: Dict, path_to_external_id: Dict[str, str]) -> Dict[str, str]:
+    async def _save_folder_contents(
+        self,
+        path: str,
+        user_id: str,
+        user_email: str,
+        record_group_id: str,
+        user_root_path: str,
+        path_to_external_id: dict[str, str],
+        found_ids: set[str] | None,
+    ) -> str | None:
+        """Save everything below the folder at ``path``; returns why it couldn't, or None."""
+        async with self.rate_limiter:
+            response = await self.data_source.list_directory(user_id=user_id, path=path, depth=100)
+        if getattr(response, "status", None) == HttpStatusCode.NOT_FOUND.value:
+            return None
+        if not is_response_successful(response):
+            return f"its contents could not be listed: {get_response_error(response)}"
+        body = extract_response_body(response)
+        entries = parse_webdav_propfind_response(body) if body else []
+        if not entries:
+            return "the listing of its contents could not be read"
+        below = self._sort_entries_by_hierarchy(entries[1:])
+        path_to_external_id.update(await self._build_path_to_external_id_map(below))
+        if found_ids is not None:
+            found_ids.update(str(e['file_id']) for e in below if e.get('file_id'))
+
+        failed_entries: list[str] = []
+        batch: list[tuple[FileRecord, list[Permission]]] = []
+        async for record, permissions, update in self._process_nextcloud_items_generator(
+            below, user_id, user_email, record_group_id, user_root_path, path_to_external_id, failed_entries,
+        ):
+            if update.is_new and record:
+                batch.append((record, permissions))
+                if len(batch) >= self.batch_size:
+                    await self.data_entities_processor.on_new_records(batch)
+                    batch = []
+            elif update.is_updated and not await self._handle_record_updates(update):
+                failed_entries.append(str(update.external_record_id))
+        if batch:
+            await self.data_entities_processor.on_new_records(batch)
+        if failed_entries:
+            return f"{len(failed_entries)} item(s) inside could not be saved"
+        return None
+
+    async def _with_stored_parent(self, entry: dict, path_to_external_id: dict[str, str]) -> dict[str, str]:
         """A copy of ``path_to_external_id`` that resolves the entry's folder to its stored parent.
 
         Used when the folder above the entry couldn't be read: its record would otherwise be

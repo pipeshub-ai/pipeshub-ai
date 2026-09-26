@@ -90,6 +90,7 @@ class FakeNextcloud:
     requests: list[httpx.Request] = field(default_factory=list)
     unrouted: list[str] = field(default_factory=list)
     faults: list[Fault] = field(default_factory=list)
+    trash: dict[str, list[Node]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._ids = itertools.count(100)
@@ -174,15 +175,19 @@ class FakeNextcloud:
     def delete(self, path: str) -> Node:
         """Deleting a folder logs one activity for the folder only, as Nextcloud does."""
         node = self.nodes[path]
-        for p in [p for p in self.nodes if p == path or p.startswith(path + "/")]:
+        removed = [p for p in self.nodes if p == path or p.startswith(path + "/")]
+        self.trash[node.file_id] = [self.nodes[p] for p in removed]
+        for p in removed:
             del self.nodes[p]
         self._tick()
         self._log("file_deleted", "deleted_self", {node.file_id: f"/{path}"})
         return node
 
     def restore(self, node: Node) -> None:
+        """Restoring from the trash brings a folder back with everything it held, under one activity."""
         self._ensure_parents(node.path)
-        self.nodes[node.path] = node
+        for restored in self.trash.pop(node.file_id, [node]):
+            self.nodes[restored.path] = restored
         self._tick()
         self._log("file_restored", "restored_self", {node.file_id: f"/{node.path}"})
 
