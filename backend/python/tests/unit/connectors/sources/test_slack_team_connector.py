@@ -1271,7 +1271,7 @@ class TestSlackConnectorInitAndFreshDatasource:
                 "credentials": {"access_token": "newtok"},
             }
         )
-        with patch("app.connectors.sources.slack.team.connector.SlackDataSource") as Sds:
+        with patch("app.connectors.sources.slack.common.token_renewal.SlackDataSource") as Sds:
             await c._fresh_datasource()
         inner.set_token.assert_called_once_with("newtok")
         Sds.assert_called()

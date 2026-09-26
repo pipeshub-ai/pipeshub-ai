@@ -11,6 +11,7 @@ so a second sync sees what the first one wrote.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import time
@@ -93,6 +94,8 @@ class SlackWorkspace:
     usergroups: list[dict[str, Any]] = field(default_factory=list)
     page_size: dict[str, int] = field(default_factory=dict)
     valid_tokens: set[str] = field(default_factory=lambda: {BOT_TOKEN, USER_TOKEN})
+    # Rotating tokens past their 12 hours, which Slack refuses with token_expired.
+    expired_tokens: set[str] = field(default_factory=set)
     auth_user_id: Optional[str] = None
     calls: list[SlackCall] = field(default_factory=list)
     downloads_seen: list[httpx.Request] = field(default_factory=list)
@@ -204,6 +207,8 @@ class SlackWorkspace:
                         self._faults.remove(fault)
                 return self._render_failure(req.full_url, fault.reply)
 
+        if token in self.expired_tokens:
+            return _json(200, {"ok": False, "error": "token_expired"})
         if token not in self.valid_tokens:
             return _json(200, {"ok": False, "error": "invalid_auth"})
         handler = getattr(self, "_api_" + method.replace(".", "_"), None)
@@ -512,13 +517,32 @@ class FakeCheckpoints:
 
 
 class FakeConfigService:
-    """Serves one connector's etcd config document."""
+    """Serves one connector's etcd config document, plus any other keys a test adds.
 
-    def __init__(self, connector_id: str, config: dict[str, Any]) -> None:
+    Reads hand out copies, as etcd does, so a change only lands through ``set_config``.
+    """
+
+    def __init__(
+        self, connector_id: str, config: dict[str, Any], others: dict[str, Any] | None = None,
+    ) -> None:
         self.connector_id = connector_id
         self.config = config
+        self.others = dict(others or {})
+        self.writes: list[dict[str, Any]] = []
+
+    @property
+    def path(self) -> str:
+        return f"/services/connectors/{self.connector_id}/config"
 
     async def get_config(self, path: str, default: object = None, **_: object) -> object:
-        if path == f"/services/connectors/{self.connector_id}/config":
-            return self.config
-        return default
+        if path == self.path:
+            return copy.deepcopy(self.config)
+        return copy.deepcopy(self.others.get(path, default))
+
+    async def set_config(self, path: str, value: Any) -> bool:  # noqa: ANN401 - any etcd value
+        if path == self.path:
+            self.config = copy.deepcopy(value)
+            self.writes.append(copy.deepcopy(value))
+        else:
+            self.others[path] = copy.deepcopy(value)
+        return True

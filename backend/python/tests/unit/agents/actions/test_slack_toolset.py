@@ -5009,3 +5009,27 @@ class TestGetScheduledMessagesDateEnrichment:
         ok, payload = await slack.get_scheduled_messages()
         assert ok is True
         assert json.loads(payload)["data"]["scheduled_messages"] == ["weird"]
+
+
+class TestExpiredSignIn:
+    @pytest.mark.asyncio
+    async def test_an_expired_rotating_sign_in_says_it_renews_itself(self) -> None:
+        slack = _build_slack()
+        slack.client.conversations_list = AsyncMock(
+            return_value=SlackResponse(success=False, error="token_expired")
+        )
+        ok, payload = await slack.fetch_channels()
+        assert ok is False
+        message = json.loads(payload)["message"]
+        assert "renews it automatically" in message
+        assert "reconnect the Slack toolset" in message
+
+    @pytest.mark.asyncio
+    async def test_a_refused_sign_in_still_asks_for_a_reconnect(self) -> None:
+        slack = _build_slack()
+        slack.client.conversations_list = AsyncMock(
+            return_value=SlackResponse(success=False, error="invalid_auth")
+        )
+        ok, payload = await slack.fetch_channels()
+        assert ok is False
+        assert json.loads(payload)["message"].startswith("Slack did not accept the saved sign-in.")

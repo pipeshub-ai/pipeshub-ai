@@ -2319,10 +2319,13 @@ class TestSlackIndividualCoverageBoost:
         client = MagicMock()
         client.get_token = MagicMock(return_value="xoxp-first")
         c.external_client.get_client = MagicMock(return_value=client)
-        from app.connectors.sources.slack.individual.connector import SlackDataSource
+        from app.connectors.sources.slack.common.token_renewal import (
+            RenewingSlackDataSource,
+        )
 
         ds = await c._fresh_datasource()
-        assert isinstance(ds, SlackDataSource)
+        assert isinstance(ds, RenewingSlackDataSource)
+        client.set_token.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_fresh_datasource_fallback_first_non_empty_token(self):

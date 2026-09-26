@@ -658,7 +658,7 @@ export function useAgentBuilderReconstruction(): {
             id: nodeId,
             type: 'web-search',
             label: agent.webSearch.providerLabel || agent.webSearch.provider,
-            description: t('Web Search'),
+            description: t('agentBuilder.webSearch'),
             icon: 'public',
             category: 'tools',
             config: {

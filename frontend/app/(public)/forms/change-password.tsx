@@ -4,7 +4,7 @@ import React, { useRef, useState } from 'react';
 import { Box, Flex } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { LoadingButton } from '@/app/components/ui/loading-button';
-import { validatePassword, PASSWORD_RULES } from '@/lib/utils/validators';
+import { validatePassword } from '@/lib/utils/validators';
 import type { JwtUser } from '@/lib/utils/auth-helpers';
 import AuthTitleSection from '../components/auth-title-section';
 import UserBadge from '../components/user-badge';
@@ -65,11 +65,11 @@ export default function ChangePassword({
 
     const pwError = validatePassword(newPassword);
     if (pwError) {
-      setNewPwError(pwError);
+      setNewPwError(t(`validation.password.${pwError}`));
       return;
     }
     if (newPassword !== confirmPassword) {
-      setConfirmError('Passwords do not match.');
+      setConfirmError(t('validation.password.mismatch'));
       return;
     }
 
@@ -95,8 +95,8 @@ export default function ChangePassword({
       const msg = rawMsg.toLowerCase();
 
       if (msg.includes('blocked') || msg.includes('multiple incorrect')) {
-        toast.error('Your account has been disabled.', {
-          description: 'You have entered incorrect credentials too many times',
+        toast.error(t('auth.common.accountDisabled'), {
+          description: t('auth.common.tooManyIncorrectCredentials'),
           duration: null,
         });
       } else if (status === 400) {
@@ -125,7 +125,7 @@ export default function ChangePassword({
         </Box>
       )}
 
-      <AuthTitleSection title="Change Password" subtitle="" />
+      <AuthTitleSection title={t('resetPassword.form.title')} subtitle="" />
 
       {/* ── Form ─────────────────────────────────────────────── */}
       <form onSubmit={handleSave}>
@@ -141,7 +141,7 @@ export default function ChangePassword({
                 e.preventDefault();
                 const err = validatePassword(newPassword);
                 if (err) {
-                  setNewPwError(err);
+                  setNewPwError(t(`validation.password.${err}`));
                   return;
                 }
                 setNewPwError('');
@@ -151,13 +151,13 @@ export default function ChangePassword({
             onBlur={() => {
               if (newPassword) {
                 const err = validatePassword(newPassword);
-                if (err) setNewPwError(err);
+                if (err) setNewPwError(t(`validation.password.${err}`));
               }
             }}
-            label="New Password*"
-            placeholder="Enter your new password"
+            label={t('resetPassword.form.newPasswordLabel')}
+            placeholder={t('resetPassword.form.newPasswordPlaceholder')}
             error={newPwError}
-            hint={newPwError ? undefined : PASSWORD_RULES}
+            hint={newPwError ? undefined : t('validation.password.rules')}
             autoComplete="new-password"
             autoFocus
             disabled={disabled}
@@ -173,11 +173,11 @@ export default function ChangePassword({
             }}
             onBlur={() => {
               if (confirmPassword && confirmPassword !== newPassword) {
-                setConfirmError('Passwords do not match.');
+                setConfirmError(t('validation.password.mismatch'));
               }
             }}
-            label="Confirm Password*"
-            placeholder="Confirm your password"
+            label={t('auth.signUp.confirmPasswordLabel')}
+            placeholder={t('auth.signUp.confirmPasswordPlaceholder')}
             error={confirmError}
             autoComplete="new-password"
             disabled={disabled}
@@ -191,7 +191,7 @@ export default function ChangePassword({
             size="3"
             disabled={disabled || !newPassword || !confirmPassword}
             loading={loading}
-            loadingLabel="Saving…"
+            loadingLabel={t('action.saving')}
             style={{
               width: '100%',
               backgroundColor:
@@ -203,7 +203,7 @@ export default function ChangePassword({
               fontWeight: 500,
             }}
           >
-            Save
+            {t('action.save')}
           </LoadingButton>
         </Flex>
       </form>

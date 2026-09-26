@@ -4,8 +4,7 @@ import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useSta
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
-import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
-import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
+import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -71,6 +70,7 @@ const footerLinkStyle: React.CSSProperties = {
 };
 
 function ChatFooterLinks() {
+  const { t } = useTranslation();
   const stars = useGitHubStars();
 
   return (
@@ -132,7 +132,7 @@ function ChatFooterLinks() {
           style={{ flexShrink: 0 }}
         />
         <span style={{ fontSize: 12, color: 'var(--olive-9)', whiteSpace: 'nowrap' }}>
-          Docs
+          {t('common.docs')}
         </span>
       </a>
     </Flex>
@@ -812,7 +812,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
+  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId]);
 
   // When sidebar/list rows arrive after the URL+slot are ready, backfill
   // `modelInfo` from GET /conversations (before history fetch completes)
@@ -1026,8 +1026,6 @@ function ChatContent() {
   const profile = useUserStore((s) => s.profile);
   const isAdmin = useUserStore(selectIsAdmin);
   const demoDataActive = useDemoDataActive();
-  // Unknown reads as shown, as before the switch existed.
-  const demoHidden = useDemoDataStatus()?.include === false;
   const greetingName = useMemo(() => {
     if (!profile) return '';
     const full = profile.fullName?.trim();
@@ -1417,13 +1415,7 @@ function ChatContent() {
                     <ChatInputWrapper />
                   </Box>
                 )}
-                {showChatInput && (
-                  // Shows itself only when it applies, including for a disabled demo
-                  // whose records are still searchable. Not tied to this admin's own
-                  // switch: others may still show it, and its sample accounts can sign in.
-                  <DemoDataRemovalNotice isAdmin={isAdmin} style={{ marginTop: 'var(--space-5)' }} />
-                )}
-                {demoDataActive && showChatInput && !demoHidden && (
+                {demoDataActive && showChatInput && (
                   <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />
                 )}
               </Flex>
@@ -1501,7 +1493,7 @@ function ChatContent() {
             <Box
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize chat and preview panels"
+              aria-label={t('chat.resizePanels')}
               onPointerDown={beginSplitResize}
               style={{
                 width: '8px',

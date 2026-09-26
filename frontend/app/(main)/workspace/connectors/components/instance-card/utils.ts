@@ -1,8 +1,5 @@
-import {
-  STRATEGY_LABELS,
-  INTERVAL_LABELS,
-  CONNECTOR_INSTANCE_STATUS,
-} from '../../constants';
+import type { TFunction } from 'i18next';
+import { STRATEGY_LABEL_KEYS, INTERVAL_LABEL_KEYS, CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { isConnectorInstanceOAuthAuthIncompleteForSyncUi, isOAuthType } from '../../utils/auth-helpers';
 import type {
   ConnectorInstance,
@@ -16,24 +13,28 @@ import type {
 // Config-derived helpers
 // ========================================
 
-export function getSyncStrategyLabel(config?: ConnectorConfig): string | null {
+export function getSyncStrategyLabel(t: TFunction, config?: ConnectorConfig): string | null {
   if (!config?.config?.sync?.selectedStrategy) return null;
   const strategy = config.config.sync.selectedStrategy;
   return (
-    STRATEGY_LABELS[strategy] ??
-    strategy.charAt(0).toUpperCase() + strategy.slice(1).toLowerCase()
+    STRATEGY_LABEL_KEYS[strategy]
+      ? t(STRATEGY_LABEL_KEYS[strategy])
+      : strategy.charAt(0).toUpperCase() + strategy.slice(1).toLowerCase()
   );
 }
 
-export function getSyncIntervalLabel(config?: ConnectorConfig): string | null {
+export function getSyncIntervalLabel(t: TFunction, config?: ConnectorConfig): string | null {
   if (!config?.config?.sync?.selectedStrategy) return null;
   if (config.config.sync.selectedStrategy !== 'SCHEDULED') return null;
   const minutes = config.config.sync.scheduledConfig?.intervalMinutes;
   if (!minutes) return null;
-  return INTERVAL_LABELS[minutes] ?? `Every ${minutes} min`;
+  return INTERVAL_LABEL_KEYS[minutes]
+    ? t(INTERVAL_LABEL_KEYS[minutes])
+    : t('workspace.connectors.syncIntervals.other', { minutes });
 }
 
 export function getRecordsSelectedInfo(
+  t: TFunction,
   config?: ConnectorConfig,
 ): { label: string; count: number } | null {
   if (!config?.config?.filters?.sync) return null;
@@ -45,7 +46,7 @@ export function getRecordsSelectedInfo(
   for (const field of fields as FilterSchemaField[]) {
     const fieldValue = values[field.name];
     if (Array.isArray(fieldValue) && fieldValue.length > 0) {
-      const label = (field.displayName ?? field.name).toUpperCase() + ' SELECTED';
+      const label = t('workspace.connectors.instanceCard.selected', { field: field.displayName ?? field.name });
       return { label, count: fieldValue.length };
     }
   }

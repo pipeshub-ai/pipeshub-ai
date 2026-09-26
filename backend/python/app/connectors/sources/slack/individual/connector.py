@@ -45,6 +45,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
+from functools import cached_property
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlparse
 
@@ -102,6 +103,10 @@ from app.connectors.sources.slack.common.apps import SlackApp
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
     slack_stream_error,
+)
+from app.connectors.sources.slack.common.token_renewal import (
+    RenewingSlackDataSource,
+    SlackTokenRenewal,
 )
 from app.models.blocks import (
     Block,
@@ -621,11 +626,19 @@ class SlackIndividualConnector(BaseConnector):
             self.logger.error(f"❌ Init failed: {exc}", exc_info=True)
             return False
 
-    async def _fresh_datasource(self) -> SlackDataSource:
-        """Return a SlackDataSource backed by the always-current OAuth token."""
+    @cached_property
+    def _token_renewal(self) -> SlackTokenRenewal:
+        return SlackTokenRenewal(
+            self.connector_id, type(self)._connector_metadata["name"], self.config_service, self.logger,
+        )
+
+    async def _fresh_datasource(self) -> RenewingSlackDataSource:
+        """Return a SlackDataSource backed by the always-current token, renewed when it expires."""
         if not self.external_client:
             raise RuntimeError("Call init() first.")
+        return await self._token_renewal.datasource(self.external_client, self._current_token)
 
+    async def _current_token(self) -> tuple[dict[str, Any], str]:
         cfg = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config",
             use_cache=True,
@@ -643,10 +656,10 @@ class SlackIndividualConnector(BaseConnector):
             (auth.get("accessToken") or "").strip(),
         ]
 
-        # Prefer xoxp- (user) tokens; this is a personal-scope connector.
+        # Prefer user tokens, rotating or not; this is a personal-scope connector.
         token = ""
         for t in candidates:
-            if t.startswith("xoxp-"):
+            if t.startswith(("xoxp-", "xoxe.xoxp-")):
                 token = t
                 break
         # Fallback: first non-empty token (may be xoxb if no xoxp found).
@@ -659,17 +672,11 @@ class SlackIndividualConnector(BaseConnector):
         if not token:
             raise RuntimeError("No access token in config.")
 
-        if token.startswith("xoxb-"):
+        if token.startswith(("xoxb-", "xoxe.xoxb-")):
             self.logger.warning(
                 "⚠️  Only a bot token (xoxb) was found — personal-scope connector "
             )
-
-        client = self.external_client.get_client()
-        if getattr(client, "get_token", lambda: None)() != token:
-            if hasattr(client, "set_token"):
-                client.set_token(token)
-
-        return SlackDataSource(self.external_client)
+        return cfg, token
 
     # =========================================================================
     # 1.  Main orchestration

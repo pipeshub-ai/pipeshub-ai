@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
+import jwt from 'jsonwebtoken'
 import { EventEmitter } from 'events'
 import {
   createConversation,
@@ -143,6 +144,50 @@ function stubUsersFindForSharedBy(users: any[] = []) {
   }
   sinon.stub(Users, 'find').returns(findChain as any)
   return findChain
+}
+
+interface CapturedAICall {
+  uri: string
+  method: string
+  body: string
+  headers: Record<string, string>
+  timeoutMs: number
+  maxAttempts: number
+}
+
+function capturePermissionSyncCalls(): CapturedAICall[] {
+  const calls: CapturedAICall[] = []
+  sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+    calls.push({
+      uri: this.uri,
+      method: this.method,
+      body: this.body,
+      headers: this.headers,
+      timeoutMs: this.timeoutMs,
+      maxAttempts: this.maxAttempts,
+    })
+    return Promise.resolve({ statusCode: 200, data: {} } as any)
+  })
+  return calls
+}
+
+/** `ChatSessionMessage.find(...).populate().lean()` used when collecting chat-attachment record ids. */
+function stubChatSessionMessageLeanFind(messages: any[]): sinon.SinonStub {
+  restoreIfStubbed(ChatSessionMessage, 'find')
+  const chain: any = {
+    populate() {
+      return chain
+    },
+    lean: () => Promise.resolve(messages),
+  }
+  return sinon.stub(ChatSessionMessage, 'find').returns(chain)
+}
+
+function serviceTokenClaims(call: CapturedAICall): Record<string, unknown> {
+  const token = call.headers.authorization.replace(/^Bearer /, '')
+  const claims = jwt.verify(token, createMockAppConfig().scopedJwtSecret) as Record<string, unknown>
+  expect(claims.scopes).to.deep.equal(['conversation:permissions'])
+  return claims
 }
 
 function createMockSession(): any {
@@ -1281,7 +1326,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1297,7 +1342,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1329,7 +1374,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -1368,7 +1413,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
@@ -1394,11 +1439,302 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
       expect(err.message).to.include('not found')
+    })
+
+    it('should not sync artifact permissions when the viewer is the conversation owner', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: false,
+        sharedWith: [],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find')
+
+      const aiExecuteStub = sinon
+        .stub(AIServiceCommand.prototype, 'execute')
+        .resolves({ statusCode: 200, data: {} } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '1', limit: '20' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(aiExecuteStub.called).to.be.false
+    })
+
+    it('should sync artifact permissions for the viewer when a shared (non-owner) user opens the conversation', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: true,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find')
+      // A non-owner viewer makes the handler resolve who shared the chat.
+      stubUsersFindForSharedBy()
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '1', limit: '20' },
+        user: { userId: VALID_OID2, orgId: VALID_OID3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      const artifactCall = calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))
+      expect(artifactCall).to.exist
+      expect(artifactCall!.method).to.equal('POST')
+      expect(JSON.parse(artifactCall!.body)).to.deep.equal({
+        conversationId: VALID_OID,
+        userIds: [VALID_OID2],
+      })
+      // The owner, not the viewer, is the grantor; the viewer's token is never forwarded.
+      expect(serviceTokenClaims(artifactCall!)).to.include({ userId: VALID_OID, orgId: VALID_OID3 })
+      expect(artifactCall!.timeoutMs).to.equal(3000)
+      expect(artifactCall!.maxAttempts).to.equal(1)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should sync attachment permissions for a shared viewer from message chips and ATTACHMENTS citations', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: true,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(2)
+      stubGetMessages(ChatSessionMessage, [
+        {
+          messageType: 'user_query',
+          content: 'see ss',
+          attachments: [{ recordId: 'att-chip' }],
+        },
+        {
+          messageType: 'bot_response',
+          content: 'here',
+          citations: [
+            {
+              citationId: {
+                _id: VALID_OID3,
+                metadata: { recordId: 'att-cite', connector: 'ATTACHMENTS' },
+              },
+            },
+            {
+              citationId: {
+                _id: VALID_OID,
+                metadata: { recordId: 'kb-doc', connector: 'KNOWLEDGE_BASE' },
+              },
+            },
+          ],
+        },
+      ])
+      stubUsersFindForSharedBy()
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '1', limit: '20' },
+        user: { userId: VALID_OID2, orgId: VALID_OID3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      const attachmentCall = calls.find((c) =>
+        c.uri.includes('/chat/attachments/permissions'),
+      )
+      expect(attachmentCall).to.exist
+      expect(attachmentCall!.method).to.equal('POST')
+      const body = JSON.parse(attachmentCall!.body)
+      expect(body.userIds).to.deep.equal([VALID_OID2])
+      expect(body.recordIds).to.have.members(['att-chip', 'att-cite'])
+      expect(body.recordIds).to.not.include('kb-doc')
+      expect(serviceTokenClaims(attachmentCall!)).to.include({
+        userId: VALID_OID,
+        orgId: VALID_OID3,
+      })
+      expect(attachmentCall!.timeoutMs).to.equal(3000)
+      expect(attachmentCall!.maxAttempts).to.equal(1)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should sync attachment permissions (but not artifacts) when a shared viewer loads an older page', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: true,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(40)
+      stubGetMessages(ChatSessionMessage, [
+        {
+          messageType: 'user_query',
+          content: 'old ss',
+          attachments: [{ recordId: 'att-old' }],
+        },
+      ])
+      stubUsersFindForSharedBy()
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '2', limit: '20' },
+        user: { userId: VALID_OID2, orgId: VALID_OID3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      expect(calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))).to.not.exist
+      const attachmentCall = calls.find((c) =>
+        c.uri.includes('/chat/attachments/permissions'),
+      )
+      expect(attachmentCall).to.exist
+      expect(JSON.parse(attachmentCall!.body)).to.deep.equal({
+        userIds: [VALID_OID2],
+        recordIds: ['att-old'],
+      })
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should not sync artifact permissions when a shared viewer loads an older page', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: true,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find')
+      // A non-owner viewer makes the handler resolve who shared the chat.
+      stubUsersFindForSharedBy()
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '2', limit: '20' },
+        user: { userId: VALID_OID2, orgId: VALID_OID3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      expect(calls).to.be.empty
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should still return the conversation when syncing artifact permissions fails', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: true,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find')
+      stubUsersFindForSharedBy()
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('permission service down'))
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '1', limit: '20' },
+        user: { userId: VALID_OID2, orgId: VALID_OID3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
     })
   })
 
@@ -1547,10 +1883,9 @@ describe('Enterprise Search Controller', () => {
       // shareConversationById does a bare `await ChatSessionMessage.find(...).lean()`
       // (no .exec()) — stubMongooseFind's `.lean()` returns the chain itself, not a
       // promise, so it would resolve to a non-array here; return a real promise.
-      restoreIfStubbed(ChatSessionMessage, 'find')
-      const attachmentLookup = sinon.stub(ChatSessionMessage, 'find').returns({
-        lean: () => Promise.resolve([{ attachments: [{ recordId: 'rec-1' }] }]),
-      } as any)
+      const attachmentLookup = stubChatSessionMessageLeanFind([
+        { attachments: [{ recordId: 'rec-1' }] },
+      ])
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1568,7 +1903,7 @@ describe('Enterprise Search Controller', () => {
       expect(update.firstCall.args[0]).to.deep.equal({ _id: VALID_OID, sessionType: 'chat' })
       // Attachment permission grant reads message attachments from the
       // separate chatSessionMessages collection, not conversation.messages.
-      expect(attachmentLookup.calledWith({ sessionId: VALID_OID }, { attachments: 1 })).to.be.true
+      expect(attachmentLookup.calledWith({ sessionId: VALID_OID }, { attachments: 1, citations: 1 })).to.be.true
 
       if (!next.called) {
         const response = res.json.firstCall.args[0]
@@ -1596,6 +1931,162 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should grant artifact permissions (in addition to attachment permissions) after sharing', async () => {
+      const handler = shareConversationById(createMockAppConfig())
+
+      const mockConversation = {
+        _id: VALID_OID,
+        sharedWith: [],
+        isShared: false,
+      }
+      stubThenableFindOne(ChatSession, mockConversation)
+
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: true,
+        shareLink: undefined,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+      } as any)
+
+      stubChatSessionMessageLeanFind([{ attachments: [{ recordId: 'rec-1' }] }])
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID2], accessLevel: 'read' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const attachmentCall = calls.find((c) => c.uri.includes('/chat/attachments/permissions'))
+      const artifactCall = calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))
+      expect(attachmentCall).to.exist
+      expect(artifactCall).to.exist
+      expect(artifactCall!.method).to.equal('POST')
+      expect(JSON.parse(artifactCall!.body)).to.deep.equal({
+        conversationId: VALID_OID,
+        userIds: [VALID_OID2],
+      })
+      for (const call of [attachmentCall!, artifactCall!]) {
+        expect(serviceTokenClaims(call)).to.include({ userId: VALID_OID, orgId: VALID_OID2 })
+      }
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+
+    it('should still share the conversation when granting artifact permissions fails', async () => {
+      const handler = shareConversationById(createMockAppConfig())
+
+      const mockConversation = {
+        _id: VALID_OID,
+        sharedWith: [],
+        isShared: false,
+      }
+      stubThenableFindOne(ChatSession, mockConversation)
+
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: true,
+        shareLink: undefined,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+      } as any)
+
+      stubChatSessionMessageLeanFind([])
+
+      // Every AIServiceCommand call (including the new artifact-permissions
+      // grant) fails; the share itself must still succeed.
+      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('permission service down'))
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID2], accessLevel: 'read' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.isShared).to.equal(true)
+    })
+
+    it('should grant attachment permissions for ATTACHMENTS citations even without message chips', async () => {
+      const handler = shareConversationById(createMockAppConfig())
+
+      const mockConversation = {
+        _id: VALID_OID,
+        sharedWith: [],
+        isShared: false,
+      }
+      stubThenableFindOne(ChatSession, mockConversation)
+
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: true,
+        shareLink: undefined,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+      } as any)
+
+      stubChatSessionMessageLeanFind([
+        {
+          attachments: [],
+          citations: [
+            {
+              citationId: {
+                metadata: { recordId: 'png-1', connector: 'ATTACHMENTS' },
+              },
+            },
+            {
+              citationId: {
+                metadata: { recordId: 'kb-doc', connector: 'KNOWLEDGE_BASE' },
+              },
+            },
+          ],
+        },
+      ])
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID2], accessLevel: 'read' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const attachmentCall = calls.find((c) =>
+        c.uri.includes('/chat/attachments/permissions'),
+      )
+      expect(attachmentCall).to.exist
+      expect(JSON.parse(attachmentCall!.body)).to.deep.equal({
+        userIds: [VALID_OID2],
+        recordIds: ['png-1'],
+      })
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
     })
   })
 
@@ -1663,7 +2154,8 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
       }
       stubMongooseFind(ChatSession, 'findOne', mockConversation)
-      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
         _id: VALID_OID,
         isShared: false,
         shareLink: undefined,
@@ -1703,6 +2195,86 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should revoke artifact permissions (in addition to attachment permissions) after unsharing', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
+      }
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: false,
+        shareLink: undefined,
+        sharedWith: [],
+      } as any)
+
+      stubChatSessionMessageLeanFind([{ attachments: [{ recordId: 'rec-1' }] }])
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID3] },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
+
+      const attachmentCall = calls.find((c) => c.uri.includes('/chat/attachments/permissions'))
+      const artifactCall = calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))
+      expect(attachmentCall).to.exist
+      expect(artifactCall).to.exist
+      expect(artifactCall!.method).to.equal('DELETE')
+      expect(JSON.parse(artifactCall!.body)).to.deep.equal({
+        conversationId: VALID_OID,
+        userIds: [VALID_OID3],
+      })
+      expect(serviceTokenClaims(artifactCall!)).to.include({ userId: VALID_OID, orgId: VALID_OID2 })
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+
+    it('should still unshare the conversation when revoking artifact permissions fails', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
+      }
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: false,
+        shareLink: undefined,
+        sharedWith: [],
+      } as any)
+
+      stubChatSessionMessageLeanFind([])
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('permission service down'))
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID3] },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response).to.have.property('unsharedUsers')
     })
   })
 
@@ -3667,7 +4239,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -3694,7 +4266,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -3730,7 +4302,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -7203,16 +7775,17 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // unshareConversationById - findByIdAndUpdate returns null
+  // unshareConversationById - findOneAndUpdate returns null
   // -----------------------------------------------------------------------
-  describe('unshareConversationById (findByIdAndUpdate null)', () => {
-    it('should call next when findByIdAndUpdate returns null', async () => {
+  describe('unshareConversationById (findOneAndUpdate null)', () => {
+    it('should call next when findOneAndUpdate returns null', async () => {
       const mockConversation = {
         _id: VALID_OID,
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
       }
       stubMongooseFind(ChatSession, 'findOne', mockConversation)
-      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves(null)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -7547,7 +8120,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -12916,8 +13489,7 @@ describe('Enterprise Search Controller', () => {
       } as any)
       // unshareConversationById revokes attachment permissions via a bare
       // `.find(...).lean()` (no .exec()); give it a real resolving promise.
-      restoreIfStubbed(ChatSessionMessage, 'find')
-      sinon.stub(ChatSessionMessage, 'find').returns({ lean: () => Promise.resolve([]) } as any)
+      stubChatSessionMessageLeanFind([])
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },

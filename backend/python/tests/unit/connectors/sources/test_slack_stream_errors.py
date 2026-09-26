@@ -60,6 +60,7 @@ class TestRawCodeReachesTheMapping:
             ("not_authed", 409),
             ("invalid_auth", 409),
             ("token_revoked", 409),
+            ("token_expired", 409),
             ("missing_scope", 403),
             ("not_in_channel", 403),
             ("channel_not_found", 403),

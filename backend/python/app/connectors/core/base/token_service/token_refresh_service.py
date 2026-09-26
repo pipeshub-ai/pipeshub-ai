@@ -34,6 +34,14 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # Consecutive rejections before deactivating; guards against provider blips
 MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
 
+CREDENTIAL_SAVE_ATTEMPTS = 3
+CREDENTIAL_SAVE_RETRY_DELAY_SECONDS = 0.5
+
+
+class CredentialSaveError(Exception):
+    """A refreshed token could not be stored. With rotating refresh tokens the old
+    one is already spent, so the refresh must not be reported as a success."""
+
 # Refreshes for one connector must not run concurrently. Providers that rotate
 # refresh tokens (GitLab among them) invalidate the old token as soon as the
 # first refresh lands, so parallel callers holding the same token are guaranteed
@@ -782,17 +790,53 @@ class TokenRefreshService:
             new_token = await oauth_provider.refresh_access_token(refresh_token)
             self.logger.info(f"✅ Successfully refreshed token for connector {connector_id}")
 
-            latest = await self.configuration_service.get_config(config_key)
-            if not latest:
-                latest = config
-            latest['credentials'] = new_token.to_dict()
-            await self.configuration_service.set_config(config_key, latest)
-            self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
+            await self._persist_refreshed_credentials(connector_id, config_key, config, new_token)
 
             self._invalid_refresh_failures.pop(connector_id, None)
             return new_token
         finally:
             await oauth_provider.close()
+
+    async def _persist_refreshed_credentials(
+        self,
+        connector_id: str,
+        config_key: str,
+        fallback_config: dict,
+        new_token: OAuthToken,
+    ) -> None:
+        """Save the new access and refresh token together, retrying a failed write.
+
+        Raises ``CredentialSaveError`` when nothing was stored.
+        """
+        for attempt in range(1, CREDENTIAL_SAVE_ATTEMPTS + 1):
+            latest = await self.configuration_service.get_config(config_key) or fallback_config
+            if self._credentials_match(latest.get('credentials'), new_token):
+                self.logger.info(f"💾 Refreshed credentials already stored for connector {connector_id}")
+                return
+            # A copy: get_config hands back the cached dict, and a failed write must not change it.
+            updated = {**latest, 'credentials': new_token.to_dict()}
+            if await self.configuration_service.set_config(config_key, updated) is not False:
+                self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
+                return
+            self.logger.warning(
+                f"Saving refreshed credentials for connector {connector_id} failed "
+                f"(attempt {attempt}/{CREDENTIAL_SAVE_ATTEMPTS})"
+            )
+            if attempt < CREDENTIAL_SAVE_ATTEMPTS:
+                await asyncio.sleep(CREDENTIAL_SAVE_RETRY_DELAY_SECONDS * attempt)
+        raise CredentialSaveError(
+            f"Could not save refreshed credentials for connector {connector_id} after "
+            f"{CREDENTIAL_SAVE_ATTEMPTS} attempts. The old refresh token may already be spent, "
+            f"so the connector may need to be reconnected."
+        )
+
+    @staticmethod
+    def _credentials_match(stored: dict | None, new_token: OAuthToken) -> bool:
+        return (
+            isinstance(stored, dict)
+            and stored.get('access_token') == new_token.access_token
+            and stored.get('refresh_token') == new_token.refresh_token
+        )
 
     def _is_connector_being_processed(self, connector_id: str) -> bool:
         """Check if connector is currently being processed."""

@@ -38,10 +38,10 @@ export function SettingsTab({
   removeDisabledTooltip,
   removePermissionLocked = false,
 }: SettingsTabProps) {
-  const { t } = useTranslation();
-  const syncStrategy = getSyncStrategyLabel(config ?? undefined) ?? 'Manual';
-  const syncInterval = getSyncIntervalLabel(config ?? undefined);
-  const isScheduled = syncStrategy.toLowerCase() === 'scheduled';
+  const { t, i18n } = useTranslation();
+  const syncStrategy = getSyncStrategyLabel(t, config ?? undefined) ?? t('workspace.connectors.syncStrategies.MANUAL');
+  const syncInterval = getSyncIntervalLabel(t, config ?? undefined);
+  const isScheduled = config?.config?.sync?.selectedStrategy === 'SCHEDULED';
 
   const creatorEntry = useUserDirectoryEntry(instance.createdBy);
   const creatorNameFromDirectory =
@@ -73,7 +73,7 @@ export function SettingsTab({
         onRequestRemoveConnector();
       }}
     >
-      Remove connector instance
+      {t('workspace.connectors.settingsTab.removeInstance')}
       {removePermissionLocked && <PermissionLockIcon />}
     </Button>
   ) : null;
@@ -172,7 +172,7 @@ export function SettingsTab({
             value={
               <Text size="2" style={{ color: 'var(--gray-12)' }}>
                 {instance.createdAtTimestamp
-                  ? new Date(instance.createdAtTimestamp).toLocaleDateString('en-GB', {
+                  ? new Date(instance.createdAtTimestamp).toLocaleDateString(i18n.resolvedLanguage, {
                       day: 'numeric',
                       month: 'short',
                       year: 'numeric',
@@ -237,11 +237,10 @@ export function SettingsTab({
           }}
         >
           <Text size="2" weight="bold" color="red">
-            Danger zone
+            {t('workspace.actions.manage.dangerZone')}
           </Text>
           <Text size="2" color="gray" style={{ maxWidth: 420 }}>
-            Permanently remove this connector instance and stop syncing its data. This cannot be
-            undone.
+            {t('workspace.connectors.settingsTab.removeInstanceDescription')}
           </Text>
           {removeConnectorControl}
         </Flex>

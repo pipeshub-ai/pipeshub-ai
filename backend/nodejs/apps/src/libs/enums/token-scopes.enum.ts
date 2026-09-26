@@ -6,6 +6,7 @@ export const TokenScopes = Object.freeze({
   TOKEN_REFRESH: 'token:refresh',
   STORAGE_TOKEN: 'storage:token',
   CONVERSATION_CREATE: 'conversation:create',
+  CONVERSATION_PERMISSIONS: 'conversation:permissions',
   VALIDATE_EMAIL: 'email:validate',
   ORG_EMAIL_VERIFY: 'org:email:verify',
   EMAIL_VERIFIED: 'email:verified',

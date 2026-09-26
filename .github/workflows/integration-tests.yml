@@ -321,6 +321,12 @@ jobs:
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
+      # Nightly sets PIPESHUB_REQUIRE_CONNECTOR_SECRETS, so a missing SMB secret
+      # fails shard 2. CIFS is not registered, so it is not in a shard.
+      SMB_HOST: ${{ secrets.SMB_HOST }}
+      SMB_SHARE: ${{ secrets.SMB_SHARE }}
+      SMB_USERNAME: ${{ secrets.SMB_USERNAME }}
+      SMB_PASSWORD: ${{ secrets.SMB_PASSWORD }}
       # Connector shards, one source of truth. The `core` shard is everything
       # these three do not own, built in the test step from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
@@ -329,7 +335,7 @@ jobs:
       # nextcloud and bookstack, the only suites needing selfhosted-sources.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files"
+      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files or smb"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
@@ -500,7 +506,7 @@ jobs:
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
@@ -683,7 +689,7 @@ jobs:
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as

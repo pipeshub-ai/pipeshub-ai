@@ -33,6 +33,10 @@ describe('TokenScopes', () => {
   it('should have CONVERSATION_CREATE as "conversation:create"', () => {
     expect(TokenScopes.CONVERSATION_CREATE).to.equal('conversation:create');
   });
+
+  it('should have CONVERSATION_PERMISSIONS as "conversation:permissions"', () => {
+    expect(TokenScopes.CONVERSATION_PERMISSIONS).to.equal('conversation:permissions');
+  });
   it('should have VALIDATE_EMAIL as "email:validate"', () => {
     expect(TokenScopes.VALIDATE_EMAIL).to.equal('email:validate');
   });
@@ -45,8 +49,8 @@ describe('TokenScopes', () => {
     expect(TokenScopes.EMAIL_VERIFIED).to.equal('email:verified');
   });
 
-  it('should have exactly 11 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(11);
+  it('should have exactly 12 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(12);
   });
 
   it('should contain only the expected keys', () => {
@@ -58,6 +62,7 @@ describe('TokenScopes', () => {
       'TOKEN_REFRESH',
       'STORAGE_TOKEN',
       'CONVERSATION_CREATE',
+      'CONVERSATION_PERMISSIONS',
       'VALIDATE_EMAIL',
       'ORG_EMAIL_VERIFY',
       'EMAIL_VERIFIED',

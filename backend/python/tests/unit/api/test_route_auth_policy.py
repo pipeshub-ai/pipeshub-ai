@@ -42,6 +42,10 @@ _SERVICE_TOKEN_ROUTES = {
     ("agent", "POST", "/{agent_id}/chat/stream"): {"conversation:create"},
     ("agent", "GET", "/{agent_id}/internal/service-account"): {"conversation:create"},
     ("chatbot", "POST", "/chat/attachments/upload"): {"conversation:create"},
+    ("chatbot", "POST", "/chat/attachments/permissions"): {"conversation:permissions"},
+    ("chatbot", "DELETE", "/chat/attachments/permissions"): {"conversation:permissions"},
+    ("chatbot", "POST", "/chat/artifacts/permissions"): {"conversation:permissions"},
+    ("chatbot", "DELETE", "/chat/artifacts/permissions"): {"conversation:permissions"},
     (
         "connectors",
         "GET",

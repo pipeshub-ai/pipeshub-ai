@@ -1,11 +1,12 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Text, Flex, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { ShareRole } from './types';
-import { SHARE_ROLE_LABELS } from './types';
+import { getShareRoleLabels } from './types';
 
 interface RoleDropdownMenuProps {
   role: ShareRole;
@@ -32,7 +33,7 @@ interface RoleDropdownMenuProps {
   onOpenChange?: (open: boolean) => void;
   /**
    * Override the label + description for each role. Defaults to
-   * {@link SHARE_ROLE_LABELS}. Pass team-specific labels for team contexts.
+   * {@link getShareRoleLabels}. Pass team-specific labels for team contexts.
    */
   labels?: Record<ShareRole, { label: string; description: string }>;
 }
@@ -43,13 +44,14 @@ const MIN_HORIZONTAL_MARGIN = 8;
 const MIN_VERTICAL_MARGIN = 8;
 
 export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, anchorRef, onOpenChange, labels }: RoleDropdownMenuProps) {
-  const effectiveLabels = labels ?? SHARE_ROLE_LABELS;
+  const { t } = useTranslation();
+  const effectiveLabels = labels ?? getShareRoleLabels(t);
   const roleLabel =
-    effectiveLabels[role]?.label ?? (typeof role === 'string' ? role : 'Reader');
+    effectiveLabels[role]?.label ?? (typeof role === 'string' ? role : t('recordView.permissionReader'));
   // Treat as no-roles when isTeam or noRolesInfo is provided
   const isNoRoles = isTeam || !!noRolesInfo;
-  const noRolesTitle = noRolesInfo?.title ?? 'Team';
-  const noRolesDescription = noRolesInfo?.description ?? 'Teams do not have roles';
+  const noRolesTitle = noRolesInfo?.title ?? t('shareSidebar.team');
+  const noRolesDescription = noRolesInfo?.description ?? t('shareSidebar.teamsNoRoles');
   const [open, setOpenState] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -306,7 +308,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
                 }}
               >
                 <Text size="1" style={{ color: 'var(--red-11)', fontSize: 13, lineHeight: '16px' }}>
-                  Remove
+                  {t('workspace.users.actions.removeButton')}
                 </Text>
               </Flex>
             </>

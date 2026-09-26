@@ -83,18 +83,18 @@ export function useChangePassword({ onOpenChange, onSuccess }: UseChangePassword
       newErrors.newPassword = t('workspace.profile.changePassword.newRequired');
     } else {
       const pwError = validatePassword(form.newPassword);
-      if (pwError) newErrors.newPassword = pwError;
+      if (pwError) newErrors.newPassword = t(`validation.password.${pwError}`);
     }
 
     if (!form.confirmPassword) {
       newErrors.confirmPassword = t('workspace.profile.changePassword.confirmRequired');
     } else if (form.confirmPassword !== form.newPassword) {
-      newErrors.confirmPassword = t('workspace.profile.changePassword.mismatchError');
+      newErrors.confirmPassword = t('validation.password.mismatch');
     }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
-  }, [form]);
+  }, [form, t]);
 
   const handleSave = useCallback(async () => {
     if (!validate()) return;
@@ -120,7 +120,7 @@ export function useChangePassword({ onOpenChange, onSuccess }: UseChangePassword
     } finally {
       setIsLoading(false);
     }
-  }, [form, validate, resetForm, onOpenChange, onSuccess]);
+  }, [form, validate, resetForm, onOpenChange, onSuccess, t]);
 
   const handleTryAgain = useCallback(() => {
     setView('form');
