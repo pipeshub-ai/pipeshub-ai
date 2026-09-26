@@ -1,3 +1,5 @@
+'use client';
+
 // Share components barrel export
 export { ShareSidebar } from './share-sidebar';
 export { ShareHeaderGroup } from './share-header-group';
