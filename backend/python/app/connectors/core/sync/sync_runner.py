@@ -505,7 +505,10 @@ async def run_sync_task(
                 document_key=connector_id, collection=CollectionNames.APPS.value
             )
             full_owed = bool((doc or {}).get(ConnectorStateKeys.PENDING_FULL_SYNC))
-            if start_status == AppStatus.FULL_SYNCING.value or not full_owed:
+            # Only when set: writing the field on every sync put it on every app
+            # doc, and main's strict Arango app schema rejects any doc carrying it.
+            flagged = bool((doc or {}).get(ConnectorStateKeys.PENDING_RESYNC))
+            if flagged and (start_status == AppStatus.FULL_SYNCING.value or not full_owed):
                 await graph_provider.update_node(
                     connector_id,
                     CollectionNames.APPS.value,
