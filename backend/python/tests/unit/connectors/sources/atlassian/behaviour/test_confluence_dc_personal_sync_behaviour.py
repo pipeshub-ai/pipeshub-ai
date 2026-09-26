@@ -587,6 +587,28 @@ class TestPartialFailures:
         assert json.loads(stored["failedPages"]) == {"p3": 1}, "p2 is given up on, p3 still holds the checkpoint"
         assert "p2" not in json.loads(stored.get("givenUpPages") or "{}"), "nothing to match it on, so it isn't kept"
 
+    async def test_an_undated_page_given_up_alone_is_named_and_the_sync_moves_on(
+        self, atlassian_api, records_db, checkpoints, search, caplog
+    ) -> None:
+        undated = {**content("p2"), "history": {"createdDate": "2024-01-01T00:00:00.000Z"}}
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1"), undated]))
+        records_db.fail_lookup_for = {"p2"}
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        await connector.pages_sync_point.update_sync_point(
+            generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG"),
+            {"failedPages": json.dumps({"p2": 4})},
+        )
+
+        with caplog.at_level(logging.ERROR):
+            await connector.run_sync()
+
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert "last_sync_time" in stored, "bounded like every other page: after 5 syncs the space moves on"
+        assert json.loads(stored["failedPages"]) == {}
+        assert "p2" not in json.loads(stored.get("givenUpPages") or "{}")
+        assert any("p2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
+
     async def test_each_failing_page_has_its_own_count(self, atlassian_api, records_db, checkpoints, search) -> None:
         stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
         search.add("page", "ENG", 0, listing([content("p1"), content("p2"), content("p3")]))
