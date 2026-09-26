@@ -436,7 +436,7 @@ class TestIncrementalSync:
 
         assert {"1001", "1002", "1004"} <= set(tickets(db))
         assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
-        assert not store.values_for("project_ENG").get("failed_issue_attempts")
+        assert json.loads(store.values_for("project_ENG").get("failed_issue_attempts") or "{}") == {}
 
     async def test_an_issue_that_keeps_failing_is_given_up_on_after_five_syncs(self, jira, db, store, search, caplog) -> None:
         stub_site(jira, search)
@@ -448,7 +448,7 @@ class TestIncrementalSync:
         for attempt in range(1, 5):
             await connector.run_sync()
             assert store.values_for("project_ENG")["last_issue_updated"] == held_at
-            assert store.values_for("project_ENG")["failed_issue_attempts"] == {"1002": attempt}
+            assert json.loads(store.values_for("project_ENG")["failed_issue_attempts"]) == {"1002": attempt}
 
         with caplog.at_level(logging.ERROR):
             await connector.run_sync()
