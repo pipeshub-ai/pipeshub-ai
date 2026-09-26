@@ -47,7 +47,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
   const { t } = useTranslation();
   const effectiveLabels = labels ?? getShareRoleLabels(t);
   const roleLabel =
-    effectiveLabels[role]?.label ?? (typeof role === 'string' ? role : t('recordView.permissionReader'));
+    effectiveLabels[role]?.label ?? (typeof role === 'string' ? role : t('shareSidebar.roles.reader.label'));
   // Treat as no-roles when isTeam or noRolesInfo is provided
   const isNoRoles = isTeam || !!noRolesInfo;
   const noRolesTitle = noRolesInfo?.title ?? t('shareSidebar.team');
@@ -308,7 +308,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
                 }}
               >
                 <Text size="1" style={{ color: 'var(--red-11)', fontSize: 13, lineHeight: '16px' }}>
-                  {t('workspace.users.actions.removeButton')}
+                  {t('action.remove')}
                 </Text>
               </Flex>
             </>

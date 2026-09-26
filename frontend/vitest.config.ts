@@ -17,8 +17,8 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
-    // Use jsdom's per-window storage instead of Node's native Web Storage.
-    // Older Node versions do not expose this flag.
+    // jsdom's per-window storage, not Node's native Web Storage, which shadows it.
+    // Node versions without the flag reject it, so only pass it where it exists.
     execArgv: process.allowedNodeEnvironmentFlags.has('--no-experimental-webstorage')
       ? ['--no-experimental-webstorage']
       : [],
@@ -29,6 +29,15 @@ export default defineConfig({
     // test:electron:local-sync) have their own runners.
     include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
     passWithNoTests: false,
+    // `include` lists every source file, loaded by a test or not, so the
+    // percentage counts untested files instead of hiding them.
+    coverage: {
+      provider: 'v8',
+      include: ['app/**/*.{ts,tsx}', 'lib/**/*.{ts,tsx}'],
+      exclude: ['**/*.test.{ts,tsx}', '**/__tests__/**', '**/*.d.ts'],
+      reporter: ['text-summary', 'json-summary', 'json', 'html'],
+      reportsDirectory: 'coverage/unit',
+    },
   },
   resolve: {
     alias: {
