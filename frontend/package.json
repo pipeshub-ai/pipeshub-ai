@@ -38,8 +38,8 @@
     "electron:build:win": "node scripts/electron/build.mjs win",
     "electron:build:linux": "node scripts/electron/build.mjs linux",
     "electron:build:all": "node scripts/electron/build.mjs all",
-    "_comment:test:electron": "--test-concurrency=1 is required, not a preference: the local-sync tests drive real fs watchers against real temp directories, and node --test runs files in parallel by default, which makes them interfere and hang.",
-    "test:electron": "npm run build:electron:typescript && node --test --test-concurrency=1 \"electron/compile/**/__tests__/*.test.js\""
+    "_comment:test:electron": "Two things here are load-bearing. --test-concurrency=1: the local-sync tests drive real fs watchers against real temp directories, and node --test runs files in parallel by default, which makes them interfere and hang. Unquoted, single-star patterns: the shell has to expand them, because CI runs Node 20, whose test runner does not glob and would treat a quoted pattern or a ** as a literal path.",
+    "test:electron": "npm run build:electron:typescript && node --test --test-concurrency=1 electron/compile/__tests__/*.test.js electron/compile/local-sync/__tests__/*.test.js"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.3",
