@@ -38,21 +38,6 @@ if TYPE_CHECKING:
 
     from app.agents.actions.google.gmail.gmail import Gmail
 
-PENDING = {
-    "files": "mail_attachments reads any file path the model names from the server and mails it",
-    "errors": "Gmail failures reach the agent as the raw HttpError text, with no next step",
-    "attachments": "attachments inside nested parts are missed, and an inline one crashes the tool",
-    "profile": "get_user_profile reads whichever mailbox the model names",
-    "reply": "reply does not thread: it never reads the original's Message-ID or thread",
-    "search": "a search whose message details could not be read is presented as complete",
-    "recipients": "an empty or address-less recipient list goes to Gmail",
-}
-
-
-def pending(key: str) -> pytest.MarkDecorator:
-    return pytest.mark.xfail(strict=True, reason=PENDING[key])
-
-
 @pytest.fixture(autouse=True)
 def no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     """googleapiclient backs off between its own retries; the tests don't wait for it."""
@@ -152,7 +137,6 @@ class TestSend:
         assert "mail_attachments" not in names
         assert "attachment_record_ids" in names
 
-    @pending("recipients")
     @pytest.mark.parametrize("mail_to", [[], ["Ada Lovelace"], ["ada@example.com", "  "]])
     async def test_recipients_without_an_address_are_refused_before_sending(self, gmail, http, mail_to) -> None:
         ok, data = result(await gmail.send_email(mail_to=mail_to, mail_subject="Hi"))
@@ -161,7 +145,6 @@ class TestSend:
         assert ok is False
         assert "address" in assert_safe_error(data)
 
-    @pending("recipients")
     async def test_a_cc_without_an_address_is_refused_before_sending(self, gmail, http) -> None:
         ok, data = result(await gmail.draft_email(mail_to=["ada@example.com"], mail_subject="Hi", mail_cc=["the team"]))
 

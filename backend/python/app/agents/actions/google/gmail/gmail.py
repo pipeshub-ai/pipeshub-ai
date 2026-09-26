@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from email.utils import parseaddr
 from http import HTTPStatus
 from typing import Any, Dict, List, Optional
 
@@ -102,6 +103,19 @@ def _unreadable(msg: dict[str, Any]) -> dict[str, Any]:
         "labelIds": [],
         "unreadable": True,
     }
+
+
+def _recipient_problem(mail_to: list[str], *others: list[str] | None) -> str | None:
+    if not mail_to:
+        return "Give at least one recipient email address in mail_to."
+    for entry in [*mail_to, *(e for group in others for e in group or [])]:
+        _, address = parseaddr(entry or "")
+        if "@" not in address or " " in address.strip():
+            return (
+                f"'{(entry or '').strip()}' is not an email address. Find the person's address first "
+                "(for example from an earlier email) and try again."
+            )
+    return None
 
 
 def _refuse_file_paths() -> tuple[bool, str]:
@@ -348,6 +362,9 @@ class Gmail:
         """Reply to an email, optionally attaching PipesHub records."""
         if mail_attachments:
             return _refuse_file_paths()
+        problem = _recipient_problem(mail_to, mail_cc, mail_bcc)
+        if problem:
+            return False, json.dumps({"error": problem})
         try:
             context = await self._reply_context(message_id, thread_id)
         except Exception as e:
@@ -404,6 +421,9 @@ class Gmail:
         """Draft an email, optionally attaching PipesHub records."""
         if mail_attachments:
             return _refuse_file_paths()
+        problem = _recipient_problem(mail_to, mail_cc, mail_bcc)
+        if problem:
+            return False, json.dumps({"error": problem})
         try:
             destination = ", ".join(mail_to) if mail_to else ""
             in_memory = await self._resolve_in_memory_attachments(attachment_record_ids, destination=destination)
@@ -462,6 +482,9 @@ class Gmail:
         """Send an email, optionally attaching PipesHub records."""
         if mail_attachments:
             return _refuse_file_paths()
+        problem = _recipient_problem(mail_to, mail_cc, mail_bcc)
+        if problem:
+            return False, json.dumps({"error": problem})
         context = _ReplyContext(thread_id=thread_id)
         if message_id:
             try:
