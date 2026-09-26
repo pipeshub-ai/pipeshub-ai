@@ -2123,8 +2123,8 @@ class WebConnector(BaseConnector):
                     # The 304 vouches for our copy at the new URL; only the old URL's record needs cleaning up.
                     await self._handle_gone_page(url, keep_id=stored_there.id)
                     return None
-                # The validators came from the old URL (a HEAD-refusing site's GET followed the
-                # redirect), so fetch the new URL in full; the redirect cleanup deals with the old record.
+                # The 304 doesn't match our copy at the new URL, so fetch it in full; the redirect
+                # cleanup deals with the old record.
                 refetched = await fetch_url_with_fallback(
                     url=moved_to, session=self.session, logger=self.logger, referer=referer,
                     timeout=15, max_size_mb=self.max_size_mb, allow_hop=self._hop_allowed,
