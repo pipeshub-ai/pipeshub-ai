@@ -105,6 +105,14 @@ def _mark_older_comments(data: dict[str, Any]) -> None:
     )
 
 
+def _missing_text(**fields: object) -> Optional[tuple[bool, str]]:
+    """Refuse a call whose required text is empty, before ClickUp is called."""
+    empty = [name for name, value in fields.items() if not isinstance(value, str) or not value.strip()]
+    if not empty:
+        return None
+    return False, json.dumps({"error": f"{' and '.join(empty)} cannot be empty. Ask the user what it should be, then try again."})
+
+
 def _no_update_fields(*values: object, empty_is_unset: bool = False) -> Optional[str]:
     """Message for an update with nothing to change.
 
@@ -1055,6 +1063,9 @@ class ClickUp:
         page: Optional[int] = None,
     ) -> tuple[bool, str]:
         """Search tasks by keyword via temporary workspace view."""
+        # A view with no search text lists every task, which would read as "all of these match".
+        if missing := _missing_text(keyword=keyword):
+            return missing
         view_id = None
         try:
             create_resp = await self.client.create_team_view(
@@ -1131,6 +1142,8 @@ class ClickUp:
         parent: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Create a new task in a list."""
+        if missing := _missing_text(name=name):
+            return missing
         priority, priority_error = _normalize_priority(priority)
         if priority_error:
             return False, json.dumps({"error": priority_error})
@@ -1352,6 +1365,8 @@ class ClickUp:
         team_id: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Add a comment to a task or a reply to a comment."""
+        if missing := _missing_text(comment_text=comment_text):
+            return missing
         if not task_id and not comment_id:
             return False, json.dumps({"error": _CREATE_COMMENT_TARGET_REQUIRED})
         try:

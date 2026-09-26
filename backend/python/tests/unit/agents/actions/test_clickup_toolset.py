@@ -618,3 +618,21 @@ class TestCommentPaging:
         data = ok(await clickup.get_comments(task_id="t1", start=1_700_000_000_076, start_id="76"))["data"]
         assert api.calls("GET", f"{V2}/task/t1/comment")[0].query == {"start": ["1700000000076"], "start_id": ["76"]}
         assert data["has_more"] is False and "note" not in data
+
+
+class TestInputValidation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("keyword", ["", "   "])
+    async def test_blank_search_is_refused_instead_of_listing_every_task(self, clickup, api, keyword) -> None:
+        assert fail(await clickup.search_tasks("9001", keyword))["error"].startswith("keyword cannot be empty")
+        assert api.requests == []
+
+    @pytest.mark.asyncio
+    async def test_blank_comment_is_refused_before_clickup(self, clickup, api) -> None:
+        assert "comment_text cannot be empty" in fail(await clickup.create_task_comment(" ", task_id="t1"))["error"]
+        assert api.requests == []
+
+    @pytest.mark.asyncio
+    async def test_blank_task_name_is_refused_before_clickup(self, clickup, api) -> None:
+        assert "name cannot be empty" in fail(await clickup.create_task("l1", ""))["error"]
+        assert api.requests == []
