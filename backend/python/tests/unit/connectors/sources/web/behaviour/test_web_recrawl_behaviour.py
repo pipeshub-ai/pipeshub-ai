@@ -350,3 +350,36 @@ async def test_a_page_gone_behind_a_redirect_is_removed_where_it_is_stored(
 
     assert db.deleted == [stored.id]
     assert not [r for r in db.records.values() if r.weburl == old or r.external_record_id.rstrip("/") == old]
+
+
+async def test_a_record_under_a_url_that_now_redirects_to_a_gone_page_is_removed(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old, new = "http://site.test/old", "http://site.test/new"
+    site.html(START_URL, "Home", "/old")
+    site.html(old, "Old")
+    connector = await make_connector()
+    await connector.run_sync()
+    stale = db.pages()[old]
+
+    site.redirect(old, "/new", status=301)
+    site.add(new, Page(status=404))
+    await connector.run_sync()
+    assert old in db.pages()
+    await connector.run_sync()
+
+    assert db.deleted == [stale.id]
+    assert site.storage_deletes == [stale.storage_document_id]
+
+
+async def test_a_redirect_onto_a_gone_page_leaves_one_failed_page_only(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/old")
+    site.redirect("http://site.test/old", "/new", status=301)
+    site.add("http://site.test/new", Page(status=404))
+
+    await (await make_connector()).run_sync()
+
+    failed = [r for r in db.pages().values() if r.indexing_status == ProgressStatus.FAILED.value]
+    assert [r.weburl for r in failed] == ["http://site.test/new"]

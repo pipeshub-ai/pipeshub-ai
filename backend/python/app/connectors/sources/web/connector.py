@@ -135,6 +135,7 @@ class RetryUrl:
     deferred: bool = False  # site asked to wait longer than we hold a sync open
     reason: str | None = None  # shown on the failed page instead of the status-based reason
     site_url: str | None = None  # the URL as the site gave it, which is what a stored record is keyed by
+    queued_url: str | None = None  # the URL that was asked for, when a redirect led to ``site_url``
 
 class Status(Enum):
     PENDING = "PENDING"
@@ -1881,7 +1882,7 @@ class WebConnector(BaseConnector):
                 size_skip = result.headers.get("X-Fetch-Skip-Reason") == "max_size_exceeded"
                 self._record_final_failure(
                     result.final_url or url, depth, referer, result.status_code,
-                    self._too_large_reason() if size_skip else None,
+                    self._too_large_reason() if size_skip else None, queued_url=url,
                 )
             return None
         elif not result.success:
@@ -1910,6 +1911,7 @@ class WebConnector(BaseConnector):
         if len(content_bytes) > self.max_size_mb * 1024 * 1024:
             self._record_final_failure(
                 result.final_url or url, depth, referer, result.status_code, self._too_large_reason(),
+                queued_url=url,
             )
             return None
 
@@ -1917,10 +1919,12 @@ class WebConnector(BaseConnector):
 
     def _record_final_failure(
         self, url: str, depth: int, referer: str | None, status_code: int | None, reason: str | None = None,
+        queued_url: str | None = None,
     ) -> None:
         """A failure retrying can't fix (404, 401, too large): shown as a failed page, never re-fetched this sync.
 
         ``url`` is where the answer came from, after any redirect: the URL the page is stored under.
+        ``queued_url`` is the URL that redirected there, whose own older record may need removing too.
         """
         normalized = self._normalize_url(url)
         self.retry_urls[normalized] = RetryUrl(
@@ -1933,6 +1937,7 @@ class WebConnector(BaseConnector):
             referer=referer,
             reason=reason,
             site_url=url,
+            queued_url=queued_url if queued_url and urldefrag(queued_url).url != urldefrag(url).url else None,
         )
 
     def _too_large_reason(self) -> str:
@@ -2366,13 +2371,21 @@ class WebConnector(BaseConnector):
         """
 
         snapshot = list(self.retry_urls.values())
-        start = self.retry_urls.get(self._normalize_url(self.url or ""))
-        # A start page that is gone means the whole site is, or it is misconfigured: delete nothing.
-        site_gone = start is not None and start.status_code in GONE_STATUS_CODES
+        start_key = self._normalize_url(self.url or "")
+        # A start page that is gone, directly or through a redirect, means the whole site is, or it is
+        # misconfigured: delete nothing.
+        site_gone = any(
+            r.status_code in GONE_STATUS_CODES
+            and start_key in (r.url, self._normalize_url(r.queued_url or ""))
+            for r in snapshot
+        )
 
         for retry_url in snapshot:
             if retry_url.status_code in GONE_STATUS_CODES and not site_gone:
                 await self._handle_gone_page(retry_url.site_url or retry_url.url)
+                if retry_url.queued_url:
+                    # An older record may still sit under the URL that redirected here.
+                    await self._handle_gone_page(retry_url.queued_url)
             placeholder, perms = await self._create_failed_placeholder_record(
                 retry_url.url, retry_url.status_code, retry_url.reason, retry_url.site_url
             )
