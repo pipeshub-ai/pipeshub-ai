@@ -2034,8 +2034,12 @@ class NextcloudConnector(BaseConnector):
                     failed_count += 1
                     continue
 
-                # Create empty cache for single record processing
+                # Records store no path, so the parent can't be looked up by one; the
+                # stored path was just read at this location, so its stored parent holds.
                 temp_cache = {}
+                parent_path = get_parent_path_from_path(entries[0].get('path', ''))
+                if parent_path and file_record.parent_external_record_id:
+                    temp_cache[parent_path.rstrip('/')] = file_record.parent_external_record_id
 
                 record_update = await self._process_nextcloud_entry(
                     entries[0],

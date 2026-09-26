@@ -1108,19 +1108,19 @@ class TestDownloadAndReindex:
 
         assert [r.record_name for r in db.content_updates] == ["Docs"], "one failure doesn't stop the rest"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: reindexing a file inside a "
-            "folder saves it with no folder, which detaches it; its path then points at the top "
-            "level, so opening or re-indexing it fails with 'not found'."
-        ),
-    )
-    async def test_reindex_keeps_a_nested_file_in_its_folder(self, server, db, store) -> None:
+    @pytest.mark.parametrize(("name", "path"), [("q1.pdf", "Docs/Reports/q1.pdf"), ("Reports", "Docs/Reports"),
+                                                 ("notes.txt", "Docs/notes.txt")])
+    async def test_reindex_keeps_a_nested_file_in_its_folder(self, server, db, store, name, path) -> None:
         connector = await synced(server, db, store)
+        before = db.by_name(name)
 
-        await connector.reindex_records([db.by_name("q1.pdf")])
+        await connector.reindex_records([before])
 
+        assert [r.record_name for r in db.content_updates] == [name]
+        assert db.path_of(name) == path
+        after = db.by_name(name)
+        assert after.parent_external_record_id == before.parent_external_record_id
+        assert after.external_revision_id == server.nodes[path].etag, "not mistaken for a move"
         assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
 
 
