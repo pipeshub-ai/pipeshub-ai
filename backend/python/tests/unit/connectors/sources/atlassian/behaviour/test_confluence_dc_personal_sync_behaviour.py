@@ -584,6 +584,33 @@ class TestSpaceHomepage:
         homepage_saves = [b for b in records_db.record_batches if any(r.external_record_id == "500" for r in b)]
         assert len(homepage_saves) == 1
 
+    async def test_a_given_up_homepage_that_is_still_listed_is_not_fetched_or_saved(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        recent = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        def spaces(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("expand") == "homepage":
+                return json_response({"results": [{**space("ENG", 10), "homepage": {"id": 500, "title": "Home"}}]})
+            return json_response(space_page([space("ENG", 10)]))
+
+        atlassian_api.on("GET", f"{API}/space", spaces)
+        atlassian_api.on("GET", f"{API}/content/500", content("500", when=recent))
+        search.add("page", "ENG", 0, listing([content("500", when=recent), content("p1")]))
+        records_db.records["500"] = stored_page("500")
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        await connector.pages_sync_point.update_sync_point(
+            generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG"),
+            {"last_sync_time": "2024-04-01T00:00:00.000Z", "givenUpPages": json.dumps({"500": recent})},
+        )
+
+        await connector.run_sync()
+
+        homepage_reads = [r for r in atlassian_api.calls("GET", f"{API}/content/500") if "homepage" not in str(r.url)]
+        assert len(homepage_reads) == 1, "only the homepage lookup reads it; the backfill does not fetch it again"
+        assert not any(r.external_record_id == "500" for b in records_db.record_batches for r in b)
+        assert "p1" in saved(records_db, RecordType.CONFLUENCE_PAGE)
+
 
 class TestSyncStopsLoudlyWhenItCannotStart:
     async def test_space_listing_error_is_not_mistaken_for_an_empty_site(self, atlassian_api, records_db, checkpoints) -> None:
