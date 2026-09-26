@@ -1585,9 +1585,12 @@ class NextcloudConnector(BaseConnector):
         a deletion and its contents would be deleted on that alone.
         """
         try:
-            found = await self._find_in_nextcloud_by_id(file_id)
-            if found is not None:
-                return not found, ""
+            found, current_path = await self._find_in_nextcloud_by_id(file_id)
+            if found is False:
+                return True, ""
+            if found:
+                reason = await self._restore_moved_folder(file_id, current_path)
+                return (None, reason) if reason else (False, "")
             record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, file_id)
             if record is None:
                 children = await self.data_entities_processor.get_records_by_parent(
@@ -1620,22 +1623,50 @@ class NextcloudConnector(BaseConnector):
         except Exception as e:
             return None, f"could not check Nextcloud: {str(e) or type(e).__name__}"
 
-    async def _find_in_nextcloud_by_id(self, file_id: str) -> bool | None:
-        """Whether the user's files (not the trash) hold ``file_id``; None when the search fails."""
+    async def _find_in_nextcloud_by_id(self, file_id: str) -> tuple[bool | None, str]:
+        """Whether the user's files (not the trash) hold ``file_id``, and its current href.
+
+        (None, "") when the search fails.
+        """
         try:
             async with self.rate_limiter:
                 response = await self.data_source.get_file_by_internal_id(self.current_user_id, file_id)
             if not is_response_successful(response):
                 self.logger.debug(f"Search by ID failed for {file_id}: {get_response_error(response)}")
-                return None
+                return None, ""
             body = extract_response_body(response)
             # An empty multistatus is a real miss; an answer that isn't one is not.
             if not body or not is_multistatus(body):
-                return None
-            return any(e.get("file_id") == file_id for e in parse_webdav_propfind_response(body))
+                return None, ""
+            match = next((e for e in parse_webdav_propfind_response(body) if e.get("file_id") == file_id), None)
+            return (True, match.get("path", "")) if match else (False, "")
         except Exception as e:
             self.logger.debug(f"Search by ID failed for {file_id}: {e}")
-            return None
+            return None, ""
+
+    async def _restore_moved_folder(self, file_id: str, current_href: str) -> str:
+        """Save a found folder whose record is gone, with what it holds, where it now is.
+
+        Returns why that failed, or "" when there was nothing to do or it worked. Nextcloud
+        logs no activity for what a moved folder holds, so the records left below it after a
+        partial cascade would otherwise stay linked to a folder record that no longer exists.
+        """
+        record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, file_id)
+        if record is not None:
+            return ""
+        children = await self.data_entities_processor.get_records_by_parent(
+            connector_id=self.connector_id, parent_external_record_id=file_id
+        )
+        if not children:
+            return ""
+        path = "/" + path_inside_user_home(current_href, self.current_user_id)
+        failures = await self._process_modified_files(
+            [path], self.current_user_id, self.current_user_email, self.current_user_id, None, {path}
+        )
+        if failures:
+            return f"could not save it at {path}: {describe_failures(failures)}"
+        self.logger.info(f"Folder {file_id} is at {path} now; it and its contents were saved there")
+        return ""
 
     async def run_incremental_sync(self) -> None:
         """

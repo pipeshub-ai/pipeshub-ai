@@ -1126,6 +1126,9 @@ class TestIncrementalSync:
 
         assert {r.id for r in db.records.values()} >= inside, "a 404 at the old path is not proof"
         assert store.checkpoint()["pending_deletes"] == ([] if search else [docs.file_id])
+        if search:
+            assert db.path_of("notes.txt") == "Archive/Docs/notes.txt"
+            assert db.path_of("q1.pdf") == "Archive/Docs/Reports/q1.pdf"
 
     @pytest.mark.parametrize("break_path", [
         pytest.param(lambda db, record: db.unreadable_paths.add(record.id), id="path-read-fails"),
