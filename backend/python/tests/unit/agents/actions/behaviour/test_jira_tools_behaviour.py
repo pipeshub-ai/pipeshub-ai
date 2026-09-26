@@ -371,3 +371,83 @@ class TestSearchUsers:
         assert ok is False
         assert assert_safe_error(data).startswith("Query parameter is required")
         assert api.requests == []
+
+
+class TestFailuresInPlainLanguage:
+    async def test_rate_limit_says_how_long_to_wait(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", (429, {"errorMessages": ["Rate limit exceeded."]}, {"Retry-After": "17"}))
+
+        ok, data = result(await jira.get_issue("PA-7"))
+
+        assert ok is False
+        assert assert_safe_error(data) == "Jira is receiving too many requests right now. Wait 17 seconds and try again."
+        assert data["status_code"] == 429
+        assert "rate limiting" in data["guidance"]
+
+    async def test_rate_limit_without_retry_after_says_a_minute(self, jira, api) -> None:
+        api.on("POST", "/issue/PA-7/comment", (429, {"errorMessages": []}))
+
+        ok, data = result(await jira.add_comment("PA-7", "Looking into it"))
+
+        assert ok is False
+        assert "Wait a minute and try again" in assert_safe_error(data)
+
+    async def test_rejected_sign_in_says_to_reconnect(self, jira, api) -> None:
+        api.on("GET", "/project", (401, {"message": "Client must be authenticated to access this resource."}))
+
+        ok, data = result(await jira.get_projects())
+
+        assert ok is False
+        message = assert_safe_error(data)
+        assert "did not accept the saved sign-in" in message and "Reconnect the Jira toolset" in message
+
+    async def test_missing_issue_says_how_to_find_it(self, jira, api) -> None:
+        ok, data = result(await jira.get_comments("PA-404"))
+
+        assert ok is False
+        message = assert_safe_error(data)
+        assert "Issue does not exist or you do not have permission to see it." in message
+        assert "search_issues" in message
+
+    async def test_forbidden_says_to_ask_an_admin(self, jira, api) -> None:
+        api.on("GET", "/project/PA", (403, {"errorMessages": ["You do not have permission to view this project."]}))
+
+        ok, data = result(await jira.get_project("PA"))
+
+        assert ok is False
+        assert "Ask a Jira admin for access" in assert_safe_error(data)
+
+    async def test_bad_jql_relays_jiras_reason_and_the_query(self, jira, api) -> None:
+        api.on("POST", SEARCH, (400, {"errorMessages": ["Field 'sprintt' does not exist."], "errors": {}}))
+
+        ok, data = result(await jira.search_issues("sprintt = 5"))
+
+        assert ok is False
+        assert "Field 'sprintt' does not exist." in assert_safe_error(data)
+        assert data["jql_query"] == "sprintt = 5"
+        assert "JQL" in data["guidance"]
+
+    async def test_server_error_says_to_try_again(self, jira, api) -> None:
+        api.on("GET", "/project/PA", (502, "<html>Bad gateway</html>"))
+
+        ok, data = result(await jira.get_project_metadata("PA"))
+
+        assert ok is False
+        assert assert_safe_error(data) == "Jira is having a temporary problem. Try again in a moment."
+
+    async def test_unreachable_jira_is_explained_without_the_library_text(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", httpx.ConnectError(f"All connection attempts failed for Basic {BASIC}"))
+
+        ok, data = result(await jira.get_issue("PA-7"))
+
+        assert ok is False
+        assert assert_safe_error(data) == "Jira could not be reached while getting issue. Try again in a moment."
+
+    async def test_unreachable_jira_during_search_keeps_the_query(self, jira, api) -> None:
+        api.on("POST", SEARCH, httpx.ReadTimeout("timed out"))
+
+        ok, data = result(await jira.search_issues('project = "PA"'))
+
+        assert ok is False
+        assert "could not be reached" in assert_safe_error(data)
+        assert data["jql_query"] == 'project = "PA"'

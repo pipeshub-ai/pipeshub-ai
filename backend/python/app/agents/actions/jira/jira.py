@@ -3,8 +3,10 @@ import json
 import logging
 import re
 import traceback
+from http import HTTPStatus
 from typing import Any, Optional
 
+import httpx
 from pydantic import BaseModel, Field, model_validator
 
 from app.agents.actions.response_transformer import ResponseTransformer
@@ -370,6 +372,46 @@ def _with_notes(message: str, notes: list[str]) -> str:
     return f"{message}, but {'; '.join(notes)}" if notes else message
 
 
+_ERROR_DETAILS_LIMIT = 500
+_RECONNECT_STEP = "Reconnect the Jira toolset in Settings > Toolsets and try again."
+
+
+def _jira_error_message(status: int, reason: object, headers: dict[str, str]) -> str:
+    """Plain-language failure the agent can relay, with what to do next."""
+    said = f" Jira said: {reason}." if reason else ""
+    if status == HTTPStatus.TOO_MANY_REQUESTS:
+        retry_after = str({k.lower(): v for k, v in headers.items()}.get("retry-after") or "").strip()
+        wait = f"Wait {retry_after} seconds" if retry_after.isdigit() else "Wait a minute"
+        return f"Jira is receiving too many requests right now. {wait} and try again."
+    if status == HTTPStatus.UNAUTHORIZED:
+        return f"Jira did not accept the saved sign-in.{said} {_RECONNECT_STEP}"
+    if status == HTTPStatus.FORBIDDEN:
+        return f"The signed-in Jira account is not allowed to do that.{said} Ask a Jira admin for access."
+    if status == HTTPStatus.NOT_FOUND:
+        return (
+            f"Jira could not find it, or the signed-in account cannot see it.{said} Check the issue or project "
+            "key, or use get_projects or search_issues to find the right one."
+        )
+    if status == HTTPStatus.GONE:
+        return f"This Jira site is no longer available.{said} {_RECONNECT_STEP}"
+    if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        return "Jira is having a temporary problem. Try again in a moment."
+    return f"Jira rejected the request.{said} Correct it and try again."
+
+
+def _jira_failure(doing: str, error: Exception) -> tuple[bool, str]:
+    """A request that raised instead of answering: say so plainly, never relay the exception text."""
+    logger.error("Error %s: %s", doing, error)
+    if isinstance(error, httpx.TransportError):
+        message = f"Jira could not be reached while {doing}. Try again in a moment."
+    else:
+        message = (
+            f"Something unexpected went wrong while {doing}. Try again, and if it keeps failing, "
+            "reconnect the Jira toolset in Settings > Toolsets."
+        )
+    return False, json.dumps({"error": message})
+
+
 def _next_page_token(page: dict) -> Optional[str]:
     """Jira's token for the next page of an enhanced search, or None on the last page."""
     token = page.get("nextPageToken")
@@ -558,17 +600,17 @@ class Jira:
                 logger.debug(f"Error parsing error response: {e}")
                 error_text = response.text() if hasattr(response, 'text') else str(response)
 
-            # Build error response
+            headers = response.headers if isinstance(getattr(response, "headers", None), dict) else {}
             error_response: dict[str, object] = {
-                "error": error_message or f"HTTP {response.status}",
+                "error": _jira_error_message(response.status, error_message, headers),
                 "status_code": response.status,
-                "details": error_text
+                "details": str(error_text)[:_ERROR_DETAILS_LIMIT],
             }
 
-            if include_guidance:
-                guidance = self._get_error_guidance(response.status)
-                if guidance:
-                    error_response["guidance"] = guidance
+            # Guidance is always attached; include_guidance is kept so existing callers still read the same.
+            guidance = self._get_error_guidance(response.status)
+            if guidance:
+                error_response["guidance"] = guidance
 
             logger.error(f"HTTP error {response.status}: {error_text}")
             return False, json.dumps(error_response)
@@ -583,6 +625,9 @@ class Jira:
             Guidance message or None
         """
         guidance_map = {
+            HTTPStatus.TOO_MANY_REQUESTS.value: (
+                "Jira is rate limiting requests. Wait before retrying, and avoid repeating the same call in a loop."
+            ),
             HttpStatusCode.GONE.value: (
                 "JIRA instance is no longer available. This usually means: "
                 "1) The JIRA instance has been deleted or moved, "
@@ -1455,8 +1500,7 @@ class Jira:
                 )
 
         except Exception as e:
-            logger.error(f"Error validating JIRA connection: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("validating JIRA connection", e)
 
     @tool(
         path="/tools/jira/get_current_user",
@@ -1500,8 +1544,7 @@ class Jira:
                 )
 
         except Exception as e:
-            logger.error(f"Error getting current user: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting current user", e)
 
     @tool(
         path="/tools/jira/convert_text_to_adf",
@@ -1520,8 +1563,7 @@ class Jira:
                 "usage_note": "Use this ADF document in the 'description' field when creating JIRA issues"
             })
         except Exception as e:
-            logger.error(f"Error converting text to ADF: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("converting text to ADF", e)
 
     @tool(
         path="/tools/jira/get_create_issue_fields",
@@ -1659,8 +1701,7 @@ class Jira:
             })
 
         except Exception as e:
-            logger.error(f"Error getting create issue fields: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting create issue fields", e)
 
     @tool(
         path="/tools/jira/create_issue",
@@ -1844,8 +1885,7 @@ class Jira:
                 )
 
         except Exception as e:
-            logger.error(f"Error creating issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("creating issue", e)
 
     @tool(
         path="/tools/jira/update_issue",
@@ -2187,8 +2227,7 @@ class Jira:
             return True, json.dumps({"message": message, "data": cleaned_data})
 
         except Exception as e:
-            logger.error(f"Error updating issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("updating issue", e)
 
     @tool(
         path="/tools/jira/get_projects",
@@ -2239,8 +2278,7 @@ class Jira:
                     include_guidance=True
                 )
         except Exception as e:
-            logger.error(f"Error getting projects: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting projects", e)
 
     @tool(
         path="/tools/jira/get_project",
@@ -2286,8 +2324,7 @@ class Jira:
                     "Project fetched successfully"
                 )
         except Exception as e:
-            logger.error(f"Error getting project: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting project", e)
 
     @tool(
         path="/tools/jira/get_issues",
@@ -2383,8 +2420,7 @@ class Jira:
                     include_guidance=True
                 )
         except Exception as e:
-            logger.error(f"Error getting issues: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting issues", e)
 
     @tool(
         path="/tools/jira/get_issue",
@@ -2449,8 +2485,7 @@ class Jira:
                     "Issue fetched successfully"
                 )
         except Exception as e:
-            logger.error(f"Error getting issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting issue", e)
 
     @tool(
         path="/tools/jira/search_issues",
@@ -2630,8 +2665,7 @@ class Jira:
                 f"Exception: {type(e).__name__}: {e}, "
                 f"Traceback: {traceback.format_exc()}"
             )
-            error_response = {"error": str(e)}
-            # jql is always in scope here as it's a function parameter
+            error_response = json.loads(_jira_failure("searching issues", e)[1])
             error_response["jql_query"] = jql
             return False, json.dumps(error_response)
 
@@ -2695,8 +2729,7 @@ class Jira:
                     "Comment added successfully"
                 )
         except Exception as e:
-            logger.error(f"Error adding comment: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("adding comment", e)
 
     @tool(
         path="/tools/jira/get_comments",
@@ -2734,8 +2767,7 @@ class Jira:
                     "Comments fetched successfully"
                 )
         except Exception as e:
-            logger.error(f"Error getting comments: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting comments", e)
 
     @tool(
         path="/tools/jira/search_users",
@@ -2828,8 +2860,7 @@ class Jira:
                     "Users fetched successfully"
                 )
         except Exception as e:
-            logger.error(f"Error searching users: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("searching users", e)
     @tool(
         path="/tools/jira/get_project_metadata",
         short_description="Get project metadata including issue types and components",
@@ -2889,8 +2920,7 @@ class Jira:
                 "metadata": metadata
             })
         except Exception as e:
-            logger.error(f"Error getting project metadata: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting project metadata", e)
 
     # @tool(
     #     app_name="jira",
