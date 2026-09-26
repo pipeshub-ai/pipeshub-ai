@@ -108,6 +108,7 @@ class FakeWeb:
         self._lock = threading.Lock()
         self.requests: list[tuple[str, str]] = []
         self.clients: list[tuple[str, str]] = []  # (fake client, url) for curl_cffi / cloudscraper requests
+        self.challenges_solved: list[str] = []
         self.served: list[tuple[str, str, str]] = []  # (client, method, url) for every answered request
         self.not_modified: list[str] = []
         self.browser_visits: list[str] = []
@@ -169,6 +170,8 @@ class FakeWeb:
         sent_cookies = next((str(v) for k, v in request_headers.items() if k.lower() == "cookie"), "")
         if page.requires_cookie and page.requires_cookie not in sent_cookies:
             return 403, {"Content-Type": "text/plain"}, b"cookie missing", page
+        if page.cloudflare_challenge and "cf_clearance=" not in sent_cookies:
+            return 403, {"Content-Type": "text/html"}, b"<html>Just a moment...</html>", page
         headers = dict(page.headers)
         if page.etag:
             headers["ETag"] = page.etag
@@ -544,7 +547,7 @@ class FakeScraper(FakeRequestsClient):
             allow_redirects: bool = True, stream: bool = False) -> FakeResponse:
         page = self.site._current(url, consume=False)
         if page.cloudflare_challenge and "cf_clearance" not in self.cookies:
-            self.site.clients.append((self.label, url))
+            self.site.challenges_solved.append(url)
             self.cookies["cf_clearance"] = "solved"
             url = urljoin(url, page.cloudflare_challenge_redirect or url)
         return super().get(url, headers, timeout, allow_redirects, stream)

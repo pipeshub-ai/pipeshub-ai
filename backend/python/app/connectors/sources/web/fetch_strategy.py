@@ -545,9 +545,9 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
 
 
 async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logger) -> FetchResponse | None:
-    """cloudscraper, hop by hop, on one scraper. With redirects not followed, a solved Cloudflare
-    challenge comes back as a redirect to the page; the same scraper, now holding the clearance
-    cookie, follows it like any other hop."""
+    """cloudscraper, hop by hop, on one scraper, which keeps Cloudflare's clearance cookie for the
+    hops after a solved challenge. The scraper requests a challenge's own target itself, so
+    ``_walk_hops`` checks where each answer came from."""
     try:
         import cloudscraper
     except ImportError:

@@ -101,18 +101,21 @@ async def test_a_cookie_set_on_a_redirect_is_sent_on_the_next_hop(
     assert _served_by(site, strategy, "http://site.test/members")  # no fallback to another client
 
 
-async def test_a_cloudflare_challenge_that_ends_in_a_redirect_is_followed_by_the_same_scraper(
+async def test_a_redirect_behind_a_cloudflare_challenge_is_followed_by_the_same_scraper(
     site: FakeWeb, db: FakeRecordsDb, use_strategy: Callable[[str], None], make_connector: MakeConnector,
 ) -> None:
     use_strategy("cloudscraper")
-    protected = "http://site.test/protected"
+    protected, inside = "http://site.test/protected", "http://site.test/protected/inside"
     site.html(START_URL, "Home", "/protected")
-    site.html(protected, "Protected", cloudflare_challenge=True)
+    site.add(protected, Page(status=302, location="/protected/inside", content_type=None,
+                             cloudflare_challenge=True, head_status=405))
+    site.html(inside, "Inside", cloudflare_challenge=True)
 
     await (await make_connector()).run_sync()
 
-    assert db.pages()[protected].record_name == "Protected"
-    assert _served_by(site, "cloudscraper", protected)  # no fallback to aiohttp
+    assert db.pages()[inside].record_name == "Inside"
+    assert site.challenges_solved == [protected]  # a new scraper would face it again at /inside
+    assert _served_by(site, "cloudscraper", inside)  # no fallback to aiohttp
 
 
 async def test_in_robust_mode_a_document_whose_get_redirects_is_checked_before_it_is_followed(
