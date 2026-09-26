@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -186,15 +187,46 @@ def initial_visible_tools(spec: "AgentSpec", runtime: "AgentRuntime") -> set[str
     return essentials
 
 
+def stable_tool_order(previous: list[str], current: Iterable[str], core: Iterable[str] = ()) -> list[str]:
+    """Deterministic, append-only tool order for prompt caching.
+
+    Names already shown keep their position; newly visible names are appended
+    sorted. On the first call (`previous` empty) the `core` subset leads,
+    sorted, followed by the rest sorted — so the same inputs always render the
+    same bytes regardless of set/dict iteration order.
+    """
+    current_set = set(current)
+    kept = [n for n in previous if n in current_set]
+    if kept:
+        kept_set = set(kept)
+        return kept + sorted(current_set - kept_set)
+    core_set = set(core) & current_set
+    return sorted(core_set) + sorted(current_set - core_set)
+
+
+def _ordered_names(agent, names: Iterable[str], core: Iterable[str] = ()) -> list[str]:
+    scope = getattr(agent, "_scope", None)
+    previous = scope.tool_order if scope is not None else []
+    ordered = stable_tool_order(previous, names, core)
+    if scope is not None:
+        scope.tool_order = ordered
+    return ordered
+
+
 def tool_schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> list["ToolSchema"]:
     """Which tool schemas the model sees this turn — all of them, unless
     the registry opts into lazy toolsets, in which case it's essentials
-    plus whatever `agent.visible_tools` has grown to via fetch_tools."""
+    plus whatever `agent.visible_tools` has grown to via fetch_tools.
+
+    Schemas are always emitted in `stable_tool_order`, never in set or
+    registration order: tools precede the system prompt in the provider
+    cache prefix, so any reorder invalidates everything after it."""
     registry = runtime.tool_registry
     if registry is None:
         return []
     if not registry.has_toolsets():
-        return registry.schemas(spec.tool_names or None)
+        names = registry.expand_tool_names(spec.tool_names) if spec.tool_names else registry.names()
+        return registry.schemas(_ordered_names(agent, names))
 
     if agent.visible_tools is None:
         agent.visible_tools = initial_visible_tools(spec, runtime)
@@ -208,7 +240,9 @@ def tool_schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> 
             # ceiling (see lazy_toolsets.py's `_grant_set` usage) — so this
             # intersection is a defensive no-op in the common case, not the
             # only enforcement point.
-            return registry.schemas(sorted(agent.visible_tools & set(spec.tool_names)))
+            return registry.schemas(_ordered_names(
+                agent, agent.visible_tools & set(spec.tool_names), initial_visible_tools(spec, runtime),
+            ))
         # eager (default): the explicit tool grant is ALL named tools,
         # fully visible from the start. Lazy disclosure (grouping tools
         # into toolsets and hiding them until fetch_tools loads them) only
@@ -218,9 +252,9 @@ def tool_schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> 
         # permanently locked out of grouped tools it was explicitly given,
         # since it lacks the list_toolsets/fetch_tools meta-tools needed
         # to discover and unlock them.
-        return registry.schemas(spec.tool_names)
+        return registry.schemas(_ordered_names(agent, registry.expand_tool_names(spec.tool_names)))
 
-    return registry.schemas(list(agent.visible_tools))
+    return registry.schemas(_ordered_names(agent, agent.visible_tools, initial_visible_tools(spec, runtime)))
 
 
 async def execute_tool_call(

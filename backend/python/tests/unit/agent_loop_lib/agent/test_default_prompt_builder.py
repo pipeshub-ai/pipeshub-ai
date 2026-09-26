@@ -163,6 +163,7 @@ class TestToolGroupOverview:
             "\n- connectors: Connected apps (3 tool(s))\n"
             "  - jira: Jira issues (2 tool(s))\n"
             "  - slack: Slack messages (1 tool(s))"
+            "\n\nGoal: g"
         )
 
     def test_eager_disclosure_never_advertises_groups(self) -> None:
