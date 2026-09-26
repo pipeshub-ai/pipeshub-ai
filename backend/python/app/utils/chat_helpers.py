@@ -776,6 +776,11 @@ RECORD_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
     RecordRelations.PARENT_CHILD,
 })
 
+# Related records listed (id + name) per hit, after the permission check.
+MAX_RELATED_RECORDS_PER_HIT = 50
+# Of those, how many also get full graph metadata + summary (one blob fetch each).
+MAX_FULL_METADATA_RELATED_PER_HIT = 15
+
 _GRAPH_TO_RECORD_FIELDS: dict[str, str] = {
     "recordName": "record_name",
     "recordType": "record_type",
@@ -1329,7 +1334,7 @@ async def _fetch_edges_for_records(
     for record_id in record_ids:
         buckets = relations.get(record_id) or {}
         edges: list[tuple[str, str]] = []
-        for bucket, outgoing in (("parents", True), ("children", False)):
+        for bucket, outgoing in (("children", False), ("parents", True)):
             for edge in buckets.get(bucket) or []:
                 if not isinstance(edge, dict):
                     continue
@@ -1426,12 +1431,19 @@ async def _resolve_target_metadata(
     frontend_url: str | None,
     blob_store: Any,
     org_id: str,
+    *,
+    full_metadata_ids: set[str] | None = None,
 ) -> dict[str, str]:
     """Batch-resolve graph docs and context metadata for all target IDs.
 
     Returns context_map: out-of-context record id -> rendered metadata.
+    ``full_metadata_ids`` narrows which records get rendered metadata (one blob
+    fetch each); None renders every out-of-context target.
     """
     ids_needing_docs = [rid for rid in all_target_ids if rid not in doc_index]
+    context_ids = (
+        all_target_ids if full_metadata_ids is None else all_target_ids & full_metadata_ids
+    )
 
     async def _fetch_docs() -> dict[str, dict[str, Any]]:
         """One query per chunk instead of one per record.
@@ -1482,7 +1494,7 @@ async def _resolve_target_metadata(
 
     doc_results, vrid_result = await asyncio.gather(
         _fetch_docs(),
-        graph_provider.get_virtual_record_ids_for_record_ids(list(all_target_ids)),
+        graph_provider.get_virtual_record_ids_for_record_ids(list(context_ids)),
         return_exceptions=True,
     )
 
@@ -1499,7 +1511,7 @@ async def _resolve_target_metadata(
 
     # Build context for out-of-context, non-deleted IDs
     out_of_context_ids = [
-        rid for rid in all_target_ids
+        rid for rid in context_ids
         if rid not in in_context_ids
         and doc_index.get(rid) and not doc_index.get(rid, {}).get("isDeleted")
     ]
@@ -1599,10 +1611,17 @@ def _annotate_record_relations(
     doc_index: dict[str, dict[str, Any]],
     in_context_ids: set[str],
     context_map: dict[str, str],
+    full_metadata_by_hit: dict[str, set[str]] | None = None,
+    truncated_record_ids: set[str] | None = None,
 ) -> None:
-    """Attach record_relations to hit records from relation buckets."""
+    """Attach record_relations to hit records from relation buckets.
+
+    ``full_metadata_by_hit`` caps which relations of each hit carry
+    context_metadata; None lets every resolved one through.
+    """
     enriched_count = 0
     for vrid, record, bucket in relation_buckets:
+        allowed_full = None if full_metadata_by_hit is None else full_metadata_by_hit.get(vrid, set())
         relations: list[dict[str, Any]] = []
         for rid, entry in bucket.items():
             doc = doc_index.get(rid)
@@ -1613,11 +1632,17 @@ def _annotate_record_relations(
                 "record_name": _record_name_from_graph_doc(doc),
                 "labels": sorted(entry["labels"]),
             }
-            if rid not in in_context_ids and rid in context_map:
+            if (
+                rid not in in_context_ids
+                and rid in context_map
+                and (allowed_full is None or rid in allowed_full)
+            ):
                 rel["context_metadata"] = context_map[rid]
             relations.append(rel)
         if relations:
             record["record_relations"] = relations
+            if truncated_record_ids and record.get("id") in truncated_record_ids:
+                record["record_relations_truncated"] = True
             enriched_count += 1
 
     logger.info("Record relation enrichment: %d records enriched", enriched_count)
@@ -1632,22 +1657,29 @@ async def enrich_records_with_graph_context(
     blob_store: Any = None,
     org_id: str = "",
     config_service: "ConfigurationService | None" = None,
+    *,
+    user_id: str,
 ) -> None:
     """
     Unified graph context enrichment for search results. Performs both:
       1. Dependent parent annotation (isDependentNode -> parent metadata on flattened_results)
       2. Record relation enrichment (graph edges -> record_relations on hit records)
 
+    Only records ``user_id`` may read are shown: hits were adjudicated by the
+    search, and everything reached from them is adjudicated here. If that check
+    cannot run nothing is added; the hits themselves are left untouched.
     All graph/blob calls are batched and deduplicated across both paths.
     """
     if not graph_provider or flattened_results is None:
+        return
+    if not user_id:
+        logger.warning("Graph context enrichment skipped: no user_id to check access for")
         return
 
     if doc_index is None:
         doc_index = _build_record_id_to_graph_doc_index(virtual_to_record_map)
         _extend_record_id_index_from_hit_records(doc_index, virtual_record_id_to_result)
 
-    frontend_url = await resolve_frontend_url(config_service)
     in_context_ids: set[str] = {
         rec["id"] for rec in virtual_record_id_to_result.values()
         if isinstance(rec, dict) and rec.get("id")
@@ -1660,20 +1692,69 @@ async def enrich_records_with_graph_context(
     if not dependent_vrid_to_parent_id and not relation_eligible:
         return
 
-    # Step 2: Fetch edges for relation-eligible hits
-    edge_results: list = []
-    if relation_eligible:
-        eligible_ids = [rid for _, rid, _ in relation_eligible]
-        edges_by_record = await _fetch_edges_for_records(graph_provider, eligible_ids)
-        edge_results = [edges_by_record.get(rid, []) for rid in eligible_ids]
+    # Step 2: Fetch edges for relation-eligible hits, alongside the frontend URL
+    eligible_ids = [rid for _, rid, _ in relation_eligible]
+
+    async def _no_edges() -> dict[str, list[tuple[str, str]]]:
+        return {}
+
+    frontend_url, edges_by_record = await asyncio.gather(
+        resolve_frontend_url(config_service),
+        _fetch_edges_for_records(graph_provider, eligible_ids) if eligible_ids else _no_edges(),
+    )
+    edge_results = [edges_by_record.get(rid, []) for rid in eligible_ids]
 
     # Step 3: Build relation buckets from edges
     relation_buckets, all_related_ids = _build_relation_buckets(
         relation_eligible, edge_results,
     )
 
-    # Step 4: Collect all IDs needing resolution (parents + related)
-    all_target_ids = all_related_ids | set(dependent_vrid_to_parent_id.values())
+    # Step 4: One access check for everything reached from the hits. The hits
+    # themselves were adjudicated by the search.
+    to_check = (all_related_ids | set(dependent_vrid_to_parent_id.values())) - in_context_ids
+    readable_ids = set(in_context_ids)
+    if to_check:
+        ids = list(to_check)
+        verdicts = await asyncio.gather(
+            *[
+                graph_provider.filter_accessible_record_ids(
+                    ids[start:start + GRAPH_BATCH_CHUNK_SIZE], user_id, org_id,
+                )
+                for start in range(0, len(ids), GRAPH_BATCH_CHUNK_SIZE)
+            ],
+            return_exceptions=True,
+        )
+        failed = next((v for v in verdicts if not isinstance(v, set)), None)
+        if failed is not None:
+            # Fail closed: without a verdict a related record may be one the user cannot open.
+            logger.warning("Graph context enrichment skipped: access check unavailable: %s", failed)
+            return
+        for granted in verdicts:
+            readable_ids |= granted
+
+    # Keep each hit's first MAX_RELATED_RECORDS_PER_HIT readable relations (parents
+    # come first), and full metadata for the first MAX_FULL_METADATA_RELATED_PER_HIT.
+    dependent_vrid_to_parent_id = {
+        vrid: pid for vrid, pid in dependent_vrid_to_parent_id.items() if pid in readable_ids
+    }
+    full_metadata_ids = set(dependent_vrid_to_parent_id.values()) - in_context_ids
+    full_metadata_by_hit: dict[str, set[str]] = {}
+    truncated_record_ids: set[str] = set()
+    readable_buckets = []
+    for vrid, record, bucket in relation_buckets:
+        kept = [rid for rid in bucket if rid in readable_ids]
+        if len(kept) > MAX_RELATED_RECORDS_PER_HIT:
+            truncated_record_ids.add(record.get("id"))
+            kept = kept[:MAX_RELATED_RECORDS_PER_HIT]
+        if kept:
+            readable_buckets.append((vrid, record, {rid: bucket[rid] for rid in kept}))
+            full = [rid for rid in kept if rid not in in_context_ids][:MAX_FULL_METADATA_RELATED_PER_HIT]
+            full_metadata_by_hit[vrid] = set(full)
+            full_metadata_ids.update(full)
+    relation_buckets = readable_buckets
+
+    all_target_ids = {rid for _, _, bucket in relation_buckets for rid in bucket}
+    all_target_ids |= set(dependent_vrid_to_parent_id.values())
     if not all_target_ids:
         return
 
@@ -1681,6 +1762,7 @@ async def enrich_records_with_graph_context(
     context_map = await _resolve_target_metadata(
         all_target_ids, doc_index, graph_provider,
         in_context_ids, frontend_url, blob_store, org_id,
+        full_metadata_ids=full_metadata_ids,
     )
 
     # Step 6: Distribute results
@@ -1692,6 +1774,7 @@ async def enrich_records_with_graph_context(
     if relation_buckets:
         _annotate_record_relations(
             relation_buckets, doc_index, in_context_ids, context_map,
+            full_metadata_by_hit, truncated_record_ids,
         )
 
 
@@ -1749,6 +1832,9 @@ def build_record_relations_info(record: dict[str, Any]) -> str:
                 record_id = rel.get("record_id", "")
                 record_name = rel.get("record_name", "Unknown")
                 lines.append(f"    - Record ID: {record_id} | Name: {record_name}")
+    if record.get("record_relations_truncated"):
+        # No count: it would reveal how many linked records the user cannot see.
+        lines.append("  (more related records exist; not shown)")
     return "\n".join(lines) + "\n"
 
 # FK table enrichment (runs before doc_index in chatbot; extends virtual_record_id_to_result)
