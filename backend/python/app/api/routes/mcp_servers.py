@@ -54,6 +54,7 @@ from app.edition_config import (
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
 )
+from app.services.cache.mcp_tool_schema_cache import get_mcp_tool_schema_cache
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = logging.getLogger(__name__)
@@ -435,6 +436,7 @@ async def update_instance(
     success = await config_service.set_config(get_mcp_instance_path(instance_id), record)
     if not success:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update MCP server instance.")
+    await get_mcp_tool_schema_cache().invalidate_instance(instance_id)
     return record
 
 
@@ -453,6 +455,7 @@ async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
 
     # Full cascade cleanup — the reference PR left credentials/oauth-clients/oauth-states orphaned.
     await config_service.delete_config(get_mcp_instance_path(instance_id))
+    await get_mcp_tool_schema_cache().invalidate_instance(instance_id)
 
     creds_prefix = get_mcp_instance_credentials_prefix(instance_id)
     try:

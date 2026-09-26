@@ -80,12 +80,13 @@ async def search(
             rewrite_chain.ainvoke(body.query), expansion_chain.ainvoke(body.query)
         )
 
-        logger.debug(f"Rewritten query: {rewritten_query}")
-        logger.debug(f"Expanded queries: {expanded_queries}")
-
         expanded_queries_list = [
             q.strip() for q in expanded_queries.split("\n") if q.strip()
         ]
+        logger.debug(
+            "Query transformed: rewritten_len=%d expanded_count=%d",
+            len(rewritten_query), len(expanded_queries_list),
+        )
 
         queries = [rewritten_query.strip()] if rewritten_query.strip() else []
         queries.extend([q for q in expanded_queries_list if q not in queries])

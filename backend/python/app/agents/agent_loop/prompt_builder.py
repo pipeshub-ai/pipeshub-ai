@@ -591,9 +591,6 @@ class PipesHubPromptBuilder:
             else None
         ))
 
-        # ── Goal brief (requirements / success criteria / gaps) ────────────
-        tpl.set("goal_brief", _render_goal_brief(goal))
-
         capability_rule = (
             _CAPABILITY_QUESTION_RULE_LAZY if spec.tool_disclosure == "lazy"
             else _CAPABILITY_QUESTION_RULE_EAGER
@@ -678,6 +675,7 @@ class PipesHubPromptBuilder:
             time_zone=self._context.timezone,
         )
         tpl.set("time_context", time_block or None)
+        tpl.set("goal_brief", _render_goal_brief(goal))
 
         if goal is not None and goal.constraints:
             goal_desc = (goal.description or "").strip()

@@ -13,7 +13,6 @@ from typing import Any
 import pytest
 
 from app.agent_loop_lib.tools.registry import ToolRegistry
-from app.agents.agent_loop import mcp_tool_loader as mcp_tool_loader_module
 from app.agents.agent_loop.lazy_tools_wiring import MCP_PARENT
 from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
 from app.agents.mcp.models import MCPToolInfo
@@ -54,9 +53,21 @@ async def _discover_fails(config: Any, credentials: dict, timeout_seconds: float
     raise RuntimeError("connection refused")
 
 
+
+def _patch_discovery(monkeypatch: pytest.MonkeyPatch, discover: Any) -> None:
+    """Route `MCPSessionManager.list_tools` (the loader's live-discovery seam)
+    to a `(config, credentials, timeout_seconds)` fake."""
+    from app.agents.agent_loop.mcp_session import MCPSessionManager
+    from app.agents.mcp.service import instance_config_from_dict
+
+    async def _list_tools(self: Any, server: Any, *, timeout_seconds: float) -> Any:
+        return await discover(instance_config_from_dict(server.instance), server.auth, timeout_seconds)
+
+    monkeypatch.setattr(MCPSessionManager, "list_tools", _list_tools)
+
 class TestLoadInto:
     async def test_registers_discovered_tool_and_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover_ok)
+        _patch_discovery(monkeypatch, _discover_ok)
         registry = ToolRegistry()
         context = _context_with_server()
 
@@ -70,10 +81,7 @@ class TestLoadInto:
 
     async def test_no_attached_servers_is_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = []
-        monkeypatch.setattr(
-            mcp_tool_loader_module, "discover_tools",
-            lambda *a, **k: calls.append(1) or _discover_ok(*a, **k),
-        )
+        _patch_discovery(monkeypatch, lambda *a, **k: calls.append(1) or _discover_ok(*a, **k))
         registry = ToolRegistry()
         context = make_context()
 
@@ -94,7 +102,7 @@ class TestLoadInto:
         symptom this whole change exists to avoid. A discovery failure must
         register nothing and record the failure, regardless of whether an
         attached tool list happens to be present."""
-        monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover_fails)
+        _patch_discovery(monkeypatch, _discover_fails)
         registry = ToolRegistry()
         context = _context_with_server(attached_tools=[
             {"name": "search", "fullName": "mcp_jira_mcp_search", "description": "Search Jira"},
@@ -110,7 +118,7 @@ class TestLoadInto:
         assert not any(g.name == MCP_PARENT for g in registry.toolsets())
 
     async def test_discovery_failure_with_no_fallback_records_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover_fails)
+        _patch_discovery(monkeypatch, _discover_fails)
         registry = ToolRegistry()
         context = _context_with_server()  # attached_tools is None — no stored selection to fall back to
 
@@ -123,7 +131,7 @@ class TestLoadInto:
         assert not any(g.name == MCP_PARENT for g in registry.toolsets())
 
     async def test_empty_attached_tool_list_is_also_no_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover_fails)
+        _patch_discovery(monkeypatch, _discover_fails)
         registry = ToolRegistry()
         context = _context_with_server(attached_tools=[])
 
@@ -138,7 +146,7 @@ class TestLoadInto:
                 return [MCPToolInfo(name="search", namespaced_name="mcp_jira_search", input_schema={})]
             raise RuntimeError("down")
 
-        monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover)
+        _patch_discovery(monkeypatch, _discover)
         registry = ToolRegistry()
         context = make_context(
             mcp_servers=[
@@ -168,7 +176,7 @@ class TestLoadInto:
                 MCPToolInfo(name="create", namespaced_name="mcp_jira_create", input_schema={}),
             ]
 
-        monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover)
+        _patch_discovery(monkeypatch, _discover)
         registry = ToolRegistry()
         # Pre-register a colliding name to force one of the two discovered
         # tools to be skipped as a duplicate.
@@ -197,7 +205,7 @@ class TestLoadInto:
         async def _discover(config: Any, credentials: dict, timeout_seconds: float = 10.0) -> list[MCPToolInfo]:
             return [MCPToolInfo(name="search", namespaced_name="mcp_jira_search", input_schema={})]
 
-        monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover)
+        _patch_discovery(monkeypatch, _discover)
         registry = ToolRegistry()
 
         from app.agent_loop_lib.tools.base import ToolOutput, ToolParameter
@@ -230,7 +238,7 @@ class TestLoadInto:
                 MCPToolInfo(name="create", namespaced_name="mcp_jira_mcp_create", input_schema={}),
             ]
 
-        monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover)
+        _patch_discovery(monkeypatch, _discover)
         registry = ToolRegistry()
         context = _context_with_server(attached_tools=[
             {"name": "search", "fullName": "mcp_jira_mcp_search"},

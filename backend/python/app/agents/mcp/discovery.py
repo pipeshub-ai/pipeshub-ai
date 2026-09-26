@@ -97,6 +97,11 @@ async def discover_tools(
             f"Timed out discovering tools for MCP instance {config.id} after {timeout_seconds}s"
         ) from e
 
+    return tool_infos_from_raw(config, raw_tools)
+
+
+def tool_infos_from_raw(config: MCPServerConfig, raw_tools: list[Any]) -> list[MCPToolInfo]:
+    """Namespace a raw `list_tools` result (SDK objects or dicts) for the agent loop."""
     server_type = config.type_id or config.name
     tools: list[MCPToolInfo] = []
     for tool in raw_tools:

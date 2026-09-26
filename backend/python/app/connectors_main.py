@@ -472,6 +472,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
 
+    # MCP instance updates/deletes land here; they drop the query service's
+    # cached tool schemas for that instance.
+    from app.services.cache.mcp_tool_schema_cache import (
+        MCPToolSchemaCache,
+        set_mcp_tool_schema_cache,
+    )
+    set_mcp_tool_schema_cache(
+        await MCPToolSchemaCache.create(logger, app_container.config_service())
+    )
+
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -594,6 +604,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Accessible-records cache closed")
     except Exception as e:
         logger.error(f"❌ Error closing accessible-records cache: {e}")
+    try:
+        from app.services.cache.mcp_tool_schema_cache import get_mcp_tool_schema_cache
+        await get_mcp_tool_schema_cache().close()
+    except Exception as e:
+        logger.error(f"❌ Error closing MCP tool-schema cache: {e}")
     # Shutdown all container resources
     try:
         await shutdown_container_resources(app_container)
