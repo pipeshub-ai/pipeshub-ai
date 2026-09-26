@@ -1746,7 +1746,7 @@ class NextcloudConnector(BaseConnector):
             )
 
         # Check if it's a folder
-        if file_record.mime_type == MimeTypes.FOLDER:
+        if file_record.mime_type == MimeTypes.FOLDER.value:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Cannot download folders"

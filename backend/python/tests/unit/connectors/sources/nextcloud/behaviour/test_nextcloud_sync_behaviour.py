@@ -1044,22 +1044,15 @@ class TestDownloadAndReindex:
             await connector.stream_record(db.by_name("cat.png"))
         assert not_ready.value.status_code == 409
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: the 'cannot download a "
-            "folder' check compares the stored MIME type text with an enum, so it never matches "
-            "and a folder download request is sent to Nextcloud instead of being refused."
-        ),
-    )
-    async def test_a_folder_download_is_refused(self, server, db, store) -> None:
+    @pytest.mark.parametrize("name", ["Docs", "Reports"])
+    async def test_a_folder_download_is_refused(self, server, db, store, name) -> None:
         connector = await synced(server, db, store)
         downloads = len(server.calls("GET", WEBDAV_PREFIX))
 
         with pytest.raises(HTTPException) as folder:
-            await connector.stream_record(db.by_name("Docs"))
+            await connector.stream_record(db.by_name(name))
 
-        assert folder.value.status_code == 400
+        assert (folder.value.status_code, folder.value.detail) == (400, "Cannot download folders")
         assert len(server.calls("GET", WEBDAV_PREFIX)) == downloads
 
     @pytest.mark.parametrize("name", ["report #1.txt", "why?.txt", "50% off.txt", "résumé ✓.txt", "a&b.txt"])
