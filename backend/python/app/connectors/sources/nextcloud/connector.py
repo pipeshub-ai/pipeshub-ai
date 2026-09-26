@@ -1610,16 +1610,25 @@ class NextcloudConnector(BaseConnector):
                 response = await self.data_source.list_directory(
                     user_id=self.current_user_id, path=path, depth=0
                 )
-            if getattr(response, "status", None) == HttpStatusCode.NOT_FOUND.value:
-                return True, ""
-            if not is_response_successful(response):
-                return None, f"could not check Nextcloud: {get_response_error(response)}"
-            body = extract_response_body(response)
-            entries = parse_webdav_propfind_response(body) if body else []
-            if not entries:
-                return None, "could not read Nextcloud's answer"
-            # Another file now at the same path means this one is still gone.
-            return entries[0].get("file_id") != file_id, ""
+            present = None
+            if getattr(response, "status", None) != HttpStatusCode.NOT_FOUND.value:
+                if not is_response_successful(response):
+                    return None, f"could not check Nextcloud: {get_response_error(response)}"
+                body = extract_response_body(response)
+                entries = parse_webdav_propfind_response(body) if body else []
+                if not entries:
+                    return None, "could not read Nextcloud's answer"
+                present = entries[0].get("file_id") == file_id
+            if present:
+                return False, ""
+            # Not at its stored path. For a folder with records still stored below it that
+            # can't tell a move from a deletion, and the deletion would take its contents.
+            children = await self.data_entities_processor.get_records_by_parent(
+                connector_id=self.connector_id, parent_external_record_id=file_id
+            )
+            if children:
+                return None, "not at its stored path, and it could not be looked up by ID"
+            return True, ""
         except Exception as e:
             return None, f"could not check Nextcloud: {str(e) or type(e).__name__}"
 

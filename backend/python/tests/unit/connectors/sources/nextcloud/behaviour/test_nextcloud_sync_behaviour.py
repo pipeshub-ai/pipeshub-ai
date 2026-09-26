@@ -1135,6 +1135,24 @@ class TestIncrementalSync:
             assert db.path_of("notes.txt") == "Archive/Docs/notes.txt"
             assert db.path_of("q1.pdf") == "Archive/Docs/Reports/q1.pdf"
 
+    async def test_a_queued_folder_that_moved_keeps_its_contents_without_a_search(self, server, db, store) -> None:
+        server.search_supported = False
+        connector = await synced(server, db, store)
+        docs = server.nodes["Docs"]
+        inside = {db.by_name(n).id for n in ("Reports", "q1.pdf", "notes.txt")}
+        db.fail_delete_for = {docs.file_id}
+        server.delete("Docs")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        db.fail_delete_for.clear()
+        server.restore(docs)
+        server.move("Docs", "Archive/Docs")  # its record is still stored, and its old path 404s
+
+        await connector.run_sync()
+
+        assert {r.id for r in db.records.values()} >= inside
+        assert store.checkpoint()["pending_deletes"] == [docs.file_id]
+
     @pytest.mark.parametrize("break_path", [
         pytest.param(lambda db, record: db.unreadable_paths.add(record.id), id="path-read-fails"),
         pytest.param(lambda db, record: db.edges.pop(record.id), id="path-is-only-the-name"),
