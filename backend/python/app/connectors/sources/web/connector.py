@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import functools
 import hashlib
 import random
 import re
@@ -1281,8 +1282,8 @@ class WebConnector(BaseConnector):
                         session=self.session,
                         logger=self.logger,
                         referer=referer,
-                        extra_headers=await self._conditional_headers(
-                            current_url, links_needed=current_depth < self.max_depth,
+                        validators_for=functools.partial(
+                            self._conditional_headers, links_needed=current_depth < self.max_depth,
                         ),
                         timeout=15,
                         max_size_mb=self.max_size_mb,
@@ -1993,7 +1994,7 @@ class WebConnector(BaseConnector):
                         session=self.session,
                         logger=self.logger,
                         referer=referer,
-                        extra_headers=await self._conditional_headers(url, links_needed=False),
+                        validators_for=functools.partial(self._conditional_headers, links_needed=False),
                         timeout=15,
                         max_size_mb=self.max_size_mb,
                         allow_hop=self._hop_allowed,
@@ -2020,9 +2021,14 @@ class WebConnector(BaseConnector):
             if result.status_code == HTTPStatus.NOT_MODIFIED:
                 if self._normalize_url(result.final_url) == self._normalize_url(url):
                     return None  # the site confirmed our stored copy is current
-                # It moved: the validators we sent were for the old URL, so fetch the new one in full,
-                # then the redirect cleanup deals with the old record.
                 moved_to = result.final_url
+                stored_there = await self._stored_record(moved_to)
+                if stored_there is not None and stored_there.storage_document_id:
+                    # Our copy at the new URL is current; only the old URL's record needs cleaning up.
+                    await self._handle_gone_page(url, keep_id=stored_there.id)
+                    return None
+                # The validators came from the old URL (a HEAD-refusing site's GET followed the
+                # redirect), so fetch the new URL in full; the redirect cleanup deals with the old record.
                 refetched = await fetch_url_with_fallback(
                     url=moved_to, session=self.session, logger=self.logger, referer=referer,
                     timeout=15, max_size_mb=self.max_size_mb, allow_hop=self._hop_allowed,
@@ -2442,6 +2448,15 @@ class WebConnector(BaseConnector):
             return
         if self._normalize_url(requested_url) != self._normalize_url(record.weburl):
             await self._handle_gone_page(requested_url, keep_id=record.id)
+
+    async def _stored_record(self, url: str) -> Record | None:
+        for candidate in self._stored_ids_for(url):
+            record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=candidate
+            )
+            if record:
+                return record
+        return None
 
     def _stored_ids_for(self, url: str) -> list[str]:
         """Every id a page at ``url`` may be stored under, the current form first.

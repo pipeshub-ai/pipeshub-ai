@@ -136,7 +136,29 @@ async def test_a_file_that_moved_with_the_same_etag_is_stored_at_its_new_url(
     site.add(moved, Page(body=b"%PDF-1.4 handbook", content_type="application/pdf", etag='"v1"'))
     await connector.run_sync()
     assert site.storage_docs[db.pages()[moved].storage_document_id] == b"%PDF-1.4 handbook"
+    uploads, gets = list(site.storage_uploads), site.gets(moved)
     await connector.run_sync()
 
+    # Current at its new URL: one GET answered 304, no refetch, and the old record still cleaned up.
+    assert site.not_modified[-1:] == [moved]
+    assert site.gets(moved) == gets + 1
+    assert site.storage_uploads == uploads
     assert db.deleted == [stale.id]
     assert set(db.pages()) == {START_URL, moved}
+
+
+async def test_a_file_reached_only_through_a_redirect_is_asked_about_before_downloading(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    moved = "http://site.test/files/handbook.pdf"
+    site.html(START_URL, "Home", "/handbook.pdf")
+    site.redirect("http://site.test/handbook.pdf", "/files/handbook.pdf", status=301)
+    site.add(moved, Page(body=b"%PDF-1.4 handbook", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector()
+    await connector.run_sync()
+    uploads = list(site.storage_uploads)
+
+    await connector.run_sync()
+
+    assert site.not_modified == [moved]
+    assert site.storage_uploads == uploads

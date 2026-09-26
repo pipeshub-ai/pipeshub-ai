@@ -357,6 +357,7 @@ async def fetch_url_with_fallback(
     max_size_mb: Optional[int] = None,
     preferred_strategy: Optional[str] = None,
     allow_hop: Callable[[str], Awaitable[bool]] | None = None,
+    validators_for: Callable[[str], Awaitable[dict | None]] | None = None,
 ) -> Optional[FetchResponse]:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -389,6 +390,8 @@ async def fetch_url_with_fallback(
         allow_hop:                 With ``max_size_mb``: asked about each redirect target the size-check
                                    HEAD finds, before that target is requested. A refusal returns a
                                    ``redirect_refused`` skip whose ``final_url`` is the refused target.
+        validators_for:            Returns conditional-request headers (If-None-Match and so on) for
+                                   the URL the GET is finally sent to, which is where HEAD landed.
         preferred_strategy:        When set, only this strategy is tried (no fallback). Use the
                                    ``strategy`` field from a prior FetchResponse to pin image/asset
                                    fetches to the same strategy that worked for the parent page.
@@ -406,7 +409,8 @@ async def fetch_url_with_fallback(
             logger.info("Not following %s: redirect to %s refused", url, walked.final_url)
             return walked
         if walked is not None:
-            # GET where HEAD landed, so the redirects aren't walked twice and GET can't go elsewhere.
+            # GET where HEAD landed, so the redirects aren't walked twice. (A site that redirects GET
+            # but not HEAD is still followed by the GET: the same limit as a site that refuses HEAD.)
             url, head_headers = walked
             cl = head_headers.get("Content-Length") or head_headers.get("content-length")
             size = int(cl) if cl and str(cl).isdigit() else None
@@ -426,6 +430,11 @@ async def fetch_url_with_fallback(
                     final_url=url,
                     strategy="size_guard",
                 )
+
+    if validators_for is not None:
+        validators = await validators_for(url)
+        if validators:
+            headers = {**headers, **validators}
 
     # Define the strategy chain: (name, async callable returning Optional[FetchResponse])
     all_strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
