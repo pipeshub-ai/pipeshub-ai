@@ -444,6 +444,8 @@ class WebConnector(BaseConnector):
         # Per crawl: each site's robots.txt rules, or None when it couldn't be read (RFC 9309: crawl nothing there).
         self._robots: dict[str, RobotsRules | None] = {}
         self._robots_skipped: set[str] = set()
+        # The script-rendering check waits for a robots.txt that could be read.
+        self._script_check_pending = False
         self.crawl4ai_fetcher: Optional[Crawl4AIFetcher] = None
 
         # Batch processing
@@ -499,9 +501,8 @@ class WebConnector(BaseConnector):
 
             if self.use_headless_browser:
                 self.crawl4ai_fetcher = await get_shared_fetcher()
-            elif self.url and await self._start_page_may_open_in_browser(self.url) and await self._detect_csr(self.url):
-                # The user didn't ask for a browser, so one that can't start means plain HTTP, not a failed init.
-                self.use_headless_browser = await self._ensure_crawl4ai_fetcher() is not None
+            elif self.url:
+                await self._check_script_rendering(self.url)
 
             return True
         except Exception as e:
@@ -844,6 +845,8 @@ class WebConnector(BaseConnector):
             self.retry_urls.clear()
             self._domain_next_retry_at.clear()
             self.processed_urls = 0
+            if self._script_check_pending and not self.use_headless_browser and self.url:
+                await self._check_script_rendering(self.url, keep_robots=True)
 
             # Start crawling
             assert self.url is not None, "URL not set — init() must be called first"
@@ -1523,12 +1526,19 @@ class WebConnector(BaseConnector):
     # CSR (client-side rendering) detection
     # ------------------------------------------------------------------
 
-    async def _start_page_may_open_in_browser(self, url: str) -> bool:
-        """Whether the script-rendering check may load the start page, which follows redirects itself.
+    async def _check_script_rendering(self, url: str, *, keep_robots: bool = False) -> None:
+        """Switch to the browser if the start page is script-rendered. The check loads the start page
+        in a browser, which follows redirects itself, so robots.txt and the redirects come first."""
+        may_open = await self._start_page_may_open_in_browser(url, keep_robots=keep_robots)
+        self._script_check_pending = may_open is None
+        if may_open and await self._detect_csr(url):
+            # The user didn't ask for a browser, so one that can't start means plain HTTP, not a failed init.
+            self.use_headless_browser = await self._ensure_crawl4ai_fetcher() is not None
 
-        Only a robots.txt that was read and disallows the page, or a redirect to a disallowed or
-        out-of-scope address, rules it out: the check runs only here, so a robots.txt that can't be
-        read right now shouldn't settle it. Nothing read here carries over to the sync.
+    async def _start_page_may_open_in_browser(self, url: str, *, keep_robots: bool) -> bool | None:
+        """Whether robots.txt and the crawl's scope let the browser load the start page and wherever
+        it redirects; None when robots.txt couldn't be read, so the check is tried again next sync.
+        ``keep_robots`` leaves the rules read here for the sync that asked; at setup nothing carries over.
         """
         if not self.respect_robots_txt:
             return True
@@ -1537,14 +1547,15 @@ class WebConnector(BaseConnector):
         try:
             allowed = await self._robots_allows(url)
             if self._robots.get(origin) is None:
-                return True
+                return None
             if not allowed:
                 return False
             probed = await self._probe_landing(url)
             return probed is None or probed[1] != 0
         finally:
-            self._robots.clear()
-            self._robots_skipped.clear()
+            if not keep_robots:
+                self._robots.clear()
+                self._robots_skipped.clear()
 
     async def _detect_csr(self, url: str) -> bool:
         """Detect whether *url* is client-side rendered.

@@ -120,10 +120,11 @@ async def test_the_script_rendering_check_does_not_follow_the_start_page_to_a_di
     assert browser.browser_visits == []
 
 
-async def test_a_robots_txt_that_cant_be_read_at_setup_leaves_the_script_rendering_check_to_run(
+async def test_a_robots_txt_that_cant_be_read_at_setup_puts_the_script_rendering_check_off_to_the_sync(
     browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
-    # The check runs only at setup; the sync reads robots.txt again for itself.
+    # RFC 9309: an unreadable robots.txt allows nothing, so the browser waits; the check runs only
+    # at setup otherwise, so it is tried again when the sync can read robots.txt.
     browser.add("http://site.test/robots.txt", [
         Page(status=503, body=b""),
         Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"),
@@ -133,10 +134,24 @@ async def test_a_robots_txt_that_cant_be_read_at_setup_leaves_the_script_renderi
     browser.add("http://site.test/inside", Page(body=SHELL, rendered=html_page("Inside", text=LONG_TEXT)))
 
     connector = await make_connector()
-    assert connector.use_headless_browser is True
+    assert browser.browser_visits == []
     await connector.run_sync()
 
+    assert connector.use_headless_browser is True
     assert db.pages()["http://site.test/inside"].record_name == "Inside"
+
+
+async def test_while_robots_txt_cant_be_read_the_browser_never_opens_the_start_page(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.add("http://site.test/robots.txt", Page(status=503, body=b""))
+    browser.add(START_URL, Page(body=SHELL, rendered=html_page("App", text=LONG_TEXT), pre_render_text_len=0))
+
+    connector = await make_connector()
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert browser.browser_visits == []
 
 
 async def test_without_a_working_browser_a_plain_site_still_syncs(
