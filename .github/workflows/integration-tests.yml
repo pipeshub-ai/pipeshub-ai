@@ -38,6 +38,7 @@ on:
             - google_drive_individual
             - gcs
             - azure_blob
+            - smb
             - azure_files
             - messaging
             - oauth_clients
@@ -328,7 +329,7 @@ jobs:
       # both at an external share instead. CIFS is not registered, so it is
       # not in a shard.
       SMB_HOST: ${{ secrets.SMB_HOST || 'localhost' }}
-      SMB_PORT: ${{ secrets.SMB_PORT || '1445' }}
+      SMB_PORT: ${{ secrets.SMB_PORT || (secrets.SMB_HOST && '445' || '1445') }}
       SMB_CONNECTOR_HOST: ${{ secrets.SMB_HOST || 'smb-source' }}
       SMB_CONNECTOR_PORT: ${{ secrets.SMB_PORT || '445' }}
       SMB_SHARE: ${{ secrets.SMB_SHARE || 'pipeshubtest' }}
