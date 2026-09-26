@@ -456,23 +456,16 @@ class TestIncrementalSync:
         assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
         assert any("ENG-2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: issue search is not retried "
-            "when Jira answers 429 (rate limited), so the project is skipped for this run instead "
-            "of waiting and continuing."
-        ),
-    )
-    async def test_a_rate_limited_issue_search_is_retried(self, jira, db, store, search) -> None:
+    async def test_a_rate_limited_issue_search_is_retried(self, jira, db, store, search, backoff_sleeps) -> None:
         stub_site(jira, search)
-        limited = httpx.Response(429, headers={"Retry-After": "1"}, content=b"{}")
+        limited = httpx.Response(429, headers={"Retry-After": "7"}, content=b"{}")
         search.add("ENG", 0, [limited, {"issues": [issue("1001", "ENG-1")], "total": 1}])
         connector, _ = await make_connector(db, store)
 
         await connector.run_sync()
 
         assert "1001" in tickets(db)
+        assert 7.0 in backoff_sleeps, "the wait Jira asked for is respected"
 
 
 def acl_summary(permissions: list[Any]) -> list[tuple[str, str, Optional[str], Optional[str]]]:
