@@ -163,6 +163,39 @@ valid_group_labels = [
         GroupType.CODE.value,
     ]
 
+
+def expand_flattened_result(result: dict, logger) -> list:
+    """Expand one flattened result into the entries that belong in the final list.
+
+    A grouped block *type* does not guarantee grouped *content*.
+    ``get_flattened_results`` emits a ``(summary, children)`` pair only for
+    table-shaped blocks; a ``code`` block -- which is in ``valid_group_labels``
+    -- arrives as a plain string. Unpacking a string of length > 2 into two
+    names raises ``ValueError``, and the caller converts that into a 500 for the
+    entire query, so a single malformed member costs the whole result set.
+
+    A block the flattener chose to emit as a string is still a usable result; it
+    simply is not a parent. Check the shape, and fall back to treating it as a
+    leaf.
+    """
+    block_type = result.get("block_type")
+    content = result.get("content")
+    is_group = (
+        block_type == GroupType.TABLE.value or block_type in valid_group_labels
+    )
+
+    if is_group and isinstance(content, tuple) and len(content) == 2:
+        _, child_results = content
+        return list(child_results)
+
+    if is_group:
+        logger.debug(
+            "Group block %s carried non-pair content (%s); treating it as a leaf.",
+            block_type,
+            type(content).__name__,
+        )
+    return [result]
+
 class RetrievalService:
     def __init__(
         self,
@@ -839,13 +872,9 @@ class RetrievalService:
                 is_multimodal_llm = False   #doesn't matter for retrieval service
                 flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
                 for result in flattened_results:
-                    block_type = result.get("block_type")
-                    if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
-                        _, child_results = result.get("content")
-                        for child in child_results:
-                            final_search_results.append(child)
-                    else:
-                        final_search_results.append(result)
+                    final_search_results.extend(
+                        expand_flattened_result(result, self.logger)
+                    )
 
             final_search_results = sorted(
                 final_search_results,
