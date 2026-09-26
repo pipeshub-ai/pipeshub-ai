@@ -51,6 +51,7 @@ class GraphDBProviderFactory:
         The provider type is determined by the DATA_STORE environment variable:
         - "arangodb": Creates ArangoHTTPProvider (HTTP-based, fully async) (default)
         - "neo4j": Creates Neo4jProvider
+        - "arcadedb": Creates ArcadeDBProvider
 
         Args:
             logger: Logger instance for logging operations
@@ -63,7 +64,7 @@ class GraphDBProviderFactory:
             ConnectionError: If unable to connect to the database
 
         Environment Variables:
-            DATA_STORE: Database provider type ("arangodb" or "neo4j")
+            DATA_STORE: Database provider type ("arangodb", "neo4j" or "arcadedb")
 
         Example:
             ```python
@@ -100,8 +101,17 @@ class GraphDBProviderFactory:
                 )
                 return provider
 
+            # ArcadeDB support (openCypher over the same Bolt protocol as Neo4j)
+            elif provider_type == "arcadedb":
+                provider = await GraphDBProviderFactory._create_arcadedb_provider(
+                    logger=logger,
+                    config_service=config_service,
+                    accessible_records_cache=accessible_records_cache,
+                )
+                return provider
+
             else:
-                raise ValueError(f"Unsupported graph database provider: {provider_type}. Set DATA_STORE env to 'arangodb' or 'neo4j'")
+                raise ValueError(f"Unsupported graph database provider: {provider_type}. Set DATA_STORE env to 'arangodb', 'neo4j' or 'arcadedb'")
 
         except Exception as e:
             logger.error(f"❌ GraphDBProviderFactory: Failed to create provider: {str(e)}")
@@ -190,6 +200,51 @@ class GraphDBProviderFactory:
             logger.error(f"❌ Failed to create Neo4j provider: {str(e)}")
             raise
 
+    @staticmethod
+    async def _create_arcadedb_provider(
+        logger: Logger,
+        config_service: ConfigurationService,
+        accessible_records_cache: "IAccessibleRecordsCache | None" = None,
+    ) -> IGraphDBProvider:
+        """
+        Create and connect an ArcadeDB provider.
+
+        Args:
+            logger: Logger instance
+            config_service: Configuration service
+            accessible_records_cache: Optional accessible-record map cache
+        Returns:
+            IGraphDBProvider: Connected ArcadeDB provider
+
+        Raises:
+            ConnectionError: If unable to connect to ArcadeDB
+        """
+        try:
+            logger.debug("🔧 Creating ArcadeDB provider...")
+
+            from app.services.graph_db.arcadedb.arcadedb_provider import (
+                ArcadeDBProvider,
+            )
+
+            provider = ArcadeDBProvider(
+                logger=logger,
+                config_service=config_service,
+                accessible_records_cache=accessible_records_cache,
+            )
+
+            logger.debug("🔌 Connecting ArcadeDB provider...")
+
+            connected = await provider.connect()
+
+            if not connected:
+                raise ConnectionError("Failed to connect ArcadeDB provider to database")
+
+            logger.info("✅ ArcadeDB provider created and connected successfully")
+            return provider
+
+        except Exception as e:
+            logger.error(f"❌ Failed to create ArcadeDB provider: {str(e)}")
+            raise
 
 
 # Convenience function
