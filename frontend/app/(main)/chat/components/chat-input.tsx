@@ -919,7 +919,7 @@ export function ChatInput({
           uploadControllersRef.current.delete(file.id);
         }
       });
-  }, [onUploadFile]);
+  }, [onUploadFile, t]);
 
   const processFiles = useCallback((
     files: FileList | File[],
