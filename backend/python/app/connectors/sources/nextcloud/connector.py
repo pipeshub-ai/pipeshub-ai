@@ -1304,12 +1304,12 @@ class NextcloudConnector(BaseConnector):
 
             if not is_response_successful(response):
                 error_msg = get_response_error(response)
+                # A full sync in its place can't see deletions and would move the cursor past them.
                 self.logger.error(
                     f"❌ [Incremental Sync] Failed to fetch activities: {error_msg}. "
-                    f"Status: {status_code or 'N/A'}"
+                    f"Status: {status_code or 'N/A'}. The cursor is kept, so the next sync reads "
+                    "the same changes again."
                 )
-                self.logger.warning("⚠️ [Incremental Sync] Falling back to full sync due to API failure.")
-                await self._run_full_sync_internal()
                 return
 
             # Parse activity response

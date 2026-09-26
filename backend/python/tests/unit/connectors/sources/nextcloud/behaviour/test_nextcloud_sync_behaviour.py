@@ -793,24 +793,21 @@ class TestIncrementalSync:
         assert "notes.txt" not in db.names()
         assert store.cursor() == str(server.latest_activity_id)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when the activity feed fails "
-            "(an outage or a 429 rate limit), the run falls back to a full sync, which doesn't notice "
-            "deletions and then moves the cursor past them, so deleted files stay searchable."
-        ),
-    )
     @pytest.mark.parametrize("status", [503, 429])
     async def test_a_failed_activity_feed_does_not_skip_deletions(self, server, db, store, status) -> None:
         connector = await synced(server, db, store)
+        cursor, listings = store.cursor(), len(server.calls("PROPFIND"))
         server.delete("Docs/notes.txt")
-        server.fail("GET", lambda p: p == ACTIVITY_PATH, httpx.Response(status, headers={"Retry-After": "1"}))
+        outage = server.outage("GET", lambda p: p == ACTIVITY_PATH,
+                               lambda: httpx.Response(status, headers={"Retry-After": "1"}))
 
         await connector.run_sync()
-        await connector.run_sync()
+        assert store.cursor() == cursor and len(server.calls("PROPFIND")) == listings, "no full sync in its place"
 
+        outage.end()
+        await connector.run_sync()
         assert "notes.txt" not in db.names()
+        assert store.cursor() == str(server.latest_activity_id)
 
     @pytest.mark.xfail(
         strict=True,
