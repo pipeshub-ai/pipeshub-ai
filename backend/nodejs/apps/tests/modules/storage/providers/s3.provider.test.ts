@@ -9,6 +9,7 @@ import {
   StorageDownloadError,
   MultipartUploadError,
   PresignedUrlError,
+  StorageDeleteError,
 } from '../../../../src/libs/errors/storage.errors'
 
 import { S3 } from 'aws-sdk'
@@ -1372,4 +1373,159 @@ describe('AmazonS3Adapter - IAM role mode', () => {
     expect(result.statusCode).to.equal(200)
     expect(result.data.url).to.equal('https://put-presigned.com')
   })
+
+  // -------------------------------------------------------------------------
+  // deleteDocumentFromStorageService
+  // -------------------------------------------------------------------------
+  describe('deleteDocumentFromStorageService', () => {
+    const URL = 'https://my-bucket.s3.us-east-1.amazonaws.com/folder/file.pdf'
+
+    function stubVersions(adapter: AmazonS3Adapter, listed: any) {
+      return sinon.stub((adapter as any).s3, 'listObjectVersions').returns({
+        promise: sinon.stub().resolves(listed),
+      })
+    }
+
+    function stubDelete(adapter: AmazonS3Adapter) {
+      return sinon.stub((adapter as any).s3, 'deleteObjects').returns({
+        promise: sinon.stub().resolves({ Deleted: [] }),
+      })
+    }
+
+    it('should delete every version of the current object', async () => {
+      const adapter = createAdapter()
+      stubVersions(adapter, {
+        Versions: [
+          { Key: 'folder/file.pdf', VersionId: 'v1' },
+          { Key: 'folder/file.pdf', VersionId: 'v2' },
+        ],
+        DeleteMarkers: [],
+        IsTruncated: false,
+      })
+      const del = stubDelete(adapter)
+
+      const result = await adapter.deleteDocumentFromStorageService({
+        s3: { url: URL },
+      } as any)
+
+      expect(result.statusCode).to.equal(200)
+      expect(result.data!.deleted).to.deep.equal(['folder/file.pdf'])
+      const sent = del.firstCall.args[0] as any
+      expect(sent.Delete.Objects).to.deep.equal([
+        { Key: 'folder/file.pdf', VersionId: 'v1' },
+        { Key: 'folder/file.pdf', VersionId: 'v2' },
+      ])
+    })
+
+    it('should delete delete-markers as well as versions', async () => {
+      const adapter = createAdapter()
+      stubVersions(adapter, {
+        Versions: [{ Key: 'folder/file.pdf', VersionId: 'v1' }],
+        DeleteMarkers: [{ Key: 'folder/file.pdf', VersionId: 'dm1' }],
+        IsTruncated: false,
+      })
+      const del = stubDelete(adapter)
+
+      await adapter.deleteDocumentFromStorageService({ s3: { url: URL } } as any)
+
+      const sent = del.firstCall.args[0] as any
+      expect(sent.Delete.Objects.map((o: any) => o.VersionId)).to.deep.equal([
+        'v1',
+        'dm1',
+      ])
+    })
+
+    it('should ignore keys that only share a prefix', async () => {
+      const adapter = createAdapter()
+      stubVersions(adapter, {
+        Versions: [
+          { Key: 'folder/file.pdf', VersionId: 'v1' },
+          { Key: 'folder/file.pdf.bak', VersionId: 'other' },
+        ],
+        DeleteMarkers: [],
+        IsTruncated: false,
+      })
+      const del = stubDelete(adapter)
+
+      await adapter.deleteDocumentFromStorageService({ s3: { url: URL } } as any)
+
+      const sent = del.firstCall.args[0] as any
+      expect(sent.Delete.Objects).to.deep.equal([
+        { Key: 'folder/file.pdf', VersionId: 'v1' },
+      ])
+    })
+
+    it('should delete version history as well as the current object', async () => {
+      const adapter = createAdapter()
+      stubVersions(adapter, { Versions: [], DeleteMarkers: [], IsTruncated: false })
+      stubDelete(adapter)
+
+      const result = await adapter.deleteDocumentFromStorageService({
+        s3: { url: URL },
+        versionHistory: [
+          { s3: { url: 'https://my-bucket.s3.us-east-1.amazonaws.com/v0.pdf' } },
+        ],
+      } as any)
+
+      expect(result.data!.deleted).to.deep.equal(['folder/file.pdf', 'v0.pdf'])
+    })
+
+    it('should deduplicate a key that appears twice', async () => {
+      const adapter = createAdapter()
+      stubVersions(adapter, { Versions: [], DeleteMarkers: [], IsTruncated: false })
+      stubDelete(adapter)
+
+      const result = await adapter.deleteDocumentFromStorageService({
+        s3: { url: URL },
+        versionHistory: [{ s3: { url: URL } }],
+      } as any)
+
+      expect(result.data!.deleted).to.deep.equal(['folder/file.pdf'])
+    })
+
+    it('should succeed with nothing to do when the document has no objects', async () => {
+      const adapter = createAdapter()
+
+      const result = await adapter.deleteDocumentFromStorageService({} as any)
+
+      expect(result.statusCode).to.equal(200)
+      expect(result.data!.deleted).to.deep.equal([])
+    })
+
+    it('should treat an already-absent object as success', async () => {
+      const adapter = createAdapter()
+      const err: any = new Error('missing')
+      err.code = 'NoSuchKey'
+      sinon.stub((adapter as any).s3, 'listObjectVersions').returns({
+        promise: sinon.stub().rejects(err),
+      })
+
+      const result = await adapter.deleteDocumentFromStorageService({
+        s3: { url: URL },
+      } as any)
+
+      expect(result.statusCode).to.equal(200)
+      expect(result.data!.deleted).to.deep.equal([])
+    })
+
+    it('should throw StorageDeleteError when an object cannot be removed', async () => {
+      const adapter = createAdapter()
+      stubVersions(adapter, {
+        Versions: [{ Key: 'folder/file.pdf', VersionId: 'v1' }],
+        DeleteMarkers: [],
+        IsTruncated: false,
+      })
+      sinon.stub((adapter as any).s3, 'deleteObjects').returns({
+        promise: sinon.stub().rejects(new Error('AccessDenied')),
+      })
+
+      try {
+        await adapter.deleteDocumentFromStorageService({ s3: { url: URL } } as any)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(StorageDeleteError)
+      }
+    })
+  })
+
 })

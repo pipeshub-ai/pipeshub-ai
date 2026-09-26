@@ -16,6 +16,7 @@ import {
   StorageUploadError,
   StorageDownloadError,
   StorageNotFoundError,
+  StorageDeleteError,
   StorageValidationError,
   MultipartUploadError,
   PresignedUrlError,
@@ -247,6 +248,70 @@ class LocalStorageAdapter implements StorageServiceInterface {
   /**
    * Retrieves document content
    */
+  /**
+   * Deletes every file backing a document: the current one and every entry in
+   * its version history.
+   *
+   * Resolution mirrors getBufferFromStorageService (localPath, then url) and
+   * reuses assertInsideMount, so a crafted URL cannot unlink outside the mount.
+   * A file that is already absent is the desired end state, not a failure.
+   *
+   * @param document - Metadata of the document whose files should be removed.
+   * @returns A promise resolving to the paths that were deleted.
+   * @throws {StorageDeleteError} If a file exists and cannot be removed
+   */
+  async deleteDocumentFromStorageService(
+    document: Document,
+  ): Promise<StorageServiceResponse<{ deleted: string[] }>> {
+    const refs: string[] = [];
+    const current = document?.local?.localPath || document?.local?.url;
+    if (current) {
+      refs.push(current);
+    }
+    for (const version of document?.versionHistory || []) {
+      const ref = version?.local?.localPath || version?.local?.url;
+      if (ref) {
+        refs.push(ref);
+      }
+    }
+
+    const deleted: string[] = [];
+
+    for (const ref of Array.from(new Set(refs))) {
+      const localPath = this.getLocalPathFromUrl(ref);
+      if (!localPath) {
+        throw new StorageValidationError('Invalid file URL format', { ref });
+      }
+
+      const fullPath = this.assertInsideMount(
+        path.join(this.mountPath, localPath),
+      );
+
+      try {
+        await fs.unlink(fullPath);
+        deleted.push(localPath);
+      } catch (error: any) {
+        // Already gone is the desired end state, not a failure.
+        if (error?.code === 'ENOENT') {
+          this.logger.warn('Local object already absent', { path: localPath });
+          continue;
+        }
+        throw new StorageDeleteError(
+          'Failed to delete document from local storage',
+          {
+            path: localPath,
+            originalError:
+              error instanceof Error ? error.message : 'Unknown error',
+          },
+        );
+      }
+    }
+
+    this.logger.info('Local objects deleted', { deleted });
+
+    return { statusCode: 200, data: { deleted } };
+  }
+
   async getBufferFromStorageService(
     document: Document,
     version?: number,

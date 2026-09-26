@@ -44,6 +44,17 @@ export class StorageServiceAdapter {
   }
 
   /**
+   * Deletes every object backing a document, current and historical.
+   * @param document - Metadata of the document whose objects should be removed.
+   * @returns A promise resolving to the identifiers that were deleted.
+   */
+  deleteDocumentFromStorageService(
+    document: Document,
+  ): Promise<StorageServiceResponse<{ deleted: string[] }>> {
+    return this.adapter.deleteDocumentFromStorageService(document);
+  }
+
+  /**
    * Retrieves the buffer content of a document.
    * @param document - Metadata of the document to retrieve.
    * @param version - (Optional) The version of the document to retrieve.

@@ -25,6 +25,20 @@ export interface StorageServiceInterface {
   ): Promise<StorageServiceResponse<string>>;
 
   /**
+   * Deletes every object backing a document: the current one and every entry
+   * in its version history.
+   *
+   * An object that is already absent is the desired end state, not a failure.
+   * An object that exists and cannot be removed is an error.
+   *
+   * @param document - Metadata of the document whose objects should be removed.
+   * @returns A promise resolving to the identifiers that were deleted.
+   */
+  deleteDocumentFromStorageService(
+    document: Document,
+  ): Promise<StorageServiceResponse<{ deleted: string[] }>>;
+
+  /**
    * Retrieves the buffer content of a document.
    * @param document - Metadata of the document to retrieve.
    * @param version - (Optional) The version of the document to retrieve.
