@@ -924,6 +924,20 @@ class TestIncrementalSync:
         assert db.path_of("Deep") == "New/Deep"
         assert db.path_of("inside.txt") == "New/Deep/inside.txt"
 
+    async def test_a_file_restored_after_its_failed_delete_is_kept(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        kept = db.by_name("notes.txt").id
+        db.fail_delete_for = {ids_of(server)["notes.txt"]}
+        server.restore(server.delete("Docs/notes.txt"))
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        db.fail_delete_for.clear()
+        await connector.run_sync()
+
+        assert db.by_name("notes.txt").id == kept and "notes.txt" not in db.deleted
+        assert store.checkpoint()["pending_deletes"] == [], "a later restore on the page cancels the deletion"
+
     async def test_the_give_up_error_names_what_could_not_be_applied(self, server, db, store, caplog) -> None:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")

@@ -1369,6 +1369,8 @@ class NextcloudConnector(BaseConnector):
             modified_paths = set()
             deleted_file_ids = set()
             deleted_paths: dict[str, str] = {}
+            # Whether each file's latest activity on this page (read oldest first) is a deletion.
+            deleted_last: dict[str, bool] = {}
             max_activity_id = last_activity_id
 
             for activity in activities:
@@ -1401,9 +1403,12 @@ class NextcloudConnector(BaseConnector):
                             if file_id:
                                 deleted_file_ids.add(str(file_id))
                                 deleted_paths[str(file_id)] = file_path or ""
+                                deleted_last[str(file_id)] = True
                                 self.logger.info(f"🗑️  Deletion detected: {file_path} (ID: {file_id})")
                     elif activity_type in ['file_created', 'file_changed', 'file_renamed', 'file_restored']:
-                        for _, file_path in targets:
+                        for file_id, file_path in targets:
+                            if file_id:
+                                deleted_last[str(file_id)] = False
                             if file_path:
                                 modified_paths.add(file_path)
                                 self.logger.info(f"📝 Modification detected: {file_path} ({activity_type})")
@@ -1450,7 +1455,10 @@ class NextcloudConnector(BaseConnector):
                     f"start of every sync until they apply: {describe_failures(failures)}"
                 )
                 # A deleted file never changes again, so nothing else would bring its deletion back.
-                pending_deletes = sorted(set(pending_deletes) | set(failed_deletes))
+                # One restored or recreated later on this page is not owed a deletion.
+                pending_deletes = sorted(
+                    set(pending_deletes) | {i for i in failed_deletes if deleted_last.get(i, True)}
+                )
 
             # Update cursor to latest activity ID
             await self.activity_sync_point.update_sync_point(
