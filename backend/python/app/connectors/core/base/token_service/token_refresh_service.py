@@ -5,6 +5,7 @@ Handles automatic token refresh for OAuth connectors
 
 import asyncio
 import logging
+import random
 import weakref
 from datetime import datetime, timedelta
 from typing import Optional
@@ -808,25 +809,33 @@ class TokenRefreshService:
 
         Raises ``CredentialSaveError`` when nothing was stored.
         """
-        for attempt in range(1, CREDENTIAL_SAVE_ATTEMPTS + 1):
-            latest = await self.configuration_service.get_config(config_key) or fallback_config
+        for attempt in range(1, 6):
+            latest, version = await self.configuration_service.get_config_with_version(config_key)
+            if latest is None:
+                self.logger.warning(f"Connector {connector_id} config not found; assuming deleted.")
+                return
+
             if self._credentials_match(latest.get('credentials'), new_token):
                 self.logger.info(f"💾 Refreshed credentials already stored for connector {connector_id}")
                 return
-            # A copy: get_config hands back the cached dict, and a failed write must not change it.
+                
             updated = {**latest, 'credentials': new_token.to_dict()}
-            if await self.configuration_service.set_config(config_key, updated) is not False:
+            success, _ = await self.configuration_service.compare_and_set(config_key, version, updated)
+            
+            if success:
                 self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
                 return
+                
             self.logger.warning(
                 f"Saving refreshed credentials for connector {connector_id} failed "
-                f"(attempt {attempt}/{CREDENTIAL_SAVE_ATTEMPTS})"
+                f"(attempt {attempt}/5)"
             )
-            if attempt < CREDENTIAL_SAVE_ATTEMPTS:
-                await asyncio.sleep(CREDENTIAL_SAVE_RETRY_DELAY_SECONDS * attempt)
+            if attempt < 5:
+                await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
+                
         raise CredentialSaveError(
             f"Could not save refreshed credentials for connector {connector_id} after "
-            f"{CREDENTIAL_SAVE_ATTEMPTS} attempts. The old refresh token may already be spent, "
+            f"5 attempts. The old refresh token may already be spent, "
             f"so the connector may need to be reconnected."
         )
 

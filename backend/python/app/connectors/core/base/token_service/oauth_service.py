@@ -441,18 +441,39 @@ class OAuthProvider:
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256"
             })
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
-        # Replace entire oauth session data - this clears any old state, codes, etc.
-        # This is important for re-authentication to ensure fresh start
-        config['oauth'] = session_data
+            
+        import asyncio
+        import random
+        from app.config.configuration_service import ConcurrentModificationError
+        
+        for attempt in range(1, 6):
+            config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
+            if config is None:
+                config = {}
+            if not isinstance(config, dict):
+                config = {}
+                
+            # Replace entire oauth session data - this clears any old state, codes, etc.
+            # This is important for re-authentication to ensure fresh start
+            config['oauth'] = session_data
 
-        await self.configuration_service.set_config(self.credentials_path, config)
-        return self._get_authorization_url(state=state, **extra)
+            success, _ = await self.configuration_service.compare_and_set(self.credentials_path, version, config)
+            if success:
+                return self._get_authorization_url(state=state, **extra)
+                
+            if attempt < 5:
+                await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
+                
+        raise ConcurrentModificationError("Failed to update OAuth session state after 5 attempts")
 
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
-        config = await self.configuration_service.get_config(self.credentials_path)
+        import asyncio
+        import random
+        from app.config.configuration_service import ConcurrentModificationError
+        
+        config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
+        if config is None:
+            config = {}
         if not isinstance(config, dict):
             config = {}
 
@@ -496,32 +517,60 @@ class OAuthProvider:
                     pass
             # Code was used but no valid credentials - treat as error
             raise ValueError("Authorization code has already been used")
+            
         try:
             token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
             self.token = token
 
-            # Mark this code as used
-            used_codes.append(code)
-            oauth_data["used_codes"] = used_codes
+            for attempt in range(1, 6):
+                used_codes = oauth_data.get("used_codes", [])
+                if code not in used_codes:
+                    used_codes.append(code)
 
-            # Store the new token FIRST before clearing OAuth state
-            # This ensures credentials are updated even if something fails during cleanup
-            config['credentials'] = token.to_dict()
+                # Store the new token FIRST before clearing OAuth state
+                # This ensures credentials are updated even if something fails during cleanup
+                config['credentials'] = token.to_dict()
 
-            # Clean up OAuth transient state after successful exchange
-            # Clear state and code_verifier, but keep used_codes temporarily
-            # to prevent duplicate callback with same code
-            config['oauth'] = {
-                "used_codes": used_codes  # Keep used codes to prevent replay attacks
-            }
+                # Clean up OAuth transient state after successful exchange
+                # Clear state and code_verifier, but keep used_codes temporarily
+                # to prevent duplicate callback with same code
+                config['oauth'] = {
+                    "used_codes": used_codes  # Keep used codes to prevent replay attacks
+                }
 
-            await self.configuration_service.set_config(self.credentials_path, config)
+                success, _ = await self.configuration_service.compare_and_set(self.credentials_path, version, config)
+                if success:
+                    return token
+                    
+                if attempt < 5:
+                    await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
+                    config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
+                    if config is None:
+                        config = {}
+                    oauth_data = config.get('oauth', {}) or {}
 
-            return token
-        except Exception:
+            raise ConcurrentModificationError("Failed to update OAuth session state after 5 attempts")
+            
+        except Exception as e:
+            if isinstance(e, ConcurrentModificationError):
+                raise
+                
             # If token exchange fails, still mark the code as used to prevent retry loops
-            used_codes.append(code)
-            oauth_data["used_codes"] = used_codes
-            config['oauth'] = oauth_data
-            await self.configuration_service.set_config(self.credentials_path, config)
+            for attempt in range(1, 6):
+                used_codes = oauth_data.get("used_codes", [])
+                if code not in used_codes:
+                    used_codes.append(code)
+                oauth_data["used_codes"] = used_codes
+                config['oauth'] = oauth_data
+                
+                success, _ = await self.configuration_service.compare_and_set(self.credentials_path, version, config)
+                if success:
+                    break
+                    
+                if attempt < 5:
+                    await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
+                    config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
+                    if config is None:
+                        config = {}
+                    oauth_data = config.get('oauth', {}) or {}
             raise

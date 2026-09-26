@@ -430,3 +430,18 @@ class TestClientProperty:
             client = store.client
             mock_get.assert_called_once()
             assert client is not None
+
+class TestCompareAndSet:
+    @pytest.mark.asyncio
+    async def test_cas_conflict_deleted_key_returns_none(self):
+        store = _make_store()
+        mock = _mock_client(store)
+        
+        # Redis returns [0, None, b""] when key was deleted before CAS
+        mock.eval = AsyncMock(return_value=[0, None, b""])
+        
+        success, (current_value, current_version) = await store.compare_and_set("key1", "expected_hash", {"data": 2})
+        
+        assert success is False
+        assert current_value is None
+        assert current_version is None

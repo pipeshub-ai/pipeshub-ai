@@ -429,6 +429,91 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.exception("Detailed error stack:")
             raise ConnectionError(f"Failed to get key: {str(e)}")
 
+    async def get_key_with_version(self, key: str, *, raise_on_error: bool = False) -> tuple[Optional[T], Any]:
+        """Get value and its mod_revision from etcd."""
+        logger.debug("🔍 Getting key with version from ETCD: %s", key)
+        try:
+            result = await self._run(lambda c: c.get(key))
+
+            if result[0] is None:
+                return None, None
+
+            value_bytes, metadata = result
+            if not value_bytes:
+                return None, metadata.mod_revision
+
+            try:
+                deserialized = self.deserializer(value_bytes)
+                if deserialized is None and value_bytes and raise_on_error:
+                    raise ValueError("Stored value could not be decoded")
+                return deserialized, metadata.mod_revision
+            except json.JSONDecodeError as e:
+                logger.error("❌ Failed to deserialize value: %s", str(e))
+                if raise_on_error:
+                    raise
+                return None, metadata.mod_revision
+
+        except Exception as e:
+            logger.error("❌ Failed to get key with version %s: %s", key, str(e))
+            raise ConnectionError(f"Failed to get key with version: {str(e)}")
+
+    async def compare_and_set(self, key: str, expected_version: Any, new_value: T, ttl: Optional[int] = None) -> tuple[bool, tuple[Optional[T], Any]]:
+        """Conditionally update a key in etcd."""
+        logger.debug("🔄 Compare and set key in ETCD: %s", key)
+        
+        try:
+            if isinstance(new_value, str):
+                value_str = new_value
+            else:
+                value_str = json.dumps(new_value, default=str)
+                
+            serialized_value = value_str.encode()
+            
+            lease = None
+            if ttl is not None:
+                lease = await self._run(lambda c: c.lease(ttl))
+
+            def txn(c: etcd3.client) -> tuple[bool, Any]:
+                compare = [c.transactions.version(key) == 0] if expected_version is None else [c.transactions.mod_revision(key) == expected_version]
+                success, responses = c.transaction(
+                    compare=compare,
+                    success=[c.transactions.put(key, serialized_value, lease=lease)],
+                    failure=[c.transactions.get(key)]
+                )
+                return success, responses
+
+            success, responses = await self._run(txn)
+            
+            if success:
+                # The put operation does not return the new mod_revision directly in python-etcd3
+                # but we know it succeeded. Wait, how to return new mod_revision?
+                # Actually, put response metadata contains revision!
+                put_response = responses[0]
+                new_version = put_response.header.revision if hasattr(put_response, 'header') else None
+                return True, (new_value, new_version)
+            else:
+                if lease is not None:
+                    await self._run(lambda c: c.revoke_lease(lease.id))
+                    
+                # Conflict: parse failure response
+                get_responses = responses[0]
+                if not get_responses or not get_responses[0]:
+                    return False, (None, None)
+                    
+                value_bytes, metadata = get_responses[0]
+                if not value_bytes:
+                    return False, (None, metadata.mod_revision)
+                    
+                try:
+                    deserialized = self.deserializer(value_bytes)
+                except json.JSONDecodeError:
+                    deserialized = None
+                return False, (deserialized, metadata.mod_revision)
+                
+        except Exception as e:
+            logger.error("❌ Failed to compare and set key %s: %s", key, str(e))
+            raise ConnectionError(f"Failed to compare and set key: {str(e)}")
+
     async def delete_key(self, key: str) -> bool:
         try:
             result = await self._run(lambda c: c.delete(key))

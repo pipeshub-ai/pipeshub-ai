@@ -86,6 +86,39 @@ class KeyValueStore(ABC, Generic[T]):
         pass
 
     @abstractmethod
+    async def get_key_with_version(self, key: str, *, raise_on_error: bool = False) -> tuple[Optional[T], Any]:
+        """
+        Retrieve the value associated with a key, along with an opaque version identifier.
+
+        Args:
+            key: The key to retrieve
+            raise_on_error: Whether to raise an exception on read error
+
+        Returns:
+            A tuple of (value, version). The version can be passed to `compare_and_set`.
+            If the key doesn't exist, returns (None, None) or (None, default_version) depending on the backend.
+        """
+        pass
+
+    @abstractmethod
+    async def compare_and_set(self, key: str, expected_version: Any, new_value: T, ttl: Optional[int] = None) -> tuple[bool, tuple[Optional[T], Any]]:
+        """
+        Conditionally update the value for a key if its version matches the expected version.
+        
+        Args:
+            key: The key to update
+            expected_version: The version identifier retrieved from `get_key_with_version`
+            new_value: The new value to set
+            ttl: Optional time-to-live in seconds
+
+        Returns:
+            A tuple of (success, (current_value, current_version)).
+            If success is True, the tuple contains the (new_value, new_version).
+            If success is False (conflict), it returns the existing (current_value, current_version).
+        """
+        pass
+
+    @abstractmethod
     async def delete_key(self, key: str) -> bool:
         """
         Delete a key-value pair from the store.
