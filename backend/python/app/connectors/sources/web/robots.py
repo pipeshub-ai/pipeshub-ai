@@ -77,7 +77,30 @@ def _decode_unreserved(text: str) -> str:
 
 
 def _matches(pattern: str, target: str) -> bool:
+    """Whether ``pattern`` ("*" is any run of characters, a final "$" anchors the end) matches ``target``
+    from its start. A single left-to-right scan: the site writes both the pattern and the paths, and a
+    backtracking regex on "/*a*a*a*...b" can run for minutes."""
     anchored = pattern.endswith("$")
     body = pattern[:-1] if anchored else pattern
-    regex = ".*".join(re.escape(part) for part in body.split("*"))
-    return re.match(regex + ("$" if anchored else ""), target) is not None
+    return _glob(body if anchored else body + "*", target)
+
+
+def _glob(pattern: str, text: str) -> bool:
+    """Whole-string match with "*" wildcards, in O(len(pattern) * len(text)) at worst."""
+    p = t = 0
+    star, resume = -1, 0
+    while t < len(text):
+        if p < len(pattern) and pattern[p] == "*":
+            star, resume = p, t
+            p += 1
+        elif p < len(pattern) and pattern[p] == text[t]:
+            p += 1
+            t += 1
+        elif star != -1:
+            p, resume = star + 1, resume + 1
+            t = resume
+        else:
+            return False
+    while p < len(pattern) and pattern[p] == "*":
+        p += 1
+    return p == len(pattern)

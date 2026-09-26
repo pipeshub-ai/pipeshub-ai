@@ -1,5 +1,6 @@
 """robots.txt: read once per site per crawl, and honoured unless the user turns it off (RFC 9309)."""
 
+import time
 from urllib.parse import unquote
 
 import pytest
@@ -12,6 +13,8 @@ from web_behaviour_fakes import (
     RecordingNotifications,
     VirtualClock,
 )
+
+from app.connectors.sources.web.robots import RobotsRules
 
 ROBOTS = "http://site.test/robots.txt"
 
@@ -363,3 +366,13 @@ async def test_only_the_first_512_kib_of_robots_txt_are_read(
 
     # The rule sits past the cut-off, so it isn't seen; what comes first still applies.
     assert "http://site.test/private/secret" in db.pages()
+
+
+def test_a_pathological_pattern_is_matched_quickly() -> None:
+    rules = RobotsRules.parse("User-agent: *\nDisallow: /*a*a*a*a*a*a*a*a*b\n", "PipesHub")
+
+    started = time.monotonic()
+    allowed = rules.allows("http://site.test/" + "a" * 40)
+
+    assert allowed is True
+    assert time.monotonic() - started < 0.5
