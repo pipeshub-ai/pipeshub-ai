@@ -4,6 +4,7 @@ The connector, its Confluence client and its request builder are all real; the
 Confluence server is an in-memory stub and our databases are in-memory fakes.
 """
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -21,6 +22,9 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.core.base.sync_point.sync_point import (
+    generate_record_sync_point_key,
+)
 from app.connectors.sources.atlassian.confluence_datacenter_personal.connector import (
     ConfluenceDataCenterPersonalConnector,
 )
@@ -487,24 +491,138 @@ class TestPartialFailures:
         saved_time = checkpoints.values_for("confluence_pages/ENG")
         assert saved_time is None or saved_time["last_sync_time"] <= "2024-05-01T10:00:00.000Z"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a page that fails to save "
-            "is not retried, because the checkpoint moves past its last-modified time."
-        ),
-    )
     async def test_a_page_that_failed_is_listed_again_next_time(self, atlassian_api, records_db, checkpoints, search) -> None:
         old = "2024-05-01T10:00:00.000Z"
+        earlier = "2024-04-01T00:00:00.000Z"
         stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
         search.add("page", "ENG", 0, listing([content("p1", when=old), content("p2", when=old)]))
         records_db.fail_lookup_for = {"p2"}
         connector = await make_connector(atlassian_api, records_db, checkpoints)
+        await connector.pages_sync_point.update_sync_point(
+            generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG"), {"last_sync_time": earlier}
+        )
 
         await connector.run_sync()
 
-        saved_time = checkpoints.values_for("confluence_pages/ENG")
-        assert saved_time is None or saved_time["last_sync_time"] <= old
+        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] == earlier
+
+        records_db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert "p2" in saved(records_db, RecordType.CONFLUENCE_PAGE)
+        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] > old
+
+    async def test_a_page_that_keeps_failing_is_given_up_on_after_five_syncs(
+        self, atlassian_api, records_db, checkpoints, search, caplog
+    ) -> None:
+        recent = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1"), content("p2", when=recent)]))
+        records_db.fail_lookup_for = {"p2"}
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+
+        for attempt in range(1, 5):
+            await connector.run_sync()
+            stored = checkpoints.values_for("confluence_pages/ENG")
+            assert "last_sync_time" not in stored
+            assert json.loads(stored["failedPages"]) == {"p2": attempt}
+
+        with caplog.at_level(logging.ERROR):
+            await connector.run_sync()
+
+        given_up_at = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        assert given_up_at > recent
+        assert any("p2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
+
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            await connector.run_sync()
+
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert not any("p2" in r.getMessage() for r in caplog.records), "an unchanged given-up page is not tried again"
+        assert stored["last_sync_time"] >= given_up_at and json.loads(stored["failedPages"]) == {}
+        assert json.loads(stored["givenUpPages"]) == {"p2": recent}
+
+        search.add("page", "ENG", 0, listing([content("p2", version=2, when=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"))]))
+        records_db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert "p2" in saved(records_db, RecordType.CONFLUENCE_PAGE), "once it changes it is tried afresh"
+        assert json.loads(checkpoints.values_for("confluence_pages/ENG")["givenUpPages"]) == {}
+
+    async def test_a_given_up_page_is_matched_only_on_a_known_revision(self, atlassian_api, records_db, checkpoints, search) -> None:
+        undated = {**content("p2"), "history": {"createdDate": "2024-01-01T00:00:00.000Z"}}
+        versioned = {**content("p3"), "history": {"createdDate": "2024-01-01T00:00:00.000Z"}, "version": {"number": 3}}
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([undated, versioned]))
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG")
+        await connector.pages_sync_point.update_sync_point(
+            key, {"last_sync_time": "2024-04-01T00:00:00.000Z", "givenUpPages": json.dumps({"p2": "", "p3": "version:3"})}
+        )
+
+        await connector.run_sync()
+
+        pages = saved(records_db, RecordType.CONFLUENCE_PAGE)
+        assert "p2" in pages, "with no known time or version it is not skipped"
+        assert "p3" not in pages, "an unchanged version number still matches"
+        assert json.loads(checkpoints.values_for("confluence_pages/ENG")["givenUpPages"]) == {"p3": "version:3"}
+
+    async def test_a_page_with_no_known_revision_is_not_remembered_when_given_up(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        undated = {**content("p2"), "history": {"createdDate": "2024-01-01T00:00:00.000Z"}}
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1"), undated, content("p3")]))
+        records_db.fail_lookup_for = {"p2", "p3"}
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        await connector.pages_sync_point.update_sync_point(
+            generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG"),
+            {"failedPages": json.dumps({"p2": 4})},
+        )
+
+        await connector.run_sync()
+
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert json.loads(stored["failedPages"]) == {"p3": 1}, "p2 is given up on, p3 still holds the checkpoint"
+        assert "p2" not in json.loads(stored.get("givenUpPages") or "{}"), "nothing to match it on, so it isn't kept"
+
+    async def test_an_undated_page_given_up_alone_is_named_and_the_sync_moves_on(
+        self, atlassian_api, records_db, checkpoints, search, caplog
+    ) -> None:
+        undated = {**content("p2"), "history": {"createdDate": "2024-01-01T00:00:00.000Z"}}
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1"), undated]))
+        records_db.fail_lookup_for = {"p2"}
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        await connector.pages_sync_point.update_sync_point(
+            generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG"),
+            {"failedPages": json.dumps({"p2": 4})},
+        )
+
+        with caplog.at_level(logging.ERROR):
+            await connector.run_sync()
+
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert "last_sync_time" in stored, "bounded like every other page: after 5 syncs the space moves on"
+        assert json.loads(stored["failedPages"]) == {}
+        assert "p2" not in json.loads(stored.get("givenUpPages") or "{}")
+        assert any("p2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
+
+    async def test_each_failing_page_has_its_own_count(self, atlassian_api, records_db, checkpoints, search) -> None:
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1"), content("p2"), content("p3")]))
+        records_db.fail_lookup_for = {"p2"}
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        for _ in range(4):
+            await connector.run_sync()
+
+        records_db.fail_lookup_for = {"p2", "p3"}
+        await connector.run_sync()
+
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert json.loads(stored["failedPages"]) == {"p3": 1}, "p3 failed once, so it is not given up with p2"
+        assert "last_sync_time" not in stored, "the checkpoint stays held for p3"
 
 
 class TestSpaceHomepage:
@@ -524,6 +642,33 @@ class TestSpaceHomepage:
         assert {"500", "p1"} <= set(saved(records_db, RecordType.CONFLUENCE_PAGE))
         homepage_saves = [b for b in records_db.record_batches if any(r.external_record_id == "500" for r in b)]
         assert len(homepage_saves) == 1
+
+    async def test_a_given_up_homepage_that_is_still_listed_is_not_fetched_or_saved(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        recent = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        def spaces(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("expand") == "homepage":
+                return json_response({"results": [{**space("ENG", 10), "homepage": {"id": 500, "title": "Home"}}]})
+            return json_response(space_page([space("ENG", 10)]))
+
+        atlassian_api.on("GET", f"{API}/space", spaces)
+        atlassian_api.on("GET", f"{API}/content/500", content("500", when=recent))
+        search.add("page", "ENG", 0, listing([content("500", when=recent), content("p1")]))
+        records_db.records["500"] = stored_page("500")
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        await connector.pages_sync_point.update_sync_point(
+            generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG"),
+            {"last_sync_time": "2024-04-01T00:00:00.000Z", "givenUpPages": json.dumps({"500": recent})},
+        )
+
+        await connector.run_sync()
+
+        homepage_reads = [r for r in atlassian_api.calls("GET", f"{API}/content/500") if "homepage" not in str(r.url)]
+        assert len(homepage_reads) == 1, "only the homepage lookup reads it; the backfill does not fetch it again"
+        assert not any(r.external_record_id == "500" for b in records_db.record_batches for r in b)
+        assert "p1" in saved(records_db, RecordType.CONFLUENCE_PAGE)
 
 
 class TestSyncStopsLoudlyWhenItCannotStart:
@@ -645,16 +790,12 @@ class TestOpeningAPageOrFile:
             await read_stream(await connector.stream_record(stored_file()))
         assert err.value.status_code == 404
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits the Confluence client: Atlassian documents an "
-            "attachment's download link as relative to the site's base address, but the client joins it "
-            "to the bare host, so on a Data Center site served under a sub-path (for example "
-            "https://intranet.example.com/confluence) every attachment download points at the wrong URL."
-        ),
+    @pytest.mark.parametrize(
+        "download_link",
+        ["/download/attachments/p1/report.pdf", "/confluence/download/attachments/p1/report.pdf"],
+        ids=["relative-to-the-site-base", "already-carries-the-sub-path"],
     )
-    async def test_attachment_download_keeps_the_sites_sub_path(self, atlassian_api, checkpoints) -> None:
+    async def test_attachment_download_keeps_the_sites_sub_path(self, atlassian_api, checkpoints, download_link) -> None:
         db = FakeRecordsDb()
         base = "https://intranet.example.com/confluence"
         config = {"auth": {"authType": "API_TOKEN", "baseUrl": base, "apiToken": FAKE_PAT}}
@@ -663,7 +804,7 @@ class TestOpeningAPageOrFile:
         )
         assert await connector.init()
         atlassian_api.install(connector.external_client.get_client())
-        atlassian_api.on("GET", "/confluence/rest/api/content/att1", {"id": "att1", "_links": {"base": base, "context": "/confluence", "download": "/download/attachments/p1/report.pdf"}})
+        atlassian_api.on("GET", "/confluence/rest/api/content/att1", {"id": "att1", "_links": {"base": base, "context": "/confluence", "download": download_link}})
         atlassian_api.on("GET", "/confluence/download/attachments/p1/report.pdf", httpx.Response(200, content=b"%PDF"))
 
         try:
@@ -824,14 +965,6 @@ class TestCommentAttachments:
         assert f.parent_external_record_id == "c1-r"
         assert f.parent_node_id == records_db.records["c1-r"].id
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: on the first sync, a page image "
-            "that a comment also shows is saved twice in the same batch (once under the page, once under "
-            "the comment), because the duplicate check looks in the database before the batch is written."
-        ),
-    )
     async def test_page_image_shown_in_a_comment_is_saved_once_under_the_page(
         self, atlassian_api, records_db, checkpoints, search
     ) -> None:
@@ -839,6 +972,7 @@ class TestCommentAttachments:
         search.add("page", "ENG", 0, listing([content("p1", attachments=[attachment("att1", "diagram.png", "image/png")])]))
         embed = '<ac:image><ri:attachment ri:filename="diagram.png" /></ac:image>'
         atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [self._comment("c1", embed)], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/c1/child/comment", {"results": [self._comment("c1-r", embed)], "_links": {"base": BASE}})
         connector = await make_connector(atlassian_api, records_db, checkpoints)
 
         await connector.run_sync()
@@ -883,13 +1017,6 @@ class TestMoreReindexShapes:
         assert updated.weburl == f"{BASE}/c2"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Bug, left alone because an open PR edits this connector: the 'Index Page Comments' "
-        "switch is read but never applied, so comments are indexed even when it is off."
-    ),
-)
 async def test_switching_off_comment_indexing_is_respected(
     atlassian_api: AtlassianApiStub, records_db: FakeRecordsDb, checkpoints: FakeCheckpointStore, search: ContentSearch
 ) -> None:
