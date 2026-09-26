@@ -1,5 +1,6 @@
 import json
 import logging
+from http import HTTPStatus
 from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, field_validator
@@ -79,6 +80,54 @@ def _github_commit_label(commit: dict) -> str:
 
 def _github_file_change_label(entry: dict) -> str:
     return f"{entry.get('filename', '?')} ({entry.get('status', '?')})"
+
+
+_RECONNECT_STEP = "Reconnect the GitHub toolset in Settings > Toolsets and try again."
+
+
+def _is_rate_limited(response: GitHubResponse) -> bool:
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS or response.exception_type == "RateLimitExceededException":
+        return True
+    message = (response.api_message or "").lower()
+    return response.status_code == HTTPStatus.FORBIDDEN and "rate limit" in message
+
+
+def _github_error_message(response: GitHubResponse, action: str) -> str:
+    """Plain-language failure the agent can relay, with what to do next."""
+    status = response.status_code
+    said = f" GitHub said: {response.api_message}." if response.api_message else ""
+    if _is_rate_limited(response):
+        seconds = response.retry_after_seconds
+        wait = f"Wait {seconds} seconds" if seconds is not None else "Wait a minute"
+        return f"GitHub's rate limit has been reached, so it could not {action}. {wait} and try again."
+    if status is None:
+        return f"Could not {action} because GitHub could not be reached. Try again in a moment."
+    if status == HTTPStatus.UNAUTHORIZED:
+        return f"Could not {action}: GitHub did not accept the saved sign-in.{said} {_RECONNECT_STEP}"
+    if status == HTTPStatus.FORBIDDEN:
+        return (
+            f"Could not {action}: the signed-in GitHub account is not allowed to do that.{said} "
+            "Ask a repository admin for access, or reconnect the toolset with the missing permission."
+        )
+    if status == HTTPStatus.NOT_FOUND:
+        return (
+            f"Could not {action}: GitHub found nothing at that owner, repository or number, or the signed-in "
+            f"account cannot see it.{said} Check the names, or call get_owner(owner='me') and "
+            "list_repositories to find the right one."
+        )
+    if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        return f"GitHub is having a temporary problem and could not {action}. Try again in a moment."
+    return f"GitHub refused to {action}.{said} Correct the request and try again."
+
+
+def _unexpected_failure(doing: str, error: Exception) -> Tuple[bool, str]:
+    logger.error("Error %s: %s", doing, error)
+    return False, json.dumps({
+        "error": (
+            f"Something unexpected went wrong while {doing}. Try again, and if it keeps failing, "
+            "reconnect the GitHub toolset in Settings > Toolsets."
+        )
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +478,7 @@ class GitHub:
     })
 
     def _handle_response(
-        self, response: GitHubResponse, success_message: str
+        self, response: GitHubResponse, success_message: str, action: str = "complete the request"
     ) -> Tuple[bool, str]:
         """Return a standardised (success, json_string) tuple."""
         if response.success:
@@ -476,7 +525,8 @@ class GitHub:
                     "data": str(serialisable),
                     "_serialization_fallback": True,
                 })
-        return False, json.dumps({"error": response.error or "Unknown error"})
+        logger.error("GitHub failed to %s: %s", action, response.error)
+        return False, json.dumps({"error": _github_error_message(response, action)})
 
     # ------------------------------------------------------------------
     # Repository tools
@@ -519,10 +569,9 @@ class GitHub:
                 description=description,
                 auto_init=auto_init,
             )
-            return self._handle_response(response, "Repository created successfully")
+            return self._handle_response(response, "Repository created successfully", "create the repository")
         except Exception as e:
-            logger.error(f"Error creating repository: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating repository", e)
 
     @tool(
         path="/tools/github/get_repository",
@@ -547,10 +596,9 @@ class GitHub:
         try:
             logger.info("github.get_repository called with args: %s", {"owner": owner, "repo": repo})
             response = self.client.get_repo(owner=owner, repo=repo)
-            return self._handle_response(response, "Repository fetched successfully")
+            return self._handle_response(response, "Repository fetched successfully", "get the repository")
         except Exception as e:
-            logger.error(f"Error getting repository: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting repository", e)
 
     @tool(
         path="/tools/github/get_owner",
@@ -583,10 +631,9 @@ class GitHub:
                 kind = "user"
             logger.info("github.get_owner called with args: %s", {"owner": owner, "owner_type": kind})
             response = self.client.get_owner(login=owner, kind=kind)
-            return self._handle_response(response, "Owner details fetched successfully")
+            return self._handle_response(response, "Owner details fetched successfully", "get the owner's profile")
         except Exception as e:
-            logger.error(f"Error getting owner: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting owner", e)
 
     @tool(
         path="/tools/github/list_repositories",
@@ -626,10 +673,9 @@ class GitHub:
             response = self.client.list_user_repos(
                 user=user, type=type, per_page=per_page, page=page
             )
-            return self._handle_response(response, "Repositories fetched successfully")
+            return self._handle_response(response, "Repositories fetched successfully", "list the repositories")
         except Exception as e:
-            logger.error(f"Error listing repositories: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("listing repositories", e)
 
     # ------------------------------------------------------------------
     # Issue tools
@@ -680,10 +726,9 @@ class GitHub:
                 assignees=assignees,
                 labels=labels,
             )
-            return self._handle_response(response, "Issue created successfully")
+            return self._handle_response(response, "Issue created successfully", "create the issue")
         except Exception as e:
-            logger.error(f"Error creating issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating issue", e)
 
     @tool(
         path="/tools/github/get_issue",
@@ -708,10 +753,9 @@ class GitHub:
         try:
             logger.info("github.get_issue called with args: %s", {"owner": owner, "repo": repo, "number": number})
             response = self.client.get_issue(owner=owner, repo=repo, number=number)
-            return self._handle_response(response, "Issue fetched successfully")
+            return self._handle_response(response, "Issue fetched successfully", "get the issue")
         except Exception as e:
-            logger.error(f"Error getting issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting issue", e)
 
     @tool(
         path="/tools/github/list_issues",
@@ -763,10 +807,9 @@ class GitHub:
                 per_page=_per_page,
                 page=_page,
             )
-            return self._handle_response(response, "Issues fetched successfully")
+            return self._handle_response(response, "Issues fetched successfully", "list the issues")
         except Exception as e:
-            logger.error(f"Error listing issues: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("listing issues", e)
 
     @tool(
         path="/tools/github/close_issue",
@@ -790,10 +833,9 @@ class GitHub:
         try:
             logger.info("github.close_issue called with args: %s", {"owner": owner, "repo": repo, "number": number})
             response = self.client.close_issue(owner=owner, repo=repo, number=number)
-            return self._handle_response(response, "Issue closed successfully")
+            return self._handle_response(response, "Issue closed successfully", "close the issue")
         except Exception as e:
-            logger.error(f"Error closing issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("closing issue", e)
 
     @tool(
         path="/tools/github/update_issue",
@@ -862,10 +904,9 @@ class GitHub:
                 assignees=assignees,
                 labels=labels,
             )
-            return self._handle_response(response, "Issue updated successfully")
+            return self._handle_response(response, "Issue updated successfully", "update the issue")
         except Exception as e:
-            logger.error(f"Error updating issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("updating issue", e)
 
     # ------------------------------------------------------------------
     # Issue comment tools
@@ -894,10 +935,9 @@ class GitHub:
         try:
             logger.info("github.list_issue_comments called with args: %s", {"owner": owner, "repo": repo, "number": number})
             response = self.client.list_issue_comments(owner=owner, repo=repo, number=number)
-            return self._handle_response(response, "Issue comments listed successfully")
+            return self._handle_response(response, "Issue comments listed successfully", "list the issue's comments")
         except Exception as e:
-            logger.error(f"Error listing issue comments: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("listing issue comments", e)
 
     @tool(
         path="/tools/github/get_issue_comment",
@@ -924,10 +964,9 @@ class GitHub:
         try:
             logger.info("github.get_issue_comment called with args: %s", {"owner": owner, "repo": repo, "number": number, "comment_id": comment_id})
             response = self.client.get_issue_comment(owner=owner, repo=repo, number=number, comment_id=comment_id)
-            return self._handle_response(response, "Issue comment fetched successfully")
+            return self._handle_response(response, "Issue comment fetched successfully", "get the comment")
         except Exception as e:
-            logger.error(f"Error getting issue comment: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting issue comment", e)
 
     @tool(
         path="/tools/github/create_issue_comment",
@@ -953,10 +992,9 @@ class GitHub:
         try:
             logger.info("github.create_issue_comment called with args: %s", {"owner": owner, "repo": repo, "number": number, "body": body[:100] + "..." if len(body) > 100 else body})
             response = self.client.create_issue_comment(owner=owner, repo=repo, number=number, body=body)
-            return self._handle_response(response, "Issue comment created successfully")
+            return self._handle_response(response, "Issue comment created successfully", "add the comment")
         except Exception as e:
-            logger.error(f"Error creating issue comment: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating issue comment", e)
 
     # ------------------------------------------------------------------
     # Pull request tools
@@ -1006,10 +1044,9 @@ class GitHub:
                 body=body,
                 draft=draft,
             )
-            return self._handle_response(response, "Pull request created successfully")
+            return self._handle_response(response, "Pull request created successfully", "create the pull request")
         except Exception as e:
-            logger.error(f"Error creating pull request: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating pull request", e)
 
     @tool(
         path="/tools/github/get_pull_request",
@@ -1036,12 +1073,12 @@ class GitHub:
         try:
             logger.info("github.get_pull_request called with args: %s", {"owner": owner, "repo": repo, "number": number})
             pr_response = self.client.get_pull(owner=owner, repo=repo, number=number)
-            success_pr, json_str_pr = self._handle_response(pr_response, "Pull request fetched successfully")
+            success_pr, json_str_pr = self._handle_response(pr_response, "Pull request fetched successfully", "get the pull request")
             if not success_pr:
                 return False, json_str_pr
             comments_response = self.client.list_issue_comments(owner=owner, repo=repo, number=number)
             success_comments, json_str_comments = self._handle_response(
-                comments_response, "Issue comments listed successfully"
+                comments_response, "Issue comments listed successfully", "list the issue's comments"
             )
             pr_payload = json.loads(json_str_pr)
             combined = {
@@ -1060,8 +1097,7 @@ class GitHub:
                 combined["data"]["conversation_comments_error"] = comments_payload.get("error")
             return True, json.dumps(combined)
         except Exception as e:
-            logger.error(f"Error getting pull request: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting pull request", e)
 
     @tool(
         path="/tools/github/get_pull_request_commits",
@@ -1087,7 +1123,7 @@ class GitHub:
         try:
             logger.info("github.get_pull_request_commits called with args: %s", {"owner": owner, "repo": repo, "number": number})
             response = self.client.get_pull_commits(owner=owner, repo=repo, number=number)
-            success, json_str = self._handle_response(response, "Pull request commits fetched successfully")
+            success, json_str = self._handle_response(response, "Pull request commits fetched successfully", "list the pull request's commits")
             if not success:
                 return success, json_str
             payload = json.loads(json_str)
@@ -1102,8 +1138,7 @@ class GitHub:
                 payload["last_commit_sha"] = None
             return True, json.dumps(payload)
         except Exception as e:
-            logger.error(f"Error getting pull request commits: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting pull request commits", e)
 
     @tool(
         path="/tools/github/get_pull_request_file_changes",
@@ -1153,12 +1188,11 @@ class GitHub:
             
             return self._handle_response(
                 response,
-                "Pull request file changes fetched successfully"
+                "Pull request file changes fetched successfully", "get the pull request's file changes"
             )
             
         except Exception as e:
-            logger.error(f"Error getting pull request file changes: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting pull request file changes", e)
     @tool(
         path="/tools/github/list_pull_requests",
         short_description="List pull requests in a GitHub repository",
@@ -1209,10 +1243,9 @@ class GitHub:
                 per_page=_per_page,
                 page=_page,
             )
-            return self._handle_response(response, "Pull requests fetched successfully")
+            return self._handle_response(response, "Pull requests fetched successfully", "list the pull requests")
         except Exception as e:
-            logger.error(f"Error listing pull requests: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("listing pull requests", e)
 
     @tool(
         path="/tools/github/merge_pull_request",
@@ -1254,10 +1287,9 @@ class GitHub:
                 commit_message=commit_message,
                 merge_method=merge_method,
             )
-            return self._handle_response(response, "Pull request merged successfully")
+            return self._handle_response(response, "Pull request merged successfully", "merge the pull request")
         except Exception as e:
-            logger.error(f"Error merging pull request: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("merging pull request", e)
 
     # ------------------------------------------------------------------
     # Pull request review and review comment tools
@@ -1286,10 +1318,9 @@ class GitHub:
         try:
             logger.info("github.get_pull_request_reviews called with args: %s", {"owner": owner, "repo": repo, "number": number})
             response = self.client.get_pull_reviews(owner=owner, repo=repo, number=number)
-            return self._handle_response(response, "Pull request reviews fetched successfully")
+            return self._handle_response(response, "Pull request reviews fetched successfully", "get the pull request's reviews")
         except Exception as e:
-            logger.error(f"Error getting pull request reviews: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting pull request reviews", e)
 
     @tool(
         path="/tools/github/create_pull_request_review",
@@ -1326,10 +1357,9 @@ class GitHub:
             response = self.client.create_pull_request_review(
                 owner=owner, repo=repo, number=number, event=event, body=body
             )
-            return self._handle_response(response, "Pull request review submitted successfully")
+            return self._handle_response(response, "Pull request review submitted successfully", "submit the review")
         except Exception as e:
-            logger.error(f"Error creating pull request review: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating pull request review", e)
 
     @tool(
         path="/tools/github/list_pull_request_comments",
@@ -1354,10 +1384,9 @@ class GitHub:
         try:
             logger.info("github.list_pull_request_comments called with args: %s", {"owner": owner, "repo": repo, "number": number})
             response = self.client.get_pull_review_comments(owner=owner, repo=repo, number=number)
-            return self._handle_response(response, "Pull request comments listed successfully")
+            return self._handle_response(response, "Pull request comments listed successfully", "list the pull request's review comments")
         except Exception as e:
-            logger.error(f"Error listing pull request comments: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("listing pull request comments", e)
 
     @tool(
         path="/tools/github/create_pull_request_review_comment",
@@ -1408,10 +1437,9 @@ class GitHub:
                 line=line,
                 side=side,
             )
-            return self._handle_response(response, "Pull request review comment created successfully")
+            return self._handle_response(response, "Pull request review comment created successfully", "add the review comment")
         except Exception as e:
-            logger.error(f"Error creating pull request review comment: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating pull request review comment", e)
 
     # ------------------------------------------------------------------
     # Search tools
@@ -1453,7 +1481,6 @@ class GitHub:
             response = self.client.search_repositories(
                 query=query, per_page=per_page, page=page
             )
-            return self._handle_response(response, "Repository search completed successfully")
+            return self._handle_response(response, "Repository search completed successfully", "search repositories")
         except Exception as e:
-            logger.error(f"Error searching repositories: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("searching repositories", e)

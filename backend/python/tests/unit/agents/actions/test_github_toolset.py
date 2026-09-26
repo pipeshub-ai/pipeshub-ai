@@ -10,6 +10,7 @@ parsed into real PyGithub objects.
 
 import json
 import re
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlsplit
@@ -25,6 +26,7 @@ from app.agents.actions.github.github import (
 from app.sources.client.github.github import GitHubClient, GitHubClientViaToken
 
 API = "https://api.github.com"
+TOKEN = "ghp_fake-token-must-never-leak"
 
 
 @dataclass
@@ -36,12 +38,13 @@ class RecordedRequest:
 
 
 class _Response:
-    def __init__(self, status: int, payload: object) -> None:
+    def __init__(self, status: int, payload: object, headers: dict[str, str] | None = None) -> None:
         self.status = status
         self._text = json.dumps(payload)
+        self._headers = headers or {}
 
     def getheaders(self) -> list[tuple[str, str]]:
-        return [("content-type", "application/json; charset=utf-8")]
+        return [("content-type", "application/json; charset=utf-8"), *self._headers.items()]
 
     def read(self) -> str:
         return self._text
@@ -54,7 +57,8 @@ class FakeGitHubAPI:
     requests: list[RecordedRequest] = field(default_factory=list)
     routes: list[tuple[str, re.Pattern, list[tuple[int, object]]]] = field(default_factory=list)
 
-    def on(self, method: str, path_regex: str, *responses: tuple[int, object]) -> "FakeGitHubAPI":
+    def on(self, method: str, path_regex: str, *responses: object) -> "FakeGitHubAPI":
+        """Each response is (status, payload), (status, payload, headers), or an exception to raise."""
         self.routes.append((method, re.compile(rf"^{path_regex}$"), list(responses)))
         return self
 
@@ -74,8 +78,10 @@ class FakeGitHubAPI:
         self.requests.append(recorded)
         for method, pattern, responses in self.routes:
             if method == verb and pattern.match(parts.path):
-                status, payload = responses.pop(0) if len(responses) > 1 else responses[0]
-                return _Response(status, payload)
+                response = responses.pop(0) if len(responses) > 1 else responses[0]
+                if isinstance(response, BaseException):
+                    raise response
+                return _Response(*response)
         return _Response(404, {"message": "Not Found", "documentation_url": "https://docs.github.com/rest"})
 
 
@@ -109,7 +115,7 @@ def api() -> Iterator[FakeGitHubAPI]:
 
 @pytest.fixture
 def github(api: FakeGitHubAPI) -> GitHub:
-    client = GitHubClientViaToken("ghp_test")
+    client = GitHubClientViaToken(TOKEN)
     client.create_client()
     requester = client.get_sdk().requester
     # PyGithub spaces requests 0.25s apart (1s for writes); pointless against a fake.
@@ -125,9 +131,13 @@ def ok(result: tuple[bool, str]) -> dict:
 
 
 def err(result: tuple[bool, str]) -> str:
+    """The failure message, checked to be plain text the agent can relay safely."""
     success, payload = result
     assert success is False, f"expected failure, got success: {payload}"
-    return json.loads(payload)["error"]
+    message = json.loads(payload)["error"]
+    for leaked in (TOKEN, "Bearer", "documentation_url", "{"):
+        assert leaked not in message, f"{leaked!r} leaked into: {message}"
+    return message
 
 
 def repo(owner: str = "acme", name: str = "web") -> dict:
@@ -456,7 +466,7 @@ class TestPullRequests:
         payload = ok(await github.get_pull_request("acme", "web", 7))
         assert payload["data"]["pr"]["number"] == 7
         assert payload["data"]["conversation_comments"] == []
-        assert "API rate limit exceeded" in payload["data"]["conversation_comments_error"]
+        assert "rate limit has been reached" in payload["data"]["conversation_comments_error"]
         assert "could not be loaded" in payload["message"]
 
     @pytest.mark.asyncio
@@ -565,3 +575,64 @@ class TestLabels:
 
     def test_review_label(self) -> None:
         assert _github_review_label({"user": {"login": "bo"}, "state": "APPROVED"}) == "bo: APPROVED"
+
+
+# ===========================================================================
+# Failures the agent relays to the user
+# ===========================================================================
+
+
+class TestFailuresInPlainLanguage:
+    @pytest.mark.asyncio
+    async def test_rate_limit_says_how_long_to_wait(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (403, {"message": "API rate limit exceeded for user ID 7."},
+                                  {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(time.time()) + 120)}))
+        message = err(await github.get_repository("acme", "web"))
+        assert "rate limit" in message
+        assert re.search(r"Wait (11\d|120) seconds and try again", message), message
+
+    @pytest.mark.asyncio
+    async def test_429_uses_retry_after(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (429, {"message": "Too many requests"}, {"retry-after": "30"}))
+        assert "Wait 30 seconds and try again" in err(await github.get_repository("acme", "web"))
+
+    @pytest.mark.asyncio
+    async def test_secondary_rate_limit_is_a_rate_limit(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("POST", rf"{REPO_PATH}/issues", (403, {"message": "You have exceeded a secondary rate limit."}, {"retry-after": "60"}))
+        assert "Wait 60 seconds" in err(await github.create_issue("acme", "web", "Crash"))
+
+    @pytest.mark.asyncio
+    async def test_rejected_sign_in_says_to_reconnect(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (401, {"message": "Bad credentials", "documentation_url": "https://docs.github.com/rest"}))
+        message = err(await github.get_repository("acme", "web"))
+        assert "did not accept the saved sign-in" in message
+        assert "Reconnect the GitHub toolset" in message
+
+    @pytest.mark.asyncio
+    async def test_missing_repository_says_how_to_find_the_right_one(self, github, api) -> None:
+        message = err(await github.get_repository("acme", "nope"))
+        assert "could not get the repository" in message.lower()
+        assert "list_repositories" in message
+
+    @pytest.mark.asyncio
+    async def test_validation_failure_relays_githubs_field_errors(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (200, repo()))
+        api.on("POST", rf"{REPO_PATH}/pulls", (422, {"message": "Validation Failed", "errors": [
+            {"resource": "PullRequest", "code": "custom", "message": "A pull request already exists for acme:feature."},
+        ]}))
+        message = err(await github.create_pull_request("acme", "web", "Add login", head="feature", base="main"))
+        assert message == (
+            "GitHub refused to create the pull request. GitHub said: Validation Failed; "
+            "A pull request already exists for acme:feature. Correct the request and try again."
+        )
+
+    @pytest.mark.asyncio
+    async def test_server_error_says_to_try_again(self, github, api) -> None:
+        api.on("GET", REPO_PATH, (502, {"message": "Server Error"}))
+        assert "temporary problem" in err(await github.get_repository("acme", "web"))
+
+    @pytest.mark.asyncio
+    async def test_unreachable_github_is_explained(self, github, api) -> None:
+        api.on("GET", REPO_PATH, ConnectionError(f"connection reset while sending Authorization: token {TOKEN}"))
+        assert "could not be reached" in err(await github.get_repository("acme", "web"))
