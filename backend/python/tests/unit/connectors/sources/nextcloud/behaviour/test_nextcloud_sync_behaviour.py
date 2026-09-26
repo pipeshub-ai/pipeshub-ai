@@ -51,12 +51,13 @@ CONNECTOR_ID = "nextcloud-1"
 BASE = "https://cloud.example.com"
 MADE_UP_DOMAIN = "@nextcloud.local"
 ALICE_OWNER = [(EntityType.USER, PermissionType.OWNER, "alice@example.com")]
+# Each makes a fresh answer, so an outage can give one to every retry.
 BAD_ANSWERS = [
-    pytest.param(httpx.Response(503), id="server-error"),
-    pytest.param(httpx.Response(207, content=b""), id="empty-body"),
-    pytest.param(httpx.Response(207, content=b"<d:multistatus"), id="garbled-xml"),
-    pytest.param(httpx.Response(207, content=b'<d:multistatus xmlns:d="DAV:"/>'), id="no-entries"),
-    pytest.param(httpx.ConnectError("connection reset"), id="network-error"),
+    pytest.param(lambda: httpx.Response(503), id="server-error"),
+    pytest.param(lambda: httpx.Response(207, content=b""), id="empty-body"),
+    pytest.param(lambda: httpx.Response(207, content=b"<d:multistatus"), id="garbled-xml"),
+    pytest.param(lambda: httpx.Response(207, content=b'<d:multistatus xmlns:d="DAV:"/>'), id="no-entries"),
+    pytest.param(lambda: httpx.ConnectError("connection reset"), id="network-error"),
 ]
 
 
@@ -78,14 +79,21 @@ def store() -> FakeStore:
 
 
 @pytest.fixture(autouse=True)
-def no_real_pauses(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The connector pauses between batches; the pause is kept but made instant."""
+def no_real_pauses(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Pauses are kept but made instant: the connector's between batches, and the retry policy's backoff.
+
+    The policy's backoff gate is recorded instead of armed, so a test can check how
+    long a retry would have waited without waiting it out.
+    """
     real_sleep = asyncio.sleep
 
     async def _sleep(delay: float, *args: object, **kwargs: object) -> None:
         await real_sleep(0)
 
     monkeypatch.setattr("app.connectors.sources.nextcloud.connector.asyncio.sleep", _sleep)
+    pauses: list[float] = []
+    monkeypatch.setattr(ResiliencePolicy, "pause", lambda _policy, seconds: pauses.append(seconds))
+    return pauses
 
 
 def auth_config(server: FakeNextcloud, **overrides: str) -> dict[str, Any]:
@@ -162,12 +170,13 @@ class TestRealClientStack:
         assert type(connector.rate_limiter) is AsyncLimiter
         assert [r.url.path for r in server.requests] == [f"{USERS_PREFIX}alice"], "init reads the user over HTTP"
 
-    async def test_the_production_client_is_built_without_a_retrying_transport(self, server, db, store) -> None:
+    async def test_the_production_client_retries_through_the_shared_policy(self, server, db, store) -> None:
         connector = await make_connector(server, db, store)
 
         http = connector.data_source.client
-        assert http.resilience is None
-        assert type(http.client._transport) is httpx.AsyncHTTPTransport, "a plain transport: no retries on 429"
+        assert http.resilience is connector.resilience
+        assert (http.resilience.max_retries, http.resilience.rate_limit) == (3, 50)
+        assert type(http.client._transport) is ResilientHTTPTransport
 
     async def test_the_fake_server_keeps_a_retrying_transport_working(self, server) -> None:
         """Guards the fake: a client that does configure retries must see them run for real."""
@@ -279,7 +288,7 @@ class TestAppPasswordAuth:
 
     async def test_connection_check_survives_a_network_error(self, server, db, store) -> None:
         connector = await make_connector(server, db, store)
-        server.fail("GET", lambda p: p == CAPABILITIES_PATH, httpx.ConnectError("refused"))
+        server.outage("GET", lambda p: p == CAPABILITIES_PATH, lambda: httpx.ConnectError("refused"))
 
         assert await connector.test_connection_and_access() is False
 
@@ -453,7 +462,7 @@ class TestFullSync:
 
     async def test_a_failed_cursor_anchor_leaves_the_next_run_a_full_sync(self, server, db, store) -> None:
         seed_drive(server)
-        server.fail("GET", lambda p: p == ACTIVITY_PATH, httpx.Response(503))
+        server.outage("GET", lambda p: p == ACTIVITY_PATH, lambda: httpx.Response(503))
         connector = await make_connector(server, db, store)
 
         await connector.run_sync()
@@ -464,7 +473,7 @@ class TestFullSync:
     async def test_a_cursor_anchor_that_raises_is_not_fatal(self, server, db, store) -> None:
         seed_drive(server)
         connector = await make_connector(server, db, store)
-        server.fail("GET", lambda p: p == ACTIVITY_PATH, httpx.ReadTimeout("slow"))
+        server.outage("GET", lambda p: p == ACTIVITY_PATH, lambda: httpx.ReadTimeout("slow"))
 
         await connector.run_sync()
 
@@ -691,7 +700,7 @@ class TestIncrementalSync:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")
         server.change("readme.txt")
-        server.fail("PROPFIND", lambda p: p.endswith("/notes.txt"), httpx.Response(503))
+        server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), lambda: httpx.Response(503))
 
         await connector.run_sync()
 
@@ -702,7 +711,7 @@ class TestIncrementalSync:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")
         server.change("readme.txt")
-        server.fail("PROPFIND", lambda p: p.endswith("/notes.txt"), bad)
+        server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), bad)
 
         await connector.run_sync()
 
@@ -712,7 +721,7 @@ class TestIncrementalSync:
     async def test_a_bad_answer_for_a_new_folder_still_saves_the_file(self, server, db, store, bad) -> None:
         connector = await synced(server, db, store)
         server.add_file("New/inside.txt")
-        server.fail("PROPFIND", lambda p: p.rstrip("/").endswith("/New"), bad, bad)
+        server.outage("PROPFIND", lambda p: p.rstrip("/").endswith("/New"), bad)
 
         await connector.run_sync()
 
@@ -764,7 +773,7 @@ class TestIncrementalSync:
 
     async def test_an_activity_feed_that_raises_fails_the_run(self, server, db, store) -> None:
         connector = await synced(server, db, store)
-        server.fail("GET", lambda p: p == ACTIVITY_PATH, httpx.ReadTimeout("slow"))
+        server.outage("GET", lambda p: p == ACTIVITY_PATH, lambda: httpx.ReadTimeout("slow"))
 
         with pytest.raises(httpx.ReadTimeout):
             await connector.run_sync()
@@ -901,22 +910,39 @@ class TestIncrementalSync:
 
         assert "notes.txt" not in db.names()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a 429 (rate limited) answer "
-            "is not retried after the Retry-After wait, because the connector builds its client "
-            "without a retry policy; the change is skipped for this run."
-        ),
-    )
-    async def test_a_rate_limited_fetch_is_retried_after_waiting(self, server, db, store) -> None:
+    @pytest.mark.parametrize("answer", [
+        pytest.param(httpx.Response(429, headers={"Retry-After": "7"}), id="rate-limited"),
+        pytest.param(httpx.Response(503, headers={"Retry-After": "7"}), id="unavailable"),
+    ])
+    async def test_a_rate_limited_fetch_is_retried_after_waiting(self, server, db, store, no_real_pauses, answer) -> None:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")
-        server.fail("PROPFIND", lambda p: p.endswith("/notes.txt"), httpx.Response(429, headers={"Retry-After": "1"}))
+        fault = server.fail("PROPFIND", lambda p: p.endswith("/notes.txt"), answer)
 
         await connector.run_sync()
 
         assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+        assert fault.hits == 1 and len([r for r in server.calls("PROPFIND") if r.url.path.endswith("/notes.txt")]) == 2
+        assert [p for p in no_real_pauses if p >= 7] != [], "the retry waited as long as Retry-After asked"
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_a_rate_limited_activity_feed_is_retried_in_the_same_run(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.delete("Docs/notes.txt")
+        server.fail("GET", lambda p: p == ACTIVITY_PATH, httpx.Response(429, headers={"Retry-After": "2"}))
+
+        await connector.run_sync()
+
+        assert "notes.txt" not in db.names()
+
+    async def test_retries_give_up_after_four_attempts(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.change("Docs/notes.txt")
+        outage = server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), lambda: httpx.Response(429))
+
+        await connector.run_sync()
+
+        assert outage.hits == 4
 
 
 class TestRateLimiting:
@@ -953,7 +979,7 @@ class TestPermissions:
     async def test_a_failed_fetch_writes_no_record_and_no_access(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         server.add_file("secret.txt")
-        server.fail("PROPFIND", lambda p: p.endswith("/secret.txt"), httpx.Response(500))
+        server.outage("PROPFIND", lambda p: p.endswith("/secret.txt"), lambda: httpx.Response(500))
         permission_sets = len(db.permissions)
 
         await connector.run_sync()
@@ -1008,7 +1034,7 @@ class TestDownloadAndReindex:
             await connector.stream_record(unknown)
         assert missing.value.status_code == 404
 
-        server.fail("GET", lambda p: p.endswith("/cat.png"), httpx.ConnectError("refused"))
+        server.outage("GET", lambda p: p.endswith("/cat.png"), lambda: httpx.ConnectError("refused"))
         with pytest.raises(HTTPException) as network:
             await connector.stream_record(db.by_name("cat.png"))
         assert network.value.status_code >= 500
@@ -1083,7 +1109,7 @@ class TestDownloadAndReindex:
         server.delete("Docs/notes.txt")
         unknown = db.by_name("cat.png").model_copy(update={"id": "not-in-db"})
         server.fail("PROPFIND", lambda p: p.endswith("/readme.txt"), httpx.Response(207, content=b""))
-        server.fail("PROPFIND", lambda p: p.endswith("/cat.png"), httpx.ConnectError("reset"))
+        server.outage("PROPFIND", lambda p: p.endswith("/cat.png"), lambda: httpx.ConnectError("reset"))
 
         await connector.reindex_records([gone, unknown, db.by_name("readme.txt"), db.by_name("cat.png"), db.by_name("Docs")])
 

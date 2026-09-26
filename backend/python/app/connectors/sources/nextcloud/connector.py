@@ -398,6 +398,12 @@ def get_response_error(response) -> str:
     .in_group("Cloud Storage")\
     .with_description("Sync files and folders from your personal Nextcloud account")\
     .with_categories(["Storage", "Collaboration"])\
+    .with_resilience_config(
+        rate_limit=50,       # Nextcloud publishes no API budget; matches the connector's own listing limiter
+        max_retries=3,       # 4 attempts total, waiting as long as Retry-After asks (capped at max_delay)
+        base_delay=1.0,
+        max_delay=60.0,
+    )\
     .with_scopes([ConnectorScope.PERSONAL])\
     .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
@@ -549,7 +555,9 @@ class NextcloudConnector(BaseConnector):
                 self.logger.error("Username and Password are required for Nextcloud")
                 return False
 
-            client = NextcloudRESTClientViaUsernamePassword(base_url, username, password)
+            client = NextcloudRESTClientViaUsernamePassword(
+                base_url, username, password, resilience=self.resilience
+            )
             data_source = NextcloudDataSource(NextcloudClient(client))
             self.current_user_id = username
 
