@@ -509,6 +509,87 @@ describe('MCP Controller — handleMCPRequest', () => {
   })
 
   // =========================================================================
+  // Request-ID logging
+  // =========================================================================
+  describe('request-ID logging', () => {
+    let infoStub: sinon.SinonStub
+
+    beforeEach(() => {
+      sinon.restore()
+
+      const logger = {
+        info: sinon.stub(),
+        debug: sinon.stub(),
+        warn: sinon.stub(),
+        error: sinon.stub(),
+      }
+
+      infoStub = logger.info
+      sinon.stub(Logger, 'getInstance').returns(logger as unknown as Logger)
+    })
+
+    afterEach(() => {
+      sinon.restore()
+    })
+
+    it('should log incoming request when x-pipeshub-request-id is present', async () => {
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves() },
+      })
+
+      const req = createMockRequest({
+        headers: { 'x-pipeshub-request-id': 'req-123' },
+        body: {},
+      })
+      const res = createMockResponse() as unknown as import('express').Response
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res, next)
+
+      expect(infoStub.calledWithMatch('Incoming MCP request', { 'x-pipeshub-request-id': 'req-123' })).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('should not log incoming request when x-pipeshub-request-id is missing', async () => {
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves() },
+      })
+
+      const req = createMockRequest({
+        headers: {},
+        body: {},
+      })
+      const res = createMockResponse() as unknown as import('express').Response
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res, next)
+
+      expect(infoStub.calledWithMatch('Incoming MCP request')).to.be.false
+      expect(next.called).to.be.false
+    })
+
+    it('should log incoming request and call next(error) when server.connect rejects and x-pipeshub-request-id is present', async () => {
+      const error = new Error('connect failed')
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().rejects(error) },
+      })
+
+      const req = createMockRequest({
+        headers: { 'x-pipeshub-request-id': 'req-error-123' },
+        body: {},
+      })
+      const res = createMockResponse() as unknown as import('express').Response
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res, next)
+
+      expect(infoStub.calledWithMatch('Incoming MCP request', { 'x-pipeshub-request-id': 'req-error-123' })).to.be.true
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.equal(error)
+    })
+  })
+
+  // =========================================================================
   // Successful flow
   // =========================================================================
   describe('successful request flow', () => {
@@ -779,6 +860,14 @@ describe('MCP Controller — handleMCPRequest', () => {
   // Multiple sequential requests
   // =========================================================================
   describe('multiple requests', () => {
+    beforeEach(() => {
+      appConfig = createMockAppConfig()
+      // Reset core mock
+      mcpCoreExports.PipeshubCore = class FakePipeshubCore {
+        constructor(_opts?: any) {}
+      }
+    })
+
     it('should handle multiple sequential requests independently', async () => {
       const tokens: string[] = []
       mcpCoreExports.PipeshubCore = class {
