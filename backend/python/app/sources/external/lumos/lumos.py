@@ -49,7 +49,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -86,7 +86,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -107,7 +107,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -134,7 +134,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -174,7 +174,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -198,7 +198,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -235,7 +235,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -256,7 +256,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -292,7 +292,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -319,7 +319,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -352,7 +352,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -373,7 +373,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -418,7 +418,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -448,7 +448,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -472,7 +472,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -511,7 +511,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -535,7 +535,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -568,7 +568,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -607,7 +607,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -634,7 +634,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -658,7 +658,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -682,7 +682,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -706,7 +706,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -732,7 +732,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -758,7 +758,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -800,7 +800,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -842,7 +842,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -880,7 +880,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -907,7 +907,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -950,7 +950,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -974,7 +974,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1004,7 +1004,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1045,7 +1045,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1069,7 +1069,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1111,7 +1111,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1135,7 +1135,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1159,7 +1159,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1193,7 +1193,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1226,7 +1226,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1268,7 +1268,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1292,7 +1292,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1319,7 +1319,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1346,7 +1346,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1370,7 +1370,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1415,7 +1415,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1457,7 +1457,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1487,7 +1487,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1521,7 +1521,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1545,7 +1545,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1569,7 +1569,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1606,7 +1606,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1633,7 +1633,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1663,7 +1663,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1707,7 +1707,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1753,7 +1753,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1774,7 +1774,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1795,7 +1795,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1830,7 +1830,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1856,7 +1856,7 @@ class LumosDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=_as_query_params(_query),
             body=_body,
         )
         return await self.http.execute(req)
@@ -1885,3 +1885,11 @@ def _serialize_value(v: Any) -> str:
 
 def _as_str_dict(d: Dict[str, Any]) -> Dict[str, str]:
     return {str(k): _serialize_value(v) for k, v in (d or {}).items()}
+
+def _as_query_params(d: dict[str, Any]) -> list[tuple[str, str]]:
+    """Lumos reads array query parameters as one ``key=value`` pair per item, not a comma-joined value."""
+    pairs: list[tuple[str, str]] = []
+    for k, v in (d or {}).items():
+        values = v if isinstance(v, (list, tuple, set)) else [v]
+        pairs.extend((str(k), _serialize_value(item)) for item in values)
+    return pairs

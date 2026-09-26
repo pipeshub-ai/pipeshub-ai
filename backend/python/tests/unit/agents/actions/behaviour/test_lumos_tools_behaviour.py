@@ -135,7 +135,6 @@ class TestReads:
         assert data["next_page"] == 2
         assert "90" in data["message"] and "page=2" in data["message"]
 
-    @pending("statuses")
     async def test_several_status_filters_are_sent_as_repeated_parameters(self, lumos, api) -> None:
         # Lumos declares ``statuses`` as an exploded array: one ``statuses=`` per value.
         api.on("GET", "/appstore/access_requests", lumos_page([]))
