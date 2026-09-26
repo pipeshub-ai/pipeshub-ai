@@ -144,7 +144,6 @@ class TestReads:
         assert ok is True
         assert api.calls[0].query["statuses"] == ["PENDING", "APPROVED"]
 
-    @pending("path")
     async def test_an_id_containing_a_slash_stays_one_path_segment(self, lumos, api) -> None:
         api.on("GET", "/users/u-1%2Froles", {"id": "u-1/roles"})
 
@@ -241,7 +240,6 @@ class TestWrites:
         assert ok is True
         assert [(c.method, c.path) for c in api.calls] == [("POST", "/users/u-1/roles/App%20Admin")]
 
-    @pending("path")
     async def test_a_role_name_containing_a_slash_does_not_reach_another_endpoint(self, lumos, api) -> None:
         api.on("DELETE", "/users/u-1/roles/Read%2FWrite", httpx.Response(204))
 

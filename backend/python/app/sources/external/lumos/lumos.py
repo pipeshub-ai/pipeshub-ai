@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional, Union
+from urllib.parse import quote
 
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
@@ -1866,8 +1867,10 @@ def _safe_format_url(template: str, params: Dict[str, object]) -> str:
     class _SafeDict(dict):
         def __missing__(self, key: str) -> str:
             return '{' + key + '}'
+    # Each value is one path segment: an id containing "/" must not reach a different endpoint.
+    encoded = {k: quote(str(v), safe='') for k, v in params.items()}
     try:
-        return template.format_map(_SafeDict(params))
+        return template.format_map(_SafeDict(encoded))
     except Exception:
         return template
 
