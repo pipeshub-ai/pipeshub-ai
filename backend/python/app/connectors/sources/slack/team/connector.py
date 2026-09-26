@@ -2554,6 +2554,13 @@ class SlackConnector(BaseConnector):
                 async with httpx.AsyncClient(timeout=30.0) as http:
                     headers = {"Authorization": f"Bearer {token}"} if token else {}
                     r = await http.get(url_dl, headers=headers)
+                    # Slack answers a token it no longer accepts with 200 and its sign-in
+                    # page. Right after a scheduled rotation the connector can still hold
+                    # the old token, so try once more with the stored one if it is newer.
+                    if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
+                        newer = await self._token_renewal.newer_stored_token(token)
+                        if newer:
+                            r = await http.get(url_dl, headers={"Authorization": f"Bearer {newer}"})
                     if r.status_code == 200:
                         file_hash = hashlib.sha256(r.content).hexdigest()
             except Exception as exc:

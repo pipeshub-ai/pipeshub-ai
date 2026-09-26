@@ -13,6 +13,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
+import httpx
 import pytest
 from slack_behaviour_fakes import (
     BOT_TOKEN,
@@ -345,6 +346,38 @@ class TestDownloadsAfterRotation:
         assert downloads
         assert {r.headers["authorization"] for r in downloads} == {f"Bearer {new_access}"}
         saved = next(r for r in store.records.values() if isinstance(r, FileRecord) and r.external_record_id == "F0ROT")
+        assert saved.sha256_hash == hashlib.sha256(content).hexdigest()
+        assert len(oauth.requests) == 1
+
+
+    async def test_a_download_refused_after_a_scheduled_rotation_is_retried_with_the_stored_token(
+        self, workspace, oauth, store, checkpoints, monkeypatch,
+    ) -> None:
+        connector, config_service = await rotating_connector(
+            store, checkpoints, monkeypatch, rotating_credentials(issued_hours_ago=11.9),
+            config_service_class=StaleCacheConfigService,
+        )
+        # The refresh service's own schedule rotates the token; this connector's
+        # renewal code never sees it, and its cache still has the old document.
+        await startup_service.get_token_refresh_service().refresh_now(PERSONAL_CONNECTOR_ID, "Slack", OLD_REFRESH)
+        new_access, _ = oauth.issued[0]
+        assert config_service.config["credentials"]["access_token"] == new_access
+
+        content = b"rotated-bytes"
+        fd = workspace.add_file("F0SCHED", "sched.txt", content, mimetype="text/plain", filetype="text")
+        workspace.post(DM_BOB, ts_minutes_ago(10), "U0BOB", "file", files=[fd])
+        serve_file = workspace.file_host
+
+        def sign_in_page_for_the_old_token(request: httpx.Request) -> httpx.Response:
+            if request.headers.get("authorization") == f"Bearer {OLD_ACCESS}":
+                return httpx.Response(200, headers={"content-type": "text/html"}, text="<html>sign in</html>")
+            return serve_file(request)
+
+        monkeypatch.setattr(workspace, "file_host", sign_in_page_for_the_old_token)
+
+        await connector.run_sync()
+
+        saved = next(r for r in store.records.values() if isinstance(r, FileRecord) and r.external_record_id == "F0SCHED")
         assert saved.sha256_hash == hashlib.sha256(content).hexdigest()
         assert len(oauth.requests) == 1
 

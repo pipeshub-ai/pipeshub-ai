@@ -199,9 +199,9 @@ class SlackTokenRenewal:
             self._explain_unrenewable(token_in_use, reason)
             return None
 
-        stored_token = credentials.get("access_token")
-        if stored_token and stored_token != token_in_use:
-            return self._record_replacement(token_in_use, stored_token)
+        replacement = self._stored_replacement(config, token_in_use)
+        if replacement is not None:
+            return replacement
         if refresh_token == self._rejected_refresh_token:
             return None
         if reason == "invalid_auth" and self._renewed_recently():
@@ -227,6 +227,21 @@ class SlackTokenRenewal:
         self._last_renewed_at = time.monotonic()
         self._logger.info("Renewed the Slack token for connector %s (%s)", self._connector_id, reason)
         return self._record_replacement(token_in_use, new_token.access_token)
+
+    async def newer_stored_token(self, token_in_use: str) -> str | None:
+        """The stored access token if it has replaced ``token_in_use``. Never refreshes."""
+        if not token_in_use.startswith(_ROTATING_TOKEN_PREFIX):
+            return None
+        config = await self._config_service.get_config(
+            f"/services/connectors/{self._connector_id}/config"
+        ) or {}
+        return self._stored_replacement(config, token_in_use)
+
+    def _stored_replacement(self, config: dict[str, Any], token_in_use: str) -> str | None:
+        stored_token = (config.get("credentials") or {}).get("access_token")
+        if stored_token and stored_token != token_in_use:
+            return self._record_replacement(token_in_use, stored_token)
+        return None
 
     def _renewed_recently(self) -> bool:
         return (
