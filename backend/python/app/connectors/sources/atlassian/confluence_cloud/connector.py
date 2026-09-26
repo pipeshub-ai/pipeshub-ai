@@ -3744,23 +3744,12 @@ class ConfluenceConnector(BaseConnector):
                 attachments_api_base_url: str | None = None
                 try:
                     datasource = await self._get_fresh_datasource()
-                    if record.record_type == RecordType.CONFLUENCE_PAGE:
-                        attachments_response = await datasource.get_page_attachments(
-                            id=int(record.external_record_id),
-                            status=["current"],  # Only fetch current version attachments
-                            limit=100
-                        )
-                    else:
-                        attachments_response = await datasource.get_blogpost_attachments(
-                            id=int(record.external_record_id),
-                            status=["current"],
-                            limit=100
-                        )
-                    if attachments_response and attachments_response.status == HttpStatusCode.SUCCESS.value:
-                        attachments_result = attachments_response.json()
-                        attachments_data = attachments_result.get("results", [])
-                        attachments_api_base_url = attachments_result.get("_links", {}).get("base")
-                        self.logger.debug(f"Fetched {len(attachments_data)} attachment(s) for streaming")
+                    attachments_data, attachments_api_base_url, _ = await self._list_current_attachments_v2(
+                        datasource,
+                        record.external_record_id,
+                        "page" if record.record_type == RecordType.CONFLUENCE_PAGE else "blogpost",
+                    )
+                    self.logger.debug(f"Fetched {len(attachments_data)} attachment(s) for streaming")
                 except Exception as e:
                     self.logger.warning(f"Failed to fetch attachments for streaming: {e}", exc_info=True)
                     attachments_data = []
@@ -3932,6 +3921,7 @@ class ConfluenceConnector(BaseConnector):
         datasource: ConfluenceDataSource,
         content_id: str,
         content_type: str,
+        limit: int = 100,
     ) -> tuple[list[dict[str, Any]], str | None, bool]:
         """Every current attachment of a page or blog post, following the v2 cursor.
 
@@ -3946,7 +3936,7 @@ class ConfluenceConnector(BaseConnector):
         base_url: str | None = None
         cursor: str | None = None
         while True:
-            kwargs: dict[str, Any] = {"id": int(content_id), "status": ["current"], "limit": 100}
+            kwargs: dict[str, Any] = {"id": int(content_id), "status": ["current"], "limit": limit}
             if cursor:
                 kwargs["cursor"] = cursor
             try:
@@ -3978,22 +3968,12 @@ class ConfluenceConnector(BaseConnector):
         datasource: ConfluenceDataSource | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Fetch current attachments for one page/blogpost."""
+        """Fetch every current attachment of one page/blogpost (``limit`` is the page size)."""
         try:
             ds = datasource or await self._get_fresh_datasource()
-            page_id_int = int(page_id) if isinstance(page_id, str) else page_id
-            list_kwargs: dict[str, Any] = {
-                "id": page_id_int,
-                "status": ["current"],
-                "limit": limit,
-            }
-            if record_type == RecordType.CONFLUENCE_BLOGPOST:
-                response = await ds.get_blogpost_attachments(**list_kwargs)
-            else:
-                response = await ds.get_page_attachments(**list_kwargs)
-
-            if response and response.status == HttpStatusCode.SUCCESS.value:
-                return list(response.json().get("results", []) or [])
+            content_type = "blogpost" if record_type == RecordType.CONFLUENCE_BLOGPOST else "page"
+            attachments, _, _ = await self._list_current_attachments_v2(ds, str(page_id), content_type, limit=limit)
+            return attachments
         except Exception as e:
             self.logger.debug(f"Failed to list attachments for page {page_id}: {e}")
         return []
