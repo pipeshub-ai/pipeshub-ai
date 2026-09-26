@@ -843,14 +843,6 @@ class TestCommentAttachments:
         assert f.parent_external_record_id == "c1-r"
         assert f.parent_node_id == records_db.records["c1-r"].id
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: on the first sync, a page image "
-            "that a comment also shows is saved twice in the same batch (once under the page, once under "
-            "the comment), because the duplicate check looks in the database before the batch is written."
-        ),
-    )
     async def test_page_image_shown_in_a_comment_is_saved_once_under_the_page(
         self, atlassian_api, records_db, checkpoints, search
     ) -> None:
@@ -858,6 +850,7 @@ class TestCommentAttachments:
         search.add("page", "ENG", 0, listing([content("p1", attachments=[attachment("att1", "diagram.png", "image/png")])]))
         embed = '<ac:image><ri:attachment ri:filename="diagram.png" /></ac:image>'
         atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [self._comment("c1", embed)], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/c1/child/comment", {"results": [self._comment("c1-r", embed)], "_links": {"base": BASE}})
         connector = await make_connector(atlassian_api, records_db, checkpoints)
 
         await connector.run_sync()
