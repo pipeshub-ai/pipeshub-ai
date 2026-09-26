@@ -1,6 +1,10 @@
 import json
 import logging
+from collections.abc import Awaitable
+from http import HTTPStatus
 from typing import Optional
+
+import httpx
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
@@ -11,12 +15,74 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.lumos.lumos import LumosClient
 from app.sources.external.lumos.lumos import LumosDataSource
 
 logger = logging.getLogger(__name__)
+
+_MAX_DETAIL_CHARS = 300
+
+
+def _failure(message: str) -> tuple[bool, str]:
+    return False, json.dumps({"error": message})
+
+
+def _detail(response: HTTPResponse) -> object:
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    return body.get("detail") if isinstance(body, dict) else None
+
+
+def _validation_problems(detail: object) -> str:
+    """FastAPI-style ``detail`` entries as "field: message"; Lumos returns these for bad arguments."""
+    if not isinstance(detail, list):
+        return detail if isinstance(detail, str) and len(detail) <= _MAX_DETAIL_CHARS else ""
+    problems = []
+    for entry in detail:
+        if not isinstance(entry, dict) or not isinstance(entry.get("msg"), str):
+            continue
+        loc = [str(part) for part in entry.get("loc") or [] if part not in ("body", "query", "path")]
+        problems.append(f"{'.'.join(loc)}: {entry['msg']}" if loc else entry["msg"])
+    return "; ".join(problems)
+
+
+def _lumos_error_message(response: HTTPResponse) -> str:
+    """Plain-language failure the agent can relay; never the raw body, which may be an HTML error page."""
+    status = response.status
+    if status == HTTPStatus.TOO_MANY_REQUESTS:
+        retry_after = str(response.headers.get("retry-after") or "").strip()
+        wait = f"Wait {retry_after} seconds" if retry_after.isdigit() else "Wait a minute"
+        return f"Lumos is receiving too many requests right now. {wait} and try again."
+    if status == HTTPStatus.UNAUTHORIZED:
+        return (
+            "Lumos did not accept the saved API key. Ask an admin to check the Lumos API key "
+            "in Settings > Toolsets, then try again."
+        )
+    if status == HTTPStatus.FORBIDDEN:
+        return (
+            "The Lumos API key does not have permission to do this. Ask a Lumos admin to grant "
+            "that access, or try a different action."
+        )
+    if status == HTTPStatus.NOT_FOUND:
+        return (
+            "Lumos could not find that item. Check the ID, or use a list tool such as list_users, "
+            "list_platforms or list_groups to find the right one."
+        )
+    if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        return "Lumos is having a temporary problem. Try again in a few minutes."
+    problems = _validation_problems(_detail(response))
+    if problems:
+        return f"Lumos rejected the request: {problems}. Fix those arguments and try again."
+    return f"Lumos rejected the request (status {status}). Check the arguments and try again."
+
+
+def _reply_data(response: HTTPResponse) -> object:
+    if response.status == HTTPStatus.NO_CONTENT:
+        return {}
+    return response.json()
 
 
 tools: list[ToolDefinition] = [
@@ -298,18 +364,19 @@ class Lumos:
     def __init__(self, client: LumosClient) -> None:
         self.client = LumosDataSource(client)
 
-    def _handle_response(self, response: HTTPResponse, success_message: str) -> tuple[bool, str]:
-        success_codes = {
-            HttpStatusCode.SUCCESS.value,
-            HttpStatusCode.CREATED.value,
-            HttpStatusCode.NO_CONTENT.value,
-        }
-        if response.status in success_codes:
-            data = {} if response.status == HttpStatusCode.NO_CONTENT.value else response.json()
-            return True, json.dumps({"message": success_message, "data": data})
-
-        error_text = response.text() if hasattr(response, "text") else str(response)
-        return False, json.dumps({"error": f"HTTP {response.status}", "details": error_text})
+    async def _call(self, request: Awaitable[HTTPResponse], success_message: str) -> tuple[bool, str]:
+        try:
+            response = await request
+        except httpx.TimeoutException:
+            logger.warning("Lumos request timed out")
+            return _failure("Lumos did not answer in time. Try again in a moment.")
+        except httpx.HTTPError as exc:
+            logger.warning("Lumos request failed before a reply: %s", type(exc).__name__)
+            return _failure("Could not reach Lumos. Check the network connection and try again in a moment.")
+        if HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
+            return True, json.dumps({"message": success_message, "data": _reply_data(response)})
+        logger.warning("Lumos returned HTTP %s", response.status)
+        return _failure(_lumos_error_message(response))
 
     def _confirm_mutation(self, confirm: bool, operation: str) -> Optional[tuple[bool, str]]:
         if confirm:
@@ -341,8 +408,10 @@ class Lumos:
         page: Optional[int] = 1,
         size: Optional[int] = 25,
     ) -> tuple[bool, str]:
-        response = await self.client.list_apps(name_search=name_search, page=page, size=size)
-        return self._handle_response(response, "Fetched platforms successfully")
+        return await self._call(
+            self.client.list_apps(name_search=name_search, page=page, size=size),
+            "Fetched platforms successfully",
+        )
 
     @tool(
         path="/tools/lumos/get_platform",
@@ -354,8 +423,10 @@ class Lumos:
         tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
     )
     async def get_platform(self, app_id: str) -> tuple[bool, str]:
-        response = await self.client.get_app(app_id=app_id)
-        return self._handle_response(response, "Fetched platform successfully")
+        return await self._call(
+            self.client.get_app(app_id=app_id),
+            "Fetched platform successfully",
+        )
 
     @tool(
         path="/tools/lumos/list_users",
@@ -374,8 +445,10 @@ class Lumos:
         page: Optional[int] = 1,
         size: Optional[int] = 25,
     ) -> tuple[bool, str]:
-        response = await self.client.list_users(search_term=search_term, page=page, size=size)
-        return self._handle_response(response, "Fetched users successfully")
+        return await self._call(
+            self.client.list_users(search_term=search_term, page=page, size=size),
+            "Fetched users successfully",
+        )
 
     @tool(
         path="/tools/lumos/get_user",
@@ -387,8 +460,10 @@ class Lumos:
         tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
     )
     async def get_user(self, user_id: str) -> tuple[bool, str]:
-        response = await self.client.get_user(user_id=user_id)
-        return self._handle_response(response, "Fetched user successfully")
+        return await self._call(
+            self.client.get_user(user_id=user_id),
+            "Fetched user successfully",
+        )
 
     @tool(
         path="/tools/lumos/get_user_accounts",
@@ -407,8 +482,10 @@ class Lumos:
         page: Optional[int] = 1,
         size: Optional[int] = 25,
     ) -> tuple[bool, str]:
-        response = await self.client.get_user_accounts(user_id=user_id, page=page, size=size)
-        return self._handle_response(response, "Fetched user accounts successfully")
+        return await self._call(
+            self.client.get_user_accounts(user_id=user_id, page=page, size=size),
+            "Fetched user accounts successfully",
+        )
 
     @tool(
         path="/tools/lumos/get_user_roles",
@@ -420,8 +497,10 @@ class Lumos:
         tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
     )
     async def get_user_roles(self, user_id: str) -> tuple[bool, str]:
-        response = await self.client.get_user_roles_users_user_id_roles_get(user_id=user_id)
-        return self._handle_response(response, "Fetched user roles successfully")
+        return await self._call(
+            self.client.get_user_roles_users_user_id_roles_get(user_id=user_id),
+            "Fetched user roles successfully",
+        )
 
     @tool(
         path="/tools/lumos/list_groups",
@@ -442,8 +521,10 @@ class Lumos:
         page: Optional[int] = 1,
         size: Optional[int] = 25,
     ) -> tuple[bool, str]:
-        response = await self.client.get_groups(name=name, app_id=app_id, page=page, size=size)
-        return self._handle_response(response, "Fetched groups successfully")
+        return await self._call(
+            self.client.get_groups(name=name, app_id=app_id, page=page, size=size),
+            "Fetched groups successfully",
+        )
 
     @tool(
         path="/tools/lumos/get_group",
@@ -455,8 +536,10 @@ class Lumos:
         tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
     )
     async def get_group(self, group_id: str) -> tuple[bool, str]:
-        response = await self.client.get_group(group_id=group_id)
-        return self._handle_response(response, "Fetched group successfully")
+        return await self._call(
+            self.client.get_group(group_id=group_id),
+            "Fetched group successfully",
+        )
 
     @tool(
         path="/tools/lumos/get_group_members",
@@ -475,8 +558,10 @@ class Lumos:
         page: Optional[int] = 1,
         size: Optional[int] = 25,
     ) -> tuple[bool, str]:
-        response = await self.client.get_group_membership(group_id=group_id, page=page, size=size)
-        return self._handle_response(response, "Fetched group members successfully")
+        return await self._call(
+            self.client.get_group_membership(group_id=group_id, page=page, size=size),
+            "Fetched group members successfully",
+        )
 
     @tool(
         path="/tools/lumos/list_permissions",
@@ -497,13 +582,15 @@ class Lumos:
         page: Optional[int] = 1,
         size: Optional[int] = 25,
     ) -> tuple[bool, str]:
-        response = await self.client.get_appstore_permissions_appstore_requestable_permissions_get(
+        return await self._call(
+            self.client.get_appstore_permissions_appstore_requestable_permissions_get(
             app_id=app_id,
             search_term=search_term,
             page=page,
             size=size,
+        ),
+            "Fetched permissions successfully",
         )
-        return self._handle_response(response, "Fetched permissions successfully")
 
     @tool(
         path="/tools/lumos/list_app_permissions",
@@ -524,13 +611,15 @@ class Lumos:
         page: Optional[int] = 1,
         size: Optional[int] = 25,
     ) -> tuple[bool, str]:
-        response = await self.client.get_appstore_permissions_for_app_appstore_apps_app_id_requestable_permissions_get(
+        return await self._call(
+            self.client.get_appstore_permissions_for_app_appstore_apps_app_id_requestable_permissions_get(
             app_id=app_id,
             search_term=search_term,
             page=page,
             size=size,
+        ),
+            "Fetched app permissions successfully",
         )
-        return self._handle_response(response, "Fetched app permissions successfully")
 
     @tool(
         path="/tools/lumos/list_access_requests",
@@ -551,13 +640,15 @@ class Lumos:
         page: Optional[int] = 1,
         size: Optional[int] = 25,
     ) -> tuple[bool, str]:
-        response = await self.client.get_access_requests(
+        return await self._call(
+            self.client.get_access_requests(
             user_id=user_id,
             statuses=statuses,
             page=page,
             size=size,
+        ),
+            "Fetched access requests successfully",
         )
-        return self._handle_response(response, "Fetched access requests successfully")
 
     @tool(
         path="/tools/lumos/get_access_request",
@@ -569,8 +660,10 @@ class Lumos:
         tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
     )
     async def get_access_request(self, request_id: str) -> tuple[bool, str]:
-        response = await self.client.get_access_request(id=request_id)
-        return self._handle_response(response, "Fetched access request successfully")
+        return await self._call(
+            self.client.get_access_request(id=request_id),
+            "Fetched access request successfully",
+        )
 
     @tool(
         path="/tools/lumos/create_access_request",
@@ -604,7 +697,8 @@ class Lumos:
         blocked = self._confirm_mutation(confirm, "create_access_request")
         if blocked:
             return blocked
-        response = await self.client.create_access_request(
+        return await self._call(
+            self.client.create_access_request(
             app_id=app_id,
             requester_user_id=requester_user_id,
             target_user_id=target_user_id,
@@ -613,8 +707,9 @@ class Lumos:
             expiration_in_seconds=expiration_in_seconds,
             access_length=access_length,
             requestable_permission_ids=requestable_permission_ids,
+        ),
+            "Created access request successfully",
         )
-        return self._handle_response(response, "Created access request successfully")
 
     @tool(
         path="/tools/lumos/cancel_access_request",
@@ -636,8 +731,10 @@ class Lumos:
         blocked = self._confirm_mutation(confirm, "cancel_access_request")
         if blocked:
             return blocked
-        response = await self.client.cancel_access_request(id=request_id, reason=reason)
-        return self._handle_response(response, "Cancelled access request successfully")
+        return await self._call(
+            self.client.cancel_access_request(id=request_id, reason=reason),
+            "Cancelled access request successfully",
+        )
 
     @tool(
         path="/tools/lumos/list_access_policies",
@@ -656,8 +753,10 @@ class Lumos:
         page: Optional[int] = 1,
         size: Optional[int] = 25,
     ) -> tuple[bool, str]:
-        response = await self.client.get_access_policies(name=name, page=page, size=size)
-        return self._handle_response(response, "Fetched access policies successfully")
+        return await self._call(
+            self.client.get_access_policies(name=name, page=page, size=size),
+            "Fetched access policies successfully",
+        )
 
     @tool(
         path="/tools/lumos/get_access_policy",
@@ -669,8 +768,10 @@ class Lumos:
         tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
     )
     async def get_access_policy(self, access_policy_id: str) -> tuple[bool, str]:
-        response = await self.client.get_access_policy(access_policy_id=access_policy_id)
-        return self._handle_response(response, "Fetched access policy successfully")
+        return await self._call(
+            self.client.get_access_policy(access_policy_id=access_policy_id),
+            "Fetched access policy successfully",
+        )
 
     @tool(
         path="/tools/lumos/create_access_policy",
@@ -698,14 +799,16 @@ class Lumos:
         blocked = self._confirm_mutation(confirm, "create_access_policy")
         if blocked:
             return blocked
-        response = await self.client.create_access_policy(
+        return await self._call(
+            self.client.create_access_policy(
             name=name,
             business_justification=business_justification,
             apps=apps,
             access_condition=access_condition,
             is_everyone_condition=is_everyone_condition,
+        ),
+            "Created access policy successfully",
         )
-        return self._handle_response(response, "Created access policy successfully")
 
     @tool(
         path="/tools/lumos/update_access_policy",
@@ -735,15 +838,17 @@ class Lumos:
         blocked = self._confirm_mutation(confirm, "update_access_policy")
         if blocked:
             return blocked
-        response = await self.client.update_access_policy(
+        return await self._call(
+            self.client.update_access_policy(
             access_policy_id=access_policy_id,
             name=name,
             business_justification=business_justification,
             apps=apps,
             access_condition=access_condition,
             is_everyone_condition=is_everyone_condition,
+        ),
+            "Updated access policy successfully",
         )
-        return self._handle_response(response, "Updated access policy successfully")
 
     @tool(
         path="/tools/lumos/delete_access_policy",
@@ -759,8 +864,10 @@ class Lumos:
         blocked = self._confirm_mutation(confirm, "delete_access_policy")
         if blocked:
             return blocked
-        response = await self.client.delete_access_policy(access_policy_id=access_policy_id)
-        return self._handle_response(response, "Deleted access policy successfully")
+        return await self._call(
+            self.client.delete_access_policy(access_policy_id=access_policy_id),
+            "Deleted access policy successfully",
+        )
 
     @tool(
         path="/tools/lumos/create_requestable_permission",
@@ -790,15 +897,17 @@ class Lumos:
         blocked = self._confirm_mutation(confirm, "create_requestable_permission")
         if blocked:
             return blocked
-        response = await self.client.create_appstore_requestable_permission_appstore_requestable_permissions_post(
+        return await self._call(
+            self.client.create_appstore_requestable_permission_appstore_requestable_permissions_post(
             app_id=app_id,
             label=label,
             include_inherited_configs=include_inherited_configs,
             app_class_id=app_class_id,
             app_instance_id=app_instance_id,
             request_config=request_config,
+        ),
+            "Created requestable permission successfully",
         )
-        return self._handle_response(response, "Created requestable permission successfully")
 
     @tool(
         path="/tools/lumos/get_requestable_permission",
@@ -815,11 +924,13 @@ class Lumos:
         permission_id: str,
         include_inherited_configs: Optional[bool] = None,
     ) -> tuple[bool, str]:
-        response = await self.client.get_appstore_permission_appstore_requestable_permissions_permission_id_get(
+        return await self._call(
+            self.client.get_appstore_permission_appstore_requestable_permissions_permission_id_get(
             permission_id=permission_id,
             include_inherited_configs=include_inherited_configs,
+        ),
+            "Fetched requestable permission successfully",
         )
-        return self._handle_response(response, "Fetched requestable permission successfully")
 
     @tool(
         path="/tools/lumos/update_requestable_permission",
@@ -851,7 +962,8 @@ class Lumos:
         blocked = self._confirm_mutation(confirm, "update_requestable_permission")
         if blocked:
             return blocked
-        response = await self.client.update_appstore_permission_appstore_requestable_permissions_permission_id_patch(
+        return await self._call(
+            self.client.update_appstore_permission_appstore_requestable_permissions_permission_id_patch(
             permission_id=permission_id,
             include_inherited_configs=include_inherited_configs,
             app_id=app_id,
@@ -859,8 +971,9 @@ class Lumos:
             app_instance_id=app_instance_id,
             label=label,
             request_config=request_config,
+        ),
+            "Updated requestable permission successfully",
         )
-        return self._handle_response(response, "Updated requestable permission successfully")
 
     @tool(
         path="/tools/lumos/delete_requestable_permission",
@@ -876,10 +989,12 @@ class Lumos:
         blocked = self._confirm_mutation(confirm, "delete_requestable_permission")
         if blocked:
             return blocked
-        response = await self.client.delete_appstore_permission_appstore_requestable_permissions_permission_id_delete(
+        return await self._call(
+            self.client.delete_appstore_permission_appstore_requestable_permissions_permission_id_delete(
             permission_id=permission_id
+        ),
+            "Deleted requestable permission successfully",
         )
-        return self._handle_response(response, "Deleted requestable permission successfully")
 
     @tool(
         path="/tools/lumos/add_user_role",
@@ -896,11 +1011,13 @@ class Lumos:
         blocked = self._confirm_mutation(confirm, "add_user_role")
         if blocked:
             return blocked
-        response = await self.client.add_role_to_user_users_user_id_roles_role_name_post(
+        return await self._call(
+            self.client.add_role_to_user_users_user_id_roles_role_name_post(
             user_id=user_id,
             role_name=role_name,
+        ),
+            "Added user role successfully",
         )
-        return self._handle_response(response, "Added user role successfully")
 
     @tool(
         path="/tools/lumos/remove_user_role",
@@ -917,8 +1034,10 @@ class Lumos:
         blocked = self._confirm_mutation(confirm, "remove_user_role")
         if blocked:
             return blocked
-        response = await self.client.remove_role_from_user_users_user_id_roles_role_name_delete(
+        return await self._call(
+            self.client.remove_role_from_user_users_user_id_roles_role_name_delete(
             user_id=user_id,
             role_name=role_name,
+        ),
+            "Removed user role successfully",
         )
-        return self._handle_response(response, "Removed user role successfully")

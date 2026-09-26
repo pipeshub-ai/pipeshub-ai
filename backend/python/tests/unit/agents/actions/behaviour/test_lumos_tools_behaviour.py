@@ -8,13 +8,14 @@ document (https://api.lumos.com/openapi.json).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
 from lumos_tool_fakes import (
     API_KEY,
     FakeLumosApi,
+    LumosCall,
     build_lumos_tool,
     lumos_error,
     lumos_page,
@@ -23,7 +24,9 @@ from lumos_tool_fakes import (
 )
 
 from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR, BoundMethodTool
-from app.agents.actions.lumos.lumos import Lumos
+
+if TYPE_CHECKING:
+    from app.agents.actions.lumos.lumos import Lumos
 
 PENDING = {
     "errors": "Lumos failures reach the agent as a raw status line and response body",
@@ -58,7 +61,7 @@ def assert_safe_error(payload: dict[str, Any]) -> str:
     return message
 
 
-def single_query(call: Any) -> dict[str, str]:
+def single_query(call: LumosCall) -> dict[str, str]:
     return {k: v[0] for k, v in call.query.items()}
 
 
@@ -345,7 +348,6 @@ class TestWrites:
 # ---------------------------------------------------------------------------
 
 
-@pending("errors")
 class TestFailures:
     async def test_rate_limit_tells_the_agent_how_long_to_wait(self, lumos, api) -> None:
         api.on("GET", "/users", lumos_error(429, "Too Many Requests", {"Retry-After": "30"}))
