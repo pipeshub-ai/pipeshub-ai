@@ -148,3 +148,54 @@ class TestAssigneeLookup:
         assert ok is True
         assert api.calls("GET", ASSIGNABLE)[0].query["project"] == "PA"
         assert api.calls("PUT", "/issue/PA-7")[0].body["fields"] == {"assignee": {"accountId": "acc-ann"}}
+
+
+class TestRefusedPeople:
+    """Jira can refuse just the assignee or reporter; the reply must say it was left out."""
+
+    async def test_created_without_the_refused_assignee_says_so(self, jira, api) -> None:
+        api.on("POST", "/issue",
+               (400, {"errorMessages": [], "errors": {"assignee": "User 'acc-x' cannot be assigned issues."}}),
+               CREATED)
+
+        ok, data = result(await jira.create_issue("PA", "Login fails", "Bug", assignee_account_id="acc-x"))
+
+        assert ok is True
+        first, second = api.calls("POST", "/issue")
+        assert first.body["fields"]["assignee"] == {"accountId": "acc-x"}
+        assert "assignee" not in second.body["fields"]
+        assert data["message"].startswith("Issue created, but nobody was assigned")
+        assert "cannot be assigned issues" in data["warning"]
+
+    async def test_created_without_the_refused_reporter_says_so(self, jira, api) -> None:
+        api.on("POST", "/issue",
+               (400, {"errors": {"reporter": "Field 'reporter' cannot be set."}}),
+               CREATED)
+
+        ok, data = result(await jira.create_issue(
+            "PA", "Login fails", "Bug", custom_fields={"reporter": {"accountId": "acc-r"}},
+        ))
+
+        assert ok is True
+        assert "the reporter was not changed" in data["warning"]
+
+    async def test_update_without_the_refused_reporter_says_so(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("PUT", "/issue/PA-7", (400, {"errors": {"reporter": "Field 'reporter' cannot be set."}}), (204, None))
+
+        ok, data = result(await jira.update_issue("PA-7", summary="New title", reporter_account_id="acc-r"))
+
+        assert ok is True
+        assert api.calls("PUT", "/issue/PA-7")[-1].body["fields"] == {"summary": "New title"}
+        assert data["message"].startswith("Issue updated successfully, but the reporter was not changed")
+
+    async def test_created_issue_with_nothing_refused_has_no_warning(self, jira, api) -> None:
+        api.on("POST", "/issue", CREATED)
+
+        ok, data = result(await jira.create_issue("PA", "Login fails", "Bug", description="Steps: <@U123> saw it"))
+
+        assert ok is True
+        assert data["message"] == "Issue created successfully" and "warning" not in data
+        assert data["data"]["url"] == f"{SITE}/browse/PA-7"
+        body = api.calls("POST", "/issue")[0].body["fields"]
+        assert body["description"]["content"][0]["content"][0]["text"] == "Steps: @U123 saw it"

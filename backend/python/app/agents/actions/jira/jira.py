@@ -358,6 +358,18 @@ class GetCreateIssueFieldsInput(BaseModel):
 _USER_LOOKUP_LIMIT = 10
 
 
+def _left_out_note(field_name: str, reason: object) -> str:
+    who = "nobody was assigned" if field_name == "assignee" else "the reporter was not changed"
+    return (
+        f"{who}: Jira would not accept that {field_name} ({reason}). "
+        f"Tell the user, and check the person with search_users before trying again."
+    )
+
+
+def _with_notes(message: str, notes: list[str]) -> str:
+    return f"{message}, but {'; '.join(notes)}" if notes else message
+
+
 def _jira_issue_label(issue: dict[str, Any]) -> str:
     key = issue.get("key") or "?"
     fields = issue.get("fields")
@@ -1700,21 +1712,20 @@ class Jira:
             # Create issue
             response = await self.client.create_issue(fields=fields)
 
-            # Handle reporter field errors by retrying without it
+            # Jira may refuse just the reporter or assignee; create the issue without it and say so.
+            left_out: Optional[str] = None
             if response.status == HttpStatusCode.BAD_REQUEST.value:
                 try:
                     error_body = response.json()
                     errors = error_body.get('errors', {})
 
-                    if 'reporter' in errors and 'reporter' in fields:
-                        logger.info("Retrying without reporter field")
-                        del fields['reporter']
-                        response = await self.client.create_issue(fields=fields)
-
-                    elif 'assignee' in errors and 'assignee' in fields:
-                        logger.info("Retrying without assignee field")
-                        del fields['assignee']
-                        response = await self.client.create_issue(fields=fields)
+                    for refused in ("reporter", "assignee"):
+                        if refused in errors and refused in fields:
+                            logger.info("Retrying without %s field", refused)
+                            del fields[refused]
+                            left_out = _left_out_note(refused, errors[refused])
+                            response = await self.client.create_issue(fields=fields)
+                            break
                 except Exception:
                     pass
 
@@ -1740,10 +1751,11 @@ class Jira:
                 if site_url:
                     self._add_urls_to_issue_references(cleaned_data, site_url)
 
-                return True, json.dumps({
-                    "message": "Issue created successfully",
-                    "data": cleaned_data
-                })
+                created: dict[str, object] = {"message": "Issue created successfully", "data": cleaned_data}
+                if left_out:
+                    created["message"] = f"Issue created, but {left_out}"
+                    created["warning"] = left_out
+                return True, json.dumps(created)
             elif response.status == HttpStatusCode.BAD_REQUEST.value:
                 # Translate field IDs to human-readable names and guide LLM to retry correctly
                 try:
@@ -1965,6 +1977,7 @@ class Jira:
                 except Exception as e:
                     logger.warning(f"Could not get transitions for {issue_key}: {e}")
 
+            notes: list[str] = []
             if not fields and not transition:
                 return False, json.dumps({
                     "error": "No updates provided",
@@ -2015,6 +2028,7 @@ class Jira:
                                         fields=fields_no_reporter,
                                         transition=None,
                                     )
+                                    notes.append(_left_out_note("reporter", errors["reporter"]))
                         except Exception:
                             pass
 
@@ -2078,6 +2092,7 @@ class Jira:
                 message = "Issue updated successfully"
                 if transition and not transition_success:
                     message += f" (but status transition failed: {transition_error})"
+                message = _with_notes(message, notes)
                 return True, json.dumps({
                     "message": message,
                     "data": {"key": issue_key, "url": url} if url else {"key": issue_key},
@@ -2102,6 +2117,7 @@ class Jira:
             message = "Issue updated successfully"
             if transition and not transition_success:
                 message += f" (but status transition failed: {transition_error})"
+            message = _with_notes(message, notes)
 
             return True, json.dumps({"message": message, "data": cleaned_data})
 
