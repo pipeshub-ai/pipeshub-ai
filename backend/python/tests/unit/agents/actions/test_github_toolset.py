@@ -13,7 +13,7 @@ import json
 import re
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlsplit
 
@@ -669,6 +669,49 @@ class TestEventLoop:
         ok(await github.get_repository("acme", "web"))
         await other_work
         assert waited == [True]
+
+
+    @pytest.mark.asyncio
+    async def test_parallel_tool_calls_never_share_the_client_at_once(self, github, api) -> None:
+        # The agent runs a turn's tool calls together; PyGithub's session and rate-limit state are not thread-safe.
+        guard = threading.Lock()
+        in_flight: list[int] = [0]
+        peak: list[int] = [0]
+
+        def slow(payload: object) -> Callable[[], tuple[int, object]]:
+            def respond() -> tuple[int, object]:
+                with guard:
+                    in_flight[0] += 1
+                    peak[0] = max(peak[0], in_flight[0])
+                time.sleep(0.05)
+                with guard:
+                    in_flight[0] -= 1
+                return 200, payload
+            return respond
+
+        api.on("GET", REPO_PATH, slow(repo()))
+        api.on("GET", r"/repos/acme/other", slow(repo(name="other")))
+        api.on("GET", r"/user", slow({"login": "me-user", "id": 7, "url": f"{API}/user"}))
+        results = await asyncio.gather(
+            github.get_repository("acme", "web"), github.get_repository("acme", "other"), github.get_owner("me"),
+        )
+        assert all(r[0] for r in results)
+        assert peak[0] == 1
+
+    @pytest.mark.xfail(strict=True, reason="get_owner('me') returns a lazy user fetched on the event loop")
+    @pytest.mark.asyncio
+    async def test_the_signed_in_user_is_fetched_off_the_event_loop(self, github, api) -> None:
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+
+        def me() -> tuple[int, object]:
+            seen.append(threading.get_ident())
+            return 200, {"login": "me-user", "id": 7, "url": f"{API}/user"}
+
+        api.on("GET", r"/user", me)
+        data = ok(await github.get_owner("me"))
+        assert data["data"]["login"] == "me-user"
+        assert seen and loop_thread not in seen
 
 
 class TestPaging:
