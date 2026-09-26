@@ -78,11 +78,11 @@ class FakeGoogleHttp:
         self.routes.insert(0, (method.upper(), re.compile(rf"^{base}{path_regex}$"), list(responses)))
         return self
 
-    def calls(self, method: str | None = None, path_regex: str | None = None) -> list[RecordedRequest]:
+    def calls(self, method: str | None = None, path_regex: str | None = None, base: str = BASE_PATH) -> list[RecordedRequest]:
         return [
             r for r in self.requests
             if (method is None or r.method == method.upper())
-            and (path_regex is None or re.fullmatch(f"{BASE_PATH}{path_regex}", r.path))
+            and (path_regex is None or re.fullmatch(f"{base}{path_regex}", r.path))
         ]
 
     def request(self, uri: str, method: str = "GET", body: object = None, headers: dict | None = None,
