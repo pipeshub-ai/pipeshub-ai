@@ -3899,9 +3899,11 @@ describe('UserAccountController', () => {
   });
 
   describe('validateEmailChange', () => {
+    const verifiedUser = { _id: 'u1', orgId: 'org1', fullName: 'Ada Lovelace', email: 'new@example.com' }
+
     it('should update email successfully when new email is not in use', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
-      sinon.stub(Users, 'findByIdAndUpdate').resolves({} as any)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves(verifiedUser as any)
       sinon.stub(UserActivities, 'create').resolves({} as any)
 
       const req: any = {
@@ -3944,8 +3946,6 @@ describe('UserAccountController', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    const verifiedUser = { _id: 'u1', orgId: 'org1', fullName: 'Ada Lovelace', email: 'new@example.com' }
-
     it('tells the graph about the new address once the change is verified', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
       sinon.stub(Users, 'findByIdAndUpdate').resolves(verifiedUser as any)
@@ -3961,23 +3961,32 @@ describe('UserAccountController', () => {
       expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('still confirms the change when the event cannot be published', async () => {
-      sinon.stub(Users, 'findOne').resolves(null)
+    it('fails when the event cannot be recorded, and opening the link again records it', async () => {
+      const findOne = sinon.stub(Users, 'findOne').resolves(null)
       sinon.stub(Users, 'findByIdAndUpdate').resolves(verifiedUser as any)
       sinon.stub(UserActivities, 'create').resolves({} as any)
-      mockEventService.publishEvent.rejects(new Error('broker down'))
+      mockEventService.publishEvent.onFirstCall().rejects(new Error('outbox write failed'))
+      mockEventService.publishEvent.onSecondCall().resolves()
 
-      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@example.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'New@Example.com', orgId: 'org1' }, ip: '127.0.0.1' }
       await controller.validateEmailChange(req, res, next)
 
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('outbox write failed')
+      expect(res.status.called).to.be.false
+
+      // The address is now this user's own, so the uniqueness check skips them.
+      expect(findOne.firstCall.args[0]).to.deep.equal({ email: 'new@example.com', _id: { $ne: 'u1' } })
+      await controller.validateEmailChange(req, res, next)
+
+      expect(mockEventService.publishEvent.calledTwice).to.be.true
+      expect(mockEventService.publishEvent.secondCall.args[0].payload).to.include({ userId: 'u1', email: 'new@example.com' })
       expect(res.status.calledWith(200)).to.be.true
-      expect(next.called).to.be.false
-      expect(mockLogger.error.calledOnce).to.be.true
     })
 
     it('should log activity with PASSWORD_CHANGED type', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
-      sinon.stub(Users, 'findByIdAndUpdate').resolves({} as any)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves(verifiedUser as any)
       const createStub = sinon.stub(UserActivities, 'create').resolves({} as any)
 
       const req: any = {

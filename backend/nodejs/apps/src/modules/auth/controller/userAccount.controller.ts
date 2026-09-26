@@ -2008,13 +2008,16 @@ export class UserAccountController {
       const newEmail = req?.tokenPayload?.newEmail;
       const orgId = req?.tokenPayload?.orgId;
 
-      const exists = await Users.findOne({ email: newEmail });
+      const email = String(newEmail).toLowerCase().trim();
+      // This account excluded: opening the link again repeats the write and
+      // the event, which is how a failed event write is retried.
+      const exists = await Users.findOne({ email, _id: { $ne: userId } });
       if (exists) {
         throw new BadRequestError(`Email already in use: ${newEmail}`);
       }
       const user = await Users.findByIdAndUpdate(
         userId,
-        { email: newEmail.toLowerCase().trim() },
+        { email },
         { new: true },
       );
       if (user) {
@@ -2037,33 +2040,30 @@ export class UserAccountController {
     }
   }
 
-  /** The graph copies a user's email from this event; without it the old address stays there. */
+  /**
+   * The graph copies a user's email from this event; without it the old
+   * address stays there. A failed write throws, so the request fails and the
+   * link can be opened again.
+   */
   private async publishEmailChanged(user: InstanceType<typeof Users>): Promise<void> {
-    try {
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId.toString(),
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-      await this.eventService.start();
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
-    } catch (error) {
-      // The address is already saved; reopening the link would now say it is taken.
-      this.logger.error('Email changed but the user update event was not published', {
-        userId: String(user._id),
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    const event: Event = {
+      eventType: EventType.UpdateUserEvent,
+      timestamp: Date.now(),
+      payload: {
+        orgId: user.orgId.toString(),
+        userId: user._id,
+        fullName: user.fullName,
+        ...(user.firstName && { firstName: user.firstName }),
+        ...(user.lastName && { lastName: user.lastName }),
+        ...(user.designation && { designation: user.designation }),
+        email: user.email,
+      } as UserUpdatedEvent,
+    };
+    await this.eventService.start();
+    await this.eventService.publishEvent(event);
+    await this.eventService.stop();
   }
+
 
 
 }
