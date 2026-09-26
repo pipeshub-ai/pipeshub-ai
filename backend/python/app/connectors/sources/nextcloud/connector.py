@@ -89,6 +89,8 @@ NEXTCLOUD_PERM_MASK_ALL = 31
 HTTP_STATUS_OK = 200
 HTTP_STATUS_MULTIPLE_CHOICES = 300
 HTTP_NOT_MODIFIED = 304
+# Runs a page of activity is read again when part of it couldn't be applied, before moving on.
+MAX_HELD_ATTEMPTS = 5
 
 APP_PASSWORD_REJECTED_MESSAGE = (
     "Nextcloud rejected the app password, so nothing could be synced. Create a new app password "
@@ -655,6 +657,8 @@ class NextcloudConnector(BaseConnector):
     ) -> Optional[RecordUpdate]:
         """
         Process a single Nextcloud entry and detect changes.
+
+        Returns None for an entry that is skipped; raises when it can't be processed.
         """
         try:
             # Extract basic properties
@@ -842,7 +846,7 @@ class NextcloudConnector(BaseConnector):
                 f"Error processing entry {entry.get('file_id', entry.get('path'))}: {ex}",
                 exc_info=True
             )
-            return None
+            raise
 
     async def _process_nextcloud_items_generator(
         self,
@@ -871,8 +875,8 @@ class NextcloudConnector(BaseConnector):
                         record_update
                     )
                 await asyncio.sleep(0)
-            except Exception as e:
-                self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
+            except Exception:
+                # Already logged by _process_nextcloud_entry; one bad entry doesn't stop the rest.
                 continue
 
     async def _get_file_shares(self, path: str, user_id: str) -> List[Dict]:
@@ -1367,20 +1371,42 @@ class NextcloudConnector(BaseConnector):
                 self.logger.info(f"🗑️  [Incremental Sync] Processing {len(deleted_file_ids)} deletions")
                 await self._process_deletions(deleted_file_ids)
 
+            applied = True
+
             # Process modifications and new files
             if modified_paths:
                 self.logger.info(f"📝 [Incremental Sync] Processing {len(modified_paths)} modified/new files")
-                await self._process_modified_files(
+                applied = await self._process_modified_files(
                     list(modified_paths),
                     user_id,
                     user_email,
                     existing_group.external_group_id
+                ) and applied
+
+            # The feed won't list these activities again once the cursor moves past them.
+            if not applied:
+                held_attempts = int(sync_point_data.get("held_attempts") or 0) + 1
+                if held_attempts < MAX_HELD_ATTEMPTS:
+                    await self.activity_sync_point.update_sync_point(
+                        sync_point_key,
+                        {"cursor": str(last_activity_id), "held_attempts": held_attempts},
+                    )
+                    self.logger.warning(
+                        f"⚠️ [Incremental Sync] Some changes could not be applied (attempt {held_attempts} "
+                        f"of {MAX_HELD_ATTEMPTS}); the cursor stays at {last_activity_id} so the next "
+                        "sync reads them again."
+                    )
+                    return
+                self.logger.error(
+                    f"❌ [Incremental Sync] Some changes still could not be applied after {held_attempts} "
+                    "attempts; moving on so later changes are not held up. They are picked up again when "
+                    "those files next change in Nextcloud."
                 )
 
             # Update cursor to latest activity ID
             await self.activity_sync_point.update_sync_point(
                 sync_point_key,
-                {"cursor": str(max_activity_id)}
+                {"cursor": str(max_activity_id), "held_attempts": 0}
             )
 
             self.logger.info(
@@ -1503,10 +1529,11 @@ class NextcloudConnector(BaseConnector):
         user_id: str,
         user_email: str,
         record_group_id: str
-    ) -> None:
+    ) -> bool:
         """
         Process modified files by fetching their latest metadata.
         For incremental sync, sends new records immediately (no batching needed for small changes).
+        Returns False when any of the changes could not be fetched or saved.
         Args:
             file_paths: List of file paths that were modified
             user_id: User ID
@@ -1525,9 +1552,10 @@ class NextcloudConnector(BaseConnector):
             # This allows parent folders created during processing to be found by children
             path_to_external_id = {}
 
+            all_applied = True
             for path in file_paths:
                 try:
-                    await self._ensure_parent_folders(
+                    if not await self._ensure_parent_folders(
                         path,
                         user_id,
                         user_email,
@@ -1535,7 +1563,8 @@ class NextcloudConnector(BaseConnector):
                         user_root_path,
                         path_to_external_id,
                         processed_parents,
-                    )
+                    ):
+                        all_applied = False
 
                     # Now fetch and process the actual file
                     async with self.rate_limiter:
@@ -1545,20 +1574,24 @@ class NextcloudConnector(BaseConnector):
                             depth=0  # Only fetch this item, not children
                         )
 
+                    if getattr(response, "status", None) == HttpStatusCode.NOT_FOUND.value:
+                        # Gone since the activity was logged; its deletion or move is in the feed too.
+                        self.logger.debug(f"{path} no longer exists in Nextcloud")
+                        continue
+
                     if not is_response_successful(response):
                         self.logger.warning(
                             f"Failed to fetch metadata for {path}: {get_response_error(response)}"
                         )
+                        all_applied = False
                         continue
 
                     # Parse response
                     response_body = extract_response_body(response)
-                    if not response_body:
-                        continue
-
-                    entries = parse_webdav_propfind_response(response_body)
-
+                    entries = parse_webdav_propfind_response(response_body) if response_body else []
                     if not entries:
+                        self.logger.warning(f"Could not read the metadata Nextcloud returned for {path}")
+                        all_applied = False
                         continue
 
                     # Build path-to-external-id map for this file and merge with existing map
@@ -1582,15 +1615,18 @@ class NextcloudConnector(BaseConnector):
                                 await self.data_entities_processor.on_new_records(
                                     [(record_update.record, record_update.new_permissions or [])],
                                 )
-                            else:
-                                # Handle updates and deletions
-                                await self._handle_record_updates(record_update)
+                            elif not await self._handle_record_updates(record_update):
+                                all_applied = False
 
                 except Exception as e:
                     self.logger.error(f"Error processing modified file {path}: {e}", exc_info=True)
+                    all_applied = False
+
+            return all_applied
 
         except Exception as e:
             self.logger.error(f"Error processing modified files: {e}", exc_info=True)
+            return False
 
     async def _ensure_parent_folders(
         self,
@@ -1601,13 +1637,15 @@ class NextcloudConnector(BaseConnector):
         user_root_path: str,
         path_to_external_id: Dict[str, str],
         processed_parents: set,
-    ) -> None:
+    ) -> bool:
         """Give every folder above ``path`` a record, top-down.
 
         A file can arrive inside folders the index has never seen. Records store
         no path to look a parent up by, so each folder is created right after
         the one above it, whose id is then in ``path_to_external_id``.
+        Returns False when a folder that still exists could not be read or saved.
         """
+        all_ready = True
         parts = [p for p in path.strip("/").split("/") if p][:-1]
         for depth in range(1, len(parts) + 1):
             folder_path = "/" + "/".join(parts[:depth])
@@ -1618,14 +1656,18 @@ class NextcloudConnector(BaseConnector):
                     response = await self.data_source.list_directory(
                         user_id=user_id, path=folder_path, depth=0
                     )
+                if getattr(response, "status", None) == HttpStatusCode.NOT_FOUND.value:
+                    continue
                 if not is_response_successful(response):
                     self.logger.warning(
                         f"Failed to fetch folder {folder_path}: {get_response_error(response)}"
                     )
+                    all_ready = False
                     continue
                 body = extract_response_body(response)
                 entries = parse_webdav_propfind_response(body) if body else []
                 if not entries or not entries[0].get('file_id'):
+                    all_ready = False
                     continue
                 entry = entries[0]
 
@@ -1651,6 +1693,8 @@ class NextcloudConnector(BaseConnector):
                 processed_parents.add(folder_path)
             except Exception as e:
                 self.logger.warning(f"⚠️ [Incremental Sync] Failed to fetch/process folder {folder_path}: {e}")
+                all_ready = False
+        return all_ready
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """

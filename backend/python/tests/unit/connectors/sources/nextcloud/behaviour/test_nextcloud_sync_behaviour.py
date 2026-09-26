@@ -809,22 +809,65 @@ class TestIncrementalSync:
         assert "notes.txt" not in db.names()
         assert store.cursor() == str(server.latest_activity_id)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: the cursor moves past a change "
-            "whose file couldn't be fetched, so that change is never retried."
-        ),
-    )
-    async def test_a_change_that_failed_to_fetch_is_retried_next_run(self, server, db, store) -> None:
+    @pytest.mark.parametrize("bad", [
+        pytest.param(lambda: httpx.Response(503), id="server-error"),
+        pytest.param(lambda: httpx.Response(207, content=b"<d:multistatus"), id="garbled-xml"),
+        pytest.param(lambda: httpx.ConnectError("connection reset"), id="network-error"),
+    ])
+    async def test_a_change_that_failed_to_fetch_is_retried_next_run(self, server, db, store, bad) -> None:
         connector = await synced(server, db, store)
+        cursor = store.cursor()
         server.change("Docs/notes.txt")
-        server.fail("PROPFIND", lambda p: p.endswith("/notes.txt"), httpx.Response(503))
+        server.change("readme.txt")
+        outage = server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), bad)
 
         await connector.run_sync()
-        await connector.run_sync()
+        assert store.cursor() == cursor, "held until the change is applied"
+        assert db.by_name("readme.txt").external_revision_id == server.nodes["readme.txt"].etag
 
+        outage.end()
+        await connector.run_sync()
         assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_a_change_that_fails_to_save_is_retried_next_run(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        cursor = store.cursor()
+        server.change("Docs/notes.txt")
+        db.fail_write_for.add("notes.txt")
+
+        await connector.run_sync()
+        assert store.cursor() == cursor
+
+        db.fail_write_for.clear()
+        await connector.run_sync()
+        assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+
+    async def test_a_change_that_never_applies_is_passed_over_after_five_runs(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        cursor = store.cursor()
+        server.change("Docs/notes.txt")
+        server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), lambda: httpx.Response(503))
+
+        for _ in range(4):
+            await connector.run_sync()
+            assert store.cursor() == cursor
+        await connector.run_sync()
+
+        assert store.cursor() == str(server.latest_activity_id)
+        server.add_file("after.txt")
+        await connector.run_sync()
+        assert "after.txt" in db.names(), "later changes are no longer held up"
+
+    async def test_a_file_gone_before_the_sync_does_not_hold_the_cursor(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.add_file("New/brief.txt")
+        server.delete("New")
+
+        await connector.run_sync()
+
+        assert store.cursor() == str(server.latest_activity_id)
+        assert not {"New", "brief.txt"} & db.names()
 
     @pytest.mark.xfail(
         strict=True,
