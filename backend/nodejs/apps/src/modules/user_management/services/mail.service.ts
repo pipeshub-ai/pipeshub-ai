@@ -97,7 +97,7 @@ export class MailService {
         data,
         timeout: SEND_MAIL_TIMEOUT_MS,
       };
-      const response = await axios(config);
+      const response = await axios.request(config);
       return { statusCode: 200, data: response.data };
     } catch (error: any) {
       this.logger.error('Error sending mail', {

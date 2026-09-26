@@ -128,6 +128,17 @@ export class MailConsumer {
         return;
       }
 
+      // Original SMTP may still complete; retrying would risk a duplicate send.
+      if (result.status === 'indeterminate') {
+        this.logger.error('Mail send outcome indeterminate; not retrying', {
+          emailTemplateType: payload.mail.emailTemplateType,
+          error: lastError,
+          attempt,
+        });
+        await this.notifyFailure(payload, lastError);
+        return;
+      }
+
       if (attempt < MAX_ATTEMPTS) {
         const delay = Math.min(
           BASE_BACKOFF_MS * 2 ** (attempt - 1),

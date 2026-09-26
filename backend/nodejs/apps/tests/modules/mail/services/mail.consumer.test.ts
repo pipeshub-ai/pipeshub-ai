@@ -93,6 +93,18 @@ describe('MailConsumer - asynchronous mail delivery', () => {
     expect(event.payload.orgId).to.equal('507f1f77bcf86cd799439012');
   });
 
+  it('does not retry an indeterminate deadline, so a late SMTP success cannot duplicate', async () => {
+    mockSender.send.resolves({
+      status: 'indeterminate',
+      error: 'SMTP send exceeded 120000ms deadline',
+    });
+
+    await deliver(payload());
+
+    expect(mockSender.send.callCount).to.equal(1);
+    expect(mockNotificationProducer.publishEvent.calledOnce).to.be.true;
+  });
+
   it('retries a transient failure and stops as soon as it succeeds', async () => {
     mockSender.send
       .onCall(0).resolves({ status: 'transient', error: 'ETIMEDOUT' })

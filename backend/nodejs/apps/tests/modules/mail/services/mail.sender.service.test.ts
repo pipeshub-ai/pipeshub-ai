@@ -136,7 +136,7 @@ describe('MailSenderService', () => {
       await clock.tickAsync(120_000 + 1);
       const result = await promise;
 
-      expect(result.status).to.equal('transient');
+      expect(result.status).to.equal('indeterminate');
       expect(String((result as { error?: string }).error)).to.contain('deadline');
       // Concurrent sends share this pool, so it must survive one timeout.
       expect(closeStub.called).to.be.false;

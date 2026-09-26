@@ -162,13 +162,22 @@ describe('MailService', () => {
     it('sends inline unless the caller asks for broker delivery', async () => {
       // Small invites stay synchronous so the admin gets a real result rather
       // than a "queued" that may still fail minutes later.
+      axiosStub = sinon.stub(axios, 'request').resolves({
+        status: 200,
+        data: { message: 'Email sent' },
+      });
+
       const result = await mailService.sendMail({
         emailTemplateType: 'appuserInvite',
         initiator: { jwtAuthToken: 'test-token' },
         usersMails: ['user@test.com'],
         subject: 'Test Subject',
+        attachedDocuments: [{ filename: 'test.pdf', content: 'data' }],
       });
 
+      expect(result.statusCode).to.equal(200);
+      expect(result.data).to.deep.equal({ message: 'Email sent' });
+      expect(axiosStub.calledOnce).to.be.true;
       expect(mockMailProducer.publishEvent.called).to.be.false;
       expect(result.data?.queued).to.not.equal(true);
     });
