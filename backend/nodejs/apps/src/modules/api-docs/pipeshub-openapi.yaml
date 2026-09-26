@@ -7103,8 +7103,13 @@ components:
         citations:
           type: array
           items:
-            $ref: '#/components/schemas/CitationReference'
-          description: References to source documents used in the response
+            anyOf:
+              - $ref: '#/components/schemas/CitationReference'
+              - $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+          description: |
+            References to source documents used in the response. Routes that
+            return the saved conversation after a turn (create, add message)
+            populate each item to `{ citationId, citationData }`.
         confidence:
           type: string
           nullable: true
