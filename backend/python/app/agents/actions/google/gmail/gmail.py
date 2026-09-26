@@ -8,6 +8,7 @@ from googleapiclient.errors import HttpError
 from pydantic import BaseModel, Field
 
 from app.agents.actions.google.gmail.utils import GmailUtils
+from app.agents.actions.util.google_api_errors import GoogleToolWording, google_error_message
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agents.actions.util.attachments import (
     attachment_record_ids_parameter,
@@ -46,6 +47,20 @@ def _gmail_message_label(message: dict) -> str:
         None,
     )
     return subject or message.get("snippet") or message.get("id") or "?"
+
+
+_GMAIL_WORDING = GoogleToolWording(
+    product="Gmail",
+    toolset="Gmail",
+    access="Gmail access",
+    not_found="that email. Check the message id, or call search_emails to find the right one.",
+    gone="that email has already been deleted.",
+)
+
+
+def _gmail_failure(error: Exception, action: str) -> tuple[bool, str]:
+    logger.error("Failed to %s: %s", action, error)
+    return False, json.dumps({"error": google_error_message(error, action, _GMAIL_WORDING)})
 
 
 def _refuse_file_paths() -> tuple[bool, str]:
@@ -177,39 +192,6 @@ class Gmail:
         self.client = GoogleGmailDataSource(client)
         self.chat_state = state
 
-    def _handle_error(self, error: Exception, operation: str = "operation") -> tuple[bool, str]:
-        """Handle errors with user-friendly authentication messages.
-
-        Args:
-            error: The exception that occurred
-            operation: Description of the operation that failed
-
-        Returns:
-            tuple[bool, str]: (False, error_json_string)
-        """
-        error_msg = str(error).lower()
-
-        # Check for AttributeError (client not properly initialized)
-        if isinstance(error, AttributeError):
-            if "users" in str(error) or "client" in error_msg:
-                logger.error(f"Gmail client not properly initialized - authentication may be required: {error}")
-                return False, json.dumps({
-                    "error": "Gmail toolset is not authenticated. Please complete the OAuth flow first. "
-                             "Go to Settings > Toolsets to authenticate your Gmail account."
-                })
-
-        # Check for authentication-related errors
-        if isinstance(error, ValueError) or "not authenticated" in error_msg or "oauth" in error_msg or "authentication" in error_msg:
-            logger.error(f"Gmail authentication error during {operation}: {error}")
-            return False, json.dumps({
-                "error": "Gmail toolset is not authenticated. Please complete the OAuth flow first. "
-                         "Go to Settings > Toolsets to authenticate your Gmail account."
-            })
-
-        # Generic error handling
-        logger.error(f"Failed to {operation}: {error}")
-        return False, json.dumps({"error": str(error)})
-
     async def _resolve_in_memory_attachments(
         self,
         attachment_record_ids: Optional[List[str]],
@@ -326,7 +308,7 @@ class Gmail:
         except ValueError as exc:
             return False, json.dumps({"error": str(exc)})
         except Exception as e:
-            return self._handle_error(e, "send reply")
+            return _gmail_failure(e, "send the reply")
 
     @tool(
         path="/tools/gmail/draft_email",
@@ -377,7 +359,7 @@ class Gmail:
         except ValueError as exc:
             return False, json.dumps({"error": str(exc)})
         except Exception as e:
-            return self._handle_error(e, "create draft")
+            return _gmail_failure(e, "save the draft")
 
     @tool(
         path="/tools/gmail/send_email",
@@ -435,7 +417,7 @@ class Gmail:
         except ValueError as exc:
             return False, json.dumps({"error": str(exc)})
         except Exception as e:
-            return self._handle_error(e, "send email")
+            return _gmail_failure(e, "send the email")
 
     @tool(
         path="/tools/gmail/search_emails",
@@ -538,7 +520,7 @@ class Gmail:
                 "resultSizeEstimate": result_size_estimate,
             })
         except Exception as e:
-            return self._handle_error(e, "search emails")
+            return _gmail_failure(e, "search emails")
 
     @tool(
         path="/tools/gmail/get_email_details",
@@ -571,7 +553,7 @@ class Gmail:
             )
             return True, json.dumps(message)
         except Exception as e:
-            return self._handle_error(e, f"get email details for {message_id}")
+            return _gmail_failure(e, "read that email")
 
     @tool(
         path="/tools/gmail/get_email_attachments",
@@ -614,7 +596,7 @@ class Gmail:
 
             return True, json.dumps(attachments)
         except Exception as e:
-            return self._handle_error(e, f"get email attachments for {message_id}")
+            return _gmail_failure(e, "list that email's attachments")
 
     @tool(
         path="/tools/gmail/get_user_profile",
@@ -648,7 +630,7 @@ class Gmail:
                 "history_id": profile.get("historyId", "")
             })
         except Exception as e:
-            return self._handle_error(e, "get user profile")
+            return _gmail_failure(e, "read the Gmail profile")
 
     # @tool(
     #     app_name="gmail",

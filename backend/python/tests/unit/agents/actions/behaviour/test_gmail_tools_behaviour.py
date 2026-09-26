@@ -355,7 +355,6 @@ class TestReadOne:
 # ---------------------------------------------------------------------------
 
 
-@pending("errors")
 class TestFailures:
     @pytest.mark.parametrize(("response", "expected"), [
         (google_error(401, "Invalid Credentials", "authError"), "Reconnect the Gmail toolset"),
