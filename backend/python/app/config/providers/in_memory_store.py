@@ -2,6 +2,7 @@ import itertools
 import json
 import time
 from threading import Lock
+import copy
 from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
 
 from app.config.key_value_store import KeyValueStore
@@ -203,7 +204,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             if key in self.store:
                 data = self.store[key]
                 if not data.is_expired():
-                    return data.value, data.version
+                    return copy.deepcopy(data.value), data.version
             return None, None
 
     async def compare_and_set(self, key: str, expected_version: Any, new_value: T, ttl: Optional[int] = None) -> tuple[bool, tuple[Optional[T], Any]]:
@@ -223,7 +224,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                 self._notify_watchers(key, new_value)
                 return True, (new_value, new_version)
             else:
-                return False, (current_data.value if current_data else None, current_version)
+                return False, (copy.deepcopy(current_data.value) if current_data else None, current_version)
 
     async def delete_key(self, key: str) -> bool:
         """

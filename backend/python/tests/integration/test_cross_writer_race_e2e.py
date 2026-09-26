@@ -1,21 +1,39 @@
 import asyncio
+import json
+import os
 import uuid
 import pytest
+import pytest_asyncio
 from unittest.mock import MagicMock
 
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
+from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
+from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
+from app.config.key_value_store_factory import StoreConfig
 from app.connectors.core.base.token_service.token_refresh_service import TokenRefreshService, OAuthToken
 from app.connectors.core.base.token_service.oauth_service import OAuthProvider, OAuthConfig
 from app.config.configuration_service import ConcurrentModificationError
 
-
-@pytest.fixture
-def config_service():
+@pytest_asyncio.fixture(params=["in_memory", "redis", "etcd"])
+async def config_service(request):
     import logging
     logger = logging.getLogger("test_cas")
-    store = InMemoryKeyValueStore(logger=logger)
-    return ConfigurationService(logger=logger, key_value_store=store)
+    store_type = request.param
+    if store_type == "in_memory":
+        store = InMemoryKeyValueStore(logger=logger)
+    elif store_type == "redis":
+        store = RedisDistributedKeyValueStore(serializer=lambda x: json.dumps(x).encode(), deserializer=lambda x: json.loads(x.decode()), host="localhost", port=6379, db=0, key_prefix="test_cas:")
+    elif store_type == "etcd":
+        store = Etcd3DistributedKeyValueStore(serializer=lambda x: json.dumps(x).encode(), deserializer=lambda x: json.loads(x.decode()), host="localhost", port=2379)
+        
+    cs = ConfigurationService(logger=logger, key_value_store=store)
+    yield cs
+    if store_type == "redis":
+        await store.client.flushdb()
+        await store.close()
+    elif store_type == "etcd":
+        await store.close()
 
 @pytest.mark.asyncio
 async def test_token_refresh_race(config_service, caplog):

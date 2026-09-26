@@ -485,11 +485,8 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             success, responses = await self._run(txn)
             
             if success:
-                # The put operation does not return the new mod_revision directly in python-etcd3
-                # but we know it succeeded. Wait, how to return new mod_revision?
-                # Actually, put response metadata contains revision!
                 put_response = responses[0]
-                new_version = put_response.header.revision if hasattr(put_response, 'header') else None
+                new_version = put_response.response_put.header.revision
                 return True, (new_value, new_version)
             else:
                 if lease is not None:

@@ -810,21 +810,28 @@ class TokenRefreshService:
         Raises ``CredentialSaveError`` when nothing was stored.
         """
         for attempt in range(1, 6):
-            latest, version = await self.configuration_service.get_config_with_version(config_key)
-            if latest is None:
+            try:
+                latest, version = await self.configuration_service.get_config_with_version(config_key, raise_on_error=True)
+            except Exception as e:
+                self.logger.error(f"Read error for {connector_id}: {e}")
+                latest = None
+                version = "error"
+
+            if latest is None and version is None:
                 self.logger.warning(f"Connector {connector_id} config not found; assuming deleted.")
                 return
 
-            if self._credentials_match(latest.get('credentials'), new_token):
-                self.logger.info(f"💾 Refreshed credentials already stored for connector {connector_id}")
-                return
+            if latest is not None:
+                if self._credentials_match(latest.get('credentials'), new_token):
+                    self.logger.info(f"💾 Refreshed credentials already stored for connector {connector_id}")
+                    return
+                    
+                updated = {**latest, 'credentials': new_token.to_dict()}
+                success, _ = await self.configuration_service.compare_and_set(config_key, version, updated)
                 
-            updated = {**latest, 'credentials': new_token.to_dict()}
-            success, _ = await self.configuration_service.compare_and_set(config_key, version, updated)
-            
-            if success:
-                self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
-                return
+                if success:
+                    self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
+                    return
                 
             self.logger.warning(
                 f"Saving refreshed credentials for connector {connector_id} failed "

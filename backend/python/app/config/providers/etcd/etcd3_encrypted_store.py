@@ -2,7 +2,7 @@ import ast
 import hashlib
 import json
 import os
-from typing import Callable, Dict, Generic, List, Optional, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar, Union
 
 import dotenv  # type: ignore
 import etcd3  # type: ignore

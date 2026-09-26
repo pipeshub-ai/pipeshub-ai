@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import os
 import threading
+import copy
 from typing import Any
 
 import dotenv
@@ -148,8 +149,9 @@ class ConfigurationService:
                 self.logger.debug("📦 Store returned no value for key: %s", key)
                 return None, version
                 
-            self.cache[key] = value
-            return value, version
+            copied_value = copy.deepcopy(value)
+            self.cache[key] = copied_value
+            return copy.deepcopy(copied_value), version
             
         except Exception as e:
             self.logger.error("❌ Failed to get config with version %s: %s", key, str(e))

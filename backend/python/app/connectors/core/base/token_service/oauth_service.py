@@ -545,9 +545,11 @@ class OAuthProvider:
                 if attempt < 5:
                     await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
                     config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
-                    if config is None:
+                    if config is None or not isinstance(config, dict):
                         config = {}
                     oauth_data = config.get('oauth', {}) or {}
+                    if oauth_data.get('state') != state:
+                        raise ValueError("OAuth state was superseded during callback retry")
 
             raise ConcurrentModificationError("Failed to update OAuth session state after 5 attempts")
             

@@ -43,7 +43,7 @@ from app.agents.actions.knowledge_graph.views import (
 )
 from app.api.middlewares.auth import is_request_admin, require_scopes, require_service_token
 from app.api.middlewares.token_policy import has_service_scope
-from app.config.configuration_service import ConfigurationService
+from app.config.configuration_service import ConfigurationService, ConcurrentModificationError
 from app.config.constants.arangodb import (
     AppStatus,
     CollectionNames,
@@ -6770,7 +6770,6 @@ async def save_connector_instance_filters(
         config_path = _get_config_path_for_instance(connector_id)
         import asyncio
         import random
-        from app.config.configuration_service import ConcurrentModificationError
         
         for attempt in range(1, 6):
             config, version = await config_service.get_config_with_version(config_path)

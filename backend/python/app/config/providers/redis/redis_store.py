@@ -337,7 +337,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 logger.debug("No value found for key")
                 return None, None
 
-            version = hashlib.sha1(value_bytes).hexdigest()
+            version = hashlib.sha1(value_bytes, usedforsecurity=False).hexdigest()
 
             try:
                 deserialized = self.deserializer(value_bytes)
@@ -397,7 +397,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             success = bool(result[0])
             
             if success:
-                new_version = hashlib.sha1(serialized_value).hexdigest()
+                new_version = hashlib.sha1(serialized_value, usedforsecurity=False).hexdigest()
                 # Publish cache invalidation
                 await self._notify_watchers(key, new_value)
                 return True, (new_value, new_version)
