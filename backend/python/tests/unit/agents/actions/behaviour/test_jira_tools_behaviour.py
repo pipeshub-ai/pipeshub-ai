@@ -263,3 +263,76 @@ class TestStatusChanges:
 
         assert ok is True
         assert "status transition failed: Resolution is required." in data["message"]
+
+
+SEARCH = "/search/jql"
+
+
+def search_pages(*pages: tuple[list[str], str | None]) -> object:
+    """Serve pages by the token in the request body: page n answers token f"t{n}"."""
+    def answer(request: Any) -> dict[str, Any]:
+        token = (request.body or {}).get("nextPageToken")
+        index = 0 if token is None else int(token[1:])
+        keys, next_token = pages[index]
+        page: dict[str, Any] = {"issues": [issue(k) for k in keys], "isLast": next_token is None}
+        if next_token:
+            page["nextPageToken"] = next_token
+        return page
+    return answer
+
+
+class TestSearchPaging:
+    async def test_a_limit_beyond_one_page_reads_the_next_page(self, jira, api) -> None:
+        api.on("POST", SEARCH, search_pages((["PA-1", "PA-2"], "t1"), (["PA-3"], "t2"), (["PA-4"], None)))
+
+        ok, data = result(await jira.search_issues('project = "PA" AND updated >= -7d', maxResults=3))
+
+        assert ok is True
+        assert [i["key"] for i in data["data"]["issues"]] == ["PA-1", "PA-2", "PA-3"]
+        first, second = api.calls("POST", SEARCH)
+        assert (first.body["maxResults"], "nextPageToken" not in first.body) == (3, True)
+        assert (second.body["maxResults"], second.body["nextPageToken"]) == (1, "t1")
+        assert data["has_more"] is True
+        assert "Showing the first 3 matching issues; more match" in data["message"]
+
+    async def test_the_last_page_is_complete(self, jira, api) -> None:
+        api.on("POST", SEARCH, search_pages((["PA-1"], None)))
+
+        ok, data = result(await jira.search_issues('project = "PA"', maxResults=10))
+
+        assert ok is True
+        assert data["has_more"] is False
+        assert data["message"] == "Issues fetched successfully"
+        assert len(api.calls("POST", SEARCH)) == 1
+
+    async def test_a_failed_second_page_keeps_the_first_and_says_the_list_is_incomplete(self, jira, api) -> None:
+        pages = search_pages((["PA-1", "PA-2"], "t1"))
+        api.on("POST", SEARCH, pages, (429, {"errorMessages": ["Rate limit exceeded"]}, {"Retry-After": "20"}))
+
+        ok, data = result(await jira.search_issues('project = "PA"', maxResults=5))
+
+        assert ok is True
+        assert [i["key"] for i in data["data"]["issues"]] == ["PA-1", "PA-2"]
+        assert data["has_more"] is True
+        assert "Only the first 2 matching issues could be read" in data["message"]
+        assert "incomplete" in data["message"]
+
+    async def test_a_repeated_page_token_ends_the_read(self, jira, api) -> None:
+        api.on("POST", SEARCH, search_pages((["PA-1"], "t1"), (["PA-2"], "t1")))
+
+        ok, data = result(await jira.search_issues('project = "PA"', maxResults=10))
+
+        assert ok is True
+        assert [i["key"] for i in data["data"]["issues"]] == ["PA-1", "PA-2"]
+        assert len(api.calls("POST", SEARCH)) == 2
+        assert data["has_more"] is True
+
+    async def test_project_issues_say_when_more_match(self, jira, api) -> None:
+        api.on("POST", SEARCH, search_pages((["PA-1", "PA-2"], "t1"), (["PA-3"], None)))
+
+        ok, data = result(await jira.get_issues("PA", days=7, max_results=2))
+
+        assert ok is True
+        assert api.calls("POST", SEARCH)[0].body["jql"] == 'project = "PA" AND updated >= -7d ORDER BY updated DESC'
+        assert [i["key"] for i in data["data"]["issues"]] == ["PA-1", "PA-2"]
+        assert data["has_more"] is True

@@ -370,6 +370,12 @@ def _with_notes(message: str, notes: list[str]) -> str:
     return f"{message}, but {'; '.join(notes)}" if notes else message
 
 
+def _next_page_token(page: dict) -> Optional[str]:
+    """Jira's token for the next page of an enhanced search, or None on the last page."""
+    token = page.get("nextPageToken")
+    return None if page.get("isLast") is True or not isinstance(token, str) or not token else token
+
+
 def _jira_issue_label(issue: dict[str, Any]) -> str:
     key = issue.get("key") or "?"
     fields = issue.get("fields")
@@ -1287,6 +1293,52 @@ class Jira:
                         if isinstance(item, dict) and item.get("key") and isinstance(item.get("key"), str):
                             add_url_to_issue_ref(item)
 
+
+    async def _read_remaining_pages(
+        self, jql: str, first_page: object, limit: int
+    ) -> tuple[object, Optional[str]]:
+        """Follow Jira's page tokens until ``limit`` issues are read.
+
+        Returns the first page's payload holding every issue read, and a note for
+        the agent when the list is not the whole result (None when it is).
+        """
+        if not isinstance(first_page, dict):
+            return first_page, None
+        issues = list(first_page.get("issues") or [])
+        token = _next_page_token(first_page)
+        seen = {token}
+        failure: Optional[str] = None
+        while token and len(issues) < limit:
+            try:
+                page = await self.client.search_and_reconsile_issues_using_jql_post(
+                    jql=jql, maxResults=limit - len(issues), fields=["*all"], nextPageToken=token,
+                )
+                if page.status != HttpStatusCode.SUCCESS.value:
+                    failure = f"Jira answered HTTP {page.status}"
+                    break
+                payload = page.json()
+            except Exception as e:
+                logger.warning("Reading the next page of Jira issues failed: %s", e)
+                failure = "Jira could not be reached"
+                break
+            issues.extend(payload.get("issues") or [])
+            token = _next_page_token(payload)
+            if token in seen:
+                break
+            seen.add(token)
+        first_page["issues"] = issues[:limit]
+        shown = len(first_page["issues"])
+        if failure:
+            return first_page, (
+                f". Only the first {shown} matching issues could be read ({failure} for the rest), so this list "
+                "is incomplete. Say so to the user, or try again."
+            )
+        if token or len(issues) > limit:
+            return first_page, (
+                f". Showing the first {shown} matching issues; more match. Narrow the JQL, or raise maxResults "
+                "to see more."
+            )
+        return first_page, None
 
     def _validate_and_fix_jql(self, jql: str) -> tuple[str, str | None]:
         """Validate and fix common JQL syntax errors.
@@ -2274,6 +2326,7 @@ class Jira:
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
+                data, paging_note = await self._read_remaining_pages(jql, data, max_results or 50)
                 # Clean response: remove redundant fields
                 cleaned_data = (
                     ResponseTransformer(data)
@@ -2319,8 +2372,9 @@ class Jira:
                         self._add_urls_to_issue_references(issue, site_url)
 
                 return True, json.dumps({
-                    "message": "Issues fetched successfully",
-                    "data": cleaned_data
+                    "message": "Issues fetched successfully" + (paging_note or ""),
+                    "data": cleaned_data,
+                    "has_more": paging_note is not None,
                 })
             else:
                 return self._handle_response(
@@ -2469,6 +2523,7 @@ class Jira:
                         "jql_query": fixed_jql
                     })
 
+                data, paging_note = await self._read_remaining_pages(fixed_jql, data, maxResults or 50)
                 try:
                     # Clean response: remove redundant fields
                     cleaned_data = (
@@ -2527,8 +2582,9 @@ class Jira:
                     })
 
                 result = {
-                    "message": "Issues fetched successfully",
-                    "data": cleaned_data
+                    "message": "Issues fetched successfully" + (paging_note or ""),
+                    "data": cleaned_data,
+                    "has_more": paging_note is not None,
                 }
                 if jql_warning:
                     result["warning"] = jql_warning
