@@ -793,6 +793,14 @@ class TestHandleSyncEvent:
         assert msg["eventType"] == "googledrive.start"
 
     @pytest.mark.asyncio
+    async def test_keyed_by_connector(self):
+        """Like Node's sync events: an unkeyed start could land on another Kafka
+        partition than that connector's resyncs and be consumed out of order."""
+        svc = _make_entity_service()
+        await svc._handle_sync_event("googledrive.start", {"orgId": "org-1", "connectorId": "c1"})
+        assert svc.app_container.messaging_producer.send_message.call_args[1]["key"] == "c1"
+
+    @pytest.mark.asyncio
     async def test_send_failure_returns_false(self):
         svc = _make_entity_service()
         svc.app_container.messaging_producer.send_message = AsyncMock(

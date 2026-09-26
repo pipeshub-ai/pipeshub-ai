@@ -73,10 +73,13 @@ class EntityEventService(BaseEventService):
                 'timestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Send the message to sync-events topic using aiokafka
+            # Keyed by connector like Node's sync events: an unkeyed start could
+            # land on another partition than that connector's resyncs and be
+            # consumed out of order with them.
             await self.app_container.messaging_producer.send_message(
                 topic='sync-events',
-                message=message
+                message=message,
+                key=(value or {}).get("connectorId") or None,
             )
 
             self.logger.info(f"Successfully sent sync event: {event_type}")
