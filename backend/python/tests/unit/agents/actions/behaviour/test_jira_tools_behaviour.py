@@ -340,6 +340,16 @@ class TestSearchPaging:
         assert "Only the first 2 matching issues could be read" in data["message"]
         assert "incomplete" in data["message"] and "more match" not in data["message"]
 
+    async def test_an_unreadable_later_page_keeps_the_issues_already_read(self, jira, api) -> None:
+        api.on("POST", SEARCH, search_pages((["PA-1", "PA-2"], "t1")), (200, ["not", "a", "page"]))
+
+        ok, data = result(await jira.search_issues('project = "PA"', maxResults=10))
+
+        assert ok is True
+        assert [i["key"] for i in data["data"]["issues"]] == ["PA-1", "PA-2"]
+        assert data["has_more"] is True
+        assert "could not be read" in data["message"] and "incomplete" in data["message"]
+
     async def test_project_issues_say_when_more_match(self, jira, api) -> None:
         api.on("POST", SEARCH, search_pages((["PA-1", "PA-2"], "t1"), (["PA-3"], None)))
 
@@ -587,6 +597,29 @@ class TestCreateIssueFields:
         assert first_ok is False
         assert "required fields are not known yet" in assert_safe_error(first)
         assert second_ok is True and "customfield_10020" in json_text(second)
+
+    async def test_an_empty_page_before_the_total_is_a_failure_and_not_remembered(self, jira, api) -> None:
+        api.on("GET", CREATEMETA, BUG_TYPES)
+        api.on("GET", f"{CREATEMETA}/1",
+               {"fields": [meta_field("summary", "Summary", required=True)], "total": 2},
+               {"fields": [], "total": 2},
+               {"fields": [meta_field("summary", "Summary", required=True),
+                           meta_field("customfield_10020", "Team", required=True)], "total": 2})
+
+        first_ok, first = result(await jira.get_create_issue_fields("PA", "Bug"))
+        second_ok, second = result(await jira.get_create_issue_fields("PA", "Bug"))
+
+        assert first_ok is False
+        assert "required fields are not known yet" in assert_safe_error(first)
+        assert second_ok is True and "customfield_10020" in json_text(second)
+
+    async def test_an_empty_page_at_the_total_ends_the_list(self, jira, api) -> None:
+        api.on("GET", CREATEMETA, BUG_TYPES)
+        api.on("GET", f"{CREATEMETA}/1", {"fields": [], "total": 0})
+
+        ok, _ = result(await jira.get_create_issue_fields("PA", "Bug"))
+
+        assert ok is True
 
     async def test_a_failed_read_is_not_remembered(self, jira, api) -> None:
         api.on("GET", CREATEMETA, BUG_TYPES)

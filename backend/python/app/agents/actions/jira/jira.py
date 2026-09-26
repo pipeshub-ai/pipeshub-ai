@@ -1087,8 +1087,11 @@ class Jira:
 
             fetched = start_at + len(page_fields)
             total = data.get("total", 0)
-            if not page_fields or fetched >= total:
+            if not isinstance(total, int) or fetched >= total:
                 break
+            if not page_fields:
+                # Jira says more fields exist but sent none; a short list would hide required ones.
+                return [], fields_unreadable
             start_at = fetched
 
         fields = list(fields_by_id.values())
@@ -1378,6 +1381,9 @@ class Jira:
             except Exception as e:
                 logger.warning("Reading the next page of Jira issues failed: %s", e)
                 failure = "Jira could not be reached"
+                break
+            if not isinstance(payload, dict):
+                failure = "Jira sent a page that could not be read"
                 break
             issues.extend(payload.get("issues") or [])
             token = _next_page_token(payload)
