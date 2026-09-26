@@ -124,9 +124,14 @@ class TestTheRecord:
     async def test_no_record_without_a_requesting_user(self) -> None:
         graph, blob, _ = _setup()
         blob.save_conversation_file_to_storage = _unregistered_upload(blob)
-        entry = await _export(graph, blob, user_id=None)
+        result = await save_query_result_csv(
+            blob_store=blob, graph_provider=graph, org_id=ORG, user_id=None,
+            conversation_id=CONVERSATION, columns=COLUMNS, rows=ROWS,
+            file_name="query_result_1.csv", source_tool="sql.execute_sql_query",
+        )
 
-        assert "recordId" not in entry
+        # Local storage, no owner: no record to stream and no signed URL, so no export.
+        assert result is None
         assert graph.nodes[CollectionNames.RECORDS.value] == {}
         assert graph.edges[CollectionNames.PERMISSION.value] == []
 

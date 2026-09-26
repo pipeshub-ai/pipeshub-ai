@@ -291,7 +291,7 @@ class TestExecuteQuery:
 
     async def test_full_result_is_exported_as_csv(self, make_tool) -> None:
         blob = create_autospec(BlobStorage, instance=True)
-        blob.save_conversation_file_to_storage.return_value = {"url": "https://files/r.csv"}
+        blob.save_conversation_file_to_storage.return_value = {"signedUrl": "https://files/r.csv"}
         state = {"conversation_id": "conv-rs", "org_id": "org-1", "blob_storage": blob}
         tool, _ = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(150)), state=state)
 
@@ -301,7 +301,7 @@ class TestExecuteQuery:
         result = await tasks[0]
         assert result["type"] == "artifacts"
         (entry,) = result["artifacts"]
-        assert (entry["url"], entry["mimeType"]) == ("https://files/r.csv", "text/csv")
+        assert (entry["signedUrl"], entry["mimeType"]) == ("https://files/r.csv", "text/csv")
         assert "recordId" not in entry
         lines = blob.save_conversation_file_to_storage.await_args.kwargs["file_bytes"].decode().splitlines()
         assert (lines[0], len(lines)) == ("id,email", 151)

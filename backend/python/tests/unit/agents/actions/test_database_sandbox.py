@@ -365,6 +365,7 @@ class TestScheduleCSVExport:
         mock_blob = MagicMock()
         mock_blob.save_conversation_file_to_storage = AsyncMock(return_value={
             "documentId": "doc-db-3", "fileName": "sqlite_result_zzz.csv",
+            "signedUrl": "https://blob.example/z",
         })
         mock_blob.save_versioned_artifact_to_storage = AsyncMock()
         sandbox = mod.DatabaseSandbox(_make_state(blob_store=mock_blob))
@@ -382,7 +383,9 @@ class TestScheduleCSVExport:
 
         create.assert_not_awaited()
         mock_blob.save_versioned_artifact_to_storage.assert_not_awaited()
-        assert "recordId" not in result["artifacts"][0]
+        (entry,) = result["artifacts"]
+        assert "recordId" not in entry
+        assert entry["signedUrl"] == "https://blob.example/z"
 
     @pytest.mark.asyncio
     async def test_blob_save_raises_resolves_to_none(self):

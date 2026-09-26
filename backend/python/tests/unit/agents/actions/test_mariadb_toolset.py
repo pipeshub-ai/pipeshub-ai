@@ -310,7 +310,7 @@ class TestExecuteQuery:
 
     async def test_full_result_is_exported_as_csv(self, make_tool) -> None:
         blob = create_autospec(BlobStorage, instance=True)
-        blob.save_conversation_file_to_storage.return_value = {"url": "https://files/x.csv"}
+        blob.save_conversation_file_to_storage.return_value = {"signedUrl": "https://files/x.csv"}
         state = {"conversation_id": "conv-maria", "org_id": "org-1", "blob_storage": blob}
         tool, _ = make_tool(_Catalog(SHOP, on_query=lambda q, p: _rows(250)), state=state)
 
@@ -320,7 +320,7 @@ class TestExecuteQuery:
         result = await tasks[0]
         assert result["type"] == "artifacts"
         (entry,) = result["artifacts"]
-        assert entry["url"] == "https://files/x.csv"
+        assert entry["signedUrl"] == "https://files/x.csv"
         assert entry["mimeType"] == "text/csv"
         # No user in state, so no owned record to stream it through.
         assert "recordId" not in entry

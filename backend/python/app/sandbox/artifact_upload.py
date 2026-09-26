@@ -118,6 +118,8 @@ async def save_query_result_csv(
     not a sandbox artifact. Without them it falls back to an unregistered
     upload, which only cloud storage can link to (by signed URL).
 
+    An export left with neither a record nor a signed URL counts as failed.
+
     Returns a conversation-task result (``{"type": "artifacts", ...}``), or
     ``None`` on failure.
     """
@@ -148,7 +150,7 @@ async def save_query_result_csv(
             "artifactType": infer_artifact_type("text/csv").value,
         }
         document_id = upload_info.get("documentId")
-        if registrable and document_id:
+        if user_id and graph_provider and document_id:
             try:
                 entry["recordId"] = await create_artifact_record(
                     graph_provider=graph_provider,
@@ -166,6 +168,14 @@ async def save_query_result_csv(
                 entry["version"] = 1
             except Exception:
                 logger.exception("Failed to create ArtifactRecord for CSV export %s", file_name)
+        # Without a record or a signed URL nobody can download it; storage itself
+        # has no user-facing route, so report the export as failed.
+        if not entry.get("recordId") and not entry.get("signedUrl"):
+            logger.warning(
+                "CSV export %s for conversation %s has no downloadable link; dropping it",
+                file_name, conversation_id,
+            )
+            return None
         logger.info(
             "CSV export %s saved for conversation %s (%d rows)",
             file_name, conversation_id, len(rows),
