@@ -490,6 +490,26 @@ services:
       start_period: 30s
 
 
+  # The SMB connector syncs from this Samba share. Behind its own profile so
+  # only the shard that runs the SMB suite starts it. The connector reaches it
+  # by service name; the test process writes files through the published port.
+  smb-source:
+    image: dockurr/samba:4.23.10@sha256:404f91bdf317d390241a41165579cd25199f34171b44677d877c75dc40184042
+    profiles: ["smb-source"]
+    restart: always
+    environment:
+      NAME: ${SMB_SHARE:-pipeshubtest}
+      USER: ${SMB_USERNAME:-pipeshubtest}
+      PASS: ${SMB_PASSWORD:-pipeshubtest123}
+      RW: "true"
+    ports:
+      - "127.0.0.1:1445:445"
+    healthcheck:
+      test: ["CMD-SHELL", "smbclient --configfile=/etc/samba.conf -L //localhost -U \"$$USER%$$PASS\" -m SMB3 >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
   # Zammad is a connector *source*, like bookstack-source, behind its own
   # profile because it is the heaviest of them: the workflow sets
   # COMPOSE_PROFILES=zammad-source only for the shard that runs its tests.
