@@ -1369,8 +1369,6 @@ class NextcloudConnector(BaseConnector):
             modified_paths = set()
             deleted_file_ids = set()
             deleted_paths: dict[str, str] = {}
-            # Whether each file's latest activity on this page (read oldest first) is a deletion.
-            deleted_last: dict[str, bool] = {}
             max_activity_id = last_activity_id
 
             for activity in activities:
@@ -1403,18 +1401,16 @@ class NextcloudConnector(BaseConnector):
                             if file_id:
                                 deleted_file_ids.add(str(file_id))
                                 deleted_paths[str(file_id)] = file_path or ""
-                                deleted_last[str(file_id)] = True
                                 self.logger.info(f"🗑️  Deletion detected: {file_path} (ID: {file_id})")
                     elif activity_type in ['file_created', 'file_changed', 'file_renamed', 'file_restored']:
-                        for file_id, file_path in targets:
-                            if file_id:
-                                deleted_last[str(file_id)] = False
+                        for _, file_path in targets:
                             if file_path:
                                 modified_paths.add(file_path)
                                 self.logger.info(f"📝 Modification detected: {file_path} ({activity_type})")
 
             failures: dict[str, str] = {}
             failed_deletes: dict[str, str] = {}
+            found_ids: set[str] = set()
 
             # Process deletions
             if deleted_file_ids:
@@ -1430,7 +1426,8 @@ class NextcloudConnector(BaseConnector):
                     list(modified_paths),
                     user_id,
                     user_email,
-                    existing_group.external_group_id
+                    existing_group.external_group_id,
+                    found_ids,
                 ))
 
             # The feed won't list these activities again once the cursor moves past them.
@@ -1455,9 +1452,10 @@ class NextcloudConnector(BaseConnector):
                     f"start of every sync until they apply: {describe_failures(failures)}"
                 )
                 # A deleted file never changes again, so nothing else would bring its deletion back.
-                # One restored or recreated later on this page is not owed a deletion.
+                # A later activity's file that Nextcloud listed just now was restored or
+                # recreated. The activity type alone can't tell: one that 404s is still gone.
                 pending_deletes = sorted(
-                    set(pending_deletes) | {i for i in failed_deletes if deleted_last.get(i, True)}
+                    set(pending_deletes) | {i for i in failed_deletes if i not in found_ids}
                 )
 
             # Update cursor to latest activity ID
@@ -1654,12 +1652,14 @@ class NextcloudConnector(BaseConnector):
         file_paths: List[str],
         user_id: str,
         user_email: str,
-        record_group_id: str
+        record_group_id: str,
+        found_ids: set[str] | None = None,
     ) -> dict[str, str]:
         """
         Process modified files by fetching their latest metadata.
         For incremental sync, sends new records immediately (no batching needed for small changes).
         Returns the paths that could not be fetched or saved, each with the reason; empty when all were.
+        Adds the file ID of every entry Nextcloud listed to ``found_ids``.
         Args:
             file_paths: List of file paths that were modified
             user_id: User ID
@@ -1726,6 +1726,8 @@ class NextcloudConnector(BaseConnector):
 
                     # Process each entry
                     for entry in entries:
+                        if found_ids is not None and entry.get('file_id'):
+                            found_ids.add(str(entry['file_id']))
                         record_update = await self._process_nextcloud_entry(
                             entry=entry,
                             user_id=user_id,

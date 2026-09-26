@@ -957,6 +957,24 @@ class TestIncrementalSync:
         assert db.by_name("notes.txt").id == kept and "notes.txt" not in db.deleted
         assert store.checkpoint()["pending_deletes"] == []
 
+    async def test_a_later_change_to_a_file_that_is_still_gone_keeps_its_deletion_queued(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notes = server.nodes["Docs/notes.txt"]
+        db.fail_delete_for = {notes.file_id}
+        server.delete("Docs/notes.txt")
+        # An activity for the file after its deletion, whose fetch now finds nothing.
+        server.activities.append({"activity_id": server.latest_activity_id + 1, "type": "file_changed",
+                                  "object_type": "files", "object_id": int(notes.file_id),
+                                  "object_name": "/Docs/notes.txt", "objects": {notes.file_id: "/Docs/notes.txt"}})
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        assert store.checkpoint()["pending_deletes"] == [notes.file_id]
+
+        db.fail_delete_for.clear()
+        await connector.run_sync()
+        assert "notes.txt" not in db.names()
+        assert store.checkpoint()["pending_deletes"] == []
+
     @pytest.mark.parametrize("break_path", [
         pytest.param(lambda db, record: db.unreadable_paths.add(record.id), id="path-read-fails"),
         pytest.param(lambda db, record: db.edges.pop(record.id), id="path-is-only-the-name"),
