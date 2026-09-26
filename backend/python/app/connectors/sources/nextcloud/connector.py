@@ -1480,7 +1480,8 @@ class NextcloudConnector(BaseConnector):
                     set(pending_deletes) | {i for i in failed_deletes if i not in found_ids}
                 )
                 for file_id in pending_deletes:
-                    pending_paths.setdefault(file_id, deleted_paths.get(file_id, ""))
+                    # This page's deletion says where the file was last; a queued path may be older.
+                    pending_paths[file_id] = deleted_paths.get(file_id) or pending_paths.get(file_id, "")
 
             # Update cursor to latest activity ID
             await self.activity_sync_point.update_sync_point(

@@ -930,6 +930,18 @@ class TestIncrementalSync:
             items = value if isinstance(value, list) else [value]
             assert all(isinstance(v, (str, int, float, bool)) for v in items if v is not None), name
 
+    async def test_a_requeued_deletion_keeps_the_path_it_was_deleted_from(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        docs = ids_of(server)["Docs"]
+        store.checkpoint().update(pending_deletes=[docs], pending_delete_paths=["/Old/Docs"], held_attempts=4)
+        db.fail_delete_for = {ids_of(server)["notes.txt"]}
+        server.delete("Docs")
+
+        await connector.run_sync()
+
+        assert store.checkpoint()["pending_deletes"] == [docs]
+        assert store.checkpoint()["pending_delete_paths"] == ["/Docs"]
+
     async def test_a_pending_deletion_whose_record_is_gone_is_dropped_quietly(self, server, db, store, caplog) -> None:
         connector = await synced(server, db, store)
         cursor = store.cursor()
