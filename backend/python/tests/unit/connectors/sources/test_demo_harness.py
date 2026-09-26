@@ -97,3 +97,58 @@ def test_s1_passes_only_an_answer_that_reports_the_recovery(fx: dict, answer: st
     q = _question(fx, "s1")
     cited = {"drive-sales-northwind-plan", "drive-sales-northwind-call-0416"}
     assert kb_harness.score(q, "cites", cited, answer)[0] is ok
+
+
+@pytest.mark.parametrize(
+    ("answer", "ok"),
+    [
+        ("Northwind is back on track; renewal expected on time.", True),
+        ("Northwind is not on track for the renewal.", False),
+        ("Northwind isn't on track yet.", False),
+        ("Northwind's renewal is not on time.", False),
+        ("Northwind is not at risk any more.", True),
+    ],
+)
+def test_a_negated_recovery_phrase_does_not_count(fx: dict, answer: str, ok: bool) -> None:
+    q = _question(fx, "s1")
+    cited = {"drive-sales-northwind-plan", "drive-sales-northwind-call-0416"}
+    assert kb_harness.score(q, "cites", cited, answer)[0] is ok
+
+
+@pytest.mark.parametrize(
+    ("answer", "ok"),
+    [
+        ("We launched on 21 April, a week after the fix shipped.", True),
+        ("We launched background exports on Tuesday, Apr 21, 2026.", True),
+        ("We launched on 14 April because PR #211 shipped.", False),
+    ],
+)
+def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: str, ok: bool) -> None:
+    q = _question(fx, "m1")
+    assert kb_harness.score(q, "cites", {"drive-mkt-exports-launch-plan"}, answer)[0] is ok
+
+
+@pytest.mark.parametrize(
+    ("answer", "ok"),
+    [
+        ("Up to $250 per purchase needs no approval.", True),
+        ("You can spend up to $2500 without your manager's approval.", False),
+    ],
+)
+def test_f2_does_not_read_250_inside_2500(fx: dict, answer: str, ok: bool) -> None:
+    q = _question(fx, "f2")
+    assert kb_harness.score(q, "cites", {"drive-fin-expense-policy"}, answer)[0] is ok
+
+
+def test_the_upload_waits_for_every_knowledge_base_the_persona_loads(fx: dict) -> None:
+    shared, restricted = kb_harness.upload_plan(fx)
+    records = {r["title"] for r in fx["records"]} | {t["title"] for t in fx.get("threads", [])}
+    for persona, groups in (("alice", {"launch-core", "payments-contract"}),
+                            ("bob", {"pricing-committee", "deal-desk", "people-managers"})):
+        readable = kb_harness.upload_groups(fx, persona)
+        probes = kb_harness.wait_probes(shared, restricted, readable)
+        # One per loaded knowledge base, each the last file uploaded to it.
+        assert len(probes) == 1 + len(groups), (persona, probes)
+        assert probes[0] == shared[-1][0].removesuffix(".md")
+        assert probes[1:] == [restricted[g][-1][0].removesuffix(".md") for g in sorted(groups)]
+        assert all(any(kb_harness.safe_name(t) == p for t in records) for p in probes)

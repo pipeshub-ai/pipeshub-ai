@@ -147,6 +147,39 @@ def upload_groups(fx: dict, persona: str) -> set[str]:
     return restricted_groups(fx) & set(person.get("groups", []))
 
 
+def upload_plan(fx: dict) -> tuple[list[tuple[str, str]], dict[str, list[tuple[str, str]]]]:
+    """Files to upload: what the installer can read goes in one shared knowledge
+    base, and each restricted group's records in their own. Threads are one file."""
+    closed = restricted_groups(fx)
+    shared: list[tuple[str, str]] = []
+    restricted: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    threads = {t["id"]: t for t in fx.get("threads", [])}
+    by_thread: dict[str, list[dict]] = defaultdict(list)
+
+    def place(group: str, item: tuple[str, str]) -> None:
+        (restricted[group] if group in closed else shared).append(item)
+
+    for r in fx["records"]:
+        if r.get("thread") and r["thread"] in threads:
+            by_thread[r["thread"]].append(r)
+            continue
+        place(group_of(r, fx), (safe_name(r["title"]) + ".md", render(r, fx)))
+    for tid, msgs in by_thread.items():
+        t = threads[tid]
+        msgs.sort(key=lambda m: str(m["created"]))
+        place(group_of(msgs[0], fx), (safe_name(t["title"]) + ".md", render_thread(t, msgs, fx)))
+    return shared, dict(restricted)
+
+
+def wait_probes(
+    shared: list[tuple[str, str]], restricted: dict[str, list[tuple[str, str]]], readable: set[str]
+) -> list[str]:
+    """One record name per knowledge base the run loaded: the last file uploaded to
+    it, so a hit means that batch has been indexed, not just its first file."""
+    batches = ([shared] if shared else []) + [restricted[g] for g in sorted(readable & set(restricted))]
+    return [batch[-1][0].removesuffix(".md") for batch in batches]
+
+
 def ensure_kb(ph: Pipeshub, name: str) -> str:
     listing = ph.knowledge_base.list_knowledge_bases()
     for kb in getattr(listing, "knowledge_bases", None) or getattr(listing, "knowledgeBases", None) or []:
@@ -223,6 +256,22 @@ def cited_fixture_ids(cited_names: list[str], name_to_id: dict[str, str], thread
     return ids
 
 
+_NEGATED = re.compile(r"(?:\bnot|n't|\bnever)\s+(?:yet\s+)?$")
+
+
+def mentions(answer: str, phrase: str) -> bool:
+    """Whether the answer states `phrase`: case-insensitive, not directly negated
+    ("not on track"; a negation further back, "won't renew on time", still counts),
+    and a number is not read inside another ("21" in "#211", "250" in "$2500")."""
+    text, p = answer.lower(), phrase.lower()
+    before = r"(?<![\d#.,])" if p[:1].isdigit() else ""
+    after = r"(?!\d|[.,]\d)" if p[-1:].isdigit() else ""
+    for m in re.finditer(before + re.escape(p) + after, text):
+        if not _NEGATED.search(text[max(0, m.start() - 16):m.start()]):
+            return True
+    return False
+
+
 def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool, str]:
     """Score one answer against a golden question's must/must-not lists.
 
@@ -237,10 +286,10 @@ def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool,
     any_ok = ((not any_of) or any(x in cited_ids for x in any_of)) and ((not any_of2) or any(x in cited_ids for x in any_of2))
     forbidden = [x for x in q.get("must_not_cite", []) if x in cited_ids]
     mention = q.get("answer_must_mention", [])
-    unmentioned = [m for m in mention if m.lower() not in answer.lower()]
+    unmentioned = [m for m in mention if not mentions(answer, m)]
     # At least one of these, for a fact the model can phrase several ways.
     mention_any = q.get("answer_must_mention_any_of", [])
-    if mention_any and not any(m.lower() in answer.lower() for m in mention_any):
+    if mention_any and not any(mentions(answer, m) for m in mention_any):
         unmentioned.append(" | ".join(mention_any))
     if expect == "none":
         # A failed run proves nothing about access, so it is not a pass.
@@ -331,24 +380,9 @@ def main() -> None:
             # Knowledge bases stand in for groups: everything the installer can read
             # goes in one shared KB, each restricted group gets its own, and only the
             # groups the modelled persona is in are loaded.
-            closed = restricted_groups(fx)
             readable = upload_groups(fx, "alice" if args.skip_restricted else "bob")
             names = {g["id"]: g["name"] for g in fx["groups"]}
-            shared: list[tuple[str, str]] = []
-            restricted: dict[str, list[tuple[str, str]]] = defaultdict(list)
-            threads = {t["id"]: t for t in fx.get("threads", [])}
-            by_thread: dict[str, list[dict]] = defaultdict(list)
-
-            def place(group: str, item: tuple[str, str]) -> None:
-                (restricted[group] if group in closed else shared).append(item)
-
-            for r in fx["records"]:
-                if r.get("thread") and r["thread"] in threads:
-                    by_thread[r["thread"]].append(r); continue
-                place(group_of(r, fx), (safe_name(r["title"]) + ".md", render(r, fx)))
-            for tid, msgs in by_thread.items():
-                t = threads[tid]; msgs.sort(key=lambda m: str(m["created"]))
-                place(group_of(msgs[0], fx), (safe_name(t["title"]) + ".md", render_thread(t, msgs, fx)))
+            shared, restricted = upload_plan(fx)
             if not args.skip_shared:
                 print(f"== uploading {len(shared)} shared records")
                 kb_shared = ensure_kb(ph, "Acme Corp (shared)")
@@ -357,9 +391,8 @@ def main() -> None:
                 print(f"== uploading {len(restricted[group])} records for {names[group]}")
                 upload(ph, ensure_kb(ph, f"Acme Corp ({names[group].lower()})"), restricted[group])
             print("== waiting for indexing")
-            wait_indexed(ph, "why was the billing worker retry logic changed", "482")
-            if "pricing-committee" in readable:
-                wait_indexed(ph, "enterprise pricing strategy platform fee", "pricing")
+            for probe in wait_probes(shared, restricted, readable):
+                wait_indexed(ph, probe, probe)
 
         persona = args.persona or ("alice" if args.skip_restricted else "bob")
         only = set(args.only.split(",")) if args.only else None
