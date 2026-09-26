@@ -44,6 +44,8 @@ from app.sources.external.microsoft.sharepoint.sharepoint import (
 logger = logging.getLogger(__name__)
 
 _MAX_FILE_CONTENT_BYTES = 50 * 1024 * 1024  # 50 MB — matches OneDrive
+_NOTEBOOK_PAGE_SIZE = 50
+_MAX_NOTEBOOK_PAGES = 20
 
 
 def _sharepoint_file_label(entry: dict) -> str:
@@ -1546,13 +1548,29 @@ class SharePoint:
     ) -> tuple[bool, str]:
         """Resolve a OneNote notebook by name in the given site. Lists notebooks for that site and matches by name."""
         try:
-            list_resp = await self.client.list_onenote_notebooks(site_id=site_id, top=50, skip=0)
-            if not list_resp.success:
+            notebooks: list[Any] = []
+            for page_number in range(_MAX_NOTEBOOK_PAGES):
+                list_resp = await self.client.list_onenote_notebooks(
+                    site_id=site_id, top=_NOTEBOOK_PAGE_SIZE, skip=page_number * _NOTEBOOK_PAGE_SIZE,
+                )
+                if not list_resp.success:
+                    # A match on the pages read so far could be the wrong notebook.
+                    return False, json.dumps({
+                        "resolved": False,
+                        "error": _failure_text(list_resp, "list the site's notebooks", "Failed to list notebooks for this site."),
+                    })
+                data = list_resp.data or {}
+                notebooks.extend(data.get("results") or data.get("notebooks") or [])
+                if not data.get("has_more"):
+                    break
+            else:
                 return False, json.dumps({
                     "resolved": False,
-                    "error": _failure_text(list_resp, "list the site's notebooks", "Failed to list notebooks for this site."),
+                    "error": (
+                        f"This site has more than {_MAX_NOTEBOOK_PAGES * _NOTEBOOK_PAGE_SIZE} notebooks, so not all "
+                        "of them could be checked. Ask the user for the notebook's exact name or link."
+                    ),
                 })
-            notebooks = (list_resp.data or {}).get("results") or (list_resp.data or {}).get("notebooks") or []
             query_norm = self._normalize_notebook_name(notebook_query)
             matches: list[dict[str, Any]] = []
             for nb in notebooks:

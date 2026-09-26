@@ -38,7 +38,7 @@ PENDING = {
     "errors": "Graph failures reach the agent without a next step, and a rate limit without a wait",
     "files": "list_files drops Graph's next-page link, so a partial folder listing reads as complete",
     "pages": "get_pages drops Graph's next-page link, so a partial page list reads as complete",
-    "notebooks": "find_notebook resolves from the first 50 notebooks only, and a nameless notebook matches anything",
+    "notebooks": "a notebook with no name matches every query",
     "sections": "list_notebook_pages shows a section whose pages could not be read as an empty section",
     "content": "get_notebook_page_content drops ids past 20 silently and reports success when every page failed",
 }
@@ -259,7 +259,6 @@ class TestNotebooks:
         assert data["resolved"] is False
         assert [c["notebook_id"] for c in data["candidates"]] == ["nb-1", "nb-2"]
 
-    @pending("notebooks")
     async def test_a_notebook_past_the_first_fifty_is_found(self, sp, stub) -> None:
         first = [notebook(f"nb-{i}", f"Team notes {i}") for i in range(50)]
         stub.on("GET", NOTEBOOKS, notebooks_by_skip({"0": page(first), "50": page([notebook("nb-x", "Roadmap")])}))
@@ -269,7 +268,6 @@ class TestNotebooks:
         assert ok is True
         assert (data["resolved"], data["notebook_id"]) == (True, "nb-x")
 
-    @pending("notebooks")
     async def test_an_unfinished_notebook_list_resolves_nothing(self, sp, stub) -> None:
         first = [notebook("nb-1", "Roadmap draft")] + [notebook(f"nb-{i}", f"Team {i}") for i in range(2, 51)]
         stub.on("GET", NOTEBOOKS, notebooks_by_skip({
