@@ -481,6 +481,24 @@ class TestFullSync:
         assert db.path_of("notes.txt") == "Docs/notes.txt"
         assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
 
+    async def test_a_failed_relink_during_a_full_sync_is_retried_by_the_next(self, server, db, store) -> None:
+        seed_drive(server)
+        server.add_file("later.txt")  # gives the run an activity to anchor the cursor to
+        connector = await make_connector(server, db, store)
+        await connector.run_sync()
+        store.sync_points.clear()  # back to full syncs
+        del db.records[ids_of(server)["Docs"]]  # the folder record went, what it held did not
+        db.fail_write_for.add("notes.txt")
+
+        await connector.run_sync()
+        assert store.cursor() is None
+
+        db.fail_write_for.clear()
+        await connector.run_sync()
+        assert db.path_of("notes.txt") == "Docs/notes.txt"
+        assert store.cursor() == str(server.latest_activity_id)
+        assert store.checkpoint()["full_sync_resave"] == []
+
     async def test_an_update_that_fails_to_save_during_a_full_sync_is_retried(self, server, db, store) -> None:
         seed_drive(server)
         server.activities.clear()  # activity app disabled: every run is a full sync

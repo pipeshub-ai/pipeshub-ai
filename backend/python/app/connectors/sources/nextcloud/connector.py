@@ -1038,11 +1038,15 @@ class NextcloudConnector(BaseConnector):
         self,
         user_id: str,
         user_email: str,
-        record_group_id: str
+        record_group_id: str,
+        resave: set[str] | None = None,
     ) -> bool:
         """
         Synchronize all files for a specific user using WebDAV PROPFIND.
         Hardcoded depth to 100
+
+        ``resave`` holds the IDs of stored records to save again whatever their state. Each
+        one saved leaves it, and each stored record whose save fails joins it.
 
         Returns True only when the whole drive was listed and every change saved.
         """
@@ -1147,14 +1151,22 @@ class NextcloudConnector(BaseConnector):
 
                 # A stored record under a folder that is new in this run is saved again so it is
                 # linked under that folder, which a failed earlier run may have left unstored.
-                relink = parent_id is not None and parent_id in new_folder_ids
+                # So is one whose save failed in an earlier run: that save had already removed
+                # its parent link, and nothing about it looks changed now.
+                record_id = str(record_update.external_record_id)
+                relink = (parent_id is not None and parent_id in new_folder_ids) or (
+                    resave is not None and record_id in resave
+                )
                 if not (record_update.is_updated or relink):
                     continue
                 await flush()  # folders sort first, so any new folder above this one is stored
                 update = record_update if record_update.is_updated else dataclasses.replace(
                     record_update, is_updated=True
                 )
-                all_saved = await self._handle_record_updates(update) and all_saved
+                saved = await self._handle_record_updates(update)
+                all_saved = saved and all_saved
+                if resave is not None:
+                    (resave.discard if saved else resave.add)(record_id)
                 updated_count += 1
 
             # Process remaining records
@@ -1289,13 +1301,25 @@ class NextcloudConnector(BaseConnector):
 
             await self.data_entities_processor.on_new_record_groups([(record_group, [user_permission])])
 
+            sync_point_key = "activity_cursor"
+            checkpoint = await self.activity_sync_point.read_sync_point(sync_point_key) or {}
+            stored_resave = checkpoint.get("full_sync_resave")
+            before = sorted(str(i) for i in stored_resave) if isinstance(stored_resave, list) else []
+            resave = set(before)
+
             # Sync files for the current user only
             self.logger.info(f"Syncing files for user: {self.current_user_email}")
-            if not await self._sync_user_files(
+            complete = await self._sync_user_files(
                 self.current_user_id,
                 self.current_user_email,
-                self.current_user_id
-            ):
+                self.current_user_id,
+                resave,
+            )
+            if sorted(resave) != before:
+                await self.activity_sync_point.update_sync_point(
+                    sync_point_key, {"full_sync_resave": sorted(resave)}
+                )
+            if not complete:
                 # The cursor only covers changes made after it, so saving one now would
                 # leave whatever this run missed unsynced until it next changes.
                 self.logger.error(
@@ -1319,7 +1343,6 @@ class NextcloudConnector(BaseConnector):
                     if activities:
                         latest_activity_id = activities[0].get('activity_id')
                         if latest_activity_id:
-                            sync_point_key = "activity_cursor"
                             # The store merges writes, so a count left from an earlier cursor is reset here.
                             await self.activity_sync_point.update_sync_point(
                                 sync_point_key,
