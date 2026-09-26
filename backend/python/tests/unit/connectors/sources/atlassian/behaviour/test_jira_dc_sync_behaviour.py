@@ -456,6 +456,22 @@ class TestIncrementalSync:
         assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
         assert any("ENG-2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
 
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            await connector.run_sync()
+
+        assert not any("ENG-2" in r.getMessage() for r in caplog.records), "an unchanged given-up issue is not tried again"
+        assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
+        assert json.loads(store.values_for("project_ENG")["given_up_issues"]) == {"1002": ts(2)}
+
+        search.pages.clear()
+        search.add("ENG", 0, [issue("1002", "ENG-2", ts(4))])
+        db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert "1002" in tickets(db), "once it changes it is tried afresh"
+        assert json.loads(store.values_for("project_ENG")["given_up_issues"]) == {}
+
     async def test_a_rate_limited_issue_search_is_retried(self, jira, db, store, search, backoff_sleeps) -> None:
         stub_site(jira, search)
         limited = httpx.Response(429, headers={"Retry-After": "7"}, content=b"{}")
