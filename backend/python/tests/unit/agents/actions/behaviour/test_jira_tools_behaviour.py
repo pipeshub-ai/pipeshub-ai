@@ -199,3 +199,67 @@ class TestRefusedPeople:
         assert data["data"]["url"] == f"{SITE}/browse/PA-7"
         body = api.calls("POST", "/issue")[0].body["fields"]
         assert body["description"]["content"][0]["content"][0]["text"] == "Steps: @U123 saw it"
+
+
+def transitions(*names: str) -> dict[str, Any]:
+    return {"transitions": [{"id": str(i + 11), "name": f"Move to {n}", "to": {"name": n}} for i, n in enumerate(names)]}
+
+
+class TestStatusChanges:
+    async def test_status_moves_through_the_matching_transition(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("GET", "/issue/PA-7/transitions", transitions("In Progress", "Done"))
+        api.on("POST", "/issue/PA-7/transitions", (204, None))
+
+        ok, data = result(await jira.update_issue("PA-7", status="done"))
+
+        assert ok is True, data
+        assert api.calls("POST", "/issue/PA-7/transitions")[0].body == {"transition": {"id": "12"}}
+        assert data["message"] == "Issue updated successfully"
+
+    async def test_unreachable_status_alone_changes_nothing_and_lists_the_options(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("GET", "/issue/PA-7/transitions", transitions("In Progress", "Done"))
+
+        ok, data = result(await jira.update_issue("PA-7", status="Closed"))
+
+        assert ok is False
+        assert assert_safe_error(data) == (
+            "Nothing was changed: PA-7 cannot move to 'Closed' from its current status. It can move to: Done, In Progress."
+        )
+        assert api.writes() == []
+
+    async def test_unreachable_status_with_other_changes_says_the_status_was_not_changed(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("GET", "/issue/PA-7/transitions", transitions("Done"))
+        api.on("PUT", "/issue/PA-7", (204, None))
+
+        ok, data = result(await jira.update_issue("PA-7", summary="New title", status="Closed"))
+
+        assert ok is True
+        assert data["message"] == (
+            "Issue updated successfully, but the status was not changed: PA-7 cannot move to 'Closed' "
+            "from its current status. It can move to: Done"
+        )
+        assert api.calls("POST", "/issue/PA-7/transitions") == []
+
+    async def test_unreadable_transitions_are_not_reported_as_a_status_change(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("GET", "/issue/PA-7/transitions", (503, {"errorMessages": ["Service unavailable"]}))
+        api.on("PUT", "/issue/PA-7", (204, None))
+
+        ok, data = result(await jira.update_issue("PA-7", labels=["urgent"], status="Done"))
+
+        assert ok is True
+        assert "the status was not changed" in data["message"]
+        assert "could not be read" in data["message"]
+
+    async def test_a_refused_transition_is_reported(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("GET", "/issue/PA-7/transitions", transitions("Done"))
+        api.on("POST", "/issue/PA-7/transitions", (400, {"errorMessages": ["Resolution is required."]}))
+
+        ok, data = result(await jira.update_issue("PA-7", status="Done"))
+
+        assert ok is True
+        assert "status transition failed: Resolution is required." in data["message"]

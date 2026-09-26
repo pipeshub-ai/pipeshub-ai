@@ -1960,7 +1960,12 @@ class Jira:
                         fields[field_id] = field_value
 
             transition = None
+            status_problem: Optional[str] = None
             if status:
+                status_problem = (
+                    f"the status was not changed: Jira's list of statuses {issue_key} can move to could not be "
+                    "read. Try the status change again in a moment"
+                )
                 try:
                     transitions_response = await self.client.get_transitions(issueIdOrKey=issue_key)
                     if transitions_response.status == HttpStatusCode.SUCCESS.value:
@@ -1969,15 +1974,23 @@ class Jira:
                             if trans.get("to", {}).get("name", "").lower() == status.lower():
                                 transition = {"id": trans.get("id")}
                                 break
-                        if not transition:
-                            logger.warning(
-                                f"Status transition '{status}' not found for {issue_key}. "
-                                f"Available: {[t.get('to', {}).get('name') for t in transitions]}"
+                        if transition:
+                            status_problem = None
+                        else:
+                            reachable = ", ".join(
+                                sorted({t.get("to", {}).get("name") for t in transitions if t.get("to", {}).get("name")})
+                            ) or "none"
+                            status_problem = (
+                                f"the status was not changed: {issue_key} cannot move to '{status}' from its current "
+                                f"status. It can move to: {reachable}"
                             )
+                            logger.warning(f"Status transition '{status}' not found for {issue_key}: {reachable}")
                 except Exception as e:
                     logger.warning(f"Could not get transitions for {issue_key}: {e}")
 
-            notes: list[str] = []
+            notes: list[str] = [status_problem] if status_problem else []
+            if status_problem and not fields:
+                return False, json.dumps({"error": f"Nothing was changed: {status_problem.split(': ', 1)[1]}."})
             if not fields and not transition:
                 return False, json.dumps({
                     "error": "No updates provided",
