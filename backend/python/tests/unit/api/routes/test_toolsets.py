@@ -8025,6 +8025,43 @@ class TestGetAuthenticatedToolsets:
         assert toolset["createdAtTimestamp"] == 1234567890
         assert toolset["updatedAtTimestamp"] == 1234567900
 
+    @pytest.mark.asyncio
+    async def test_none_auth_instance_without_user_auth_is_authenticated(self) -> None:
+        """NONE-auth instances need no credentials, so no record means authenticated."""
+        from app.agents.constants.toolset_constants import AuthType
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [
+            {"_id": "inst-none", "orgId": "o1", "toolsetType": "web_search", "authType": "NONE"},
+            {"_id": "inst-none-enum", "orgId": "o1", "toolsetType": "web_search", "authType": AuthType.NONE},
+            {"_id": "inst-oauth", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH"},
+        ]
+
+        async def mock_get_config(path, default=None):
+            if "toolset-instances" in path:
+                return instances
+            # No credential record for the NONE instances; none for OAUTH either.
+            return None
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {
+            "display_name": "Test",
+            "description": "",
+            "icon_path": "",
+            "category": "app",
+            "tools": [],
+        }
+
+        result, auth_by_instance = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        instance_ids = [t["instanceId"] for t in result]
+        assert "inst-none" in instance_ids
+        assert "inst-none-enum" in instance_ids
+        assert "inst-oauth" not in instance_ids
+        assert all(t["isAuthenticated"] is True for t in result)
+        assert auth_by_instance["inst-none"] == {}
+
 
 class TestIsActionsEnabled:
     """No env override exists — resolution is `config_service` (via the shared
