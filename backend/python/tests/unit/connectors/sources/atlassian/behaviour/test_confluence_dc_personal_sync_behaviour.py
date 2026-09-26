@@ -17,6 +17,8 @@ from atlassian_behaviour_fakes import (
     FakeConfigService,
     FakeRecordsDb,
     json_response,
+    logged,
+    record_logs,
 )
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -513,13 +515,14 @@ class TestPartialFailures:
         assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] > old
 
     async def test_a_page_that_keeps_failing_is_given_up_on_after_five_syncs(
-        self, atlassian_api, records_db, checkpoints, search, caplog
+        self, atlassian_api, records_db, checkpoints, search
     ) -> None:
         recent = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
         search.add("page", "ENG", 0, listing([content("p1"), content("p2", when=recent)]))
         records_db.fail_lookup_for = {"p2"}
         connector = await make_connector(atlassian_api, records_db, checkpoints)
+        logs = record_logs(connector)
 
         for attempt in range(1, 5):
             await connector.run_sync()
@@ -527,19 +530,17 @@ class TestPartialFailures:
             assert "last_sync_time" not in stored
             assert json.loads(stored["failedPages"]) == {"p2": attempt}
 
-        with caplog.at_level(logging.ERROR):
-            await connector.run_sync()
+        await connector.run_sync()
 
         given_up_at = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
         assert given_up_at > recent
-        assert any("p2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
+        assert any("p2" in m and "after 5 syncs" in m for m in logged(logs))
 
-        caplog.clear()
-        with caplog.at_level(logging.ERROR):
-            await connector.run_sync()
+        errors_before = len(logged(logs))
+        await connector.run_sync()
 
         stored = checkpoints.values_for("confluence_pages/ENG")
-        assert not any("p2" in r.getMessage() for r in caplog.records), "an unchanged given-up page is not tried again"
+        assert not any("p2" in m for m in logged(logs)[errors_before:]), "an unchanged given-up page is not tried again"
         assert stored["last_sync_time"] >= given_up_at and json.loads(stored["failedPages"]) == {}
         assert json.loads(stored["givenUpPages"]) == {"p2": recent}
 
@@ -588,7 +589,7 @@ class TestPartialFailures:
         assert "p2" not in json.loads(stored.get("givenUpPages") or "{}"), "nothing to match it on, so it isn't kept"
 
     async def test_an_undated_page_given_up_alone_is_named_and_the_sync_moves_on(
-        self, atlassian_api, records_db, checkpoints, search, caplog
+        self, atlassian_api, records_db, checkpoints, search
     ) -> None:
         undated = {**content("p2"), "history": {"createdDate": "2024-01-01T00:00:00.000Z"}}
         stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
@@ -599,15 +600,15 @@ class TestPartialFailures:
             generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG"),
             {"failedPages": json.dumps({"p2": 4})},
         )
+        logs = record_logs(connector)
 
-        with caplog.at_level(logging.ERROR):
-            await connector.run_sync()
+        await connector.run_sync()
 
         stored = checkpoints.values_for("confluence_pages/ENG")
         assert "last_sync_time" in stored, "bounded like every other page: after 5 syncs the space moves on"
         assert json.loads(stored["failedPages"]) == {}
         assert "p2" not in json.loads(stored.get("givenUpPages") or "{}")
-        assert any("p2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
+        assert any("p2" in m and "after 5 syncs" in m for m in logged(logs))
 
     async def test_each_failing_page_has_its_own_count(self, atlassian_api, records_db, checkpoints, search) -> None:
         stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
