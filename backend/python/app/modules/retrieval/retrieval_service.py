@@ -25,6 +25,7 @@ from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import GroupType
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.models.entities import substitute_user_email
 from app.modules.retrieval.result_merging import (
     CollectionResults,
     ResultMerger,
@@ -581,6 +582,14 @@ class RetrievalService:
                 self.logger.error("Failed to fetch records by record IDs")
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
+            # Resolve the viewer's email here, before the maps below start sharing
+            # these dicts: `virtual_to_record_map` reaches the citation builders via
+            # `get_record`, which copies `webUrl` verbatim onto the blob record.
+            user_email = user.get("email") if user else None
+            for r in fetched_records:
+                if r and r.get("webUrl"):
+                    r["webUrl"] = substitute_user_email(r["webUrl"], user_email)
+
             record_id_to_record_map = {}
             for r in fetched_records:
                 if r:
@@ -626,10 +635,6 @@ class RetrievalService:
                         result["metadata"]["connectorId"] = record.get("connectorId", None)
                         result["metadata"]["kbId"] = record.get("kbId", None)
                         weburl = record.get("webUrl")
-                        if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                            user_email = user.get("email") if user else None
-                            if user_email:
-                                weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
                         result["metadata"]["recordName"] = record.get("recordName")
                         result["metadata"]["previewRenderable"] = record.get("previewRenderable", True)
@@ -801,14 +806,15 @@ class RetrievalService:
                 elif record_type == "mail" and record_id in mails_map:
                     mail = mails_map[record_id]
                     weburl = mail.get("webUrl")
-                    if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                        user_email = user.get("email") if user else None
-                        if user_email:
-                            weburl = weburl.replace("{user.email}", user_email)
                     fallback_mimetype = "text/html"
 
                 if weburl:
-                    result["metadata"]["webUrl"] = weburl
+                    resolved_weburl = substitute_user_email(weburl, user_email)
+                    result["metadata"]["webUrl"] = resolved_weburl
+                    # `record` is the same object virtual_to_record_map holds (see
+                    # record_id_to_record_map / _create_virtual_to_record_mapping),
+                    # so citation building via chat_helpers.get_record() needs this too.
+                    record["webUrl"] = resolved_weburl
 
                 if fallback_mimetype:
                     result["metadata"]["mimeType"] = fallback_mimetype

@@ -396,13 +396,18 @@ def _append_record_page_citation(
     return citation_num + 1
 
 
-_TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
+_FRAGMENT_DIRECTIVE_DELIMITER = ":~:"
 
 
 def _page_of(url: str) -> str:
-    """Strip a `#:~:text=` fragment so a bare page URL can be compared
-    against fragment-keyed web records (see `generate_text_fragment_url`)."""
-    return url.split(_TEXT_FRAGMENT_DIRECTIVE_PREFIX, 1)[0]
+    """Strip the fragment directive so a bare page URL can be compared
+    against fragment-keyed web records (see `generate_text_fragment_url`).
+
+    Splits on `:~:` rather than `#:~:text=` because the directive is appended
+    after any anchor the URL already had, so the `#` is not always adjacent.
+    """
+    page = url.split(_FRAGMENT_DIRECTIVE_DELIMITER, 1)[0]
+    return page[:-1] if page.endswith("#") else page
 
 
 def _build_web_record_page_index(

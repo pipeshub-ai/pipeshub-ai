@@ -65,6 +65,7 @@ from app.models.entities import (
     WebpageRecord,
     SQLTableRecord,
     SQLViewRecord,
+    substitute_user_email,
 )
 from app.schema.arango.documents import (
     agent_schema,
@@ -16840,14 +16841,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 additional_data = await self.get_document(
                     record_id, CollectionNames.MAILS.value, transaction
                 )
-                if additional_data and user.get("email"):
-                    message_id = record.get("externalRecordId")
-                    additional_data["webUrl"] = (
-                        f"https://mail.google.com/mail?authuser={user['email']}#all/{message_id}"
-                    )
             elif record.get("recordType") == RecordTypes.TICKET.value:
                 additional_data = await self.get_document(
                     record_id, CollectionNames.TICKETS.value, transaction
+                )
+
+            if additional_data and additional_data.get("webUrl"):
+                additional_data["webUrl"] = substitute_user_email(
+                    additional_data["webUrl"], user.get("email")
                 )
 
             # Get metadata
@@ -16975,6 +16976,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "accessType": best_access.get("type"),
             }]
 
+            if record.get("webUrl"):
+                record["webUrl"] = substitute_user_email(record["webUrl"], user.get("email"))
             return {
                 "record": {
                     **record,
