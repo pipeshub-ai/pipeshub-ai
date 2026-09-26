@@ -451,3 +451,73 @@ class TestFailuresInPlainLanguage:
         assert ok is False
         assert "could not be reached" in assert_safe_error(data)
         assert data["jql_query"] == 'project = "PA"'
+
+
+class TestUpdateIssue:
+    async def test_a_transition_that_cannot_reach_jira_is_explained_without_the_library_text(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("GET", "/issue/PA-7/transitions", transitions("Done"))
+        api.on("POST", "/issue/PA-7/transitions", httpx.ConnectError(f"reset while sending Basic {BASIC}"))
+
+        ok, data = result(await jira.update_issue("PA-7", status="Done"))
+
+        assert ok is True
+        assert "status transition failed: Jira could not be reached" in data["message"]
+        assert BASIC not in data["message"]
+
+    async def test_type_change_goes_first_then_the_other_fields(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("GET", "/issue/createmeta/PA/issuetypes", {"issueTypes": [{"name": "Bug"}, {"name": "New Feature"}]})
+        api.on("PUT", "/issue/PA-7", (204, None))
+
+        ok, data = result(await jira.update_issue(
+            "PA-7", issue_type_name="feature", custom_fields={"customfield_10016": 5}, priority_name="High",
+        ))
+
+        assert ok is True, data
+        first, second = api.calls("PUT", "/issue/PA-7")
+        assert first.body["fields"] == {"issuetype": {"name": "New Feature"}}
+        assert second.body["fields"] == {"priority": {"name": "High"}, "customfield_10016": 5}
+
+    async def test_a_refused_type_change_writes_nothing_else(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("GET", "/issue/createmeta/PA/issuetypes", {"issueTypes": [{"name": "Story"}]})
+        api.on("PUT", "/issue/PA-7", (400, {"errorMessages": ["The issue type selected is invalid."], "errors": {}}))
+
+        ok, data = result(await jira.update_issue("PA-7", issue_type_name="Story", summary="New"))
+
+        assert ok is False
+        assert "The issue type selected is invalid." in assert_safe_error(data)
+        assert len(api.calls("PUT", "/issue/PA-7")) == 1
+
+    async def test_missing_required_fields_are_named_for_the_new_type(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("GET", "/issue/createmeta/PA/issuetypes", {"issueTypes": [{"name": "Story"}]})
+        api.on("GET", "/field", [{"id": "customfield_10016", "name": "Story Points"}])
+        api.on("PUT", "/issue/PA-7", (204, None), (400, {"errors": {"customfield_10016": "Story Points is required."}}))
+
+        ok, data = result(await jira.update_issue("PA-7", issue_type_name="story", summary="New"))
+
+        assert ok is False
+        assert data["field_errors"] == {"Story Points (customfield_10016)": "Story Points is required."}
+        assert "get_create_issue_fields(project_key='PA', issue_type_name='story')" in data["guidance"]
+
+    async def test_description_is_sent_as_a_document(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("PUT", "/issue/PA-7", (204, None))
+
+        ok, data = result(await jira.update_issue("PA-7", description="Fixed in 2.3"))
+
+        assert ok is True
+        sent = api.calls("PUT", "/issue/PA-7")[0].body["fields"]["description"]
+        assert sent["type"] == "doc" and sent["content"][0]["content"][0]["text"] == "Fixed in 2.3"
+        assert data["data"]["url"] == f"{SITE}/browse/PA-7"
+
+    async def test_an_updated_issue_that_cannot_be_reread_still_reports_the_update(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"), (503, {"errorMessages": ["busy"]}))
+        api.on("PUT", "/issue/PA-7", (204, None))
+
+        ok, data = result(await jira.update_issue("PA-7", labels=["urgent"]))
+
+        assert ok is True
+        assert data["data"] == {"key": "PA-7", "url": f"{SITE}/browse/PA-7"}

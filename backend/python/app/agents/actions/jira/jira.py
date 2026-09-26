@@ -2187,7 +2187,7 @@ class Jira:
                         logger.warning(f"Transition to '{status}' failed for {issue_key}: {transition_error}")
                 except Exception as e:
                     transition_success = False
-                    transition_error = str(e)
+                    transition_error = "Jira could not be reached; try the status change again in a moment"
                     logger.warning(f"Exception during transition to '{status}' for {issue_key}: {e}")
 
             issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
