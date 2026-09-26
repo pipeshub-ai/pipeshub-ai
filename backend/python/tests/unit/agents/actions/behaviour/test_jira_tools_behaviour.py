@@ -571,6 +571,21 @@ class TestCreateIssueFields:
         assert ok is False
         assert "required fields are not known yet" in assert_safe_error(data)
 
+    async def test_a_page_without_a_field_list_is_a_failure_and_not_remembered(self, jira, api) -> None:
+        api.on("GET", CREATEMETA, BUG_TYPES)
+        api.on("GET", f"{CREATEMETA}/1",
+               {"fields": [meta_field("summary", "Summary", required=True)], "total": 2},
+               {"fields": None, "total": 2},
+               {"fields": [meta_field("summary", "Summary", required=True),
+                           meta_field("customfield_10020", "Team", required=True)], "total": 2})
+
+        first_ok, first = result(await jira.get_create_issue_fields("PA", "Bug"))
+        second_ok, second = result(await jira.get_create_issue_fields("PA", "Bug"))
+
+        assert first_ok is False
+        assert "required fields are not known yet" in assert_safe_error(first)
+        assert second_ok is True and "customfield_10020" in json_text(second)
+
     async def test_a_failed_read_is_not_remembered(self, jira, api) -> None:
         api.on("GET", CREATEMETA, BUG_TYPES)
         api.on("GET", f"{CREATEMETA}/1", (503, {"errorMessages": ["busy"]}),

@@ -1066,9 +1066,9 @@ class Jira:
             except Exception:
                 return [], fields_unreadable
 
-            page_fields = data.get("fields", [])
+            page_fields = data.get("fields", []) if isinstance(data, dict) else None
             if not isinstance(page_fields, list):
-                break
+                return [], fields_unreadable
 
             for f in page_fields:
                 field_id = f.get("fieldId") or f.get("key") or f.get("id")

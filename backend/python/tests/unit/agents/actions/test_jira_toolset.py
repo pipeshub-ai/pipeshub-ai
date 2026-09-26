@@ -1823,7 +1823,7 @@ class TestFetchCreateFieldsExtended:
         assert jira._create_fields_cache == {}
 
     @pytest.mark.asyncio
-    async def test_non_list_fields_payload_stops_pagination(self):
+    async def test_non_list_fields_payload_is_an_unreadable_page(self):
         jira = _build_jira()
         jira.client.get_create_issue_meta_issue_types = AsyncMock(
             return_value=_mock_response(200, {"issueTypes": [{"id": "1", "name": "Bug"}]}),
@@ -1832,8 +1832,8 @@ class TestFetchCreateFieldsExtended:
             return_value=_mock_response(200, {"fields": "bad", "total": 0}),
         )
         fields, err = await jira._fetch_create_fields("PROJ", "Bug")
-        assert err is None
         assert fields == []
+        assert "required fields are not known yet" in err
 
 
 class TestCleanIssueFieldsExtended:
