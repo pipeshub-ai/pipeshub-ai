@@ -446,3 +446,26 @@ async def test_every_url_that_moved_to_the_same_page_has_its_record_removed(
 
     assert set(db.deleted) == stale
     assert set(db.pages()) == {START_URL, moved}
+
+
+@pytest.mark.parametrize("links", [("/guide", "/old.pdf"), ("/old.pdf", "/guide")], ids=["landing-first", "source-first"])
+async def test_a_file_that_now_redirects_to_a_page_the_crawl_drops_is_kept(
+    links: tuple[str, str], site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old = "http://site.test/old.pdf"
+    site.html(START_URL, "Home", *links)
+    site.add(old, Page(body=b"%PDF-1.4 manual", content_type="application/pdf"))
+    site.html("http://site.test/guide", "Guide")
+    connector = await make_connector()
+    await connector.run_sync()
+    stored = db.pages()[old].id
+
+    # Only PDFs from now on: /guide is still fetched for its links, then dropped.
+    connector.config_service.filters = {
+        "sync": {"values": {"file_extensions": {"operator": "in", "value": ["pdf"], "type": "multiselect"}}}
+    }
+    site.redirect(old, "/guide", status=301)
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert stored not in db.deleted

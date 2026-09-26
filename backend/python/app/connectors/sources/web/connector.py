@@ -427,6 +427,8 @@ class WebConnector(BaseConnector):
         self.visited_urls: Set[str] = set()
         # Where redirects landed: deduplicated like visited_urls, but not counted toward max_pages.
         self._landed_urls: set[str] = set()
+        # Pages this sync kept, directly or through a redirect; visited_urls also holds pages fetched and dropped.
+        self._kept_urls: set[str] = set()
         self.retry_urls: dict[str, RetryUrl] = {}
         # Stored pages that answered 404/410: deleted when the next sync gets the same answer.
         self._gone_last_sync: set[str] = set()
@@ -835,6 +837,7 @@ class WebConnector(BaseConnector):
             # Reset state for new sync
             self.visited_urls.clear()
             self._landed_urls.clear()
+            self._kept_urls.clear()
             self._robots.clear()
             self._robots_skipped.clear()
             self.retry_urls.clear()
@@ -1353,10 +1356,11 @@ class WebConnector(BaseConnector):
         landed = self._normalize_url(final_url)
         redirected = landed != normalized_url
         if redirected and (landed in self.visited_urls or landed in self._landed_urls):
-            # A duplicate of a page this sync already has, but the URL asked for is now an old name for
-            # it: its own record goes the same way as any other redirect source's.
-            landing_record = await self._stored_record(final_url)
-            await self._handle_gone_page(requested_url, keep_id=landing_record.id if landing_record else None)
+            if landed in self._kept_urls:
+                # A duplicate of a page this sync kept, so the URL asked for is now an old name for it:
+                # its own record goes the same way as any other redirect source's.
+                landing_record = await self._stored_record(final_url)
+                await self._handle_gone_page(requested_url, keep_id=landing_record.id if landing_record else None)
             return False
 
         if depth < self.max_depth and result.content_bytes:
@@ -1377,6 +1381,7 @@ class WebConnector(BaseConnector):
             return False
         if redirected:
             self._landed_urls.add(landed)
+        self._kept_urls.add(landed)
         return True
 
     def _should_try_crawl4ai_fallback(self, result: FetchResponse | None, url: str | None = None) -> bool:
