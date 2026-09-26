@@ -89,12 +89,13 @@ describe('DemoSourceBadge', () => {
     expect(screen.getByText(en.demoData.badge.label)).toBeTruthy();
   });
 
-  it('shows nothing for a real source, or a citation saved without a connector id', () => {
+  it('shows nothing for a real source, a citation saved without a connector id, or a Collection node (null)', () => {
     seed({ demo: true, realData: null });
     renderInTheme(
       <>
         <DemoSourceBadge connectorId="slack-1" />
         <DemoSourceBadge connectorId={undefined} />
+        <DemoSourceBadge connectorId={null} />
       </>,
     );
     expect(screen.queryByText(en.demoData.badge.label)).toBeNull();
