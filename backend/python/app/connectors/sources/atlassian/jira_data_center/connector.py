@@ -96,6 +96,8 @@ from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
 )
+from app.sources.client.http.http_response import HTTPResponse
+from app.sources.client.http.http_retry import call_with_retry
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
@@ -4329,46 +4331,32 @@ class JiraDataCenterConnector(BaseConnector):
         fields: list[str],
         max_attempts: int = 3,
     ) -> Any:
-        """Search Jira issues, retrying on transient httpx transport errors.
+        """Search Jira issues, retrying transport errors and 429 / 5xx answers with backoff.
 
-        Targeted at stale keep-alive sockets that raise ``RemoteProtocolError``
-        before any HTTP response is received during paginated sync. Replaying the
-        same JQL and ``startAt`` is safe when no response was received — search is
-        read-only and httpx evicts the broken connection on failure.
+        Honours ``Retry-After`` on 429. Replaying the same JQL and ``startAt`` is safe:
+        search is read-only and httpx evicts a broken connection on failure.
         """
-        last_exc: Exception | None = None
-        for attempt in range(max_attempts):
-            try:
-                datasource = await self._get_fresh_datasource()
-                return await datasource.search_issues_post_v2(
-                    jql=jql,
-                    startAt=start_at,
-                    maxResults=max_results,
-                    fields=fields,
-                )
-            except (
-                httpx.RemoteProtocolError,
-                httpx.ReadError,
-                httpx.WriteError,
-                httpx.ConnectError,
-                httpx.PoolTimeout,
-                httpx.ReadTimeout,
-            ) as e:
-                last_exc = e
-                if attempt == max_attempts - 1:
-                    break
-                backoff = 0.5 * (2 ** attempt)  # 0.5s, 1.0s, ...
-                self.logger.warning(
-                    "Transient transport error searching issues for project %s "
-                    "(startAt=%s, attempt %s/%s): %s — retrying in %.1fs",
-                    project_key, start_at, attempt + 1, max_attempts, e, backoff,
-                )
-                await asyncio.sleep(backoff)
+        async def _search() -> HTTPResponse:
+            datasource = await self._get_fresh_datasource()
+            return await datasource.search_issues_post_v2(
+                jql=jql,
+                startAt=start_at,
+                maxResults=max_results,
+                fields=fields,
+            )
 
-        raise Exception(
-            f"Failed to fetch issues for {project_key} (startAt={start_at}) "
-            f"after {max_attempts} attempts: {last_exc}"
-        ) from last_exc
+        try:
+            return await call_with_retry(
+                _search,
+                logger=self.logger,
+                label=f"issue search {project_key} startAt={start_at}",
+                max_attempts=max_attempts,
+            )
+        except httpx.HTTPError as e:
+            raise Exception(
+                f"Failed to fetch issues for {project_key} (startAt={start_at}) "
+                f"after {max_attempts} attempts: {e}"
+            ) from e
 
     async def _get_issue_with_retry(
         self,
