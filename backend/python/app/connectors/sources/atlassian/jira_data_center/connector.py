@@ -111,6 +111,9 @@ BATCH_PROCESSING_SIZE: int = 100
 # How many runs an issue that fails to process holds its project's checkpoint
 # before it is given up on, so one broken issue can't stop a project for good.
 MAX_FAILED_ISSUE_ATTEMPTS: int = 5
+# A given-up issue is remembered while the search can still return it: the search
+# re-reads about a minute before the checkpoint, so a day is ample.
+GIVEN_UP_ISSUE_MEMORY_MS: int = 24 * 60 * 60 * 1000
 
 
 def _stored_map(value: object) -> dict[str, Any]:
@@ -417,6 +420,8 @@ class JiraDataCenterConnector(BaseConnector):
         # (from the checkpoint) and the ones this run holds, id -> (attempts, updated ms).
         self._failed_issue_attempts_before: dict[str, int] = {}
         self._held_issues: dict[str, tuple[int, int | None]] = {}
+        # Issues given up on, id -> the ``updated`` value seen then; skipped until it changes.
+        self._given_up_issues: dict[str, str] = {}
 
     def _notification_title(self, event: str) -> str:
         return f"{self.connector_instance_name or 'Jira Data Center'} connector {event}"
@@ -818,6 +823,7 @@ class JiraDataCenterConnector(BaseConnector):
         last_sync_time: Optional[int] = None,
         last_issue_updated: Optional[int] = None,
         failed_issue_attempts: dict[str, int] | None = None,
+        given_up_issues: dict[str, str] | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -827,6 +833,7 @@ class JiraDataCenterConnector(BaseConnector):
             last_sync_time: Timestamp when checkpoint was updated (metadata only)
             last_issue_updated: Updated timestamp of last processed issue (used for resume AND next incremental sync)
             failed_issue_attempts: Issue id -> runs it has failed to process, for issues holding the checkpoint
+            given_up_issues: Issue id -> updated value when it was given up on, for issues skipped until they change
         """
         sync_point_key = f"project_{project_key}"
 
@@ -837,10 +844,11 @@ class JiraDataCenterConnector(BaseConnector):
             "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
             "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated")
         }
-        failed = failed_issue_attempts if failed_issue_attempts is not None else _stored_map(existing.get("failed_issue_attempts"))
         # Written even when empty: Neo4j merges sync point fields, so an omitted field would keep its old value.
-        if failed or existing.get("failed_issue_attempts"):
-            sync_point_data["failed_issue_attempts"] = json.dumps(failed, sort_keys=True)
+        for field, value in (("failed_issue_attempts", failed_issue_attempts), ("given_up_issues", given_up_issues)):
+            stored = value if value is not None else _stored_map(existing.get(field))
+            if stored or existing.get(field):
+                sync_point_data[field] = json.dumps(stored, sort_keys=True)
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
@@ -2708,6 +2716,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._issue_key_to_id_cache.clear()
         self._failed_issue_attempts_before = _stored_map((project_sync_data or {}).get("failed_issue_attempts"))
         self._held_issues = {}
+        self._given_up_issues = _stored_map((project_sync_data or {}).get("given_up_issues"))
 
         def checkpoint_at(last_seen: int | None) -> int | None:
             # A failed issue keeps the checkpoint at its own updated time so the next search finds it again.
@@ -2750,6 +2759,7 @@ class JiraDataCenterConnector(BaseConnector):
                         last_sync_time=current_time,
                         last_issue_updated=checkpoint_at(last_issue_updated_in_batch),
                         failed_issue_attempts=self._held_issue_attempts(),
+                        given_up_issues=self._given_up_issues_to_keep(checkpoint_at(last_issue_updated_in_batch)),
                     )
                 continue
 
@@ -2767,6 +2777,7 @@ class JiraDataCenterConnector(BaseConnector):
                     last_sync_time=current_time,
                     last_issue_updated=checkpoint_at(last_issue_updated_in_batch),
                     failed_issue_attempts=self._held_issue_attempts(),
+                    given_up_issues=self._given_up_issues_to_keep(checkpoint_at(last_issue_updated_in_batch)),
                 )
 
         # Final checkpoint update if we processed any issues (ensures last_sync_time stays close to last_issue_updated)
@@ -2777,6 +2788,7 @@ class JiraDataCenterConnector(BaseConnector):
                 last_sync_time=current_time,
                 last_issue_updated=checkpoint_at(last_issue_updated_in_batch),
                 failed_issue_attempts=self._held_issue_attempts(),
+                given_up_issues=self._given_up_issues_to_keep(checkpoint_at(last_issue_updated_in_batch)),
             )
 
         if total_issues_processed == 0:
@@ -3698,6 +3710,26 @@ class JiraDataCenterConnector(BaseConnector):
     def _held_issue_attempts(self) -> dict[str, int]:
         return {issue_id: attempts for issue_id, (attempts, _) in self._held_issues.items()}
 
+    def _given_up_issues_to_keep(self, checkpoint_ms: int | None) -> dict[str, str]:
+        """Given-up issues the search can still return; older ones are forgotten so the record stays small."""
+        if not checkpoint_ms:
+            return dict(self._given_up_issues)
+        return {
+            issue_id: updated
+            for issue_id, updated in self._given_up_issues.items()
+            if self._parse_jira_timestamp(updated) >= checkpoint_ms - GIVEN_UP_ISSUE_MEMORY_MS
+        }
+
+    def _is_given_up_issue(self, issue: dict[str, Any]) -> bool:
+        """True for an issue given up on that hasn't changed since; a changed one is tried afresh."""
+        issue_id = str(issue.get("id") or "")
+        if issue_id not in self._given_up_issues:
+            return False
+        if self._given_up_issues[issue_id] == (issue.get("fields") or {}).get("updated"):
+            return True
+        del self._given_up_issues[issue_id]
+        return False
+
     def _note_failed_issue(self, issue: dict[str, Any], error: Exception) -> None:
         """Hold the checkpoint for an issue that failed to process, until it has failed too many runs."""
         issue_id = str(issue.get("id") or "") if isinstance(issue, dict) else ""
@@ -3708,6 +3740,7 @@ class JiraDataCenterConnector(BaseConnector):
                 f"❌ Issue {issue_key} still could not be processed after {attempts} syncs; moving on without it. "
                 f"It is read again when it next changes. Last error: {error}"
             )
+            self._given_up_issues[issue_id] = str((issue.get("fields") or {}).get("updated") or "")
             return
         try:
             updated: int | None = self._parse_jira_timestamp((issue.get("fields") or {}).get("updated")) or None
@@ -3745,6 +3778,9 @@ class JiraDataCenterConnector(BaseConnector):
         user_by_account_id = {user.source_user_id: user for user in users if user.source_user_id}
 
         for issue in issues:
+            if isinstance(issue, dict) and self._is_given_up_issue(issue):
+                skipped_unchanged_count += 1
+                continue
             try:
                 issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
 
