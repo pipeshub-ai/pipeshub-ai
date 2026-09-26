@@ -267,8 +267,9 @@ class LocalSyncCoordinator:
         # the finalizer never ran and the lease was held until restart.
         lease = self._held.get(connector_id)
         if lease is not None:
-            if lease.stop_requested_at_ms is None:
-                lease.stop_requested_at_ms = _now_ms()
+            # The latest stop, not the first: a request made between two stops of
+            # a sync slow to wind down was otherwise kept and re-issued after it.
+            lease.stop_requested_at_ms = _now_ms()
             lease.stop_requested.set()
             return True
         return self._tasks.request_stop(connector_id)

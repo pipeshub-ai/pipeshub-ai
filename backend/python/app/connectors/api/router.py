@@ -8074,7 +8074,7 @@ async def delete_connector_instance(
             "timestamp": get_epoch_timestamp_in_ms(),
         }
         try:
-            await producer.send_message(topic="sync-events", message=delete_message)
+            await producer.send_message(topic="sync-events", message=delete_message, key=connector_id)
         except Exception:
             # Nothing will delete it, so it must not stay in DELETING.
             await graph_provider.update_node(

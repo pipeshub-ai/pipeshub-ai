@@ -190,6 +190,55 @@ class TestStopDuringInitOnADrainedConnector:
 
         assert _updates(svc)[-1]["status"] == AppStatus.IDLE.value
 
+    @pytest.mark.asyncio
+    async def test_a_delete_in_that_window_keeps_deleting(self) -> None:
+        """The delete route writes DELETING and its appDisabled stops this lease;
+        the doc read before init still said QUEUED and was written back as IDLE."""
+        docs = {"c1": {"id": "c1", ConnectorStateKeys.IS_ACTIVE: True, "status": AppStatus.QUEUED.value}}
+        svc = _service(None)
+        svc.graph_provider.get_document = AsyncMock(side_effect=lambda *a, **k: dict(docs["c1"]))
+        coordinator = _Coordinator(Admission.GRANTED)
+
+        async def ensure(*_a, **_k):
+            docs["c1"]["status"] = "DELETING"
+            coordinator.lease.stop_requested.set()
+            return MagicMock()
+
+        with patch("app.connectors.services.event_service.get_coordinator", return_value=coordinator), \
+                patch.object(svc, "_ensure_connector", AsyncMock(side_effect=ensure)), \
+                patch("app.connectors.services.event_service.drain_queued_syncs", AsyncMock(return_value=[])):
+            assert await svc._handle_start_sync("gmail", {"orgId": "o1", "connectorId": "c1"}) is True
+
+        assert not any(u.get("status") == AppStatus.IDLE.value for u in _updates(svc))
+        coordinator.end.assert_awaited_once()
+
+
+class TestDeleteLeavesPendingResyncAlone:
+    """A failed delete reverts and keeps the doc; main's strict Arango app schema
+    then rejects every update to a doc carrying the field."""
+
+    async def _delete(self, doc: dict) -> EventService:
+        svc = _service(doc)
+        svc.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        svc.app_container.config_service = MagicMock(return_value=AsyncMock())
+        coordinator = MagicMock(cancel_and_wait=AsyncMock())
+        with patch("app.connectors.services.event_service.get_coordinator", return_value=coordinator), \
+                patch("app.connectors.services.event_service.reindex_task_manager") as rtm, \
+                patch("app.connectors.services.event_service.build_connector_vector_cleanup_events", return_value=[]):
+            rtm.cancel_by_prefix = AsyncMock()
+            assert await svc._handle_delete("gmail", {"orgId": "o1", "connectorId": "c1"}) is True
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_not_written_when_absent(self) -> None:
+        svc = await self._delete({"id": "c1", "status": "DELETING"})
+        assert not any(ConnectorStateKeys.PENDING_RESYNC in u for u in _updates(svc))
+
+    @pytest.mark.asyncio
+    async def test_cleared_when_set(self) -> None:
+        svc = await self._delete({"id": "c1", "status": "DELETING", ConnectorStateKeys.PENDING_RESYNC: True})
+        assert {ConnectorStateKeys.PENDING_RESYNC: False} in _updates(svc)
+
 
 class TestQueueOrderIsArrivalOrder:
     @pytest.mark.asyncio
