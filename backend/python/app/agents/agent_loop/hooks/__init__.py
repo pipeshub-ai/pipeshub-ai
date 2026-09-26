@@ -26,11 +26,20 @@ from app.agents.agent_loop.hooks.citations import (
     citation_tracking,
     ensure_fetch_full_record_available,
 )
+from app.agents.agent_loop.hooks.code_graph_unlock import (
+    code_graph_unlock_after_tools,
+    code_graph_unlock_on_turn,
+)
 from app.agents.agent_loop.hooks.completion_gate import completion_gate
 from app.agents.agent_loop.hooks.memory import (
     conversation_enrichment,
     seed_visible_tools_from_history,
+    sync_visible_tools_for_prompt,
 )
+# from app.agents.agent_loop.hooks.repo_instructions import (
+#     repo_instructions_after_tools,
+#     repo_instructions_on_turn,
+# )
 from app.agents.agent_loop.hooks.result_accumulation import (
     result_accumulation,
     stash_tool_call_metadata,
@@ -46,13 +55,18 @@ __all__ = [
     "attachment_rehydration",
     "citation_tracking",
     "ensure_fetch_full_record_available",
+    "code_graph_unlock_after_tools",
+    "code_graph_unlock_on_turn",
     "completion_gate",
     "conversation_enrichment",
     "seed_visible_tools_from_history",
+    "sync_visible_tools_for_prompt",
     "resolve_attachments_for_goal",
     "resolve_history_attachments",
     "shape_image_injection",
     "shape_retrieved_image_injection",
+    # "repo_instructions_after_tools",
+    # "repo_instructions_on_turn",
     "result_accumulation",
     "retry_with_status",
     "stash_tool_call_metadata",

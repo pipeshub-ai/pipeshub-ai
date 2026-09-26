@@ -33,6 +33,10 @@ from app.models.blocks import (
 )
 from app.models.entities import Record, RecordType
 from app.modules.parsers.code_parser.lang_config import config_for_extension, detect_language
+from app.modules.code_graph.block_projection import (
+    BlockProjectionContext,
+    write_code_file_blocks_to_graph,
+)
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
@@ -148,12 +152,14 @@ class Processor:
         record,
         event_type: Optional[str] = None,
         prev_virtual_record_id: Optional[str] = None,
+        is_code: bool = False,
     ) -> TransformContext:
         """Create TransformContext with per-invocation reconciliation context."""
         return TransformContext(
             record=record,
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
+            is_code=is_code,
         )
 
     async def process_image(self, record_id, content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
@@ -1776,6 +1782,74 @@ class Processor:
             self.logger.warning(f"Could not read filePath for {record_id}: {e}")
             return None
 
+    async def project_code_blocks_to_graph(
+        self,
+        *,
+        record_id: str,
+        org_id: str,
+        record_group_id: str | None,
+        connector_id: str | None,
+        record_name: str,
+        file_path: str | None = None,
+        language: str | None = None,
+        content: bytes | None = None,
+        block_containers: BlocksContainer | None = None,
+        propagate_failure: bool = False,
+    ) -> None:
+        """Write a code file's blocks to the graph, carrying their unresolved
+        cross-file references for the corpus edge pass to resolve later.
+
+        Every indexing path has to reach this. The blob and the vectors are keyed
+        by virtualRecordId and dedupe safely; these nodes are keyed by record and
+        do not, so any path that skips this leaves the file searchable but absent
+        from the code graph.
+
+        Callers holding a parsed container pass it; the duplicate path passes raw
+        ``content`` and pays for a parse instead.
+
+        Swallows failures by default -- the blocks are already searchable and the
+        edge pass can be re-run. Callers that run this *before* the record is
+        marked COMPLETED pass ``propagate_failure=True``: there, silently losing
+        the blocks would let the edge builder resolve the repo against a symbol
+        table the file is missing from, which yields wrong edges rather than
+        absent ones.
+        """
+        try:
+            if not file_path:
+                file_path = await self._lookup_code_file_path(record_id)
+            file_path = file_path or record_name
+            language = language or detect_language(record_name) or detect_language(file_path)
+            if not language:
+                return
+
+            if block_containers is None:
+                if not content:
+                    return
+                block_containers = self.parsers[ExtensionTypes.CODE.value].parse_to_blocks(
+                    content, record_name, file_path, language
+                )
+            if block_containers is None:
+                return
+
+            await write_code_file_blocks_to_graph(
+                graph_provider=self.graph_provider,
+                context=BlockProjectionContext(
+                    org_id=org_id,
+                    record_id=record_id,
+                    record_group_id=record_group_id,
+                    connector_id=connector_id,
+                    language=language,
+                ),
+                block_containers=block_containers,
+                logger=self.logger,
+            )
+        except Exception as projection_error:
+            self.logger.error(
+                f"❌ Failed to project code blocks to graph for {record_id}: {projection_error}"
+            )
+            if propagate_failure:
+                raise
+
     async def process_code_document(
         self, recordName, recordId, code_binary, virtual_record_id, extension=None,
         file_path: Optional[str] = None,
@@ -1824,13 +1898,14 @@ class Processor:
                 return
 
             parser = self.parsers[ExtensionTypes.CODE.value]
-            block_containers = parser.parse_to_blocks(
-                code_binary, recordName, file_path, language
+            block_containers = await asyncio.to_thread(
+                parser.parse_to_blocks, code_binary, recordName, file_path, language
             )
 
             if block_containers is None:
                 self.logger.info(
-                    f"Code parser skipped {recordName} (oversized); marking as not supported"
+                    f"Code parser skipped {recordName} (oversized or grammar unavailable); "
+                    "marking as not supported"
                 )
                 await self._mark_record(recordId, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1845,10 +1920,30 @@ class Processor:
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
+            # Before the pipeline, which marks the record COMPLETED. That status
+            # is what tells the edge builder the repo has drained, so a file
+            # carrying it while its blocks are still missing gets the whole repo
+            # resolved against a symbol table it does not appear in -- wrong
+            # edges, not missing ones. Everything between the two used to run in
+            # that gap: extraction, re-upload, re-embed, graph enrichment.
+            await self.project_code_blocks_to_graph(
+                record_id=recordId,
+                org_id=record.org_id,
+                record_group_id=record.record_group_id,
+                connector_id=record.connector_id,
+                record_name=recordName,
+                file_path=file_path,
+                language=language,
+                block_containers=block_containers,
+                propagate_failure=True,
+            )
+
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
-            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+            ctx = self._create_transform_context(
+                record, event_type, prev_virtual_record_id, is_code=True
+            )
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
 

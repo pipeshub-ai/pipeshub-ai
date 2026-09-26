@@ -118,6 +118,11 @@ _MID_CHAR_CEILINGS: dict[str, int] = {
     "service_only":          8_750,
     "lazy_with_pinned":     14_250,
     "kb_with_full_record":  13_600,
+    # Code knowledge graph fixtures: these carry the gated "Navigating Code"
+    # section, which only renders when a codegraph tool is callable, so they
+    # sit above the rest. Measured 16,428 / 13,807 → +~10% headroom.
+    "lazy_with_bound_codegraph":      18_100,
+    "lazy_with_pinned_and_codegraph": 15_200,
 }
 
 # ---------------------------------------------------------------------------
@@ -154,6 +159,9 @@ _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
     "service_only":          5_900,
     "lazy_with_pinned":     11_400,
     "kb_with_full_record":  10_750,
+    # Both measured 11,213 (no worked traces, same gated section) → +~10%.
+    "lazy_with_bound_codegraph":      12_350,
+    "lazy_with_pinned_and_codegraph": 12_350,
 }
 
 

@@ -292,6 +292,30 @@ class TestBuildCodeFileRecords:
         assert updates[0].record.extension == "py"
         assert updates[0].record.to_kafka_record()["extension"] == "py"
 
+    async def test_updated_at_is_taken_at_build_time(self) -> None:
+        """A content change must carry a fresh `updatedAtTimestamp`.
+
+        The model default is frozen at import, so relying on it made every
+        modified blob look older than the last code edge build, which then
+        skipped the file and kept its removed CALLS edges.
+        """
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        repos._process_records = AsyncMock()
+
+        build_time = 1_900_000_000_000
+        with patch(
+            "app.utils.time_conversion.get_epoch_timestamp_in_ms",
+            return_value=build_time,
+        ):
+            await repos.build_code_file_records(
+                [self._blob_node("src/main.py")], _PROJECT_ID, _PROJECT_PATH
+            )
+
+        record = repos._process_records.call_args.args[0][0].record
+        assert record.updated_at == build_time
+        assert record.to_arango_base_record()["updatedAtTimestamp"] == build_time
+
     async def test_dotfile_blob_skipped(self) -> None:
         c = make_mock_connector()
         repos = ReposSync(c)
@@ -325,6 +349,57 @@ class TestBuildCodeFileRecords:
         updates = repos._process_records.call_args.args[0]
         from app.config.constants.arangodb import ProgressStatus
         assert updates[0].record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_test_file_syncs_but_is_not_indexed_by_default(self) -> None:
+        """A test file still becomes a record; only its content indexing is off."""
+        from app.config.constants.arangodb import ProgressStatus
+
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        repos._process_records = AsyncMock()
+
+        await repos.build_code_file_records(
+            [self._blob_node("tests/test_main.py")], _PROJECT_ID, _PROJECT_PATH
+        )
+        record = repos._process_records.call_args.args[0][0].record
+        assert record.file_role == "test"
+        assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_test_file_stays_off_when_filters_exist_without_a_row(self) -> None:
+        """A pre-existing filter config with no ``test_files`` row must not
+        fall back to the generic default-True and start indexing tests."""
+        from app.config.constants.arangodb import ProgressStatus
+        from app.connectors.core.registry.filters import FilterCollection
+
+        c = make_mock_connector()
+        c.indexing_filters = FilterCollection()
+        repos = ReposSync(c)
+        repos._process_records = AsyncMock()
+        assert repos._code_files_indexing_enabled() is True
+        assert repos._test_files_indexing_enabled() is False
+
+        await repos.build_code_file_records(
+            [self._blob_node("src/main.py"), self._blob_node("tests/test_main.py")],
+            _PROJECT_ID,
+            _PROJECT_PATH,
+        )
+        by_path = {u.record.file_path: u.record for u in repos._process_records.call_args.args[0]}
+        assert by_path["tests/test_main.py"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert by_path["src/main.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_test_file_is_indexed_once_the_filter_is_on(self) -> None:
+        from app.config.constants.arangodb import ProgressStatus
+
+        c = make_mock_connector()
+        repos = ReposSync(c)
+        repos._process_records = AsyncMock()
+        repos._test_files_indexing_enabled = MagicMock(return_value=True)
+
+        await repos.build_code_file_records(
+            [self._blob_node("tests/test_main.py")], _PROJECT_ID, _PROJECT_PATH
+        )
+        record = repos._process_records.call_args.args[0][0].record
+        assert record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
     async def test_nested_file_sets_parent_external_record_id(self) -> None:
         c = make_mock_connector()

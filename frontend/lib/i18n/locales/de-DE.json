@@ -478,6 +478,13 @@
     "message": "Das Dokument wird von Grund auf neu indiziert; dies kann zusätzliche Kosten verursachen. Verwenden Sie dies, wenn Suchergebnisse veraltet sind oder das Dokument nach abgeschlossener Indizierung nicht durchsuchbar ist.",
     "confirm": "Bestätigen"
   },
+  "reindexBlocked": {
+    "title": "Dieser Eintrag kann nicht einzeln neu indexiert werden",
+    "message": "Dateien aus GitHub und GitLab werden gemeinsam als ein Code-Graph für das gesamte Repository indexiert. Würde eine einzelne Datei neu indexiert, wäre sie auf einem neueren Stand als der Rest des Repositorys, und die Verknüpfungen zwischen den Dateien würden brechen. Um die neuesten Änderungen zu übernehmen, starte eine Synchronisierung des Connectors – sie aktualisiert alle geänderten Dateien des Repositorys gemeinsam.",
+    "folderTitle": "Dieser Ordner kann nicht einzeln neu indexiert werden",
+    "folderMessage": "Dateien aus GitHub und GitLab werden gemeinsam als ein Code-Graph für das gesamte Repository indexiert. Würde ein Ordner neu indexiert, wären nur diese Dateien auf einem neueren Stand als der Rest des Repositorys, und die Verknüpfungen zwischen den Dateien würden brechen. Um die neuesten Änderungen zu übernehmen, starte eine Synchronisierung des Connectors – sie aktualisiert alle geänderten Dateien des Repositorys gemeinsam.",
+    "goToConnectors": "Zu den Connectors"
+  },
   "kb": {
     "viewToggle": "Ansicht wechseln",
     "collectionsView": "Sammlungsansicht",

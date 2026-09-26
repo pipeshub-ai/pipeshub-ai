@@ -115,6 +115,32 @@ class TestCodeExecutionMandatoryTrigger:
         assert "## Code Execution (MANDATORY" not in result
 
 
+class TestCodeSetQuestionWalksFactory:
+    """A 'what all X are implemented' question must be steered at the
+    factory/base type + inbound neighbours — not a directory crawl. The
+    Navigating Code section is the only place that arbitration lives."""
+
+    def test_set_path_is_factory_or_base_then_inbound(self) -> None:
+        context = make_context()
+        result = _build(
+            context,
+            tool_names=[
+                "codegraph__get_neighbour",
+                "codegraph__read_code",
+                "codegraph__query_code_graph",
+            ],
+        )
+        assert "## Navigating Code" in result
+        section = result.split("## Navigating Code", 1)[1]
+        assert "factory, registry, or base type" in section
+        assert "inbound neighbours" in section
+        assert "never a directory crawl" in section
+        assert "Do not glob" in section
+        assert "Never use it to finish a set" in section
+        assert "ConnectorFactory" not in section
+        assert "BaseConnector" not in section
+
+
 class TestRoutingTablesStayRemoved:
     """Regression guard for the routing-table removal: the ASCII
     "Tool Routing" block and the "Dual-Source Apps" decision table must not

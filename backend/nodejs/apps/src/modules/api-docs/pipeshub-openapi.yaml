@@ -25125,7 +25125,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/reIndexRecordResponseSchema'
         '400':
-          description: Invalid request body or parameters
+          description: >-
+            Invalid request body or parameters, or the record belongs to a
+            GitHub/GitLab repository-wide code graph and must be refreshed
+            through connector sync
           content:
             application/json:
               schema:

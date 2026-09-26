@@ -68,8 +68,12 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.RECORD_RELATIONS.value,
-        "from_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value,CollectionNames.RECORD_GROUPS.value],
-        "to_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value],
+        # blocks are declared on both sides so the code knowledge graph's
+        # record->block CONTAINS and block->block CALLS edges are valid vertices
+        # for named-graph traversals. _ensure_edge_definitions_up_to_date merges
+        # this into the live graph at boot, so no manual migration is needed.
+        "from_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value,CollectionNames.RECORD_GROUPS.value, CollectionNames.BLOCKS.value],
+        "to_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value, CollectionNames.BLOCKS.value],
     },
     {
         "edge_collection": CollectionNames.USER_DRIVE_RELATION.value,
