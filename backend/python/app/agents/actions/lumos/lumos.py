@@ -101,6 +101,23 @@ def _lumos_error_message(response: HTTPResponse) -> str:
     return f"Lumos rejected the request (status {status}). Check the arguments and try again."
 
 
+def _more_pages(data: object) -> dict[str, object]:
+    """A Lumos page that is not the last one says so, so the agent does not treat it as the full list."""
+    if not isinstance(data, dict):
+        return {}
+    page, pages, total = data.get("page"), data.get("pages"), data.get("total")
+    if not (isinstance(page, int) and isinstance(pages, int) and page < pages):
+        return {}
+    shown = len(data.get("items") or [])
+    return {
+        "next_page": page + 1,
+        "note": (
+            f"This is page {page} of {pages}: {shown} of {total} results. "
+            f"Call again with page={page + 1} for more."
+        ),
+    }
+
+
 def _reply_data(response: HTTPResponse) -> object:
     # The change already happened; an unreadable body must not turn it into a reported failure.
     if response.status == HTTPStatus.NO_CONTENT or not response.bytes():
@@ -400,7 +417,8 @@ class Lumos:
             logger.warning("Lumos request failed before a reply: %s", type(exc).__name__)
             return _failure("Could not reach Lumos. Check the network connection and try again in a moment.")
         if HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
-            return True, json.dumps({"message": success_message, "data": _reply_data(response)})
+            data = _reply_data(response)
+            return True, json.dumps({"message": success_message, "data": data, **_more_pages(data)})
         logger.warning("Lumos returned HTTP %s", response.status)
         return _failure(_lumos_error_message(response))
 

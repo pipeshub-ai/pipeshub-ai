@@ -28,20 +28,6 @@ from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR, BoundMethodTool
 if TYPE_CHECKING:
     from app.agents.actions.lumos.lumos import Lumos
 
-PENDING = {
-    "errors": "Lumos failures reach the agent as a raw status line and response body",
-    "statuses": "several status filters are sent comma-joined, which Lumos rejects",
-    "path": "an id containing '/' is not escaped, so the call lands on another endpoint",
-    "objects": "access_condition and request_config are declared as text but Lumos needs objects",
-    "not_json": "a successful reply that is not JSON is reported as a failure",
-    "pages": "a page that is not the last one does not say more results exist",
-}
-
-
-def pending(key: str) -> pytest.MarkDecorator:
-    return pytest.mark.xfail(strict=True, reason=PENDING[key])
-
-
 @pytest.fixture
 def api() -> FakeLumosApi:
     return FakeLumosApi()
@@ -124,7 +110,6 @@ class TestReads:
         assert [u["id"] for u in data["data"]["items"]] == ["u-1", "u-2"]
         assert "next_page" not in data
 
-    @pending("pages")
     async def test_a_page_that_is_not_the_last_says_how_to_get_the_rest(self, lumos, api) -> None:
         items = [{"id": f"u-{i}"} for i in range(25)]
         api.on("GET", "/users", lumos_page(items, page=1, size=25, total=90))
@@ -133,7 +118,7 @@ class TestReads:
 
         assert ok is True
         assert data["next_page"] == 2
-        assert "90" in data["message"] and "page=2" in data["message"]
+        assert "25 of 90" in data["note"] and "page=2" in data["note"]
 
     async def test_several_status_filters_are_sent_as_repeated_parameters(self, lumos, api) -> None:
         # Lumos declares ``statuses`` as an exploded array: one ``statuses=`` per value.
