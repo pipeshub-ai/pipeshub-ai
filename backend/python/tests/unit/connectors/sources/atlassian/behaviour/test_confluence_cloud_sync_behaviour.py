@@ -405,6 +405,29 @@ class TestPageSync:
         assert "att0" in db.records, "the attachment from the search result is still saved"
         assert (checkpoints.values_for("confluence_pages/ENG") is not None) is checkpoint_moves
 
+    async def test_a_cursor_that_comes_round_again_ends_the_list_and_keeps_the_checkpoint(
+        self, api, db, checkpoints, search
+    ) -> None:
+        def att(i: int) -> dict[str, Any]:
+            return {"id": f"att{i}", "title": f"file{i}.pdf", "mediaType": "application/pdf", "fileSize": 10,
+                    "version": {"number": 1}, "_links": {"download": f"/download/attachments/10/file{i}.pdf"}}
+
+        pages = {
+            None: {"results": [att(0)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}},
+            "A2": {"results": [att(1)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A3"}},
+            "A3": {"results": [att(2)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}},
+        }
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[att(0)])])
+        api.on("GET", f"{V2}/pages/10/attachments", lambda r: json_response(pages[AtlassianApiStub.query(r).get("cursor")]))
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert len(api.calls("GET", f"{V2}/pages/10/attachments")) == 3, "A2 is not read a second time"
+        assert {"att0", "att1", "att2"} <= set(db.records)
+        assert checkpoints.values_for("confluence_pages/ENG") is None
+
     async def test_opening_a_page_reads_every_attachment_for_its_images(self, api, db, checkpoints, search) -> None:
         self._many_attachments(api, search, None)
         connector, _ = await ready_connector(db, checkpoints)
