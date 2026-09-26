@@ -336,3 +336,38 @@ class TestSearchPaging:
         assert api.calls("POST", SEARCH)[0].body["jql"] == 'project = "PA" AND updated >= -7d ORDER BY updated DESC'
         assert [i["key"] for i in data["data"]["issues"]] == ["PA-1", "PA-2"]
         assert data["has_more"] is True
+
+
+class TestSearchUsers:
+    async def test_more_matches_than_shown_are_reported(self, jira, api) -> None:
+        api.on("GET", "/user/picker", {
+            "users": [
+                {"accountId": "acc-1", "displayName": "Ann Lee", "html": "<strong>Ann</strong> Lee (ann@acme.test)"},
+                {"accountId": "acc-2", "displayName": "Ann Park", "html": "Ann Park"},
+            ],
+            "total": 57, "header": "Showing 2 of 57 matching users",
+        })
+
+        ok, data = result(await jira.search_users("  ann ", max_results=2))
+
+        assert ok is True
+        assert api.calls("GET", "/user/picker")[0].query == {"query": "ann", "maxResults": "2"}
+        assert data["data"]["results"][0]["emailAddress"] == "ann@acme.test"
+        assert (data["data"]["total"], data["data"]["returned"], data["data"]["has_more"]) == (57, 2, True)
+        assert data["message"].startswith("Showing 2 of 57 matching users")
+
+    async def test_every_match_shown_is_complete(self, jira, api) -> None:
+        api.on("GET", "/user/picker", {"users": [{"accountId": "acc-1", "displayName": "Ann Lee"}, {"displayName": "no id"}], "total": 1})
+
+        ok, data = result(await jira.search_users("ann"))
+
+        assert ok is True
+        assert (data["data"]["total"], data["data"]["has_more"]) == (1, False)
+        assert data["message"] == "Users fetched successfully"
+
+    async def test_blank_query_is_refused_before_jira(self, jira, api) -> None:
+        ok, data = result(await jira.search_users("   "))
+
+        assert ok is False
+        assert assert_safe_error(data).startswith("Query parameter is required")
+        assert api.requests == []

@@ -2805,13 +2805,23 @@ class Jira:
                     if cleaned_user.get("accountId"):
                         cleaned_users.append(cleaned_user)
 
-                return True, json.dumps({
+                jira_total = data.get("total") if isinstance(data, dict) else None
+                total = jira_total if isinstance(jira_total, int) and jira_total >= len(cleaned_users) else len(cleaned_users)
+                found: dict[str, object] = {
                     "message": "Users fetched successfully",
                     "data": {
                         "results": cleaned_users,
-                        "total": len(cleaned_users)
-                    }
-                })
+                        "total": total,
+                        "returned": len(cleaned_users),
+                        "has_more": total > len(cleaned_users),
+                    },
+                }
+                if total > len(cleaned_users):
+                    found["message"] = (
+                        f"Showing {len(cleaned_users)} of {total} matching users. Use a fuller name or an email "
+                        "address to find the right person."
+                    )
+                return True, json.dumps(found)
             else:
                 return self._handle_response(
                     response,
