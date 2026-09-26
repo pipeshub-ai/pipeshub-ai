@@ -1681,7 +1681,7 @@ class NextcloudConnector(BaseConnector):
             failed: dict[str, str] = {}
             for path in file_paths:
                 try:
-                    if not await self._ensure_parent_folders(
+                    parents_ready = await self._ensure_parent_folders(
                         path,
                         user_id,
                         user_email,
@@ -1689,7 +1689,8 @@ class NextcloudConnector(BaseConnector):
                         user_root_path,
                         path_to_external_id,
                         processed_parents,
-                    ):
+                    )
+                    if not parents_ready:
                         failed[path] = "a folder above it could not be read or saved"
 
                     # Now fetch and process the actual file
@@ -1728,13 +1729,16 @@ class NextcloudConnector(BaseConnector):
                     for entry in entries:
                         if found_ids is not None and entry.get('file_id'):
                             found_ids.add(str(entry['file_id']))
+                        parent_lookup = path_to_external_id
+                        if not parents_ready:
+                            parent_lookup = await self._with_stored_parent(entry, path_to_external_id)
                         record_update = await self._process_nextcloud_entry(
                             entry=entry,
                             user_id=user_id,
                             user_email=user_email,
                             record_group_id=record_group_id,
                             user_root_path=user_root_path,
-                            path_to_external_id=path_to_external_id
+                            path_to_external_id=parent_lookup
                         )
 
                         if record_update:
@@ -1755,6 +1759,24 @@ class NextcloudConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error processing modified files: {e}", exc_info=True)
             return dict.fromkeys(file_paths, str(e) or type(e).__name__)
+
+    async def _with_stored_parent(self, entry: Dict, path_to_external_id: Dict[str, str]) -> Dict[str, str]:
+        """A copy of ``path_to_external_id`` that resolves the entry's folder to its stored parent.
+
+        Used when the folder above the entry couldn't be read: its record would otherwise be
+        saved with no parent, and a page given up on would leave it detached for good. The
+        copy keeps a folder that may since have moved from being reused for other entries.
+        """
+        lookup = dict(path_to_external_id)
+        parent_path = get_parent_path_from_path(entry.get('path', ''))
+        if not parent_path or not entry.get('file_id'):
+            return lookup
+        existing = await self.data_entities_processor.get_record_by_external_id(
+            self.connector_id, entry['file_id']
+        )
+        if existing and existing.parent_external_record_id:
+            lookup.setdefault(parent_path.rstrip('/'), existing.parent_external_record_id)
+        return lookup
 
     async def _ensure_parent_folders(
         self,

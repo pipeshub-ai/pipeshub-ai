@@ -924,6 +924,18 @@ class TestIncrementalSync:
         assert db.path_of("Deep") == "New/Deep"
         assert db.path_of("inside.txt") == "New/Deep/inside.txt"
 
+    async def test_a_changed_file_keeps_its_folder_when_that_folder_cannot_be_read(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.change("Docs/notes.txt", b"v2")
+        server.outage("PROPFIND", lambda p: p.rstrip("/").endswith("/Docs"), lambda: httpx.Response(503))
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+            assert db.path_of("notes.txt") == "Docs/notes.txt"
+
+        assert store.cursor() == str(server.latest_activity_id), "given up on, and still in its folder"
+        assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+
     async def test_a_file_restored_after_its_failed_delete_is_kept(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         kept = db.by_name("notes.txt").id
