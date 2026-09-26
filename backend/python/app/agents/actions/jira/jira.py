@@ -412,7 +412,7 @@ def _jira_failure(doing: str, error: Exception) -> tuple[bool, str]:
     return False, json.dumps({"error": message})
 
 
-def _next_page_token(page: dict) -> Optional[str]:
+def _next_page_token(page: dict) -> str | None:
     """Jira's token for the next page of an enhanced search, or None on the last page."""
     token = page.get("nextPageToken")
     return None if page.get("isLast") is True or not isinstance(token, str) or not token else token
@@ -752,7 +752,7 @@ class Jira:
         project_key: str,
         query: str,
         role: str = "assignee",
-    ) -> tuple[Optional[str], Optional[str]]:
+    ) -> tuple[str | None, str | None]:
         """Find the one person in the project that ``query`` names.
 
         Returns ``(account_id, None)``, or ``(None, message)`` when the lookup failed,
@@ -1354,7 +1354,7 @@ class Jira:
 
     async def _read_remaining_pages(
         self, jql: str, first_page: object, limit: int
-    ) -> tuple[object, Optional[str]]:
+    ) -> tuple[object, str | None]:
         """Follow Jira's page tokens until ``limit`` issues are read.
 
         Returns the first page's payload holding every issue read, and a note for
@@ -1365,7 +1365,7 @@ class Jira:
         issues = list(first_page.get("issues") or [])
         token = _next_page_token(first_page)
         seen = {token}
-        failure: Optional[str] = None
+        failure: str | None = None
         while token and len(issues) < limit:
             try:
                 page = await self.client.search_and_reconsile_issues_using_jql_post(
@@ -1819,7 +1819,7 @@ class Jira:
             response = await self.client.create_issue(fields=fields)
 
             # Jira may refuse just the reporter or assignee; create the issue without it and say so.
-            left_out: Optional[str] = None
+            left_out: str | None = None
             if response.status == HttpStatusCode.BAD_REQUEST.value:
                 try:
                     error_body = response.json()
@@ -2065,7 +2065,7 @@ class Jira:
                         fields[field_id] = field_value
 
             transition = None
-            status_problem: Optional[str] = None
+            status_problem: str | None = None
             if status:
                 status_problem = (
                     f"the status was not changed: Jira's list of statuses {issue_key} can move to could not be "

@@ -7,13 +7,24 @@ real and what is faked.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
-from jira_tool_fakes import API_TOKEN, BASIC, SITE, FakeJiraApi, build_jira_tool, issue, result, user
+from jira_tool_fakes import (
+    API_TOKEN,
+    BASIC,
+    SITE,
+    FakeJiraApi,
+    RecordedRequest,
+    build_jira_tool,
+    issue,
+    result,
+    user,
+)
 
-from app.agents.actions.jira.jira import Jira
+if TYPE_CHECKING:
+    from app.agents.actions.jira.jira import Jira
 
 ASSIGNABLE = "/user/assignable/search"
 CREATED = (201, {"id": "10001", "key": "PA-7", "self": f"{SITE}/rest/api/3/issue/10001"})
@@ -270,7 +281,7 @@ SEARCH = "/search/jql"
 
 def search_pages(*pages: tuple[list[str], str | None]) -> object:
     """Serve pages by the token in the request body: page n answers token f"t{n}"."""
-    def answer(request: Any) -> dict[str, Any]:
+    def answer(request: RecordedRequest) -> dict[str, Any]:
         token = (request.body or {}).get("nextPageToken")
         index = 0 if token is None else int(token[1:])
         keys, next_token = pages[index]

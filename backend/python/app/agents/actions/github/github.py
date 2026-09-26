@@ -13,12 +13,12 @@ from app.agents.actions.util.tool_summaries import (
     entity_summary,
     list_summary,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
     OAuthScopeConfig,
 )
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -124,7 +124,7 @@ def _github_error_message(response: GitHubResponse, action: str) -> str:
     return f"GitHub refused to {action}.{said} Correct the request and try again."
 
 
-def _with_paging(result: Tuple[bool, str], page: int, per_page: int) -> Tuple[bool, str]:
+def _with_paging(result: tuple[bool, str], page: int, per_page: int) -> tuple[bool, str]:
     """Say whether this page is the last, so one page is never read as the whole list."""
     success, text = result
     if not success:
@@ -146,7 +146,7 @@ def _with_paging(result: Tuple[bool, str], page: int, per_page: int) -> Tuple[bo
     return True, json.dumps(payload)
 
 
-def _missing_text(**fields: object) -> Optional[Tuple[bool, str]]:
+def _missing_text(**fields: object) -> tuple[bool, str] | None:
     """Refuse a write whose required text is empty, before GitHub is called."""
     empty = [name for name, value in fields.items() if not isinstance(value, str) or not value.strip()]
     if not empty:
@@ -154,7 +154,7 @@ def _missing_text(**fields: object) -> Optional[Tuple[bool, str]]:
     return False, json.dumps({"error": f"{' and '.join(empty)} cannot be empty. Ask the user what it should say, then try again."})
 
 
-def _unexpected_failure(doing: str, error: Exception) -> Tuple[bool, str]:
+def _unexpected_failure(doing: str, error: Exception) -> tuple[bool, str]:
     logger.error("Error %s: %s", doing, error)
     return False, json.dumps({
         "error": (

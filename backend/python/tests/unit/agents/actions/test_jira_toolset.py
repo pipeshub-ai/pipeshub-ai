@@ -406,7 +406,7 @@ class TestHandleResponse:
         assert ok is True
         assert json.loads(payload)["data"] == {}
 
-    def test_server_error_is_temporary_and_keeps_jiras_text_in_details(self):
+    def test_server_error_is_temporary_and_keeps_jiras_text_in_details(self) -> None:
         jira = _build_jira()
         resp = _mock_response(500, {"errorMessages": ["first msg"]})
         ok, payload = jira._handle_response(resp, "ignored", include_guidance=False)
@@ -654,7 +654,7 @@ class TestAddUrlsToIssueReferences:
 
 class TestResolveUserToAccountId:
     @pytest.mark.asyncio
-    async def test_single_assignable_user_is_found(self):
+    async def test_single_assignable_user_is_found(self) -> None:
         client = MagicMock()
         client.find_assignable_users = AsyncMock(
             return_value=_mock_response(200, [{"accountId": "a1", "displayName": "Alice"}]),
@@ -664,7 +664,7 @@ class TestResolveUserToAccountId:
         assert await jira._resolve_user_to_account_id("P", "alice") == ("a1", None)
 
     @pytest.mark.asyncio
-    async def test_no_match_is_an_error_not_a_global_guess(self):
+    async def test_no_match_is_an_error_not_a_global_guess(self) -> None:
         client = MagicMock()
         client.find_assignable_users = AsyncMock(return_value=_mock_response(200, []))
         client.find_users_by_query = AsyncMock(return_value=_mock_response(200, [{"accountId": "g1"}]))
@@ -675,7 +675,7 @@ class TestResolveUserToAccountId:
         client.find_users_by_query.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_exception_is_an_error(self):
+    async def test_exception_is_an_error(self) -> None:
         client = MagicMock()
         client.find_assignable_users = AsyncMock(side_effect=RuntimeError("boom"))
         jira = _build_jira()
@@ -1529,7 +1529,7 @@ class TestFetchCreateFields:
         assert "could not list the issue types" in err
 
     @pytest.mark.asyncio
-    async def test_fields_http_error_is_an_error_not_a_short_list(self):
+    async def test_fields_http_error_is_an_error_not_a_short_list(self) -> None:
         jira = _build_jira()
         jira.client.get_create_issue_meta_issue_types = AsyncMock(
             return_value=_mock_response(200, {"issueTypes": [{"id": "1", "name": "Bug"}]}),
@@ -1809,7 +1809,7 @@ class TestSearchIssuesExtended:
 
 class TestFetchCreateFieldsExtended:
     @pytest.mark.asyncio
-    async def test_fields_fetch_exception_is_an_error(self):
+    async def test_fields_fetch_exception_is_an_error(self) -> None:
         jira = _build_jira()
         jira.client.get_create_issue_meta_issue_types = AsyncMock(
             return_value=_mock_response(200, {"issueTypes": [{"id": "1", "name": "Bug"}]}),

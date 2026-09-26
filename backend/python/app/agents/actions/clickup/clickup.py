@@ -105,7 +105,7 @@ def _mark_older_comments(data: dict[str, Any]) -> None:
     )
 
 
-def _missing_text(**fields: object) -> Optional[tuple[bool, str]]:
+def _missing_text(**fields: object) -> tuple[bool, str] | None:
     """Refuse a call whose required text is empty, before ClickUp is called."""
     empty = [name for name, value in fields.items() if not isinstance(value, str) or not value.strip()]
     if not empty:
