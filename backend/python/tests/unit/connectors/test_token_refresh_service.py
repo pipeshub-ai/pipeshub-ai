@@ -25,8 +25,8 @@ CONNECTOR_ID = "conn-123"
 def mock_config_service() -> MagicMock:
     """Mock ConfigurationService with async get_config/set_config."""
     svc = MagicMock()
-    svc.get_config = AsyncMock(return_value={})
-    svc.set_config = AsyncMock()
+    svc.get_config_with_version = AsyncMock(return_value=({}, 1))
+    svc.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
     return svc
 
 
@@ -145,8 +145,8 @@ class TestRefreshTokenInvalidThreshold:
         self, service: TokenRefreshService, mock_config_service: MagicMock
     ) -> None:
         """Explicit isAuthenticated=False is skipped; missing flag (legacy) is kept."""
-        mock_config_service.get_config = AsyncMock(
-            return_value={"credentials": {"refresh_token": "tok"}}
+        mock_config_service.get_config_with_version = AsyncMock(
+            return_value=({"credentials": {"refresh_token": "tok"}}, 1)
         )
         connectors = [
             {"_key": "dead", "authType": "OAUTH", "isAuthenticated": False},
@@ -169,7 +169,7 @@ class TestRefreshTokenInvalidThreshold:
         for _ in range(MAX_REFRESH_TOKEN_INVALID_FAILURES - 2):
             await service._handle_refresh_token_invalid(CONNECTOR_ID, error)
 
-        mock_config_service.get_config = AsyncMock(return_value=_connector_config())
+        mock_config_service.get_config_with_version = AsyncMock(return_value=(_connector_config(), 1))
         new_token = OAuthToken(access_token="new-access", refresh_token="new-refresh", expires_in=3600)
         with (
             patch.object(OAuthProvider, "refresh_access_token", AsyncMock(return_value=new_token)),
@@ -203,11 +203,11 @@ class TestRotatingRefreshTokenSafety:
             expires_in=3600,
             created_at=datetime.now(),
         )
-        mock_config_service.get_config = AsyncMock(
-            return_value={
+        mock_config_service.get_config_with_version = AsyncMock(
+            return_value=({
                 "auth": _connector_config()["auth"],
                 "credentials": live.to_dict(),
-            }
+            }, 1)
         )
         with (
             patch.object(OAuthProvider, "refresh_access_token", AsyncMock()) as mock_refresh,
@@ -240,15 +240,16 @@ class TestRotatingRefreshTokenSafety:
         first_entered = asyncio.Event()
         release_first = asyncio.Event()
 
-        async def get_config(_key, **_kw):
-            return deepcopy(store)
+        async def get_config_with_version(_key, **_kw):
+            return deepcopy(store), 1
 
-        async def set_config(_key, value):
+        async def compare_and_set(_key, _v, value):
             store.clear()
             store.update(deepcopy(value))
+            return True, (deepcopy(value), 2)
 
-        mock_config_service.get_config = AsyncMock(side_effect=get_config)
-        mock_config_service.set_config = AsyncMock(side_effect=set_config)
+        mock_config_service.get_config_with_version = AsyncMock(side_effect=get_config_with_version)
+        mock_config_service.compare_and_set = AsyncMock(side_effect=compare_and_set)
 
         async def fake_refresh(refresh_token: str):
             sent.append(refresh_token)
@@ -301,15 +302,15 @@ class TestRotatingRefreshTokenSafety:
             },
         ]
 
-        async def get_config(_key, **_kw):
-            return reads.pop(0) if reads else {
+        async def get_config_with_version(_key, **_kw):
+            return (reads.pop(0) if reads else {
                 "auth": _connector_config()["auth"],
                 "filters": {"sync": "new"},
                 "credentials": {"access_token": "new-access", "refresh_token": "rt-new"},
-            }
+            }), 1
 
-        mock_config_service.get_config = AsyncMock(side_effect=get_config)
-        mock_config_service.set_config = AsyncMock()
+        mock_config_service.get_config_with_version = AsyncMock(side_effect=get_config_with_version)
+        mock_config_service.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
         new_token = OAuthToken(access_token="new-access", refresh_token="rt-new", expires_in=3600)
 
         with (
@@ -318,7 +319,7 @@ class TestRotatingRefreshTokenSafety:
         ):
             await service.refresh_now(CONNECTOR_ID, "jira", "rt-old")
 
-        written = mock_config_service.set_config.await_args.args[1]
+        written = mock_config_service.compare_and_set.await_args.args[2]
         assert written["filters"] == {"sync": "new"}
         assert written["credentials"]["refresh_token"] == "rt-new"
 
@@ -335,17 +336,17 @@ class TestRotatingRefreshTokenSafety:
         store = {"auth": _connector_config()["auth"], "credentials": {"access_token": "old-access", "refresh_token": "rt-old"}}
         answers = [False, False, True]
 
-        async def get_config(_key: str, **_kw: object) -> dict:
-            return dict(store)
+        async def get_config_with_version(_key: str, **_kw: object):
+            return dict(store), 1
 
-        async def set_config(_key: str, value: dict) -> bool:
+        async def compare_and_set(_key: str, _v, value: dict):
             ok = answers.pop(0)
             if ok:
                 store.update(value)
-            return ok
+            return ok, (dict(store), 2)
 
-        mock_config_service.get_config = AsyncMock(side_effect=get_config)
-        mock_config_service.set_config = AsyncMock(side_effect=set_config)
+        mock_config_service.get_config_with_version = AsyncMock(side_effect=get_config_with_version)
+        mock_config_service.compare_and_set = AsyncMock(side_effect=compare_and_set)
         new_token = OAuthToken(access_token="new-access", refresh_token="rt-new", expires_in=3600)
 
         with (
@@ -354,7 +355,7 @@ class TestRotatingRefreshTokenSafety:
         ):
             await service.refresh_now(CONNECTOR_ID, "slack", "rt-old")
 
-        assert mock_config_service.set_config.await_count == 3
+        assert mock_config_service.compare_and_set.await_count == 3
         assert store["credentials"]["access_token"] == "new-access"
         assert store["credentials"]["refresh_token"] == "rt-new"
 
@@ -375,14 +376,14 @@ class TestRotatingRefreshTokenSafety:
             "credentials": {"access_token": "old-access", "refresh_token": "rt-old"},
         }
         # Like ConfigurationService, every read hands back the one cached dict.
-        mock_config_service.get_config = AsyncMock(return_value=cached)
-        mock_config_service.set_config = AsyncMock(return_value=False)
+        mock_config_service.get_config_with_version = AsyncMock(return_value=(cached, 1))
+        mock_config_service.compare_and_set = AsyncMock(return_value=(False, ({}, 2)))
         service._invalid_refresh_failures[CONNECTOR_ID] = 1
 
         with pytest.raises(Exception, match="Could not save refreshed credentials"):
             await service.refresh_now(CONNECTOR_ID, "slack", "rt-old")
 
         assert len(slack.requests) == 1
-        assert mock_config_service.set_config.await_count == 4
+        assert mock_config_service.compare_and_set.await_count == 5
         assert cached["credentials"] == {"access_token": "old-access", "refresh_token": "rt-old"}
         assert service._invalid_refresh_failures[CONNECTOR_ID] == 1

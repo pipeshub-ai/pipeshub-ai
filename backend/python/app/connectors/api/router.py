@@ -43,7 +43,7 @@ from app.agents.actions.knowledge_graph.views import (
 )
 from app.api.middlewares.auth import is_request_admin, require_scopes, require_service_token
 from app.api.middlewares.token_policy import has_service_scope
-from app.config.configuration_service import ConfigurationService
+from app.config.configuration_service import ConfigurationService, ConcurrentModificationError
 from app.config.constants.arangodb import (
     AppStatus,
     CollectionNames,
@@ -6768,21 +6768,32 @@ async def save_connector_instance_filters(
         # Get current config
         config_service = resolve_config_service(container, user_context["org_id"])
         config_path = _get_config_path_for_instance(connector_id)
-        config = await config_service.get_config(config_path)
+        import asyncio
+        import random
+        
+        for attempt in range(1, 6):
+            config, version = await config_service.get_config_with_version(config_path)
 
-        if not config:
-            logger.error("Configuration not found. Please configure first.")
-            config = {}
+            if not config:
+                logger.error("Configuration not found. Please configure first.")
+                config = {}
 
-        # Update filters
-        if "filters" not in config:
-            logger.error("Filters not found. Please configure first.")
-            config["filters"] = {}
+            # Update filters
+            if "filters" not in config:
+                logger.error("Filters not found. Please configure first.")
+                config["filters"] = {}
 
-        config["filters"]["values"] = filter_selections
+            config["filters"]["values"] = filter_selections
 
-        # Save updated config
-        await config_service.set_config(config_path, config)
+            # Save updated config
+            success, _ = await config_service.compare_and_set(config_path, version, config)
+            if success:
+                break
+                
+            if attempt < 5:
+                await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
+        else:
+            raise ConcurrentModificationError("Concurrent modification conflict")
 
         logger.info(f"Saved filter selections for instance {connector_id}")
 
@@ -6793,6 +6804,12 @@ async def save_connector_instance_filters(
 
     except HTTPException:
         raise
+    except ConcurrentModificationError as e:
+        logger.error(f"Concurrent modification for {connector_id}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail="Concurrent modification conflict. Please try again."
+        )
     except Exception as e:
         logger.error(f"Error saving filter selections for {connector_id}: {e}")
         raise HTTPException(

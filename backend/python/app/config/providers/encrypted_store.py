@@ -285,6 +285,59 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 raise
             return None
 
+    async def get_key_with_version(self, key: str, *, raise_on_error: bool = False) -> tuple[Optional[T], Any]:
+        try:
+            encrypted_value, version = await self.store.get_key_with_version(key, raise_on_error=raise_on_error)
+
+            if encrypted_value is not None:
+                try:
+                    return self._decode_value(key, encrypted_value), version
+                except Exception as e:
+                    self.logger.error(f"Failed to process value for key {key}: {str(e)}")
+                    if raise_on_error:
+                        raise
+                    return None, version
+            else:
+                self.logger.debug(f"No value found for key: {key}")
+                return None, version
+
+        except Exception as e:
+            self.logger.error("Failed to get config with version %s: %s", key, str(e))
+            self.logger.exception("Detailed error:")
+            if raise_on_error:
+                raise
+            return None, None
+
+    async def compare_and_set(self, key: str, expected_version: Any, new_value: T, ttl: Optional[int] = None) -> tuple[bool, tuple[Optional[T], Any]]:
+        try:
+            value_json = json.dumps(new_value, cls=_DatetimeSafeEncoder)
+            encrypt_value = key not in UNENCRYPTED_KEYS
+
+            if encrypt_value:
+                store_value = self.encryption_service.encrypt(value_json)
+            else:
+                store_value = value_json
+                
+            success, result = await self.store.compare_and_set(key, expected_version, store_value, ttl)
+            if success:
+                _, new_version = result
+                # Return the plaintext new_value we were passed, not the encrypted one
+                return True, (new_value, new_version)
+            else:
+                current_value, current_version = result
+                if current_value is not None:
+                    try:
+                        current_value = self._decode_value(key, current_value)
+                    except Exception as e:
+                        self.logger.error(f"Failed to process conflict value for key {key}: {str(e)}")
+                        current_value = None
+                return False, (current_value, current_version)
+                
+        except Exception as e:
+            self.logger.error("Failed to compare and set config %s: %s", key, str(e))
+            self.logger.exception("Detailed error:")
+            raise ConnectionError(f"Failed to compare and set key: {str(e)}")
+
     def _decode_value(self, key: str, stored: object) -> T | None:
         """Turn what the inner store returned for ``key`` into the caller's value."""
         if isinstance(stored, (dict, list, int, float)):

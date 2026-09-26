@@ -1,9 +1,10 @@
 import asyncio
+import hashlib
 import json
 import random
 import threading
 import uuid
-from typing import TYPE_CHECKING, Callable, Generic, List, Optional, TypeVar
+from typing import TYPE_CHECKING, Callable, Generic, List, Optional, TypeVar, Any
 
 from app.config.key_value_store import KeyValueStore
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
@@ -233,15 +234,18 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             serialized_value = self.serializer(value)
 
+            new_rev = str(uuid.uuid4())
+            value_to_store = f"REV:{new_rev}:".encode('utf-8') + serialized_value
+
             if overwrite:
                 if ttl:
-                    await self._get_client().set(full_key, serialized_value, ex=ttl)
+                    await self._get_client().set(full_key, value_to_store, ex=ttl)
                 else:
-                    await self._get_client().set(full_key, serialized_value)
+                    await self._get_client().set(full_key, value_to_store)
             else:
                 # Use nx=True for atomic "set if not exists"
                 was_set = await self._get_client().set(
-                    full_key, serialized_value, ex=ttl, nx=True
+                    full_key, value_to_store, ex=ttl, nx=True
                 )
                 if not was_set:
                     logger.debug(
@@ -270,9 +274,12 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             serialized_value = self.serializer(value)
 
+            new_rev = str(uuid.uuid4())
+            value_to_store = f"REV:{new_rev}:".encode('utf-8') + serialized_value
+
             # Use xx=True for atomic "set if exists"
             result = await self._get_client().set(
-                full_key, serialized_value, ex=ttl, xx=True
+                full_key, value_to_store, ex=ttl, xx=True
             )
 
             if not result:
@@ -301,8 +308,18 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 logger.debug("No value found for key")
                 return None
 
+            if value_bytes.startswith(b"REV:") and len(value_bytes) >= 42 and value_bytes[40:41] == b":":
+                version_str = value_bytes[4:40].decode('utf-8')
+                try:
+                    uuid.UUID(version_str)
+                    actual_bytes = value_bytes[41:]
+                except ValueError:
+                    actual_bytes = value_bytes
+            else:
+                actual_bytes = value_bytes
+
             try:
-                deserialized = self.deserializer(value_bytes)
+                deserialized = self.deserializer(actual_bytes)
                 # Present bytes that deserialize to nothing could not be read:
                 # the factory deserializer answers None for bytes that are not
                 # valid UTF-8 instead of raising, so the decode handler below
@@ -323,6 +340,139 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         except Exception as e:
             logger.error("Failed to get key %s: %s", key, str(e))
             raise ConnectionError(f"Failed to get key: {str(e)}")
+
+    async def get_key_with_version(self, key: str, *, raise_on_error: bool = False) -> tuple[Optional[T], Any]:
+        """Get value and its SHA-1 version from Redis."""
+        full_key = self._build_key(key)
+        logger.debug("Getting key with version from Redis: %s (original: %s)", full_key, key)
+
+        try:
+            value_bytes = await self._get_client().get(full_key)
+
+            if value_bytes is None:
+                logger.debug("No value found for key")
+                return None, None
+
+            if value_bytes.startswith(b"REV:") and len(value_bytes) >= 42 and value_bytes[40:41] == b":":
+                version_str = value_bytes[4:40].decode('utf-8')
+                try:
+                    uuid.UUID(version_str)
+                    version = version_str
+                    actual_bytes = value_bytes[41:]
+                except ValueError:
+                    version = hashlib.sha1(value_bytes, usedforsecurity=False).hexdigest()
+                    actual_bytes = value_bytes
+            else:
+                version = hashlib.sha1(value_bytes, usedforsecurity=False).hexdigest()
+                actual_bytes = value_bytes
+
+            try:
+                deserialized = self.deserializer(actual_bytes)
+                if deserialized is None and value_bytes and raise_on_error:
+                    raise ValueError("Stored value could not be decoded")
+                return deserialized, version
+            except json.JSONDecodeError as e:
+                logger.error("Failed to deserialize value: %s", str(e))
+                if raise_on_error:
+                    raise
+                return None, version
+
+        except Exception as e:
+            logger.error("Failed to get key with version %s: %s", key, str(e))
+            raise ConnectionError(f"Failed to get key with version: {str(e)}")
+
+    async def compare_and_set(self, key: str, expected_version: Any, new_value: T, ttl: Optional[int] = None) -> tuple[bool, tuple[Optional[T], Any]]:
+        """Conditionally update a key in Redis using a Lua script."""
+        full_key = self._build_key(key)
+        logger.debug("Compare and set key in Redis: %s (original: %s)", full_key, key)
+
+        try:
+            serialized_value = self.serializer(new_value)
+            
+            new_rev = str(uuid.uuid4())
+            value_to_store = f"REV:{new_rev}:".encode('utf-8') + serialized_value
+            
+            script = """
+            local current = redis.call("GET", KEYS[1])
+            local current_rev = ""
+            
+            if current then
+                if string.sub(current, 1, 4) == "REV:" then
+                    local candidate = string.sub(current, 5, 40)
+                    if string.match(candidate, "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") then
+                        current_rev = candidate
+                    else
+                        current_rev = redis.sha1hex(current)
+                    end
+                else
+                    current_rev = redis.sha1hex(current)
+                end
+            end
+
+            if (ARGV[1] == "" and not current) or (current_rev == ARGV[1]) then
+                if ARGV[3] == "KEEPTTL" then
+                    redis.call("SET", KEYS[1], ARGV[2], "KEEPTTL")
+                elseif ARGV[3] ~= "" then
+                    redis.call("SET", KEYS[1], ARGV[2], "EX", ARGV[3])
+                else
+                    redis.call("SET", KEYS[1], ARGV[2])
+                end
+                return {1, ARGV[4], ""}
+            end
+            return {0, current, current_rev}
+            """
+            
+            # Using "" to denote None since Lua script ARGV are strings
+            exp_version_str = expected_version if expected_version is not None else ""
+            ttl_str = "KEEPTTL" if ttl is None else str(ttl)
+            
+            # We use eval rather than evalsha for simplicity, though evalsha could be optimized later
+            result = await self._get_client().eval(
+                script, 
+                1, 
+                full_key, 
+                exp_version_str, 
+                value_to_store, 
+                ttl_str,
+                new_rev
+            )
+            
+            success = bool(result[0])
+            
+            if success:
+                new_version = result[1].decode('utf-8') if isinstance(result[1], bytes) else result[1]
+                # Publish cache invalidation
+                await self._notify_watchers(key, new_value)
+                return True, (new_value, new_version)
+            else:
+                # Conflict
+                current_bytes = result[1]
+                current_version = result[2]
+                
+                if not current_bytes:
+                    return False, (None, None)
+                    
+                # Deserialize current_bytes exactly like get_key_with_version
+                if current_bytes.startswith(b"REV:") and len(current_bytes) >= 42 and current_bytes[40:41] == b":":
+                    version_str = current_bytes[4:40].decode('utf-8')
+                    try:
+                        uuid.UUID(version_str)
+                        actual_bytes = current_bytes[41:]
+                    except ValueError:
+                        actual_bytes = current_bytes
+                else:
+                    actual_bytes = current_bytes
+                    
+                try:
+                    deserialized = self.deserializer(actual_bytes)
+                except json.JSONDecodeError:
+                    deserialized = None
+                    
+                return False, (deserialized, current_version.decode('utf-8') if isinstance(current_version, bytes) else current_version)
+                
+        except Exception as e:
+            logger.error("Failed to compare and set key %s: %s", key, str(e))
+            raise ConnectionError(f"Failed to compare and set key: {str(e)}")
 
     async def delete_key(self, key: str) -> bool:
         """Delete a key from Redis."""

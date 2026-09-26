@@ -3,6 +3,8 @@ import asyncio
 import hashlib
 import os
 import threading
+import copy
+from typing import Any
 
 import dotenv
 from cachetools import LRUCache
@@ -22,6 +24,10 @@ _ = dotenv.load_dotenv()
 # Pub/Sub state lock before giving up and cancelling anyway.
 _PUBSUB_LOCK_TIMEOUT_SECONDS = 5.0
 
+
+class ConcurrentModificationError(Exception):
+    """Raised when a CAS operation fails due to concurrent modifications after all retries."""
+    pass
 
 class ConfigurationService:
     """Service to manage configuration using etcd or Redis store with caching."""
@@ -123,6 +129,62 @@ class ConfigurationService:
                 self.logger.debug("📦 Using environment variable fallback due to error for key: %s", key)
                 return env_fallback
             return default
+
+    async def get_config_with_version(self, key: str, *, raise_on_error: bool = False) -> tuple[Any, Any]:
+        """Get configuration value and version, bypassing the cache.
+        
+        This MUST bypass the LRU cache to ensure writers always get the 
+        absolute latest state and version from the network.
+        """
+        try:
+            value, version = await self.store.get_key_with_version(key, raise_on_error=raise_on_error)
+            
+            if value is None:
+                env_fallback = self._get_env_fallback(key)
+                if env_fallback is not None:
+                    self.logger.debug("📦 Using environment variable fallback for key: %s", key)
+                    self.cache[key] = env_fallback
+                    return env_fallback, version
+                    
+                self.logger.debug("📦 Store returned no value for key: %s", key)
+                return None, version
+                
+            copied_value = copy.deepcopy(value)
+            self.cache[key] = copied_value
+            return copy.deepcopy(copied_value), version
+            
+        except Exception as e:
+            self.logger.error("❌ Failed to get config with version %s: %s", key, str(e))
+            if raise_on_error:
+                raise
+            env_fallback = self._get_env_fallback(key)
+            if env_fallback is not None:
+                self.logger.debug("📦 Using environment variable fallback due to error for key: %s", key)
+                return env_fallback, None
+            return None, None
+
+    async def compare_and_set(self, key: str, expected_version: Any, value: str | int | float | bool | dict | list) -> tuple[bool, tuple[Any, Any]]:
+        """Conditionally update a configuration value using CAS."""
+        try:
+            self.logger.info("📝 compare_and_set called for key: %s", key)
+
+            success, result = await self.store.compare_and_set(key, expected_version, value)
+            
+            if success:
+                new_value, new_version = result
+                # Update cache
+                self.cache[key] = new_value
+                self.logger.info("✅ Successfully conditionally set config for key: %s", key)
+                # Publish cache invalidation
+                await self._publish_cache_invalidation(key)
+                return True, (new_value, new_version)
+            else:
+                self.logger.debug("⚠️ Conflict in compare_and_set for key: %s", key)
+                return False, result
+
+        except Exception as e:
+            self.logger.error("❌ Failed to compare_and_set config %s: %s", key, str(e))
+            raise
 
     def _get_env_fallback(self, key: str) -> dict | None:
         """Get environment variable fallback for specific configuration keys"""

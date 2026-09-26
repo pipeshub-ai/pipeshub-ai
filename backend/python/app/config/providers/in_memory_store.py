@@ -1,6 +1,8 @@
+import itertools
 import json
 import time
 from threading import Lock
+import copy
 from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
 
 from app.config.key_value_store import KeyValueStore
@@ -20,11 +22,12 @@ class KeyData(Generic[T]):
         expiry: Optional expiration timestamp
     """
 
-    def __init__(self, value: T, ttl: Optional[int] = None) -> None:
+    def __init__(self, value: T, version: int, ttl: Optional[int] = None) -> None:
         logger.debug("🔧 Creating KeyData instance")
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
 
         self.value = value
+        self.version = version
         self.expiry = time.time() + ttl if ttl else None
         if self.expiry:
             logger.debug(
@@ -66,6 +69,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         self.store: Dict[str, KeyData[T]] = {}
         self.watchers: Dict[str, List[tuple[Callable[[Optional[T]], None], Any]]] = {}
         self.lock = Lock()
+        self._next_version = itertools.count(1)
 
         if default_json_file_path:
             self.json_file_path = default_json_file_path
@@ -82,7 +86,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         """Load data from a JSON file."""
         with open(json_file_path, 'r') as file:
             data = json.load(file)
-        return {key: KeyData(value, None) for key, value in data.items()}
+        return {key: KeyData(value, next(self._next_version), None) for key, value in data.items()}
 
     def _cleanup_expired_keys(self) -> None:
         """Clean up expired keys synchronously."""
@@ -136,7 +140,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                 return False  # Key was not created (already exists)
 
             logger.debug("🔄 Storing new key-value pair")
-            self.store[key] = KeyData(value, ttl)
+            self.store[key] = KeyData(value, next(self._next_version), ttl)
             logger.debug("🔄 Notifying watchers")
             self._notify_watchers(key, value)
             logger.debug("✅ Key created successfully")
@@ -164,7 +168,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                 raise KeyError(f'Key "{key}" does not exist.')
 
             logger.debug("🔄 Updating value")
-            self.store[key] = KeyData(value, ttl)
+            self.store[key] = KeyData(value, next(self._next_version), ttl)
             logger.debug("🔄 Notifying watchers")
             self._notify_watchers(key, value)
             logger.debug("✅ Value updated successfully")
@@ -192,6 +196,35 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             else:
                 logger.debug("⚠️ Key not found")
             return None
+
+    async def get_key_with_version(self, key: str, *, raise_on_error: bool = False) -> tuple[Optional[T], Any]:
+        logger.debug("🔍 Getting value with version for key: %s", key)
+        with self.lock:
+            self._cleanup_expired_keys()
+            if key in self.store:
+                data = self.store[key]
+                if not data.is_expired():
+                    return copy.deepcopy(data.value), data.version
+            return None, None
+
+    async def compare_and_set(self, key: str, expected_version: Any, new_value: T, ttl: Optional[int] = None) -> tuple[bool, tuple[Optional[T], Any]]:
+        logger.debug("🔄 Compare and set for key: %s", key)
+        with self.lock:
+            self._cleanup_expired_keys()
+            current_data = self.store.get(key)
+            
+            if current_data and current_data.is_expired():
+                current_data = None
+                
+            current_version = current_data.version if current_data else None
+            
+            if current_version == expected_version:
+                new_version = next(self._next_version)
+                self.store[key] = KeyData(new_value, new_version, ttl)
+                self._notify_watchers(key, new_value)
+                return True, (new_value, new_version)
+            else:
+                return False, (copy.deepcopy(current_data.value) if current_data else None, current_version)
 
     async def delete_key(self, key: str) -> bool:
         """

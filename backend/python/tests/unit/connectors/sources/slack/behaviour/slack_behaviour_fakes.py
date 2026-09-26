@@ -546,3 +546,14 @@ class FakeConfigService:
         else:
             self.others[path] = copy.deepcopy(value)
         return True
+
+    async def get_config_with_version(self, path: str, default: object = None, **kwargs: object) -> tuple[object, int]:
+        return await self.get_config(path, default, **kwargs), 1
+
+    async def compare_and_set(self, path: str, expected_version: int, value: Any, **_: object) -> tuple[bool, tuple[Any, int] | None]:
+        if path == self.path:
+            self.config = __import__('copy').deepcopy(value)
+            self.writes.append(__import__('copy').deepcopy(value))
+        else:
+            self.others[path] = __import__('copy').deepcopy(value)
+        return True, (__import__('copy').deepcopy(value), 2)
