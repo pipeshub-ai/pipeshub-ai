@@ -38,6 +38,9 @@ RENEW_BEFORE_EXPIRY = timedelta(minutes=5)
 # better, and renewing on every refused call would hammer oauth.v2.access.
 RENEWAL_COOLDOWN_SECONDS = 60
 
+# Rotations happen about every 12 hours, so a handful covers any stale read.
+_SUPERSEDED_TOKENS_KEPT = 8
+
 _ROTATING_TOKEN_PREFIX = "xoxe."
 
 RECONNECT_MESSAGE = (
@@ -78,6 +81,15 @@ class RenewingSlackDataSource:
         self._renewal = renewal
         self._rebuild = rebuild
 
+    @property
+    def access_token(self) -> str:
+        """The token this datasource's calls go out with, including after a renewal.
+
+        Downloads need it: the shared client's token can be changed by another call
+        while a download waits for its rate-limit slot.
+        """
+        return self._token
+
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - proxies any datasource member
         member = getattr(self._datasource, name)
         if not inspect.iscoroutinefunction(member):
@@ -93,7 +105,9 @@ class RenewingSlackDataSource:
             renewed_token = await self._renewal.renew(self._token, error)
             if renewed_token is None:
                 return response
-            return await getattr(self._rebuild(renewed_token), name)(*args, **kwargs)
+            self._datasource = self._rebuild(renewed_token)
+            self._token = renewed_token
+            return await getattr(self._datasource, name)(*args, **kwargs)
 
         return call
 
@@ -121,10 +135,15 @@ class SlackTokenRenewal:
         # a rejected refresh token rotates nothing, so every caller queued behind
         # the refresh service's lock would otherwise send it again and add a strike.
         self._lock = asyncio.Lock()
+        # A cached config read can land after a rotation's save and hand back the
+        # old document. Remembering what each token was replaced by keeps that read
+        # from putting a spent token back on the shared Slack client.
+        self._replaced_by: dict[str, str] = {}
 
     async def datasource(self, external_client: SlackClient, current_token: TokenSource) -> RenewingSlackDataSource:
         """A datasource for the connector's current token, renewed first if it is about to expire."""
         config, token = await current_token()
+        token = self._newest(token)
         if self._expiring(config, token):
             token = await self.renew(token, "token_expiring") or token
 
@@ -132,6 +151,20 @@ class SlackTokenRenewal:
             return _datasource_for(external_client, renewed_token)
 
         return RenewingSlackDataSource(_datasource_for(external_client, token), token, self, rebuild)
+
+    def _newest(self, token: str) -> str:
+        for _ in range(_SUPERSEDED_TOKENS_KEPT):
+            if token not in self._replaced_by:
+                break
+            token = self._replaced_by[token]
+        return token
+
+    def _record_replacement(self, old: str, new: str) -> str:
+        if old != new:
+            self._replaced_by[old] = new
+            while len(self._replaced_by) > _SUPERSEDED_TOKENS_KEPT:
+                self._replaced_by.pop(next(iter(self._replaced_by)))
+        return new
 
     @staticmethod
     def _expiring(config: dict[str, Any], token: str) -> bool:
@@ -168,7 +201,7 @@ class SlackTokenRenewal:
 
         stored_token = credentials.get("access_token")
         if stored_token and stored_token != token_in_use:
-            return stored_token
+            return self._record_replacement(token_in_use, stored_token)
         if refresh_token == self._rejected_refresh_token:
             return None
         if reason == "invalid_auth" and self._renewed_recently():
@@ -193,7 +226,7 @@ class SlackTokenRenewal:
             return None
         self._last_renewed_at = time.monotonic()
         self._logger.info("Renewed the Slack token for connector %s (%s)", self._connector_id, reason)
-        return new_token.access_token
+        return self._record_replacement(token_in_use, new_token.access_token)
 
     def _renewed_recently(self) -> bool:
         return (

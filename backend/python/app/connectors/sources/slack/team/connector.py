@@ -2550,9 +2550,7 @@ class SlackConnector(BaseConnector):
                 # files.slack.com downloads aren't covered by the Web API tiers;
                 # T3 keeps a sane upper bound on parallel binary transfers.
                 await ctx.rate_limiter.acquire(Tier.T3)
-                token = getattr(
-                    self.external_client.get_client(), "get_token", lambda: None
-                )()
+                token = (await self._fresh_datasource()).access_token
                 async with httpx.AsyncClient(timeout=30.0) as http:
                     headers = {"Authorization": f"Bearer {token}"} if token else {}
                     r = await http.get(url_dl, headers=headers)
@@ -4230,11 +4228,7 @@ class SlackConnector(BaseConnector):
                 connector=self.display_name,
             )
 
-        token = getattr(
-            self.external_client.get_client(), "get_token", lambda: None
-        )()
-        if not token:
-            self.logger.warning(f"No auth token available for file download {fid}, attempting without auth")
+        token = ds.access_token
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as http:
             headers = {"Authorization": f"Bearer {token}"} if token else {}
             async with http.stream("GET", url, headers=headers) as r:

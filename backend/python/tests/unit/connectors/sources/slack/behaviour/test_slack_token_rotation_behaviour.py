@@ -8,6 +8,7 @@ against the fake workspace and a fake ``oauth.v2.access`` endpoint.
 
 import asyncio
 import copy
+import hashlib
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -36,6 +37,7 @@ from app.connectors.core.base.token_service.token_refresh_service import (
     TokenRefreshService,
 )
 from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
+from app.models.entities import FileRecord
 from tests.support.slack_oauth import FakeSlackOAuth
 
 OLD_ACCESS = "xoxe.xoxp-1-first-access"
@@ -307,6 +309,44 @@ class TestRetryUsesTheRenewedToken:
         assert len(oauth.requests) == 1
         tokens = [c.token for c in workspace.calls[calls_before:]]
         assert sorted(tokens) == sorted([OLD_ACCESS, OLD_ACCESS, new_access, new_access])
+
+
+class TestDownloadsAfterRotation:
+    async def test_a_file_is_downloaded_with_the_renewed_token_when_the_cache_is_stale(
+        self, workspace, oauth, store, checkpoints, monkeypatch,
+    ) -> None:
+        connector, _ = await rotating_connector(
+            store, checkpoints, monkeypatch, rotating_credentials(issued_hours_ago=1),
+            config_service_class=StaleCacheConfigService,
+        )
+        workspace.valid_tokens.discard(OLD_ACCESS)
+        workspace.expired_tokens.add(OLD_ACCESS)
+        assert await connector.test_connection_and_access() is True
+        new_access, _ = oauth.issued[0]
+
+        content = b"rotated-bytes"
+        fd = workspace.add_file("F0ROT", "rot.txt", content, mimetype="text/plain", filetype="text")
+        workspace.post(DM_BOB, ts_minutes_ago(10), "U0BOB", "file", files=[fd])
+
+        # Another call builds a datasource from the stale cached config every time
+        # this connector waits for a rate-limit slot, which includes the wait just
+        # before a file download.
+        wait_for_slot = connector.rate_limiter.acquire
+
+        async def acquire_while_another_call_starts(tier: object) -> None:
+            await wait_for_slot(tier)
+            await connector._fresh_datasource()
+
+        monkeypatch.setattr(connector.rate_limiter, "acquire", acquire_while_another_call_starts)
+
+        await connector.run_sync()
+
+        downloads = [r for r in workspace.downloads_seen if str(r.url) == fd["url_private_download"]]
+        assert downloads
+        assert {r.headers["authorization"] for r in downloads} == {f"Bearer {new_access}"}
+        saved = next(r for r in store.records.values() if isinstance(r, FileRecord) and r.external_record_id == "F0ROT")
+        assert saved.sha256_hash == hashlib.sha256(content).hexdigest()
+        assert len(oauth.requests) == 1
 
 
 class TestRenewalThatCannotWork:
