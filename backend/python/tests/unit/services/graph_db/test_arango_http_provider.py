@@ -4261,7 +4261,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_no_queued_duplicates(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
+            [{"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100, "orgId": "org-1"}],  # reference
             [],  # no queued duplicates
         ]
         result = await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
@@ -4270,7 +4270,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_queued_duplicates_found_and_updated(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
+            [{"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100, "orgId": "org-1"}],  # reference
             [{"_key": "r2", "md5Checksum": "abc123"}],  # queued duplicate
         ]
         with patch.object(
@@ -4285,7 +4285,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_empty_status_mapping(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123"}],
+            [{"_key": "r1", "md5Checksum": "abc123", "orgId": "org-1"}],
             [{"_key": "r2", "md5Checksum": "abc123"}],
         ]
         with patch.object(
@@ -4300,7 +4300,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_failed_status_includes_reason(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123"}],
+            [{"_key": "r1", "md5Checksum": "abc123", "orgId": "org-1"}],
             [{"_key": "r2", "md5Checksum": "abc123"}],
         ]
         with patch.object(
@@ -10126,7 +10126,7 @@ class TestUpdateQueuedDuplicatesStatusProvider:
     async def test_no_queued_duplicates(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[
-                [{"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100}],
+                [{"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100, "orgId": "org-1"}],
                 [],
             ]
         )
@@ -14206,7 +14206,7 @@ class TestFindNextQueuedDuplicate:
     async def test_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[
-                [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 1024}],
+                [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 1024, "orgId": "org-1"}],
                 [{"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}],
             ]
         )
@@ -14218,7 +14218,7 @@ class TestFindNextQueuedDuplicate:
     async def test_no_queued(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[
-                [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 1024}],
+                [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 1024, "orgId": "org-1"}],
                 [],
             ]
         )
@@ -14263,6 +14263,111 @@ class TestFindNextQueuedDuplicate:
 
 
 # ---------------------------------------------------------------------------
+# find_queued_duplicates / update_record_if
+# ---------------------------------------------------------------------------
+
+
+class TestFindQueuedDuplicates:
+    @pytest.mark.asyncio
+    async def test_mirrors_the_waiting_records_filter(self, connected_provider):
+        """A waiting record filtered by its own type and size only when it had
+        them, so a null on its side must still match."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"_key": "r2", "indexingStatus": "QUEUED"}]
+        )
+
+        found = await connected_provider.find_queued_duplicates(
+            "r1", "abc", org_id="org-1", record_type="FILE", size_in_bytes=10
+        )
+
+        assert found == [{"_key": "r2", "indexingStatus": "QUEUED"}]
+        call = connected_provider.http_client.execute_aql.await_args
+        query = " ".join(call.args[0].split())
+        assert "(record.recordType == null OR record.recordType == @record_type)" in query
+        assert "(record.sizeInBytes == null OR record.sizeInBytes == @size_in_bytes)" in query
+        assert "record.isDeleted != true" in query
+        assert call.kwargs["bind_vars"] == {
+            "md5_checksum": "abc",
+            "record_key": "r1",
+            "queued_status": "QUEUED",
+            "org_id": "org-1",
+            "record_type": "FILE",
+            "size_in_bytes": 10,
+        }
+
+    @pytest.mark.asyncio
+    async def test_matches_nothing_without_an_org(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock()
+
+        assert await connected_provider.find_queued_duplicates("r1", "abc", org_id="") == []
+        connected_provider.http_client.execute_aql.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_raises_only_when_asked(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("down"))
+
+        assert await connected_provider.find_queued_duplicates("r1", "abc", org_id="org-1") == []
+        with pytest.raises(Exception, match="down"):
+            await connected_provider.find_queued_duplicates(
+                "r1", "abc", org_id="org-1", raise_on_error=True
+            )
+
+    @pytest.mark.asyncio
+    async def test_status_updates_and_next_lookup_need_the_reference_org(self, connected_provider):
+        """Without it, promoting every QUEUED record with this md5 reached into
+        other orgs and stamped them with this org's VRID."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"_key": "r1", "md5Checksum": "abc"}]
+        )
+
+        assert await connected_provider.update_queued_duplicates_status("r1", "FAILED") == 0
+        assert await connected_provider.find_next_queued_duplicate("r1") is None
+        assert connected_provider.http_client.execute_aql.await_count == 2
+
+
+class TestUpdateRecordIf:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rows, applied", [(["r1"], True), ([], False)])
+    async def test_reports_whether_it_applied(self, connected_provider, rows, applied):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=rows)
+
+        result = await connected_provider.update_record_if(
+            "r1",
+            {"indexingStatus": "COMPLETED"},
+            expected_statuses=["QUEUED"],
+            match_virtual_record_id=True,
+            expected_virtual_record_id=None,
+        )
+
+        assert result is applied
+        bind_vars = connected_provider.http_client.execute_aql.await_args.args[1]
+        assert bind_vars["@collection"] == "records"
+        assert bind_vars["key"] == "r1"
+        assert bind_vars["statuses"] == ["QUEUED"]
+        assert bind_vars["match_vrid"] is True
+        assert bind_vars["vrid"] is None
+        assert bind_vars["updates"] == {"indexingStatus": "COMPLETED"}
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        assert "UPDATE doc WITH @updates" in query
+        assert "REPLACE" not in query
+
+    @pytest.mark.asyncio
+    async def test_raises_on_database_errors(self, connected_provider):
+        """False must only ever mean "moved on"."""
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("down"))
+
+        with pytest.raises(Exception, match="down"):
+            await connected_provider.update_record_if(
+                "r1", {"indexingStatus": "COMPLETED"}, expected_statuses=["QUEUED"]
+            )
+
+    @pytest.mark.asyncio
+    async def test_refuses_to_run_unconditionally(self, connected_provider):
+        with pytest.raises(ValueError):
+            await connected_provider.update_record_if("r1", {"indexingStatus": "COMPLETED"})
+
+
+# ---------------------------------------------------------------------------
 # copy_document_relationships
 # ---------------------------------------------------------------------------
 
@@ -14276,6 +14381,26 @@ class TestCopyDocumentRelationships:
         connected_provider.http_client.create_document = AsyncMock()
         result = await connected_provider.copy_document_relationships("r1", "r2")
         assert result is True
+        connected_provider.http_client.create_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_copies_by_upsert_so_a_retried_attach_adds_no_duplicate_edges(
+        self, connected_provider
+    ):
+        """A duplicate attach now retries until it sticks. A plain insert
+        added another copy of every edge on each attempt."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"from": "records/r1", "to": "departments/d1", "timestamp": 1000}]
+        )
+        with patch.object(
+            connected_provider, "batch_create_edges", new_callable=AsyncMock, return_value=True
+        ) as batch:
+            await connected_provider.copy_document_relationships("r1", "r2")
+
+        edges, collection = batch.await_args_list[0].args
+        assert edges == [{"_from": "records/r2", "_to": "departments/d1", "createdAtTimestamp": 1000}]
+        assert collection == "belongsToDepartment"
+        assert batch.await_count == 4  # one per edge collection
 
     @pytest.mark.asyncio
     async def test_no_relationships(self, connected_provider):

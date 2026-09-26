@@ -19,6 +19,7 @@ directly.
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from app.config.constants.arangodb import ProgressStatus
@@ -50,7 +51,25 @@ class DuplicateMatch:
     waited on."""
 
 
-def _is_processed(record: Mapping[str, Any]) -> bool:
+class ReleaseAction(Enum):
+    """What releasing a parked duplicate did with it."""
+
+    ATTACHED = "attached"
+    """Now shares the twin's content identity, edges and vector membership."""
+    WAKE = "wake"
+    """Left parked and unchanged; needs its own event to resolve itself."""
+    SKIPPED = "skipped"
+    """Moved on by something else in the meantime; nothing to do."""
+
+
+@dataclass(frozen=True)
+class DuplicateReleaseOutcome:
+    record: Mapping[str, Any]
+    action: ReleaseAction
+    detail: str = ""
+
+
+def is_processed_duplicate(record: Mapping[str, Any]) -> bool:
     status = record.get("indexingStatus")
     if status == ProgressStatus.EMPTY.value:
         # An EMPTY record genuinely produced no vectors, so it is "done" —
@@ -61,6 +80,37 @@ def _is_processed(record: Mapping[str, Any]) -> bool:
 
 def _is_in_progress(record: Mapping[str, Any]) -> bool:
     return record.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value
+
+
+def twin_identity_fields(twin: Mapping[str, Any]) -> dict[str, Any]:
+    """The content identity a record takes over when it attaches to a twin.
+
+    Written before membership is synced, because the sync finds a VRID's
+    records by ``virtualRecordId`` — a record that does not hold it yet is
+    invisible to it.
+    """
+    return {
+        "virtualRecordId": twin.get("virtualRecordId"),
+        "summaryDocumentId": twin.get("summaryDocumentId"),
+    }
+
+
+def twin_completion_fields(twin: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
+    """The status an attached record takes over, written last.
+
+    Last because the COMPLETED guard in the record handler drops a redelivered
+    event for a finished record: once these land, nothing retries the attach.
+    """
+    return {
+        "isDirty": False,
+        "indexingStatus": twin.get("indexingStatus"),
+        "lastIndexTimestamp": now_ms,
+        # EMPTY twins never ran extraction, so this can be missing on the twin.
+        "extractionStatus": (
+            twin.get("extractionStatus") or ProgressStatus.NOT_STARTED.value
+        ),
+        "lastExtractionTimestamp": now_ms,
+    }
 
 
 def select_duplicate(
@@ -108,7 +158,10 @@ def select_duplicate(
         target.append(record)
 
     for pool, same_collection in ((same, True), (other, False)):
-        for predicate, is_processed in ((_is_processed, True), (_is_in_progress, False)):
+        for predicate, is_processed in (
+            (is_processed_duplicate, True),
+            (_is_in_progress, False),
+        ):
             # Within a pool, finished beats in-flight; across pools, same
             # collection beats other. Hence pool first, status second.
             match = next((r for r in pool if predicate(r)), None)

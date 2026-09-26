@@ -2405,7 +2405,7 @@ class TestDuplicateAndSyncOperations:
     async def test_find_next_queued_duplicate_success(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "md5Checksum": "m1", "sizeInBytes": 10}}],
+                [{"record": {"id": "rec-1", "md5Checksum": "m1", "sizeInBytes": 10, "orgId": "org-9"}}],
                 [{"record": {"id": "rec-2"}}],
             ]
         )
@@ -2452,7 +2452,7 @@ class TestDuplicateAndSyncOperations:
     ):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "md5Checksum": "m1", "sizeInBytes": 12}}],
+                [{"record": {"id": "rec-1", "md5Checksum": "m1", "sizeInBytes": 12, "orgId": "org-9"}}],
                 [{"record": {"id": "rec-2"}}, {"record": {"id": "rec-3"}}],
             ]
         )
@@ -2482,9 +2482,9 @@ class TestDuplicateAndSyncOperations:
     async def test_update_queued_duplicates_status_maps_failed_and_empty(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "md5Checksum": "m1"}}],
+                [{"record": {"id": "rec-1", "md5Checksum": "m1", "orgId": "org-9"}}],
                 [{"record": {"id": "rec-2"}}],
-                [{"record": {"id": "rec-1", "md5Checksum": "m1"}}],
+                [{"record": {"id": "rec-1", "md5Checksum": "m1", "orgId": "org-9"}}],
                 [{"record": {"id": "rec-2"}}],
             ]
         )
@@ -2505,7 +2505,7 @@ class TestDuplicateAndSyncOperations:
     ):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "md5Checksum": "m1"}}],
+                [{"record": {"id": "rec-1", "md5Checksum": "m1", "orgId": "org-9"}}],
                 [{"record": {"id": "rec-2"}}],
             ]
         )
@@ -2527,6 +2527,156 @@ class TestDuplicateAndSyncOperations:
     ):
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("queue fail"))
         assert await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED") == -1
+
+    @pytest.mark.asyncio
+    async def test_queued_duplicate_lookups_match_nothing_without_an_org(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """Without an org to scope by, promoting every QUEUED record with this
+        md5 reached into other orgs and stamped them with this org's VRID."""
+        reference = [{"record": {"id": "rec-1", "md5Checksum": "m1"}}]
+        neo4j_provider.client.execute_query = AsyncMock(return_value=reference)
+
+        assert await neo4j_provider.find_next_queued_duplicate("rec-1") is None
+        assert await neo4j_provider.update_queued_duplicates_status("rec-1", "FAILED") == 0
+        assert await neo4j_provider.find_queued_duplicates("rec-1", "m1", org_id="") == []
+        # Only the two reference-record reads; no duplicate query ever ran.
+        assert neo4j_provider.client.execute_query.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_update_queued_duplicates_status_scopes_by_org_type_and_size(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"record": {"id": "rec-1", "md5Checksum": "m1", "orgId": "org-9",
+                             "recordType": "FILE", "sizeInBytes": 12}}],
+                [],
+            ]
+        )
+
+        await neo4j_provider.update_queued_duplicates_status("rec-1", "FAILED")
+
+        second_call = neo4j_provider.client.execute_query.await_args_list[1]
+        assert second_call.kwargs["parameters"] == {
+            "md5_checksum": "m1",
+            "record_key": "rec-1",
+            "queued_status": "QUEUED",
+            "org_id": "org-9",
+            "record_type": "FILE",
+            "size_in_bytes": 12,
+        }
+
+    @pytest.mark.asyncio
+    async def test_find_queued_duplicates_mirrors_the_waiting_records_filter(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """A waiting record filtered by its own type and size only when it had
+        them, so a null on its side must still match."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"record": {"id": "rec-2"}}])
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
+
+        found = await neo4j_provider.find_queued_duplicates(
+            "rec-1", "m1", org_id="org-9", record_type="FILE", size_in_bytes=12,
+            transaction="txn-q",
+        )
+
+        assert found == [{"_key": "rec-2"}]
+        call = neo4j_provider.client.execute_query.await_args
+        query = " ".join(call.args[0].split())
+        assert "(record.recordType IS NULL OR record.recordType = $record_type)" in query
+        assert "(record.sizeInBytes IS NULL OR record.sizeInBytes = $size_in_bytes)" in query
+        assert "coalesce(record.isDeleted, false) = false" in query
+        assert "record.orgId = $org_id" in query
+        assert call.kwargs["txn_id"] == "txn-q"
+
+    @pytest.mark.asyncio
+    async def test_find_queued_duplicates_raises_only_when_asked(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("down"))
+
+        assert await neo4j_provider.find_queued_duplicates("rec-1", "m1", org_id="org-9") == []
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.find_queued_duplicates(
+                "rec-1", "m1", org_id="org-9", raise_on_error=True
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_record_if_takes_the_write_lock_before_checking(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """Read-committed: a WHERE evaluated before the lock reads a value
+        another transaction can overwrite before our SET, and that write is
+        lost without an error. Arango raises a conflict instead."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"id": "rec-1"}])
+
+        await neo4j_provider.update_record_if(
+            "rec-1", {"indexingStatus": "COMPLETED"}, expected_statuses=["QUEUED"]
+        )
+
+        query = " ".join(neo4j_provider.client.execute_query.await_args.args[0].split())
+        assert query.index("SET n._updateLock = true") < query.index("WHERE")
+        assert "REMOVE n._updateLock" in query
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rows, applied", [([{"id": "rec-1"}], True), ([], False)])
+    async def test_update_record_if_reports_whether_it_applied(
+        self, neo4j_provider: Neo4jProvider, rows, applied
+    ):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=rows)
+
+        result = await neo4j_provider.update_record_if(
+            "rec-1",
+            {"indexingStatus": "COMPLETED"},
+            expected_statuses=["QUEUED"],
+            match_virtual_record_id=True,
+            expected_virtual_record_id="vr-1",
+        )
+
+        assert result is applied
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert params["key"] == "rec-1"
+        assert params["statuses"] == ["QUEUED"]
+        assert params["match_vrid"] is True
+        assert params["vrid"] == "vr-1"
+        assert params["updates"]["indexingStatus"] == "COMPLETED"
+
+    @pytest.mark.asyncio
+    async def test_update_record_if_can_require_holding_no_vrid(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """`n.virtualRecordId = null` is null in Cypher, so "holds none" needs
+        its own branch or it never matches."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"id": "rec-1"}])
+
+        await neo4j_provider.update_record_if(
+            "rec-1", {"indexingStatus": "EMPTY"},
+            match_virtual_record_id=True, expected_virtual_record_id=None,
+        )
+
+        call = neo4j_provider.client.execute_query.await_args
+        assert "n.virtualRecordId IS NULL AND $vrid IS NULL" in " ".join(call.args[0].split())
+        assert call.kwargs["parameters"]["statuses"] is None
+
+    @pytest.mark.asyncio
+    async def test_update_record_if_raises_on_database_errors(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        """False must only ever mean "moved on"."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("down"))
+
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.update_record_if(
+                "rec-1", {"indexingStatus": "COMPLETED"}, expected_statuses=["QUEUED"]
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_record_if_refuses_to_run_unconditionally(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        with pytest.raises(ValueError):
+            await neo4j_provider.update_record_if("rec-1", {"indexingStatus": "COMPLETED"})
 
     @pytest.mark.asyncio
     async def test_copy_document_relationships_copies_expected_edge_types(

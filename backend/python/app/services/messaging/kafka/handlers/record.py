@@ -22,6 +22,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.events.dedup import ReleaseAction
 from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
@@ -59,6 +60,7 @@ from app.utils.user_errors import (
     RETRY_SCHEDULED,
     STORED_CONTENT_DAMAGED,
     STORED_CONTENT_MISSING,
+    TEMPORARY_PROBLEM,
     duplicate_failed,
     to_user_reason,
     unsupported_file_type,
@@ -77,6 +79,7 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
+        self._detached_releases: set[asyncio.Future] = set()
 
     # Statuses that already describe a finished record. Abandoning a duplicate
     # delivery of one of these must not rewrite it as a failure. FAILED is
@@ -299,18 +302,7 @@ class RecordEventHandler(BaseEventService):
             next_record_id = next_queued_record.get("_key")
             self.logger.info(f"🚀 Found queued duplicate: {next_record_id}, triggering indexing")
 
-            file_record = None
-            if next_queued_record.get("recordType") == RecordTypes.FILE.value:
-                file_record = await self.event_processor.graph_provider.get_document(
-                    next_record_id, CollectionNames.FILES.value
-                )
-
-            payload = await self.event_processor.graph_provider._create_reindex_event_payload(
-                next_queued_record,
-                file_record,
-            )
-
-            await self._publish_reindex_event(str(next_record_id), payload)
+            await self._publish_duplicate_wake(next_queued_record)
 
             self.logger.info(f"✅ Successfully triggered indexing for queued duplicate: {next_record_id}")
 
@@ -320,6 +312,126 @@ class RecordEventHandler(BaseEventService):
                 await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, ProgressStatus.FAILED.value, virtual_record_id)
             except Exception as e:
                 self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
+
+    async def _publish_duplicate_wake(self, record: dict) -> None:
+        """Send a parked duplicate its own newRecord, so it resolves itself."""
+        record_key = record.get("_key") or record.get("id")
+        file_record = None
+        if record.get("recordType") == RecordTypes.FILE.value:
+            file_record = await self.event_processor.graph_provider.get_document(
+                record_key, CollectionNames.FILES.value
+            )
+        payload = await self.event_processor.graph_provider._create_reindex_event_payload(
+            record,
+            file_record,
+        )
+        await self._publish_reindex_event(str(record_key), payload)
+
+    async def _release_queued_duplicates(self, primary: dict) -> bool:
+        """Hand the records parked behind ``primary`` its result. Never raises.
+
+        Runs in the ``finally`` of a message that already succeeded; the caller
+        decides whether a failure is worth redelivering it. Returns False only
+        when the parked records could not even be listed.
+        """
+        primary_id = primary.get("_key") or primary.get("id")
+        listed = True
+        try:
+            outcomes = await self.event_processor.release_queued_duplicates(primary)
+        except Exception as e:
+            self.logger.error(
+                "Could not release duplicates queued behind record %s: %s",
+                primary_id,
+                e,
+                exc_info=True,
+            )
+            outcomes = []
+            listed = False
+
+        # The record's own KB is notified too: not every path to COMPLETED
+        # passes through the sink that normally does it.
+        attached_kbs: set[tuple] = {(
+            primary.get("connectorName"),
+            primary.get("connectorId"),
+            primary.get("externalGroupId"),
+            primary.get("orgId"),
+        )}
+        counts = dict.fromkeys(ReleaseAction, 0)
+        for outcome in outcomes:
+            counts[outcome.action] += 1
+            dup = outcome.record
+            dup_id = dup.get("_key") or dup.get("id")
+            if outcome.action == ReleaseAction.ATTACHED:
+                attached_kbs.add((
+                    dup.get("connectorName"),
+                    dup.get("connectorId"),
+                    dup.get("externalGroupId"),
+                    dup.get("orgId"),
+                ))
+            elif outcome.action == ReleaseAction.WAKE:
+                await self._wake_queued_duplicate(dup, outcome.detail)
+            else:
+                self.logger.debug("Left queued duplicate %s alone: %s", dup_id, outcome.detail)
+
+        if outcomes:
+            self.logger.info(
+                "Released duplicates queued behind record %s: %d attached, %d woken, %d skipped",
+                primary_id,
+                counts[ReleaseAction.ATTACHED],
+                counts[ReleaseAction.WAKE],
+                counts[ReleaseAction.SKIPPED],
+            )
+
+        try:
+            backfilled = await self.event_processor.backfill_early_attached_copies(primary)
+            if backfilled:
+                self.logger.info(
+                    "Backfilled edges from record %s onto %d copy(ies) that attached "
+                    "before its extraction finished",
+                    primary_id,
+                    backfilled,
+                )
+        except Exception as e:
+            self.logger.error(
+                "Could not backfill edges from record %s onto early-attached copies: %s",
+                primary_id,
+                e,
+            )
+
+        if primary.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+            # Attached duplicates just became searchable, possibly in other KBs.
+            for connector_name, connector_id, external_group_id, org_id in attached_kbs:
+                await notify_record_indexed(
+                    connector_name=connector_name,
+                    connector_id=connector_id,
+                    external_record_group_id=external_group_id,
+                    org_id=org_id,
+                )
+        return listed
+
+    async def _wake_queued_duplicate(self, dup: dict, why: str) -> None:
+        dup_id = dup.get("_key") or dup.get("id")
+        try:
+            await self._publish_duplicate_wake(dup)
+            self.logger.info("Woke queued duplicate %s (%s)", dup_id, why)
+            return
+        except Exception as e:
+            self.logger.error(
+                "Could not wake queued duplicate %s (%s): %s", dup_id, why, e
+            )
+        # Nothing else will ever move it, and a KB upload is never swept. FAILED
+        # at least shows in the UI, where a reindex recovers it.
+        try:
+            await self.event_processor.graph_provider.update_record_if(
+                dup_id,
+                {
+                    "indexingStatus": ProgressStatus.FAILED.value,
+                    "reason": TEMPORARY_PROBLEM,
+                },
+                expected_statuses=[ProgressStatus.QUEUED.value],
+            )
+        except Exception as e:
+            self.logger.error("Could not mark queued duplicate %s FAILED: %s", dup_id, e)
 
     @staticmethod
     def _blob_has_blocks(blob: dict) -> bool:
@@ -1330,16 +1442,28 @@ class RecordEventHandler(BaseEventService):
                     indexing_status = record.get("indexingStatus")
                     virtual_record_id = record.get("virtualRecordId")
                     if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
-                        await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
-                        if indexing_status == ProgressStatus.COMPLETED.value:
-                            # Duplicates just became searchable too. They can live in
-                            # a different KB than this record, which only the TTL
-                            # covers — the provider returns a count, not the ids.
-                            await notify_record_indexed(
-                                connector_name=record.get("connectorName"),
-                                connector_id=record.get("connectorId"),
-                                external_record_group_id=record.get("externalGroupId"),
-                                org_id=record.get("orgId"),
+                        # Shielded: cancelled between a duplicate's VRID write
+                        # and its status write, it would stay QUEUED on this
+                        # VRID, which the stranded sweep skips as parked. The
+                        # release never raises, so finishing it detached is
+                        # safe; the set keeps the detached task referenced.
+                        release = asyncio.ensure_future(self._release_queued_duplicates(record))
+                        self._detached_releases.add(release)
+                        release.add_done_callback(self._detached_releases.discard)
+                        released = await asyncio.shield(release)
+                        if (
+                            not released
+                            and indexing_status == ProgressStatus.COMPLETED.value
+                            and event_type in (EventTypes.NEW_RECORD.value, EventTypes.REINDEX_RECORD.value)
+                            and not payload.get("forceReindex")
+                        ):
+                            # Nothing else would release them: parked copies are
+                            # skipped by the stranded sweep, and KB uploads are
+                            # never swept. Redelivery is cheap here, since the
+                            # COMPLETED guard sends it straight back to this step.
+                            raise IndexingError(
+                                "Could not release the duplicates queued behind this record",
+                                details={"record_id": record_id},
                             )
                     elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                         # Find and trigger indexing for the next queued duplicate

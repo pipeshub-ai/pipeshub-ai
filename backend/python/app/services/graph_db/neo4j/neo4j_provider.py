@@ -38,7 +38,7 @@ from app.config.constants.arangodb import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Sequence
 
     from app.services.cache.interface import IAccessibleRecordsCache
 from app.config.constants.neo4j import (
@@ -4198,8 +4198,6 @@ class Neo4jProvider(IGraphDBProvider):
 
             ref_record = dict(results[0]["record"])
             md5_checksum = ref_record.get("md5Checksum")
-            size_in_bytes = ref_record.get("sizeInBytes")
-            org_id = ref_record.get("orgId")
 
             if not md5_checksum:
                 # Expected, not a fault: duplicates are matched by md5Checksum
@@ -4209,35 +4207,22 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return None
 
-            # Find the first queued duplicate record
-            query = """
+            if not ref_record.get("orgId"):
+                self.logger.debug(
+                    "Record %s has no orgId; no queued duplicate can be matched", record_id
+                )
+                return None
+
+            where, params = self._queued_duplicate_filter(
+                record_key=record_id,
+                md5_checksum=md5_checksum,
+                org_id=ref_record.get("orgId"),
+                record_type=ref_record.get("recordType"),
+                size_in_bytes=ref_record.get("sizeInBytes"),
+            )
+            query = f"""
             MATCH (record:Record)
-            WHERE record.md5Checksum = $md5_checksum
-            AND record.id <> $record_id
-            AND record.indexingStatus = $queued_status
-            """
-
-            params = {
-                "md5_checksum": md5_checksum,
-                "record_id": record_id,
-                "queued_status": "QUEUED"
-            }
-
-            if size_in_bytes is not None:
-                query += """
-                AND record.sizeInBytes = $size_in_bytes
-                """
-                params["size_in_bytes"] = size_in_bytes
-
-            # Scoped to the reference record's own org: a queued duplicate in
-            # another org must never be silently indexed from this org's event.
-            if org_id:
-                query += """
-                AND record.orgId = $org_id
-                """
-                params["org_id"] = org_id
-
-            query += """
+            {where}
             RETURN record
             LIMIT 1
             """
@@ -4266,6 +4251,133 @@ class Neo4jProvider(IGraphDBProvider):
             if raise_on_error:
                 raise
             return None
+
+    @staticmethod
+    def _queued_duplicate_filter(
+        record_key: str,
+        md5_checksum: str,
+        org_id: str,
+        record_type: str | None,
+        size_in_bytes: int | None,
+    ) -> tuple[str, dict[str, Any]]:
+        """WHERE clause (on ``record``) for QUEUED records waiting on this one.
+
+        The mirror of ``find_duplicate_records``: a waiting record filtered by
+        its own recordType/size only when it had one, so it matches when its
+        value is null or equals ours. A null parameter makes ``x = $p`` null in
+        Cypher, which leaves only the null-valued candidates — exactly the
+        records that could have matched a reference with no value.
+        """
+        where = """
+            WHERE record.md5Checksum = $md5_checksum
+            AND record.id <> $record_key
+            AND record.indexingStatus = $queued_status
+            AND record.orgId = $org_id
+            AND coalesce(record.isDeleted, false) = false
+            AND (record.recordType IS NULL OR record.recordType = $record_type)
+            AND (record.sizeInBytes IS NULL OR record.sizeInBytes = $size_in_bytes)
+        """
+        params = {
+            "md5_checksum": md5_checksum,
+            "record_key": record_key,
+            "queued_status": ProgressStatus.QUEUED.value,
+            "org_id": org_id,
+            "record_type": record_type or None,
+            "size_in_bytes": size_in_bytes,
+        }
+        return where, params
+
+    async def find_queued_duplicates(
+        self,
+        record_key: str,
+        md5_checksum: str,
+        org_id: str,
+        record_type: str | None = None,
+        size_in_bytes: int | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        if not org_id or not md5_checksum:
+            return []
+        try:
+            where, params = self._queued_duplicate_filter(
+                record_key=record_key,
+                md5_checksum=md5_checksum,
+                org_id=org_id,
+                record_type=record_type,
+                size_in_bytes=size_in_bytes,
+            )
+            results = await self.client.execute_query(
+                f"""
+                MATCH (record:Record)
+                {where}
+                RETURN record
+                """,
+                parameters=params,
+                txn_id=transaction,
+            )
+            return [
+                self._neo4j_to_arango_node(dict(row["record"]), CollectionNames.RECORDS.value)
+                for row in results or []
+                if row.get("record")
+            ]
+        except Exception as e:
+            self.logger.error("❌ Failed to find queued duplicates of %s: %s", record_key, e)
+            if raise_on_error:
+                raise
+            return []
+
+    async def update_record_if(
+        self,
+        record_id: str,
+        updates: dict,
+        *,
+        expected_statuses: Sequence[str] | None = None,
+        match_virtual_record_id: bool = False,
+        expected_virtual_record_id: str | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        if expected_statuses is None and not match_virtual_record_id:
+            raise ValueError("update_record_if needs at least one condition")
+        collection = CollectionNames.RECORDS.value
+        try:
+            neo4j_updates = self._arango_to_neo4j_node(updates, collection)
+            self.validator.validate_node_update(collection, neo4j_updates)
+            # Read-committed: without taking the node's write lock first, the
+            # WHERE reads a value another transaction can still overwrite
+            # before our SET lands, and that write is silently lost. Setting a
+            # throwaway property takes the lock for the rest of the statement.
+            # `SET n += {field: null}` removes the property, which is what the
+            # IS NULL branch of the VRID condition then matches.
+            results = await self.client.execute_query(
+                f"""
+                MATCH (n:{collection_to_label(collection)} {{id: $key}})
+                SET n._updateLock = true
+                REMOVE n._updateLock
+                WITH n
+                WHERE ($statuses IS NULL OR n.indexingStatus IN $statuses)
+                AND (
+                    NOT $match_vrid
+                    OR n.virtualRecordId = $vrid
+                    OR (n.virtualRecordId IS NULL AND $vrid IS NULL)
+                )
+                SET n += $updates
+                RETURN n.id AS id
+                """,
+                parameters={
+                    "key": record_id,
+                    "statuses": list(expected_statuses) if expected_statuses is not None else None,
+                    "match_vrid": match_virtual_record_id,
+                    "vrid": expected_virtual_record_id,
+                    "updates": neo4j_updates,
+                },
+                txn_id=transaction,
+            )
+            return bool(results)
+        except Exception as e:
+            self.logger.error("❌ Conditional record update failed for %s: %s", record_id, e)
+            raise
 
     async def update_queued_duplicates_status(
         self,
@@ -4311,7 +4423,6 @@ class Neo4jProvider(IGraphDBProvider):
 
             ref_record = dict(results[0]["record"])
             md5_checksum = ref_record.get("md5Checksum")
-            size_in_bytes = ref_record.get("sizeInBytes")
 
             if not md5_checksum:
                 # Expected, not a fault: duplicates are matched by md5Checksum
@@ -4321,41 +4432,21 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return 0
 
-            # Find all queued duplicate records directly from RECORDS collection
-            query = """
-            MATCH (record:Record)
-            WHERE record.md5Checksum = $md5_checksum
-            AND record.id <> $record_id
-            AND record.indexingStatus = $queued_status
-            """
+            if not ref_record.get("orgId"):
+                self.logger.debug(
+                    "Record %s has no orgId; no queued duplicate can be matched", record_id
+                )
+                return 0
 
-            params = {
-                "md5_checksum": md5_checksum,
-                "record_id": record_id,
-                "queued_status": "QUEUED"
-            }
-
-            if size_in_bytes is not None:
-                query += """
-                AND record.sizeInBytes = $size_in_bytes
-                """
-                params["size_in_bytes"] = size_in_bytes
-
-            query += """
-            RETURN record
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters=params,
-                txn_id=transaction
+            queued_records = await self.find_queued_duplicates(
+                record_key=record_id,
+                md5_checksum=md5_checksum,
+                org_id=ref_record.get("orgId"),
+                record_type=ref_record.get("recordType"),
+                size_in_bytes=ref_record.get("sizeInBytes"),
+                transaction=transaction,
+                raise_on_error=True,
             )
-
-            queued_records = []
-            for record in results:
-                if record.get("record"):
-                    record_dict = dict(record["record"])
-                    queued_records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
 
             if not queued_records:
                 self.logger.debug("✅ No QUEUED duplicate records found")

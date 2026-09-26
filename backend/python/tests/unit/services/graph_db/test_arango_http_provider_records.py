@@ -1315,7 +1315,7 @@ class TestGetDepartments:
 
 class TestUpdateQueuedDuplicatesStatus:
     async def test_no_duplicates(self, connected_provider):
-        ref_record = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref_record = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100, "orgId": "org-1"}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref_record],  # get reference record
             [],            # no queued duplicates
@@ -1341,7 +1341,7 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 0
 
     async def test_with_duplicates_completed(self, connected_provider):
-        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100, "orgId": "org-1"}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref],   # reference
@@ -1354,7 +1354,7 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 1
 
     async def test_with_duplicates_empty_status(self, connected_provider):
-        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100, "orgId": "org-1"}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref],
@@ -1367,7 +1367,7 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 1
 
     async def test_batch_update_fails(self, connected_provider):
-        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100, "orgId": "org-1"}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref],

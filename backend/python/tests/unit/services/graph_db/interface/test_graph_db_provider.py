@@ -300,7 +300,9 @@ class TestAbstractMethodInventory:
         "find_duplicate_records",
         "find_slack_burst_record_by_ts",
         "find_next_queued_duplicate",
+        "find_queued_duplicates",
         "update_queued_duplicates_status",
+        "update_record_if",
         "copy_document_relationships",
         # Permission operations
         "batch_upsert_records",

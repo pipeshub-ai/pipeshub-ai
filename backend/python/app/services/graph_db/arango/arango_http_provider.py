@@ -156,7 +156,7 @@ from app.services.graph_db.vector_membership_queries import (
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Sequence
 
 # Constants for ArangoDB document ID format
 ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"
@@ -6312,7 +6312,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return 0
 
             md5_checksum = ref_record.get("md5Checksum")
-            size_in_bytes = ref_record.get("sizeInBytes")
 
             if not md5_checksum:
                 # Expected, not a fault: duplicates are matched by md5Checksum
@@ -6322,37 +6321,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return 0
 
-            # Find all queued duplicate records directly from RECORDS collection
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.md5Checksum == @md5_checksum
-                AND record._key != @record_id
-                AND record.indexingStatus == @queued_status
-            """
+            if not ref_record.get("orgId"):
+                self.logger.debug(
+                    "Record %s has no orgId; no queued duplicate can be matched", record_id
+                )
+                return 0
 
-            bind_vars = {
-                "md5_checksum": md5_checksum,
-                "record_id": record_id,
-                "queued_status": "QUEUED"
-            }
-
-            if size_in_bytes is not None:
-                query += """
-                AND record.sizeInBytes == @size_in_bytes
-                """
-                bind_vars["size_in_bytes"] = size_in_bytes
-
-            query += """
-                RETURN record
-            """
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
+            queued_records = await self.find_queued_duplicates(
+                record_key=record_id,
+                md5_checksum=md5_checksum,
+                org_id=ref_record.get("orgId"),
+                record_type=ref_record.get("recordType"),
+                size_in_bytes=ref_record.get("sizeInBytes"),
+                transaction=transaction,
+                raise_on_error=True,
             )
-
-            queued_records = list(results) if results else []
 
             if not queued_records:
                 self.logger.debug("✅ No QUEUED duplicate records found")
@@ -19062,8 +19045,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return None
 
             md5_checksum = ref_record.get("md5Checksum")
-            size_in_bytes = ref_record.get("sizeInBytes")
-            org_id = ref_record.get("orgId")
 
             if not md5_checksum:
                 # Expected, not a fault: duplicates are matched by md5Checksum
@@ -19073,35 +19054,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return None
 
-            # Find the first queued duplicate record directly from RECORDS collection
+            if not ref_record.get("orgId"):
+                self.logger.debug(
+                    "Record %s has no orgId; no queued duplicate can be matched", record_id
+                )
+                return None
+
+            query_filter, bind_vars = self._queued_duplicate_filter(
+                record_key=record_id,
+                md5_checksum=md5_checksum,
+                org_id=ref_record.get("orgId"),
+                record_type=ref_record.get("recordType"),
+                size_in_bytes=ref_record.get("sizeInBytes"),
+            )
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.md5Checksum == @md5_checksum
-                AND record._key != @record_id
-                AND record.indexingStatus == @queued_status
-            """
-
-            bind_vars = {
-                "md5_checksum": md5_checksum,
-                "record_id": record_id,
-                "queued_status": "QUEUED"
-            }
-
-            if size_in_bytes is not None:
-                query += """
-                AND record.sizeInBytes == @size_in_bytes
-                """
-                bind_vars["size_in_bytes"] = size_in_bytes
-
-            # Scoped to the reference record's own org: a queued duplicate in
-            # another org must never be silently indexed from this org's event.
-            if org_id:
-                query += """
-                AND record.orgId == @org_id
-                """
-                bind_vars["org_id"] = org_id
-
-            query += """
+                {query_filter}
                 LIMIT 1
                 RETURN record
             """
@@ -19133,6 +19101,117 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if raise_on_error:
                 raise
             return None
+
+    @staticmethod
+    def _queued_duplicate_filter(
+        record_key: str,
+        md5_checksum: str,
+        org_id: str,
+        record_type: str | None,
+        size_in_bytes: int | None,
+    ) -> tuple[str, dict[str, Any]]:
+        """FILTER (on ``record``) for QUEUED records waiting on this one.
+
+        The mirror of ``find_duplicate_records``: a waiting record filtered by
+        its own recordType/size only when it had one, so it matches when its
+        value is null or equals ours. A null bind value collapses the second
+        disjunct into the first, leaving only null-valued candidates — the
+        same result the Neo4j provider gets from Cypher's null comparison.
+        """
+        query_filter = """
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_key
+                AND record.indexingStatus == @queued_status
+                AND record.orgId == @org_id
+                AND record.isDeleted != true
+                AND (record.recordType == null OR record.recordType == @record_type)
+                AND (record.sizeInBytes == null OR record.sizeInBytes == @size_in_bytes)
+        """
+        bind_vars = {
+            "md5_checksum": md5_checksum,
+            "record_key": record_key,
+            "queued_status": ProgressStatus.QUEUED.value,
+            "org_id": org_id,
+            "record_type": record_type or None,
+            "size_in_bytes": size_in_bytes,
+        }
+        return query_filter, bind_vars
+
+    async def find_queued_duplicates(
+        self,
+        record_key: str,
+        md5_checksum: str,
+        org_id: str,
+        record_type: str | None = None,
+        size_in_bytes: int | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        if not org_id or not md5_checksum:
+            return []
+        try:
+            query_filter, bind_vars = self._queued_duplicate_filter(
+                record_key=record_key,
+                md5_checksum=md5_checksum,
+                org_id=org_id,
+                record_type=record_type,
+                size_in_bytes=size_in_bytes,
+            )
+            results = await self.http_client.execute_aql(
+                f"""
+                FOR record IN {CollectionNames.RECORDS.value}
+                    {query_filter}
+                    RETURN record
+                """,
+                bind_vars=bind_vars,
+                txn_id=transaction,
+            )
+            return [dict(r) for r in results or [] if r]
+        except Exception as e:
+            self.logger.error("❌ Failed to find queued duplicates of %s: %s", record_key, e)
+            if raise_on_error:
+                raise
+            return []
+
+    async def update_record_if(
+        self,
+        record_id: str,
+        updates: dict,
+        *,
+        expected_statuses: Sequence[str] | None = None,
+        match_virtual_record_id: bool = False,
+        expected_virtual_record_id: str | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        if expected_statuses is None and not match_virtual_record_id:
+            raise ValueError("update_record_if needs at least one condition")
+        try:
+            # A missing attribute reads as null in AQL, so "holds no VRID"
+            # needs no separate branch.
+            updated = await self.http_client.execute_aql(
+                """
+                FOR doc IN @@collection
+                    FILTER doc._key == @key
+                    FILTER @statuses == null OR doc.indexingStatus IN @statuses
+                    FILTER !@match_vrid OR doc.virtualRecordId == @vrid
+                    UPDATE doc WITH @updates IN @@collection
+                    RETURN NEW._key
+                """,
+                {
+                    "@collection": CollectionNames.RECORDS.value,
+                    "key": record_id,
+                    "statuses": list(expected_statuses) if expected_statuses is not None else None,
+                    "match_vrid": match_virtual_record_id,
+                    "vrid": expected_virtual_record_id,
+                    "updates": self._translate_node_to_arango(updates),
+                },
+                transaction,
+            )
+            return bool(updated)
+        except Exception as e:
+            self.logger.error("❌ Conditional record update failed for %s: %s", record_id, e)
+            raise
 
     async def copy_document_relationships(
         self,
@@ -19182,18 +19261,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 edges = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
 
                 if edges:
-                    # Create new edges for target document
-                    for edge in edges:
-                        new_edge = {
-                            "_from": target_doc,
-                            "_to": edge["to"],
-                            "createdAtTimestamp": edge.get("timestamp", get_epoch_timestamp_in_ms())
-                        }
-                        await self.http_client.create_document(
-                            collection,
-                            new_edge,
-                            txn_id=transaction
-                        )
+                    # batch_create_edges upserts on (_from, _to): a duplicate
+                    # attach is retried until it sticks, and a plain insert
+                    # would add another copy of every edge on each attempt.
+                    await self.batch_create_edges(
+                        [
+                            {
+                                "_from": target_doc,
+                                "_to": edge["to"],
+                                # The projection always has the key, so a
+                                # legacy edge without a timestamp reads None,
+                                # which the strict edge schema rejects.
+                                "createdAtTimestamp": edge.get("timestamp") or get_epoch_timestamp_in_ms(),
+                            }
+                            for edge in edges
+                        ],
+                        collection,
+                        transaction=transaction,
+                    )
 
                     self.logger.debug(
                         f"✅ Copied {len(edges)} edges from {collection}"
