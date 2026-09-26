@@ -119,3 +119,24 @@ async def test_a_validator_the_site_stops_sending_is_kept(
     await connector.run_sync()
 
     assert db.pages()[PDF].etag == '"v1"'
+
+
+async def test_a_file_that_moved_with_the_same_etag_is_stored_at_its_new_url(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    moved = "http://site.test/files/handbook.pdf"
+    old = "http://site.test/handbook.pdf"
+    site.html(START_URL, "Home", "/handbook.pdf")
+    site.add(old, Page(body=b"%PDF-1.4 handbook", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector()
+    await connector.run_sync()
+    stale = db.pages()[old]
+
+    site.redirect(old, "/files/handbook.pdf", status=301)
+    site.add(moved, Page(body=b"%PDF-1.4 handbook", content_type="application/pdf", etag='"v1"'))
+    await connector.run_sync()
+    assert site.storage_docs[db.pages()[moved].storage_document_id] == b"%PDF-1.4 handbook"
+    await connector.run_sync()
+
+    assert db.deleted == [stale.id]
+    assert set(db.pages()) == {START_URL, moved}

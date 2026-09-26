@@ -2018,7 +2018,22 @@ class WebConnector(BaseConnector):
                     return None
 
             if result.status_code == HTTPStatus.NOT_MODIFIED:
-                return None  # the site confirmed our stored copy is current
+                if self._normalize_url(result.final_url) == self._normalize_url(url):
+                    return None  # the site confirmed our stored copy is current
+                # It moved: the validators we sent were for the old URL, so fetch the new one in full,
+                # then the redirect cleanup deals with the old record.
+                moved_to = result.final_url
+                refetched = await fetch_url_with_fallback(
+                    url=moved_to, session=self.session, logger=self.logger, referer=referer,
+                    timeout=15, max_size_mb=self.max_size_mb, allow_hop=self._hop_allowed,
+                )
+                result = await self._validate_fetch_result(moved_to, depth, referer, refetched)
+                if (
+                    result is None
+                    or result.status_code == HTTPStatus.NOT_MODIFIED
+                    or self._excluded_by_extension_filter(result)
+                ):
+                    return None
 
             final_url = result.final_url
 
