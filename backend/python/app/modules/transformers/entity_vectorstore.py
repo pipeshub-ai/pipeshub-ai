@@ -568,29 +568,29 @@ class EntityVectorStore:
     async def _shrink_connector_membership(
         self, org_id: str, connector_id: str, page_size: int = 100
     ) -> None:
-        """Remove *connector_id* from ``connectorIds`` on every point that
-        has it, within *org_id*.
+        """Remove *connector_id*'s footprint from every entity point that
+        references it within *org_id*.
 
-        Scrolls only points matching this connector (same filter the old
-        hard-delete used, so the bound is unchanged), then per point:
-        deletes it outright if removing this connector leaves both
-        ``connectorIds`` and ``recordGroupIds`` empty (no membership left at
-        all — such a point is also unreachable by ``search_entities``, whose
-        Stage-1 filter requires a ``should`` match on one of those arrays);
-        otherwise rewrites it with the connector removed, via
-        ``upsert_entities_batch(..., merge_membership=False)`` so the
-        removed id is not immediately re-unioned back in.
+        Five-phase algorithm:
 
-        A per-point read-modify-write, not ``set_payload``: rewriting a point
-        touches ``metadata.*`` fields alongside the top-level membership
-        arrays (e.g. dropping a malformed ``typeCategory``), and there is no
-        representation of a partial-field update that is consistent across
-        all vector backends (Qdrant treats a dotted payload key literally;
-        Redis flattens nested dicts into ``metadata_x`` hash fields only at
-        ``upsert_points`` time, not on a payload-only write). Going through
-        the normal upsert path keeps this write consistent with every other
-        write to this collection, at the cost of re-embedding the (typically
-        few) entities this connector touches.
+        1. **Scroll** all entity points matching this connector.
+        2. **Delete RECORD entities** outright — a record belongs to exactly
+           one connector, so there is no shared membership to preserve.
+        3. **Delete RECORD_GROUP entities** outright (same reasoning) and
+           **collect their recordGroupIds** for phase 5.
+        4. **Delete exclusive taxonomy entities** — those whose
+           ``connectorIds`` contains *only* this connector.  Their
+           ``recordGroupIds`` (if any) must also belong to this connector,
+           so the entire point is orphaned.
+        5. **Strip membership from shared taxonomy entities** — remove
+           *connector_id* from ``connectorIds`` **and** remove any of the
+           deleted connector's recordGroupIds (collected in phase 3) from
+           ``recordGroupIds``.  Re-upsert with ``merge_membership=False``
+           so the removed ids are not immediately re-unioned back in.
+
+        Going through the normal upsert path for phase 5 keeps writes
+        consistent across all vector backends, at the cost of re-embedding
+        the (typically few) shared entities.
         """
         from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 
@@ -598,8 +598,8 @@ class EntityVectorStore:
             must={"metadata.orgId": org_id, CONNECTOR_IDS_FIELD: connector_id}
         )
 
-        to_delete: list[tuple[str, str]] = []
-        to_reupsert: list[EntityRecord] = []
+        # Phase 1: scroll all matching points
+        all_points: list[VectorPoint] = []
         offset: str | None = None
         while True:
             result = await self.vector_db_service.scroll(
@@ -608,53 +608,80 @@ class EntityVectorStore:
                 limit=page_size,
                 offset=offset,
             )
-            for point in result.points:
-                meta = point.payload.get("metadata") or {}
-                entity_id = meta.get("entityId")
-                entity_type = meta.get("entityType")
-                if not entity_id or not entity_type:
-                    continue
-                connector_ids = [
-                    c for c in (point.payload.get(CONNECTOR_IDS_FIELD) or [])
-                    if c != connector_id
-                ]
-                record_group_ids = list(point.payload.get(RECORD_GROUP_IDS_FIELD) or [])
-                if not connector_ids and not record_group_ids:
-                    to_delete.append((entity_type, entity_id))
-                    continue
-                try:
-                    type_category = (
-                        EntityTypeCategory(meta["typeCategory"])
-                        if meta.get("typeCategory")
-                        else EntityTypeCategory.PREDEFINED
-                    )
-                    to_reupsert.append(
-                        EntityRecord(
-                            entity_id=entity_id,
-                            entity_type=EntityType(entity_type),
-                            name=meta.get("name") or "",
-                            org_id=org_id,
-                            canonical_name=meta.get("canonicalName") or "",
-                            aliases=list(meta.get("aliases") or []),
-                            domain=meta.get("domain"),
-                            level=meta.get("level"),
-                            type_category=type_category,
-                            connector_ids=connector_ids,
-                            record_group_ids=record_group_ids,
-                        )
-                    )
-                except Exception as exc:
-                    self.logger.warning(
-                        "Skipping malformed entity point during connector "
-                        "membership shrink (org=%s entityId=%s): %s",
-                        org_id, entity_id, exc,
-                    )
+            all_points.extend(result.points)
             offset = result.next_offset
             if offset is None:
                 break
 
-        for entity_type, entity_id in to_delete:
-            await self.delete_entity(org_id, entity_type, entity_id)
+        to_delete: list[tuple[str, str]] = []
+        to_reupsert: list[EntityRecord] = []
+        connector_record_group_ids: set[str] = set()
+
+        for point in all_points:
+            meta = point.payload.get("metadata") or {}
+            entity_id = meta.get("entityId")
+            entity_type_str = meta.get("entityType")
+            if not entity_id or not entity_type_str:
+                continue
+
+            # Phase 2: RECORD entities — delete immediately
+            if entity_type_str == EntityType.RECORD.value:
+                to_delete.append((entity_type_str, entity_id))
+                continue
+
+            # Phase 3: RECORD_GROUP entities — collect their IDs, then delete
+            if entity_type_str == EntityType.RECORD_GROUP.value:
+                for rg_id in (point.payload.get(RECORD_GROUP_IDS_FIELD) or []):
+                    connector_record_group_ids.add(rg_id)
+                to_delete.append((entity_type_str, entity_id))
+                continue
+
+            # Taxonomy entities (category, subcategory, topic, department, etc.)
+            connector_ids = [
+                c for c in (point.payload.get(CONNECTOR_IDS_FIELD) or [])
+                if c != connector_id
+            ]
+
+            # Phase 4: exclusive taxonomy entities — delete outright
+            if not connector_ids:
+                to_delete.append((entity_type_str, entity_id))
+                continue
+
+            # Phase 5: shared taxonomy entities — strip membership
+            record_group_ids = [
+                rg for rg in (point.payload.get(RECORD_GROUP_IDS_FIELD) or [])
+                if rg not in connector_record_group_ids
+            ]
+            try:
+                type_category = (
+                    EntityTypeCategory(meta["typeCategory"])
+                    if meta.get("typeCategory")
+                    else EntityTypeCategory.PREDEFINED
+                )
+                to_reupsert.append(
+                    EntityRecord(
+                        entity_id=entity_id,
+                        entity_type=EntityType(entity_type_str),
+                        name=meta.get("name") or "",
+                        org_id=org_id,
+                        canonical_name=meta.get("canonicalName") or "",
+                        aliases=list(meta.get("aliases") or []),
+                        domain=meta.get("domain"),
+                        level=meta.get("level"),
+                        type_category=type_category,
+                        connector_ids=connector_ids,
+                        record_group_ids=record_group_ids,
+                    )
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Skipping malformed entity point during connector "
+                    "membership shrink (org=%s entityId=%s): %s",
+                    org_id, entity_id, exc,
+                )
+
+        for entity_type_str, entity_id in to_delete:
+            await self.delete_entity(org_id, entity_type_str, entity_id)
         if to_reupsert:
             await self.upsert_entities_batch(to_reupsert, merge_membership=False)
 
