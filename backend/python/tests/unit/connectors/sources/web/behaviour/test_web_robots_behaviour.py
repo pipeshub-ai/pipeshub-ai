@@ -46,6 +46,21 @@ async def test_pages_robots_txt_disallows_are_skipped_and_the_summary_says_how_t
     )
 
 
+async def test_each_sync_reads_robots_txt_again(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    _site(site)
+    _robots(site, "User-agent: *\nDisallow: /private/\n")
+    connector = await make_connector()
+    await connector.run_sync()
+    _robots(site, "User-agent: *\nDisallow: /public\n")
+
+    await connector.run_sync()
+
+    assert site.gets(ROBOTS) == 2
+    assert site.gets("http://site.test/private/secret") == 1
+
+
 async def test_rules_for_pipeshub_by_name_win_over_the_general_ones(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:

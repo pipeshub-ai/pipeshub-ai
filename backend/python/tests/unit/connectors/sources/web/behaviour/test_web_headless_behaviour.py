@@ -92,6 +92,20 @@ async def test_a_server_rendered_site_is_crawled_without_the_browser(
     assert set(db.pages()) == {START_URL, "http://site.test/next"}
 
 
+async def test_the_script_rendering_check_does_not_load_a_start_page_robots_txt_disallows(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    browser.add("http://site.test/robots.txt",
+                Page(body=b"User-agent: *\nDisallow: /\n", content_type="text/plain"))
+    browser.add(START_URL, Page(body=SHELL, rendered=html_page("App", text=LONG_TEXT), pre_render_text_len=0))
+
+    connector = await make_connector()
+    await connector.run_sync()
+
+    assert browser.browser_visits == []
+    assert db.pages() == {}
+
+
 async def test_without_a_working_browser_a_plain_site_still_syncs(
     browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
