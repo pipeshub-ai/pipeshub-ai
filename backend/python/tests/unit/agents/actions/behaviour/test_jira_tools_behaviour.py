@@ -272,8 +272,21 @@ class TestStatusChanges:
 
         ok, data = result(await jira.update_issue("PA-7", status="Done"))
 
+        assert ok is False
+        message = assert_safe_error(data)
+        assert message.startswith("Nothing was changed") and "Resolution is required." in message
+
+    async def test_a_refused_transition_after_saved_fields_says_the_status_did_not_change(self, jira, api) -> None:
+        api.on("GET", "/issue/PA-7", issue("PA-7"))
+        api.on("GET", "/issue/PA-7/transitions", transitions("Done"))
+        api.on("PUT", "/issue/PA-7", (204, None))
+        api.on("POST", "/issue/PA-7/transitions", (400, {}))
+
+        ok, data = result(await jira.update_issue("PA-7", summary="New title", status="Done"))
+
         assert ok is True
-        assert "status transition failed: Resolution is required." in data["message"]
+        assert "status transition failed" in data["message"] and "HTTP" not in data["message"]
+        assert api.calls("PUT", "/issue/PA-7")[0].body["fields"] == {"summary": "New title"}
 
 
 SEARCH = "/search/jql"
@@ -391,6 +404,27 @@ class TestSearchPaging:
         assert ok is True
         assert len(api.calls("POST", SEARCH)) == 50
         assert "incomplete" in data["message"]
+
+    @pytest.mark.parametrize("bad_issues", [[5], ["PA-9"], "mixed"])
+    async def test_a_later_page_with_non_issue_entries_keeps_the_issues_already_read(self, jira, api, bad_issues) -> None:
+        entries = [issue("PA-3"), "garbage"] if bad_issues == "mixed" else bad_issues
+        api.on("POST", SEARCH, search_pages((["PA-1", "PA-2"], "t1")), (200, {"issues": entries, "isLast": True}))
+
+        ok, data = result(await jira.search_issues('project = "PA"', maxResults=10))
+
+        assert ok is True
+        assert [i["key"] for i in data["data"]["issues"]] == ["PA-1", "PA-2"]
+        assert data["has_more"] is True and "incomplete" in data["message"]
+
+    async def test_a_first_page_with_non_issue_entries_keeps_the_real_issues(self, jira, api) -> None:
+        api.on("POST", SEARCH, {"issues": [issue("PA-1"), 7, issue("PA-2")], "isLast": False, "nextPageToken": "t1"})
+
+        ok, data = result(await jira.get_issues("PA", max_results=10))
+
+        assert ok is True
+        assert [i["key"] for i in data["data"]["issues"]] == ["PA-1", "PA-2"]
+        assert len(api.calls("POST", SEARCH)) == 1
+        assert data["has_more"] is True
 
     async def test_project_issues_say_when_more_match(self, jira, api) -> None:
         api.on("POST", SEARCH, search_pages((["PA-1", "PA-2"], "t1"), (["PA-3"], None)))
@@ -526,9 +560,10 @@ class TestUpdateIssue:
 
         ok, data = result(await jira.update_issue("PA-7", status="Done"))
 
-        assert ok is True
-        assert "status transition failed: Jira could not be reached" in data["message"]
-        assert BASIC not in data["message"]
+        assert ok is False
+        message = assert_safe_error(data)
+        assert message.startswith("Nothing was changed") and "Jira could not be reached" in message
+        assert BASIC not in message
 
     async def test_type_change_goes_first_then_the_other_fields(self, jira, api) -> None:
         api.on("GET", "/issue/PA-7", issue("PA-7"))

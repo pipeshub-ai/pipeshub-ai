@@ -1374,10 +1374,14 @@ class Jira:
         """
         if not isinstance(first_page, dict) or not isinstance(first_page.get("issues", []), list):
             return first_page, None
-        issues = list(first_page.get("issues") or [])
+        first_issues = first_page.get("issues") or []
+        issues = [i for i in first_issues if isinstance(i, dict)]
         token = _next_page_token(first_page)
         seen = {token}
         failure: str | None = None
+        if len(issues) < len(first_issues):
+            failure = "Jira sent entries that could not be read"
+            token = None
         pages_read = 1
         while token and len(issues) < limit:
             if pages_read >= _MAX_SEARCH_PAGES:
@@ -1397,7 +1401,7 @@ class Jira:
                 failure = "Jira could not be reached"
                 break
             page_issues = payload.get("issues") if isinstance(payload, dict) else None
-            if not isinstance(page_issues, list):
+            if not isinstance(page_issues, list) or not all(isinstance(i, dict) for i in page_issues):
                 failure = "Jira sent a page that could not be read"
                 break
             if not page_issues:
@@ -2220,7 +2224,7 @@ class Jira:
                     tr = await self.client.do_transition(issueIdOrKey=issue_key, transition=transition)
                     if tr.status not in [HttpStatusCode.SUCCESS.value, HttpStatusCode.NO_CONTENT.value]:
                         transition_success = False
-                        transition_error = f"HTTP {tr.status}"
+                        transition_error = f"Jira refused the status change (status {tr.status})"
                         try:
                             err_data = tr.json()
                             if isinstance(err_data, dict) and "errorMessages" in err_data:
@@ -2232,6 +2236,10 @@ class Jira:
                     transition_success = False
                     transition_error = "Jira could not be reached; try the status change again in a moment"
                     logger.warning(f"Exception during transition to '{status}' for {issue_key}: {e}")
+            if transition and not transition_success and not fields:
+                return False, json.dumps({
+                    "error": f"Nothing was changed: {issue_key} could not move to '{status}': {transition_error}.",
+                })
 
             issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
             if issue_response.status != HttpStatusCode.SUCCESS.value:
