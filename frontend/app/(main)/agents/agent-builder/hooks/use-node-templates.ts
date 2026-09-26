@@ -242,7 +242,7 @@ export function useAgentBuilderNodeTemplates(
       {
         type: 'web-search',
         label: t('agentBuilder.webSearch'),
-        description: t('Web Search'),
+        description: t('agentBuilder.webSearch'),
         icon: 'public',
         defaultConfig: {
           provider: '',

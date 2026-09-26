@@ -109,7 +109,7 @@ export function AgentBuilderWebSearchSection({
   return (
     <>
       <SidebarCategoryRow
-        groupLabel={t('Web Search')}
+        groupLabel={t('agentBuilder.webSearch')}
         groupMaterialIcon="public"
         groupMaterialIconColor="var(--blue-9)"
         itemCount={visibleProviders.length}
@@ -156,7 +156,7 @@ export function AgentBuilderWebSearchSection({
                       }),
                     );
                   } else if (attached) {
-                    onNotify(t('Only One Web Search Provider Allowed'));
+                    onNotify(t('agentBuilder.webSearchOnlyOne'));
                   }
                 }}
                 isAdmin={Boolean(isAdmin)}
@@ -276,7 +276,7 @@ function ProviderRow({
         </Text>
 
         {isAttached ? (
-          <Tooltip content={t('Attached')}>
+          <Tooltip content={t('agentBuilder.attached')}>
             <span
               style={{
                 display: 'inline-flex',
@@ -292,7 +292,7 @@ function ProviderRow({
             </span>
           </Tooltip>
         ) : isConfigured ? (
-          <Tooltip content={t('Configured')}>
+          <Tooltip content={t('workspace.webSearch.badges.configured')}>
             <span
               style={{
                 display: 'inline-flex',
@@ -322,8 +322,8 @@ function ProviderRow({
             <Tooltip
               content={
                 isConfigured
-                  ? t('Edit')
-                  : t('Configure')
+                  ? t('workspace.users.actions.edit')
+                  : t('agentBuilder.configureShort')
               }
             >
               <IconButton

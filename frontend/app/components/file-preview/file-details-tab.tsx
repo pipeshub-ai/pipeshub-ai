@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import { Flex, Text, Box } from '@radix-ui/themes';
 import { formatDate } from '@/lib/utils/formatters';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -49,6 +51,7 @@ function DetailRow({ label, value }: DetailRowProps) {
 }
 
 function LinkRow({ label, href }: LinkRowProps) {
+  const { t } = useTranslation();
   if (!href) return null;
 
   return (
@@ -87,7 +90,7 @@ function LinkRow({ label, href }: LinkRowProps) {
           href={href}
           target="_blank"
           rel="noopener noreferrer"
-          aria-label="Open web URL"
+          aria-label={t('filePreview.openWebUrl')}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -105,6 +108,7 @@ function LinkRow({ label, href }: LinkRowProps) {
 }
 
 export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
+  const { t } = useTranslation();
   if (!recordDetails) {
     return (
       <Flex
@@ -116,7 +120,7 @@ export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
         }}
       >
         <Text size="2" style={{ color: 'var(--olive-a11)' }}>
-          No file details available
+          {t('filePreview.noDetails')}
         </Text>
       </Flex>
     );
@@ -154,23 +158,23 @@ export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
       {/* Metadata Section */}
       <Flex direction="column" gap="2">
         <Text size="3" weight="medium" style={{ color: 'var(--olive-12)' }}>
-          Metadata
+          {t('filePreview.metadata')}
         </Text>
         
         <Flex direction="column" gap="2">
           {record.origin !== 'UPLOAD' && (
-            <LinkRow label="Web URL" href={record.webUrl || record.fileRecord?.webUrl} />
+            <LinkRow label={t('filePreview.webUrl')} href={record.webUrl || record.fileRecord?.webUrl} />
           )}
-          <DetailRow label="Name" value={record.recordName} />
-          <DetailRow label="Record ID" value={record.id} />
-          <DetailRow label="Record Type" value={record.recordType} />
-          <DetailRow label="Origin" value={record.origin} />
-          <DetailRow label="Indexing Status" value={record.indexingStatus} />
-          <DetailRow label="Version" value={record.version?.toString()} />
-          <DetailRow label="Created At" value={createdDate} />
-          <DetailRow label="Updated At" value={updatedDate} />
-          <DetailRow label="Knowledge Base" value={knowledgeBase?.name} />
-          <DetailRow label="Permissions" value={permissions?.[0]?.relationship || 'Owner'} />
+          <DetailRow label={t('recordView.labels.name')} value={record.recordName} />
+          <DetailRow label={t('recordView.labels.recordId')} value={record.id} />
+          <DetailRow label={t('recordView.labels.recordType')} value={t(`recordView.labels.recordTypes.${record.recordType}`, { defaultValue: record.recordType })} />
+          <DetailRow label={t('recordView.labels.origin')} value={record.origin} />
+          <DetailRow label={t('recordView.labels.indexingStatus')} value={record.indexingStatus} />
+          <DetailRow label={t('recordView.labels.version')} value={record.version?.toString()} />
+          <DetailRow label={t('recordView.labels.createdAt')} value={createdDate} />
+          <DetailRow label={t('recordView.labels.updatedAt')} value={updatedDate} />
+          <DetailRow label={t('recordView.labels.collection')} value={knowledgeBase?.name} />
+          <DetailRow label={t('recordView.labels.permissions')} value={permissions?.[0]?.relationship || t('recordView.permissionOwner')} />
         </Flex>
       </Flex>
 

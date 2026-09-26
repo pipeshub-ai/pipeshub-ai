@@ -80,6 +80,10 @@ jobs:
           cd frontend
           npm install
 
+      - name: Check German locale parity
+        working-directory: frontend
+        run: npm run i18n:check && npm run test:i18n
+
       # frontend/package.json defines test:unit (vitest) and 380 tests exist
       # across 27 files, but no workflow ran them. They need no browser and no
       # services and finish in about twenty seconds.

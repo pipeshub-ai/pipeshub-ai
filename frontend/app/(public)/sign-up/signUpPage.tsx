@@ -86,13 +86,13 @@ export default function SignUpPage() {
       next.password = t('auth.signUp.errors.passwordRequired');
     } else {
       const pwErr = validatePassword(password);
-      if (pwErr) next.password = pwErr;
+      if (pwErr) next.password = t(`validation.password.${pwErr}`);
     }
 
     if (!confirmPassword) {
       next.confirmPassword = t('auth.signUp.errors.confirmPasswordRequired');
     } else if (password !== confirmPassword) {
-      next.confirmPassword = t('auth.signUp.errors.passwordsMismatch');
+      next.confirmPassword = t('validation.password.mismatch');
     }
 
     setErrors(next);
@@ -351,7 +351,7 @@ export default function SignUpPage() {
                   label={t('auth.signUp.passwordLabel')}
                   placeholder={t('auth.signUp.passwordPlaceholder')}
                   error={errors.password}
-                  hint={t('auth.signUp.passwordHint')}
+                  hint={t('validation.password.rules')}
                   autoComplete="new-password"
                   id="signup-password"
                   disabled={loading}

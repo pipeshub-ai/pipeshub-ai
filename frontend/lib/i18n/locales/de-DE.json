@@ -6,6 +6,11 @@
       "resetExpiredMessage": "Dieser Link zum Zurücksetzen des Passworts ist abgelaufen. Bitte fordern Sie einen neuen über die Option „Passwort vergessen“ auf der Anmeldeseite an.",
       "backToSignIn": "Zurück zur Anmeldung",
       "genericLinkInvalidMessage": "Dieser Link ist möglicherweise abgelaufen. Bitte bitten Sie Ihren Organisationsadministrator um eine neue Einladung."
+    },
+    "form": {
+      "title": "Passwort ändern",
+      "newPasswordLabel": "Neues Passwort*",
+      "newPasswordPlaceholder": "Geben Sie Ihr neues Passwort ein"
     }
   },
   "agents": {
@@ -80,7 +85,7 @@
       "sizeLimitTitle_one": "{{count}} Datei überschreitet das Größenlimit",
       "sizeLimitTitle_other": "{{count}} Dateien überschreiten das Größenlimit",
       "sizeLimitDescription": "Limit {{maxMb}} MB pro Datei. Wenden Sie sich an Ihren Administrator, um ein höheres Limit anzufragen.",
-      "sizeLimitDescriptionAdmin": "Limit {{maxMb}} MB pro Datei. Sie können es in Workspace Labs erhöhen.",
+      "sizeLimitDescriptionAdmin": "Limit {{maxMb}} MB pro Datei. Sie können es unter „Arbeitsbereich → Labs“ erhöhen.",
       "unsupportedDescription": "Nicht unterstützter Dateityp.",
       "duplicateDescription": "Eine Datei mit diesem Namen existiert hier bereits.",
       "trackerHint": "Details im Upload-Panel unten.",
@@ -107,8 +112,8 @@
     "skipEmbeddingDefault": "Überspringen",
     "skipEmbeddingTitle": "Einrichtung für „Standard (System)“ öffnen, dann „Modell hinzufügen“ wählen",
     "nextDisabledEmbeddingHint": "Fügen Sie unten ein Embedding hinzu, oder nutzen Sie „Überspringen“ für die Standard-Einrichtung",
-    "embeddingStepHint": "Fügen Sie unten einen Embedding-Anbieter hinzu, oder klicken Sie auf „Überspringen“, um „Standard (System)“ zu öffnen und „Modell hinzufügen“ zu bestätigen. Änderbar in den Workspace-Einstellungen.",
-    "embeddingStepHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um die semantische Suche zu aktivieren. Änderbar in den Workspace-Einstellungen.",
+    "embeddingStepHint": "Fügen Sie unten einen Embedding-Anbieter hinzu, oder klicken Sie auf „Überspringen“, um „Standard (System)“ zu öffnen und „Modell hinzufügen“ zu bestätigen. Änderbar in den Einstellungen des Arbeitsbereichs.",
+    "embeddingStepHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um die semantische Suche zu aktivieren. Änderbar in den Einstellungen des Arbeitsbereichs.",
     "embeddingDefaultNotInRegistry": "Für diese Bereitstellung ist kein systemseitiges Standard-Embedding verfügbar.",
     "failedToLoadEmbeddingProviders": "Embedding-Anbieter konnten nicht geladen werden.",
     "failedToLoadConfiguredModels": "Konfigurierte Modelle konnten nicht geladen werden.",
@@ -204,6 +209,10 @@
       "visitDocs": "Besuchen Sie die",
       "docsLabel": "Dokumentation",
       "toLearnMore": "um mehr zu erfahren."
+    },
+    "tour": {
+      "dismiss": "Tour schließen",
+      "completedDescription": "Die Einrichtung ist abgeschlossen. Weitere Informationen finden Sie in der <docs>Dokumentation</docs>."
     }
   },
   "nav": {
@@ -264,7 +273,8 @@
     "uploading": "Hochladen...",
     "saving": "Speichern...",
     "processing": "Verarbeiten...",
-    "reindexing": "Neu indizieren..."
+    "reindexing": "Neu indizieren...",
+    "tryAgain": "Erneut versuchen"
   },
   "filter": {
     "type": "Typ",
@@ -420,7 +430,15 @@
     "beta": {
       "label": "Beta",
       "tooltip": "Diese Funktion befindet sich in der Beta-Phase und kann sich noch ändern."
-    }
+    },
+    "you": "Sie",
+    "refreshing": "Wird aktualisiert...",
+    "clear": "Leeren",
+    "current": "Aktuell",
+    "openProfile": "Profil öffnen",
+    "loading": "Wird geladen...",
+    "moreOptions": "Weitere Optionen",
+    "docs": "Dokumentation"
   },
   "units": {
     "bytes": "Bytes",
@@ -459,7 +477,11 @@
     "more": "Mehr",
     "loadMore": "Mehr laden",
     "moreCollections": "Weitere Sammlungen",
-    "searchCollections": "Suchen"
+    "searchCollections": "Suchen",
+    "open": "Seitenleiste öffnen",
+    "expand": "Seitenleiste ausklappen",
+    "close": "Seitenleiste schließen",
+    "collapse": "Seitenleiste einklappen"
   },
   "menu": {
     "reindex": "Neu indizieren",
@@ -468,7 +490,7 @@
     "reindexManual": "Manuelle neu indizieren",
     "startIndexing": "Indizierung starten",
     "startManualIndex": "Manuelle Indizierung starten",
-    "forceReindexing": "Reindex erzwingen",
+    "forceReindexing": "Neuindizierung erzwingen",
     "retryIndexing": "Indizierung wiederholen",
     "rename": "Umbenennen",
     "delete": "Löschen"
@@ -490,7 +512,15 @@
     "folderEmpty": "Dieser Ordner ist leer",
     "itemStats": "Sie haben {{collections}} Sammlungen, {{files}} Dateien in diesem Sammlungsordner",
     "searchPlaceholder": "z.B.: Vertriebsdokumente",
-    "searchMinChars": "Für die Suche sind mindestens 2 Zeichen erforderlich"
+    "searchMinChars": "Für die Suche sind mindestens 2 Zeichen erforderlich",
+    "createFolder": "Ordner erstellen",
+    "goToCollections": "Zu den Sammlungen",
+    "namedEmpty": "{{name}} ist leer",
+    "noRecords": "Keine Datensätze gefunden",
+    "searchEmptyHint": "Keine passenden Ergebnisse gefunden. Versuchen Sie einen anderen Suchbegriff.",
+    "adjustFiltersHint": "Wählen Sie eine andere Quelle oder passen Sie Ihre Filter an",
+    "addFromCollectionsHint": "Sie können Unternehmensdateien oder -ordner über die Sammlungen hinzufügen",
+    "addFilesHint": "Fügen Sie Ihre Dateien oder Ordner hinzu"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -520,10 +550,9 @@
     },
     "results": "Ergebnisse",
     "greeting": "Was möchten Sie heute erkunden?",
-    "heyUser": "Hey, {{name}} 👋",
-    "heyUserDefaultName": "du",
+    "heyUser": "Hallo {{name}} 👋",
+    "heyUserDefaultName": "und willkommen",
     "askAnything": "Fragen Sie etwas...",
-    "sendMessage": "Nachricht senden",
     "quick": "Schnell",
     "listening": "Zuhören...",
     "voiceInputNotSupported": "Spracheingabe wird in diesem Browser nicht unterstützt",
@@ -547,11 +576,19 @@
       "noCollectionMatches": "Keine Sammlungen entsprechen Ihrer Suche.",
       "noActions": "Für diesen Agenten sind keine Aktionen (Toolsets) konfiguriert.",
       "configureMoreActions": "Weitere Aktionen konfigurieren",
-      "browseWorkspaceActions": "Workspace-Aktionen durchsuchen",
-      "browseWorkspaceActionsAria": "Workspace-Aktionen öffnen, um Integrationen hinzuzufügen oder zu verwalten",
+      "browseWorkspaceActions": "Aktionen des Arbeitsbereichs durchsuchen",
+      "browseWorkspaceActionsAria": "Aktionen des Arbeitsbereichs öffnen, um Integrationen hinzuzufügen oder zu verwalten",
       "actionsCount": "{{count}} Aktionen",
       "resetDefaults": "Auf Standard zurücksetzen",
-      "knowledgeScopeClearedWarning": "Für diesen Durchlauf sind keine Wissensquellen ausgewählt — der Agent durchsucht Ihre Konnektoren und Sammlungen nicht nach Antworten."
+      "knowledgeScopeClearedWarning": "Für diesen Durchlauf sind keine Wissensquellen ausgewählt — der Agent durchsucht Ihre Konnektoren und Sammlungen nicht nach Antworten.",
+      "searchMcp": "MCP-Server suchen",
+      "mcpTab": "MCP",
+      "noMcpServers": "Für diesen Agenten sind keine MCP-Server konfiguriert.",
+      "configureMoreMcp": "Weitere MCP-Server konfigurieren",
+      "browseWorkspaceMcp": "MCP-Server durchsuchen",
+      "browseWorkspaceMcpAria": "MCP-Server öffnen, um Verbindungen hinzuzufügen oder zu verwalten",
+      "noActionMatches": "Keine Aktionen entsprechen Ihrer Suche.",
+      "noMcpMatches": "Keine MCP-Server entsprechen Ihrer Suche."
     },
     "projectResources": {
       "noConnectors": "Für dieses Projekt sind keine Konnektoren aktiviert.",
@@ -657,8 +694,7 @@
       "editComingSoonTitle": "Demnächst verfügbar",
       "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt",
       "deprecatedTools": "Dieser Agent hat Tools, die nicht mehr verfügbar sind. Öffnen Sie den Agent Builder, um sie zu entfernen.",
-      "openAgentBuilder": "Agent Builder öffnen",
-      "loadConversationFailed": "Diese Unterhaltung konnte nicht geöffnet werden. Laden Sie die Seite neu, um es erneut zu versuchen."
+      "openAgentBuilder": "Agent Builder öffnen"
     },
     "queryModes": {
       "chat": {
@@ -876,8 +912,8 @@
         "updatePinFailed": "Pin-Status konnte nicht aktualisiert werden",
         "updateArchiveFailed": "Archivierungsstatus konnte nicht aktualisiert werden",
         "shareRefreshFailed": "Freigabedetails konnten nicht aktualisiert werden",
-        "removeFileConfirmTitle": "Remove file",
-        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone.",
+        "removeFileConfirmTitle": "Datei entfernen",
+        "removeFileConfirmDescription": "Möchten Sie „{{fileName}}“ wirklich aus diesem Projekt entfernen? Diese Aktion kann nicht rückgängig gemacht werden.",
         "heroTitle": "Woran sollen wir arbeiten?",
         "heroSubtitle": "Jeder Chat, den Sie hier starten, übernimmt die Anweisungen, Dateien und Tools dieses Projekts.",
         "addDescription": "Beschreibung hinzufügen",
@@ -932,6 +968,120 @@
         "owner": "Eigentümer",
         "editor": "Bearbeiter",
         "viewer": "Betrachter"
+      }
+    },
+    "scrollAttachmentsLeft": "Anhänge nach links scrollen",
+    "scrollAttachmentsRight": "Anhänge nach rechts scrollen",
+    "toolValidation": {
+      "tooManyTools": "Zu viele Tools ausgewählt. Aus Leistungsgründen sind höchstens 1024 Tools pro Anfrage zulässig.",
+      "multipleInstances": "Mehrere Instanzen desselben Aktionstyps ({{types}}) können nicht gemeinsam verwendet werden. Öffnen Sie das Aktionen-Panel und wählen Sie pro Typ nur eine Instanz aus."
+    },
+    "attachments": {
+      "uploadFailed": "Upload fehlgeschlagen",
+      "uploadFailedNamed": "{{name}} konnte nicht hochgeladen werden: {{error}}",
+      "unsupportedType": "Nicht unterstützter Dateityp: {{names}}. Unterstützte Typen: {{types}}.",
+      "fileTooLarge": "Datei zu groß: {{names}}. Die maximale Größe beträgt {{maxMb}} MB pro Datei.",
+      "tooManyFiles": "Höchstens {{max}} Anhänge pro Nachricht.",
+      "pasteTruncated": "\n\n[Inhalt gekürzt — der eingefügte Text überschreitet die maximale Anhangsgröße.]",
+      "uploading": "Wird hochgeladen…",
+      "retry": "Upload erneut versuchen",
+      "pastedText": "Eingefügter Text",
+      "pasteMeta": "{{chars}} Zeichen · {{count}} Zeilen",
+      "uploadingNamed": "Eingefügter Text wird hochgeladen",
+      "removePastedText": "Eingefügten Text entfernen",
+      "showInTextField": "Im Textfeld anzeigen",
+      "previewLoadFailed": "Inhalt konnte nicht geladen werden",
+      "copyText": "Kopieren",
+      "closePreview": "Schließen",
+      "loadingPreview": "Wird geladen…",
+      "pasteMeta_one": "{{chars}} Zeichen · {{count}} Zeile",
+      "pasteMeta_other": "{{chars}} Zeichen · {{count}} Zeilen"
+    },
+    "voiceSttNotConfigured": "Konfigurieren Sie in den KI-Modelleinstellungen ein Speech-to-Text-Modell (STT), um die Spracheingabe zu aktivieren.",
+    "voiceSttLoading": "Sprachfunktionen werden geprüft…",
+    "expandComposer": "Eingabefeld vergrößern",
+    "stopGenerating": "Generierung stoppen",
+    "backToChat": "Zurück zum Chat",
+    "searchToggle": {
+      "ariaLabel": "Zur Suchansicht wechseln"
+    },
+    "plusMenu": {
+      "ariaLabelFiltersApplied": "Dateien und Funktionen hinzufügen. Suchfilter sind aktiv",
+      "ariaLabel": "Dateien und Funktionen hinzufügen",
+      "title": "Hinzufügen und Funktionen"
+    },
+    "stopListening": "Sprachaufnahme stoppen",
+    "voiceInput": "Spracheingabe",
+    "regenerateResponse": "Antwort neu generieren",
+    "editQuery": "Anfrage bearbeiten",
+    "queryOptions": "Anfrageoptionen",
+    "models": "Modelle",
+    "manage": "Verwalten",
+    "configuredModels": "Konfigurierte Modelle",
+    "reasoningEffort": {
+      "label": "Reasoning-Aufwand",
+      "overrideHint": "Klicken Sie erneut, um den Standardwert zu verwenden.",
+      "defaultHintWithLevel": "Ohne Auswahl wird {{level}} verwendet.",
+      "low": "Niedrig",
+      "medium": "Mittel",
+      "high": "Hoch",
+      "max": "Maximal"
+    },
+    "universalAgent": {
+      "toolsLoadError": "Verfügbare Aktionen konnten nicht geladen werden.",
+      "mcpLoadError": "MCP-Server konnten nicht geladen werden.",
+      "noReasoningModel": "Es ist kein Modell mit Reasoning-Unterstützung konfiguriert. Konfigurieren Sie eines unter „Einstellungen → KI-Modelle“, bevor Sie den Agentenmodus verwenden.",
+      "loadingTools": "Aktionen werden geladen…",
+      "noActions": "Keine authentifizierten Aktionen gefunden. Verbinden Sie Integrationen unter „Arbeitsbereich → Aktionen“.",
+      "loadingMcp": "MCP-Server werden geladen…",
+      "noMcpServers": "Keine authentifizierten MCP-Server gefunden. Verbinden Sie einen unter „Arbeitsbereich → MCP-Server“.",
+      "toolCount": "{{count}} Tools",
+      "toolCount_one": "{{count}} Tool",
+      "toolCount_other": "{{count}} Tools"
+    },
+    "agentCapabilities": {
+      "notConfiguredOnAgent": "Für diesen Agenten nicht konfiguriert",
+      "internalSearch": "Interne Suche",
+      "webSearch": "Websuche"
+    },
+    "resizePanels": "Größe der Chat- und Vorschau-Panels ändern",
+    "mobileProfileComingSoon": "Die Profilseite ist bald auch auf Mobilgeräten verfügbar.",
+    "demoBanner": "Sie sehen Acme Corp, ein kleines fiktives Unternehmen mit geladenen Demodaten. Probieren Sie eine dieser Fragen aus oder",
+    "demoConnectYourOwn": "verbinden Sie Ihre eigenen Quellen",
+    "demoSuggestions": {
+      "1": {
+        "text": "Warum wurde die Architektur des Zahlungsdienstes geändert und wie wurde die Entscheidung getroffen?",
+        "icons": [
+          "github",
+          "jira",
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "Welche Kunden meldeten Zeitüberschreitungen beim Export und wodurch wurde das Problem behoben?",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      },
+      "3": {
+        "text": "Welche Regelung gilt bei uns für Rufbereitschaft an einem gesetzlichen Feiertag?",
+        "icons": [
+          "sheets"
+        ]
+      },
+      "4": {
+        "text": "Wer hat PR #482 im Billing Worker geprüft und genehmigt, und was hat Dana vor dem Merge verlangt?",
+        "icons": [
+          "github"
+        ]
+      },
+      "5": {
+        "text": "Wie lautet die Enterprise-Preisstrategie für 2026?",
+        "icons": [
+          "sheets",
+          "slack"
+        ]
       }
     }
   },
@@ -1004,7 +1154,12 @@
         "unblockSuccess": "Benutzer erfolgreich entsperrt",
         "unblockError": "Benutzer konnte nicht entsperrt werden",
         "unblocking": "Wird entsperrt…",
-        "edit": "Bearbeiten"
+        "edit": "Bearbeiten",
+        "demoteAdminBeforeRemoveTitle": "Administrator kann nicht entfernt werden",
+        "demoteAdminBeforeRemove": "Ändern Sie zunächst die Rolle des Administrators zu „Mitglied“ und entfernen Sie ihn anschließend.",
+        "resendInviteSuccess": "Einladung erneut gesendet",
+        "resendInviteSuccessDescription": "Die Einladung wurde erneut an {{email}} gesendet",
+        "resendInviteError": "Einladung konnte nicht erneut gesendet werden"
       },
       "profile": {
         "title": "Profil",
@@ -1037,12 +1192,9 @@
         "roleLabel": "Rolle",
         "rolePlaceholder": "Rolle auswählen",
         "roleAdmin": "Admin",
-        "roleAdminDescription": "Kann alle Aspekte des Arbeitsbereichs verwalten",
         "roleMember": "Mitglied",
-        "roleMemberDescription": "Kann den Arbeitsbereich anzeigen und nutzen",
         "groupLabel": "Gruppen (Optional)",
         "groupPlaceholder": "Gruppen auswählen",
-        "groupSearchPlaceholder": "Gruppen suchen...",
         "import": "Importieren",
         "importFormatTitle": "CSV oder Excel — jedes Layout funktioniert",
         "importHintHeader": "Kopfzeile optional — zusätzliche Spalten werden ignoriert",
@@ -1062,8 +1214,41 @@
         "importSkippedDescription": "Ungültige Einträge sind markiert — vor dem Senden entfernen.",
         "importFailed": "Import fehlgeschlagen",
         "importFailedDescription": "Datei konnte nicht gelesen werden. Bitte eine gültige CSV- oder Excel-Datei hochladen.",
-        "adminGroupWarning": "Alle hier eingeladenen Personen werden vollwertige Organisations-Admins — auch jede aus einer Datei importierte Adresse. Admins können Benutzer, Gruppen und Organisationseinstellungen verwalten."
-      }
+        "adminGroupWarning": "Alle hier eingeladenen Personen werden vollwertige Organisations-Admins — auch jede aus einer Datei importierte Adresse. Admins können Benutzer, Gruppen und Organisationseinstellungen verwalten.",
+        "editSuccessTitle": "Einladung aktualisiert",
+        "editSuccessDescription": "Die Einladung für {{email}} wurde aktualisiert",
+        "editError": "Einladung konnte nicht aktualisiert werden",
+        "editTitle": "Einladung bearbeiten",
+        "update": "Einladung aktualisieren",
+        "smtpNotConfiguredTooltip": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Einladungen versenden."
+      },
+      "bulk": {
+        "removeSuccess": "{{count}} Benutzer aus dem Arbeitsbereich entfernt",
+        "removePartialError": "{{count}} Benutzer konnten nicht entfernt werden",
+        "resendSuccess": "Einladung an {{count}} Benutzer erneut gesendet",
+        "resendPartialError": "Einladung an {{count}} Benutzer konnte nicht erneut gesendet werden",
+        "cancelSuccess": "{{count}} Einladung(en) zurückgezogen",
+        "cancelPartialError": "{{count}} Einladung(en) konnten nicht zurückgezogen werden",
+        "resendInvite": "Einladung erneut senden",
+        "adminInviteCantBeCancelled": "Administratoreinladungen können nicht zurückgezogen werden",
+        "cancelInvite": "Einladung zurückziehen",
+        "adminCantBeRemoved": "Administratoren können nicht entfernt werden",
+        "removeFromWorkspace": "Aus dem Arbeitsbereich entfernen",
+        "removeSuccess_one": "{{count}} Benutzer aus dem Arbeitsbereich entfernt",
+        "removeSuccess_other": "{{count}} Benutzer aus dem Arbeitsbereich entfernt",
+        "removePartialError_one": "{{count}} Benutzer konnte nicht entfernt werden",
+        "removePartialError_other": "{{count}} Benutzer konnten nicht entfernt werden",
+        "resendSuccess_one": "Einladung an {{count}} Benutzer erneut gesendet",
+        "resendSuccess_other": "Einladung an {{count}} Benutzer erneut gesendet",
+        "resendPartialError_one": "Einladung an {{count}} Benutzer konnte nicht erneut gesendet werden",
+        "resendPartialError_other": "Einladung an {{count}} Benutzer konnte nicht erneut gesendet werden",
+        "cancelSuccess_one": "{{count}} Einladung zurückgezogen",
+        "cancelSuccess_other": "{{count}} Einladungen zurückgezogen",
+        "cancelPartialError_one": "{{count}} Einladung konnte nicht zurückgezogen werden",
+        "cancelPartialError_other": "{{count}} Einladungen konnten nicht zurückgezogen werden"
+      },
+      "inviteDisabledSmtp": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Benutzer einladen.",
+      "bulkLabel": "Benutzer"
     },
     "groups": {
       "title": "Gruppen",
@@ -1088,7 +1273,9 @@
         "viewGroup": "Gruppe anzeigen",
         "delete": "Löschen",
         "deleteSuccess": "Gruppe gelöscht",
-        "deleteError": "Gruppe konnte nicht gelöscht werden"
+        "deleteError": "Gruppe konnte nicht gelöscht werden",
+        "managePermissions": "Berechtigungen verwalten",
+        "deleteSystemTooltip": "Nur benutzerdefinierte Gruppen können gelöscht werden"
       },
       "create": {
         "title": "Gruppe erstellen",
@@ -1114,7 +1301,8 @@
         "users": "Benutzer",
         "noUsers": "Keine Benutzer in dieser Gruppe",
         "accessPermissions": "Zugriffsberechtigungen",
-        "accessComingSoon": "Zugriffsberechtigungen demnächst verfügbar"
+        "accessComingSoon": "Zugriffsberechtigungen demnächst verfügbar",
+        "searchUsers": "Benutzer suchen..."
       },
       "edit": {
         "edit": "Gruppe bearbeiten",
@@ -1134,7 +1322,20 @@
         "deleting": "Löschen...",
         "deleteSuccess": "Gruppe gelöscht",
         "deleteSuccessDescription": "\"{{name}}\" wurde gelöscht",
-        "deleteError": "Gruppe konnte nicht gelöscht werden"
+        "deleteError": "Gruppe konnte nicht gelöscht werden",
+        "nameRequired": "Ein Gruppenname ist erforderlich"
+      },
+      "permissions": {
+        "title": "Zugriffsberechtigungen",
+        "titleWithName": "{{name}} — Zugriffsberechtigungen",
+        "subtitle": "Legen Sie fest, welche Aktionen Mitglieder dieser Gruppe ausführen dürfen.",
+        "save": "Änderungen speichern",
+        "saving": "Wird gespeichert...",
+        "discard": "Verwerfen",
+        "saveSuccess": "Berechtigungen gespeichert",
+        "saveError": "Berechtigungen konnten nicht gespeichert werden",
+        "loadError": "Berechtigungen konnten nicht geladen werden",
+        "empty": "Es sind noch keine Berechtigungen definiert."
       }
     },
     "teams": {
@@ -1174,7 +1375,9 @@
         "cancel": "Abbrechen",
         "successTitle": "Team erstellt!",
         "successDescription": "\"{{name}}\" wurde erfolgreich erstellt",
-        "errorGeneric": "Team konnte nicht erstellt werden"
+        "errorGeneric": "Team konnte nicht erstellt werden",
+        "applyToAll": "Auf alle anwenden",
+        "memberRoles": "Mitgliederrollen"
       },
       "detail": {
         "nameLabel": "Teamname",
@@ -1185,7 +1388,8 @@
         "noMembers": "Keine Mitglieder in diesem Team",
         "roleLabel": "Rolle",
         "accessPermissions": "Zugriffsberechtigungen",
-        "accessComingSoon": "Zugriffsberechtigungen demnächst verfügbar"
+        "accessComingSoon": "Zugriffsberechtigungen demnächst verfügbar",
+        "searchMembers": "Mitglieder suchen..."
       },
       "edit": {
         "edit": "Team bearbeiten",
@@ -1204,7 +1408,10 @@
         "deleting": "Löschen...",
         "deleteSuccess": "Team gelöscht",
         "deleteSuccessDescription": "\"{{name}}\" wurde gelöscht",
-        "deleteError": "Team konnte nicht gelöscht werden"
+        "deleteError": "Team konnte nicht gelöscht werden",
+        "saveErrorDescription": "Team konnte nicht aktualisiert werden. Bitte versuchen Sie es erneut.",
+        "applyToAll": "Auf alle anwenden",
+        "newMemberRoles": "Rollen neuer Mitglieder"
       }
     },
     "oauth2": {
@@ -1533,7 +1740,9 @@
         "webSearch": "Websuche",
         "tenants": "Mandanten",
         "superOrgs": "Organisationen",
-        "oauthApps": "OAuth Apps"
+        "oauthApps": "OAuth Apps",
+        "personalAccessTokens": "Persönliche Zugriffstoken",
+        "serviceAccounts": "Dienstkonten"
       }
     },
     "actions": {
@@ -1558,7 +1767,9 @@
         "configure": "Konfigurieren",
         "authenticate": "Authentifizieren",
         "unavailable": "Nicht verfügbar",
-        "notConfigured": "Nicht konfiguriert"
+        "notConfigured": "Nicht konfiguriert",
+        "manage": "Verwalten",
+        "adminSetupRequired": "Einrichtung durch einen Administrator erforderlich"
       },
       "trailingYourActions": "Ihre Aktionen",
       "loading": "Aktionen werden geladen…",
@@ -1660,7 +1871,11 @@
         "saveSuccess": "Änderungen gespeichert.",
         "saveDeauthNotice": "Gespeichert. {{count}} Benutzer wurde(n) abgemeldet und müssen sich erneut authentifizieren.",
         "missingInstance": "Dieser Aktion fehlt eine Instanz-ID. Versuchen Sie, die Seite zu aktualisieren.",
-        "copyFailed": "In die Zwischenablage kopieren ist fehlgeschlagen."
+        "copyFailed": "In die Zwischenablage kopieren ist fehlgeschlagen.",
+        "loadingOauthApps": "OAuth-Apps werden geladen…",
+        "noOauthApps": "Keine OAuth-Apps konfiguriert",
+        "personalActionsHint": "Benutzeranmeldedaten werden unter „Ihre Aktionen“ verwaltet.",
+        "openPersonalActionsCta": "Ihre Aktionen öffnen"
       },
       "errors": {
         "instanceNameRequired": "Geben Sie einen Instanznamen ein."
@@ -1668,8 +1883,15 @@
       "validation": {
         "fieldRequired": "{{field}} ist erforderlich",
         "fieldMustBeTrue": "{{field}} muss wahr sein",
-        "fixErrorsAbove": "Korrigieren Sie die hervorgehobenen Felder oben, um fortzufahren."
-      }
+        "fixErrorsAbove": "Korrigieren Sie die hervorgehobenen Felder oben, um fortzufahren.",
+        "minLength": "{{field}} muss mindestens {{minLength}} Zeichen lang sein",
+        "maxLength": "{{field}} darf höchstens {{maxLength}} Zeichen lang sein",
+        "email": "{{field}} muss eine gültige E-Mail-Adresse sein",
+        "url": "{{field}} muss eine gültige URL sein",
+        "urlProtocol": "{{field}} muss http oder https verwenden"
+      },
+      "adminRequiredToast": "Nur Administratoren können neue Aktionen hinzufügen. Bitten Sie Ihren Administrator, diese Aktion zuerst zu konfigurieren.",
+      "personalNonAdminHint": "Als „Nicht konfiguriert“ markierte Aktionen müssen zunächst von einem Administrator eingerichtet werden, bevor Sie sie verwenden können."
     },
     "rightPanel": {
       "primaryDisabledHint": "Scrollen Sie nach oben und füllen Sie die Pflichtfelder (mit *) aus, um fortzufahren.",
@@ -1686,7 +1908,11 @@
       "restoreError": "Chat konnte nicht wiederhergestellt werden",
       "deleteSuccess": "Erfolgreich gelöscht",
       "deleteSuccessDescription": "Ihr Chat wurde dauerhaft gelöscht",
-      "deleteError": "Chat konnte nicht gelöscht werden"
+      "deleteError": "Chat konnte nicht gelöscht werden",
+      "assistantChat": "Assistenten-Chat",
+      "agents": "Agenten",
+      "showMore": "Mehr anzeigen",
+      "moreAgents": "Weitere Agenten"
     },
     "general": {
       "subtitle": "Allgemeine Informationen Ihres Unternehmens",
@@ -1783,6 +2009,14 @@
         "message": "Wenn Sie verwerfen, werden Ihre Änderungen nicht gespeichert",
         "confirm": "Verwerfen",
         "cancel": "Weiter bearbeiten"
+      },
+      "featureFlags": {
+        "title": "Feature-Flags",
+        "subtitle": "Aktivieren oder deaktivieren Sie experimentelle Funktionen für alle Agenten in diesem Arbeitsbereich."
+      },
+      "vectorStore": {
+        "title": "Vektorspeicher",
+        "subtitle": "Löschen Sie alle Embeddings oder erstellen Sie sie für alle Datensätze anhand der gespeicherten Inhalte neu."
       }
     },
     "authentication": {
@@ -1833,6 +2067,10 @@
         "body": "Sie haben <bold>Passwort</bold> und <bold>Einmalpasswort</bold> deaktiviert. Benutzer können sich nur noch anmelden mit:",
         "warningSingle": "Stellen Sie sicher, dass {{method}} vollständig konfiguriert und funktionsfähig ist, bevor Sie speichern. Wenn die Einzelanmeldung aufgrund einer Fehlkonfiguration fehlschlägt, können Benutzer ausgesperrt werden.",
         "warningMultiple": "Stellen Sie sicher, dass alle ausgewählten Methoden vollständig konfiguriert und funktionsfähig sind, bevor Sie speichern. Wenn die Einzelanmeldung aufgrund einer Fehlkonfiguration fehlschlägt, können Benutzer ausgesperrt werden."
+      },
+      "userMethods": {
+        "heading": "Anmeldemethoden für Benutzer",
+        "subtitle": "Legen Sie fest, welche Anmeldemethoden allen Benutzern in allen Organisationen zur Verfügung stehen."
       }
     },
     "connectors": {
@@ -1868,12 +2106,13 @@
         "authSaveError": "Authentifizierungskonfiguration konnte nicht gespeichert werden",
         "configSaveError": "Konfiguration konnte nicht gespeichert werden",
         "oauthAppUnavailableTitle": "Für diesen Konnektor sind keine OAuth-Apps verfügbar",
-        "oauthAppUnavailableDescription": "Bitten Sie Ihren Workspace-Administrator, zuerst eine OAuth-App für {{name}} zu erstellen, und versuchen Sie es dann erneut.",
+        "oauthAppUnavailableDescription": "Bitten Sie den Administrator Ihres Arbeitsbereichs, zuerst eine OAuth-App für {{name}} zu erstellen, und versuchen Sie es dann erneut.",
         "thisConnectorFallback": "diesen Konnektor"
       },
       "tabs": {
         "authenticate": "Instanz authentifizieren",
-        "configureRecords": "Datensätze konfigurieren"
+        "configureRecords": "Datensätze konfigurieren",
+        "authorize": "Autorisieren"
       },
       "tooltips": {
         "authFirst": "Schließen Sie zuerst die Authentifizierung ab, um die Konfiguration zu speichern"
@@ -1894,7 +2133,7 @@
       },
       "syncSaveConfirm": {
         "title": "Synchronisationsprozess starten?",
-        "manualMessage": "Sie haben die manuelle Indexierung für diesen Connector aktiviert. Datensätze werden synchronisiert, sind aber erst durch KI durchsuchbar, nachdem Sie sie indexiert haben. Sie können in „Alle Datensätze“ manuell wählen, welche indexiert werden sollen. Fortfahren?",
+        "manualMessage": "Sie haben die manuelle Indexierung für diesen Konnektor aktiviert. Datensätze werden synchronisiert, sind aber erst durch KI durchsuchbar, nachdem Sie sie indexiert haben. Sie können in „Alle Datensätze“ manuell wählen, welche indexiert werden sollen. Fortfahren?",
         "wideSyncMessage": "Dieser Vorgang kann eine große Anzahl von Datensätzen synchronisieren. Möchten Sie die Synchronisation wirklich starten? Erwägen Sie Filter unter „Filter“, um die Datenmenge zu reduzieren.",
         "confirm": "Bestätigen",
         "cancel": "Abbrechen"
@@ -1905,38 +2144,38 @@
         "confirm": "Bestätigen"
       },
       "disableFirstDialog": {
-        "title": "Connector ist derzeit aktiviert",
+        "title": "Konnektor ist derzeit aktiviert",
         "message": "{{name}} ist derzeit aktiviert. Um {{action}}, wird er zunächst automatisch deaktiviert. Möchten Sie fortfahren?",
-        "messageNoName": "Dieser Connector ist derzeit aktiviert. Um {{action}}, wird er zunächst automatisch deaktiviert. Möchten Sie fortfahren?",
+        "messageNoName": "Dieser Konnektor ist derzeit aktiviert. Um {{action}}, wird er zunächst automatisch deaktiviert. Möchten Sie fortfahren?",
         "proceed": "Deaktivieren & Fortfahren",
         "proceeding": "Wird deaktiviert...",
         "cancel": "Abbrechen",
-        "errorTitle": "Connector konnte nicht deaktiviert werden",
-        "errorFallback": "Connector konnte nicht deaktiviert werden. Bitte versuchen Sie es erneut.",
+        "errorTitle": "Konnektor konnte nicht deaktiviert werden",
+        "errorFallback": "Konnektor konnte nicht deaktiviert werden. Bitte versuchen Sie es erneut.",
         "actions": {
-          "removeInstance": "diese Connector-Instanz zu entfernen",
+          "removeInstance": "diese Konnektor-Instanz zu entfernen",
           "saveConfig": "Konfigurationsänderungen zu speichern"
         }
       },
       "adminAccessDialog": {
         "title": "Administratorzugriff erforderlich",
-        "question": "Haben Sie Administratorzugriff in {{appGroup}}? Der Team-Connector erfordert Administratorrechte in der nativen App, um OAuth-Anwendungen zu registrieren und organisationsweite Daten zu synchronisieren.",
+        "question": "Haben Sie Administratorzugriff in {{appGroup}}? Der Team-Konnektor erfordert Administratorrechte in der nativen App, um OAuth-Anwendungen zu registrieren und organisationsweite Daten zu synchronisieren.",
         "yesContinue": "Ja, Einrichtung fortsetzen",
         "noNotAdmin": "Nein, ich bin kein Administrator",
-        "redirectTitle": "Persönlichen Connector verwenden",
-        "redirectMessage": "Der Team-Connector {{connectorName}} erfordert Administratorzugriff in Ihrer {{appGroup}}-Instanz. Bitte verwenden Sie den persönlichen {{appGroup}}-Connector, um stattdessen Ihr eigenes Konto zu synchronisieren.",
+        "redirectTitle": "Persönlichen Konnektor verwenden",
+        "redirectMessage": "Der Team-Konnektor {{connectorName}} erfordert Administratorzugriff in Ihrer {{appGroup}}-Instanz. Bitte verwenden Sie den persönlichen {{appGroup}}-Konnektor, um stattdessen Ihr eigenes Konto zu synchronisieren.",
         "goToPersonal": "Zu {{appGroup}} Personal wechseln",
         "cancel": "Schließen"
       },
       "removeInstanceDialog": {
-        "title": "Connector-Instanz entfernen?",
+        "title": "Konnektor-Instanz entfernen?",
         "description": "Möchten Sie {{name}} wirklich löschen? Dies kann nicht rückgängig gemacht werden.",
         "cancel": "Abbrechen",
-        "confirm": "Connector entfernen",
+        "confirm": "Konnektor entfernen",
         "alreadyRemovingTitle": "Wird bereits entfernt",
-        "alreadyRemovingDescription": "Dieser Connector wird bereits entfernt.",
-        "successTitle": "Connector entfernt",
-        "errorTitle": "Connector konnte nicht entfernt werden"
+        "alreadyRemovingDescription": "Dieser Konnektor wird bereits entfernt.",
+        "successTitle": "Konnektor entfernt",
+        "errorTitle": "Konnektor konnte nicht entfernt werden"
       },
       "selectRecords": {
         "title": "Datensätze auswählen",
@@ -1968,7 +2207,7 @@
         "oauthAppNamePlaceholder": "z. B. {{name}} OAuth",
         "oauthAppNameHelper": "Dieser Name wird mit der OAuth-Registrierung gespeichert und angezeigt, wenn Benutzer eine gespeicherte App für andere Instanzen auswählen.",
         "oauthAppNameRequired": "Geben Sie einen Namen für die neue OAuth-App ein.",
-        "oauthAppChangeReauthWarning": "Wenn Sie die OAuth-App oder ihre Anmeldedaten ändern, müssen Sie den Connector erneut authentifizieren."
+        "oauthAppChangeReauthWarning": "Wenn Sie die OAuth-App oder ihre Anmeldedaten ändern, müssen Sie den Konnektor erneut authentifizieren."
       },
       "docSection": {
         "title": "Einrichtungsdokumentation",
@@ -2017,7 +2256,7 @@
         "statQueued": "Warteschlange",
         "statQueuedSub": "Warten auf Indizierung",
         "statNotStarted": "Nicht gestartet",
-        "statNotStartedSub": "Noch nicht mit dem Connector synchronisiert",
+        "statNotStartedSub": "Noch nicht mit dem Konnektor synchronisiert",
         "statManualIndexing": "Manuelle Indizierung",
         "statManualIndexingSub": "Synchronisiert, aber noch nicht indexiert",
         "statCompleted": "Abgeschlossen",
@@ -2031,12 +2270,12 @@
       },
       "settingsTab": {
         "instanceName": "Instanzname",
-        "renameSuccess": "Connector umbenannt",
-        "renameErrorGeneric": "Fehler beim Umbenennen des Connectors",
+        "renameSuccess": "Konnektor umbenannt",
+        "renameErrorGeneric": "Fehler beim Umbenennen des Konnektors",
         "enabledBy": "Aktiviert von",
         "member": "Mitglied",
         "date": "Datum",
-        "connectorIdentitySection": "Connector",
+        "connectorIdentitySection": "Konnektor",
         "connectorNameLabel": "Name",
         "connectorIdLabel": "ID",
         "createdBySection": "Erstellt von",
@@ -2045,33 +2284,41 @@
         "syncSettings": "Synchronisierungseinstellungen",
         "syncStrategySettingsHint": "Sie können die Synchronisierungsstrategie ändern, indem Sie zu <bold>{{manageConfig}}</bold> wechseln.",
         "syncInterval": "Synchronisierungsintervall",
-        "syncIntervalHelper": "Legen Sie fest, wie oft {{name}}-Daten aktualisiert werden"
+        "syncIntervalHelper": "Legen Sie fest, wie oft {{name}}-Daten aktualisiert werden",
+        "removeInstance": "Konnektorinstanz entfernen",
+        "removeInstanceDescription": "Entfernen Sie diese Konnektorinstanz dauerhaft und beenden Sie die Synchronisierung ihrer Daten. Dies kann nicht rückgängig gemacht werden."
       },
       "instanceCard": {
         "recordsSelected": "Ausgewählte Datensätze",
         "syncStrategy": "Synchronisierungsstrategie",
         "authBannerTitle": "Persönliches Konto authentifizieren",
-        "authBannerDescription": "Verbinden Sie Ihr Konto, um Zugriff und Arbeitsbereichskonfiguration zu aktivieren"
+        "authBannerDescription": "Verbinden Sie Ihr Konto, um Zugriff und Arbeitsbereichskonfiguration zu aktivieren",
+        "lastSynced": "Zuletzt synchronisiert",
+        "syncEnabled": "Synchronisierung aktiviert",
+        "removing": "Dieser Konnektor wird entfernt.",
+        "configureFirst": "Schließen Sie die Konfiguration ab, bevor Sie die Synchronisierung aktivieren.",
+        "authenticateFirst": "Authentifizieren Sie diesen Konnektor, bevor Sie die Synchronisierung aktivieren.",
+        "selected": "{{field}} ausgewählt"
       },
       "instanceStatus": {
         "setup": {
           "kind": "Setup",
           "rowLabel": "Konfiguration",
           "notConfigured": "Unvollständig",
-          "notConfiguredTooltip": "Die Konfiguration ist nicht abgeschlossen. Öffnen Sie das Setup, um Sync- und Filtereinstellungen zu vervollständigen.",
+          "notConfiguredTooltip": "Die Konfiguration ist nicht abgeschlossen. Öffnen Sie die Einrichtung, um die Synchronisierungs- und Filtereinstellungen zu vervollständigen.",
           "needsAuth": "Auth nötig",
           "needsAuthTooltip": "Die Konfiguration ist gespeichert, aber diese Instanz muss noch authentifiziert werden.",
           "ready": "Abgeschlossen",
-          "readyTooltip": "Konfiguration ist abgeschlossen und authentifiziert. Sync kann bei Aktivierung laufen.",
+          "readyTooltip": "Die Konfiguration ist abgeschlossen und authentifiziert. Die Synchronisierung kann nach der Aktivierung starten.",
           "desktopOffline": "Desktop offline",
           "desktopOfflineTooltip": "Die Desktop-App, der dieser Ordner gehört, ist nicht verbunden. Öffnen Sie sie auf diesem Rechner, um zu synchronisieren."
         },
         "sync": {
-          "kind": "Sync",
+          "kind": "Synchronisierung",
           "syncing": "Synchronisierung läuft",
-          "syncingTooltip": "Dieser Connector synchronisiert neue und aktualisierte Inhalte.",
-          "fullSyncing": "Vollständiger Sync läuft",
-          "fullSyncingTooltip": "Dieser Connector führt eine vollständige Neusynchronisierung von der Quelle durch.",
+          "syncingTooltip": "Dieser Konnektor synchronisiert neue und aktualisierte Inhalte.",
+          "fullSyncing": "Vollständige Synchronisierung läuft",
+          "fullSyncingTooltip": "Dieser Konnektor führt eine vollständige Neusynchronisierung von der Quelle durch.",
           "removing": "Entfernen",
           "removingTooltip": "Diese Instanz wird gelöscht."
         }
@@ -2101,6 +2348,108 @@
         "syncing": "Datensätze werden synchronisiert...",
         "synced": "Datensätze synchronisiert",
         "failed": "Synchronisierung fehlgeschlagen"
+      },
+      "errors": {
+        "missingCreatedId": "Der Konnektor wurde erstellt, aber es wurde keine Konnektor-ID zurückgegeben",
+        "createdConfigUnavailable": "Der Konnektor wurde erstellt, aber die Konfiguration konnte nicht geladen werden. Öffnen Sie das Panel erneut.",
+        "authenticateFirst": "Keine Konnektor-ID gefunden. Schließen Sie zuerst die Authentifizierung ab."
+      },
+      "syncIntervals": {
+        "5": "Alle 5 Minuten",
+        "15": "Alle 15 Minuten",
+        "30": "Alle 30 Minuten",
+        "60": "Jede Stunde",
+        "240": "Alle 4 Stunden",
+        "480": "Alle 8 Stunden",
+        "720": "Alle 12 Stunden",
+        "1440": "Täglich",
+        "10080": "Wöchentlich",
+        "other": "Alle {{minutes}} Min."
+      },
+      "filters": {
+        "selectField": "{{field}} auswählen",
+        "addFieldValue": "{{field}} hinzufügen…",
+        "authenticateForOptions": "Schließen Sie die Authentifizierung ab und speichern Sie den Konnektor, um die Optionen für diesen Filter zu laden.",
+        "manualIndexingInfo": "Informationen zur manuellen Indexierung",
+        "manualIndexingTooltip": "AUS (Standard): Datensätze werden anhand der folgenden Indexierungsfilter automatisch indexiert.\n\nEIN: Es werden keine Datensätze automatisch indexiert. Sie wählen in den Sammlungen manuell aus, welche Datensätze indexiert werden sollen.",
+        "title": "Indexierungs- und Synchronisierungsfilter",
+        "description": "Indexierungsfilter gelten immer. Aktivieren oder deaktivieren Sie Optionen und passen Sie Werte nach Bedarf an. Fügen Sie nur die benötigten Synchronisierungsfilter hinzu. Listen- und Datumsfilter verwenden einen Operator und einen Wert. Entfernen Sie einen Synchronisierungsfilter, wenn Sie diese Einschränkung nicht benötigen.",
+        "syncTitle": "Synchronisierungsfilter",
+        "indexingTitle": "Indexierungsfilter",
+        "add": "Filter hinzufügen",
+        "incomplete": "Vervollständigen Sie unten für jeden Filter den Operator und den Wert, um hier eine Zusammenfassung zu sehen.",
+        "empty": "Noch keine Filter. Wählen Sie über „Filter hinzufügen“ einen der unterstützten Filter aus.",
+        "operator": "Operator",
+        "chooseOperator": "Operator auswählen…",
+        "value": "Wert",
+        "rollingWindow": "Dieser Operator verwendet einen gleitenden Zeitraum. Es sind keine festen Datumsangaben erforderlich.",
+        "dateRange": "Zeitraum",
+        "operators": {
+          "is": "Ist",
+          "is_not": "Ist nicht",
+          "is_empty": "Ist leer",
+          "is_not_empty": "Ist nicht leer",
+          "contains": "Enthält",
+          "does_not_contain": "Enthält nicht",
+          "is_after": "Ist nach",
+          "is_before": "Ist vor",
+          "is_between": "Liegt zwischen",
+          "in": "Enthalten in",
+          "not_in": "Nicht enthalten in",
+          "greater_than_or_equal": "Größer oder gleich",
+          "greater_than": "Größer als",
+          "equal": "Gleich",
+          "less_than": "Kleiner als",
+          "less_than_or_equal": "Kleiner oder gleich",
+          "last_7_days": "Letzte 7 Tage",
+          "last_14_days": "Letzte 14 Tage",
+          "last_30_days": "Letzte 30 Tage",
+          "last_90_days": "Letzte 90 Tage",
+          "last_180_days": "Letzte 180 Tage",
+          "last_365_days": "Letzte 365 Tage"
+        },
+        "fieldValues": "{{field}}-Werte",
+        "loadingOptions": "Optionen werden geladen…",
+        "noResults": "Keine Ergebnisse gefunden",
+        "loadingMore": "Weitere Optionen werden geladen…"
+      },
+      "syncStrategies": {
+        "SCHEDULED": "Geplant",
+        "MANUAL": "Manuell",
+        "WEBHOOK": "Webhook",
+        "REALTIME": "Echtzeit"
+      },
+      "syncIntervalOptions": {
+        "5": "5 Minuten",
+        "15": "15 Minuten",
+        "30": "30 Minuten",
+        "60": "1 Stunde",
+        "240": "4 Stunden",
+        "480": "8 Stunden",
+        "720": "12 Stunden",
+        "1440": "1 Tag",
+        "10080": "1 Woche"
+      },
+      "vectorStore": {
+        "cleanup": {
+          "label": "Embeddings bereinigen",
+          "rowDescription": "Löschen Sie alle Embeddings und erstellen Sie die Vektorsammlung leer neu. Datensätze werden nicht gelöscht.",
+          "buttonLabel": "Bereinigen",
+          "title": "Alle Embeddings löschen?",
+          "body": "Die gemeinsame Vektorsammlung wird gelöscht und leer neu erstellt.",
+          "warning": "Die Suche liefert für niemanden mehr Ergebnisse, bis die Neuindizierung abgeschlossen ist. Bei großen Bereitstellungen kann das mehrere Stunden dauern. Ihre Datensätze werden nicht gelöscht, sondern nur deren Embeddings.",
+          "confirm": "Embeddings löschen"
+        },
+        "reindex": {
+          "label": "Embeddings neu indexieren",
+          "rowDescription": "Erstellen Sie die Embeddings aller Datensätze anhand der gespeicherten Inhalte neu. Quellen werden weder erneut heruntergeladen noch erneut geparst.",
+          "buttonLabel": "Neu indexieren",
+          "title": "Alle Datensätze neu indexieren?",
+          "body": "Die Embeddings aller Datensätze werden anhand der gespeicherten Inhalte neu erstellt. Quellen werden weder erneut heruntergeladen noch erneut geparst.",
+          "warning": "Dies kann bei großen Bereitstellungen lange dauern und wird im Hintergrund ausgeführt.",
+          "confirm": "Neuindizierung starten"
+        },
+        "typePrompt": "Geben Sie zur Bestätigung {{token}} ein."
       }
     },
     "mcpServers": {
@@ -2158,7 +2507,8 @@
         "authBannerTitle": "Authentifizierung erforderlich",
         "authBannerDescription": "Authentifizieren Sie diesen MCP-Server, damit die Agenten Ihres Teams ihn nutzen können.",
         "authBannerAuthenticatedTitle": "Verbunden",
-        "authBannerAuthenticatedDescription": "Sie können diesen MCP-Server erneut authentifizieren oder trennen."
+        "authBannerAuthenticatedDescription": "Sie können diesen MCP-Server erneut authentifizieren oder trennen.",
+        "createdBy": "Erstellt von"
       },
       "deleteDialog": {
         "title": "MCP-Server löschen?",
@@ -2246,7 +2596,8 @@
         "noCode": "Es wurde kein Autorisierungscode zurückgegeben.",
         "noState": "Es wurde kein State-Parameter zurückgegeben.",
         "backendRejected": "Der Server hat die Autorisierungsanfrage abgelehnt."
-      }
+      },
+      "deleteDisabledTooltip": "Dieser Server kann nicht gelöscht werden"
     },
     "bots": {
       "subtitle": "Konfigurieren Sie Bot-Anmeldedaten und ordnen Sie optional jeden Bot einem Agenten zu",
@@ -2327,7 +2678,12 @@
         "typeNameToConfirm": "Geben Sie \"{{name}}\" ein, um zu bestätigen",
         "deleteBotBodyLine1": "Möchten Sie {{name}} wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
         "deleteBotBodyLine2": "Alle Konfigurationen und Anmeldedaten dieses Bots werden dauerhaft entfernt."
-      }
+      },
+      "errors": {
+        "loadConfigs": "Bot-Konfigurationen konnten nicht geladen werden",
+        "loadData": "Daten konnten nicht geladen werden"
+      },
+      "refreshed": "Aktualisiert"
     },
     "mail": {
       "subtitle": "E-Mail-Server-Konfiguration für OTP und Benachrichtigungen",
@@ -2416,7 +2772,15 @@
       "systemPrompt": "Systemprompt",
       "systemPromptDescription": "Definieren Sie das Verhalten und die Persönlichkeit des KI-Assistenten",
       "configCalloutTitle": "Prompt-Konfiguration",
-      "configCalloutDescription": "Der benutzerdefinierte Systemprompt hilft dabei, das Verhalten, den Ton und den Ansatz der KI bei der Beantwortung von Fragen zu definieren. Stellen Sie sicher, dass Ihr Prompt klar ist und den Anforderungen Ihrer Organisation entspricht."
+      "configCalloutDescription": "Der benutzerdefinierte Systemprompt hilft dabei, das Verhalten, den Ton und den Ansatz der KI bei der Beantwortung von Fragen zu definieren. Stellen Sie sicher, dass Ihr Prompt klar ist und den Anforderungen Ihrer Organisation entspricht.",
+      "resetToDefault": "Auf Standard zurücksetzen",
+      "customInstructionsTitle": "Benutzerdefinierte Anweisungen",
+      "customInstructionsDescription": "Fügen Sie eigene Anweisungen für den Chat-Assistenten hinzu, etwa zur Antwortsprache, zur Formatierung oder zum gewünschten Verhalten. Jeder der folgenden Modi hat eigene Anweisungen, da sie Fragen unterschiedlich beantworten.",
+      "scopeHint": "Diese Anweisungen gelten nur für den <bold>Chat-Assistenten</bold> (Agentenmodus unten). Eigene Agenten aus dem <bold>Agent Builder</bold> sind davon nicht betroffen. Jeder Agent verwendet den direkt bei ihm konfigurierten System-Prompt und seine eigenen Anweisungen.",
+      "agentTitle": "Agent",
+      "agentDescription": "Gilt für Chats im Agentenmodus. Der Assistent entscheidet für jede Frage, ob er internes Wissen, die Websuche oder beides verwendet.",
+      "agentPlaceholder": "z. B. Bevorzugen Sie internes Wissen bei unternehmensspezifischen Fragen. Beginnen Sie immer mit einer Zusammenfassung, bevor Sie Details nennen.",
+      "agentHelperText": "Dieser Prompt leitet die KI an, wenn sie frei zwischen internem Wissen und Websuche wählen kann. Änderungen gelten sofort für neue Unterhaltungen."
     },
     "webSearch": {
       "loading": "Websuche-Einstellungen werden geladen…",
@@ -2556,7 +2920,21 @@
       "discardTitle": "Änderungen verwerfen?",
       "discardMessage": "Wenn Sie verwerfen, werden Ihre Änderungen nicht gespeichert",
       "discardConfirm": "Verwerfen",
-      "discardCancel": "Weiter bearbeiten"
+      "discardCancel": "Weiter bearbeiten",
+      "authentication": {
+        "title": "Authentifizierung",
+        "subtitle": "Für Ihr Konto aktivierte Anmeldemethoden. Diese werden vom Administrator Ihres Arbeitsbereichs verwaltet.",
+        "methodsLabel": "Aktivierte Anmeldemethoden",
+        "loading": "Wird geladen…",
+        "none": "Keine Anmeldemethoden aktiviert"
+      },
+      "deleteError": "Chat konnte nicht gelöscht werden",
+      "assistantChat": "Assistenten-Chat",
+      "agents": "Agenten",
+      "seeMore": "Mehr anzeigen",
+      "showMore": "Mehr anzeigen",
+      "moreAgents": "Weitere Agenten",
+      "moreChats": "Weitere Chats"
     },
     "services": {
       "pageTitle": "Dienste",
@@ -2570,7 +2948,7 @@
       "lastChecked": "Zuletzt geprüft: {{time}}",
       "loading": "Dienststatus wird geladen…",
       "policyTitle": "Dienstintegritätsrichtlinie",
-      "policyDescription": "Query- und Connector-Dienste sind kritisch — die Anwendung wartet auf sie vor dem Laden. Indexierungs-, Docling-, Parsing- und Extraktionsdienste sind nicht-blockierend und betreffen nur die Hintergrundverarbeitung.",
+      "policyDescription": "Query- und Konnektor-Dienste sind kritisch — die Anwendung wartet auf sie vor dem Laden. Indexierungs-, Docling-, Parsing- und Extraktionsdienste sind nicht-blockierend und betreffen nur die Hintergrundverarbeitung.",
       "allHealthy": "Alle Dienste sind funktionsfähig",
       "someUnhealthy": "Einige Dienste sind nicht funktionsfähig",
       "fetchFailed": "Fehler beim Prüfen des Dienststatus",
@@ -2612,7 +2990,7 @@
           "description": "RAG, semantische Suche und LLM-Integration"
         },
         "connector": {
-          "label": "Connector-Dienst",
+          "label": "Konnektor-Dienst",
           "description": "OAuth, Token-Aktualisierung und Datenquellenintegrationen"
         },
         "indexing": {
@@ -2738,14 +3116,14 @@
     },
     "oauthApps": {
       "title": "OAuth-Apps",
-      "subtitle": "Verwalten Sie OAuth-Zugangsdaten für Connectors und Aktionen. Als „Standard“ markierte Apps werden automatisch für neue Verbindungen verwendet, sofern nicht überschrieben.",
+      "subtitle": "Verwalten Sie OAuth-Zugangsdaten für Konnektoren und Aktionen. Als „Standard“ markierte Apps werden automatisch für neue Verbindungen verwendet, sofern nicht überschrieben.",
       "addButton": "OAuth-App hinzufügen",
       "tabs": {
-        "connectors": "Connectors",
+        "connectors": "Konnektoren",
         "toolsets": "Aktionen"
       },
       "typeSelector": {
-        "connectorLabel": "Connector-Typ",
+        "connectorLabel": "Konnektor-Typ",
         "toolsetLabel": "Aktionstyp",
         "loading": "Wird geladen…"
       },
@@ -2759,8 +3137,8 @@
       },
       "empty": {
         "title": "Keine OAuth-Apps für {{typeLabel}}",
-        "connectorDescription": "Fügen Sie eine OAuth-App hinzu, damit Connectors dieses Typs sich mit Ihren Zugangsdaten authentifizieren können.",
-        "connectorDescriptionPersonal": "Fügen Sie eine OAuth-App hinzu, damit sich dieser Connector-Typ in Ihrem Namen authentifizieren kann.",
+        "connectorDescription": "Fügen Sie eine OAuth-App hinzu, damit Konnektoren dieses Typs sich mit Ihren Zugangsdaten authentifizieren können.",
+        "connectorDescriptionPersonal": "Fügen Sie eine OAuth-App hinzu, damit sich dieser Konnektor-Typ in Ihrem Namen authentifizieren kann.",
         "toolsetDescription": "Fügen Sie eine OAuth-App hinzu, damit Aktionen dieses Typs sich mit Ihren Zugangsdaten authentifizieren können.",
         "noSearchResults": "Keine OAuth-Apps entsprechen Ihrer Suche.",
         "addButton": "OAuth-App hinzufügen"
@@ -2791,20 +3169,318 @@
       },
       "delete": {
         "title": "„{{name}}“ löschen?",
-        "message": "Diese OAuth-App wird dauerhaft gelöscht. Connector-Instanzen, die sie derzeit verwenden, funktionieren möglicherweise nicht mehr.",
+        "message": "Diese OAuth-App wird dauerhaft gelöscht. Konnektor-Instanzen, die sie derzeit verwenden, funktionieren möglicherweise nicht mehr.",
         "confirmLabel": "Löschen",
         "forceDeleteButton": "Erzwungen löschen",
         "forceTitle": "„{{name}}“ erzwungen löschen?",
-        "forceMessage": "Diese OAuth-App wird derzeit verwendet. Das erzwungene Löschen entfernt sie und kann bestehende Connector-Verbindungen, die darauf basieren, unterbrechen. Diese Aktion kann nicht rükgängig gemacht werden.",
+        "forceMessage": "Diese OAuth-App wird derzeit verwendet. Das erzwungene Löschen entfernt sie und kann bestehende Konnektor-Verbindungen, die darauf basieren, unterbrechen. Diese Aktion kann nicht rückgängig gemacht werden.",
         "forceConfirmLabel": "Erzwungen löschen",
         "successMessage": "OAuth-App „{{name}}“ wurde gelöscht."
       },
       "errors": {
         "loadTypes": "Verfügbare OAuth-App-Typen konnten nicht geladen werden.",
-        "loadConnectors": "Connector-OAuth-Apps konnten nicht geladen werden.",
+        "loadConnectors": "Konnektor-OAuth-Apps konnten nicht geladen werden.",
         "loadToolsets": "Aktions-OAuth-Apps konnten nicht geladen werden.",
         "deleteGeneric": "OAuth-App konnte nicht gelöscht werden."
+      },
+      "card": {
+        "default": "Standard",
+        "locked": "Gesperrt",
+        "edit": "Bearbeiten",
+        "delete": "Löschen"
       }
+    },
+    "personalAccessTokens": {
+      "title": "Persönliche Zugriffstoken (PAT)",
+      "subtitle": "Erstellen Sie langlebige Zugriffstoken für Ihre eigenen Skripte und Integrationen, etwa den MCP-Server. Nur Sie können Ihre Zugriffstoken hier sehen.",
+      "newToken": "Neues Zugriffstoken",
+      "emptyTitle": "Keine persönlichen Zugriffstoken",
+      "emptyDescription": "Erstellen Sie ein Zugriffstoken, um den PipesHub-MCP-Server oder Ihre eigenen Skripte zu verbinden.",
+      "errorGeneric": "Persönliche Zugriffstoken konnten nicht geladen werden",
+      "retry": "Erneut versuchen",
+      "columnName": "Name",
+      "columnScopes": "Berechtigungsbereiche",
+      "columnCreated": "Erstellt",
+      "columnExpires": "Läuft ab",
+      "columnLastUsed": "Zuletzt verwendet",
+      "scopeCount": "{{count}} Berechtigungsbereiche",
+      "neverUsed": "Nie",
+      "neverExpires": "Nie",
+      "revokeAria": "{{name}} widerrufen",
+      "revoke": {
+        "confirmTitle": "Zugriffstoken widerrufen?",
+        "confirmMessage": "Möchten Sie „{{name}}“ wirklich widerrufen? Alle Anwendungen, die dieses Zugriffstoken verwenden, verlieren sofort den Zugriff. Diese Aktion kann nicht rückgängig gemacht werden.",
+        "confirmButton": "Widerrufen",
+        "confirmLoading": "Wird widerrufen...",
+        "successTitle": "Zugriffstoken widerrufen",
+        "errorTitle": "Zugriffstoken konnte nicht widerrufen werden"
+      },
+      "create": {
+        "panelTitle": "Persönliches Zugriffstoken (PAT) erstellen",
+        "successPanelTitle": "Zugriffstoken erstellt",
+        "createButton": "Zugriffstoken erstellen",
+        "doneButton": "Fertig",
+        "cancel": "Abbrechen",
+        "nameLabel": "Name des Zugriffstokens",
+        "namePlaceholder": "z. B. MCP-Server",
+        "errorNameRequired": "Geben Sie einen Namen für dieses Zugriffstoken ein.",
+        "errorCreateTitle": "Zugriffstoken konnte nicht erstellt werden",
+        "expiryHeading": "Gültigkeit",
+        "expiry30Days": "30 Tage",
+        "expiry90Days": "90 Tage",
+        "expiry365Days": "365 Tage",
+        "expiryNever": "Unbegrenzt",
+        "permissionsHeading": "Berechtigungsbereiche",
+        "errorScopeRequired": "Wählen Sie mindestens einen Berechtigungsbereich aus.",
+        "selectAllScopes": "Alle auswählen",
+        "clearAllScopes": "Auswahl aufheben",
+        "scopesLoading": "Berechtigungsbereiche werden geladen...",
+        "scopesLoadError": "Berechtigungsbereiche konnten nicht geladen werden.",
+        "scopesRetry": "Erneut versuchen",
+        "successScreenTitle": "Zugriffstoken erstellt",
+        "successScreenSubtitle": "Kopieren Sie Ihr Zugriffstoken jetzt. Es wird später nicht mehr angezeigt.",
+        "tokenLabel": "Zugriffstoken",
+        "tokenShownOnceWarning": "Dieses Zugriffstoken wird nur einmal angezeigt. Bewahren Sie es an einem sicheren Ort auf.",
+        "showTokenAria": "Zugriffstoken anzeigen",
+        "hideTokenAria": "Zugriffstoken ausblenden",
+        "copyTokenAria": "Zugriffstoken kopieren",
+        "pasteBlockLabel": "Zum Einfügen in Ihre MCP-Konfiguration bereit",
+        "copyPasteBlockAria": "Konfigurationsblock kopieren",
+        "copySuccessTitle": "Kopiert",
+        "copyErrorTitle": "Kopieren fehlgeschlagen"
+      },
+      "scopeCount_one": "{{count}} Berechtigungsbereich",
+      "scopeCount_other": "{{count}} Berechtigungsbereiche"
+    },
+    "skills": {
+      "title": "Skills",
+      "subtitle": "Erstellen Sie eigene Skills für Ihre Agenten: Markdown-Anweisungen, optionale Skripte und Referenzdateien — versioniert und verwaltet wie alle anderen Inhalte im Agent Builder.",
+      "loading": "Skills werden geladen…",
+      "refreshed": "Aktualisiert",
+      "createSkill": "Skill erstellen",
+      "importSkill": "Importieren",
+      "reviewCandidates": "Vorschläge prüfen",
+      "searchPlaceholder": "Skills suchen…",
+      "noResults": "Keine Skills entsprechen Ihrer Suche",
+      "emptyTitle": "Noch keine Skills",
+      "emptyDescription": "Erstellen Sie Ihren ersten Skill oder importieren Sie einen aus npm, über eine URL oder aus einer ZIP-Datei",
+      "status": {
+        "active": "Aktiv",
+        "deprecated": "Veraltet",
+        "candidate": "Vorschlag",
+        "disabled": "Deaktiviert"
+      },
+      "cta": {
+        "manage": "Verwalten",
+        "view": "Anzeigen"
+      },
+      "errors": {
+        "loadSkills": "Skills konnten nicht geladen werden",
+        "loadData": "Daten konnten nicht geladen werden"
+      },
+      "toasts": {
+        "loadError": "Skills konnten nicht geladen werden",
+        "updated": "Skill „{{name}}“ aktualisiert",
+        "created": "Skill „{{name}}“ erstellt",
+        "updateError": "Skill konnte nicht aktualisiert werden",
+        "createError": "Skill konnte nicht erstellt werden",
+        "deprecated": "Skill „{{name}}“ als veraltet markiert",
+        "deprecateError": "Skill konnte nicht als veraltet markiert werden",
+        "deleted": "Skill „{{name}}“ gelöscht",
+        "deleteError": "Skill konnte nicht gelöscht werden",
+        "imported": "Skill „{{name}}“ importiert",
+        "importError": "Skill konnte nicht importiert werden",
+        "resourceAdded": "Ressource hinzugefügt",
+        "resourceError": "Ressource konnte nicht aktualisiert werden",
+        "rolledBack": "Auf Version {{version}} zurückgesetzt",
+        "rollbackError": "Zurücksetzen fehlgeschlagen",
+        "candidateApproved": "„{{name}}“ genehmigt",
+        "candidateRejected": "„{{name}}“ abgelehnt",
+        "candidateActionError": "Vorschlag konnte nicht aktualisiert werden",
+        "disabled": "Skill „{{name}}“ deaktiviert",
+        "enabled": "Skill „{{name}}“ aktiviert",
+        "toggleError": "Verfügbarkeit des Skills konnte nicht aktualisiert werden",
+        "conflict": "Dieser Skill wurde an anderer Stelle geändert",
+        "conflictDescription": "Laden Sie die neueste Version und wenden Sie Ihre Änderungen anschließend erneut an.",
+        "conflictReload": "Neu laden"
+      },
+      "builtinReadOnly": "Dieser Skill ist integriert und kann nicht bearbeitet werden.",
+      "editorPanel": {
+        "createTitle": "Neuer Skill",
+        "reviewTitle": "Vorschlag prüfen und bearbeiten",
+        "requiredHint": "Erforderlich: {{fields}}",
+        "bodyHint": "Beschreiben Sie die Anweisungen, die der Agent bei der Verwendung dieses Skills befolgen soll. Verwenden Sie Markdown-Überschriften, Listen und Codeblöcke."
+      },
+      "tabs": {
+        "content": "Inhalt",
+        "metadata": "Metadaten",
+        "resources": "Ressourcen",
+        "versions": "Versionen"
+      },
+      "form": {
+        "name": "Name",
+        "namePlaceholder": "z. B. pdf-table-extractor",
+        "bodyPlaceholder": "Beschreiben Sie, wie dieser Skill ausgeführt werden soll…",
+        "description": "Beschreibung",
+        "descriptionPlaceholder": "Was dieser Skill leistet und wann er verwendet werden soll (die Vorgehensweise gehört in den Inhalt)",
+        "category": "Kategorie",
+        "subcategory": "Unterkategorie",
+        "tags": "Tags",
+        "tagsPlaceholder": "Tag hinzufügen…",
+        "related": "Verwandte Skills",
+        "relatedPlaceholder": "Namen eines verwandten Skills hinzufügen…",
+        "requires": "Abhängigkeiten",
+        "requiresPlaceholder": "Namen eines erforderlichen Skills hinzufügen…",
+        "license": "Lizenz",
+        "compatibility": "Kompatibilität",
+        "deprecateReason": "Grund",
+        "replacedBy": "Ersetzt durch",
+        "noReplacement": "Kein Ersatz",
+        "typeNameToConfirm": "Geben Sie zur Bestätigung „{{name}}“ ein",
+        "replacedBy_withName": "Ersetzt durch {{name}}"
+      },
+      "dangerZone": {
+        "title": "Kritische Aktionen",
+        "deprecate": "Als veraltet markieren",
+        "delete": "Löschen",
+        "deprecateTitle": "„{{name}}“ als veraltet markieren?",
+        "deleteTitle": "„{{name}}“ löschen?",
+        "deleteBody": "Möchten Sie diesen Skill wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+        "cannotDeleteTitle": "Dieser Skill kann nicht gelöscht werden",
+        "requiredBy": "Andere Skills benötigen diesen Skill: {{names}}. Markieren Sie ihn stattdessen als veraltet, damit diese Abhängigkeiten weiterhin aufgelöst werden können.",
+        "usedByAgents": "Dieser Skill ist folgenden Agenten zugewiesen: {{names}}. Beim Löschen werden diese Zuweisungen entfernt."
+      },
+      "resources": {
+        "empty": "Noch keine Ressourcen enthalten.",
+        "addNew": "Ressource hinzufügen",
+        "path": "Pfad",
+        "content": "Inhalt"
+      },
+      "versions": {
+        "empty": "Noch kein Versionsverlauf.",
+        "current": "Aktuell",
+        "updatedBy": "Aktualisiert von {{who}}",
+        "rollback": "Zurücksetzen",
+        "rollbackTitle": "Auf Version {{version}} zurücksetzen?",
+        "rollbackBody": "Dadurch wird eine neue Version mit dem Inhalt von Version {{version}} erstellt. Der Versionsverlauf bleibt erhalten."
+      },
+      "import": {
+        "title": "Skill importieren",
+        "description": "Importieren Sie einen Skill aus einem npm-Paket, über eine URL oder aus einem hochgeladenen Archiv.",
+        "tabNpm": "npm",
+        "tabUrl": "URL",
+        "tabUpload": "Upload",
+        "npmLabel": "npm-Installationsbefehl oder Paketname",
+        "npmHint": "Fügen Sie einen Installationsbefehl für npm, npx, yarn oder pnpm oder nur einen Paketnamen ein. Der Befehl wird lediglich ausgewertet und niemals ausgeführt.",
+        "urlLabel": "Archiv-URL",
+        "uploadLabel": "Skill-Archiv (.zip, .tar.gz)",
+        "chooseFile": "Datei auswählen…",
+        "preview": "Vorschau",
+        "previewError": "Vorschau dieses Skills konnte nicht geladen werden",
+        "confirmImport": "Skill importieren",
+        "source": "Quelle: {{source}}",
+        "resourceCount": "{{count}} Ressource(n)",
+        "skippedBinary": "{{count}} Binärdatei(en) wurden übersprungen (noch nicht unterstützt)",
+        "resourceCount_one": "{{count}} Ressource",
+        "resourceCount_other": "{{count}} Ressourcen",
+        "skippedBinary_one": "{{count}} Binärdatei wurde übersprungen (noch nicht unterstützt)",
+        "skippedBinary_other": "{{count}} Binärdateien wurden übersprungen (noch nicht unterstützt)",
+        "nameHint": "Kleinbuchstaben im Kebab-Case. Ändern Sie den Namen, wenn der ursprüngliche Name bereits von einem integrierten Skill verwendet wird (z. B. pptx).",
+        "nameInvalid": "Der Name darf nur Kleinbuchstaben, Zahlen und einzelne Bindestriche enthalten.",
+        "originalName": "Ursprünglicher Name: {{name}}"
+      },
+      "candidates": {
+        "title": "Ausstehende Skill-Vorschläge",
+        "subtitle": "Skills, die Ihre Agenten während ihrer Arbeit vorgeschlagen haben. Prüfen und genehmigen Sie die Vorschläge, um sie Ihrem Katalog hinzuzufügen, oder lehnen Sie sie ab.",
+        "empty": "Keine ausstehenden Vorschläge",
+        "approve": "Genehmigen",
+        "reject": "Ablehnen",
+        "view": "Anzeigen",
+        "hide": "Ausblenden",
+        "editAndApprove": "Bearbeiten und genehmigen"
+      },
+      "availability": {
+        "label": "Für Agenten verfügbar",
+        "description": "Wenn deaktiviert, bleibt dieser Skill in Ihrer Bibliothek, kann von Agenten jedoch nicht gefunden oder geladen werden.",
+        "descriptionBuiltin": "Wenn deaktiviert, bleibt dieser integrierte Skill in der Bibliothek, kann jedoch von Agenten in der gesamten Organisation nicht gefunden oder geladen werden."
+      }
+    },
+    "serviceAccounts": {
+      "title": "Dienstkonten",
+      "subtitle": "Maschinenidentitäten, damit Automatisierungen mit eigenen Berechtigungen lesen, statt die Berechtigungen einer Person zu übernehmen.",
+      "newAccount": "Neues Dienstkonto",
+      "errorGeneric": "Dienstkonten konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "emptyTitle": "Noch keine Dienstkonten",
+      "emptyDescription": "Mit einem Dienstkonto kann ein Skript aus PipesHub lesen, ohne sich als Kollege anzumelden. Es sieht nur, was Sie ihm freigeben, und funktioniert weiter, wenn Personen das Unternehmen verlassen.",
+      "columnName": "Name",
+      "columnDescription": "Verwendungszweck",
+      "columnStatus": "Status",
+      "statusActive": "Aktiv",
+      "statusDisabled": "Deaktiviert",
+      "manageTokens": "Tokens",
+      "enable": "Aktivieren",
+      "disable": "Deaktivieren",
+      "delete": "Löschen",
+      "enabledTitle": "Dienstkonto aktiviert",
+      "disabledTitle": "Dienstkonto deaktiviert",
+      "disabledBody": "Seine Tokens funktionieren sofort nicht mehr, nicht erst bei der nächsten Anmeldung.",
+      "updateErrorTitle": "Dienstkonto konnte nicht aktualisiert werden",
+      "deleteTitle": "Dieses Dienstkonto löschen?",
+      "deleteDescription": "{{name}} funktioniert sofort nicht mehr und alle zugehörigen Tokens werden widerrufen. Alles, was noch eines dieser Tokens verwendet, schlägt anschließend fehl.",
+      "deleteSuccessTitle": "Dienstkonto gelöscht",
+      "deleteErrorTitle": "Dienstkonto konnte nicht gelöscht werden",
+      "create": {
+        "title": "Neues Dienstkonto",
+        "intro": "Automatisierungen authentifizieren sich als dieses Konto statt als Person. Dadurch werden die Leseberechtigungen hier festgelegt und nicht von der Person übernommen, die die Automatisierung eingerichtet hat.",
+        "slugLabel": "Kurzname",
+        "slugHelp": "Kleinbuchstaben, Ziffern und einzelne Bindestriche. Dieser Wert wird Teil der Kontoadresse und kann später nicht geändert werden.",
+        "slugLengthError": "Verwenden Sie zwischen 3 und 48 Zeichen.",
+        "slugFormatError": "Verwenden Sie Kleinbuchstaben, Ziffern und einzelne Bindestriche. Der Name darf nicht mit einem Bindestrich beginnen oder enden.",
+        "nameLabel": "Anzeigename",
+        "namePlaceholder": "Nächtliche Synchronisierung",
+        "descriptionLabel": "Verwendungszweck",
+        "descriptionPlaceholder": "Liest das Handbuch für die Release-Zusammenfassung",
+        "note": "Niemand kann sich als Dienstkonto anmelden. Es ist immer Mitglied und niemals Administrator. Gewähren Sie Zugriff wie bei einem Kollegen: über Gruppen und Teams.",
+        "submit": "Erstellen",
+        "successTitle": "Dienstkonto erstellt",
+        "errorTitle": "Dienstkonto konnte nicht erstellt werden"
+      },
+      "tokens": {
+        "title": "Tokens",
+        "newToken": "Neues Token",
+        "mint": "Token erstellen",
+        "nameLabel": "Wofür wird dieses Token verwendet?",
+        "namePlaceholder": "Release-Zusammenfassungsjob",
+        "scopesLabel": "Scopes",
+        "scopesHelp": "Wählen Sie aus, was dieses Token tun darf. Es gibt keine Standardauswahl: Eine unbeaufsichtigt verwendete Anmeldeinformation sollte nur die bewusst vergebenen Berechtigungen besitzen.",
+        "expiryLabel": "Läuft ab nach",
+        "expiryDays": "{{count}} Tagen",
+        "existing": "Tokens",
+        "none": "Dieses Konto besitzt noch keine Tokens.",
+        "lastUsed": "Zuletzt verwendet: {{date}}",
+        "neverUsed": "Nie verwendet",
+        "expiresOn": "läuft am {{date}} ab",
+        "expiresInDays": "Noch {{count}} Tage",
+        "expired": "Abgelaufen",
+        "expiringSoon": "{{count}} Token(s) laufen bald ab. Erstellen Sie den Ersatz, stellen Sie die Integration darauf um und widerrufen Sie anschließend das alte Token.",
+        "revoke": "Widerrufen",
+        "revokeSuccessTitle": "Token widerrufen",
+        "revokeErrorTitle": "Token konnte nicht widerrufen werden",
+        "mintErrorTitle": "Token konnte nicht erstellt werden",
+        "loadErrorTitle": "Tokens konnten nicht geladen werden",
+        "copyNowTitle": "Kopieren Sie dieses Token jetzt",
+        "copyNowBody": "Es wird nur dieses eine Mal angezeigt. Gespeichert wird ausschließlich sein Hash, daher kann es später nicht erneut abgerufen werden.",
+        "disabledNote": "Dieses Konto ist deaktiviert, daher können keine neuen Tokens erstellt werden. Vorhandene Tokens werden unten weiterhin angezeigt und können widerrufen werden.",
+        "rotationHelp": "So rotieren Sie ein Token: Erstellen Sie ein neues Token, stellen Sie die Integration um, solange beide funktionieren, und widerrufen Sie anschließend das alte. Ein vorheriger Widerruf würde die verwendende Integration unterbrechen.",
+        "loading": "Tokens werden geladen…",
+        "copy": "Token kopieren",
+        "revokeTitle": "Dieses Token widerrufen?",
+        "revokeDescription": "„{{name}}“ funktioniert sofort nicht mehr und kann nicht wiederhergestellt werden. Alles, was es noch verwendet, schlägt anschließend fehl. Wenn Sie rotieren, erstellen Sie zuerst den Ersatz und stellen Sie die Integration darauf um."
+      },
+      "disableTitle": "Dieses Dienstkonto deaktivieren?",
+      "disableDescription": "{{name}} funktioniert sofort nicht mehr – einschließlich aller bereits vorhandenen Tokens, nicht erst bei der nächsten Anmeldung. Alles, was eines dieser Tokens verwendet, schlägt fehl, bis Sie das Konto wieder aktivieren.",
+      "disableConfirm": "Deaktivieren"
     }
   },
   "filePreview": {
@@ -2815,17 +3491,28 @@
     "showMore": "Mehr anzeigen",
     "showLess": "Weniger anzeigen",
     "lockZoom": "Zoomstufe sperren",
-    "unlockZoom": "Zoomstufe entsperren"
+    "unlockZoom": "Zoomstufe entsperren",
+    "closePreview": "Vorschau schließen",
+    "openWebUrl": "Web-URL öffnen",
+    "openInSource": "In der Quelle öffnen",
+    "noDetails": "Keine Dateidetails verfügbar",
+    "metadata": "Metadaten",
+    "webUrl": "Web-URL",
+    "fitToScreen": "An Bildschirm anpassen",
+    "resizeCitations": "Größe des Quellen-Panels ändern",
+    "resizePreview": "Größe der Dateivorschau ändern",
+    "viewCitations": "Quellen anzeigen",
+    "openNamedInSource": "{{name}} in der Quelle öffnen"
   },
   "agentBuilder": {
     "goBack": "Zurück",
     "agentName": "Agentenname",
     "createdBy": "Erstellt von",
     "agentNamePlaceholder": "z.B. Support-Bot, Forschungsassistent",
-    "serviceAccountBadge": "Servicemitarbeiter",
+    "serviceAccountBadge": "Service-Agent",
     "serviceAccountBadgeTooltip": "Dieser Service-Agent nutzt dedizierte Toolset-Anmeldedaten und organisationsweiten Wissenszugriff für alle Nutzer.",
     "convertToServiceAccount": "In Service-Agent umwandeln",
-    "convertToServiceAccountTooltip": "Dauerhaft umwandeln — dedizierte Toolset-Anmeldedaten und organisationsweiter Wissenszugriff. Kann nicht rükgängig gemacht werden.",
+    "convertToServiceAccountTooltip": "Dauerhaft umwandeln — dedizierte Toolset-Anmeldedaten und organisationsweiter Wissenszugriff. Kann nicht rückgängig gemacht werden.",
     "convertToServiceAccountTooltipNewAgent": "Erstellt diesen Agenten als Service-Agent mit agentbezogenen Toolsets und organisationsweitem Wissenszugriff.",
     "createAsServiceAccount": "Service-Agent",
     "createAsServiceAccountTooltip": "Als Service-Agent mit eigenen Toolset-Anmeldedaten und vollem Wissenszugriff erstellen.",
@@ -2839,11 +3526,11 @@
     "saving": "Wird gespeichert…",
     "saveChanges": "Änderungen speichern",
     "createAgent": "Agenten erstellen",
-    "createAgentSubtitle": "Gib deinem Agenten einen Namen und wähle einen Typ.",
+    "createAgentSubtitle": "Geben Sie Ihrem Agenten einen Namen und wählen Sie einen Typ.",
     "agentType": "Agentenart",
     "userAgent": "Benutzer-Agent",
     "userAgentDesc": "Persönlicher Agent mit benutzerspezifischer Toolset-Authentifizierung.",
-    "serviceAgent": "Dienst-Agent",
+    "serviceAgent": "Service-Agent",
     "serviceAgentDesc": "Organisationsweiter Agent mit Agent-Level-Toolset-Anmeldedaten.",
     "nameRequired": "Name ist erforderlich",
     "saveAsServiceAccountFirst": "Speichern Sie den Agenten zuerst als Service-Agent, dann konfigurieren Sie die Toolset-Anmeldedaten.",
@@ -2888,7 +3575,7 @@
     "mcpServersSection": "MCP-Server",
     "skillsSection": "Skills",
     "noSkillsAvailable": "Keine Skills verfügbar",
-    "skillNodeTemplateDescription": "Benutzerdefinierte Skill, die Ihr Agent aufrufen kann",
+    "skillNodeTemplateDescription": "Eigener Skill, den Ihr Agent aufrufen kann",
     "skillDeprecated": "Diese Skill wurde als veraltet markiert",
     "skillDeprecatedReplacedBy": "Diese Skill wurde als veraltet markiert. Verwenden Sie stattdessen {{name}}.",
     "inputSection": "Eingabe",
@@ -2937,13 +3624,6 @@
     "notConfiguredTooltip": "Nicht konfiguriert (nur Registry-Eintrag)",
     "configureToolsetTooltip": "Toolset konfigurieren",
     "authenticateToolsetTooltip": "Dieses Toolset authentifizieren",
-    "svcAcctConvertNextSteps": "Speichern Sie den Agenten und verwenden Sie dann das Schlüssel-Symbol neben jedem Toolset in der Palette, um Anmeldedaten auf Agentenebene festzulegen. Bestehende Benutzer-Toolset-Verbindungen werden nicht übertragen.",
-    "svcAcctCreateNextSteps": "Speichern Sie den Agenten und verwenden Sie dann das Schlüssel-Symbol in der Palette, um Anmeldedaten für jedes Toolset dieses Dienstkontos zu konfigurieren. Fügen Sie Wissen hinzu, legen Sie das Modell fest und verfeinern Sie den Ablauf nach Bedarf.",
-    "svcAcctDescSuffix": "Das bedeutet im Einzelnen:",
-    "svcAcctKnowledgeNote3": "Jeder, der diesen Agenten verwendet, kann Antworten aus Inhalten sehen, auf die Sie Zugriff haben, auch wenn deren eigene Berechtigungen dies nicht einschließen würden.",
-    "svcAcctToolsetsDesc": "Toolsets verwenden einen Satz von Anmeldedaten für den gesamten Agenten, der von allen Nutzern geteilt wird — nicht die persönlichen Toolset-Anmeldedaten jedes Nutzers.",
-    "svcAcctToolsetsNote2Create": "Fügen Sie keine Toolsets hinzu, die Benutzer-Anmeldedaten erfordern, bis Sie bereit sind, Anmeldedaten auf Agentenebene in der Palette bereitzustellen.",
-    "svcAcctNextStepsLabel": "Nächste Schritte:",
     "svcAcctConvertTitle": "In Service-Agent umwandeln",
     "svcAcctCreateTitle": "Service-Agent erstellen",
     "svcAcctConvertDesc": "Dieser Agent wird ein gemeinsamer Service-Agent: organisationsweit verfügbar, jedes Toolset authentifiziert sich einmal auf Agentenebene, und Wissen beschränkt sich auf das, was Sie im Ablauf anbinden.",
@@ -3060,7 +3740,7 @@
     "connectionToolToToolsets": "Tools müssen mit dem Toolsets-Handle des Agenten verbunden werden",
     "connectionAgentResponseToOutput": "Antwort-Handle des Agenten mit der Chat-Ausgabe verbinden",
     "connectionThroughAgent": "Knoten müssen über den Agenten verbunden werden",
-    "defaultSystemPrompt": "Du bist ein hilfreicher Assistent.",
+    "defaultSystemPrompt": "Sie sind ein hilfreicher Assistent.",
     "defaultStartMessage": "Hallo! Ich stehe bereit. Wie kann ich Ihnen heute helfen?",
     "nodeLabelChatInput": "Chat-Eingabe",
     "nodeDescUserMessages": "Nutzer-Nachrichten",
@@ -3123,10 +3803,29 @@
     "toolInlineSuffix": "{{name}}-Tool",
     "paletteToolGroupLabel": "{{app}}-Tools",
     "nodeTemplateChatResponseDesc": "Sendet die Antwort an den Nutzer",
-    "deprecatedToolsBanner": "{{count}} Tool(s) auf diesem Agenten sind veraltet, entferne sie: {{tools}}",
+    "deprecatedToolsBanner": "{{count}} Tool(s) dieses Agenten sind veraltet. Entfernen Sie diese: {{tools}}",
     "removeDeprecatedTools": "Veraltete Tools entfernen",
     "showMore": "Mehr anzeigen",
-    "showLess": "Weniger anzeigen"
+    "showLess": "Weniger anzeigen",
+    "noSkills": "Noch keine Skills — erstellen oder importieren Sie einen unter „Ihre Skills“",
+    "connectionSkillToSkillsHandle": "Skills müssen mit dem Skills-Anschluss des Agenten verbunden werden",
+    "dropDuplicateSkill": "{{name}} wurde diesem Agenten bereits hinzugefügt",
+    "mcpServerAlreadyAttachedNotify": "{{name}} wurde diesem Agenten bereits hinzugefügt",
+    "mcpServerWithToolCount": "MCP-Server mit {{count}} Tool(s)",
+    "webSearchOnlyOne": "Es kann nur ein Websuchanbieter hinzugefügt werden",
+    "mcpServerNodeSubtitle": "Tools eines MCP-Servers",
+    "noMcpServersAvailable": "Keine MCP-Server verfügbar",
+    "webSearchLocked": "Die Websuche kann für diesen Agenten nicht geändert werden",
+    "webSearchLoading": "Websuchanbieter werden geladen…",
+    "webSearchConfigureFirst": "Konfigurieren Sie zuerst {{name}}",
+    "webSearch": "Websuche",
+    "attached": "Hinzugefügt",
+    "toolsetOAuthServerError": "Authentifizierung fehlgeschlagen. Versuchen Sie es erneut oder wenden Sie sich an Ihren Administrator.",
+    "mcpServerWithToolCount_one": "MCP-Server mit {{count}} Tool",
+    "mcpServerWithToolCount_other": "MCP-Server mit {{count}} Tools",
+    "deprecatedToolsBanner_one": "{{count}} Tool dieses Agenten ist veraltet. Entfernen Sie es: {{tools}}",
+    "deprecatedToolsBanner_other": "{{count}} Tools dieses Agenten sind veraltet. Entfernen Sie diese: {{tools}}",
+    "skillDisabled": "Dieser Skill ist deaktiviert und steht dem Agenten erst wieder zur Verfügung, wenn er erneut aktiviert wird."
   },
   "recordView": {
     "sections": {
@@ -3161,7 +3860,7 @@
     "openFullscreen": "Vollbild öffnen",
     "exitFullscreen": "Vollbild beenden",
     "close": "Schließen",
-    "forceReindex": "Reindex erzwingen",
+    "forceReindex": "Neuindizierung erzwingen",
     "retryIndexing": "Indizierung wiederholen",
     "startIndexing": "Indizierung starten",
     "resumeIndexing": "Indizierung fortsetzen",
@@ -3197,16 +3896,48 @@
       "folder": "Ordner",
       "connectorId": "Konnektor-ID",
       "notAvailable": "k. A.",
-      "typeEmail": "E-Mail",
-      "typeFile": "Datei",
-      "typeArtifact": "Artefakt",
-      "typeTicket": "Ticket",
-      "typeWebpage": "Webseite",
-      "typeMessage": "Nachricht",
       "mailSubject": "Betreff",
       "ticketSummary": "Zusammenfassung",
-      "ticketDescription": "Beschreibung"
-    }
+      "ticketDescription": "Beschreibung",
+      "recordTypes": {
+        "FILE": "Datei",
+        "DRIVE": "Laufwerk",
+        "WEBPAGE": "Webseite",
+        "DATABASE": "Datenbank",
+        "DATASOURCE": "Datenquelle",
+        "MESSAGE": "Nachricht",
+        "MAIL": "E-Mail",
+        "EMAIL": "E-Mail",
+        "GROUP_MAIL": "Gruppen-E-Mail",
+        "TICKET": "Ticket",
+        "COMMENT": "Kommentar",
+        "INLINE_COMMENT": "Inline-Kommentar",
+        "CONFLUENCE_PAGE": "Confluence-Seite",
+        "CONFLUENCE_BLOGPOST": "Confluence-Blogbeitrag",
+        "SHAREPOINT_PAGE": "SharePoint-Seite",
+        "SHAREPOINT_LIST": "SharePoint-Liste",
+        "SHAREPOINT_LIST_ITEM": "SharePoint-Listenelement",
+        "SHAREPOINT_DOCUMENT_LIBRARY": "SharePoint-Dokumentbibliothek",
+        "LINK": "Link",
+        "PROJECT": "Projekt",
+        "PULL_REQUEST": "Pull Request",
+        "MEETING": "Besprechung",
+        "PRODUCT": "Produkt",
+        "DEAL": "Deal",
+        "CASE": "Fall",
+        "TASK": "Aufgabe",
+        "ARTIFACT": "Artefakt",
+        "CODE_FILE": "Codedatei",
+        "SQL_TABLE": "SQL-Tabelle",
+        "SQL_VIEW": "SQL-View",
+        "OTHERS": "Sonstiges"
+      }
+    },
+    "forceReindexTitle": "Vollständige Neuindizierung erzwingen?",
+    "forceReindexDescription": "Das Dokument wird von Grund auf neu indexiert. Dabei können zusätzliche Kosten entstehen. Verwenden Sie diese Option, wenn Suchergebnisse veraltet sind oder das Dokument trotz abgeschlossener Indexierung nicht durchsuchbar ist.",
+    "deleteRecord": "Datensatz löschen",
+    "previewConversionFailed": "Konvertierung für die Vorschau fehlgeschlagen. Sie können die Datei weiterhin herunterladen.",
+    "missingRecordId": "Datensatz-ID fehlt"
   },
   "oauthConsent": {
     "loading": "Autorisierungsanfrage wird geladen…",
@@ -3246,7 +3977,8 @@
       "invalid_request": "Die angegebene Redirect-URI stimmt mit keiner registrierten URI für diese Anwendung überein. Überprüfen Sie die Redirect-URIs in den Entwicklereinstellungen.",
       "invalid_client": "Die client_id stimmt mit keiner registrierten OAuth-Anwendung überein. Überprüfen Sie die Client-ID in der Konfiguration Ihrer Anwendung.",
       "server_error": "Ein unerwarteter Serverfehler ist aufgetreten. Bitte versuchen Sie es später erneut."
-    }
+    },
+    "unreviewedApp": "Diese Anwendung hat sich selbst registriert. Sie wurde von keinem Administrator geprüft."
   },
   "auth": {
     "titleSection": {
@@ -3350,7 +4082,9 @@
       "microsoftUnavailable": "Microsoft-Anmeldung ist derzeit nicht verfügbar. Kontaktieren Sie Ihren Administrator.",
       "oauthUnavailable": "OAuth-Anmeldung ist derzeit nicht verfügbar. Kontaktieren Sie Ihren Administrator.",
       "showPassword": "Passwort anzeigen",
-      "hidePassword": "Passwort verbergen"
+      "hidePassword": "Passwort verbergen",
+      "accountDisabled": "Ihr Konto wurde deaktiviert.",
+      "tooManyIncorrectCredentials": "Sie haben zu oft falsche Anmeldedaten eingegeben"
     }
   },
   "healthGate": {
@@ -3378,5 +4112,98 @@
     "skip": "Überspringen",
     "next": "Weiter",
     "submit": "Absenden"
+  },
+  "oauthDevice": {
+    "title": "Gerät verbinden",
+    "codeLabel": "Geben Sie den in Ihrem Terminal angezeigten Code ein",
+    "phishingWarning": "Fahren Sie nur fort, wenn Sie diesen Vorgang selbst auf einem Gerät gestartet haben, das Sie kontrollieren. Wenn Ihnen jemand diesen Code geschickt hat, schließen Sie diese Seite.",
+    "codePlaceholder": "ABCD-EFGH",
+    "continue": "Weiter",
+    "loading": "Gerät wird gesucht…",
+    "doneTitle": "Gerät verbunden",
+    "doneLine": "Sie können zum Terminal zurückkehren. Dieses Fenster kann geschlossen werden.",
+    "deniedTitle": "Anfrage abgelehnt",
+    "deniedLine": "Dem Gerät wurde kein Zugriff gewährt."
+  },
+  "collections": {
+    "stats": {
+      "title": "Analysen",
+      "menuLabel": "Analysen",
+      "fetchError": "Indexierungsstatistiken konnten nicht geladen werden",
+      "refreshSuccess": "Statistiken aktualisiert",
+      "refreshError": "Statistiken konnten nicht aktualisiert werden",
+      "reindexFailedStart": "Fehlgeschlagene Datensätze werden neu indexiert…",
+      "reindexFailedError": "Fehlgeschlagene Datensätze konnten nicht neu indexiert werden",
+      "manualIndexStart": "Datensätze mit manueller Indexierung werden indexiert…",
+      "manualIndexError": "Manuelle Indexierung konnte nicht gestartet werden"
+    }
+  },
+  "reindexScope": {
+    "description": "Wählen Sie aus, was für „{{name}}“ indexiert werden soll.",
+    "thisItemOnly": "Nur dieses Element",
+    "withChildren": "Dieses Element und alle untergeordneten Elemente"
+  },
+  "validation": {
+    "password": {
+      "rules": "Mindestens 8 Zeichen, darunter Kleinbuchstaben, Großbuchstaben, eine Zahl und ein Sonderzeichen.",
+      "minLength": "Das Passwort muss mindestens 8 Zeichen lang sein.",
+      "lowercase": "Das Passwort muss einen Kleinbuchstaben enthalten.",
+      "uppercase": "Das Passwort muss einen Großbuchstaben enthalten.",
+      "number": "Das Passwort muss eine Zahl enthalten.",
+      "symbol": "Das Passwort muss ein Sonderzeichen enthalten.",
+      "mismatch": "Die Passwörter stimmen nicht überein."
+    }
+  },
+  "filterDropdown": {
+    "selectedCount": "{{count}} ausgewählt",
+    "is": "ist",
+    "isAnyOf": "ist einer von",
+    "loadingOptions": "Optionen werden geladen…",
+    "refreshingOptions": "Optionen werden aktualisiert…",
+    "loadingMore": "Weitere werden geladen…"
+  },
+  "moveFolder": {
+    "moving": "Wird verschoben...",
+    "noFolders": "Keine Ordner gefunden"
+  },
+  "shareSidebar": {
+    "suggestedTeams": "Vorgeschlagene Teams",
+    "suggestedMembers": "Vorgeschlagene Mitglieder",
+    "loadingMoreUsers": "Weitere Benutzer werden geladen...",
+    "noResults": "Keine Benutzer oder Teams gefunden",
+    "createNewTeam": "Neues Team erstellen",
+    "sharing": "Wird freigegeben...",
+    "accessShared": "Zugriff freigegeben",
+    "sharedWith": "Freigegeben für {{names}}",
+    "shareFailed": "Freigabe fehlgeschlagen",
+    "shareError": "Zugriff konnte nicht freigegeben werden. Bitte versuchen Sie es erneut.",
+    "roleUpdated": "Rolle aktualisiert",
+    "roleUpdatedDescription": "{{name}} hat jetzt die Rolle „{{role}}“",
+    "member": "Mitglied",
+    "roleError": "Rolle konnte nicht aktualisiert werden. Bitte versuchen Sie es erneut.",
+    "roleFailed": "Rolle konnte nicht aktualisiert werden",
+    "accessRevoked": "Zugriff entzogen",
+    "accessRevokedDescription": "{{name}} hat keinen Zugriff mehr",
+    "revokeError": "Zugriff konnte nicht entzogen werden. Bitte versuchen Sie es erneut.",
+    "revokeFailed": "Zugriff konnte nicht entzogen werden",
+    "memberCount_one": "{{count}} Mitglied",
+    "memberCount_other": "{{count}} Mitglieder",
+    "roles": {
+      "owner": {
+        "label": "Vollzugriff",
+        "description": "Gemeinsame Inhaberschaft der Sammlung"
+      },
+      "writer": {
+        "label": "Kann bearbeiten",
+        "description": "Darf Dateien und Ordner nur bearbeiten und organisieren"
+      },
+      "reader": {
+        "label": "Kann ansehen",
+        "description": "Nur Lesezugriff"
+      }
+    },
+    "team": "Team",
+    "teamsNoRoles": "Teams haben keine Rollen",
+    "invite": "Zu PipesHub einladen"
   }
 }

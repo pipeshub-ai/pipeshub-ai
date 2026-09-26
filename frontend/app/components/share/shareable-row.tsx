@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
 import React from 'react';
 import { Flex, Text, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -59,6 +60,7 @@ export function ShareableRow({
   onRemove,
   onRoleDropdownOpenChange,
 }: ShareableRowProps) {
+  const { t } = useTranslation();
   return (
     <Flex
       align="center"
@@ -166,7 +168,7 @@ export function ShareableRow({
 
       {isOwner && !showRoleDropdown && (
         <Text size="2" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
-          Owner
+          {t('recordView.permissionOwner')}
         </Text>
       )}
 
@@ -183,7 +185,7 @@ export function ShareableRow({
             onInvite?.();
           }}
         >
-          Invite to Pipeshub
+          {t('shareSidebar.invite')}
         </Text>
       )}
     </Flex>

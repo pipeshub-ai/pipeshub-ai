@@ -28,7 +28,8 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import type { FilterSchemaField } from '../../types';
 import { isMeaningfulFilterRow } from '../../utils/sync-filter-save-guards';
-import { MANUAL_INDEXING_TOOLTIP_TEXT } from '../../utils/manual-indexing-tooltip';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 
 type FilterSection = 'sync' | 'indexing';
@@ -39,8 +40,6 @@ const MANUAL_INDEXING_FIELD_NAME = 'enable_manual_sync';
 const INITIAL_LIMIT = 20;
 const PAGE_LIMIT = 20;
 const MAX_OPTIONS_IN_MEMORY = 5000;
-const OPTIONS_LOAD_FAILED_MESSAGE =
-  "We couldn't load the options for this filter. Close this list and open it again to retry.";
 
 const inputLike: React.CSSProperties = {
   height: 32,
@@ -160,11 +159,12 @@ function coerceDatetimePersistedForOperator(operator: string, rawValue: unknown)
   return persistDatetimeRangeValue(operator, start, end);
 }
 
-function formatOperatorLabel(operator: string): string {
-  return operator
+function formatOperatorLabel(operator: string, t: TFunction): string {
+  const defaultValue = operator
     .split('_')
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(' ');
+  return t(`workspace.connectors.filters.operators.${operator.toLowerCase()}`, { defaultValue });
 }
 
 /** Align connector datetime operators with shared `DateRangePicker` modes (users / workspace filters). */
@@ -254,9 +254,10 @@ function hasActiveFilterRow(raw: unknown): boolean {
 function summarizeCommittedFilter(
   field: FilterSchemaField,
   row: FilterRowValue,
-  section: FilterSection
+  section: FilterSection,
+  t: TFunction
 ): string {
-  const op = formatOperatorLabel(row.operator);
+  const op = formatOperatorLabel(row.operator, t);
   const ft = String(field.filterType ?? '').toLowerCase();
   if (ft === 'select') {
     const id = listFilterIds(row.value)[0];
@@ -276,10 +277,10 @@ function summarizeCommittedFilter(
     const opLower = row.operator.toLowerCase();
     if (opLower.startsWith('last_')) return `${op}`;
     const { start: ds, end: de } = datetimeFilterDisplayPair(row.operator, row.value);
-    return ds || de ? `${op} · date range` : op;
+    return ds || de ? `${op} · ${t('workspace.connectors.filters.dateRange')}` : op;
   }
   if (ft === 'boolean') {
-    const yn = row.value ? 'Yes' : 'No';
+    const yn = row.value ? t('common.yes') : t('common.no');
     if (section === 'indexing') return yn;
     return `${op} · ${yn}`;
   }
@@ -543,7 +544,7 @@ function useDynamicFilterOptions(
         if (!append) {
           setOptions([]);
           setHasMore(false);
-          setEmptyMessage(OPTIONS_LOAD_FAILED_MESSAGE);
+          setEmptyMessage(undefined);
         }
       } finally {
         if (append) appendFetchingRef.current = false;
@@ -602,6 +603,7 @@ function ConnectorFilterMultiSelect({
   /** Exclude repository options under these parent containers (sync filter, NOT_IN). */
   optionExcludeContextGroupPaths?: string[];
 }) {
+  const { t } = useTranslation();
   const selectedIds = useMemo(() => listFilterIds(value), [value]);
   const labelsById = useMemo(() => listFilterLabelsById(value), [value]);
   const dyn = useDynamicFilterOptions(
@@ -636,13 +638,13 @@ function ConnectorFilterMultiSelect({
     [dynamicOpts, selectedIds, labelsById]
   );
 
-  const plural = `${field.displayName} values`;
-  const selectLabel = `Select ${field.displayName}`;
+  const plural = t('workspace.connectors.filters.fieldValues', { field: field.displayName });
+  const selectLabel = t('workspace.connectors.filters.selectField', { field: field.displayName });
 
   if (dyn.isDynamic && !connectorId) {
     return (
       <Text size="1" color="gray">
-        Complete authentication and save the connector to load options for this filter.
+        {t('workspace.connectors.filters.authenticateForOptions')}
       </Text>
     );
   }
@@ -653,7 +655,6 @@ function ConnectorFilterMultiSelect({
         label={selectLabel}
         triggerTitle={selectLabel}
         icon="filter_list"
-        pluralLabel={plural}
         options={mergedStaticOpts}
         selectedValues={selectedIds}
         onSelectionChange={(next) => onValueChange(buildListPersistedValue(next, value, mergedStaticOpts))}
@@ -671,7 +672,6 @@ function ConnectorFilterMultiSelect({
       label={selectLabel}
       triggerTitle={selectLabel}
       icon="filter_list"
-      pluralLabel={plural}
       options={mergedDynamicOpts}
       selectedValues={selectedIds}
       onSelectionChange={(next) => onValueChange(buildListPersistedValue(next, value, mergedDynamicOpts))}
@@ -714,6 +714,7 @@ function ConnectorFilterSelect({
   optionContextGroupPaths?: string[];
   optionExcludeContextGroupPaths?: string[];
 }) {
+  const { t } = useTranslation();
   const selectedId = useMemo(() => listFilterIds(value)[0] ?? null, [value]);
   const labelsById = useMemo(() => listFilterLabelsById(value), [value]);
   const dyn = useDynamicFilterOptions(
@@ -777,7 +778,7 @@ function ConnectorFilterSelect({
   if (dyn.isDynamic && !connectorId) {
     return (
       <Text size="1" color="gray">
-        Complete authentication and save the connector to load options for this filter.
+        {t('workspace.connectors.filters.authenticateForOptions')}
       </Text>
     );
   }
@@ -813,7 +814,7 @@ function ConnectorFilterSelect({
               color: selectedLabel ? 'var(--gray-12)' : 'var(--gray-10)',
             }}
           >
-            {selectedLabel ?? `Select ${field.displayName.toLowerCase()}`}
+            {selectedLabel ?? t('workspace.connectors.filters.selectField', { field: field.displayName })}
           </Text>
           <MaterialIcon name="expand_more" size={16} color="var(--gray-9)" style={{ flexShrink: 0 }} />
         </Button>
@@ -828,7 +829,7 @@ function ConnectorFilterSelect({
         <Box style={{ padding: 8 }}>
           <TextField.Root
             size="2"
-            placeholder="Search…"
+            placeholder={t('form.search')}
             value={query}
             onChange={(e) => handleQueryChange(e.target.value)}
             autoFocus
@@ -844,12 +845,12 @@ function ConnectorFilterSelect({
             <Flex align="center" justify="center" gap="2" style={{ padding: '20px 12px' }}>
               <Spinner size={14} />
               <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                Loading options…
+                {t('workspace.connectors.filters.loadingOptions')}
               </Text>
             </Flex>
           ) : visibleOptions.length === 0 ? (
             <Text size="2" style={{ color: 'var(--slate-9)', display: 'block', padding: '8px 12px' }}>
-              {dyn.emptyMessage ?? 'No results found'}
+              {dyn.emptyMessage ?? t('workspace.connectors.filters.noResults')}
             </Text>
           ) : (
             visibleOptions.map((opt) => {
@@ -900,7 +901,7 @@ function ConnectorFilterSelect({
             <Flex align="center" justify="center" gap="2" style={{ padding: 8 }}>
               <Spinner size={12} />
               <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                Loading more…
+                {t('workspace.connectors.filters.loadingMore')}
               </Text>
             </Flex>
           ) : null}
@@ -927,6 +928,7 @@ function ConnectorFilterTagInput({
   value: unknown;
   onValueChange: (v: unknown) => void;
 }) {
+  const { t } = useTranslation();
   // Tags live in local state (not re-derived from `value` on every render) so that
   // transient per-tag UI state (isHighlighted for backspace-to-delete, isEditing for
   // click-to-edit) survives across renders — mirrors invite-users-sidebar's TagInput usage.
@@ -957,7 +959,7 @@ function ConnectorFilterTagInput({
     <TagInput
       tags={tags}
       onTagsChange={handleTagsChange}
-      placeholder={`Add ${field.displayName.toLowerCase()}…`}
+      placeholder={t('workspace.connectors.filters.addFieldValue', { field: field.displayName })}
     />
   );
 }
@@ -973,6 +975,7 @@ function ManualIndexingSection({
   field: FilterSchemaField;
   readOnly?: boolean;
 }) {
+  const { t } = useTranslation();
   const { formData, setFilterFormValue } = useConnectorsStore();
   const raw = formData.filters.indexing[field.name];
 
@@ -1018,13 +1021,13 @@ function ManualIndexingSection({
               <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {field.displayName}
               </Text>
-              <HelpTooltip content={MANUAL_INDEXING_TOOLTIP_TEXT}>
+              <HelpTooltip content={t('workspace.connectors.filters.manualIndexingTooltip')}>
                 <IconButton
                   type="button"
                   size="1"
                   variant="ghost"
                   color="gray"
-                  aria-label="About manual indexing"
+                  aria-label={t('workspace.connectors.filters.manualIndexingInfo')}
                   style={{ cursor: 'help', flexShrink: 0 }}
                 >
                   <MaterialIcon name="info" size={16} color="var(--gray-10)" />
@@ -1061,6 +1064,7 @@ function ManualIndexingSection({
 // ========================================
 
 export function FiltersSection({ readOnly = false }: { readOnly?: boolean }) {
+  const { t } = useTranslation();
   const { connectorSchema, panelConnectorId, formData, setFilterFormValue } = useConnectorsStore();
 
   const syncFields = useMemo(
@@ -1184,12 +1188,10 @@ export function FiltersSection({ readOnly = false }: { readOnly?: boolean }) {
       <Flex direction="column" gap="5">
         <Flex direction="column" gap="1">
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Indexing & sync filters
+            {t('workspace.connectors.filters.title')}
           </Text>
           <Text size="1" style={{ color: 'var(--gray-10)' }}>
-            Indexing filters always apply—toggle booleans or adjust values as needed. For sync filters,
-            add only what you need; list and date filters use an operator and value, and you can clear
-            a sync filter when you do not want that constraint.
+            {t('workspace.connectors.filters.description')}
           </Text>
         </Flex>
 
@@ -1199,7 +1201,7 @@ export function FiltersSection({ readOnly = false }: { readOnly?: boolean }) {
 
         {syncFields.length > 0 && (
           <FilterCategoryBlock
-            title="Sync filters"
+            title={t('workspace.connectors.filters.syncTitle')}
             section="sync"
             fields={syncFields}
             values={formData.filters.sync}
@@ -1213,7 +1215,7 @@ export function FiltersSection({ readOnly = false }: { readOnly?: boolean }) {
 
         {indexingFields.length > 0 && (
           <FilterCategoryBlock
-            title="Indexing filters"
+            title={t('workspace.connectors.filters.indexingTitle')}
             section="indexing"
             fields={indexingFields}
             values={formData.filters.indexing}
@@ -1254,6 +1256,7 @@ function FilterCategoryBlock({
   showConfiguredPreview?: boolean;
   readOnly?: boolean;
 }) {
+  const { t } = useTranslation();
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   /** Indexing filters are always-on (legacy); sync filters stay add/remove. */
   const allowRemoveFilter = section === 'sync' && !readOnly;
@@ -1307,18 +1310,18 @@ function FilterCategoryBlock({
             name,
             kind: 'list' as const,
             fieldLabel: field.displayName,
-            operatorLabel: formatOperatorLabel(row.operator),
+            operatorLabel: formatOperatorLabel(row.operator, t),
             valueLabels,
           };
         }
         return {
           name,
           kind: 'single' as const,
-          chipLine: `${field.displayName}: ${summarizeCommittedFilter(field, row, section)}`,
+          chipLine: `${field.displayName}: ${summarizeCommittedFilter(field, row, section, t)}`,
         };
       })
       .filter((x): x is FilterPreviewItem => x !== null);
-  }, [activeFieldNames, fields, section, values]);
+  }, [activeFieldNames, fields, section, values, t]);
 
   return (
     <Box
@@ -1338,7 +1341,7 @@ function FilterCategoryBlock({
             <DropdownMenu.Trigger>
               <Button type="button" size="1" variant="soft" color="green" style={{ cursor: 'pointer' }}>
                 <MaterialIcon name="add" size={14} color="var(--green-11)" />
-                Add filter
+                {t('workspace.connectors.filters.add')}
               </Button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content
@@ -1420,11 +1423,11 @@ function FilterCategoryBlock({
           </Flex>
         ) : activeFieldNames.length > 0 ? (
           <Text size="1" color="gray" style={{ marginBottom: 14 }}>
-            Finish operator and value for each filter below to see a summary here.
+            {t('workspace.connectors.filters.incomplete')}
           </Text>
         ) : (
           <Text size="1" color="gray" style={{ marginBottom: 14 }}>
-            No filters yet. Use &quot;Add filter&quot; to choose one of the supported filters.
+            {t('workspace.connectors.filters.empty')}
           </Text>
         )
       ) : null}
@@ -1476,6 +1479,7 @@ function FilterFieldRow({
   /** Full sync filter form values (used to scope a repo picker by its parent container filter). */
   allSyncValues?: Record<string, unknown>;
 }) {
+  const { t } = useTranslation();
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const operators = useMemo(() => {
     const fromSchema = field.operators?.filter((o) => o && o.trim()) ?? [];
@@ -1539,7 +1543,7 @@ function FilterFieldRow({
             {allowClear ? (
               <Button type="button" size="1" variant="ghost" color="gray" onClick={onClear} style={{ cursor: 'pointer' }}>
                 <MaterialIcon name="close" size={14} color="var(--gray-11)" />
-                Clear
+                {t('common.clear')}
               </Button>
             ) : null}
           </Flex>
@@ -1605,7 +1609,7 @@ function FilterFieldRow({
           {allowClear ? (
             <Button type="button" size="1" variant="ghost" color="gray" onClick={onClear} style={{ cursor: 'pointer' }}>
               <MaterialIcon name="close" size={14} color="var(--gray-11)" />
-              Clear
+              {t('common.clear')}
             </Button>
           ) : null}
         </Flex>
@@ -1637,7 +1641,7 @@ function FilterFieldRow({
             }}
           >
             <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
-              Operator
+              {t('workspace.connectors.filters.operator')}
             </Text>
             {operators.length > 0 ? (
               <Select.Root
@@ -1654,7 +1658,7 @@ function FilterFieldRow({
                   commit({ ...row, operator: nextOperator });
                 }}
               >
-                <Select.Trigger placeholder="Choose operator…" style={{ width: '100%', height: 32 }} />
+                <Select.Trigger placeholder={t('workspace.connectors.filters.chooseOperator')} style={{ width: '100%', height: 32 }} />
                 <Select.Content
                   position="popper"
                   style={{ zIndex: 10000 }}
@@ -1662,7 +1666,7 @@ function FilterFieldRow({
                 >
                   {operators.map((op) => (
                     <Select.Item key={op} value={op}>
-                      {formatOperatorLabel(op)}
+                      {formatOperatorLabel(op, t)}
                     </Select.Item>
                   ))}
                 </Select.Content>
@@ -1672,7 +1676,7 @@ function FilterFieldRow({
                 type="text"
                 value={row.operator}
                 onChange={(e) => commit({ ...row, operator: e.target.value })}
-                placeholder="Operator"
+                placeholder={t('workspace.connectors.filters.operator')}
                 style={inputLike}
               />
             )}
@@ -1693,7 +1697,7 @@ function FilterFieldRow({
                 ? field.displayName
                 : field.filterType === 'datetime'
                   ? field.displayName
-                  : 'Value'}
+                  : t('workspace.connectors.filters.value')}
             </Text>
             {freeTextList ? (
               <ConnectorFilterTagInput
@@ -1740,6 +1744,7 @@ function FilterValueEditor({
   onValueChange: (v: unknown) => void;
   portalContainer?: HTMLElement | null;
 }) {
+  const { t } = useTranslation();
   const ft = field.filterType;
 
   if (ft === 'boolean') {
@@ -1747,14 +1752,14 @@ function FilterValueEditor({
     return (
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
         <input type="checkbox" checked={checked} onChange={(e) => onValueChange(e.target.checked)} />
-        <Text size="2">Yes</Text>
+        <Text size="2">{t('common.yes')}</Text>
       </label>
     );
   }
 
   if (ft === 'number') {
     return (
-      <FormField label="Value">
+      <FormField label={t('workspace.connectors.filters.value')}>
         <input
           type="number"
           value={value === undefined || value === null || value === '' ? '' : String(value)}
@@ -1778,7 +1783,7 @@ function FilterValueEditor({
     if (opLower.startsWith('last_')) {
       return (
         <Text size="2" color="gray" style={{ lineHeight: 1.55 }}>
-          This operator uses a rolling window — no fixed dates to set.
+          {t('workspace.connectors.filters.rollingWindow')}
         </Text>
       );
     }
@@ -1796,7 +1801,7 @@ function FilterValueEditor({
     return (
       <Box style={{ width: '100%', minWidth: 0 }}>
         <DateRangePicker
-          label={`Select ${field.displayName}`}
+          label={t('workspace.connectors.filters.selectField', { field: field.displayName })}
           icon="schedule"
           startDate={startDateProp}
           endDate={endDateProp}
@@ -1829,7 +1834,7 @@ function FilterValueEditor({
   }
 
   return (
-    <FormField label="Value">
+    <FormField label={t('workspace.connectors.filters.value')}>
       <input
         type="text"
         value={value === undefined || value === null ? '' : String(value)}

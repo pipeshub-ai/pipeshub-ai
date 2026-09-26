@@ -20,4 +20,4 @@ export type {
   ShareUser,
   SharedAvatarMember,
 } from './types';
-export { SHARE_ROLE_LABELS } from './types';
+export { getShareRoleLabels } from './types';

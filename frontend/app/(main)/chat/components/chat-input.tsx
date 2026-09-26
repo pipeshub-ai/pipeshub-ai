@@ -843,10 +843,10 @@ export function ChatInput({
     // (otherwise the send button would be stuck), but the user has
     // already seen a toast per failed upload and the chip exposes a
     // retry icon if they want to recover.
-    const refs = uploadedFiles
-      .filter((f) => f.status === 'uploaded' && f.ref)
-      .map((f) => f.ref!);
-    if ((message.trim() || refs.length > 0) && onSend) {
+    if ((message.trim() || uploadedFiles.length > 0) && onSend) {
+      const refs = uploadedFiles
+        .filter((f) => f.status === 'uploaded' && f.ref)
+        .map((f) => f.ref!);
       onSend(message, refs.length > 0 ? refs : undefined);
       setMessage('');
       setUploadedFiles([]);
@@ -907,7 +907,12 @@ export function ChatInput({
             f.id === file.id ? { ...f, status: 'error', errorMessage, ref: undefined } : f,
           ),
         );
-        toast.error(errorMessage);
+        toast.error(
+          t('chat.attachments.uploadFailedNamed', {
+            name: file.name,
+            error: errorMessage,
+          }),
+        );
       })
       .finally(() => {
         if (uploadControllersRef.current.get(file.id) === controller) {
@@ -939,7 +944,8 @@ export function ChatInput({
     if (typeRejected.length > 0) {
       toast.error(
         t('chat.attachments.unsupportedType', {
-          defaultValue: `Unsupported file type: ${typeRejected.map((f) => f.name).join(', ')}. Supported types: ${SUPPORTED_FILE_TYPES.join(', ')}.`,
+          names: typeRejected.map((f) => f.name).join(', '),
+          types: SUPPORTED_FILE_TYPES.join(', '),
         })
       );
     }
@@ -956,7 +962,8 @@ export function ChatInput({
     if (sizeRejected.length > 0) {
       toast.error(
         t('chat.attachments.fileTooLarge', {
-          defaultValue: `File too large: ${sizeRejected.map((f) => f.name).join(', ')}. Maximum size is ${Math.round(CHAT_ATTACHMENT_MAX_BYTES / (1024 * 1024))} MB per file.`,
+          names: sizeRejected.map((f) => f.name).join(', '),
+          maxMb: Math.round(CHAT_ATTACHMENT_MAX_BYTES / (1024 * 1024)),
         })
       );
     }
@@ -975,7 +982,7 @@ export function ChatInput({
     if (toAdd.length < sizeValid.length) {
       toast.error(
         t('chat.attachments.tooManyFiles', {
-          defaultValue: `Maximum ${CHAT_ATTACHMENT_MAX_FILES} attachments per message.`,
+          max: CHAT_ATTACHMENT_MAX_FILES,
         })
       );
     }
@@ -1264,8 +1271,7 @@ export function ChatInput({
     setShowUploadArea(next);
   };
 
-  const hasContent =
-    message.trim() || uploadedFiles.some((f) => f.status === 'uploaded') || isListening;
+  const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
   const hasUploadingAttachments = uploadedFiles.some((f) => f.status === 'uploading');
   const canSubmit =
     (hasContent || activeMessageAction !== null) &&
@@ -1426,7 +1432,6 @@ export function ChatInput({
               size="2"
               onClick={handleSubmit}
               disabled={!canSubmit}
-              aria-label={t('chat.sendMessage', { defaultValue: 'Send message' })}
               style={{
                 margin: 0,
                 backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',
@@ -1551,7 +1556,7 @@ export function ChatInput({
                 backgroundColor: 'var(--slate-4)',
                 cursor: 'pointer',
               }}
-              aria-label="Scroll attachments left"
+              aria-label={t('chat.scrollAttachmentsLeft')}
             >
               <MaterialIcon name="chevron_left" size={16} color="var(--slate-11)" />
             </Box>
@@ -1744,7 +1749,7 @@ export function ChatInput({
                 backgroundColor: 'var(--slate-4)',
                 cursor: 'pointer',
               }}
-              aria-label="Scroll attachments right"
+              aria-label={t('chat.scrollAttachmentsRight')}
             >
               <MaterialIcon name="chevron_right" size={16} color="var(--slate-11)" />
             </Box>
@@ -2078,7 +2083,7 @@ export function ChatInput({
                   color="gray"
                   size="2"
                   style={{ margin: 0, cursor: 'pointer' }}
-                  aria-label="More options"
+                  aria-label={t('common.moreOptions')}
                 >
                   <MaterialIcon name="tune" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
                 </IconButton>
@@ -2447,7 +2452,6 @@ export function ChatInput({
               size="2"
               onClick={handleSubmit}
               disabled={!canSubmit}
-              aria-label={t('chat.sendMessage', { defaultValue: 'Send message' })}
               style={{
                 margin: 0,
                 backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',
