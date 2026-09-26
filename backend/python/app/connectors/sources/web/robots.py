@@ -44,7 +44,7 @@ class RobotsRules:
                 in_rules = True
                 if not value:
                     continue  # "Disallow:" with no path allows everything
-                rule = (key == "allow", value)
+                rule = (key == "allow", _decode_unreserved(value))
                 if token in agents:
                     named.append(rule)
                 if "*" in agents:
@@ -53,7 +53,7 @@ class RobotsRules:
 
     def allows(self, url: str) -> bool:
         parsed = urlparse(url)
-        target = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+        target = _decode_unreserved((parsed.path or "/") + (f"?{parsed.query}" if parsed.query else ""))
         if target == "/robots.txt":
             return True
         best: tuple[int, bool] | None = None
@@ -63,6 +63,17 @@ class RobotsRules:
                 if best is None or candidate > best:  # longer wins; on equal length, Allow (True) wins
                     best = candidate
         return best is None or best[1]
+
+
+_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+
+def _decode_unreserved(text: str) -> str:
+    """RFC 9309 §2.2.2: %62 and b are the same character; reserved escapes such as %2F stay encoded."""
+    def _one(match: re.Match[str]) -> str:
+        char = chr(int(match.group(1), 16))
+        return char if char in _UNRESERVED else "%" + match.group(1).upper()
+    return re.sub(r"%([0-9A-Fa-f]{2})", _one, text)
 
 
 def _matches(pattern: str, target: str) -> bool:

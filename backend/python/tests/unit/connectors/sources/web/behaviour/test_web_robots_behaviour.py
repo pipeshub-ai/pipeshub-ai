@@ -1,5 +1,7 @@
 """robots.txt: read once per site per crawl, and honoured unless the user turns it off (RFC 9309)."""
 
+from urllib.parse import unquote
+
 import pytest
 from web_behaviour_fakes import (
     START_URL,
@@ -147,6 +149,9 @@ async def test_each_site_s_own_robots_txt_applies_to_its_pages(
         pytest.param("Disallow: /page\nAllow: /page", ["/page"], [], id="allow-wins-a-tie"),
         pytest.param("Disallow: /*.pdf$", ["/files/a.pdf?download=1", "/files/a.pdfx"], ["/files/a.pdf"],
                      id="star-and-dollar"),
+        pytest.param("Disallow: /foo/bar/baz", ["/foo/bar"], ["/foo/bar/%62%61%7A"], id="encoded-unreserved-path"),
+        pytest.param("Disallow: /docs/%7euser$", ["/docs/user"], ["/docs/~user"], id="encoded-unreserved-rule"),
+        pytest.param("Disallow: /a/b", ["/a%2Fb"], [], id="encoded-slash-stays-distinct"),
     ],
 )
 async def test_the_longest_matching_rule_decides_and_allow_wins_a_tie(
@@ -164,7 +169,8 @@ async def test_the_longest_matching_rule_decides_and_allow_wins_a_tie(
     for path in allowed:
         assert f"http://site.test{path}" in db.pages(), path
     for path in blocked:
-        assert site.gets(f"http://site.test{path}") == 0, path
+        # Compared decoded: the HTTP client may send %62 as b, and either spelling is the same page.
+        assert not [u for _, u in site.requests if unquote(u) == unquote(f"http://site.test{path}")], path
 
 
 @pytest.mark.parametrize("status", [429, 503], ids=["429", "503"])
