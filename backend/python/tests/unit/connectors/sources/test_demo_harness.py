@@ -9,10 +9,18 @@ the installing admin being scored as if it were Alice.
 
 from __future__ import annotations
 
+import sys
+import types
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 import yaml
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 import app.connectors.sources.demo.connector as demo_connector
 from app.connectors.sources.demo.harness import kb_harness
@@ -221,3 +229,142 @@ def test_an_unknown_only_id_fails_before_logging_in_or_uploading(tmp_path: Path,
     monkeypatch.setattr("sys.argv", ["kb_harness.py", "--env", str(env), "--fixture", str(FIXTURE), "--only", "s1,nope"])
     with pytest.raises(SystemExit, match="nope"):
         kb_harness.main()
+
+
+@pytest.mark.parametrize(
+    ("qid", "cited", "answer", "ok"),
+    [
+        # Negation up to three words back, and "no" counts.
+        ("u2", {"jira-fin-37", "jira-fin-38"}, "Contoso's invoice has not yet been reissued.", False),
+        ("u2", {"jira-fin-37", "jira-fin-38"}, "Contoso's invoice hasn't actually been reissued.", False),
+        ("u2", {"jira-fin-37", "jira-fin-38"}, "Contoso's invoice has yet to be reissued.", False),
+        ("u2", {"jira-fin-37", "jira-fin-38"}, "Contoso received no credit note.", False),
+        ("s1", {"drive-sales-northwind-plan", "drive-sales-northwind-call-0416"}, "Northwind is no longer on track.", False),
+        ("s1", {"drive-sales-northwind-plan", "drive-sales-northwind-call-0416"}, "Northwind is no longer on time.", False),
+        ("s1", {"drive-sales-northwind-plan", "drive-sales-northwind-call-0416"}, "Northwind is no longer at risk and is back on track.", True),
+        ("h1", {"slack-people-0302"}, "The limit is no longer five days; it is three.", False),
+        # A comparative is a limit, not a denial.
+        ("h1", {"slack-people-0302"}, "You can carry over no more than five days.", True),
+        # "no" further back doesn't cancel a stated limit.
+        ("f2", {"drive-fin-expense-policy"}, "You need no approval for purchases up to $250.", True),
+    ],
+)
+def test_negation_reaches_three_words_back_and_includes_no(
+    fx: dict, qid: str, cited: set[str], answer: str, ok: bool
+) -> None:
+    assert kb_harness.score(_question(fx, qid), "cites", cited, answer)[0] is ok
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "There is no approval above $2,500; your manager approves from $250.",
+        "No approval is needed for a $5,000 purchase.",
+        "Purchases without approval are not allowed above the manager band.",
+    ],
+)
+def test_f2_needs_the_no_approval_amount_not_just_the_words(fx: dict, answer: str) -> None:
+    assert kb_harness.score(_question(fx, "f2"), "cites", {"drive-fin-expense-policy"}, answer)[0] is False
+
+
+class _FakeKbs:
+    """Stands in for the SDK's knowledge base calls, recording what main does."""
+
+    def __init__(self, existing: dict[str, str] | None = None) -> None:
+        self.kbs = dict(existing or {})
+        self.deleted: list[str] = []
+        self.created: list[str] = []
+
+    def list_knowledge_bases(self) -> object:
+
+        return SimpleNamespace(knowledge_bases=[SimpleNamespace(name=n, id=i) for n, i in self.kbs.items()])
+
+    def create_knowledge_base(self, *, kb_name: str) -> object:
+
+        kb_id = f"new-{len(self.created)}"
+        self.created.append(kb_id)
+        self.kbs[kb_name] = kb_id
+        return SimpleNamespace(id=kb_id)
+
+    def delete_knowledge_base(self, *, kb_id: str) -> None:
+        self.deleted.append(kb_id)
+        self.kbs = {n: i for n, i in self.kbs.items() if i != kb_id}
+
+
+def _run_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kbs: _FakeKbs, extra: list[str]) -> list[list[str] | None]:
+
+    env = tmp_path / "bootstrap.env"
+    env.write_text("PIPESHUB_ORIGIN=http://localhost:1\nPIPESHUB_ACCOUNT_EMAIL=a@b.c\nPIPESHUB_ACCOUNT_PASSWORD=x\n")
+
+    class FakePipeshub:
+        def __init__(self, *_: object, **__: object) -> None:
+            self.knowledge_base = kbs
+
+        def __enter__(self) -> "FakePipeshub":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    sdk = types.ModuleType("pipeshub_sdk")
+    sdk.Pipeshub = FakePipeshub
+    sdk.models = SimpleNamespace(Security=lambda **_: object())
+    monkeypatch.setitem(sys.modules, "pipeshub_sdk", sdk)
+    monkeypatch.setattr(kb_harness, "login", lambda *_: "jwt")
+    monkeypatch.setattr(kb_harness, "upload", lambda *_: None)
+    monkeypatch.setattr(kb_harness, "wait_indexed", lambda *_: None)
+    asked: list[list[str] | None] = []
+
+    def ask(*args: object) -> tuple[str, list[str]]:
+        asked.append(args[-1])  # type: ignore[arg-type]
+        return "", []
+
+    monkeypatch.setattr(kb_harness, "ask", ask)
+    monkeypatch.setattr("sys.argv", ["kb_harness.py", "--env", str(env), "--fixture", str(FIXTURE), "--runs", "1", *extra])
+    kb_harness.main()
+    return asked
+
+
+def test_an_upload_run_asks_exactly_the_knowledge_bases_it_created(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    kbs = _FakeKbs()
+    asked = _run_main(tmp_path, monkeypatch, kbs, ["--only", "q1"])
+    assert asked == [kbs.created]
+    assert len(kbs.created) == 4  # shared, plus Bob's pricing, deal-desk and people-managers
+
+
+def test_an_upload_run_replaces_knowledge_bases_left_by_an_earlier_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    kbs = _FakeKbs({"Acme Corp (shared)": "old-shared"})
+    _run_main(tmp_path, monkeypatch, kbs, ["--only", "q1"])
+    assert "old-shared" in kbs.deleted
+    assert "old-shared" not in kbs.kbs.values()
+
+
+def test_a_skip_upload_rerun_asks_the_same_knowledge_bases_the_persona_loaded(
+    fx: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    existing = {name: f"kb-{i}" for i, name in enumerate(kb_harness.kb_names_for(fx, "alice"))}
+    existing["Acme Corp (deal desk)"] = "kb-bobs"  # another persona's knowledge base
+    kbs = _FakeKbs(existing)
+    asked = _run_main(tmp_path, monkeypatch, kbs, ["--only", "q1", "--skip-upload", "--skip-restricted"])
+    assert asked == [[existing[n] for n in kb_harness.kb_names_for(fx, "alice")]]
+    assert kbs.created == [] and kbs.deleted == []
+
+
+def test_a_skip_upload_rerun_without_the_knowledge_bases_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(SystemExit, match="no knowledge base named"):
+        _run_main(tmp_path, monkeypatch, _FakeKbs(), ["--only", "q1", "--skip-upload"])
+
+
+def test_an_incomplete_upload_stops_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    sdk = types.ModuleType("pipeshub_sdk")
+    sdk.models = SimpleNamespace(UploadRecordsFile=lambda **kw: kw)
+    monkeypatch.setitem(sys.modules, "pipeshub_sdk", sdk)
+
+    @contextmanager
+    def one_of_two(**_: object) -> Iterator[list[SimpleNamespace]]:
+        yield [SimpleNamespace(event="file:succeeded", data="")]
+
+    ph = SimpleNamespace(knowledge_base=SimpleNamespace(upload_records=one_of_two))
+    with pytest.raises(SystemExit, match="1 of 2"):
+        kb_harness.upload(ph, "kb", [("a.md", "a"), ("b.md", "b")])

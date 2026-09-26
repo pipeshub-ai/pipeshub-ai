@@ -180,12 +180,43 @@ def wait_probes(
     return [batch[-1][0].removesuffix(".md") for batch in batches]
 
 
-def ensure_kb(ph: Pipeshub, name: str) -> str:
+def find_kb(ph: Pipeshub, name: str) -> str | None:
     listing = ph.knowledge_base.list_knowledge_bases()
     for kb in getattr(listing, "knowledge_bases", None) or getattr(listing, "knowledgeBases", None) or []:
         if getattr(kb, "name", None) == name:
             return kb.id
+    return None
+
+
+def ensure_kb(ph: Pipeshub, name: str, *, fresh: bool = False) -> str:
+    """The knowledge base called `name`. `fresh` replaces an existing one, so a run
+    never scores against files a previous run left behind under the same names."""
+    existing = find_kb(ph, name)
+    if existing and not fresh:
+        return existing
+    if existing:
+        ph.knowledge_base.delete_knowledge_base(kb_id=existing)
     return ph.knowledge_base.create_knowledge_base(kb_name=name).id
+
+
+def kb_names_for(fx: dict, persona: str) -> list[str]:
+    """The knowledge bases an upload run for `persona` loads, by name: shared first."""
+    names = {g["id"]: g["name"] for g in fx["groups"]}
+    _, restricted = upload_plan(fx)
+    return ["Acme Corp (shared)"] + [
+        f"Acme Corp ({names[g].lower()})" for g in sorted(upload_groups(fx, persona) & set(restricted))
+    ]
+
+
+def existing_kb_ids(ph: Pipeshub, fx: dict, persona: str) -> list[str]:
+    """For --skip-upload: the ids of the knowledge bases an earlier upload run loaded."""
+    ids = []
+    for name in kb_names_for(fx, persona):
+        kb_id = find_kb(ph, name)
+        if not kb_id:
+            sys.exit(f"--skip-upload: no knowledge base named {name!r}; run once without --skip-upload")
+        ids.append(kb_id)
+    return ids
 
 
 def upload(ph: Pipeshub, kb_id: str, files: list[tuple[str, str]]) -> None:
@@ -198,6 +229,9 @@ def upload(ph: Pipeshub, kb_id: str, files: list[tuple[str, str]]) -> None:
             if ev.event == "file:succeeded": ok += 1
             elif ev.event == "file:failed": fail += 1; print("   failed:", (ev.data or "")[:160])
     print(f"   uploaded {ok} ok, {fail} failed")
+    if ok != len(files):
+        # A skipped or failed file would leave the run scoring against a partial corpus.
+        sys.exit(f"upload incomplete: {ok} of {len(files)} files uploaded")
 
 
 def wait_indexed(ph: Pipeshub, probe_query: str, expect_substr: str, timeout: int = 900) -> None:
@@ -256,15 +290,23 @@ def cited_fixture_ids(cited_names: list[str], name_to_id: dict[str, str], thread
     return ids
 
 
-_CLAUSE_BREAK = re.compile(r"[.;:,!?]|\bbut\b")
-_NEGATION = re.compile(r"^(?:not|never)$|n't$")
+_CLAUSE_BREAK = re.compile(r"[.;:,!?]|\b(?:but|and)\b")
+_NEGATION = re.compile(r"^(?:not|never|no|nor)$|n't$")
+# A limit, not a denial: "no more than five days", "not later than Friday".
+_COMPARATIVE = re.compile(r"\b(?:no|not)\s+(?:more|less|fewer|later|earlier|sooner)\s+than\s*$")
+_NEGATION_WINDOW = 3
 
 
 def _negated(before: str) -> bool:
-    """Whether one of the two words before a phrase, in the same clause, negates it:
-    "not on track", "won't renew on time", "has not been reissued"."""
+    """Whether the words just before a phrase, in the same clause, negate it:
+    "not on track", "no longer on time", "has not yet been reissued", "has yet to
+    be reissued". Three words back, so "you need no approval for purchases up to
+    $250" still states the limit; a comparative ("no more than five") is a limit."""
     clause = _CLAUSE_BREAK.split(before)[-1]
-    return any(_NEGATION.search(w) for w in clause.split()[-2:])
+    if _COMPARATIVE.search(clause):
+        return False
+    window = clause.split()[-_NEGATION_WINDOW:]
+    return any(_NEGATION.search(w) for w in window) or bool(re.search(r"\byet\s+to\b", " ".join(window)))
 
 
 def mentions(answer: str, phrase: str) -> bool:
@@ -389,7 +431,9 @@ def main() -> None:
     name_to_id, thread_of = build_name_index(fx)
 
     uploading = not args.skip_upload and not args.persona
-    if uploading:
+    # Upload mode asks only its own knowledge bases, also when re-asking with --skip-upload.
+    using_kbs = not args.persona
+    if using_kbs:
         from pipeshub_sdk import Pipeshub, models  # noqa: PLC0415 - only the KB-upload path needs the SDK
 
         sdk = Pipeshub(server_url=f"{origin}/api/v1", security=models.Security(bearer_auth=jwt))
@@ -406,18 +450,20 @@ def main() -> None:
             readable = upload_groups(fx, "alice" if args.skip_restricted else "bob")
             names = {g["id"]: g["name"] for g in fx["groups"]}
             shared, restricted = upload_plan(fx)
-            kb_shared = ensure_kb(ph, "Acme Corp (shared)")
+            kb_shared = ensure_kb(ph, "Acme Corp (shared)", fresh=not args.skip_shared)
             kb_ids = [kb_shared]
             if not args.skip_shared:
                 print(f"== uploading {len(shared)} shared records")
                 upload(ph, kb_shared, shared)
             for group in sorted(readable & set(restricted)):
                 print(f"== uploading {len(restricted[group])} records for {names[group]}")
-                kb_ids.append(ensure_kb(ph, f"Acme Corp ({names[group].lower()})"))
+                kb_ids.append(ensure_kb(ph, f"Acme Corp ({names[group].lower()})", fresh=True))
                 upload(ph, kb_ids[-1], restricted[group])
             print("== waiting for indexing")
             for probe in wait_probes(shared, restricted, readable):
                 wait_indexed(ph, probe, probe)
+        elif using_kbs:
+            kb_ids = existing_kb_ids(ph, fx, "alice" if args.skip_restricted else "bob")
 
         persona = args.persona or ("alice" if args.skip_restricted else "bob")
         summary = []
