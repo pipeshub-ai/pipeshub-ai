@@ -76,6 +76,13 @@ class StaleCacheConfigService(FakeConfigService):
             return copy.deepcopy(self.frozen)
         return await super().get_config(path, default)
 
+    async def get_config_with_version(self, path: str, default: object = None, use_cache: bool = False, **_: object) -> tuple[object, int]:
+        if use_cache and path == self.path:
+            if self.frozen is None:
+                self.frozen = __import__('copy').deepcopy(self.config)
+            return __import__('copy').deepcopy(self.frozen), 1
+        return await super().get_config_with_version(path, default)
+
 
 class UnsavableConfigService(FakeConfigService):
     """The connector's config can be read but every write to it fails."""
@@ -83,6 +90,11 @@ class UnsavableConfigService(FakeConfigService):
     async def set_config(self, path: str, value: Any) -> bool:  # noqa: ANN401
         if path == self.path:
             return False
+
+    async def compare_and_set(self, path: str, expected_version: int, value: Any, **_: object) -> tuple[bool, tuple[Any, int] | None]:
+        if path == self.path:
+            return False, None
+        return await super().compare_and_set(path, expected_version, value)
         return await super().set_config(path, value)
 
 

@@ -30,7 +30,9 @@ async def config_service(request):
     cs = ConfigurationService(logger=logger, key_value_store=store)
     yield cs
     if store_type == "redis":
-        await store.client.flushdb()
+        keys = await store.client.keys("test_cas:*")
+        if keys:
+            await store.client.delete(*keys)
         await store.close()
     elif store_type == "etcd":
         await store.close()

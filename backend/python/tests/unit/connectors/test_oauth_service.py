@@ -400,10 +400,12 @@ def _make_oauth_config(**overrides):
 
 @pytest.fixture
 def mock_config_service():
-    """Mock ConfigurationService with async get_config/set_config."""
+    """Mock ConfigurationService with async get_config_with_version/compare_and_set."""
     svc = MagicMock()
     svc.get_config = AsyncMock(return_value={})
     svc.set_config = AsyncMock()
+    svc.get_config_with_version = AsyncMock(return_value=({}, 1))
+    svc.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
     return svc
 
 

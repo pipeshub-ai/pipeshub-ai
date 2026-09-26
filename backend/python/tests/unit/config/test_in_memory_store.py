@@ -32,36 +32,36 @@ class TestKeyData:
     """Tests for the KeyData helper class."""
 
     def test_no_ttl_never_expires(self):
-        kd = KeyData("hello", ttl=None)
+        kd = KeyData("hello", version=1, ttl=None)
         assert kd.is_expired() is False
         assert kd.value == "hello"
         assert kd.expiry is None
 
     def test_ttl_not_yet_expired(self):
-        kd = KeyData("val", ttl=3600)
+        kd = KeyData("val", version=1, ttl=3600)
         assert kd.is_expired() is False
         assert kd.expiry is not None
 
     def test_ttl_expired(self):
-        kd = KeyData("val", ttl=1)
+        kd = KeyData("val", version=1, ttl=1)
         # Force expiry by setting expiry in the past
         kd.expiry = time.time() - 10
         assert kd.is_expired() is True
 
     def test_value_stored_correctly(self):
-        kd = KeyData({"nested": [1, 2]}, ttl=60)
+        kd = KeyData({"nested": [1, 2]}, version=1, ttl=60)
         assert kd.value == {"nested": [1, 2]}
 
     def test_ttl_zero_treated_as_no_ttl(self):
         """ttl=0 is falsy, so expiry should be None."""
-        kd = KeyData("val", ttl=0)
+        kd = KeyData("val", version=1, ttl=0)
         assert kd.expiry is None
         assert kd.is_expired() is False
 
     def test_expiry_set_correctly(self):
         """Verify the expiry timestamp is approximately now + ttl."""
         before = time.time()
-        kd = KeyData("v", ttl=100)
+        kd = KeyData("v", version=1, ttl=100)
         after = time.time()
         assert kd.expiry is not None
         assert before + 100 <= kd.expiry <= after + 100

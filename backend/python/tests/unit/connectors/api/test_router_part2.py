@@ -2116,8 +2116,8 @@ class TestSaveConnectorInstanceFilters:
         )
 
         config_service = req.app.container.config_service()
-        config_service.get_config = AsyncMock(return_value={"filters": {}})
-        config_service.set_config = AsyncMock(return_value=True)
+        config_service.get_config_with_version = AsyncMock(return_value=({"filters": {}}, 1))
+        config_service.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
 
         with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock):
             result = await save_connector_instance_filters(
@@ -2125,7 +2125,7 @@ class TestSaveConnectorInstanceFilters:
             )
 
         assert result["success"] is True
-        config_service.set_config.assert_called_once()
+        config_service.compare_and_set.assert_called_once()
 
     async def test_saves_filters_when_config_is_none(self):
         from app.connectors.api.router import save_connector_instance_filters
@@ -2140,8 +2140,8 @@ class TestSaveConnectorInstanceFilters:
         )
 
         config_service = req.app.container.config_service()
-        config_service.get_config = AsyncMock(return_value=None)
-        config_service.set_config = AsyncMock(return_value=True)
+        config_service.get_config_with_version = AsyncMock(return_value=(None, 1))
+        config_service.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
 
         with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock):
             result = await save_connector_instance_filters(
