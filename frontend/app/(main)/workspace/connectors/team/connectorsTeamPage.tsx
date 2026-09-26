@@ -11,9 +11,12 @@ import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
+  isConnectorSyncInProgressError,
+  isConnectorSyncLockedError,
   startConnectorSync,
   toggleConnectorSyncOn,
 } from '../utils/connector-sync-actions';
+import { useSyncConflictGuard } from '../utils/use-sync-conflict-guard';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { localFsDesktopToast } from '../utils/local-fs-helpers';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
@@ -450,35 +453,50 @@ function TeamConnectorsPageContent() {
   );
 
   // ── Success dialog handlers ─────────────────────────────────
+  const { guard: syncConflictGuard, dialog: syncConflictDialog } = useSyncConflictGuard();
+
   const handleStartSyncingFromDialog = useCallback(async () => {
     setShowConfigSuccessDialog(false);
     const instanceId = newlyConfiguredConnectorId;
     setNewlyConfiguredConnectorId(null);
     if (!instanceId) return;
 
-    try {
-      const outcome = await startConnectorSync({
-        _key: instanceId,
-        type: connectorTypeInfo?.type,
-      });
-      if (outcome?.kind === 'requires-desktop') {
-        addToast(localFsDesktopToast(outcome));
+    const doStartSync = async (force: boolean) => {
+      try {
+        const outcome = await startConnectorSync(
+          { _key: instanceId, type: connectorTypeInfo?.type },
+          { force }
+        );
+        if (outcome.kind === 'requires-desktop') {
+          addToast(localFsDesktopToast(outcome));
+          await refreshConnectorRowQuiet(instanceId);
+          return;
+        }
+        addToast({
+          variant: 'success',
+          title: t('workspace.connectors.toasts.syncStarted', {
+            name: connectorTypeInfo?.name ?? 'connector',
+          }),
+          description: t('workspace.connectors.toasts.syncStartedLongDescription'),
+          duration: 3000,
+        });
         await refreshConnectorRowQuiet(instanceId);
-        return;
+      } catch (err) {
+        if (isConnectorSyncInProgressError(err) || isConnectorSyncLockedError(err)) {
+          throw err;
+        }
+        addToast({
+          variant: 'error',
+          title: t('workspace.connectors.toasts.syncError'),
+        });
       }
-      addToast({
-        variant: 'success',
-        title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
-        description: t('workspace.connectors.toasts.syncStartedLongDescription'),
-        duration: 3000,
-      });
-      await refreshConnectorRowQuiet(instanceId);
-    } catch {
-      addToast({
-        variant: 'error',
-        title: t('workspace.connectors.toasts.syncError'),
-      });
-    }
+    };
+
+    const currentStatus = instances.find((i) => i._key === instanceId)?.status;
+    await syncConflictGuard(doStartSync, {
+      requestedFullSync: false,
+      currentStatus,
+    });
   }, [
     newlyConfiguredConnectorId,
     connectorTypeInfo,
@@ -486,6 +504,9 @@ function TeamConnectorsPageContent() {
     refreshConnectorRowQuiet,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
+    instances,
+    syncConflictGuard,
+    t,
   ]);
 
   const handleDoLater = useCallback(() => {
@@ -527,6 +548,7 @@ function TeamConnectorsPageContent() {
           onStartSyncing={handleStartSyncingFromDialog}
           onDoLater={handleDoLater}
         />
+        {syncConflictDialog}
         <AdminAccessRequiredDialog
           open={adminAccessDialogOpen}
           onOpenChange={setAdminAccessDialogOpen}
@@ -541,6 +563,7 @@ function TeamConnectorsPageContent() {
 
   return (
     <>
+      {syncConflictDialog}
       <ConnectorCatalogLayout
         title={t('workspace.sidebar.nav.connectors')}
         subtitle={t('workspace.connectors.subtitle')}

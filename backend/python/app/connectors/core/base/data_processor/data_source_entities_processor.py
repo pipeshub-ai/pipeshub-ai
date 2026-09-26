@@ -1,3 +1,5 @@
+import asyncio
+import time
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Optional
@@ -83,6 +85,14 @@ class UserGroupWithMembers:
     user_group: AppUserGroup
     users: list[tuple[AppUser, Permission]]
 
+
+# Coalesce buffered "unchanged" counts before writing to Redis: flush once this
+# many accumulate (memory cap), or at least this often (so the panel climbs in
+# near real time instead of jumping at discovery close). Whichever comes first.
+_UNCHANGED_FLUSH_THRESHOLD = 50
+_UNCHANGED_FLUSH_INTERVAL_SECONDS = 1.0
+
+
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
         RecordType.MAIL,
@@ -120,6 +130,13 @@ class DataSourceEntitiesProcessor:
         self.data_store_provider: DataStoreProvider = data_store_provider
         self.config_service: ConfigurationService = config_service
         self.org_id = ""
+        # Coalesce "unchanged" run counts so per-record relink/metadata updates
+        # don't each hit Redis (counters sit on the sync hot path). Keyed by
+        # (org_id, connector_id, run_id); flushed on a size threshold, on a time
+        # interval so the count climbs live, and unconditionally at close.
+        self._unchanged_buffer: dict[tuple[str, str, str], int] = {}
+        self._unchanged_last_flush: dict[tuple[str, str, str], float] = {}
+        self._unchanged_buffer_lock = asyncio.Lock()
 
     async def initialize(self, org_id: Optional[str] = None) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
@@ -227,6 +244,9 @@ class DataSourceEntitiesProcessor:
             "source_created_at": 0,  # Will be updated when real parent is synced
             "source_updated_at": 0,  # Will be updated when real parent is synced
             "is_placeholder": True,  # Reconciled to False when the real record syncs
+            # Stubs never get Kafka events; keep them terminal so rollups/stats
+            # never treat them as forever-QUEUED work.
+            "indexing_status": ProgressStatus.AUTO_INDEX_OFF.value,
         }
 
         # Map RecordType to appropriate Record class
@@ -1076,6 +1096,9 @@ class DataSourceEntitiesProcessor:
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
 
+            # Relink/permissions-only update: examined this run, no re-indexing.
+            await self._track_unchanged(record)
+
             await self._publish_membership_sync(moved_virtual_record_ids)
         except Exception as e:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
@@ -1114,6 +1137,15 @@ class DataSourceEntitiesProcessor:
             if record.origin == OriginTypes.UPLOAD
             else await self._handle_record_group(record, tx_store)
         )
+
+        # Same-revision terminal records must not be re-queued (e.g. Jira
+        # re-emitting unchanged attachments on a parent ticket change).
+        _TERMINAL_INDEXING = {
+            ProgressStatus.COMPLETED.value,
+            ProgressStatus.EMPTY.value,
+            ProgressStatus.AUTO_INDEX_OFF.value,
+        }
+        skip_auto_index_publish = False
 
         if existing_record is None:
             self.logger.debug("New record: %s", record)
@@ -1158,25 +1190,44 @@ class DataSourceEntitiesProcessor:
             #       the new URL on every sync, and
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
+            promoting_placeholder = (
+                existing_record.is_placeholder and not record.is_placeholder
+            )
+            revision_changed = (
+                record.external_revision_id != existing_record.external_revision_id
+            )
             if record.origin != OriginTypes.UPLOAD:
-                if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
-                    if record.external_revision_id != existing_record.external_revision_id:
-                        # Real content change on an already-indexed record: re-queue it,
-                        # even when the connector stamped AUTO_INDEX_OFF for a manual-only
-                        # filter. Honouring that stamp here downgraded a COMPLETED record
-                        # to AUTO_INDEX_OFF on every source change, which both lost the
-                        # fact that it had been indexed and left its stale vectors in
-                        # place with no event to correct them. Manual-only still holds for
-                        # records the user never indexed: this branch is reached only when
-                        # the stored status is already COMPLETED.
-                        record.indexing_status = ProgressStatus.NOT_STARTED.value
-                    else:
-                        # Unchanged content stays COMPLETED (blocks re-publish
-                        # below). Resetting unconditionally made every full
-                        # re-sync re-embed the entire already-indexed set, and
-                        # clobbered AUTO_INDEX_OFF on manually-indexed records.
-                        record.indexing_status = ProgressStatus.COMPLETED.value
-            elif record.external_revision_id == existing_record.external_revision_id:
+                if existing_record.indexing_status == ProgressStatus.COMPLETED.value and (
+                    revision_changed or promoting_placeholder
+                ):
+                    # Real content change on an already-indexed record: re-queue it,
+                    # even when the connector stamped AUTO_INDEX_OFF for a manual-only
+                    # filter. Honouring that stamp here downgraded a COMPLETED record
+                    # to AUTO_INDEX_OFF on every source change, which both lost the
+                    # fact that it had been indexed and left its stale vectors in
+                    # place with no event to correct them. Manual-only still holds for
+                    # records the user never indexed: this branch is reached only when
+                    # the stored status is already COMPLETED. A stub becoming the real
+                    # record is a content change too.
+                    record.indexing_status = ProgressStatus.NOT_STARTED.value
+                elif (
+                    not revision_changed
+                    and not promoting_placeholder
+                    and existing_record.indexing_status in _TERMINAL_INDEXING
+                    # A record stored AUTO_INDEX_OFF whose connector now sends a
+                    # normal status had indexing turned on, and must be published.
+                    and not (
+                        existing_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+                        and record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                    )
+                ):
+                    # Unchanged content keeps its terminal status and is not
+                    # re-published. Resetting it made every full re-sync re-embed the
+                    # entire already-indexed set, and clobbered AUTO_INDEX_OFF on
+                    # manually-indexed records. It counts as unchanged for this run.
+                    record.indexing_status = existing_record.indexing_status
+                    skip_auto_index_publish = True
+            elif not revision_changed:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
                 record.indexing_status = existing_record.indexing_status
@@ -1193,10 +1244,10 @@ class DataSourceEntitiesProcessor:
                 record.source_updated_at = existing_record.source_updated_at
             # A real record replacing a stub promotes it out of placeholder state.
             # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
-            if existing_record.is_placeholder and not record.is_placeholder:
+            if promoting_placeholder:
                 record.is_placeholder = False
             #check if revision Id is same as existing record
-            if record.external_revision_id != existing_record.external_revision_id:
+            if revision_changed:
                 if publishes_event:
                     self._stamp_queued_at(record)
                 await self._handle_updated_record(record, existing_record, tx_store)
@@ -1269,6 +1320,10 @@ class DataSourceEntitiesProcessor:
         # Create record if it doesn't exist
         # Record download function
         # Create a permission edge between the record and the app with sync status if it doesn't exist
+        if skip_auto_index_publish:
+            await self._track_unchanged(record)
+            object.__setattr__(record, "_skip_auto_index_publish", True)
+
         if existing_record is None:
             return record
 
@@ -1362,6 +1417,11 @@ class DataSourceEntitiesProcessor:
                     )
                     continue
 
+                # Same-revision terminal records were counted as unchanged in
+                # _process_record — do not inflate discovered / re-queue Kafka.
+                if getattr(record, "_skip_auto_index_publish", False):
+                    continue
+
                 publishable.append(record)
 
             if publishable:
@@ -1373,7 +1433,7 @@ class DataSourceEntitiesProcessor:
                             {
                                 "eventType": "newRecord",
                                 "timestamp": get_epoch_timestamp_in_ms(),
-                                "payload": record.to_kafka_record(),
+                                "payload": self._kafka_payload(record),
                             },
                         )
                         for record in publishable
@@ -1382,11 +1442,123 @@ class DataSourceEntitiesProcessor:
                 await self._mark_queued_after_publish(
                     [r.id for r, ok in zip(publishable, acked) if ok]
                 )
+                await self._track_records_queued(
+                    [r for r, ok in zip(publishable, acked) if ok]
+                )
 
             await self._publish_membership_sync(moved_virtual_record_ids)
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
             raise e
+
+    async def _track_discovered(
+        self, discovered_by_connector: dict[tuple[str, str, str | None], int]
+    ) -> None:
+        """Best-effort: count records queued for indexing by the active sync run."""
+        if not discovered_by_connector:
+            return
+        try:
+            from app.connectors.services.sync_progress_store import (
+                get_connector_sync_progress_store,
+            )
+            store = await get_connector_sync_progress_store(self.logger, self.config_service)
+            if not store:
+                return
+            for (record_org_id, connector_id, run_id), count in discovered_by_connector.items():
+                # Only connector-run discovery owns a run-scoped counter. Manual
+                # reindex/webhook events must not inflate an unrelated active run.
+                if run_id:
+                    await store.add_discovered(record_org_id, connector_id, count, run_id=run_id)
+        except Exception as e:
+            self.logger.debug(f"Failed to track discovered records for sync progress: {e}")
+
+    async def _track_record_queued(self, record: Record) -> None:
+        """Count one published new/update/reindex event in the active sync run."""
+        await self._track_records_queued([record])
+
+    async def _track_records_queued(self, records: list[Record]) -> None:
+        """Batch discovery updates produced by a bulk move or reindex operation."""
+        if not records:
+            return
+        from app.connectors.services.sync_run_context import get_sync_run_id
+
+        run_id = get_sync_run_id()
+        discovered_by_connector: dict[tuple[str, str, str | None], int] = {}
+        for record in records:
+            org_id = getattr(record, "org_id", "") or self.org_id
+            connector_id = getattr(record, "connector_id", "")
+            if org_id and connector_id:
+                key = (org_id, connector_id, run_id)
+                discovered_by_connector[key] = discovered_by_connector.get(key, 0) + 1
+        await self._track_discovered(discovered_by_connector)
+
+    @staticmethod
+    def _kafka_payload(record: Record) -> dict:
+        """Preserve the discovery run on asynchronous record events."""
+        from app.connectors.services.sync_run_context import get_sync_run_id
+
+        payload = record.to_kafka_record()
+        if run_id := get_sync_run_id():
+            payload["syncRunId"] = run_id
+        return payload
+
+    async def _track_unchanged(self, record: Record) -> None:
+        """Count a record examined this run that needed no re-indexing (relink or
+        metadata-only update). Buffered per run and flushed at a threshold /at
+        discovery close, so per-record updates stay off the Redis hot path.
+        No-op outside a connector sync run (manual/webhook updates)."""
+        from app.connectors.services.sync_run_context import get_sync_run_id
+
+        run_id = get_sync_run_id()
+        if not run_id:
+            return
+        org_id = getattr(record, "org_id", "") or self.org_id
+        connector_id = getattr(record, "connector_id", "")
+        if not org_id or not connector_id:
+            return
+
+        to_flush: dict[tuple[str, str, str], int] | None = None
+        async with self._unchanged_buffer_lock:
+            key = (org_id, connector_id, run_id)
+            self._unchanged_buffer[key] = self._unchanged_buffer.get(key, 0) + 1
+            now = time.monotonic()
+            last = self._unchanged_last_flush.setdefault(key, now)
+            due = (
+                self._unchanged_buffer[key] >= _UNCHANGED_FLUSH_THRESHOLD
+                or (now - last) >= _UNCHANGED_FLUSH_INTERVAL_SECONDS
+            )
+            if due:
+                to_flush = {key: self._unchanged_buffer.pop(key)}
+                self._unchanged_last_flush[key] = now
+        if to_flush:
+            await self._flush_unchanged_counts(to_flush)
+
+    async def flush_unchanged(self) -> None:
+        """Flush any buffered unchanged counts. Called at discovery close so the
+        final count lands before the panel switches to the INDEXING phase."""
+        async with self._unchanged_buffer_lock:
+            self._unchanged_last_flush.clear()
+            if not self._unchanged_buffer:
+                return
+            to_flush = dict(self._unchanged_buffer)
+            self._unchanged_buffer.clear()
+        await self._flush_unchanged_counts(to_flush)
+
+    async def _flush_unchanged_counts(
+        self, counts: dict[tuple[str, str, str], int]
+    ) -> None:
+        try:
+            from app.connectors.services.sync_progress_store import (
+                get_connector_sync_progress_store,
+            )
+            store = await get_connector_sync_progress_store(self.logger, self.config_service)
+            if not store:
+                return
+            for (org_id, connector_id, run_id), count in counts.items():
+                if count > 0:
+                    await store.add_unchanged(org_id, connector_id, count, run_id=run_id)
+        except Exception as e:
+            self.logger.debug(f"Failed to flush unchanged sync counts: {e}")
 
 
     @retry_on_deadlock()
@@ -1412,10 +1584,15 @@ class DataSourceEntitiesProcessor:
             return
         await self.messaging_producer.send_message(
             "record-events",
-            {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
-            key=record.id
+            {
+                "eventType": "updateRecord",
+                "timestamp": get_epoch_timestamp_in_ms(),
+                "payload": self._kafka_payload(processed_record),
+            },
+            key=record.id,
         )
         await self._mark_queued_after_publish([record.id])
+        await self._track_record_queued(processed_record)
 
     def _preserve_indexing_state(self, record: Record, existing_record: Record) -> None:
         """Carry the stored indexing lifecycle onto a metadata-only write.
@@ -1462,6 +1639,8 @@ class DataSourceEntitiesProcessor:
                 if existing_record is not None:
                     self._preserve_indexing_state(processed_record, existing_record)
                 await self._handle_updated_record(processed_record, existing_record, tx_store)
+        # Metadata-only update: examined this run, no content re-indexing needed.
+        await self._track_unchanged(record)
 
         # This path deliberately publishes no indexing event and preserves the
         # indexing lifecycle, so nothing downstream would ever recompute
@@ -1697,7 +1876,7 @@ class DataSourceEntitiesProcessor:
                             {
                                 "eventType": "newRecord",
                                 "timestamp": get_epoch_timestamp_in_ms(),
-                                "payload": record.to_kafka_record(),
+                                "payload": self._kafka_payload(record),
                             },
                         )
                         for record in new_batch
@@ -1723,12 +1902,28 @@ class DataSourceEntitiesProcessor:
                             {
                                 "eventType": "updateRecord",
                                 "timestamp": get_epoch_timestamp_in_ms(),
-                                "payload": record.to_kafka_record(),
+                                "payload": self._kafka_payload(record),
                             },
                         )
                         for record in reindex_batch
                     ],
                 )
+            await self._track_records_queued(
+                [
+                    *[
+                        record
+                        for record in new_records_to_publish
+                        if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                        and not record.is_internal
+                    ],
+                    *[
+                        record
+                        for record in records_to_reindex
+                        if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                        and not record.is_internal
+                    ],
+                ]
+            )
 
             await self._publish_membership_sync(membership_vrids)
 
@@ -1869,7 +2064,9 @@ class DataSourceEntitiesProcessor:
 
     @staticmethod
     def _reindex_event_payload(record: Record, *, vector_db_only: bool) -> dict:
-        payload = {**record.to_kafka_record(), "forceReindex": True}
+        # Built on the ordinary payload so a reindex keeps the sync run it was
+        # discovered in, and the run's progress counts it.
+        payload = {**DataSourceEntitiesProcessor._kafka_payload(record), "forceReindex": True}
         if record.virtual_record_id:
             payload.setdefault("virtualRecordId", record.virtual_record_id)
         if vector_db_only:
@@ -1949,6 +2146,9 @@ class DataSourceEntitiesProcessor:
             # consumes QUEUED.
             published_ids = [r.id for r, ok in zip(to_publish, acked) if ok]
             await self._mark_queued_after_publish(published_ids)
+            await self._track_records_queued(
+                [r for r, ok in zip(to_publish, acked) if ok]
+            )
 
             self.logger.debug(
                 f"Published reindex events for {len(published_ids)} records; "

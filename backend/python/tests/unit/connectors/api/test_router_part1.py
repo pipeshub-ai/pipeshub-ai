@@ -1564,6 +1564,7 @@ class TestGetConnectorStatsEndpoint:
         result = await get_connector_stats_endpoint(request, connector_id="conn-1", graph_provider=gp)
         assert result["success"] is True
         assert result["data"]["totalRecords"] == 100
+        gp.get_connector_stats.assert_awaited_once_with("org-1", "conn-1")
 
     async def test_not_found_raises_404(self):
         from app.connectors.api.router import get_connector_stats_endpoint

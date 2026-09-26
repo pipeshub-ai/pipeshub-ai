@@ -24,6 +24,7 @@ import {
   SyncEventProducer,
   Event as SyncEvent,
   BaseSyncEvent,
+  ResyncConnectorRequest,
 } from './sync_events.service';
 import {
   isLocalFsConnector,
@@ -282,7 +283,9 @@ export class RecordRelationService {
     };
   }
 
-  async resyncConnectorRecords(resyncConnectorPayload: any): Promise<any> {
+  async resyncConnectorRecords(
+    resyncConnectorPayload: ResyncConnectorRequest,
+  ): Promise<any> {
     try {
       const resyncPayload =
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
@@ -312,7 +315,7 @@ export class RecordRelationService {
   }
 
   async createResyncConnectorEventPayload(
-    resyncConnectorEventPayload: any,
+    resyncConnectorEventPayload: ResyncConnectorRequest,
   ): Promise<BaseSyncEvent> {
     const connectorName = isLocalFsConnector(
       resyncConnectorEventPayload.connectorName,
@@ -327,6 +330,7 @@ export class RecordRelationService {
       connectorId: resyncConnectorEventPayload.connectorId,
       syncedBy: resyncConnectorEventPayload.userId,
       fullSync: resyncConnectorEventPayload.fullSync,
+      force: resyncConnectorEventPayload.force === true,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),

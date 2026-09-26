@@ -5366,6 +5366,44 @@ components:
           type: boolean
           description: When true, triggers a full sync instead of incremental.
           default: false
+        force:
+          type: boolean
+          description: |
+            When true, cancels a sync that is already running and starts this one.
+            Without it, a running sync is refused with `HTTP_CONNECTOR_SYNC_IN_PROGRESS`.
+            It does not override a locked connector (`HTTP_CONNECTOR_SYNC_LOCKED`).
+          default: false
+
+    ConnectorSyncProgress:
+      type: object
+      description: Run-scoped sync and indexing progress for one connector instance.
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            connectorId:
+              type: string
+            isActive:
+              type: boolean
+              description: True while a sync run is discovering or indexing.
+            phase:
+              type: string
+              description: Current run phase, e.g. `DISCOVERING`, `INDEXING`, `DONE`, `FAILED`, `IDLE`.
+            run:
+              type: object
+              description: |
+                Counters for the current or latest run: scanned, unchanged, queued,
+                indexed, failed and skipped records, plus a failure code and reason
+                when the run failed.
+            coverage:
+              type: object
+              description: Lifetime record counts, loaded when no run is active.
+            indexingQueue:
+              type: object
+              nullable: true
+              description: Shared indexing backlog for the organization, with a rough wait estimate.
 
     ConnectorStats:
       type: object
@@ -33814,6 +33852,42 @@ paths:
         '404':
           description: Connector not found
 
+  /connectors/{connectorId}/sync-progress:
+    get:
+      tags:
+        - Connector Instances
+      summary: Get connector sync progress
+      description: |
+        Progress of the connector's current or latest sync run: how many records were
+        scanned, left unchanged, queued, indexed, failed or skipped, whether the run is
+        still active, and the shared indexing backlog. When no run is active, lifetime
+        record counts are included instead. Access is checked the same way as
+        `GET /connectors/{connectorId}/stats`.
+      operationId: getConnectorSyncProgress
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Connector sync progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorSyncProgress'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient OAuth scope or no access to this connector
+        '404':
+          description: Connector not found
+
   /connectors/record/{recordId}/content:
     get:
       tags:
@@ -34345,15 +34419,20 @@ paths:
           description: |
             Conflict. Possible reasons:<br>
             <ul>
-            <li>The connector instance is disabled or locked</li>
+            <li>The connector instance is disabled</li>
+            <li><code>HTTP_CONNECTOR_SYNC_IN_PROGRESS</code> - a sync is already running; resend with <code>force: true</code> to cancel it and start this one</li>
+            <li><code>HTTP_CONNECTOR_SYNC_LOCKED</code> - the connector is locked while a sync is being prepared; wait and retry (<code>force</code> does not override this)</li>
             <li><code>DESKTOP_OFFLINE</code> - Local FS: the owner device's desktop app is not connected</li>
             <li><code>DESKTOP_UNCLAIMED</code> - Local FS: no device owns the connector yet</li>
             </ul>
-            Local FS refusals carry <code>details.code</code> and use the body below.
+            Local FS refusals carry <code>details.code</code> and use the Local FS body; the sync
+            conflicts use the standard error envelope.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LocalFsDesktopRefusal'
+                oneOf:
+                  - $ref: '#/components/schemas/LocalFsDesktopRefusal'
+                  - $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}/name:
     put:

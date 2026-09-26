@@ -52,6 +52,7 @@ from app.services.vector_db.strategy import (
 )
 from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
+from app.utils.indexing_progress import build_indexing_progress, stage_for_status
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import ENRICHMENT_FAILED
 
@@ -530,9 +531,10 @@ class EventProcessor:
             raise IndexingError(what, details={"record_id": _record_key(doc)})
 
     async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
-        """Persist the legacy pipeline's indexing and extraction status."""
+        """Persist the legacy pipeline's indexing status, with the progress-stage
+        fields the UI reads."""
         record_id = _record_key(doc) or "unknown"
-        fields = {
+        fields: dict[str, Any] = {
             "indexingStatus": status.value,
             "processingStartedAt": (
                 get_epoch_timestamp_in_ms()
@@ -540,6 +542,9 @@ class EventProcessor:
                 else None
             ),
         }
+        stage = stage_for_status(status)
+        if stage is not None:
+            fields.update(build_indexing_progress(stage))
         success = await self.update_record_fields(doc, fields)
         self._require_persisted(
             success, f"Failed to persist status {status.value} for record", doc

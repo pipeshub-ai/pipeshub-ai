@@ -121,7 +121,14 @@ class TestSyncCompletionSite:
         connector.data_entities_processor = MagicMock(org_id="org-1")
         invalidator = _register()
 
-        await ConnectorFactory._run_sync_and_invalidate(connector, "conn-1", MagicMock())
+        # No progress store in a unit test; the sync and the invalidation run anyway.
+        with patch(
+            "app.connectors.services.sync_progress_store.get_connector_sync_progress_store",
+            new=AsyncMock(side_effect=RuntimeError("no redis")),
+        ):
+            await ConnectorFactory._run_startup_sync(
+                connector, "conn-1", None, MagicMock(), MagicMock()
+            )
 
         connector.run_sync.assert_awaited_once()
         invalidator.on_connector_sync_completed.assert_awaited_once_with("conn-1", "org-1")

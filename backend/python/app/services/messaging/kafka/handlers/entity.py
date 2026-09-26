@@ -699,4 +699,3 @@ class EntityEventService(BaseEventService):
         except Exception as e:
             self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
             return {}
-

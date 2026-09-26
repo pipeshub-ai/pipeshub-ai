@@ -104,6 +104,11 @@ from app.connectors.core.registry.filters import sync_filter_selection_problems
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.indexing_queue import get_indexing_queue_for_progress
+from app.connectors.services.sync_progress_store import (
+    get_connector_sync_progress_store,
+    summarize_run,
+)
 from app.connectors.services.vector_store_rebuild import (
     VectorStoreRebuildBusyError,
     VectorStoreRebuildConflictError,
@@ -2446,6 +2451,99 @@ async def get_connector_stats_endpoint(
     except Exception as e:
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("load connector activity")) from e
+
+def _coverage_from_stats(stats_data: dict[str, Any] | None) -> dict[str, Any]:
+    """Reduce the lifetime stats payload to the fields the progress UI needs."""
+    stats = (stats_data or {}).get("stats", {}) or {}
+    by_status = stats.get("indexingStatus", {}) or {}
+    from app.utils.indexing_progress import FAILED_STATUSES, INDEXED_STATUSES, SKIPPED_STATUSES
+
+    indexed = sum(int(by_status.get(status, 0) or 0) for status in INDEXED_STATUSES)
+    skipped = sum(int(by_status.get(status, 0) or 0) for status in SKIPPED_STATUSES)
+    failed = sum(int(by_status.get(status, 0) or 0) for status in FAILED_STATUSES)
+    return {
+        "total": int(stats.get("total", 0) or 0),
+        "indexed": indexed,
+        "failed": failed,
+        "skipped": skipped,
+        "inProgress": int(by_status.get("IN_PROGRESS", 0) or 0),
+        "queued": int(by_status.get("QUEUED", 0) or 0),
+        "indexingStatus": by_status,
+    }
+
+@router.get("/api/v1/sync-progress", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
+async def get_connector_sync_progress_endpoint(
+    request: Request,
+    connector_id: str,
+    include_coverage: bool = True,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
+    """Run-scoped connector sync/indexing progress with lifetime coverage fallback."""
+    logger = request.app.container.logger()
+    try:
+        org_id = request.state.user.get("orgId")
+        if not org_id:
+            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Organization is required")
+        # The same check /stats makes: connector_id comes from the query string,
+        # and these counters include failure reasons and indexing breakdowns.
+        await authorize_connector_stats(
+            request, graph_provider, request.app.state.connector_registry, connector_id, org_id
+        )
+        run = None
+        store = None
+        try:
+            store = await get_connector_sync_progress_store(
+                logger, request.app.container.config_service()
+            )
+            if store:
+                run = await store.get(org_id, connector_id)
+        except Exception as store_err:
+            logger.debug(f"Sync progress store unavailable: {store_err}")
+
+        run_view = summarize_run(run)
+        coverage: dict[str, Any] = {}
+        # Lifetime graph stats are unused for most active polls (run counters
+        # drive the UI). Load them when idle, or right after a force/restart
+        # when discovered is still 0 so Current sync can explain prior pending.
+        run_discovered = int(run_view.get("discovered") or 0)
+        load_coverage = include_coverage and (
+            not run_view["isActive"] or run_discovered == 0
+        )
+        if load_coverage:
+            try:
+                stats_result = await graph_provider.get_connector_stats(org_id, connector_id)
+                if stats_result.get("success"):
+                    coverage = _coverage_from_stats(stats_result.get("data"))
+            except Exception as stats_err:
+                logger.debug(f"Failed to load coverage stats for {connector_id}: {stats_err}")
+
+        indexing_queue = None
+        # Org-scoped backlog explains "Indexing 0 of N" while discovery is done
+        # but this org's indexer work is still draining.
+        if store is not None and store.redis is not None:
+            indexing_queue = await get_indexing_queue_for_progress(
+                logger, store.redis, org_id
+            )
+
+        return {
+            "success": True,
+            "data": {
+                "connectorId": connector_id,
+                "isActive": run_view["isActive"],
+                "phase": run_view["phase"],
+                "run": run_view,
+                "coverage": coverage,
+                "indexingQueue": indexing_queue,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting connector sync progress: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=action_failed("load this connector's sync progress"),
+        ) from e
 
 @router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record_group)])
 @inject
