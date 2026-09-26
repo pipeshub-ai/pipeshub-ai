@@ -99,3 +99,42 @@ def test_no_open_folder_holds_a_restricted_record(fx: dict) -> None:
     containers = {c["id"]: c for c in fx["containers"]}
     leaks = sorted(r["id"] for r in fx["records"] if r.get("group") and r["group"] != containers[r["container"]]["group"])
     assert leaks == [], leaks
+
+
+
+def test_s1_is_scored_on_the_call_notes_not_the_at_risk_thread(fx: dict) -> None:
+    q = next(q for q in _pack_questions(fx) if q["id"] == "s1")
+    assert "drive-sales-northwind-call-0416" in q["must_cite"]
+    assert "slack-deals-0410" not in q.get("must_cite_any_of", []) + q.get("must_cite", [])
+
+
+def test_u2_is_scored_on_finances_resolution(fx: dict) -> None:
+    q = next(q for q in _pack_questions(fx) if q["id"] == "u2")
+    required = set(q.get("must_cite", [])) | set(q.get("must_cite_any_of", []))
+    assert required and required <= {"jira-fin-37", "jira-fin-38"}, required
+
+
+@pytest.mark.parametrize(
+    ("summary", "later"),
+    [
+        # A record that states a story's current status must be dated after the
+        # records it summarises, or the demo answers with a stale status.
+        ("drive-sales-northwind-plan", "drive-sales-northwind-call-0416"),
+        ("jira-sup-121", "jira-fin-37"),
+        ("jira-sup-121", "jira-fin-38"),
+        ("drive-fin-q2-budget", "jira-fin-38"),
+    ],
+)
+def test_a_status_record_is_current_with_its_story(fx: dict, summary: str, later: str) -> None:
+    records = {r["id"]: r for r in fx["records"]}
+
+    def last(r: dict) -> str:
+        return str(r.get("updated") or r["created"])
+
+    assert last(records[summary]) >= last(records[later]), (summary, later)
+
+
+def test_closed_stories_say_so(fx: dict) -> None:
+    records = {r["id"]: r for r in fx["records"]}
+    assert "**On track.**" in records["drive-sales-northwind-plan"]["body"]
+    assert "**Status:** Done" in records["jira-sup-121"]["body"]

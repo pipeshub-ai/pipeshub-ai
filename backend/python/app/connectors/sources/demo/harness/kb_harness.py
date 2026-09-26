@@ -98,6 +98,55 @@ def group_of(rec: dict, fx: dict) -> str:
     return rec.get("group") or containers[rec["container"]]["group"]
 
 
+def restricted_groups(fx: dict) -> set[str]:
+    """Groups the installing admin doesn't join: each holds a "who can see this" lesson."""
+    return {g["id"] for g in fx["groups"] if not g.get("installer_joins")}
+
+
+def all_questions(fx: dict) -> list[dict]:
+    """The chat landing's questions, then every Build Pack's."""
+    packs = [q for qs in (fx.get("pack_questions") or {}).values() for q in qs]
+    return list(fx["questions"]) + packs
+
+
+def select_questions(fx: dict, only: set[str] | None) -> list[dict]:
+    """Questions to ask; an unknown id in `only` is an error, never a silent pass."""
+    questions = all_questions(fx)
+    if not only:
+        return questions
+    unknown = sorted(only - {q["id"] for q in questions})
+    if unknown:
+        raise SystemExit(f"unknown question ids: {', '.join(unknown)}")
+    return [q for q in questions if q["id"] in only]
+
+
+def expectation(q: dict, persona: str, fx: dict) -> str:
+    """"cites" or "none" for this persona. The installer is in the groups marked
+    installer_joins only, so a question hinging on a restricted group is "none"."""
+    if persona != "installer":
+        return q["personas"][persona]
+    if not q.get("restricted"):
+        return "cites"
+    records = {r["id"]: r for r in fx["records"]}
+    threads = {t["id"]: t for t in fx.get("threads", [])}
+    closed = restricted_groups(fx)
+    for x in q["restricted"]:
+        if x in records:
+            group = group_of(records[x], fx)
+        else:
+            first = min((r for r in fx["records"] if r.get("thread") == x), key=lambda r: str(r["created"]))
+            group = group_of(first, fx) if x in threads else ""
+        if group in closed:
+            return "none"
+    return "cites"
+
+
+def upload_groups(fx: dict, persona: str) -> set[str]:
+    """Restricted groups whose records the upload models as readable for `persona`."""
+    person = next(p for p in fx["people"] if p["id"] == persona)
+    return restricted_groups(fx) & set(person.get("groups", []))
+
+
 def ensure_kb(ph: Pipeshub, name: str) -> str:
     listing = ph.knowledge_base.list_knowledge_bases()
     for kb in getattr(listing, "knowledge_bases", None) or getattr(listing, "knowledgeBases", None) or []:
@@ -189,6 +238,10 @@ def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool,
     forbidden = [x for x in q.get("must_not_cite", []) if x in cited_ids]
     mention = q.get("answer_must_mention", [])
     unmentioned = [m for m in mention if m.lower() not in answer.lower()]
+    # At least one of these, for a fact the model can phrase several ways.
+    mention_any = q.get("answer_must_mention_any_of", [])
+    if mention_any and not any(m.lower() in answer.lower() for m in mention_any):
+        unmentioned.append(" | ".join(mention_any))
     if expect == "none":
         # A failed run proves nothing about access, so it is not a pass.
         if answer.startswith("ERROR:"):
@@ -238,7 +291,8 @@ def main() -> None:
     ap.add_argument("--fixture", required=True)
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--skip-upload", action="store_true")
-    ap.add_argument("--skip-restricted", action="store_true", help="model Alice: don't load the pricing-committee KB")
+    ap.add_argument("--skip-restricted", action="store_true",
+                    help="model Alice: load only the restricted groups she is in (default models Bob)")
     ap.add_argument("--skip-shared", action="store_true", help="shared KB already uploaded in an earlier run")
     ap.add_argument("--only", help="comma-separated question ids")
     ap.add_argument("--persona", choices=["alice", "bob", "installer"],
@@ -274,38 +328,44 @@ def main() -> None:
 
     with sdk as ph:
         if uploading:
-            shared, restricted = [], []
+            # Knowledge bases stand in for groups: everything the installer can read
+            # goes in one shared KB, each restricted group gets its own, and only the
+            # groups the modelled persona is in are loaded.
+            closed = restricted_groups(fx)
+            readable = upload_groups(fx, "alice" if args.skip_restricted else "bob")
+            names = {g["id"]: g["name"] for g in fx["groups"]}
+            shared: list[tuple[str, str]] = []
+            restricted: dict[str, list[tuple[str, str]]] = defaultdict(list)
             threads = {t["id"]: t for t in fx.get("threads", [])}
             by_thread: dict[str, list[dict]] = defaultdict(list)
+
+            def place(group: str, item: tuple[str, str]) -> None:
+                (restricted[group] if group in closed else shared).append(item)
+
             for r in fx["records"]:
                 if r.get("thread") and r["thread"] in threads:
                     by_thread[r["thread"]].append(r); continue
-                item = (safe_name(r["title"]) + ".md", render(r, fx))
-                (restricted if group_of(r, fx) == "pricing-committee" else shared).append(item)
+                place(group_of(r, fx), (safe_name(r["title"]) + ".md", render(r, fx)))
             for tid, msgs in by_thread.items():
                 t = threads[tid]; msgs.sort(key=lambda m: str(m["created"]))
-                item = (safe_name(t["title"]) + ".md", render_thread(t, msgs, fx))
-                (restricted if group_of(msgs[0], fx) == "pricing-committee" else shared).append(item)
+                place(group_of(msgs[0], fx), (safe_name(t["title"]) + ".md", render_thread(t, msgs, fx)))
             if not args.skip_shared:
                 print(f"== uploading {len(shared)} shared records")
                 kb_shared = ensure_kb(ph, "Acme Corp (shared)")
                 upload(ph, kb_shared, shared)
-            if not args.skip_restricted:
-                print(f"== uploading {len(restricted)} restricted records")
-                kb_res = ensure_kb(ph, "Acme Corp (pricing committee)")
-                upload(ph, kb_res, restricted)
+            for group in sorted(readable & set(restricted)):
+                print(f"== uploading {len(restricted[group])} records for {names[group]}")
+                upload(ph, ensure_kb(ph, f"Acme Corp ({names[group].lower()})"), restricted[group])
             print("== waiting for indexing")
             wait_indexed(ph, "why was the billing worker retry logic changed", "482")
-            if not args.skip_restricted:
+            if "pricing-committee" in readable:
                 wait_indexed(ph, "enterprise pricing strategy platform fee", "pricing")
 
         persona = args.persona or ("alice" if args.skip_restricted else "bob")
         only = set(args.only.split(",")) if args.only else None
         summary = []
-        for q in fx["questions"]:
-            if only and q["id"] not in only: continue
-            # The installer joins the shared groups only, so they see what Alice sees.
-            expect = q["personas"]["alice" if persona == "installer" else persona]
+        for q in select_questions(fx, only):
+            expect = expectation(q, persona, fx)
             passes = 0
             print(f"\n== {q['id']} [{persona}] {q['ask']}")
             for i in range(args.runs):
@@ -322,7 +382,7 @@ def main() -> None:
         print("\n== summary")
         failed = []
         for qid, p, ok, n in summary:
-            q = next(x for x in fx["questions"] if x["id"] == qid)
+            q = next(x for x in all_questions(fx) if x["id"] == qid)
             # A leak of restricted material is a failure of the whole demo, so
             # questions with a restricted list must pass every run.
             need = n if q.get("restricted") else (args.min_pass if args.min_pass is not None else 0)

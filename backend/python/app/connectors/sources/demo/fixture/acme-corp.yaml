@@ -982,10 +982,17 @@ records:
     title: "SUP-121: Invoice PDF shows wrong VAT line (Contoso)"
     author: sam
     created: 2026-04-20T11:15:00Z
+    updated: 2026-05-06T16:00:00Z
     web_url: https://jira.acme-demo.example/browse/SUP-121
     body: |
-      Contoso's April invoice shows VAT on a line that should be exempt. Finance is
-      reissuing; engineering to check the VAT rule for reverse-charge customers. Open.
+      **Status:** Done
+
+      Contoso's April invoice shows VAT on a line that should be exempt. Finance to
+      reissue; the VAT rule for reverse-charge customers to be checked.
+
+      ## Resolution
+      Finance reissued the invoice on 22 April (FIN-37). The billing rule was
+      fixed on 6 May (FIN-38). Contoso has been told. Closed.
 
   - id: sn-4455
     container: servicenow
@@ -1099,7 +1106,7 @@ records:
     title: "Account plan — Northwind Traders"
     author: omar
     created: 2026-01-12T10:00:00Z
-    updated: 2026-04-11T16:30:00Z
+    updated: 2026-04-16T18:00:00Z
     web_url: https://docs.acme-demo.example/document/d/acme-account-northwind
     body: |
       **Owner:** Omar Haddad (account executive) · **Exec sponsor:** Lena Fischer
@@ -1109,17 +1116,23 @@ records:
       contract renews on **30 June 2026**. Champion: their head of operations,
       whose team runs the monthly full-workspace export into their reporting.
 
-      ## Renewal status (updated 11 April)
-      **At risk.** Their full-workspace export has timed out since early April
-      (ServiceNow case CS0004471, escalated to engineering as SUP-114). Monthly
-      reporting slipped, and the champion told us on 9 April that they are
-      evaluating alternatives before signing again.
+      ## Renewal status (updated 16 April)
+      **On track.** Their full-workspace export ran on 15 April as a background
+      job after the fix shipped (PR #211), monthly reporting is back on schedule,
+      and they are no longer evaluating alternatives: renewal expected on time.
+      See the call notes from 16 April.
+
+      ## History
+      From early April the renewal was **at risk**: their full-workspace export
+      timed out (ServiceNow case CS0004471, escalated to engineering as SUP-114),
+      monthly reporting slipped, and on 9 April the champion said they were
+      evaluating alternatives.
 
       ## Plan
-      1. Get a firm fix date from engineering and share it with the champion.
-      2. Once the fix ships, run a joint check of their next monthly export.
+      1. Done: got the fix date from engineering and shared it with the champion.
+      2. Done: joint check of their first export after the fix (16 April call).
       3. Bring a renewal proposal to the deal desk that reflects the disruption.
-      4. Expansion to ~600 seats is realistic once reporting is stable.
+      4. Expansion to ~600 seats is realistic now that reporting is stable.
 
   - id: slack-deals-0410-1
     container: slack-deals
@@ -1429,13 +1442,14 @@ records:
     type: FILE
     title: "Q2 2026 budget review"
     author: ingrid
-    created: 2026-04-30T10:00:00Z
+    created: 2026-05-08T10:00:00Z
     web_url: https://docs.acme-demo.example/document/d/acme-budget-q2-2026
     body: |
       ## Summary
       Spend is 4% under budget for the quarter to date. Card processing fees rose
       with renewal volume, in line with forecast. The April invoice reissues
-      (FIN-37, FIN-38) cost about $1,900 in credit notes.
+      (Contoso in FIN-37, and three more found when FIN-38 was fixed on 6 May)
+      cost about $1,900 in credit notes.
 
       ## Watch items
       Monitoring vendor renewal (FIN-40) and travel for the June customer reviews.
@@ -1621,9 +1635,11 @@ pack_questions:
   sales:
     - id: s1
       ask: "Is the Northwind Traders renewal at risk, and what is being done about it?"
-      must_cite: [drive-sales-northwind-plan]
-      must_cite_any_of: [slack-deals-0410, drive-sales-northwind-call-0416]
+      # The current answer is the recovery after the 16 April call; the 10 April
+      # #deals thread is the at-risk moment, so it can't stand in for the call notes.
+      must_cite: [drive-sales-northwind-plan, drive-sales-northwind-call-0416]
       answer_must_mention: ["Northwind"]
+      answer_must_mention_any_of: ["on time", "on track", "no longer at risk", "not at risk", "back on schedule", "no longer evaluating"]
       must_not_cite: [drive-pricing-2026, drive-billing-resilience]
       personas: { alice: cites, bob: cites }
     - id: s2
@@ -1641,7 +1657,8 @@ pack_questions:
   support:
     - id: u2
       ask: "What happened with Contoso's invoice that showed VAT on an exempt line?"
-      must_cite_any_of: [jira-sup-121, jira-fin-37, jira-fin-38]
+      # The resolution lives in finance's tickets; SUP-121 alone is the report.
+      must_cite_any_of: [jira-fin-37, jira-fin-38]
       answer_must_mention: ["Contoso", "reissue"]
       must_not_cite: [drive-pricing-2026]
       personas: { alice: cites, bob: cites }
