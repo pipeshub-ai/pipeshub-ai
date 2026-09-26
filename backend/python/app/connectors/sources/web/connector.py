@@ -1897,11 +1897,12 @@ class WebConnector(BaseConnector):
         Each hop is asked with HEAD, or with GET (body left unread) when HEAD is refused or fails.
         Returns the landing URL, its status and Content-Type, or the first out-of-scope or
         disallowed hop, unrequested, with status 0, or the last hop checked with ``PROBE_UNENDING``
-        when the chain is still redirecting after MAX_PROBE_REDIRECTS. Returns None if the site doesn't answer.
+        when the chain is still redirecting after MAX_PROBE_REDIRECTS redirects, the same limit as
+        a normal crawl's walk. Returns None if the site doesn't answer.
         """
         if self.session is None:
             return None
-        for _ in range(MAX_PROBE_REDIRECTS):
+        for _ in range(MAX_PROBE_REDIRECTS + 1):
             try:
                 status, location, content_type = await self._probe_hop("HEAD", url)
             except (asyncio.TimeoutError, aiohttp.ClientError, OSError):

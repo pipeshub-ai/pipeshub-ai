@@ -200,6 +200,30 @@ async def test_in_robust_mode_a_redirect_loop_is_one_failed_page_and_the_browser
     assert set(db.pages()) == {START_URL, chain[0]}
 
 
+@pytest.mark.parametrize("suffix", ["", ".pdf"], ids=["page", "file"])
+@pytest.mark.parametrize("robust", [False, True], ids=["normal", "robust"])
+async def test_ten_redirects_land_and_eleven_are_too_many_in_either_mode(
+    robust: bool, suffix: str, site: FakeWeb, db: FakeRecordsDb, browser: FakeWeb, make_connector: MakeConnector,
+) -> None:
+    ten = [f"http://site.test/a{i}{suffix}" for i in range(11)]
+    eleven = [f"http://site.test/b{i}{suffix}" for i in range(12)]
+    site.html(START_URL, "Home", f"/a0{suffix}", f"/b0{suffix}")
+    for chain in (ten, eleven):
+        for here, there in zip(chain, chain[1:]):
+            site.add(here, Page(status=302, location=there, content_type=None))
+        if suffix:
+            site.add(chain[-1], Page(body=b"%PDF-1.4 landing", content_type="application/pdf"))
+        else:
+            site.html(chain[-1], "Landing")
+
+    await (await make_connector(use_headless_browser=robust)).run_sync()
+
+    assert ten[-1] in db.pages()
+    assert (db.pages()[eleven[0]].reason or "").startswith("This page redirects too many times")
+    assert _requests_to(site, eleven[-1]) == []
+    assert eleven[-1] not in browser.browser_loaded
+
+
 @pytest.mark.parametrize("chunked", [False, True], ids=["declared-size", "streamed"])
 @pytest.mark.parametrize("strategy", STRATEGIES)
 async def test_a_site_that_refuses_head_still_gets_the_size_limit_at_the_final_hop(
