@@ -5,7 +5,11 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { MailBody, SmtpConfig } from '../middlewares/types';
 import { MailModel } from '../schema/mailInfo.schema';
 import { getEmailContent } from '../utils/email-content';
-import { classifyMailError, MailSendResult } from '../types/mail-event.types';
+import {
+  classifyMailError,
+  MailSendResult,
+  SMTP_DEADLINE_ERROR_CODE,
+} from '../types/mail-event.types';
 
 const SMTP_DNS_TIMEOUT_MS = 30_000;
 const SMTP_CONNECTION_TIMEOUT_MS = 30_000;
@@ -85,15 +89,39 @@ export class MailSenderService {
     deadlineMs: number,
   ): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
+    // Keep a handle: Promise.race does not cancel sendMail, and a consumer
+    // retry while it is still running can deliver the same email twice.
+    const sendPromise = transporter.sendMail(message);
     const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`SMTP send exceeded ${deadlineMs}ms deadline`)),
-        deadlineMs,
-      );
+      timer = setTimeout(() => {
+        reject(
+          Object.assign(
+            new Error(`SMTP send exceeded ${deadlineMs}ms deadline`),
+            { code: SMTP_DEADLINE_ERROR_CODE },
+          ),
+        );
+      }, deadlineMs);
     });
 
     try {
-      await Promise.race([transporter.sendMail(message), deadline]);
+      await Promise.race([sendPromise, deadline]);
+    } catch (error) {
+      const timedOut =
+        error instanceof Error &&
+        (error as { code?: string }).code === SMTP_DEADLINE_ERROR_CODE;
+      if (timedOut) {
+        void sendPromise.then(
+          () =>
+            this.logger.warn(
+              'SMTP send completed after deadline; skipped retry to avoid duplicate',
+            ),
+          (err) =>
+            this.logger.warn('SMTP send failed after deadline', {
+              error: err instanceof Error ? err.message : String(err),
+            }),
+        );
+      }
+      throw error;
     } finally {
       clearTimeout(timer);
     }
@@ -163,6 +191,15 @@ export class MailSenderService {
           : typeof error === 'string'
             ? error
             : 'Failed to send email';
+      if (
+        error instanceof Error &&
+        (error as { code?: string }).code === SMTP_DEADLINE_ERROR_CODE
+      ) {
+        this.logger.error('Mail send deadline exceeded; not retrying', {
+          error: message,
+        });
+        return { status: 'indeterminate', error: message };
+      }
       // An unknown template is a caller bug; replaying it fails identically.
       const kind =
         typeof error === 'string' ? 'permanent' : classifyMailError(error);

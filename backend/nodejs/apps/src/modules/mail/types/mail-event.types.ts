@@ -24,7 +24,11 @@ export interface MailEvent {
 export type MailSendResult =
   | { status: 'sent' }
   | { status: 'transient'; error: string }
-  | { status: 'permanent'; error: string };
+  | { status: 'permanent'; error: string }
+  // Deadline fired while SMTP may still be in flight — retrying risks a duplicate.
+  | { status: 'indeterminate'; error: string };
+
+export const SMTP_DEADLINE_ERROR_CODE = 'ESMTPDEADLINE';
 
 // Per RFC 5321: 4xx means try again later, 5xx is an outright rejection.
 const PERMANENT_SMTP_RANGE = { min: 500, max: 599 };
