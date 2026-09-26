@@ -114,7 +114,6 @@ interface StreamCall {
   conversation?: FakeConversation | null
   messageId?: mongoose.Types.ObjectId | string | null
   onComplete?: (data: IAIResponse) => void
-  isAgentSession?: boolean
   accumulator?: StreamedContentAccumulator
 }
 
@@ -128,7 +127,6 @@ const feed = (res: FakeResponse, call: StreamCall): string =>
     'req-regen',
     asRes(res),
     call.onComplete ?? ((): void => undefined),
-    call.isAgentSession ?? false,
     AGUI_PROTOCOL,
     call.accumulator,
   )
@@ -279,7 +277,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const toolData = { question: 'Which region?', options: ['EMEA', 'APAC'] }
       const frame = frameAGUI('CUSTOM', { name: 'ask_user_question', value: { toolData } })
 
-      feed(res, { chunk: frame, conversation, isAgentSession: true })
+      feed(res, { chunk: frame, conversation })
       await settle()
 
       expect(written(res)).to.equal(frame)
@@ -290,19 +288,20 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(at(at(docs).tools).toolResult).to.deep.equal(toolData)
     })
 
-    it('forwards ask_user_question without saving it for a plain chat regeneration', async () => {
+    it('records an ask_user_question for a plain chat regeneration too, so a reload can restore the card', async () => {
       const res = makeRes()
       const conversation = makeConversation()
-      const allocate = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq: 1 })
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq: 1 })
       const insert = sinon.stub(ChatSessionMessage, 'insertMany').resolves([])
-      const frame = frameAGUI('CUSTOM', { name: 'ask_user_question', value: { toolData: { q: 1 } } })
+      const toolData = { q: 1 }
+      const frame = frameAGUI('CUSTOM', { name: 'ask_user_question', value: { toolData } })
 
-      feed(res, { chunk: frame, conversation, isAgentSession: false })
+      feed(res, { chunk: frame, conversation })
       await settle()
 
       expect(written(res)).to.equal(frame)
-      expect(allocate.called).to.equal(false)
-      expect(insert.called).to.equal(false)
+      const [docs] = insert.firstCall.args as [Array<{ tools: Array<{ toolResult: unknown }> }>]
+      expect(at(at(docs).tools).toolResult).to.deep.equal(toolData)
     })
 
     it('keeps streaming when saving an ask_user_question fails', async () => {
@@ -315,7 +314,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       process.on('unhandledRejection', unhandled)
 
       try {
-        feed(res, { chunk: frame, conversation, isAgentSession: true })
+        feed(res, { chunk: frame, conversation })
         await settle()
       } finally {
         process.removeListener('unhandledRejection', unhandled)
@@ -330,7 +329,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const res = makeRes()
       const chunk = 'event: CUSTOM\ndata: {broken\n\n'
 
-      feed(res, { chunk, conversation: makeConversation(), isAgentSession: true })
+      feed(res, { chunk, conversation: makeConversation() })
 
       expect(written(res)).to.equal(chunk)
     })
@@ -340,7 +339,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const insert = sinon.stub(ChatSessionMessage, 'insertMany')
       const frame = frameAGUI('CUSTOM', { name: 'ask_user_question', value: { toolData: {} } })
 
-      feed(res, { chunk: frame, conversation: null, isAgentSession: true })
+      feed(res, { chunk: frame, conversation: null })
 
       expect(written(res)).to.equal(frame)
       expect(insert.called).to.equal(false)
@@ -417,6 +416,41 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(body.messages).to.have.length(1)
       expect(at(body.messages).content).to.equal('Revenue grew 12% quarter on quarter.')
       expect(at(at(body.messages).citations).citationData).to.equal(savedCitations[0])
+    })
+
+    it('stamps ask_user_question onto the replaced bot so a reload can restore the card', async () => {
+      const conversation = makeConversation()
+      const messageId = new mongoose.Types.ObjectId()
+      sinon.stub(ChatSessionMessage, 'findById').resolves({
+        _id: messageId,
+        sessionId: conversation._id,
+        orgId: conversation.orgId,
+        seq: 3,
+      })
+      const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').callsFake(
+        (_filter: unknown, replacement: unknown) =>
+          Promise.resolve({ toObject: () => ({ _id: messageId, ...(replacement as object) }) }) as never,
+      )
+      stubCitationSave()
+      const askPayload = {
+        questions: [{ question: 'Which region?', options: ['EU', 'US'] }],
+      }
+
+      await handleRegenerationSuccess(
+        completeAnswer({ answer: '', status: 'waiting_input' } as IAIResponse),
+        asDoc(conversation),
+        messageId,
+        conversation.orgId.toString(),
+        null,
+        undefined,
+        askPayload,
+      )
+
+      const replacement = replace.firstCall.args[1] as {
+        tools?: Array<{ toolName: string; toolResult: unknown }>
+      }
+      expect(at(replacement.tools ?? []).toolName).to.equal('ask_user_question')
+      expect(at(replacement.tools ?? []).toolResult).to.deep.equal(askPayload)
     })
 
     it('passes the transaction to citation and conversation saves when one is given', async () => {

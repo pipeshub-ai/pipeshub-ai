@@ -52,6 +52,7 @@
     "thinkingFallback": "Pensando…",
     "refiningResponse": "Refinando la respuesta…",
     "errorFallback": "Se ha producido un error. Inténtelo de nuevo.",
+    "askQuestionResumeFailed": "No se pudieron enviar tus respuestas. Envía de nuevo para reintentar.",
     "copyCode": "Copiar",
     "copiedCode": "Copiado"
   },

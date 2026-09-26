@@ -524,36 +524,40 @@ export const buildAIResponseMessage = (
   citations: ICitation[] = [],
   modelInfo?: IAIModel,
 ): IMessage => {
+  const data = aiResponse?.data;
   // A `stopped` run may have been cancelled before any tokens streamed —
-  // an empty answer is valid there (see AnswerFinalizer's cancelled branch),
-  // unlike a normal completion, which should never legitimately have none.
-  if (!aiResponse?.data?.answer && aiResponse?.data?.status !== 'stopped') {
+  // an empty answer is valid there (see AnswerFinalizer's cancelled branch).
+  // `waiting_input` is the ask_user_question pause: the card is the turn,
+  // not a prose answer.
+  const allowsEmptyAnswer =
+    data?.status === 'stopped' || data?.status === 'waiting_input';
+  if (!data || (!data.answer && !allowsEmptyAnswer)) {
     throw new InternalServerError('AI response must include an answer');
   }
 
   const message: IMessage = {
-    messageType: isClassifiedFailureAnswer(aiResponse.data)
+    messageType: isClassifiedFailureAnswer(data)
       ? 'error'
       : 'bot_response',
     createdAt: new Date(),
     updatedAt: new Date(),
-    content: aiResponse.data?.answer ?? '',
+    content: data.answer ?? '',
     contentFormat: 'MARKDOWN',
     citations: citations.map((citation) => ({
       citationId: citation._id as mongoose.Types.ObjectId,
     })),
-    confidence: aiResponse.data.confidence,
+    confidence: data.confidence,
     followUpQuestions:
-      aiResponse.data.followUpQuestions?.map((q) => ({
+      data.followUpQuestions?.map((q) => ({
         question: q.question,
         confidence: q.confidence,
         reasoning: q.reasoning,
       })) || [],
     metadata: {
-      processingTimeMs: aiResponse.data.metadata?.processingTimeMs,
-      modelVersion: aiResponse.data.metadata?.modelVersion,
-      aiTransactionId: aiResponse.data.metadata?.aiTransactionId,
-      reason: aiResponse.data?.reason,
+      processingTimeMs: data.metadata?.processingTimeMs,
+      modelVersion: data.metadata?.modelVersion,
+      aiTransactionId: data.metadata?.aiTransactionId,
+      reason: data.reason,
     },
     modelInfo: modelInfo,
   };
@@ -562,10 +566,10 @@ export const buildAIResponseMessage = (
   // This stores technical IDs that were in the response for later reference
   // Filter out invalid items (must have name and at least key or id)
   if (
-    aiResponse.data.referenceData &&
-    Array.isArray(aiResponse.data.referenceData)
+    data.referenceData &&
+    Array.isArray(data.referenceData)
   ) {
-    message.referenceData = aiResponse.data.referenceData.filter((item) => {
+    message.referenceData = data.referenceData.filter((item) => {
       // Ensure item has name and at least one of key or id (id can be optional)
       return item?.name;
     });
@@ -574,11 +578,11 @@ export const buildAIResponseMessage = (
   // Present only when PIPESHUB_PERSIST_REASONING=true on the Python side
   // (see reasoning_persistence.py) — absent for every existing client/run.
   if (
-    aiResponse.data.reasoning &&
-    Array.isArray(aiResponse.data.reasoning) &&
-    aiResponse.data.reasoning.length > 0
+    data.reasoning &&
+    Array.isArray(data.reasoning) &&
+    data.reasoning.length > 0
   ) {
-    message.reasoning = aiResponse.data.reasoning;
+    message.reasoning = data.reasoning;
   }
 
   // Ordered agent-activity transcript (`agui` protocol only — see
@@ -588,17 +592,40 @@ export const buildAIResponseMessage = (
   // reasoning) before this reaches Node, so no full external tool result
   // ever lands in Mongo via this path.
   if (
-    aiResponse.data.parts &&
-    Array.isArray(aiResponse.data.parts) &&
-    aiResponse.data.parts.length > 0
+    data.parts &&
+    Array.isArray(data.parts) &&
+    data.parts.length > 0
   ) {
-    message.parts = aiResponse.data.parts;
+    message.parts = data.parts;
   }
 
-  if (aiResponse.data.status === 'stopped') {
+  if (data.status === 'stopped') {
     message.status = 'stopped';
   }
 
+  return message;
+};
+
+/**
+ * Stamp the questions payload onto the regenerated bot row itself.
+ *
+ * Regeneration replaces the bot message wholesale (see updateMessageById), so
+ * the `tool_call` row saved alongside it is the only other copy — carrying it
+ * here as well means a reload restores the card even if that sibling row is
+ * missing (older conversations, a failed append).
+ */
+export const attachAskUserQuestionToMessage = (
+  message: IMessage,
+  payload: unknown,
+): IMessage => {
+  if (!payload || typeof payload !== 'object') {
+    return message;
+  }
+  const existingTools = message.tools ?? [];
+  message.tools = [
+    ...existingTools.filter((tool) => !tool.toolName?.includes('ask_user_question')),
+    { toolName: 'ask_user_question', toolResult: payload },
+  ];
   return message;
 };
 
@@ -654,34 +681,78 @@ const toolResultsFromParts = (
     });
 };
 
+type PreviousToolResult = ReturnType<typeof toolResultsFromParts>[number];
+
+const askToolResultsFromToolCall = (
+  msg: IMessage | undefined,
+): PreviousToolResult[] => {
+  if (!msg || msg.messageType !== 'tool_call' || !msg.tools?.length) {
+    return [];
+  }
+  return msg.tools
+    .filter((tool) => tool.toolName.includes('ask_user_question') && tool.toolResult)
+    .map((tool) => ({
+      tool_id: 'ask_user_question',
+      tool_name: tool.toolName.includes('internaltools')
+        ? tool.toolName
+        : 'internaltools__ask_user_question',
+      result:
+        typeof tool.toolResult === 'string'
+          ? tool.toolResult
+          : JSON.stringify(tool.toolResult),
+      status: 'success' as const,
+    }));
+};
+
+const withAdjacentAskToolResults = (
+  messages: IMessage[],
+  botIndex: number,
+  existing: PreviousToolResult[],
+): PreviousToolResult[] => {
+  if (existing.some((row) => row.tool_name?.includes('ask_user_question'))) {
+    return existing;
+  }
+  const extra = [...askToolResultsFromToolCall(messages[botIndex - 1])];
+  for (let j = botIndex + 1; j < messages.length; j++) {
+    const next = messages[j];
+    if (next?.messageType !== 'tool_call') break;
+    extra.push(...askToolResultsFromToolCall(next));
+  }
+  return extra.length ? [...existing, ...extra] : existing;
+};
+
 export const formatPreviousConversations = (messages: IMessage[]) => {
-  return messages
-    .filter(
-      (msg) => msg.messageType !== 'error' && msg.messageType !== 'tool_call',
-    )
-    .map((msg) => {
-      const toolResults =
-        msg.messageType === 'bot_response'
-          ? toolResultsFromParts(msg.parts)
-          : [];
-      return {
-        content: msg.content,
-        role: msg.messageType,
-        ...(msg.attachments &&
-          msg.attachments.length > 0 && {
-            attachments: msg.attachments,
-          }),
-        // Include referenceData for follow-up queries (IDs from tool responses)
-        ...(msg.referenceData &&
-          msg.referenceData.length > 0 && {
-            referenceData: msg.referenceData,
-          }),
-        // Prior tool calls/results for this turn — lets the rebuilt agent
-        // see HOW a past answer was produced instead of text-only history
-        // (see `_convert_conversation_turn`, factory.py).
-        ...(toolResults.length > 0 && { tool_results: toolResults }),
-      };
+  const result: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg || msg.messageType === 'error' || msg.messageType === 'tool_call') {
+      continue;
+    }
+    let toolResults: PreviousToolResult[] =
+      msg.messageType === 'bot_response' ? toolResultsFromParts(msg.parts) : [];
+    if (msg.messageType === 'bot_response') {
+      // Regen persists ask_user_question after the bot; resume needs it on this turn.
+      toolResults = withAdjacentAskToolResults(messages, i, toolResults);
+    }
+    result.push({
+      content: msg.content,
+      role: msg.messageType,
+      ...(msg.attachments &&
+        msg.attachments.length > 0 && {
+          attachments: msg.attachments,
+        }),
+      // Include referenceData for follow-up queries (IDs from tool responses)
+      ...(msg.referenceData &&
+        msg.referenceData.length > 0 && {
+          referenceData: msg.referenceData,
+        }),
+      // Prior tool calls/results for this turn — lets the rebuilt agent
+      // see HOW a past answer was produced instead of text-only history
+      // (see `_convert_conversation_turn`, factory.py).
+      ...(toolResults.length > 0 && { tool_results: toolResults }),
     });
+  }
+  return result;
 };
 
 export const getPaginationParams = (req: AuthenticatedUserRequest) => {
@@ -2130,6 +2201,40 @@ export const sendSSECompleteEvent = (
 /**
  * Handle regeneration stream data events
  */
+const persistAskUserQuestionToolCall = (
+  conversation: IChatSessionDocument,
+  payload: unknown,
+  requestId: string,
+): void => {
+  void appendMessages(
+    conversation._id as mongoose.Types.ObjectId,
+    conversation.orgId,
+    [
+      {
+        messageType: 'tool_call' as const,
+        content: '',
+        tools: [
+          {
+            toolName: 'ask_user_question',
+            toolResult: payload,
+          },
+        ],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ],
+  ).catch((saveErr: any) => {
+    logger.error(
+      'Failed to persist ask_user_question tool_call message during regenerate',
+      {
+        requestId,
+        conversationId: conversation._id,
+        error: saveErr?.message,
+      },
+    );
+  });
+};
+
 export const handleRegenerationStreamData = (
   chunk: Buffer,
   buffer: string,
@@ -2139,10 +2244,10 @@ export const handleRegenerationStreamData = (
   requestId: string,
   res: Response,
   onCompleteData: (data: IAIResponse) => void,
-  isAgentSession: boolean,
   protocol?: SSEProtocol,
   accumulator?: StreamedContentAccumulator,
   onUpstreamError?: () => void,
+  onAskUserQuestion?: (payload: unknown) => void,
 ): string => {
   const chunkStr = chunk.toString();
   let newBuffer = buffer + chunkStr;
@@ -2227,34 +2332,13 @@ export const handleRegenerationStreamData = (
         try {
           const eventData = JSON.parse(dataLine);
           if (eventData?.name === 'ask_user_question' && eventData.value) {
-            const toolCallMessage = {
-              messageType: 'tool_call' as const,
-              content: '',
-              tools: [
-                {
-                  toolName: 'ask_user_question',
-                  toolResult: eventData.value.toolData ?? eventData.value,
-                },
-              ],
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            };
-            if (isAgentSession) {
-              void appendMessages(
-                existingConversation._id as mongoose.Types.ObjectId,
-                existingConversation.orgId,
-                [toolCallMessage],
-              ).catch((saveErr: any) => {
-                logger.error(
-                  'Failed to persist ask_user_question tool_call message during regenerate',
-                  {
-                    requestId,
-                    conversationId: existingConversation._id,
-                    error: saveErr?.message,
-                  },
-                );
-              });
-            }
+            const payload = eventData.value.toolData ?? eventData.value;
+            onAskUserQuestion?.(payload);
+            persistAskUserQuestionToolCall(
+              existingConversation,
+              payload,
+              requestId,
+            );
           }
         } catch (parseErr: any) {
           logger.warn('Failed to parse CUSTOM event data during regenerate', {
@@ -2348,34 +2432,13 @@ export const handleRegenerationStreamData = (
             typeof eventData === 'object' &&
             eventData.status === 'success'
           ) {
-            const toolCallMessage = {
-              messageType: 'tool_call' as const,
-              content: '',
-              tools: [
-                {
-                  toolName: 'ask_user_question',
-                  toolResult: eventData.toolData ?? eventData,
-                },
-              ],
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            };
-            if (isAgentSession) {
-              void appendMessages(
-                existingConversation._id as mongoose.Types.ObjectId,
-                existingConversation.orgId,
-                [toolCallMessage],
-              ).catch((saveErr: any) => {
-                logger.error(
-                  'Failed to persist ask_user_question tool_call message during regenerate',
-                  {
-                    requestId,
-                    conversationId: existingConversation._id,
-                    error: saveErr?.message,
-                  },
-                );
-              });
-            }
+            const payload = eventData.toolData ?? eventData;
+            onAskUserQuestion?.(payload);
+            persistAskUserQuestionToolCall(
+              existingConversation,
+              payload,
+              requestId,
+            );
           }
         } catch (parseErr: any) {
           logger.warn(
@@ -2411,6 +2474,7 @@ export const handleRegenerationSuccess = async (
   orgId: string,
   session: ClientSession | null,
   modelInfo?: IAIModel,
+  askUserQuestionPayload?: unknown,
 ): Promise<{
   conversation: any;
   savedCitations: ICitation[];
@@ -2438,6 +2502,9 @@ export const handleRegenerationSuccess = async (
     savedCitations,
     modelInfo,
   );
+  if (askUserQuestionPayload) {
+    attachAskUserQuestionToMessage(aiResponseMessage, askUserQuestionPayload);
+  }
 
   const updatedMessage = await updateMessageById(
     messageId,

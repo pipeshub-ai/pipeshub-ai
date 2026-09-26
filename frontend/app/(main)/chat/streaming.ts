@@ -18,9 +18,12 @@ import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
+import { appendResumeParts } from './utils/tool-display';
 import { debugLog } from './debug-logger';
-import { loadHistoricalMessages, getThreadMessagePlainText } from './runtime';
+import { loadHistoricalMessages, getThreadMessagePlainText, isUsableFollowUpText } from './runtime';
+import { mergeAskUserQuestionPayloads } from './components/message-area/ask-user-question-card';
 import { i18n } from '@/lib/i18n';
+import { toast } from '@/lib/store/toast-store';
 import { showNoModelToast } from './utils/no-model-toast';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import {
@@ -123,6 +126,64 @@ function buildStoppedMessages(
   ];
 }
 
+function stampPendingCardOnMessages(
+  messages: ThreadMessageLike[],
+  pending: PendingAskUserQuestion | null | undefined,
+): ThreadMessageLike[] {
+  if (!pending?.payload || !pending.assistantMessageId) return messages;
+  const idx = messages.findIndex(
+    (row) => row.role === 'assistant' && row.id === pending.assistantMessageId,
+  );
+  if (idx < 0) return messages;
+  const row = messages[idx];
+  const prevCustom = (row.metadata?.custom ?? {}) as Record<string, unknown>;
+  if (prevCustom.persistedAskUserQuestion) return messages;
+  const next = messages.slice();
+  next[idx] = {
+    ...row,
+    metadata: {
+      ...row.metadata,
+      custom: { ...prevCustom, persistedAskUserQuestion: pending.payload },
+    },
+  };
+  return next;
+}
+
+function assistantRowIdForBackendMessage(
+  messages: ThreadMessageLike[],
+  backendMessageId: string,
+): string {
+  const row = messages.find((m) => {
+    if (m.role !== 'assistant') return false;
+    if (m.id === backendMessageId) return true;
+    const custom = m.metadata?.custom as { messageId?: string } | undefined;
+    return custom?.messageId === backendMessageId;
+  });
+  if (row && typeof row.id === 'string') return row.id;
+  const last = [...messages].reverse().find((m) => m.role === 'assistant');
+  return last && typeof last.id === 'string' ? last.id : backendMessageId;
+}
+
+function pendingFromUnansweredPersistedCard(
+  messages: ThreadMessageLike[],
+  assistantId: string,
+): PendingAskUserQuestion | null {
+  const row = messages.find((m) => m.role === 'assistant' && m.id === assistantId);
+  const custom = row?.metadata?.custom as {
+    persistedAskUserQuestion?: PendingAskUserQuestion['payload'];
+    persistedAskUserQuestionAnswers?: PendingAskUserQuestion['answers'];
+  } | undefined;
+  const payload = custom?.persistedAskUserQuestion;
+  const answers = custom?.persistedAskUserQuestionAnswers ?? {};
+  if (!payload || Object.keys(answers).length > 0) return null;
+  return {
+    assistantMessageId: assistantId,
+    payload,
+    answers: {},
+    status: 'pending',
+  };
+}
+
 function applyAskUserQuestionSse(
   slotId: string,
   data: SSEAskUserQuestionEvent,
@@ -137,11 +198,21 @@ function applyAskUserQuestionSse(
   ) {
     return;
   }
+  const slot = useChatStore.getState().slots[slotId];
+  const previous = slot?.pendingAskUserQuestion;
+  const messages =
+    previous && previous.assistantMessageId !== assistantRowId
+      ? stampPendingCardOnMessages(slot?.messages ?? [], previous)
+      : slot?.messages;
+  const sameRow = previous?.assistantMessageId === assistantRowId;
   useChatStore.getState().updateSlot(slotId, {
+    ...(messages && messages !== slot?.messages ? { messages } : {}),
     pendingAskUserQuestion: {
       assistantMessageId: assistantRowId,
-      payload: toolData,
-      answers: {},
+      payload: sameRow && previous
+        ? mergeAskUserQuestionPayloads(previous.payload, toolData)
+        : toolData,
+      answers: sameRow && previous ? previous.answers : {},
       status: 'pending',
     },
   });
@@ -151,6 +222,22 @@ function applyAskUserQuestionSse(
  * If the last message is the empty placeholder assistant for an in-flight stream,
  * replace it with the error text. Otherwise append a new assistant error row.
  */
+function pendingAfterStreamFailure(
+  pending: PendingAskUserQuestion | null | undefined,
+): PendingAskUserQuestion | null {
+  if (!pending) return null;
+  return { ...pending, status: 'pending' };
+}
+
+/** A failed resume keeps the card (with its selections) instead of an error
+ *  row, and the pending card hides that row's text — so the only place left
+ *  to tell the user the answers never reached the model is a toast. */
+function notifyAskUserQuestionResumeFailed(detail: string): void {
+  toast.error(i18n.t('chatStream.askQuestionResumeFailed'), {
+    ...(detail ? { description: detail } : {}),
+  });
+}
+
 function withStreamingErrorMessage(
   currentMessages: ThreadMessageLike[],
   errorText: string
@@ -327,10 +414,55 @@ function createStatusDwellScheduler(
  *   streams, `ChatApi.streamMessage` always sends `filters: { apps, kb }` and `tools: [...]`
  *   — empty arrays mean no knowledge / no tools (same explicit contract).
  */
+/** Live trailing text is the answer (`AnswerContent`). Mark it `isFinal` so
+ *  the activity timeline does not also render it after we persist `streamingParts`. */
+function findAskUserQuestionRow(
+  finalMessages: ThreadMessageLike[],
+  pending: PendingAskUserQuestion | null | undefined,
+): ThreadMessageLike | undefined {
+  const assistants = finalMessages.filter((m) => m.role === 'assistant');
+  if (pending?.assistantMessageId) {
+    const byId = assistants.find((m) => m.id === pending.assistantMessageId);
+    if (byId) return byId;
+  }
+  const withCard = assistants.find((m) => {
+    const custom = m.metadata?.custom as { persistedAskUserQuestion?: unknown } | undefined;
+    return Boolean(custom?.persistedAskUserQuestion);
+  });
+  if (withCard) return withCard;
+  if (assistants.length >= 2) return assistants[assistants.length - 2];
+  return assistants[0];
+}
+
+function textFromLiveParts(parts: MessagePart[]): string {
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i];
+    if (part.type === 'text' && typeof part.content === 'string' && part.content.trim()) {
+      return part.content;
+    }
+  }
+  return '';
+}
+
+function withFinalAnswerMarked(parts: MessagePart[]): MessagePart[] {
+  let lastText = -1;
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    if (parts[i].type === 'text') {
+      lastText = i;
+      break;
+    }
+  }
+  if (lastText < 0 || parts[lastText].isFinal) return parts;
+  return parts.map((part, i) =>
+    i === lastText && part.type === 'text' ? { ...part, isFinal: true } : part,
+  );
+}
+
 export async function streamMessageForSlot(
   slotId: string,
   query: string,
-  request: StreamChatRequest
+  request: StreamChatRequest,
+  options?: { resumeAskUserQuestion?: boolean }
 ): Promise<void> {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
@@ -360,16 +492,99 @@ export async function streamMessageForSlot(
   // assistant" message. Pairs with MessageList: only the last assistant whose
   // preceding user text matches `streamingQuestion` receives live SSE props
   // (avoids `!content` false positives on older agent turns).
-  const pendingAssistantId = createPendingAssistantId();
+  //
+  // Ask-user resume: keep the existing assistant row and do not append a
+  // "User selections:" user bubble. MessageList still matches live SSE to
+  // that row because `streamingQuestion` is the original user text.
+  const resumeAskUserQuestion = options?.resumeAskUserQuestion === true;
+  const cardAssistantId = resumeAskUserQuestion
+    ? slot.pendingAskUserQuestion?.assistantMessageId
+    : undefined;
+  let lastUserText = '';
+  let lastAssistantId: string | undefined;
+  let lastAssistantParts: MessagePart[] = [];
+  if (cardAssistantId) {
+    const cardIdx = baseMessages.findIndex(
+      (row) => row.role === 'assistant' && row.id === cardAssistantId,
+    );
+    if (cardIdx >= 0) {
+      lastAssistantId = cardAssistantId;
+      const persisted = baseMessages[cardIdx].metadata?.custom?.persistedParts;
+      if (Array.isArray(persisted)) lastAssistantParts = persisted as MessagePart[];
+      for (let i = cardIdx - 1; i >= 0; i -= 1) {
+        if (baseMessages[i].role === 'user') {
+          lastUserText = getThreadMessagePlainText(baseMessages[i]);
+          break;
+        }
+      }
+    }
+  }
+  if (!lastAssistantId) {
+    for (let i = baseMessages.length - 1; i >= 0; i -= 1) {
+      const row = baseMessages[i];
+      if (!lastAssistantId && row.role === 'assistant' && typeof row.id === 'string') {
+        lastAssistantId = row.id;
+        const persisted = row.metadata?.custom?.persistedParts;
+        if (Array.isArray(persisted)) lastAssistantParts = persisted as MessagePart[];
+      }
+      if (!lastUserText && row.role === 'user') {
+        lastUserText = getThreadMessagePlainText(row);
+      }
+      if (lastAssistantId && lastUserText) break;
+    }
+  }
+  const reuseExistingAssistant = resumeAskUserQuestion && Boolean(lastAssistantId);
+  const messagesWithPreviousCard = reuseExistingAssistant
+    ? baseMessages
+    : stampPendingCardOnMessages(baseMessages, slot.pendingAskUserQuestion);
+  const pendingAssistantId = reuseExistingAssistant
+    ? lastAssistantId!
+    : createPendingAssistantId();
+  const streamingQuestion = reuseExistingAssistant && lastUserText ? lastUserText : query;
+
+  const resumeMessages = reuseExistingAssistant
+    ? baseMessages
+    : [
+        ...messagesWithPreviousCard,
+        {
+          role: 'user' as const,
+          content: [{ type: 'text' as const, text: query }],
+          ...(request.filters && (request.filters.apps.length > 0 || request.filters.kb.length > 0)
+            ? {
+                metadata: {
+                  custom: {
+                    filters: request.filters,
+                    createdAt: new Date().toISOString(),
+                    ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+                    ...(request.attachments?.length ? { attachments: request.attachments } : {}),
+                  },
+                },
+              }
+            : {
+                metadata: {
+                  custom: {
+                    createdAt: new Date().toISOString(),
+                    ...(request.agentId && request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+                    ...(request.attachments?.length ? { attachments: request.attachments } : {}),
+                  },
+                },
+              }),
+        },
+        {
+          role: 'assistant' as const,
+          id: pendingAssistantId,
+          content: [{ type: 'text' as const, text: '' }],
+        },
+      ];
 
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
     isStreaming: true,
-    streamingQuestion: query,
+    streamingQuestion,
     streamingContent: '',
     currentStatusMessage: null,
     streamingCitationMaps: null,
-    streamingParts: [],
+    streamingParts: reuseExistingAssistant ? lastAssistantParts : [],
     abortController,
     runId: streamRunId,
     stopping: false,
@@ -382,38 +597,7 @@ export async function streamMessageForSlot(
     ...(request.agentId
       ? { agentStreamTools: request.agentStreamTools ?? null }
       : {}),
-    messages: [
-      ...baseMessages,
-      {
-        role: 'user' as const,
-        content: [{ type: 'text' as const, text: query }],
-        ...(request.filters && (request.filters.apps.length > 0 || request.filters.kb.length > 0)
-          ? {
-              metadata: {
-                custom: {
-                  filters: request.filters,
-                  createdAt: new Date().toISOString(),
-                  ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
-                  ...(request.attachments?.length ? { attachments: request.attachments } : {}),
-                },
-              },
-            }
-          : {
-              metadata: {
-                custom: {
-                  createdAt: new Date().toISOString(),
-                  ...(request.agentId && request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
-                  ...(request.attachments?.length ? { attachments: request.attachments } : {}),
-                },
-              },
-            }),
-      },
-      {
-        role: 'assistant' as const,
-        id: pendingAssistantId,
-        content: [{ type: 'text' as const, text: '' }],
-      },
-    ],
+    messages: resumeMessages,
   });
 
   // For new conversations, push a pending sidebar entry keyed by slotId
@@ -487,7 +671,9 @@ export async function streamMessageForSlot(
     }
     useChatStore.getState().updateSlot(slotId, {
       streamingContent: accumulatedContent,
-      streamingParts: latestParts,
+      streamingParts: reuseExistingAssistant && lastAssistantParts.length
+        ? appendResumeParts(lastAssistantParts, latestParts)
+        : latestParts,
       ...(citationMaps ? { streamingCitationMaps: citationMaps } : {}),
     });
   }
@@ -683,20 +869,67 @@ export async function streamMessageForSlot(
         const newConvId = conv._id || conv.id || '';
 
         // Build finalized messages from API response
-        const { messages: finalMessages } = loadHistoricalMessages(data.conversation.messages);
+        const { messages: finalMessages, unansweredAskUserQuestion } = loadHistoricalMessages(data.conversation.messages);
 
         // SSE placeholder assistant id → persisted Mongo message id after complete.
-        const pendingBefore = useChatStore.getState().slots[slotId]?.pendingAskUserQuestion;
+        const slotBeforeComplete = useChatStore.getState().slots[slotId];
+        const liveParts = slotBeforeComplete?.streamingParts ?? [];
+        const liveFollowUp = resumeAskUserQuestion
+          ? [
+              slotBeforeComplete?.streamingContent,
+              textFromLiveParts(liveParts),
+            ].find((text) => isUsableFollowUpText(text))?.trim() ?? ''
+          : '';
+        const pendingBefore = slotBeforeComplete?.pendingAskUserQuestion;
         let remappedPending: PendingAskUserQuestion | undefined;
+        const lastAsst = [...finalMessages].reverse().find((m) => m.role === 'assistant');
+        const cardRow = findAskUserQuestionRow(finalMessages, pendingBefore);
         if (
-          pendingBefore?.status === 'pending' &&
-          pendingBefore.assistantMessageId === pendingAssistantId
+          resumeAskUserQuestion &&
+          pendingBefore &&
+          (pendingBefore.status === 'pending' || pendingBefore.status === 'submitted')
         ) {
-          const lastAsst = [...finalMessages].reverse().find((m) => m.role === 'assistant');
-          const newId = typeof lastAsst?.id === 'string' ? lastAsst.id : undefined;
-          if (newId) {
-            remappedPending = { ...pendingBefore, assistantMessageId: newId };
+          remappedPending = {
+            ...pendingBefore,
+            assistantMessageId:
+              (cardRow && typeof cardRow.id === 'string'
+                ? cardRow.id
+                : pendingBefore.assistantMessageId),
+          };
+        }
+        const partsTarget = cardRow ?? lastAsst;
+        if (partsTarget && liveParts.length) {
+          const prevCustom = (partsTarget.metadata?.custom ?? {}) as Record<string, unknown>;
+          const persistedParts = withFinalAnswerMarked(liveParts);
+          if (persistedParts.length) {
+            Object.assign(partsTarget, {
+              metadata: {
+                ...partsTarget.metadata,
+                custom: { ...prevCustom, persistedParts },
+              },
+            });
           }
+        }
+        if (cardRow && liveFollowUp && !isUsableFollowUpText(getThreadMessagePlainText(cardRow))) {
+          Object.assign(cardRow, {
+            content: [{ type: 'text' as const, text: liveFollowUp }],
+          });
+        }
+        const rowHasFollowUp = Boolean(
+          cardRow && isUsableFollowUpText(getThreadMessagePlainText(cardRow)),
+        );
+        if (cardRow && pendingBefore?.status === 'submitted') {
+          const prevCustom = (cardRow.metadata?.custom ?? {}) as Record<string, unknown>;
+          Object.assign(cardRow, {
+            metadata: {
+              ...cardRow.metadata,
+              custom: {
+                ...prevCustom,
+                persistedAskUserQuestion: pendingBefore.payload,
+                persistedAskUserQuestionAnswers: pendingBefore.answers,
+              },
+            },
+          });
         }
 
         // Determine pagination for the "load older messages" feature.
@@ -745,7 +978,23 @@ export async function streamMessageForSlot(
             conversationModelInfo: data.conversation.modelInfo,
             ...(newMsgPagination !== null ? { messagePagination: newMsgPagination } : {}),
             ...(isNewConversation ? { isOwner: true } : {}),
-            ...(remappedPending ? { pendingAskUserQuestion: remappedPending } : {}),
+            pendingAskUserQuestion: (
+              resumeAskUserQuestion && rowHasFollowUp && pendingBefore
+                ? {
+                    ...pendingBefore,
+                    status: 'submitted' as const,
+                    assistantMessageId:
+                      (cardRow && typeof cardRow.id === 'string' ? cardRow.id : pendingBefore.assistantMessageId),
+                  }
+                : (unansweredAskUserQuestion
+                  ?? (pendingBefore?.status === 'submitted'
+                    ? {
+                        ...pendingBefore,
+                        assistantMessageId:
+                          (cardRow && typeof cardRow.id === 'string' ? cardRow.id : pendingBefore.assistantMessageId),
+                      }
+                    : (remappedPending ?? pendingBefore ?? null)))
+            ),
           });
 
         // Resolve temp → real convId
@@ -797,7 +1046,9 @@ export async function streamMessageForSlot(
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         cancelPendingStatus();
         console.error('[streaming] Stream error for slot', slotId, error);
-        const currentMessages = useChatStore.getState().slots[slotId]?.messages ?? [];
+        const slotNow = useChatStore.getState().slots[slotId];
+        const pendingNow = slotNow?.pendingAskUserQuestion;
+        const currentMessages = slotNow?.messages ?? [];
         const err = error.message || 'An error occurred. Please try again.';
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
@@ -810,9 +1061,14 @@ export async function streamMessageForSlot(
           abortController: null,
           runId: null,
           stopping: false,
-          pendingAskUserQuestion: null,
-          messages: withStreamingErrorMessage(currentMessages, err),
+          pendingAskUserQuestion: pendingAfterStreamFailure(pendingNow),
+          messages: resumeAskUserQuestion
+            ? currentMessages
+            : withStreamingErrorMessage(currentMessages, err),
         });
+        if (resumeAskUserQuestion) {
+          notifyAskUserQuestionResumeFailed(err);
+        }
         if (isNewConversation) {
           useChatStore.getState().clearPendingConversation(slotId);
         }
@@ -860,7 +1116,9 @@ export async function streamMessageForSlot(
     if (!slotIsOnRun(slotId, streamRunId)) return;
 
     console.error('[streaming] Fatal error for slot', slotId, error);
-    const currentMessages = useChatStore.getState().slots[slotId]?.messages ?? [];
+    const slotNow = useChatStore.getState().slots[slotId];
+    const pendingNow = slotNow?.pendingAskUserQuestion;
+    const currentMessages = slotNow?.messages ?? [];
     const errorMessage = error instanceof Error
       ? error.message
       : i18n.t('chatStream.errorFallback');
@@ -875,9 +1133,14 @@ export async function streamMessageForSlot(
       abortController: null,
       runId: null,
       stopping: false,
-      pendingAskUserQuestion: null,
-      messages: withStreamingErrorMessage(currentMessages, errorMessage),
+      pendingAskUserQuestion: pendingAfterStreamFailure(pendingNow),
+      messages: resumeAskUserQuestion
+        ? currentMessages
+        : withStreamingErrorMessage(currentMessages, errorMessage),
     });
+    if (resumeAskUserQuestion) {
+      notifyAskUserQuestionResumeFailed(errorMessage);
+    }
     if (isNewConversation) {
       useChatStore.getState().clearPendingConversation(slotId);
     }
@@ -1091,7 +1354,12 @@ export async function streamRegenerateForSlot(
       });
       // The run is parked on the user, not working — no progress indicator.
       stopIdleStatus();
-      applyAskUserQuestionSse(slotId, data, messageId);
+      const liveMessages = useChatStore.getState().slots[slotId]?.messages ?? [];
+      applyAskUserQuestionSse(
+        slotId,
+        data,
+        assistantRowIdForBackendMessage(liveMessages, messageId),
+      );
     },
 
     onAnswerFinal: () => {
@@ -1112,7 +1380,15 @@ export async function streamRegenerateForSlot(
           ? await AgentsApi.fetchAgentConversation(reloadViaAgentId, slot.convId!)
           : await ChatApi.fetchConversation(slot.convId!);
         if (!slotIsOnRun(slotId, streamRunId)) return;
-        const { messages: finalMessages } = loadHistoricalMessages(detail.messages);
+        const pendingBefore = useChatStore.getState().slots[slotId]?.pendingAskUserQuestion;
+        const { messages: loadedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(detail.messages);
+        const regenRowId = assistantRowIdForBackendMessage(loadedMessages, messageId);
+        const finalMessages = pendingBefore?.payload
+          ? stampPendingCardOnMessages(loadedMessages, {
+              ...pendingBefore,
+              assistantMessageId: regenRowId,
+            })
+          : loadedMessages;
         const postRegenModelInfo = pickModelInfoFromConversationBundle({
           modelInfo: detail.conversation.modelInfo,
           messages: detail.messages,
@@ -1136,6 +1412,14 @@ export async function streamRegenerateForSlot(
           abortController: null,
           runId: null,
           stopping: false,
+          pendingAskUserQuestion: unansweredAskUserQuestion
+            ?? (pendingBefore
+              ? {
+                  ...pendingBefore,
+                  status: 'pending' as const,
+                  assistantMessageId: regenRowId,
+                }
+              : pendingFromUnansweredPersistedCard(finalMessages, regenRowId)),
           ...(regenPagination ? { messagePagination: regenPagination } : {}),
           ...(postRegenModelInfo ? { conversationModelInfo: postRegenModelInfo } : {}),
         });

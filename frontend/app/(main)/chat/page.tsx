@@ -787,9 +787,7 @@ function ChatContent() {
             isLoadingOlder: false,
           },
           ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
-          ...(unansweredAskUserQuestion
-            ? { pendingAskUserQuestion: unansweredAskUserQuestion }
-            : {}),
+          pendingAskUserQuestion: unansweredAskUserQuestion,
         });
       } catch (error) {
         console.error('Failed to load conversation history:', error);
