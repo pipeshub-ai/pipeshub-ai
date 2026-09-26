@@ -48,7 +48,7 @@ import type { CitationMaps, CitationCallbacks } from './response-tabs/citations'
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
-import { parseDownloadMarkers, parseArtifactMarkers, isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
+import { extractAnswerMarkers, isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
 import { isAskUserQuestionTool } from '../../utils/tool-display';
 import { BELOW_APP_KEYS, hasAnyFilter } from '../../utils/tree-selection';
 import { DownloadTasks } from './download-tasks';
@@ -500,18 +500,17 @@ export const ChatResponse = React.memo(function ChatResponse({
       ),
     [isStreaming, streamingContent, answer],
   );
-  // Extract persisted artifact + legacy download-task markers so the markdown
-  // pipeline doesn't try to render them as raw text. The backend appends these
-  // markers to the final saved answer content:
-  //   ::artifact[name](url){mime|docId|recordId}
-  //   ::download_conversation_task[name](url)  (legacy CSV download)
-  const { text: contentWithoutArtifacts, artifacts: persistedArtifacts } = useMemo(
-    () => parseArtifactMarkers(processedContent),
-    [processedContent],
-  );
-  const { text: displayContent, tasks: downloadTasks } = useMemo(
-    () => parseDownloadMarkers(contentWithoutArtifacts),
-    [contentWithoutArtifacts],
+  // Markers are always stripped from the markdown; they become cards only in
+  // a saved answer (see `MarkerSource`). While streaming, live cards come
+  // solely from the backend's typed artifact events (`streamingArtifacts`),
+  // never from the model's own text.
+  const {
+    text: displayContent,
+    artifacts: persistedArtifacts,
+    downloadTasks,
+  } = useMemo(
+    () => extractAnswerMarkers(processedContent, isStreaming ? 'streamed' : 'persisted'),
+    [processedContent, isStreaming],
   );
   const EMPTY_ANSWER_FALLBACK =
     "I wasn't able to generate a response. Please try rephrasing.";
@@ -525,15 +524,9 @@ export const ChatResponse = React.memo(function ChatResponse({
     hasQuestionCard && displayContent.trim() === EMPTY_ANSWER_FALLBACK
       ? ''
       : displayContent;
-  // During streaming, use live artifacts from SSE events (they arrive before
-  // the final content exists). Once streaming ends, the markers in the saved
-  // content become the source of truth — slot.artifacts gets wiped on
-  // complete, so parsing from content keeps the panel populated for both
-  // freshly completed and historically loaded messages.
-  const effectiveArtifacts: ChatArtifact[] =
-    isStreaming && streamingArtifacts && streamingArtifacts.length > 0
-      ? streamingArtifacts
-      : persistedArtifacts;
+  const effectiveArtifacts: ChatArtifact[] = isStreaming
+    ? streamingArtifacts ?? []
+    : persistedArtifacts;
   const currentStatusMessage = currentStatusMessageProp;
   const streamingStatusToShow =
     currentStatusMessage ?? (isStreaming && !displayContent ? streamingFallbackStatus : null);
