@@ -975,18 +975,19 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                         if not item_id or not item_title:
                             continue
 
-                        item_when = _extract_item_last_modified_when(item_data) or ""
-                        if str(item_id) in given_up:
-                            if given_up[str(item_id)] == item_when:
-                                continue
-                            del given_up[str(item_id)]
-
                         if (
                             record_type == RecordType.CONFLUENCE_PAGE
                             and space_homepage_id
                             and str(item_id) == space_homepage_id
                         ):
                             homepage_seen_in_search = True
+
+                        # After the homepage check, so a skipped homepage isn't mistaken for one missing from search.
+                        item_when = _extract_item_last_modified_when(item_data) or ""
+                        if str(item_id) in given_up:
+                            if given_up[str(item_id)] == item_when:
+                                continue
+                            del given_up[str(item_id)]
 
                         self.logger.debug(f"Processing {content_type}: {item_title} ({item_id})")
 
