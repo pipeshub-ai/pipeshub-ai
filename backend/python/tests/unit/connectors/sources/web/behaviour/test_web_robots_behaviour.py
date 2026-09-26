@@ -339,3 +339,27 @@ async def test_a_site_that_refuses_head_still_crawls_as_before(
 
     stored = f"http://site.test{target}" in db.pages()
     assert stored is (target == "/public/page")
+
+
+async def test_a_robots_txt_that_starts_with_a_byte_order_mark_is_still_read(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    _site(site)
+    site.add(ROBOTS, Page(body="﻿User-agent: *\nDisallow: /private/\n".encode(), content_type="text/plain"))
+
+    await (await make_connector()).run_sync()
+
+    assert "http://site.test/private/secret" not in db.pages()
+
+
+async def test_only_the_first_512_kib_of_robots_txt_are_read(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    _site(site)
+    padding = b"# padding line\n" * (600 * 1024 // 15)
+    site.add(ROBOTS, Page(body=padding + b"User-agent: *\nDisallow: /private/\n", content_type="text/plain"))
+
+    await (await make_connector()).run_sync()
+
+    # The rule sits past the cut-off, so it isn't seen; what comes first still applies.
+    assert "http://site.test/private/secret" in db.pages()

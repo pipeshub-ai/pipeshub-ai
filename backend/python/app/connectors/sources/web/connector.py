@@ -171,6 +171,7 @@ PROBE_TIMEOUT_SECONDS = 10
 # The name robots.txt groups are matched against; sites without a group for it get their "*" rules.
 ROBOTS_USER_AGENT = "PipesHub"
 ROBOTS_TIMEOUT_SECONDS = 10
+ROBOTS_MAX_BYTES = 512 * 1024
 
 DOCUMENT_MIME_TYPES = {
     MimeTypes.PDF.value,
@@ -1453,7 +1454,14 @@ class WebConnector(BaseConnector):
                 timeout=aiohttp.ClientTimeout(total=ROBOTS_TIMEOUT_SECONDS),
             ) as response:
                 status = response.status
-                body = await response.read() if status < 400 else b""
+                body = bytearray()
+                if status < 400:
+                    # RFC 9309 §2.5 lets a crawler stop after 500 KiB; a site shouldn't hold a worker's memory.
+                    async for chunk in response.content.iter_chunked(64 * 1024):
+                        body.extend(chunk)
+                        if len(body) >= ROBOTS_MAX_BYTES:
+                            del body[ROBOTS_MAX_BYTES:]
+                            break
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
             self.logger.warning("Couldn't read %s (%s); not crawling that site this sync", url, e)
             return None
@@ -1462,7 +1470,8 @@ class WebConnector(BaseConnector):
             return None
         if status >= 400:
             return RobotsRules()
-        return RobotsRules.parse(body.decode("utf-8", "replace"), ROBOTS_USER_AGENT)
+        # utf-8-sig: a leading byte-order mark would otherwise hide the first "User-agent" line.
+        return RobotsRules.parse(bytes(body).decode("utf-8-sig", "replace"), ROBOTS_USER_AGENT)
 
     def _robots_summary(self) -> str:
         unreadable = sorted(urlparse(origin).netloc for origin, rules in self._robots.items() if rules is None)
