@@ -272,7 +272,6 @@ class TestSearch:
         assert data["unreadable_message_ids"] == ["m-2"]
         assert "1 of 2" in data["note"] and "get_email_details" in data["note"]
 
-    @pending("search")
     @pytest.mark.parametrize("max_results", [0, -5, 501])
     async def test_a_result_count_gmail_cannot_serve_is_refused_up_front(self, gmail, http, max_results) -> None:
         ok, data = result(await gmail.search_emails(query="x", max_results=max_results))

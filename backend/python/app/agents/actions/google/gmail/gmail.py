@@ -40,6 +40,8 @@ from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
 logger = logging.getLogger(__name__)
 
+_MAX_SEARCH_RESULTS = 500
+
 
 def _gmail_message_label(message: dict) -> str:
     payload = message.get("payload") or {}
@@ -519,6 +521,13 @@ class Gmail:
         Returns:
             tuple[bool, str]: True if the emails are searched, False otherwise
         """
+        if max_results is not None and not 1 <= max_results <= _MAX_SEARCH_RESULTS:
+            return False, json.dumps({
+                "error": (
+                    f"max_results must be between 1 and {_MAX_SEARCH_RESULTS}; Gmail returns at most "
+                    f"{_MAX_SEARCH_RESULTS} messages per page. Use page_token to read further pages."
+                )
+            })
         try:
             result = await self.client.users_messages_list(
                 userId="me",
