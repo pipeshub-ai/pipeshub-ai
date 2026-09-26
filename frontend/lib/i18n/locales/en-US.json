@@ -736,7 +736,8 @@
       "editComingSoonTitle": "Coming Soon",
       "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
-      "openAgentBuilder": "Open Agent Builder"
+      "openAgentBuilder": "Open Agent Builder",
+      "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again."
     },
     "queryModes": {
       "chat": {
@@ -860,7 +861,8 @@
         "icons": [
           "sheets",
           "slack"
-        ]
+        ],
+        "restricted": true
       }
     },
     "askMoreQuestionSets": [
@@ -1101,7 +1103,11 @@
       "webSearch": "Web Search"
     },
     "resizePanels": "Resize chat and preview panels",
-    "mobileProfileComingSoon": "Profile page on mobile is coming soon."
+    "mobileProfileComingSoon": "Profile page on mobile is coming soon.",
+    "sendMessage": "Send message",
+    "demoHide": "Hide demo data",
+    "demoRestrictedHint": "Pricing committee only, so you'll get no answer here. That's permissions at work.",
+    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer."
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -2491,7 +2497,8 @@
         "fieldValues": "{{field}} values",
         "loadingOptions": "Loading options…",
         "noResults": "No results found",
-        "loadingMore": "Loading more…"
+        "loadingMore": "Loading more…",
+        "optionsLoadFailed": "We couldn't load the options for this filter. Close this list and open it again to retry."
       },
       "syncStrategies": {
         "SCHEDULED": "Scheduled",
@@ -3167,7 +3174,18 @@
       "seeMore": "See more",
       "showMore": "Show More",
       "moreAgents": "More Agents",
-      "moreChats": "More Chats"
+      "moreChats": "More Chats",
+      "demoData": {
+        "description": "Acme Corp is a fictional company loaded so you can try PipesHub. This only changes what you see; nothing is deleted.",
+        "everyoneDescription": "Turning it off hides the demo from everyone's answers, search and records, and stops the sample accounts signing in. Nothing is deleted.",
+        "everyoneLabel": "Offer the demo to everyone",
+        "followingDefault": "Following the default: shown until your organization has data of its own, then hidden.",
+        "label": "Show Acme Corp demo data in my answers, search and records",
+        "offForEveryone": "Turned off for everyone by an admin.",
+        "title": "Demo data",
+        "useDefault": "Use the default",
+        "yourChoice": "Your own choice."
+      }
     },
     "services": {
       "pageTitle": "Services",
@@ -4205,5 +4223,45 @@
     "team": "Team",
     "teamsNoRoles": "Teams do not have roles",
     "invite": "Invite to Pipeshub"
+  },
+  "demoData": {
+    "badge": {
+      "label": "Demo",
+      "tooltip": "Sample data from the Acme Corp demo, not one of your company's records"
+    },
+    "removalNotice": {
+      "title": "The Acme Corp demo data is still in your workspace",
+      "description": "Your company's own data is now in PipesHub. The demo is hidden from answers by default, but anyone can turn it back on, and its sample accounts can still sign in. Turn it off for everyone, or remove it permanently.",
+      "remove": "Remove permanently",
+      "keep": "Keep for now",
+      "turnOff": "Turn off for everyone"
+    },
+    "removeDialog": {
+      "title": "Remove the Acme Corp demo data permanently?",
+      "description": "This deletes the Demo connector with all of its records, groups and permissions. To hide it without deleting anything, turn it off for everyone instead. You can add it again later from the Connectors page.",
+      "deleteAccounts": "Also delete the sample accounts: {{names}}",
+      "deleteAccountsHint": "They were created with a starting password, so anyone who knows it can sign in as them.",
+      "cancel": "Cancel",
+      "confirm": "Remove permanently",
+      "successTitle": "Demo data removed",
+      "successAccounts": "The sample accounts were deleted too.",
+      "partialTitle": "Demo data removed, but some sample accounts remain",
+      "partialDescription": "Delete {{emails}} under Workspace → Users.",
+      "errorTitle": "Couldn't remove the demo data",
+      "errorDescription": "Please try again. If it keeps happening, remove the Demo connector from the Connectors page."
+    },
+    "switch": {
+      "errorTitle": "Couldn't change the demo data setting",
+      "errorDescription": "Nothing changed. Try again in a moment.",
+      "hiddenTitle": "Acme Corp demo data hidden",
+      "hiddenDescription": "It's out of your answers, search and records. Turn it back on anytime in Profile → Demo data.",
+      "undo": "Undo"
+    },
+    "everyone": {
+      "offTitle": "Demo data turned off for everyone",
+      "offDescription": "It's out of everyone's answers, search and records, and the sample accounts can't sign in. Turn it back on in Profile → Demo data.",
+      "onTitle": "Demo data turned back on for everyone",
+      "errorTitle": "Couldn't change the demo data for everyone"
+    }
   }
 }

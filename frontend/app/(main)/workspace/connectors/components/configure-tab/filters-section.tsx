@@ -450,6 +450,7 @@ function useDynamicFilterOptions(
   optionContextGroupPaths?: string[],
   optionExcludeContextGroupPaths?: string[]
 ) {
+  const { t } = useTranslation();
   const isDynamic = field.optionSourceType === 'dynamic';
   const [options, setOptions] = useState<PickerOption[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -544,7 +545,7 @@ function useDynamicFilterOptions(
         if (!append) {
           setOptions([]);
           setHasMore(false);
-          setEmptyMessage(undefined);
+          setEmptyMessage(t('workspace.connectors.filters.optionsLoadFailed'));
         }
       } finally {
         if (append) appendFetchingRef.current = false;
@@ -553,7 +554,7 @@ function useDynamicFilterOptions(
       }
     },
     // Refs are read inside but omitted from deps so this callback stays stable; adding them would churn consumers.
-    [connectorId, field.name, isDynamic, optionContextGroupPaths, optionExcludeContextGroupPaths]
+    [connectorId, field.name, isDynamic, optionContextGroupPaths, optionExcludeContextGroupPaths, t]
   );
 
   /** Fresh first page (popover opened). */

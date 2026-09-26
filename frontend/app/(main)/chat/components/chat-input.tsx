@@ -838,12 +838,10 @@ export function ChatInput({
     }
 
     // ── Normal send flow ──────────────────────────────────────
-    // Only forward chips whose upload completed successfully. Errored
-    // chips are dropped silently here — `canSubmit` lets them through
-    // (otherwise the send button would be stuck), but the user has
-    // already seen a toast per failed upload and the chip exposes a
-    // retry icon if they want to recover.
-    if ((message.trim() || uploadedFiles.length > 0) && onSend) {
+    // Only forward chips whose upload completed. A failed chip stays, with
+    // its retry, and does not by itself enable send.
+    const hasUploaded = uploadedFiles.some((f) => f.status === 'uploaded');
+    if ((message.trim() || hasUploaded) && onSend) {
       const refs = uploadedFiles
         .filter((f) => f.status === 'uploaded' && f.ref)
         .map((f) => f.ref!);
@@ -1271,7 +1269,8 @@ export function ChatInput({
     setShowUploadArea(next);
   };
 
-  const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
+  const hasSendableAttachment = uploadedFiles.some((f) => f.status === 'uploaded');
+  const hasContent = Boolean(message.trim()) || hasSendableAttachment || isListening;
   const hasUploadingAttachments = uploadedFiles.some((f) => f.status === 'uploading');
   const canSubmit =
     (hasContent || activeMessageAction !== null) &&
@@ -1432,6 +1431,7 @@ export function ChatInput({
               size="2"
               onClick={handleSubmit}
               disabled={!canSubmit}
+              aria-label={t('chat.sendMessage')}
               style={{
                 margin: 0,
                 backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',
@@ -2452,6 +2452,7 @@ export function ChatInput({
               size="2"
               onClick={handleSubmit}
               disabled={!canSubmit}
+              aria-label={t('chat.sendMessage')}
               style={{
                 margin: 0,
                 backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',

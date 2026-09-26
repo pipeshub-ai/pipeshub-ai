@@ -694,7 +694,8 @@
       "editComingSoonTitle": "Demnächst verfügbar",
       "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt",
       "deprecatedTools": "Dieser Agent hat Tools, die nicht mehr verfügbar sind. Öffnen Sie den Agent Builder, um sie zu entfernen.",
-      "openAgentBuilder": "Agent Builder öffnen"
+      "openAgentBuilder": "Agent Builder öffnen",
+      "loadConversationFailed": "Diese Unterhaltung konnte nicht geöffnet werden. Laden Sie die Seite neu, um es erneut zu versuchen."
     },
     "queryModes": {
       "chat": {
@@ -1081,9 +1082,14 @@
         "icons": [
           "sheets",
           "slack"
-        ]
+        ],
+        "restricted": true
       }
-    }
+    },
+    "sendMessage": "Nachricht senden",
+    "demoHide": "Demodaten ausblenden",
+    "demoRestrictedHint": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. So wirken Berechtigungen.",
+    "demoRestrictedHintSignIn": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. Melden Sie sich als {{email}} an, um die Antwort zu sehen."
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -2411,7 +2417,8 @@
         "fieldValues": "{{field}}-Werte",
         "loadingOptions": "Optionen werden geladen…",
         "noResults": "Keine Ergebnisse gefunden",
-        "loadingMore": "Weitere Optionen werden geladen…"
+        "loadingMore": "Weitere Optionen werden geladen…",
+        "optionsLoadFailed": "Die Optionen für diesen Filter konnten nicht geladen werden. Schließen Sie die Liste und öffnen Sie sie erneut, um es noch einmal zu versuchen."
       },
       "syncStrategies": {
         "SCHEDULED": "Geplant",
@@ -2934,7 +2941,18 @@
       "seeMore": "Mehr anzeigen",
       "showMore": "Mehr anzeigen",
       "moreAgents": "Weitere Agenten",
-      "moreChats": "Weitere Chats"
+      "moreChats": "Weitere Chats",
+      "demoData": {
+        "description": "Acme Corp ist ein fiktives Unternehmen, das geladen wird, damit Sie PipesHub ausprobieren können. Das ändert nur, was Sie sehen; es wird nichts gelöscht.",
+        "everyoneDescription": "Wenn Sie sie ausschalten, wird die Demo aus den Antworten, der Suche und den Datensätzen aller ausgeblendet, und die Beispielkonten können sich nicht mehr anmelden. Es wird nichts gelöscht.",
+        "everyoneLabel": "Die Demo allen anbieten",
+        "followingDefault": "Entspricht der Vorgabe: sichtbar, bis Ihre Organisation eigene Daten hat, danach ausgeblendet.",
+        "label": "Demodaten von Acme Corp in meinen Antworten, der Suche und den Datensätzen anzeigen",
+        "offForEveryone": "Von einer Administration für alle ausgeschaltet.",
+        "title": "Demodaten",
+        "useDefault": "Vorgabe verwenden",
+        "yourChoice": "Ihre eigene Auswahl."
+      }
     },
     "services": {
       "pageTitle": "Dienste",
@@ -4205,5 +4223,45 @@
     "team": "Team",
     "teamsNoRoles": "Teams haben keine Rollen",
     "invite": "Zu PipesHub einladen"
+  },
+  "demoData": {
+    "badge": {
+      "label": "Demo",
+      "tooltip": "Beispieldaten aus der Acme-Corp-Demo, nicht aus den Unterlagen Ihres Unternehmens"
+    },
+    "removalNotice": {
+      "title": "Die Demodaten von Acme Corp sind noch in Ihrem Arbeitsbereich",
+      "description": "Die eigenen Daten Ihres Unternehmens sind jetzt in PipesHub. Die Demo ist in Antworten standardmäßig ausgeblendet, kann aber von jedem wieder eingeschaltet werden, und die Beispielkonten können sich weiterhin anmelden. Schalten Sie sie für alle aus, oder entfernen Sie sie dauerhaft.",
+      "remove": "Dauerhaft entfernen",
+      "keep": "Vorerst behalten",
+      "turnOff": "Für alle ausschalten"
+    },
+    "removeDialog": {
+      "title": "Demodaten von Acme Corp dauerhaft entfernen?",
+      "description": "Damit werden der Demo-Connector und alle zugehörigen Datensätze, Gruppen und Berechtigungen gelöscht. Um die Demo auszublenden, ohne etwas zu löschen, schalten Sie sie stattdessen für alle aus. Sie können sie später auf der Connector-Seite wieder hinzufügen.",
+      "deleteAccounts": "Auch die Beispielkonten löschen: {{names}}",
+      "deleteAccountsHint": "Sie wurden mit einem Startpasswort angelegt, deshalb kann sich jeder anmelden, der es kennt.",
+      "cancel": "Abbrechen",
+      "confirm": "Dauerhaft entfernen",
+      "successTitle": "Demodaten entfernt",
+      "successAccounts": "Die Beispielkonten wurden ebenfalls gelöscht.",
+      "partialTitle": "Demodaten entfernt, aber einige Beispielkonten bleiben",
+      "partialDescription": "Löschen Sie {{emails}} unter Arbeitsbereich → Benutzer.",
+      "errorTitle": "Die Demodaten konnten nicht entfernt werden",
+      "errorDescription": "Bitte versuchen Sie es erneut. Wenn es weiterhin auftritt, entfernen Sie den Demo-Connector auf der Connector-Seite."
+    },
+    "switch": {
+      "errorTitle": "Die Demodaten-Einstellung konnte nicht geändert werden",
+      "errorDescription": "Es hat sich nichts geändert. Versuchen Sie es gleich noch einmal.",
+      "hiddenTitle": "Demodaten von Acme Corp ausgeblendet",
+      "hiddenDescription": "Sie sind aus Ihren Antworten, der Suche und den Datensätzen verschwunden. Sie können sie jederzeit unter Profil → Demodaten wieder einschalten.",
+      "undo": "Rückgängig"
+    },
+    "everyone": {
+      "offTitle": "Demodaten für alle ausgeschaltet",
+      "offDescription": "Sie sind aus den Antworten, der Suche und den Datensätzen aller verschwunden, und die Beispielkonten können sich nicht anmelden. Schalten Sie sie unter Profil → Demodaten wieder ein.",
+      "onTitle": "Demodaten für alle wieder eingeschaltet",
+      "errorTitle": "Die Demodaten konnten nicht für alle geändert werden"
+    }
   }
 }
