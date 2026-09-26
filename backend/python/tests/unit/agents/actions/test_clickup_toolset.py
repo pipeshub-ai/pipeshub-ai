@@ -636,3 +636,69 @@ class TestInputValidation:
     async def test_blank_task_name_is_refused_before_clickup(self, clickup, api) -> None:
         assert "name cannot be empty" in fail(await clickup.create_task("l1", ""))["error"]
         assert api.requests == []
+
+
+# Every tool, with arguments that pass its own checks, and the first data-source method it calls.
+EVERY_TOOL = [
+    ("get_authorized_user", {}, "get_authorized_user"),
+    ("get_authorized_teams_workspaces", {}, "get_authorized_teams_workspaces"),
+    ("get_spaces", {"team_id": "9001"}, "get_spaces"),
+    ("get_folders", {"space_id": "s1", "team_id": "9001"}, "get_folders"),
+    ("get_lists", {"folder_id": "f1", "team_id": "9001"}, "get_lists"),
+    ("get_folderless_lists", {"space_id": "s1", "team_id": "9001"}, "get_folderless_lists"),
+    ("create_space", {"team_id": "9001", "name": "Ops"}, "create_space"),
+    ("create_folder", {"space_id": "s1", "name": "Q4"}, "create_folder"),
+    ("create_list", {"name": "Bugs", "folder_id": "f1"}, "create_list"),
+    ("update_list", {"list_id": "l1", "name": "Renamed"}, "update_list"),
+    ("get_tasks", {"team_id": "9001"}, "get_filtered_team_tasks"),
+    ("search_tasks", {"team_id": "9001", "keyword": "invoice"}, "create_team_view"),
+    ("get_task", {"task_id": "t1"}, "get_task"),
+    ("create_task", {"list_id": "l1", "name": "Ship it"}, "create_task"),
+    ("update_task", {"task_id": "t1", "name": "Renamed"}, "update_task"),
+    ("get_comments", {"task_id": "t1"}, "get_task_comments"),
+    ("create_task_comment", {"comment_text": "Done", "task_id": "t1"}, "create_task_comment"),
+    ("create_checklist", {"task_id": "t1", "name": "QA"}, "create_checklist"),
+    ("create_checklist_item", {"checklist_id": "c1", "name": "Smoke test"}, "create_checklist_item"),
+    ("update_checklist_item", {"checklist_id": "c1", "checklist_item_id": "i1", "resolved": True}, "update_checklist_item"),
+    ("get_workspace_docs", {"workspace_id": "9001"}, "get_workspace_docs"),
+    ("get_doc_pages", {"workspace_id": "9001", "doc_id": "d1"}, "get_doc_pages"),
+    ("get_doc_page", {"workspace_id": "9001", "doc_id": "d1", "page_id": "p1"}, "get_doc_page"),
+    ("create_doc", {"workspace_id": "9001", "name": "Runbook"}, "create_doc"),
+    ("create_doc_page", {"workspace_id": "9001", "doc_id": "d1", "name": "Intro"}, "create_doc_page"),
+    ("update_doc_page", {"workspace_id": "9001", "doc_id": "d1", "page_id": "p1", "content": "Hi"}, "update_doc_page"),
+]
+TOOL_IDS = [t[0] for t in EVERY_TOOL]
+
+
+class TestEveryToolFailsHonestly:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool_name", "args", "method"), EVERY_TOOL, ids=TOOL_IDS)
+    async def test_a_rate_limit_is_a_failure_that_says_to_wait(self, clickup, api, tool_name, args, method) -> None:
+        for verb in ("GET", "POST", "PUT", "DELETE"):
+            api.on(verb, r"/api/v\d/.*", (429, {"err": "Rate limit reached", "ECODE": "APP_002"}))
+        assert "Wait a minute" in fail(await getattr(clickup, tool_name)(**args))["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool_name", "args", "method"), EVERY_TOOL, ids=TOOL_IDS)
+    async def test_a_crash_is_a_plain_failure_without_the_exception_text(self, clickup, api, monkeypatch, tool_name, args, method) -> None:
+        async def crash(*_: object, **__: object) -> None:
+            raise RuntimeError(f"Authorization: Bearer {TOKEN}")
+
+        monkeypatch.setattr(clickup.client, method, crash)
+        message = fail(await getattr(clickup, tool_name)(**args))["error"]
+        assert message.startswith("Something unexpected went wrong in")
+
+
+class TestWebLinks:
+    @pytest.mark.parametrize(("entity", "kwargs"), [
+        (ClickUpEntityType.SPACE, {"team_id": "9"}),
+        (ClickUpEntityType.FOLDER, {"team_id": "9", "folder_id": "f1"}),
+        (ClickUpEntityType.LIST, {"team_id": "9", "list_id": "l1"}),
+        (ClickUpEntityType.DOC, {"team_id": "9"}),
+        (ClickUpEntityType.PAGE, {"team_id": "9", "doc_id": "d1"}),
+        (ClickUpEntityType.COMMENT, {"task_id": "t1"}),
+        (ClickUpEntityType.COMMENT_REPLY, {"task_id": "t1", "comment_id": "c1"}),
+        (ClickUpEntityType.LIST, {"list_id": "l1", "folder_id": "f1"}),
+    ])
+    def test_a_link_missing_an_id_is_left_out_rather_than_broken(self, entity, kwargs) -> None:
+        assert _build_clickup_web_url(entity, **kwargs) == ""
