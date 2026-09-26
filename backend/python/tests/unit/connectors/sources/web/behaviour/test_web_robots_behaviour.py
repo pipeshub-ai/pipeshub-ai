@@ -65,6 +65,25 @@ async def test_each_sync_reads_robots_txt_again(
     assert site.gets("http://site.test/private/secret") == 1
 
 
+@pytest.mark.parametrize("landing", ["http://site.test/private/page", "http://elsewhere.test/page"],
+                         ids=["disallowed", "off-site"])
+@pytest.mark.parametrize("single_page", [False, True], ids=["crawl", "single-page"])
+async def test_in_robust_mode_the_browser_never_loads_a_redirect_it_may_not_follow(
+    landing: str, single_page: bool, browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    _robots(browser, "User-agent: *\nDisallow: /private/\n")
+    browser.html(START_URL, "Home", "/go")
+    browser.redirect("http://site.test/go", landing)
+    browser.html(landing, "Landing")
+    start = "http://site.test/go" if single_page else START_URL
+
+    await (await make_connector(start, crawl_type="single" if single_page else "recursive",
+                                use_headless_browser=True)).run_sync()
+
+    assert landing not in browser.browser_loaded
+    assert "Landing" not in {record.record_name for record in db.pages().values()}
+
+
 async def test_rules_for_pipeshub_by_name_win_over_the_general_ones(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:

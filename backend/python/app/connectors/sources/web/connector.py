@@ -1686,12 +1686,18 @@ class WebConnector(BaseConnector):
             headers["If-Modified-Since"] = record.ctag
         return headers or None
 
-    async def _headless_fetch(self, url: str) -> FetchResponse | None:
-        """Fetch a single URL via crawl4ai (used outside the BFS crawl loop); documents go over plain HTTP."""
+    async def _headless_fetch(self, url: str, *, walk_first: bool = True) -> FetchResponse | None:
+        """Fetch a single URL via crawl4ai (used outside the BFS crawl loop); documents go over plain HTTP.
+
+        ``walk_first=False`` is for fetches that aren't part of a crawl (a stored record opened on
+        demand), and for a retry of a page whose redirects were just walked.
+        """
         if self.crawl4ai_fetcher is None:
             return None
         if self._is_document_url(url):
             return await self._fetch_linked_document(url)
+        if walk_first and (refused := await self._landing_refused_before_browser(url)) is not None:
+            return refused
         result = await self.crawl4ai_fetcher.fetch(url)
         return await self._fetch_document_behind_render(
             self._crawl4ai_result_to_response(result, url), url, no_answer=self._browser_got_no_answer(result),
@@ -1701,11 +1707,17 @@ class WebConnector(BaseConnector):
         """Fetch a batch of URLs via crawl4ai concurrently; documents go over plain HTTP."""
         assert self.crawl4ai_fetcher is not None
         page_urls = [url for url in urls if not self._is_document_url(url)]
-        rendered = iter(await self.crawl4ai_fetcher.fetch_many(page_urls)) if page_urls else iter(())
+        refused = dict(zip(page_urls, await asyncio.gather(
+            *(self._landing_refused_before_browser(url) for url in page_urls)
+        )))
+        to_render = [url for url in page_urls if refused[url] is None]
+        rendered = iter(await self.crawl4ai_fetcher.fetch_many(to_render)) if to_render else iter(())
         responses: list[FetchResponse | None] = []
         for url in urls:
             if self._is_document_url(url):
                 responses.append(await self._fetch_linked_document(url))
+            elif refused[url] is not None:
+                responses.append(refused[url])
             else:
                 fetch_result = next(rendered)
                 rendered_response = self._crawl4ai_result_to_response(fetch_result, url)
@@ -1713,6 +1725,15 @@ class WebConnector(BaseConnector):
                     rendered_response, url, no_answer=self._browser_got_no_answer(fetch_result),
                 ))
         return responses
+
+    async def _landing_refused_before_browser(self, url: str) -> FetchResponse | None:
+        """The browser follows redirects on its own, so walk them first: a hop outside the crawl or
+        disallowed by robots.txt is answered here, never loaded. None means the browser may go."""
+        probed = await self._probe_landing(url)
+        if probed is None or probed[1] != 0:
+            return None
+        landing = probed[0]
+        return self._out_of_scope_response(landing) if self._outside_crawl(landing) else self._robots_skip_response(landing)
 
     @staticmethod
     def _browser_got_no_answer(fetch_result: FetchResult) -> bool:
@@ -1800,7 +1821,7 @@ class WebConnector(BaseConnector):
             still_limited: list[int] = []
             for batch_idx in pending:
                 url = batch[batch_idx][0]
-                new_resp = await self._headless_fetch(url)
+                new_resp = await self._headless_fetch(url, walk_first=False)
                 if self._is_browser_rate_limited(new_resp):
                     still_limited.append(batch_idx)
                 else:
@@ -3847,7 +3868,7 @@ class WebConnector(BaseConnector):
                 raise connector_not_ready(self.display_name)
 
             if self.use_headless_browser and self.crawl4ai_fetcher:
-                result = await self._headless_fetch(record.weburl)
+                result = await self._headless_fetch(record.weburl, walk_first=False)
             else:
                 result = await fetch_url_with_fallback(
                     url=record.weburl,

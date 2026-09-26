@@ -103,6 +103,7 @@ class FakeWeb:
         self.requests: list[tuple[str, str]] = []
         self.not_modified: list[str] = []
         self.browser_visits: list[str] = []
+        self.browser_loaded: list[str] = []  # every address the browser requested, redirect hops included
         self.browser_starts = 0
         self.browser_broken = False
         self.storage_docs: dict[str, bytes] = {}
@@ -226,6 +227,7 @@ class FakeWeb:
     def render(self, url: str) -> tuple[str, Page]:
         """What a browser ends up showing for ``url``, following redirects."""
         for _ in range(10):
+            self.browser_loaded.append(url)
             page = self._current(url, consume=True)
             if page.location and 300 <= page.status < 400:
                 url = urljoin(url, page.location)
