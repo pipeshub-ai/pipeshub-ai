@@ -1,6 +1,7 @@
 import { HttpMethod } from '../../enums/http-methods.enum';
 import { Logger } from '../../services/logger.service';
 import { BaseCommand } from '../command.interface';
+import { InternalServerError } from '../../errors/http.errors';
 import { Readable } from 'stream';
 import { logSafeUrl } from '../log-safe-url';
 
@@ -37,10 +38,23 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
   // Execute the HTTP request based on the provided options.
   public async execute(): Promise<ConnectorServiceResponse<T>> {
     const url = this.buildUrl();
+    const parsedTarget = new URL(url);
+
+    // Ensure the target origin exactly matches the configured connector service origin
+    if (!process.env.CONNECTOR_BACKEND) {
+      throw new InternalServerError('CONNECTOR_BACKEND is not configured');
+    }
+    const configuredOrigin = new URL(process.env.CONNECTOR_BACKEND).origin;
+
+    if (parsedTarget.origin !== configuredOrigin) {
+      throw new InternalServerError('Blocked connector request to an untrusted origin');
+    }
+
     const requestOptions: RequestInit = {
       method: this.method,
       headers: this.headers,
       body: this.body,
+      redirect: 'error',
     };
 
     try {
