@@ -18,6 +18,8 @@ from atlassian_behaviour_fakes import (
     FakeConfigService,
     FakeRecordsDb,
     json_response,
+    logged,
+    record_logs,
 )
 from fastapi import HTTPException
 
@@ -438,11 +440,12 @@ class TestIncrementalSync:
         assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
         assert json.loads(store.values_for("project_ENG").get("failed_issue_attempts") or "{}") == {}
 
-    async def test_an_issue_that_keeps_failing_is_given_up_on_after_five_syncs(self, jira, db, store, search, caplog) -> None:
+    async def test_an_issue_that_keeps_failing_is_given_up_on_after_five_syncs(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         search.add("ENG", 0, [issue("1001", "ENG-1", ts(1)), issue("1002", "ENG-2", ts(2)), issue("1004", "ENG-4", ts(3))])
         db.fail_lookup_for = {"1002"}
         connector, _ = await make_connector(db, store)
+        logs = record_logs(connector)
         held_at = connector._parse_jira_timestamp(ts(2))
 
         for attempt in range(1, 5):
@@ -450,17 +453,15 @@ class TestIncrementalSync:
             assert store.values_for("project_ENG")["last_issue_updated"] == held_at
             assert json.loads(store.values_for("project_ENG")["failed_issue_attempts"]) == {"1002": attempt}
 
-        with caplog.at_level(logging.ERROR):
-            await connector.run_sync()
+        await connector.run_sync()
 
         assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
-        assert any("ENG-2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
+        assert any("ENG-2" in m and "after 5 syncs" in m for m in logged(logs))
 
-        caplog.clear()
-        with caplog.at_level(logging.ERROR):
-            await connector.run_sync()
+        errors_before = len(logged(logs))
+        await connector.run_sync()
 
-        assert not any("ENG-2" in r.getMessage() for r in caplog.records), "an unchanged given-up issue is not tried again"
+        assert not any("ENG-2" in m for m in logged(logs)[errors_before:]), "an unchanged given-up issue is not tried again"
         assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
         assert json.loads(store.values_for("project_ENG")["given_up_issues"]) == {"1002": ts(2)}
 

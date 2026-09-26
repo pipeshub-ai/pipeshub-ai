@@ -5,7 +5,7 @@ import shutil
 import socket
 import sys
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,6 +18,8 @@ from web_behaviour_fakes import (
     FakeCheckpointStore,
     FakeConfigService,
     FakeRecordsDb,
+    FakeRequestsClient,
+    FakeScraper,
     FakeWeb,
     MakeConnector,
     RecordingNotifications,
@@ -103,6 +105,21 @@ async def browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterat
         leftover = crawl4ai_fetcher._shared_instance
         if leftover is not None:
             await leftover.close()
+
+
+@pytest.fixture
+def use_strategy(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
+    """Serve page fetches with one of the fetcher's strategies (aiohttp is the default)."""
+    def _use(name: str) -> None:
+        if name == "curl_cffi":
+            import curl_cffi.requests
+
+            monkeypatch.setattr(fetch_strategy, "_CURL_PROFILES", ["chrome"])
+            monkeypatch.setattr(curl_cffi.requests, "Session", lambda **_: FakeRequestsClient(site, "curl_cffi"))
+        elif name == "cloudscraper":
+            fake = SimpleNamespace(create_scraper=lambda **_: FakeScraper(site, "cloudscraper"))
+            monkeypatch.setitem(sys.modules, "cloudscraper", fake)
+    return _use
 
 
 @pytest.fixture

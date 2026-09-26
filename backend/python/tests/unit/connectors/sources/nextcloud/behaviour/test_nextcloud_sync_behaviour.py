@@ -153,6 +153,29 @@ def listen_for_notifications(connector: NextcloudConnector) -> Callable[[], Awai
     return sent
 
 
+class _RecordList(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+def capture_logs(connector: NextcloudConnector) -> list[logging.LogRecord]:
+    """Give the connector a logger of its own and return what it logs.
+
+    The logger is built directly, not through ``logging.getLogger``, so no other test's
+    changes to shared loggers (propagate, disabled, level, or the root's handlers, which
+    ``caplog`` relies on) can hide a record from this list.
+    """
+    handler = _RecordList()
+    logger = logging.Logger(f"nextcloud-capture-{id(connector)}", logging.DEBUG)
+    logger.addHandler(handler)
+    connector.logger = logger
+    return handler.records
+
+
 async def synced(server: FakeNextcloud, db: FakeRecordsDb, store: FakeStore) -> NextcloudConnector:
     """A connector that has finished its first full sync and anchored its activity cursor."""
     seed_drive(server)
@@ -988,17 +1011,18 @@ class TestIncrementalSync:
         assert store.checkpoint()["pending_deletes"] == [docs]
         assert store.checkpoint()["pending_delete_paths"] == ["/Docs"]
 
-    async def test_a_pending_deletion_whose_record_is_gone_is_dropped_quietly(self, server, db, store, caplog) -> None:
+    async def test_a_pending_deletion_whose_record_is_gone_is_dropped_quietly(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         cursor = store.cursor()
         store.checkpoint()["pending_deletes"] = ["99999"]
-        caplog.clear()
+        logged = capture_logs(connector)
 
         await connector.run_sync()
 
         assert store.checkpoint()["pending_deletes"] == [] and store.cursor() == cursor
         assert db.deleted == []
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert logged, "the run was logged, so an empty warning list below means something"
+        assert not [r for r in logged if r.levelno >= logging.WARNING]
 
     async def test_a_folder_below_one_that_failed_is_parented_after_the_retry(self, server, db, store) -> None:
         connector = await synced(server, db, store)
@@ -1196,7 +1220,7 @@ class TestIncrementalSync:
         assert notes.external_record_id not in {r.external_record_id for r in db.records.values()}
         assert store.checkpoint()["pending_deletes"] == []
 
-    async def test_the_give_up_error_names_what_could_not_be_applied(self, server, db, store, caplog) -> None:
+    async def test_the_give_up_error_names_what_could_not_be_applied(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         server.change("Docs/notes.txt")
         readme = ids_of(server)["readme.txt"]
@@ -1204,10 +1228,12 @@ class TestIncrementalSync:
         server.delete("readme.txt")
         server.outage("PROPFIND", lambda p: p.endswith("/notes.txt"), lambda: httpx.Response(503))
 
+        logged = capture_logs(connector)
+
         for _ in range(MAX_HELD_ATTEMPTS):
             await connector.run_sync()
 
-        gave_up = [r.getMessage() for r in caplog.records
+        gave_up = [r.getMessage() for r in logged
                    if r.levelno == logging.ERROR and "still could not be applied" in r.getMessage()]
         assert len(gave_up) == 1
         assert "/Docs/notes.txt (fetch failed: HTTP 503)" in gave_up[0]

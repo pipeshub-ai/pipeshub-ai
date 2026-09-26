@@ -17,6 +17,10 @@ from web_behaviour_fakes import (
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 
 MB = 1024 * 1024
+TOO_LARGE = (
+    "This file is larger than this connector's 1 MB size limit, so it wasn't downloaded. "
+    "Raise the Maximum Size in MB setting to include it, then sync again."
+)
 OFFICE_TYPES = "application/vnd.openxmlformats-officedocument"
 
 
@@ -111,7 +115,7 @@ async def test_with_webpage_indexing_off_pages_are_stored_but_not_queued_for_ind
     assert db.pages()["http://site.test/guide.pdf"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
 
-async def test_an_oversized_download_is_skipped_without_fetching_its_body(
+async def test_an_oversized_download_is_shown_as_too_large_without_fetching_its_body(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     big = "http://site.test/huge.pdf"
@@ -122,7 +126,7 @@ async def test_an_oversized_download_is_skipped_without_fetching_its_body(
     await (await make_connector(max_size_mb=1)).run_sync()
 
     assert site.gets(big) == 0
-    assert big not in db.pages()
+    assert db.pages()[big].reason == TOO_LARGE
     assert "http://site.test/small" in db.pages()
 
 
@@ -141,7 +145,7 @@ async def test_an_oversized_download_does_not_start_the_headless_browser(
     assert site.browser_starts == starts_after_init
 
 
-async def test_an_oversized_page_without_a_declared_size_is_not_stored(
+async def test_an_oversized_page_without_a_declared_size_is_shown_as_too_large(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     big = "http://site.test/stream.pdf"
@@ -150,7 +154,8 @@ async def test_an_oversized_page_without_a_declared_size_is_not_stored(
 
     await (await make_connector(max_size_mb=1)).run_sync()
 
-    assert big not in db.pages()
+    assert db.pages()[big].indexing_status == ProgressStatus.FAILED.value
+    assert db.pages()[big].reason == TOO_LARGE
 
 
 async def test_a_page_that_grew_too_big_keeps_its_stored_record(
@@ -291,3 +296,29 @@ async def test_robust_mode_never_stores_the_viewer_page_when_the_file_is_blocked
     assert not any(b"<embed" in doc for doc in browser.storage_docs.values())
     assert "http://site.test/handbook.pdf" not in db.pages()
     assert "403 Forbidden" in (db.pages()["http://site.test/handbook"].reason or "")
+
+
+async def test_an_svg_is_stored_as_an_svg_not_as_xml(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    diagram = "http://site.test/diagram"
+    site.add(diagram, Page(body=b'<svg xmlns="http://www.w3.org/2000/svg"></svg>', content_type="image/svg+xml"))
+
+    await (await make_connector(diagram, crawl_type="single")).run_sync()
+
+    assert (db.pages()[diagram].mime_type, db.pages()[diagram].extension) == (MimeTypes.SVG.value, "svg")
+
+
+@pytest.mark.parametrize("aborts", [False, True], ids=["shown-in-viewer", "navigation-aborted"])
+async def test_robust_mode_fetches_a_document_served_from_a_url_without_an_extension(
+    aborts: bool, browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    url = "http://site.test/download?id=7"
+    browser.html(START_URL, "Home", "/download?id=7")
+    browser.add(url, Page(body=b"%PDF-1.4 report", content_type="application/pdf", browser_aborts=aborts))
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    record = db.pages()[url]
+    assert record.mime_type == MimeTypes.PDF.value
+    assert site_bytes(browser, db, url) == b"%PDF-1.4 report"

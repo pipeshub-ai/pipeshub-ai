@@ -32,6 +32,10 @@ def _require_smb_creds() -> dict[str, str]:
         "password": os.environ["SMB_PASSWORD"],
         "port": os.getenv("SMB_PORT", "445"),
         "domain": os.getenv("SMB_DOMAIN", ""),
+        # The connector runs inside the compose network and the test process
+        # on the host, so they can need different addresses for one server.
+        "connector_host": os.getenv("SMB_CONNECTOR_HOST") or os.environ["SMB_HOST"],
+        "connector_port": os.getenv("SMB_CONNECTOR_PORT") or os.getenv("SMB_PORT", "445"),
     }
 
 
@@ -57,11 +61,11 @@ async def smb_connector(
     creds = _require_smb_creds()
     config = {
         "auth": {
-            "server": creds["host"],
+            "server": creds["connector_host"],
             "username": creds["username"],
             "password": creds["password"],
             "share": creds["share"],
-            "port": creds["port"],
+            "port": creds["connector_port"],
             "domain": creds["domain"],
         }
     }

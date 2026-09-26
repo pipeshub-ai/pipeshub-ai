@@ -113,6 +113,7 @@ async def test_a_page_that_fails_to_load_keeps_its_stored_record(
 
     site.add(GUIDE, outage)
     await connector.run_sync()
+    await connector.run_sync()
 
     kept = db.pages()[GUIDE]
     assert db.deleted == []
@@ -133,6 +134,7 @@ async def test_a_site_that_is_unreachable_keeps_every_stored_record(
     site.add(START_URL, Page(status=503, body=b""))
     site.add(GUIDE, Page(status=503, body=b""))
     await connector.run_sync()
+    await connector.run_sync()
 
     assert {url: (r.id, r.external_revision_id) for url, r in db.pages().items()} == before
     assert db.deleted == []
@@ -150,23 +152,53 @@ async def test_a_page_the_start_page_stops_linking_to_is_kept(
     assert db.deleted == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Pages that are gone (404/410) stay in search forever: the crawler never "
-        "removes records. Deciding when a page counts as removed is a product decision."
-    ),
-)
 @pytest.mark.parametrize("status", [404, 410])
-async def test_a_page_that_is_gone_is_removed_from_the_index(
+async def test_a_page_gone_on_two_syncs_in_a_row_is_removed_with_its_stored_copy(
     status: int, site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     connector = await _first_sync(site, db, make_connector)
+    first = db.pages()[GUIDE]
 
     site.add(GUIDE, Page(status=status, body=b"gone"))
     await connector.run_sync()
+    assert GUIDE in db.pages() and db.deleted == []
 
-    assert GUIDE not in db.pages()
+    await connector.run_sync()
+
+    assert db.deleted == [first.id]
+    assert site.storage_deletes == [first.storage_document_id]
+    # Still linked from the site, so it stays listed as a failed page with nothing indexed.
+    remains = db.pages()[GUIDE]
+    assert remains.id != first.id and remains.storage_document_id is None
+    assert remains.indexing_status == ProgressStatus.FAILED.value
+    assert START_URL in db.pages()
+
+
+async def test_a_page_gone_once_and_then_back_starts_counting_again(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    connector = await _first_sync(site, db, make_connector)
+
+    for page in (Page(status=404), html_page("Guide", text="Install with pip"), Page(status=404)):
+        site.add(GUIDE, page if isinstance(page, Page) else Page(body=page))
+        await connector.run_sync()
+
+    assert GUIDE in db.pages()
+    assert db.deleted == []
+
+
+async def test_nothing_is_removed_while_the_start_page_itself_is_gone(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    connector = await _first_sync(site, db, make_connector)
+
+    site.add(START_URL, Page(status=404))
+    site.add(GUIDE, Page(status=404))
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert db.deleted == []
+    assert {START_URL, GUIDE} <= set(db.pages())
 
 
 async def test_a_page_that_failed_last_time_is_indexed_once_it_loads(
@@ -230,3 +262,210 @@ async def test_storage_outage_still_records_the_page_for_live_fetch(
     guide = db.pages()[GUIDE]
     assert guide.storage_document_id is None
     assert guide.weburl == GUIDE
+
+
+@pytest.mark.parametrize("robust", [False, True], ids=["plain", "robust-mode"])
+async def test_a_page_that_moved_leaves_no_stale_record_under_its_old_url(
+    robust: bool, browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old, new = "http://site.test/old-name", "http://site.test/new-name"
+    browser.html(START_URL, "Home", "/old-name")
+    browser.html(old, "Guide")
+    connector = await make_connector(use_headless_browser=robust)
+    await connector.run_sync()
+    stale = db.pages()[old]
+
+    browser.redirect(old, "/new-name", status=301)
+    browser.html(new, "Guide")
+    await connector.run_sync()
+    assert old in db.pages()
+
+    await connector.run_sync()
+
+    assert db.deleted == [stale.id]
+    assert browser.storage_deletes == [stale.storage_document_id]
+    assert set(db.pages()) == {START_URL, new}
+
+
+async def test_a_redirect_off_the_site_never_removes_the_stored_page(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    connector = await _first_sync(site, db, make_connector)
+
+    site.redirect(GUIDE, "http://other.test/guide")
+    site.html("http://other.test/guide", "Guide elsewhere")
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert db.deleted == []
+    assert GUIDE in db.pages()
+
+
+@pytest.mark.parametrize(
+    ("link", "stored_key"),
+    [
+        pytest.param("/docs/", "http://site.test/docs/", id="trailing-slash"),
+        pytest.param("/list?b=2&a=1", "http://site.test/list?b=2&a=1", id="query-in-the-site-s-order"),
+    ],
+)
+async def test_a_stored_page_gone_twice_is_removed_whatever_key_it_was_stored_under(
+    link: str, stored_key: str, site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    url = f"http://site.test{link}"
+    site.html(START_URL, "Home", link)
+    site.html(url, "Page")
+    connector = await make_connector()
+    await connector.run_sync()
+    [key] = [k for k in db.records if k.startswith(url.split("?")[0].rstrip("/"))]
+    stored = db.records.pop(key)
+    stored.external_record_id = stored_key  # as an older version of the connector keyed it
+    db.records[stored_key] = stored
+
+    site.add(url, Page(status=404))
+    await connector.run_sync()
+    # The first 404 finds the stored record, so no failed copy is added beside it.
+    assert [r.id for r in db.records.values() if r.weburl != START_URL] == [stored.id]
+    await connector.run_sync()
+
+    assert db.deleted == [stored.id]
+    # Still linked from the site, so it stays listed as one failed page with nothing indexed.
+    [remains] = [r for r in db.records.values() if r.weburl != START_URL]
+    assert remains.indexing_status == ProgressStatus.FAILED.value and remains.storage_document_id is None
+
+
+async def test_a_page_gone_behind_a_redirect_is_removed_where_it_is_stored(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old, new = "http://site.test/old", "http://site.test/new"
+    site.html(START_URL, "Home", "/old")
+    site.redirect(old, "/new", status=301)
+    site.html(new, "New")
+    connector = await make_connector()
+    await connector.run_sync()
+    stored = db.pages()[new]
+
+    site.add(new, Page(status=404))
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert db.deleted == [stored.id]
+    assert not [r for r in db.records.values() if r.weburl == old or r.external_record_id.rstrip("/") == old]
+
+
+async def test_a_record_under_a_url_that_now_redirects_to_a_gone_page_is_removed(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old, new = "http://site.test/old", "http://site.test/new"
+    site.html(START_URL, "Home", "/old")
+    site.html(old, "Old")
+    connector = await make_connector()
+    await connector.run_sync()
+    stale = db.pages()[old]
+
+    site.redirect(old, "/new", status=301)
+    site.add(new, Page(status=404))
+    await connector.run_sync()
+    assert old in db.pages()
+    await connector.run_sync()
+
+    assert db.deleted == [stale.id]
+    assert site.storage_deletes == [stale.storage_document_id]
+
+
+async def test_a_redirect_onto_a_gone_page_leaves_one_failed_page_only(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/old")
+    site.redirect("http://site.test/old", "/new", status=301)
+    site.add("http://site.test/new", Page(status=404))
+
+    await (await make_connector()).run_sync()
+
+    failed = [r for r in db.pages().values() if r.indexing_status == ProgressStatus.FAILED.value]
+    assert [r.weburl for r in failed] == ["http://site.test/new"]
+
+
+async def test_every_url_that_redirects_to_a_gone_page_has_its_record_removed(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    sources = ["http://site.test/old", "http://site.test/also"]
+    site.html(START_URL, "Home", "/old", "/also")
+    for source in sources:
+        site.html(source, source.rsplit("/", 1)[-1].title())
+    connector = await make_connector()
+    await connector.run_sync()
+    stale = {db.pages()[source].id for source in sources}
+
+    for source in sources:
+        site.redirect(source, "/new", status=301)
+    site.add("http://site.test/new", Page(status=404))
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert set(db.deleted) == stale
+
+
+@pytest.mark.parametrize("links", [("/old", "/new"), ("/new", "/old")], ids=["source-first", "landing-first"])
+async def test_robust_mode_removes_a_redirecting_source_even_when_the_landing_also_fails_directly(
+    links: tuple[str, str], browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old, new = "http://site.test/old", "http://site.test/new"
+    browser.html(START_URL, "Home", *links)
+    browser.html(old, "Old")
+    browser.html(new, "New")
+    connector = await make_connector(use_headless_browser=True)
+    await connector.run_sync()
+    stale = db.pages()[old].id
+
+    browser.redirect(old, "/new", status=301)
+    browser.add(new, Page(status=404))
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert stale in db.deleted
+
+
+@pytest.mark.parametrize("robust", [False, True], ids=["plain", "robust-mode"])
+async def test_every_url_that_moved_to_the_same_page_has_its_record_removed(
+    robust: bool, browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    sources = ["http://site.test/old.pdf", "http://site.test/also.pdf"]
+    moved = "http://site.test/files/handbook.pdf"
+    browser.html(START_URL, "Home", "/old.pdf", "/also.pdf")
+    for source in sources:
+        browser.add(source, Page(body=source.encode(), content_type="application/pdf"))
+    connector = await make_connector(use_headless_browser=robust)
+    await connector.run_sync()
+    stale = {db.pages()[source].id for source in sources}
+
+    for source in sources:
+        browser.redirect(source, "/files/handbook.pdf", status=301)
+    browser.add(moved, Page(body=b"%PDF-1.4 handbook", content_type="application/pdf"))
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert set(db.deleted) == stale
+    assert set(db.pages()) == {START_URL, moved}
+
+
+@pytest.mark.parametrize("links", [("/guide", "/old.pdf"), ("/old.pdf", "/guide")], ids=["landing-first", "source-first"])
+async def test_a_file_that_now_redirects_to_a_page_the_crawl_drops_is_kept(
+    links: tuple[str, str], site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old = "http://site.test/old.pdf"
+    site.html(START_URL, "Home", *links)
+    site.add(old, Page(body=b"%PDF-1.4 manual", content_type="application/pdf"))
+    site.html("http://site.test/guide", "Guide")
+    connector = await make_connector()
+    await connector.run_sync()
+    stored = db.pages()[old].id
+
+    # Only PDFs from now on: /guide is still fetched for its links, then dropped.
+    connector.config_service.filters = {
+        "sync": {"values": {"file_extensions": {"operator": "in", "value": ["pdf"], "type": "multiselect"}}}
+    }
+    site.redirect(old, "/guide", status=301)
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert stored not in db.deleted
