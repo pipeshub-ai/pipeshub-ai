@@ -381,6 +381,21 @@ class TestPageSync:
         assert len(files) == 130
         assert checkpoints.values_for("confluence_pages/ENG") is not None
 
+    async def test_opening_a_page_reads_every_attachment_for_its_images(self, api, db, checkpoints, search) -> None:
+        self._many_attachments(api, search, None)
+        connector, _ = await ready_connector(db, checkpoints)
+        page = WebpageRecord(
+            org_id="org-1", record_name="Page 10", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR, version=0,
+            weburl=f"{WIKI}/pages/10",
+        )
+
+        await connector.stream_record(page)
+
+        listed = [AtlassianApiStub.query(r).get("cursor") for r in api.calls("GET", f"{V2}/pages/10/attachments")]
+        assert "A2" in listed, "the attachment list is followed past the first 100"
+        assert len(await connector._fetch_page_attachments_list("10", RecordType.CONFLUENCE_PAGE)) == 130
+
     async def test_a_failed_second_page_of_attachments_keeps_the_checkpoint(self, api, db, checkpoints, search) -> None:
         self._many_attachments(api, search, json_response({"message": "Service Unavailable"}, status=503))
         connector, _ = await ready_connector(db, checkpoints)
