@@ -1650,10 +1650,9 @@ class NextcloudConnector(BaseConnector):
         Returns why that failed, or "" when there was nothing to do or it worked. Nextcloud
         logs no activity for what a moved folder holds, so the records left below it after a
         partial cascade would otherwise stay linked to a folder record that no longer exists.
+        Runs even when the folder record exists: an earlier attempt may have saved it and
+        then failed on a child, whose parent link a failed save has already removed.
         """
-        record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, file_id)
-        if record is not None:
-            return ""
         children = await self.data_entities_processor.get_records_by_parent(
             connector_id=self.connector_id, parent_external_record_id=file_id
         )

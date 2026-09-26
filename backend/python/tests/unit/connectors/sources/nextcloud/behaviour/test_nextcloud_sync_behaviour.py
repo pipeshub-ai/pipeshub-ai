@@ -1121,6 +1121,11 @@ class TestIncrementalSync:
         server.restore(docs)
         server.move("Docs", "Archive/Docs")  # back, but not where it was deleted from, so that path 404s
         server.search_supported = search
+        if search:
+            db.fail_write_for.add("notes.txt")  # the folder is saved, then a file inside it isn't
+            await connector.run_sync()
+            assert store.checkpoint()["pending_deletes"] == [docs.file_id], "kept until everything is relinked"
+            db.fail_write_for.clear()
 
         await connector.run_sync()
 
