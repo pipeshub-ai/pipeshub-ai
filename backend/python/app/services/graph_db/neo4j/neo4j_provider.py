@@ -15686,6 +15686,7 @@ class Neo4jProvider(IGraphDBProvider):
                 parentId: 'apps/' + parent_id,
                 origin: 'CONNECTOR',
                 connector: rg.connectorName,
+                connectorId: rg.connectorId,
                 recordType: null,
                 recordGroupType: rg.groupType,
                 indexingStatus: null,
@@ -17135,7 +17136,7 @@ class Neo4jProvider(IGraphDBProvider):
                      ELSE 'CONNECTOR'
                    END,
                    connector: record.connectorName,
-                   connectorId: CASE WHEN record.connectorName = 'KB' THEN null ELSE record.connectorId END,
+                   connectorId: record.connectorId,
                    createdAt: CASE WHEN record.connectorName = 'KB'
                      THEN COALESCE(record.createdAtTimestamp, 0)
                      ELSE COALESCE(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0) END,

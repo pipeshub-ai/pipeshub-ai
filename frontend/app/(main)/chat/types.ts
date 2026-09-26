@@ -1128,6 +1128,8 @@ export interface SearchResultMetadata {
   recordVersion?: number;
   origin: string;
   connector: string;
+  /** Connector instance the record came from; marks demo records. */
+  connectorId?: string;
   blockText?: string;
   blockType?: string;
   bounding_box?: Array<{ x: number; y: number }>;

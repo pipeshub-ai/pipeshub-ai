@@ -5448,6 +5448,7 @@ components:
         - parentId
         - origin
         - connector
+        - connectorId
         - recordType
         - recordGroupType
         - indexingStatus
@@ -5487,6 +5488,10 @@ components:
           type: string
           nullable: true
           description: Connector display name / key when applicable; otherwise `null`.
+        connectorId:
+          type: string
+          nullable: true
+          description: Connector instance id for records and groups that come from a connector; otherwise `null` (Collections, and app nodes).
         recordType:
           type: string
           nullable: true

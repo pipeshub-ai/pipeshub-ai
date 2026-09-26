@@ -291,7 +291,6 @@ class KnowledgeHub:
             # so we only pass them when searching or when LLM explicitly provides them.
 
             # KB ids keep a KB-only agent's search scoped (None would search everything).
-            # Name search still finds no KB files: the providers null connectorId before filtering.
             agent_source_ids = list(dict.fromkeys([*agent_connector_ids, *scope.kb_ids]))
 
             if connector_ids:

@@ -24,7 +24,7 @@ export function useDemoDataActive(): boolean {
  * Whether a record from `connectorId` is Acme Corp sample data. Reads what the
  * page already looked up, so it is cheap to call for every citation.
  */
-export function useIsDemoSource(connectorId: string | undefined): boolean {
+export function useIsDemoSource(connectorId: string | null | undefined): boolean {
   return useDemoDataStore(
     (s) => !!connectorId && s.demoConnectors.some((c) => c._key === connectorId),
   );

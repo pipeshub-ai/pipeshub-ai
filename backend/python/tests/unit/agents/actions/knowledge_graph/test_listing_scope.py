@@ -1,8 +1,8 @@
 """`knowledgegraph__list_files` through the real `KnowledgeHubService` and
 scope resolver; only the graph database is stubbed, with an autospec of the
 production `ArangoHTTPProvider`. The stubbed search mirrors the provider's
-query: it projects knowledge-base records with `connectorId` set to null, then
-applies the connector filter to the projection, before paging.
+query: it applies the connector filter to each record's own `connectorId`
+(a knowledge base's id for its files), before paging.
 """
 
 from __future__ import annotations
@@ -33,19 +33,13 @@ _USER_VISIBLE = [
     ("kb-finance", _node("fin-1", "budget plan")),
 ]
 _USER_APPS = ["app-jira", "app-drive", "app-slack", "kb-hr", "kb-finance"]
-_KB_APPS = frozenset({"kb-hr", "kb-finance"})
-
-KB_SEARCH_GAP = pytest.mark.xfail(
-    strict=True,
-    reason="graph providers null connectorId on KB records before the connector filter",
-)
 
 
-def _project_like_current_providers(connector_id: str, node: dict[str, Any]) -> dict[str, Any]:
-    """Mirror both graph providers' current search projection, which sets
-    connectorId to null on knowledge-base records before the connector filter."""
-    # When the providers stop nulling connectorId, change this helper and remove KB_SEARCH_GAP.
-    return {**node, "connectorId": None if connector_id in _KB_APPS else connector_id}
+def _project_like_providers(connector_id: str, node: dict[str, Any]) -> dict[str, Any]:
+    """Mirror both graph providers' search projection, which keeps each
+    record's own connectorId (a knowledge base's id for its files) for the
+    connector filter."""
+    return {**node, "connectorId": connector_id}
 
 
 def _passes_connector_filter(node: dict[str, Any], connector_ids: list[str]) -> bool:
@@ -58,7 +52,7 @@ def _provider_search(
     *, skip: int, limit: int, search_query: str | None = None,
     connector_ids: list[str] | None = None, **_: object,
 ) -> dict[str, Any]:
-    projected = [_project_like_current_providers(cid, node) for cid, node in _USER_VISIBLE]
+    projected = [_project_like_providers(cid, node) for cid, node in _USER_VISIBLE]
     matches = [
         node for node in projected
         if (not connector_ids or _passes_connector_filter(node, connector_ids))
@@ -127,7 +121,6 @@ class TestStaysInsideTheAgentsSources:
         assert graph.get_knowledge_hub_search.await_args.kwargs["search_query"] == "budget"
         assert not _ids(text) & other_sources
 
-    @KB_SEARCH_GAP
     async def test_kb_only_agent_search_finds_its_kb_files(self, graph: MagicMock) -> None:
         _, text = await execute_list_files(_state(graph, apps=[], kb=["kb-hr"]), query="budget")
         assert _ids(text) == {"hr-1", "hr-2"}
@@ -141,7 +134,6 @@ class TestStaysInsideTheAgentsSources:
         assert _ids(text) <= {"jira-1", "hr-1", "hr-2"}
         assert "jira-1" in _ids(text)
 
-    @KB_SEARCH_GAP
     async def test_mixed_agent_search_finds_its_kb_files_too(self, graph: MagicMock) -> None:
         _, text = await execute_list_files(_state(graph, apps=["app-jira"], kb=["kb-hr"]), query="budget")
         assert _ids(text) == {"jira-1", "hr-1", "hr-2"}
@@ -155,7 +147,6 @@ class TestStaysInsideTheAgentsSources:
         _, text = await execute_list_files(state, query="budget", source_ids=["app-jira", "app-slack"])
         assert _ids(text) == {"jira-1"}
 
-    @KB_SEARCH_GAP
     async def test_narrowing_to_one_kb_finds_its_files(self, graph: MagicMock) -> None:
         state = _state(graph, apps=["app-jira"], kb=["kb-hr"])
         _, text = await execute_list_files(state, query="budget", source_ids=["kb-hr", "kb-finance"])

@@ -9,6 +9,7 @@ import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/
 import { openRecordSource } from '@/chat/utils/open-record-source';
 import { getConnectorConfig } from '../message-area/response-tabs/citations/utils';
 import type { SearchResultItem } from '@/chat/types';
+import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
 
 interface SearchResultCardProps {
   result: SearchResultItem;
@@ -89,6 +90,7 @@ export function SearchResultCard({
             >
               {metadata.recordName}
             </Text>
+            <DemoSourceBadge connectorId={metadata.connectorId} />
           </Flex>
 
           {/* Right: action buttons */}

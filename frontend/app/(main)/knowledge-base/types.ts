@@ -230,6 +230,8 @@ export interface KnowledgeHubNode {
   parentId: string | null;
   origin: NodeOrigin;
   connector?: string;
+  /** Connector instance a CONNECTOR-origin node belongs to; marks demo records. `null` otherwise. */
+  connectorId?: string | null;
   hasChildren: boolean;
   permission: NodePermission;
   sharingStatus: SharingStatus;
