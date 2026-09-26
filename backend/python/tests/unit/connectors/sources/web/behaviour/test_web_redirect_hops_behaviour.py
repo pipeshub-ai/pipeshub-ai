@@ -179,6 +179,27 @@ async def test_a_redirect_loop_is_one_failed_page_with_no_retries_and_no_browser
     assert set(db.pages()) == {START_URL, chain[0]}
 
 
+@pytest.mark.parametrize("suffix", ["", ".pdf"], ids=["page", "file"])
+async def test_in_robust_mode_a_redirect_loop_is_one_failed_page_and_the_browser_never_follows_it(
+    suffix: str, site: FakeWeb, db: FakeRecordsDb, browser: FakeWeb, make_connector: MakeConnector,
+) -> None:
+    # The walk before the browser gives up after 10 steps; the browser would follow the rest unchecked.
+    _robots(site)
+    chain = [f"http://site.test/r{i}{suffix}" for i in range(12)]
+    site.html(START_URL, "Home", f"/r0{suffix}")
+    for here, there in zip(chain, [*chain[1:], SECRET]):
+        site.add(here, Page(status=302, location=there, content_type=None))
+    site.html(SECRET, "Secret")
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    failed = db.pages()[chain[0]]
+    assert (failed.reason or "").startswith("This page redirects too many times")
+    assert _requests_to(site, SECRET) == []
+    assert not {*chain, SECRET} & set(browser.browser_loaded)
+    assert set(db.pages()) == {START_URL, chain[0]}
+
+
 @pytest.mark.parametrize("chunked", [False, True], ids=["declared-size", "streamed"])
 @pytest.mark.parametrize("strategy", STRATEGIES)
 async def test_a_site_that_refuses_head_still_gets_the_size_limit_at_the_final_hop(

@@ -458,13 +458,17 @@ async def _walk_hops(
             status_code=hop.status, content_bytes=hop.body, headers=hop.headers,
             final_url=current, strategy=strategy,
         )
-    # A finished answer, filed under the link: None would be retried and sent to the headless
-    # browser, which follows redirects without asking.
+    return too_many_redirects_response(walk.url)
+
+
+def too_many_redirects_response(url: str) -> FetchResponse:
+    """A finished answer, filed under the link: None would be retried and sent to the headless
+    browser, which follows redirects without asking."""
     return FetchResponse(
         status_code=508,
         content_bytes=b"",
         headers={"X-Fetch-Skip-Reason": "too_many_redirects"},
-        final_url=walk.url,
+        final_url=url,
         strategy="redirect_guard",
         success=False,
     )

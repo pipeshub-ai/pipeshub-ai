@@ -77,6 +77,7 @@ from app.connectors.sources.web.fetch_strategy import (
     FetchResponse,
     build_stealth_headers,
     fetch_url_with_fallback,
+    too_many_redirects_response,
 )
 from app.connectors.sources.web.crawl4ai_fetcher import Crawl4AIFetcher, FetchResult, get_shared_fetcher, release_shared_fetcher, resolve_fetch_status_code
 from app.connectors.sources.web.robots import RobotsRules
@@ -164,6 +165,7 @@ MAX_RETRIES = 2
 
 # Finding where a redirect the browser aborted was heading, without following it off the crawl.
 MAX_PROBE_REDIRECTS = 10
+PROBE_UNENDING = -1  # _probe_landing's status for a chain still redirecting after MAX_PROBE_REDIRECTS
 REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 HEAD_NOT_SUPPORTED = frozenset({HTTPStatus.METHOD_NOT_ALLOWED.value, HTTPStatus.NOT_IMPLEMENTED.value})
 PROBE_TIMEOUT_SECONDS = 10
@@ -1559,7 +1561,7 @@ class WebConnector(BaseConnector):
             probed = await self._probe_landing(url)
             if None in self._robots.values():
                 return None  # a redirect onto a site whose robots.txt couldn't be read isn't a refusal
-            return probed is None or probed[1] != 0
+            return probed is None or probed[1] > 0
         finally:
             if not keep_robots:
                 self._robots.clear()
@@ -1666,7 +1668,9 @@ class WebConnector(BaseConnector):
         probed = await self._probe_landing(url)
         if probed is None:
             return None  # the site answered neither HEAD nor GET; recorded as unreachable
-        landing, _status, _content_type = probed
+        landing, status, _content_type = probed
+        if status == PROBE_UNENDING:
+            return too_many_redirects_response(url)
         if self._outside_crawl(landing):
             return self._out_of_scope_response(landing)
         if landing != url and not await self._robots_allows(landing):
@@ -1750,8 +1754,10 @@ class WebConnector(BaseConnector):
         """The browser follows redirects on its own, so walk them first: a hop outside the crawl or
         disallowed by robots.txt is answered here, never loaded. None means the browser may go."""
         probed = await self._probe_landing(url)
-        if probed is None or probed[1] != 0:
+        if probed is None or probed[1] > 0:
             return None
+        if probed[1] == PROBE_UNENDING:
+            return too_many_redirects_response(url)
         landing = probed[0]
         return self._out_of_scope_response(landing) if self._outside_crawl(landing) else self._robots_skip_response(landing)
 
@@ -1782,6 +1788,8 @@ class WebConnector(BaseConnector):
             if probed is None:
                 return response  # the site didn't answer the probe either; the browser retry stands
             landing, status, content_type = probed
+            if status == PROBE_UNENDING:
+                return too_many_redirects_response(requested_url)
             if self._outside_crawl(landing):
                 return self._out_of_scope_response(landing)
             if landing != requested_url and not await self._robots_allows(landing):
@@ -1888,7 +1896,8 @@ class WebConnector(BaseConnector):
 
         Each hop is asked with HEAD, or with GET (body left unread) when HEAD is refused or fails.
         Returns the landing URL, its status and Content-Type, or the first out-of-scope or
-        disallowed hop, unrequested, with status 0. Returns None if the site doesn't answer or the chain doesn't end.
+        disallowed hop, unrequested, with status 0, or the last hop checked with ``PROBE_UNENDING``
+        when the chain is still redirecting after MAX_PROBE_REDIRECTS. Returns None if the site doesn't answer.
         """
         if self.session is None:
             return None
@@ -1907,7 +1916,7 @@ class WebConnector(BaseConnector):
             url = urljoin(url, location)
             if self._outside_crawl(url) or not await self._robots_allows(url):
                 return url, 0, None  # not requested at all: outside the crawl, or robots.txt disallows it
-        return None
+        return url, PROBE_UNENDING, None
 
     async def _probe_hop(self, method: str, url: str) -> tuple[int, str | None, str | None]:
         async with self.session.request(  # type: ignore[union-attr]
