@@ -1002,6 +1002,28 @@ class TestIncrementalSync:
         assert "notes.txt" not in db.names()
         assert store.checkpoint()["pending_deletes"] == []
 
+    @pytest.mark.parametrize("restored", [pytest.param(True, id="folder-restored"), pytest.param(False, id="folder-gone")])
+    async def test_a_queued_folder_whose_record_is_gone_is_checked_before_its_contents_go(
+            self, server, db, store, restored) -> None:
+        connector = await synced(server, db, store)
+        docs = server.nodes["Docs"]
+        inside = {db.by_name(n).id for n in ("Reports", "q1.pdf", "notes.txt")}
+        db.fail_delete_for = {docs.file_id}
+        server.delete("Docs")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        assert store.checkpoint()["pending_deletes"] == [docs.file_id]
+        db.fail_delete_for.clear()
+        del db.records[docs.file_id]  # a cascade that committed partway: the folder went, its contents did not
+        if restored:
+            server.restore(docs)  # the queue is retried before the feed that reports this is read
+
+        await connector.run_sync()
+
+        still_there = {r.id for r in db.records.values()} & inside
+        assert still_there == (inside if restored else set()), "restored contents keep their records"
+        assert store.checkpoint()["pending_deletes"] == []
+
     @pytest.mark.parametrize("break_path", [
         pytest.param(lambda db, record: db.unreadable_paths.add(record.id), id="path-read-fails"),
         pytest.param(lambda db, record: db.edges.pop(record.id), id="path-is-only-the-name"),

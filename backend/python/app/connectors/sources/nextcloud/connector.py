@@ -138,6 +138,18 @@ def describe_failures(failures: dict[str, str]) -> str:
     return "; ".join(named) + (f"; and {hidden} more" if hidden > 0 else "")
 
 
+def pending_delete_fields(pending: list[str], paths: dict[str, str]) -> dict[str, list]:
+    """The checkpoint fields for queued deletions, both written in full.
+
+    The store merges writes, and it merges nested objects too, so the paths are
+    kept as a list, which a write replaces whole.
+    """
+    return {
+        "pending_deletes": pending,
+        "pending_delete_paths": [{"id": i, "path": paths.get(i, "")} for i in pending],
+    }
+
+
 def get_path_depth(path: str) -> int:
     """Calculate the depth of a path (number of directory levels)."""
     if not path or path == "/":
@@ -1322,8 +1334,12 @@ class NextcloudConnector(BaseConnector):
                 await self._run_full_sync_internal()
                 return
 
+            pending_paths = {
+                str(e.get("id")): str(e.get("path") or "")
+                for e in sync_point_data.get("pending_delete_paths") or [] if isinstance(e, dict)
+            }
             pending_deletes = await self._retry_pending_deletes(
-                sync_point_key, [str(i) for i in sync_point_data.get("pending_deletes") or []]
+                sync_point_key, [str(i) for i in sync_point_data.get("pending_deletes") or []], pending_paths
             )
 
             self.logger.info(f"📋 [Incremental Sync] Fetching activities since ID: {last_activity_id}")
@@ -1441,7 +1457,7 @@ class NextcloudConnector(BaseConnector):
                     await self.activity_sync_point.update_sync_point(
                         sync_point_key,
                         {"cursor": str(last_activity_id), "held_attempts": held_attempts,
-                         "pending_deletes": pending_deletes},
+                         **pending_delete_fields(pending_deletes, pending_paths)},
                     )
                     self.logger.warning(
                         f"⚠️ [Incremental Sync] {len(failures)} change(s) could not be applied (attempt "
@@ -1461,11 +1477,14 @@ class NextcloudConnector(BaseConnector):
                 pending_deletes = sorted(
                     set(pending_deletes) | {i for i in failed_deletes if i not in found_ids}
                 )
+                for file_id in pending_deletes:
+                    pending_paths.setdefault(file_id, deleted_paths.get(file_id, ""))
 
             # Update cursor to latest activity ID
             await self.activity_sync_point.update_sync_point(
                 sync_point_key,
-                {"cursor": str(max_activity_id), "held_attempts": 0, "pending_deletes": pending_deletes}
+                {"cursor": str(max_activity_id), "held_attempts": 0,
+                 **pending_delete_fields(pending_deletes, pending_paths)}
             )
 
             self.logger.info(
@@ -1478,7 +1497,9 @@ class NextcloudConnector(BaseConnector):
             # Don't fall back to full sync on every error - let the scheduler retry
             raise
 
-    async def _retry_pending_deletes(self, sync_point_key: str, pending: list[str]) -> list[str]:
+    async def _retry_pending_deletes(
+        self, sync_point_key: str, pending: list[str], pending_paths: dict[str, str]
+    ) -> list[str]:
         """Apply the deletions an earlier run gave up on; returns the ones still owed.
 
         Each is applied only once Nextcloud confirms the file is gone, since it may
@@ -1490,7 +1511,7 @@ class NextcloudConnector(BaseConnector):
         confirmed: set[str] = set()
         still_owed: dict[str, str] = {}
         for file_id in sorted(set(pending)):
-            gone, reason = await self._is_gone_from_nextcloud(file_id)
+            gone, reason = await self._is_gone_from_nextcloud(file_id, pending_paths.get(file_id, ""))
             if gone is None:
                 still_owed[file_id] = reason
             elif gone:
@@ -1501,7 +1522,9 @@ class NextcloudConnector(BaseConnector):
             still_owed.update(await self._process_deletions(confirmed))
         remaining = sorted(still_owed)
         if remaining != sorted(set(pending)):
-            await self.activity_sync_point.update_sync_point(sync_point_key, {"pending_deletes": remaining})
+            await self.activity_sync_point.update_sync_point(
+                sync_point_key, pending_delete_fields(remaining, pending_paths)
+            )
         if remaining:
             self.logger.warning(
                 f"⚠️ [Incremental Sync] {len(remaining)} earlier deletion(s) still could not be applied; "
@@ -1509,20 +1532,32 @@ class NextcloudConnector(BaseConnector):
             )
         return remaining
 
-    async def _is_gone_from_nextcloud(self, file_id: str) -> tuple[bool | None, str]:
-        """(True, "") when the file is gone, (False, "") when it is still there, (None, why) when unknown."""
+    async def _is_gone_from_nextcloud(self, file_id: str, deleted_path: str) -> tuple[bool | None, str]:
+        """(True, "") when the file is gone, (False, "") when it is still there, (None, why) when unknown.
+
+        ``deleted_path`` is where the deletion activity said the file was.
+        """
         try:
             record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, file_id)
             if record is None:
-                # Nothing is stored under this ID; the delete only clears anything left below it.
-                return True, ""
-            # A 404 proves the file gone only at its full stored path. The graph returns None
-            # when the path read fails, and a bare name for a file with a parent isn't that path.
-            path = await self.data_entities_processor.get_record_path(record.id)
-            if not path:
-                return None, "could not read its stored path"
-            if record.parent_external_record_id and "/" not in path.strip("/"):
-                return None, "its stored path is incomplete"
+                children = await self.data_entities_processor.get_records_by_parent(
+                    connector_id=self.connector_id, parent_external_record_id=file_id
+                )
+                if not children:
+                    return True, ""
+                # A cascade that committed partway left the folder's contents; the folder
+                # may be back in Nextcloud, so it is checked where it was deleted from.
+                if not deleted_path:
+                    return None, "the folder's location is not known"
+                path = deleted_path
+            else:
+                # A 404 proves the file gone only at its full stored path. The graph returns None
+                # when the path read fails, and a bare name for a file with a parent isn't that path.
+                path = await self.data_entities_processor.get_record_path(record.id)
+                if not path:
+                    return None, "could not read its stored path"
+                if record.parent_external_record_id and "/" not in path.strip("/"):
+                    return None, "its stored path is incomplete"
             async with self.rate_limiter:
                 response = await self.data_source.list_directory(
                     user_id=self.current_user_id, path=path, depth=0

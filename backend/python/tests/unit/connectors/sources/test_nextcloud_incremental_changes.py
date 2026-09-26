@@ -111,7 +111,8 @@ class TestMergedActivities:
         paths = connector._process_modified_files.await_args.args[0]
         assert sorted(paths) == ["/Handbook", "/Handbook/leave.txt"]
         connector.activity_sync_point.update_sync_point.assert_awaited_once_with(
-            "activity_cursor", {"cursor": "110", "held_attempts": 0, "pending_deletes": []}
+            "activity_cursor",
+            {"cursor": "110", "held_attempts": 0, "pending_deletes": [], "pending_delete_paths": []}
         )
 
     @pytest.mark.asyncio
