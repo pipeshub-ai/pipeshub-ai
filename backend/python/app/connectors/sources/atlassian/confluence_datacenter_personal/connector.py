@@ -125,7 +125,7 @@ def _extract_item_last_modified_when(item_data: dict[str, Any]) -> Optional[str]
         return version.get("when") or version.get("createdAt")
     return None
 
-def _item_revision_marker(item_data: dict[str, Any]) -> Optional[str]:
+def _item_revision_marker(item_data: dict[str, Any]) -> str | None:
     """What identifies this revision of an item: its last-modified time, else its version number.
 
     None when neither is known, so a given-up item can't be matched and is never skipped.
