@@ -766,18 +766,6 @@ export const KnowledgeBaseApi = {
   },
 
   /**
-   * Download record file using externalRecordId
-   * Returns blob that can be converted to object URL
-   */
-  async downloadRecord(externalRecordId: string): Promise<Blob> {
-    const { data } = await apiClient.get(
-      `/api/v1/document/${externalRecordId}/download`,
-      { responseType: 'blob' }
-    );
-    return data;
-  },
-
-  /**
    * Bulk reindex multiple records
    * @param items - Array of items with id and nodeType to reindex
    * @returns Promise.allSettled results for each reindex operation

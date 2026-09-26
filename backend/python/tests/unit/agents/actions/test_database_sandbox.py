@@ -266,21 +266,6 @@ class TestParseCSVOutput:
         assert result == []
 
 
-class TestRowsToCsvBytes:
-    def test_basic(self):
-        from app.agents.actions.database_sandbox.database_sandbox import _rows_to_csv_bytes
-        result = _rows_to_csv_bytes(["a", "b"], [(1, 2), (3, 4)])
-        text = result.decode("utf-8")
-        assert "a,b" in text
-        assert "1,2" in text
-        assert "3,4" in text
-
-    def test_empty(self):
-        from app.agents.actions.database_sandbox.database_sandbox import _rows_to_csv_bytes
-        result = _rows_to_csv_bytes(["x"], [])
-        assert b"x" in result
-
-
 class TestScheduleCSVExport:
     """Cover the ``_schedule_csv_export`` background-task branches."""
 
@@ -291,23 +276,21 @@ class TestScheduleCSVExport:
         from app.agents.actions.database_sandbox import database_sandbox as mod
 
         mock_blob = MagicMock()
-        mock_blob.save_conversation_file_to_storage = AsyncMock(return_value={
+        mock_blob.save_versioned_artifact_to_storage = AsyncMock(return_value={
             "documentId": "doc-db-1",
             "fileName": "sqlite_result_xxx.csv",
-            "signedUrl": "https://blob.example/x",
         })
-        state = _make_state(
-            blob_store=mock_blob,
-            user_id="user-1",
-        )
+        mock_blob.save_conversation_file_to_storage = AsyncMock()
+        graph = MagicMock()
+        state = _make_state(blob_store=mock_blob, user_id="user-1", graph_provider=graph)
         sandbox = mod.DatabaseSandbox(state)
 
         captured_tasks: list[asyncio.Task] = []
 
-        with patch.object(
-            mod, "create_artifact_record",
+        with patch(
+            "app.sandbox.artifact_upload.create_artifact_record",
             AsyncMock(return_value="record-123"),
-        ), patch.object(
+        ) as create, patch.object(
             mod, "register_task",
             lambda conv_id, task: captured_tasks.append(task),
         ):
@@ -320,18 +303,23 @@ class TestScheduleCSVExport:
 
         assert result is not None
         assert result["type"] == "artifacts"
-        assert len(result["artifacts"]) == 1
-        entry = result["artifacts"][0]
+        (entry,) = result["artifacts"]
         assert entry["mimeType"] == "text/csv"
-        assert entry["recordId"] == "record-123"
+        assert (entry["recordId"], entry["version"]) == ("record-123", 1)
         assert entry["sizeBytes"] > 0
 
-        mock_blob.save_conversation_file_to_storage.assert_awaited_once()
-        call = mock_blob.save_conversation_file_to_storage.await_args
-        assert call.kwargs["org_id"] == "org-db-001"
-        assert call.kwargs["conversation_id"] == "conv-db-001"
+        # Stored like any other artifact: version-enabled, so it can be updated later.
+        mock_blob.save_conversation_file_to_storage.assert_not_awaited()
+        call = mock_blob.save_versioned_artifact_to_storage.await_args
+        assert (call.kwargs["org_id"], call.kwargs["conversation_id"]) == ("org-db-001", "conv-db-001")
         assert call.kwargs["file_name"].startswith("sqlite_result_")
         assert call.kwargs["file_name"].endswith(".csv")
+        assert call.kwargs["content_type"] == "text/csv"
+        assert call.kwargs["file_bytes"].decode().splitlines() == ["id,name", "1,alice", "2,bob"]
+
+        kwargs = create.await_args.kwargs
+        assert (kwargs["graph_provider"], kwargs["user_id"], kwargs["document_id"]) == (graph, "user-1", "doc-db-1")
+        assert kwargs["source_tool"] == "database_sandbox.sqlite"
 
     @pytest.mark.asyncio
     async def test_record_creation_failure_still_returns_upload(self):
@@ -340,21 +328,18 @@ class TestScheduleCSVExport:
         from app.agents.actions.database_sandbox import database_sandbox as mod
 
         mock_blob = MagicMock()
-        mock_blob.save_conversation_file_to_storage = AsyncMock(return_value={
+        mock_blob.save_versioned_artifact_to_storage = AsyncMock(return_value={
             "documentId": "doc-db-2",
             "fileName": "pg_result_yyy.csv",
             "signedUrl": "https://blob.example/y",
         })
-        state = _make_state(
-            blob_store=mock_blob,
-            user_id="user-1",
-        )
+        state = _make_state(blob_store=mock_blob, user_id="user-1")
         sandbox = mod.DatabaseSandbox(state)
 
         captured_tasks: list[asyncio.Task] = []
 
-        with patch.object(
-            mod, "create_artifact_record",
+        with patch(
+            "app.sandbox.artifact_upload.create_artifact_record",
             AsyncMock(side_effect=RuntimeError("graph down")),
         ), patch.object(
             mod, "register_task",
@@ -367,10 +352,37 @@ class TestScheduleCSVExport:
             result = await captured_tasks[0]
 
         assert result is not None
-        assert len(result["artifacts"]) == 1
-        entry = result["artifacts"][0]
-        assert "recordId" not in entry
+        (entry,) = result["artifacts"]
+        assert "recordId" not in entry and "version" not in entry
         assert entry["mimeType"] == "text/csv"
+
+    @pytest.mark.asyncio
+    async def test_without_a_user_the_export_is_not_registered(self):
+        import asyncio
+
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        mock_blob = MagicMock()
+        mock_blob.save_conversation_file_to_storage = AsyncMock(return_value={
+            "documentId": "doc-db-3", "fileName": "sqlite_result_zzz.csv",
+        })
+        mock_blob.save_versioned_artifact_to_storage = AsyncMock()
+        sandbox = mod.DatabaseSandbox(_make_state(blob_store=mock_blob))
+
+        captured_tasks: list[asyncio.Task] = []
+
+        with patch(
+            "app.sandbox.artifact_upload.create_artifact_record", AsyncMock(),
+        ) as create, patch.object(
+            mod, "register_task",
+            lambda conv_id, task: captured_tasks.append(task),
+        ):
+            sandbox._schedule_csv_export([{"id": "1"}], "sqlite_result")
+            result = await captured_tasks[0]
+
+        create.assert_not_awaited()
+        mock_blob.save_versioned_artifact_to_storage.assert_not_awaited()
+        assert "recordId" not in result["artifacts"][0]
 
     @pytest.mark.asyncio
     async def test_blob_save_raises_resolves_to_none(self):
@@ -379,7 +391,7 @@ class TestScheduleCSVExport:
         from app.agents.actions.database_sandbox import database_sandbox as mod
 
         mock_blob = MagicMock()
-        mock_blob.save_conversation_file_to_storage = AsyncMock(
+        mock_blob.save_versioned_artifact_to_storage = AsyncMock(
             side_effect=RuntimeError("blob down"),
         )
         state = _make_state(blob_store=mock_blob, user_id="user-1")

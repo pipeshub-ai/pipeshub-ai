@@ -435,9 +435,12 @@ class ArtifactRegistryService:
     ) -> str:
         record = await self._access.authorize_read(actor, artifact_id)
         storage_version = await self._resolve_storage_version(artifact_id, record, version)
-        return await self._urls.get_download_url(
+        signed = await self._urls.get_download_url(
             org_id=actor.org_id, document_id=record["externalRecordId"], version=storage_version, ttl_s=ttl_s,
         )
+        if signed:
+            return signed
+        return await self._blob_store.get_record_stream_url(artifact_id, version=version)
 
     async def _resolve_storage_version(
         self, artifact_id: str, record: dict, version: int | None,

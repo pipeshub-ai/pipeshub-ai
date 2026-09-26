@@ -893,6 +893,59 @@ class TestCreateExecuteQueryTool:
         assert mock_register.call_args[0][0] == "conv-1"
 
     @pytest.mark.asyncio
+    async def test_csv_export_is_an_artifact_owned_by_the_user(self):
+        # Local storage has no signed URL; the owned record is the only way
+        # the user can download the export (through the record stream).
+        from app.utils.execute_query import create_execute_query_tool
+
+        mock_blob_store = AsyncMock()
+        mock_blob_store.save_versioned_artifact_to_storage = AsyncMock(
+            return_value={"documentId": "doc-1", "fileName": "q.csv"}
+        )
+        graph = MagicMock()
+
+        with patch(
+            "app.utils.execute_query._execute_query_impl",
+            new_callable=AsyncMock,
+            return_value={
+                "ok": True,
+                "markdown_result": "| x |",
+                "row_count": 2,
+                "column_count": 1,
+                "raw_columns": ["x"],
+                "raw_rows": [(1,), (2,)],
+            },
+        ), patch(
+            "app.utils.execute_query.register_task",
+        ) as mock_register, patch(
+            "app.sandbox.artifact_upload.create_artifact_record",
+            AsyncMock(return_value="rec-1"),
+        ) as create:
+            tool = create_execute_query_tool(
+                config_service=MagicMock(),
+                graph_provider=graph,
+                org_id="org-1",
+                conversation_id="conv-1",
+                blob_store=mock_blob_store,
+                user_id="user-1",
+            )
+            await tool.ainvoke({
+                "query": "SELECT x",
+                "source_name": "PostgreSQL",
+                "connector_id": "conn-1",
+            })
+            result = await mock_register.call_args[0][1]
+
+        (entry,) = result["artifacts"]
+        assert result["type"] == "artifacts"
+        assert (entry["recordId"], entry["mimeType"]) == ("rec-1", "text/csv")
+        kwargs = create.await_args.kwargs
+        assert (kwargs["graph_provider"], kwargs["user_id"], kwargs["document_id"]) == (graph, "user-1", "doc-1")
+        assert kwargs["source_tool"] == "sql.execute_sql_query"
+        csv_lines = mock_blob_store.save_versioned_artifact_to_storage.await_args.kwargs["file_bytes"].decode().splitlines()
+        assert csv_lines == ["x", "1", "2"]
+
+    @pytest.mark.asyncio
     async def test_csv_export_not_registered_without_conversation_id(self):
         from app.utils.execute_query import create_execute_query_tool
 

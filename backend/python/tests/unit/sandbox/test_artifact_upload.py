@@ -1,16 +1,19 @@
 """Tests for app.sandbox.artifact_upload."""
 
 import asyncio
+import hashlib
 import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import Connectors
 from app.sandbox.artifact_upload import (
     MAX_ARTIFACT_BYTES,
     _read_file_bytes,
     create_artifact_record,
+    save_query_result_csv,
     schedule_artifact_upload_task,
     upload_artifacts_to_blob,
     upload_bytes_artifact,
@@ -709,3 +712,88 @@ class TestScheduleArtifactUploadTask:
             result = await captured_tasks[0]
 
         assert result is None
+
+
+class TestSaveQueryResultCsv:
+    @staticmethod
+    def _blob(*, error: Exception | None = None, signed_url: str | None = None) -> MagicMock:
+        info = {"documentId": "doc-1", "fileName": "q.csv", **({"signedUrl": signed_url} if signed_url else {})}
+        blob = MagicMock()
+        blob.save_versioned_artifact_to_storage = AsyncMock(return_value=info, side_effect=error)
+        blob.save_conversation_file_to_storage = AsyncMock(return_value=info, side_effect=error)
+        return blob
+
+    @staticmethod
+    async def _save(blob: MagicMock, *, user_id: str | None = "user-1", graph_provider: MagicMock | None = None) -> dict | None:
+        return await save_query_result_csv(
+            blob_store=blob,
+            graph_provider=graph_provider if graph_provider is not None else MagicMock(),
+            org_id="org-1",
+            user_id=user_id,
+            conversation_id="conv-1",
+            columns=["id", "name"],
+            rows=[(1, "a"), (2, "b,c")],
+            file_name="q.csv",
+            source_tool="sql.execute_sql_query",
+        )
+
+    @pytest.mark.asyncio
+    async def test_registers_the_csv_as_an_owned_versioned_artifact(self):
+        blob = self._blob()
+        with patch(
+            "app.sandbox.artifact_upload.create_artifact_record", AsyncMock(return_value="rec-1"),
+        ) as create:
+            result = await self._save(blob)
+
+        assert result["type"] == "artifacts"
+        (entry,) = result["artifacts"]
+        assert (entry["documentId"], entry["recordId"], entry["version"]) == ("doc-1", "rec-1", 1)
+        assert (entry["mimeType"], entry["fileName"]) == ("text/csv", "q.csv")
+
+        blob.save_conversation_file_to_storage.assert_not_awaited()
+        upload = blob.save_versioned_artifact_to_storage.await_args.kwargs
+        assert (upload["org_id"], upload["conversation_id"], upload["content_type"]) == ("org-1", "conv-1", "text/csv")
+        assert upload["file_bytes"].decode().splitlines() == ["id,name", "1,a", '2,"b,c"']
+        assert entry["sizeBytes"] == len(upload["file_bytes"])
+
+        kwargs = create.await_args.kwargs
+        assert (kwargs["user_id"], kwargs["org_id"], kwargs["conversation_id"]) == ("user-1", "org-1", "conv-1")
+        assert (kwargs["document_id"], kwargs["mime_type"]) == ("doc-1", "text/csv")
+        assert kwargs["connector_name"] == Connectors.DATABASE_SANDBOX
+        assert kwargs["content_hash"] == hashlib.sha256(upload["file_bytes"]).hexdigest()
+
+    @pytest.mark.asyncio
+    async def test_without_a_user_uploads_unregistered(self):
+        blob = self._blob()
+        with patch("app.sandbox.artifact_upload.create_artifact_record", AsyncMock()) as create:
+            result = await self._save(blob, user_id=None)
+
+        create.assert_not_awaited()
+        blob.save_versioned_artifact_to_storage.assert_not_awaited()
+        blob.save_conversation_file_to_storage.assert_awaited_once()
+        assert "recordId" not in result["artifacts"][0]
+
+    @pytest.mark.asyncio
+    async def test_keeps_the_export_when_record_creation_fails(self):
+        blob = self._blob(signed_url="https://s3/q")
+        with patch(
+            "app.sandbox.artifact_upload.create_artifact_record", AsyncMock(side_effect=RuntimeError("graph down")),
+        ):
+            result = await self._save(blob)
+
+        (entry,) = result["artifacts"]
+        assert entry["signedUrl"] == "https://s3/q"
+        assert "recordId" not in entry and "version" not in entry
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_upload_fails(self):
+        assert await self._save(self._blob(error=OSError("bucket gone"))) is None
+
+    @pytest.mark.asyncio
+    async def test_never_emits_a_storage_service_link(self):
+        blob = self._blob()
+        with patch("app.sandbox.artifact_upload.create_artifact_record", AsyncMock(return_value="rec-1")):
+            result = await self._save(blob)
+
+        assert "/api/v1/document/" not in repr(result)
+        assert "downloadUrl" not in result["artifacts"][0]
