@@ -272,3 +272,62 @@ class TestFilterByAttached:
         ]
         filtered = MCPToolProvider._filter_by_attached(server, discovered)
         assert [t.namespaced_name for t in filtered] == ["mcp_jira_mcp_search"]
+
+
+class TestStdioLaunchPolicy:
+    """P0.12: the edition's launch policy is enforced where instances become runnable configs."""
+
+    def _stdio_context(self, *, is_custom: bool, type_id: str | None) -> Any:
+        context = _context_with_server(type_id=type_id or "custom")
+        instance = context.mcp_server_configs["inst-1"]["instance"]
+        instance.update(
+            transport="stdio", isCustom=is_custom, typeId=type_id, command="npx", args=["-y", "pkg@1.0.0"],
+        )
+        return context
+
+    async def _load(self, monkeypatch: pytest.MonkeyPatch, context: Any, launch_policy: Any) -> list[Any]:
+        from app import edition_config
+        from app.agents.mcp import client as client_module
+
+        spawned: list[Any] = []
+
+        async def _discover_spawns(config: Any, credentials: dict, timeout_seconds: float = 10.0) -> list[MCPToolInfo]:
+            spawned.append(client_module.build_transport(config, env={}))
+            return await _discover_ok(config, credentials, timeout_seconds)
+
+        monkeypatch.setattr(edition_config, "stdio_mcp_launch_policy", launch_policy)
+        monkeypatch.setattr(mcp_tool_loader_module, "discover_tools", _discover_spawns)
+        await MCPToolProvider().load_into(ToolRegistry(), context)
+        return spawned
+
+    async def test_deny_policy_spawns_nothing_and_records_a_load_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.mcp.stdio_policy import deny_custom_stdio_launch
+
+        context = self._stdio_context(is_custom=True, type_id=None)
+        spawned = await self._load(monkeypatch, context, deny_custom_stdio_launch)
+
+        assert spawned == []
+        assert context.mcp_tool_load_failures == [
+            {"instanceId": "inst-1", "name": "JiraMCP", "reason": "launch_denied"},
+        ]
+
+    async def test_oss_policy_still_launches_an_existing_custom_instance(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.mcp.stdio_policy import allow_existing_stdio_launch
+
+        context = self._stdio_context(is_custom=True, type_id=None)
+        spawned = await self._load(monkeypatch, context, allow_existing_stdio_launch)
+
+        assert len(spawned) == 1
+        assert context.mcp_tool_load_failures == []
+
+    async def test_deny_policy_leaves_catalog_template_instances_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.mcp.registry import get_mcp_registry
+        from app.agents.mcp.stdio_policy import deny_custom_stdio_launch
+
+        get_mcp_registry().auto_discover_templates()
+        context = self._stdio_context(is_custom=False, type_id="exa")
+        spawned = await self._load(monkeypatch, context, deny_custom_stdio_launch)
+
+        assert len(spawned) == 1
+        assert spawned[0].args == ["-y", "exa-mcp-server@3.4.1"]
+        assert context.mcp_tool_load_failures == []

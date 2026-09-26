@@ -48,6 +48,10 @@ class MCPConnectionError(Exception):
     """Raised when an MCP server cannot be reached or its transport config is invalid."""
 
 
+class MCPLaunchDeniedError(MCPConnectionError):
+    """Raised when the edition's STDIO launch policy refuses to start an instance."""
+
+
 class _LastHttpResponse:
     """Records the most recent HTTP status/URL seen on an HTTP transport's httpx
     client, purely for diagnostics.

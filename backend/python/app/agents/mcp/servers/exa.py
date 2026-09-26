@@ -13,7 +13,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         default_auth_mode=MCPAuthMode.API_TOKEN,
         supported_auth_modes=[MCPAuthMode.API_TOKEN],
         command="npx",
-        args=["-y", "exa-mcp-server"],
+        args=["-y", "exa-mcp-server@3.4.1"],
         required_env=["EXA_API_KEY"],
         documentation_url="https://docs.exa.ai/reference/exa-mcp",
         auth_hint=AuthHint(

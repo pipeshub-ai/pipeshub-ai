@@ -141,6 +141,37 @@ class TestInstanceConfigFromDict:
         assert cfg.type_id == "brave_search"
         assert cfg.is_custom is False
 
+    def test_catalog_stdio_instance_runs_the_templates_pinned_package(self) -> None:
+        from app.agents.mcp.registry import get_mcp_registry
+
+        get_mcp_registry().auto_discover_templates()
+        stored = _instance(typeId="exa", command="npx", args=["-y", "exa-mcp-server"])
+        cfg = instance_config_from_dict(stored)
+        assert cfg.command == "npx"
+        assert cfg.args == ["-y", "exa-mcp-server@3.4.1"]
+
+    def test_denied_custom_stdio_launch_raises_before_any_config_is_built(self) -> None:
+        from app.agents.mcp.client import MCPLaunchDeniedError, MCPConnectionError
+        from app.agents.mcp.stdio_policy import deny_custom_stdio_launch
+
+        stored = _instance(typeId=None, isCustom=True, command="bash", args=["-c", "id"])
+        with patch("app.edition_config.stdio_mcp_launch_policy", deny_custom_stdio_launch):
+            with pytest.raises(MCPLaunchDeniedError) as exc:
+                instance_config_from_dict(stored)
+        assert isinstance(exc.value, MCPConnectionError)
+
+    def test_launch_policy_is_not_consulted_for_remote_instances(self) -> None:
+        from app.agents.mcp.stdio_policy import deny_custom_stdio_launch
+
+        stored = _instance(typeId=None, isCustom=True, transport="streamable_http", url="https://mcp.example.com")
+        with patch("app.edition_config.stdio_mcp_launch_policy", deny_custom_stdio_launch):
+            assert instance_config_from_dict(stored).url == "https://mcp.example.com"
+
+    def test_custom_stdio_instance_keeps_its_stored_launch_spec(self) -> None:
+        stored = _instance(typeId=None, isCustom=True, command="node", args=["server.js"])
+        cfg = instance_config_from_dict(stored)
+        assert (cfg.command, cfg.args) == ("node", ["server.js"])
+
 
 class TestCredentialsToDiscoveryDict:
     def test_oauth_extracts_access_token(self) -> None:

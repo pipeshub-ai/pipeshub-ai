@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Avatar, Badge, Box, Checkbox, Flex, IconButton, Tabs, Text, TextField, Tooltip } from '@radix-ui/themes';
+import { Avatar, Badge, Box, Callout, Checkbox, Flex, IconButton, Tabs, Text, TextField, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { toast } from '@/lib/store/toast-store';
 import { apiClient, isProcessedError } from '@/lib/api';
@@ -21,6 +21,7 @@ import {
   isMultiEnvAuthComplete,
   needsMultiEnvAuth,
 } from '../../stdio-env-auth';
+import { findStdioLaunchIssue } from '../../stdio-launch-policy';
 import type {
   McpAuthMode,
   McpMyServerEntry,
@@ -128,6 +129,7 @@ export function McpInstanceConfigPanel({
   const [authorizationUrl, setAuthorizationUrl] = useState('');
   const [tokenUrl, setTokenUrl] = useState('');
   const [scopeTags, setScopeTags] = useState<TagItem[]>([]);
+  const [acknowledgeUnsandboxed, setAcknowledgeUnsandboxed] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   const [apiToken, setApiToken] = useState('');
@@ -183,6 +185,7 @@ export function McpInstanceConfigPanel({
       setTokenUrl('');
       setScopeTags([]);
     }
+    setAcknowledgeUnsandboxed(false);
     setApiToken('');
     setEnvValues({});
     setHeaderValue('');
@@ -270,8 +273,22 @@ export function McpInstanceConfigPanel({
       ? t('workspace.mcpServers.form.oauthPairRequired')
       : undefined;
 
+  const isCustomStdio = !isTemplateBased && transport === 'stdio';
+  const stdioLaunchIssue = isCustomStdio ? findStdioLaunchIssue(command, tagsToStrings(argTags)) : null;
+  const stdioLaunchError = !stdioLaunchIssue
+    ? undefined
+    : stdioLaunchIssue.kind === 'unpinned'
+      ? t('workspace.mcpServers.form.stdioPackageNotPinned', {
+          spec: stdioLaunchIssue.spec,
+          example: stdioLaunchIssue.example,
+        })
+      : stdioLaunchIssue.kind === 'forbiddenOption'
+        ? t('workspace.mcpServers.form.stdioShellOptionNotAllowed', { option: stdioLaunchIssue.option })
+        : t('workspace.mcpServers.form.stdioPackageMissing');
+
   const isValid =
     name.trim().length > 0 &&
+    (!isCustomStdio || (acknowledgeUnsandboxed && !stdioLaunchError)) &&
     (isTemplateBased ||
       (transport === 'stdio'
         ? command.trim().length > 0 &&
@@ -337,6 +354,7 @@ export function McpInstanceConfigPanel({
                 command: command.trim(),
                 args: tagsToStrings(argTags),
                 requiredEnv: tagsToStrings(requiredEnvTags),
+                acknowledgeUnsandboxedExecution: acknowledgeUnsandboxed,
               }
             : { url: url.trim() }),
         ...(authMode === 'headers' ? { headerName: headerName.trim() || null } : {}),
@@ -427,7 +445,7 @@ export function McpInstanceConfigPanel({
               placeholder="npx"
             />
           </FormField>
-          <FormField label={t('workspace.mcpServers.form.args')} required>
+          <FormField label={t('workspace.mcpServers.form.args')} required error={stdioLaunchError}>
             <TagInput tags={argTags} onTagsChange={setArgTags} placeholder={t('workspace.mcpServers.form.argsPlaceholder')} />
           </FormField>
           <FormField label={t('workspace.mcpServers.form.requiredEnv')} required>
@@ -437,6 +455,26 @@ export function McpInstanceConfigPanel({
               placeholder={t('workspace.mcpServers.form.requiredEnvPlaceholder')}
             />
           </FormField>
+          <Callout.Root color="amber" variant="surface" size="1">
+            <Callout.Icon>
+              <MaterialIcon name="warning" size={16} />
+            </Callout.Icon>
+            <Flex direction="column" gap="2">
+              <Text size="2" weight="medium">
+                {t('workspace.mcpServers.form.stdioWarningTitle')}
+              </Text>
+              <Text size="2">{t('workspace.mcpServers.form.stdioWarning')}</Text>
+              <Text as="label" size="2">
+                <Flex align="start" gap="2">
+                  <Checkbox
+                    checked={acknowledgeUnsandboxed}
+                    onCheckedChange={(v) => setAcknowledgeUnsandboxed(v === true)}
+                  />
+                  {t('workspace.mcpServers.form.stdioAcknowledge')}
+                </Flex>
+              </Text>
+            </Flex>
+          </Callout.Root>
         </>
       )}
 

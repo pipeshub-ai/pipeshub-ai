@@ -13,7 +13,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         default_auth_mode=MCPAuthMode.API_TOKEN,
         supported_auth_modes=[MCPAuthMode.API_TOKEN],
         command="npx",
-        args=["-y", "@modelcontextprotocol/server-slack"],
+        args=["-y", "@modelcontextprotocol/server-slack@2025.4.25"],
         required_env=["SLACK_BOT_TOKEN", "SLACK_TEAM_ID"],
         optional_env=["SLACK_CHANNEL_IDS"],
         documentation_url="https://github.com/modelcontextprotocol/servers-archived/tree/main/src/slack",

@@ -35,6 +35,7 @@ from app.agents.agent_loop.lazy_tools_wiring import MCP_PARENT
 from app.agents.agent_loop.mcp_access import MCPAccessResolver, ResolvedMCPServer
 from app.agents.agent_loop.mcp_session import MCPSessionManager
 from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
+from app.agents.mcp.client import MCPLaunchDeniedError
 from app.agents.mcp.discovery import build_namespaced_tool_name, discover_tools
 from app.agents.mcp.models import MCPToolInfo
 from app.agents.mcp.service import credentials_to_discovery_dict, instance_config_from_dict
@@ -149,6 +150,9 @@ class MCPToolProvider:
             credentials = credentials_to_discovery_dict(server.instance.get("authMode", ""), server.auth)
             tool_infos = await discover_tools(config, credentials, timeout_seconds=timeout_seconds)
             return self._filter_by_attached(server, tool_infos), None
+        except MCPLaunchDeniedError as exc:
+            logger.warning("MCPToolProvider: launch denied for instance %s (%s): %s", server.instance_id, server.name, exc)
+            return None, "launch_denied"
         except Exception as exc:
             logger.warning(
                 "MCPToolProvider: live discovery failed for instance %s (%s): %s",
