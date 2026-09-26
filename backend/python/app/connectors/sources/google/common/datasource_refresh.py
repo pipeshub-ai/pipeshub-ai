@@ -8,6 +8,7 @@ google-auth refreshed in memory is saved back, so the next check does not swap i
 for the stale saved one.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -28,6 +29,7 @@ from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+_MAX_RECONCILE_ROUNDS = 3
 
 # Set on each in-memory credentials object: the refresh token settings last agreed
 # with. It tells a refresh token Google rotated in memory (save it) apart from one a
@@ -191,6 +193,31 @@ async def _save_refreshed_token(
     logger.info("Saved the refreshed Google %s token to connector settings", service_name)
 
 
+async def _read_connector_settings(
+    config_service: ConfigurationService, config_path: str, service_name: str
+) -> dict:
+    config = await config_service.get_config(config_path)
+    if not isinstance(config, dict):
+        raise GoogleAuthError(f"Google {service_name} configuration not found")
+    return config
+
+
+def _reconciler(http: object, saved: _TokenState) -> Callable[[], tuple[_Action, object, _TokenState]]:
+    def reconcile() -> tuple[_Action, object, _TokenState]:
+        # Runs on the datasource's transport, so no refresh is half-written while we read.
+        credentials = http.credentials
+        memory = _memory_state(credentials)
+        action = _choose(memory, saved, _agreed_refresh_token(credentials))
+        if action is _Action.ADOPT_SAVED:
+            http.credentials = _credentials_from_saved(saved, credentials)
+            _remember_agreement(http.credentials, saved.refresh_token)
+        elif action is _Action.KEEP:
+            _remember_agreement(credentials, saved.refresh_token)
+        return action, credentials, memory
+
+    return reconcile
+
+
 async def refresh_google_datasource_credentials(
     google_client: GoogleClient,
     data_source: GoogleDriveDataSource | GoogleGmailDataSource,
@@ -230,29 +257,28 @@ async def refresh_google_datasource_credentials(
     # after the read above is seen here, and nothing it writes lands between our read
     # and our write.
     async with connector_refresh_lock(connector_id):
-        latest = await config_service.get_config(config_path)
-        if not isinstance(latest, dict):
-            raise GoogleAuthError(f"Google {service_name} configuration not found")
-        saved = _saved_state(latest.get("credentials") or {})
-        if not saved.access_token and not saved.refresh_token:
-            raise GoogleAuthError("No OAuth credentials available")
-
-        def reconcile() -> tuple[_Action, object, _TokenState]:
-            # Runs on the datasource's transport, so no refresh is half-written while we read.
-            credentials = http.credentials
-            memory = _memory_state(credentials)
-            action = _choose(memory, saved, _agreed_refresh_token(credentials))
+        latest = await _read_connector_settings(config_service, config_path, service_name)
+        for _ in range(_MAX_RECONCILE_ROUNDS):
+            saved = _saved_state(latest.get("credentials") or {})
+            if not saved.access_token and not saved.refresh_token:
+                raise GoogleAuthError("No OAuth credentials available")
+            action, credentials, memory = await data_source.execute(_reconciler(http, saved))
+            # Other writers (the OAuth callback, filter saves) don't take this lock, and
+            # waiting for the transport can span a whole Drive call, so only act on a
+            # decision the settings still support.
+            current = await _read_connector_settings(config_service, config_path, service_name)
+            if _saved_state(current.get("credentials") or {}) != saved:
+                latest = current
+                continue
             if action is _Action.ADOPT_SAVED:
-                http.credentials = _credentials_from_saved(saved, credentials)
-                _remember_agreement(http.credentials, saved.refresh_token)
-            elif action is _Action.KEEP:
-                _remember_agreement(credentials, saved.refresh_token)
-            return action, credentials, memory
-
-        action, credentials, memory = await data_source.execute(reconcile)
-        if action is _Action.ADOPT_SAVED:
-            logger.info("Using the Google %s token saved in connector settings", service_name)
-        elif action is _Action.SAVE_IN_MEMORY:
-            await _save_refreshed_token(
-                config_service, config_path, latest, credentials, memory, logger, service_name
-            )
+                logger.info("Using the Google %s token saved in connector settings", service_name)
+            elif action is _Action.SAVE_IN_MEMORY:
+                await _save_refreshed_token(
+                    config_service, config_path, current, credentials, memory, logger, service_name
+                )
+            return
+        logger.warning(
+            "Google %s connector settings kept changing during the token check; "
+            "it is retried on the next call",
+            service_name,
+        )

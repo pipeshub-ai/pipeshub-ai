@@ -804,6 +804,44 @@ async def test_a_token_saved_while_the_check_waits_for_the_refresh_lock_is_used_
     assert drive.names() == {"one.txt", "two.txt"}
 
 
+@pytest.mark.parametrize("first_seen_lifetime_s", [1800, 5400], ids=["older-than-memory", "newer-than-memory"])
+async def test_a_re_authentication_while_the_check_waits_for_the_transport_is_kept_and_used(
+    drive: Harness, monkeypatch: pytest.MonkeyPatch, first_seen_lifetime_s: int
+) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+    connector = await drive.connector_()
+    await drive.sync()
+    drive.http.accept_token("first-seen-token", ME)
+    drive.http.accept_token("reauth-token", ME)
+    drive.world.aliases["oauth:refresh-2"] = ME
+    saved_token(drive.config, "first-seen-token", age=timedelta(0), lifetime_s=first_seen_lifetime_s)
+
+    real_execute = connector.drive_data_source.execute
+    reauthenticated: list[bool] = []
+
+    async def execute(operation: Callable[[], object]) -> object:
+        # The OAuth callback writes settings without the refresh lock.
+        if getattr(operation, "__name__", "") == "reconcile" and not reauthenticated:
+            reauthenticated.append(True)
+            saved_token(drive.config, "reauth-token", age=timedelta(0))
+            drive.config["credentials"]["refresh_token"] = "refresh-2"
+            drive.config["oauth"] = {"used_codes": ["code-1"]}
+        return await real_execute(operation)
+
+    monkeypatch.setattr(connector.drive_data_source, "execute", execute)
+    requests_before = len(drive.http.requests)
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    assert reauthenticated == [True]
+    assert drive.config["credentials"]["access_token"] == "reauth-token"
+    assert drive.config["credentials"]["refresh_token"] == "refresh-2"
+    assert drive.config["oauth"] == {"used_codes": ["code-1"]}
+    sent = {r.headers["authorization"] for r in drive.http.requests[requests_before:]}
+    assert sent == {"Bearer reauth-token"}
+
+
 async def test_a_revoked_refresh_token_fails_the_run_without_a_checkpoint(drive: Harness) -> None:
     my_file(drive.world, "f1", "one.txt")
     await drive.connector_()
