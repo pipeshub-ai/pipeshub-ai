@@ -22805,20 +22805,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to update agent template: %s", str(e))
             return False
 
+    CORPUS_MUTATION_STALENESS_MS = 300000
+
     async def get_corpus_revision(self, org_id: str) -> str:
         """Get the current corpus revision for an organization."""
-        query = """
-        LET r = DOCUMENT("CorpusRevision", @org_id)
+        query = f"""
+        LET r = DOCUMENT("{CollectionNames.CORPUS_REVISION.value}", @org_id)
         LET now = DATE_NOW()
         LET activeMutations = (
             FOR m IN r != null ? (r.pendingMutations || []) : []
-            FILTER m.timestamp >= now - 300000
+            FILTER m.timestamp >= now - {self.CORPUS_MUTATION_STALENESS_MS}
             RETURN m
         )
-        RETURN {
+        RETURN {{
             revision: r != null ? TO_STRING(r.revision) : "0",
             pendingCount: LENGTH(activeMutations)
-        }
+        }}
         """
         results = await self.execute_query(query, bind_vars={"org_id": org_id})
         if results and results[0]:
@@ -22830,12 +22832,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def mark_corpus_mutation_start(self, org_id: str) -> str:
         mutation_id = str(uuid.uuid4())
-        query = """
-        LET new_mut = { id: @mutation_id, timestamp: DATE_NOW() }
-        UPSERT { _key: @org_id }
-        INSERT { _key: @org_id, orgId: @org_id, revision: 0, pendingMutations: [new_mut] }
-        UPDATE { pendingMutations: PUSH(OLD.pendingMutations || [], new_mut) }
-        IN CorpusRevision
+        query = f"""
+        LET new_mut = {{ id: @mutation_id, timestamp: DATE_NOW() }}
+        UPSERT {{ _key: @org_id }}
+        INSERT {{ _key: @org_id, orgId: @org_id, revision: 0, pendingMutations: [new_mut] }}
+        UPDATE {{ pendingMutations: PUSH(OLD.pendingMutations || [], new_mut) }}
+        IN {CollectionNames.CORPUS_REVISION.value}
         """
         for attempt in range(2):
             try:
@@ -22851,22 +22853,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Atomically increment and return the corpus revision for an organization.
 
         Retries the UPSERT exactly once when ArangoDB raises unique-constraint
-        error 1210 (can occur on a concurrent INSERT/UPDATE race).  Any other
-        error, and any failure on the retry attempt, is propagated to the caller.
+        error 1210 or write-write conflict error 1200 (can occur on a concurrent 
+        INSERT/UPDATE race).  Any other error, and any failure on the retry 
+        attempt, is propagated to the caller.
         """
-        query = """
+        query = f"""
         LET now = DATE_NOW()
-        UPSERT { _key: @org_id }
-        INSERT { _key: @org_id, orgId: @org_id, revision: 1, pendingMutations: [] }
-        UPDATE { 
+        UPSERT {{ _key: @org_id }}
+        INSERT {{ _key: @org_id, orgId: @org_id, revision: 1, pendingMutations: [] }}
+        UPDATE {{ 
             revision: OLD.revision + 1,
             pendingMutations: (
                 FOR m IN (OLD.pendingMutations || [])
-                FILTER (@mutation_id != null ? m.id != @mutation_id : true) AND m.timestamp >= now - 300000
+                FILTER (@mutation_id != null ? m.id != @mutation_id : true) AND m.timestamp >= now - {self.CORPUS_MUTATION_STALENESS_MS}
                 RETURN m
             )
-        }
-        IN CorpusRevision
+        }}
+        IN {CollectionNames.CORPUS_REVISION.value}
         RETURN TO_STRING(NEW.revision)
         """
         for attempt in range(2):
@@ -22885,3 +22888,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 raise
         return "0"  # unreachable; satisfies the type checker
 
+    async def remove_corpus_mutation(self, org_id: str, mutation_id: str) -> None:
+        """Remove a pending corpus mutation without incrementing the revision."""
+        query = f"""
+        LET now = DATE_NOW()
+        FOR doc IN {CollectionNames.CORPUS_REVISION.value}
+            FILTER doc._key == @org_id
+            UPDATE doc WITH {{
+                pendingMutations: (
+                    FOR m IN (doc.pendingMutations || [])
+                    FILTER m.id != @mutation_id AND m.timestamp >= now - {self.CORPUS_MUTATION_STALENESS_MS}
+                    RETURN m
+                )
+            }} IN {CollectionNames.CORPUS_REVISION.value}
+        """
+        try:
+            await self.execute_query(query, bind_vars={"org_id": org_id, "mutation_id": mutation_id})
+        except Exception as exc:
+            self._logger.error(f"Failed to remove corpus mutation {mutation_id} for org {org_id}: {exc}")

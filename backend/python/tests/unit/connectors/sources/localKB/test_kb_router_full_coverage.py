@@ -1064,7 +1064,7 @@ class TestUpdateRecord:
             "timestamp": 1234567890,
         })
         gp = app.state.graph_provider
-        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB"})
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB", "org_id": "org1"})
         gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         gp.get_user_kb_permission = AsyncMock(return_value="OWNER")
         gp.get_knowledge_base = AsyncMock(return_value={"id": "kb1", "name": "KB"})
@@ -1085,6 +1085,8 @@ class TestUpdateRecord:
         kb_svc.update_record = AsyncMock(return_value={
             "success": False, "code": 404, "reason": "Not found"
         })
+        gp = app.state.graph_provider
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB", "org_id": "org1"})
         client = TestClient(app)
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {}})
         assert resp.status_code == 404
@@ -1092,6 +1094,8 @@ class TestUpdateRecord:
     def test_unexpected_exception(self):
         app, kb_svc, _ = _make_app()
         kb_svc.update_record = AsyncMock(side_effect=RuntimeError("err"))
+        gp = app.state.graph_provider
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB", "org_id": "org1"})
         client = TestClient(app)
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {}})
         assert resp.status_code == 500
@@ -1104,7 +1108,7 @@ class TestUpdateRecord:
             "updatedRecord": {"id": "r1"},
         })
         gp = app.state.graph_provider
-        gp._get_kb_context_for_record = AsyncMock(return_value=None)
+        gp._get_kb_context_for_record = AsyncMock(return_value={"org_id": "org1"})
 
         client = TestClient(app)
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {"recordName": "new"}})
@@ -1125,7 +1129,7 @@ class TestUpdateRecord:
             },
         })
         gp = app.state.graph_provider
-        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB"})
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB", "org_id": "org1"})
         gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         gp.get_user_kb_permission = AsyncMock(return_value="OWNER")
         gp.get_knowledge_base = AsyncMock(return_value={"id": "kb1", "name": "KB"})

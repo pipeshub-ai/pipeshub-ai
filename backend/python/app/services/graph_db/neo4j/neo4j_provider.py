@@ -243,7 +243,7 @@ class Neo4jProvider(IGraphDBProvider):
         """Initialize Neo4j schema (delegates to ensure_schema)."""
         success = await self.ensure_schema()
         if not success:
-            raise RuntimeError("Failed to ensure Neo4j schema (CorpusRevision constraint creation failed).")
+            raise RuntimeError("Failed to ensure Neo4j schema.")
 
     async def _initialize_departments(self) -> None:
         """Initialize departments collection with predefined department types"""
@@ -19783,3 +19783,16 @@ class Neo4jProvider(IGraphDBProvider):
         if results and results[0].get("revision") is not None:
             return str(results[0]["revision"])
         return "0"
+
+    async def remove_corpus_mutation(self, org_id: str, mutation_id: str) -> None:
+        """Remove a pending corpus mutation without incrementing the revision."""
+        if not self.client:
+            raise RuntimeError("Neo4j client not connected")
+        query = """
+        MATCH (r:CorpusRevision {orgId: $org_id})
+        SET r.pendingMutations = [x IN coalesce(r.pendingMutations, []) WHERE split(x, '|')[0] <> $mutation_id AND toInteger(split(x, '|')[1]) >= timestamp() - 300000]
+        """
+        try:
+            await self.client.execute_query(query, {"org_id": org_id, "mutation_id": mutation_id})
+        except Exception as exc:
+            self._logger.error(f"Failed to remove corpus mutation {mutation_id} for org {org_id}: {exc}")

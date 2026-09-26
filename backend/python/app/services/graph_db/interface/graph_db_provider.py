@@ -5202,3 +5202,12 @@ class IGraphDBProvider(ABC):
         Returns the new revision string.
         """
         pass
+
+    @abstractmethod
+    async def remove_corpus_mutation(self, org_id: str, mutation_id: str) -> None:
+        """Remove a pending corpus mutation without incrementing the revision.
+        
+        This is used to revert a mutation lock if the underlying operation or
+        invalidation fails and the corpus was ultimately not modified.
+        """
+        pass

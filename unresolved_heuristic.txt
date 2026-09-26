@@ -1,0 +1,35 @@
+[2] By github-advanced-security[bot] at https://github.com/pipeshub-ai/pipeshub-ai/pull/3122#discussion_r3897541126
+## CodeQL / Information exposure through an exception
+
+[Stack trace information](1) flows to this location and may be exposed to an external user.
+[Stack trace information](2) flows to this location a...
+----------------------------------------
+[5] By coderabbitai[bot] at https://github.com/pipeshub-ai/pipeshub-ai/pull/3122#discussion_r3897687158
+_🎯 Functional Correctness_ | _🟡 Minor_ | _⚡ Quick win_
+
+**Emit an AGUI error when the live stream fails.**
+
+If `base_stream` raises after it emits partial output, this handler only logs the exception ...
+----------------------------------------
+[8] By Saneajayy at https://github.com/pipeshub-ai/pipeshub-ai/pull/3122#discussion_r4079345436
+This has been resolved in the latest commit. 
+
+The CodeQL alert for "Information exposure through an exception" was triggered because the `Exception` object (`e`) was being formatted directly into l...
+----------------------------------------
+[12] By Saneajayy at https://github.com/pipeshub-ai/pipeshub-ai/pull/3122#discussion_r4079474092
+@coderabbitai we don't currently have a global corpusRevision variable tracking document changes.
+
+What is the recommended architectural approach here? Should we add a new corpusRevision field to th...
+----------------------------------------
+[13] By coderabbitai[bot] at https://github.com/pipeshub-ai/pipeshub-ai/pull/3122#discussion_r4079480355
+<details>
+<summary>🧩 Analysis chain</summary>
+
+🏁 Script executed:
+
+```shell
+#!/bin/bash
+set -e
+ast-grep outline backend/python/app/services/cache/semantic_cache.py --items all
+ast-grep outline backend...
+----------------------------------------

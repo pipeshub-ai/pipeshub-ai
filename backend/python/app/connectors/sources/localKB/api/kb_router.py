@@ -1421,7 +1421,14 @@ async def update_record(
                     status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                     detail=error_reason
                 )
-        finally:
+        except Exception:
+            if _bump_org_id and mutation_id:
+                try:
+                    await request.app.state.graph_provider.remove_corpus_mutation(_bump_org_id, mutation_id)
+                except Exception as e:
+                    logger.error(f"Failed to remove corpus mutation: {e}")
+            raise
+        else:
             if _bump_org_id:
                 cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _bump_org_id, mutation_id)
 
@@ -1593,7 +1600,14 @@ async def delete_records_in_kb(
                     status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                     detail=error_reason
                 )
-        finally:
+        except Exception:
+            if _kb_org and mutation_id:
+                try:
+                    await request.app.state.graph_provider.remove_corpus_mutation(_kb_org, mutation_id)
+                except Exception as e:
+                    _log.error(f"Failed to remove corpus mutation: {e}")
+            raise
+        else:
             if _kb_org:
                 cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org, mutation_id)
             else:
@@ -1671,7 +1685,14 @@ async def delete_record_in_folder(
                     status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                     detail=error_reason
                 )
-        finally:
+        except Exception:
+            if _kb_org and mutation_id:
+                try:
+                    await request.app.state.graph_provider.remove_corpus_mutation(_kb_org, mutation_id)
+                except Exception as e:
+                    _log.error(f"Failed to remove corpus mutation: {e}")
+            raise
+        else:
             if _kb_org:
                 cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(request.app.state.graph_provider, _kb_org, mutation_id)
             else:

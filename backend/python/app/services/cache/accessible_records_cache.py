@@ -415,8 +415,13 @@ class AccessibleRecordsInvalidator:
                 )
                 return
             mutation_id = await self.graph_provider.mark_corpus_mutation_start(org_id)
-            await self.cache.invalidate_connector(org_id, connector_id)
-            await self.graph_provider.increment_corpus_revision(org_id, mutation_id)
+            try:
+                await self.cache.invalidate_connector(org_id, connector_id)
+            except Exception:
+                await self.graph_provider.remove_corpus_mutation(org_id, mutation_id)
+                raise
+            else:
+                await self.graph_provider.increment_corpus_revision(org_id, mutation_id)
         except Exception as e:
             self.logger.warning(
                 "Could not invalidate accessible-records cache for connector %s: %s",
@@ -441,8 +446,13 @@ class AccessibleRecordsInvalidator:
             if not org_id:
                 return
             mutation_id = await self.graph_provider.mark_corpus_mutation_start(org_id)
-            await self.cache.invalidate_kb(org_id, kb_id)
-            await self.graph_provider.increment_corpus_revision(org_id, mutation_id)
+            try:
+                await self.cache.invalidate_kb(org_id, kb_id)
+            except Exception:
+                await self.graph_provider.remove_corpus_mutation(org_id, mutation_id)
+                raise
+            else:
+                await self.graph_provider.increment_corpus_revision(org_id, mutation_id)
         except Exception as e:
             self.logger.warning(
                 "Could not invalidate accessible-records cache for KB %s: %s", kb_id, str(e)

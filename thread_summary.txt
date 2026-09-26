@@ -1,0 +1,26 @@
+Thread starting at https://github.com/pipeshub-ai/pipeshub-ai/pull/3122#discussion_r3897541126
+  github-advanced-security[bot]: ## CodeQL / Information exposure through an exception
+
+[Stack trace information](1) flows to this lo...
+  Saneajayy: This has been resolved in the latest commit. 
+
+The CodeQL alert for "Information exposure through ...
+----------------------------------------
+Thread starting at https://github.com/pipeshub-ai/pipeshub-ai/pull/3122#discussion_r3897687158
+  coderabbitai[bot]: _🎯 Functional Correctness_ | _🟡 Minor_ | _⚡ Quick win_
+
+**Emit an AGUI error when the live stream fa...
+----------------------------------------
+Thread starting at https://github.com/pipeshub-ai/pipeshub-ai/pull/3122#discussion_r4079474092
+  Saneajayy: @coderabbitai we don't currently have a global corpusRevision variable tracking document changes.
+...
+  coderabbitai[bot]: <details>
+<summary>🧩 Analysis chain</summary>
+
+🏁 Script executed:
+
+```shell
+#!/bin/bash
+set -e
+ast-g...
+----------------------------------------

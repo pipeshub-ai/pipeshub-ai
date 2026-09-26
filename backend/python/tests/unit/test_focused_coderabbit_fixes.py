@@ -170,9 +170,14 @@ async def test_update_record_failed_kb_context_lookup():
     mock_kafka = AsyncMock()
     
     with patch("app.connectors.sources.localKB.api.kb_router.increment_org_corpus_revision_with_retry", new_callable=AsyncMock) as mock_bump:
-        result = await update_record(record_id="r1", request=mock_request, kb_service=mock_kb_service, kafka_service=mock_kafka)
+        from fastapi import HTTPException
+        import pytest
+        with pytest.raises(HTTPException) as exc_info:
+            await update_record(record_id="r1", request=mock_request, kb_service=mock_kb_service, kafka_service=mock_kafka)
+        
+        assert exc_info.value.status_code == 404
         mock_bump.assert_not_called()
-        assert result.get("cacheInvalidationPending") is True
+        mock_kb_service.update_record.assert_not_called()
 
 # ---------------------------------------------------------
 # 7. ArangoDB retries for 1200 and 1210

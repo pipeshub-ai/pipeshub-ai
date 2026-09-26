@@ -1484,9 +1484,7 @@ async def askAIStream(
                                 for e in events:
                                     yield f"event: {e['event']}\ndata: {json.dumps(e['data'])}\n\n"
                                 return
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
+            except Exception:
                 logger.warning("Semantic cache lookup failed", exc_info=True)
 
             # If no cache hit, run the live stream and accumulate text + citations

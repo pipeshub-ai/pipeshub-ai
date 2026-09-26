@@ -978,6 +978,8 @@ class TestUpdateRecord:
         kb_svc.update_record = AsyncMock(return_value={
             "success": False, "code": 404, "reason": "Not found"
         })
+        gp = app.state.graph_provider
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB", "org_id": "org1"})
         client = TestClient(app)
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {}})
         assert resp.status_code == 404
@@ -985,6 +987,8 @@ class TestUpdateRecord:
     def test_unexpected_exception(self):
         app, kb_svc, _ = _make_app()
         kb_svc.update_record = AsyncMock(side_effect=RuntimeError("err"))
+        gp = app.state.graph_provider
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB", "org_id": "org1"})
         client = TestClient(app)
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {}})
         assert resp.status_code == 500
@@ -2058,6 +2062,8 @@ class TestUpdateRecordFullCoverage:
         kb_svc.update_record = AsyncMock(return_value={
             "success": False, "code": 404, "reason": "Not found"
         })
+        gp = app.state.graph_provider
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB", "org_id": "org1"})
         client = TestClient(app)
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {}})
         assert resp.status_code == 404
@@ -2065,6 +2071,8 @@ class TestUpdateRecordFullCoverage:
     def test_unexpected_exception(self):
         app, kb_svc, _ = _make_app()
         kb_svc.update_record = AsyncMock(side_effect=RuntimeError("err"))
+        gp = app.state.graph_provider
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB", "org_id": "org1"})
         client = TestClient(app)
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {}})
         assert resp.status_code == 500

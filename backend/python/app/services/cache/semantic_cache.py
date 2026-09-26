@@ -79,12 +79,16 @@ class SemanticCacheService:
         # Index on the nested metadata field so filters survive OpenSearch
         # document conversion (top-level payload fields are discarded by the
         # vector_point_to_document adapter; only metadata.* survives).
-        await self.vector_db.create_index(
-            self.collection_name, "metadata.filters_hash", {"type": "keyword"}
-        )
-        await self.vector_db.create_index(
-            self.collection_name, "metadata.corpusRevision", {"type": "keyword"}
-        )
+        try:
+            await self.vector_db.create_index(
+                self.collection_name, "metadata.filters_hash", {"type": "keyword"}
+            )
+            await self.vector_db.create_index(
+                self.collection_name, "metadata.corpusRevision", {"type": "keyword"}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create semantic cache indexes: {e}")
+            return
 
         # Migration: apply non-indexed mapping for large stored-text fields.
         # This is an OpenSearch-only operation: put_mapping adds index:false to

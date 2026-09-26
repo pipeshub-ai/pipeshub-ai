@@ -2187,6 +2187,23 @@ async def delete_record(
         user_id = request.state.user.get("userId")
         logger.info(f"🗑️ Attempting to delete record {record_id}")
 
+        org_id = None
+        try:
+            # Try to resolve org_id before deletion to register mutation lock early
+            context = await graph_provider._get_kb_context_for_record(record_id)
+            if context:
+                org_id = context.get("org_id")
+        except Exception as e:
+            logger.warning(f"Failed to lookup context for record {record_id} before deletion: {e}")
+
+        mutation_id = None
+        if org_id:
+            try:
+                mutation_id = await graph_provider.mark_corpus_mutation_start(org_id)
+            except Exception as e:
+                logger.error(f"Failed to start corpus mutation: {e}")
+                raise HTTPException(status_code=503, detail="Service unavailable (database error)")
+
         result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id
@@ -2198,15 +2215,21 @@ async def delete_record(
             # cache entries valid for the now-deleted record until their TTL
             # expires. The warning is still emitted after the final attempt.
             cache_invalidation_pending = False
-            org_id = result.get("orgId")
+            org_id = result.get("orgId") or org_id
             if org_id:
-                cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(graph_provider, org_id)
+                cache_invalidation_pending = not await increment_org_corpus_revision_with_retry(graph_provider, org_id, mutation_id)
             else:
                 logger.warning(
                     f"Skipped corpus revision bump for record {record_id}: "
                     f"delete_record returned no orgId."
                 )
                 cache_invalidation_pending = True
+        else:
+            if org_id and mutation_id:
+                try:
+                    await graph_provider.remove_corpus_mutation(org_id, mutation_id)
+                except Exception as e:
+                    logger.error(f"Failed to remove corpus mutation: {e}")
 
             # Publish deletion event. The graph deletion above has already
             # committed, so a publish failure here cannot be undone by failing
