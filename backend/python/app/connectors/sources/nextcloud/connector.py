@@ -1366,12 +1366,12 @@ class NextcloudConnector(BaseConnector):
                                 modified_paths.add(file_path)
                                 self.logger.info(f"📝 Modification detected: {file_path} ({activity_type})")
 
+            applied = True
+
             # Process deletions
             if deleted_file_ids:
                 self.logger.info(f"🗑️  [Incremental Sync] Processing {len(deleted_file_ids)} deletions")
-                await self._process_deletions(deleted_file_ids)
-
-            applied = True
+                applied = await self._process_deletions(deleted_file_ids)
 
             # Process modifications and new files
             if modified_paths:
@@ -1473,12 +1473,15 @@ class NextcloudConnector(BaseConnector):
 
         return activities
 
-    async def _process_deletions(self, file_ids: set) -> None:
+    async def _process_deletions(self, file_ids: set) -> bool:
         """
         Process file deletions from activity feed.
         Args:
             file_ids: Set of external file IDs that were deleted
+        Returns:
+            False when any of the deletions could not be applied
         """
+        all_applied = True
         try:
             for file_id in file_ids:
                 try:
@@ -1514,14 +1517,18 @@ class NextcloudConnector(BaseConnector):
                             f"❌ Could not remove deleted folder {file_id} and everything in it: "
                             f"{(result or {}).get('reason') or result}"
                         )
+                        all_applied = False
                         continue
                     self.logger.info(f"🗑️ Removed folder {file_id} and everything in it")
 
                 except Exception as e:
                     self.logger.error(f"Error deleting record {file_id}: {e}", exc_info=True)
+                    all_applied = False
 
         except Exception as e:
             self.logger.error(f"Error processing deletions: {e}", exc_info=True)
+            return False
+        return all_applied
 
     async def _process_modified_files(
         self,

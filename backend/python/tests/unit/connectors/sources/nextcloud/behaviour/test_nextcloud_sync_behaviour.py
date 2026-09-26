@@ -869,20 +869,34 @@ class TestIncrementalSync:
         assert store.cursor() == str(server.latest_activity_id)
         assert not {"New", "brief.txt"} & db.names()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: the cursor moves past a "
-            "deletion that failed to apply, so the deleted file stays searchable."
-        ),
-    )
-    async def test_a_deletion_that_failed_to_apply_is_retried_next_run(self, server, db, store) -> None:
+    @pytest.mark.parametrize(("deleted", "gone"), [
+        pytest.param("Docs/notes.txt", {"notes.txt"}, id="file"),
+        pytest.param("Docs", {"Docs", "Reports", "q1.pdf", "notes.txt"}, id="folder"),
+    ])
+    async def test_a_deletion_that_failed_to_apply_is_retried_next_run(self, server, db, store, deleted, gone) -> None:
         connector = await synced(server, db, store)
+        cursor = store.cursor()
         db.fail_delete_for = {ids_of(server)["notes.txt"]}
-        server.delete("Docs/notes.txt")
+        server.delete(deleted)
+        server.add_file("new.txt")
 
         await connector.run_sync()
+        assert store.cursor() == cursor, "held until the deletion is applied"
+        assert "new.txt" in db.names(), "the rest of the page is still applied"
+
         db.fail_delete_for.clear()
+        await connector.run_sync()
+        assert not gone & db.names()
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_a_deletion_whose_lookup_fails_is_retried_next_run(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notes = ids_of(server)["notes.txt"]
+        server.delete("Docs/notes.txt")
+        db.fail_lookup_for = {notes}
+
+        await connector.run_sync()
+        db.fail_lookup_for.clear()
         await connector.run_sync()
 
         assert "notes.txt" not in db.names()
