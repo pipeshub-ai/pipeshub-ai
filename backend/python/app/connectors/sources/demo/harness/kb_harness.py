@@ -348,6 +348,19 @@ def mentions(answer: str, phrase: str) -> bool:
     return any(not _negated(text[:m.start()]) for m in re.finditer(before + re.escape(p) + after, text))
 
 
+# Sentence ends, not clause breaks: "Up to $250 per purchase: no approval needed" is one statement.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def states_together(answer: str, first: list[str], second: list[str]) -> bool:
+    """Whether one sentence states a phrase from each list, so both facts are about
+    the same thing: "$250 needs your manager. No approval above $2,500" is two."""
+    return any(
+        any(mentions(s, m) for m in first) and any(mentions(s, m) for m in second)
+        for s in _SENTENCE_END.split(answer)
+    )
+
+
 def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool, str]:
     """Score one answer against a golden question's must/must-not lists.
 
@@ -364,11 +377,13 @@ def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool,
     mention = q.get("answer_must_mention", [])
     unmentioned = [m for m in mention if m.lower() not in answer.lower()]
     # At least one of these, for a fact the model can phrase several ways.
-    # A second list is a second fact the answer must also state (f2: the amount, and no approval).
-    for key in ("answer_must_mention_any_of", "answer_must_mention_any_of_2"):
-        mention_any = q.get(key, [])
-        if mention_any and not any(mentions(answer, m) for m in mention_any):
-            unmentioned.append(" | ".join(mention_any))
+    mention_any = q.get("answer_must_mention_any_of", [])
+    if mention_any and not any(mentions(answer, m) for m in mention_any):
+        unmentioned.append(" | ".join(mention_any))
+    # A second fact about the same thing, stated in the same sentence (f2: the amount needs no approval).
+    mention_any2 = q.get("answer_must_mention_any_of_2", [])
+    if mention_any2 and not states_together(answer, mention_any or [""], mention_any2):
+        unmentioned.append(" | ".join(mention_any2) + " (in the same sentence)")
     # Statements that make an answer wrong however well it cites ("still open").
     unmentioned += [f"not: {m}" for m in q.get("answer_must_not_mention", []) if mentions(answer, m)]
     if expect == "none":
