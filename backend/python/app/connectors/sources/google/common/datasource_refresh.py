@@ -8,7 +8,6 @@ google-auth refreshed in memory is saved back, so the next check does not swap i
 for the stale saved one.
 """
 
-import weakref
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -30,10 +29,11 @@ from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 
-# The refresh token settings and each in-memory credentials object last agreed on.
-# It tells a refresh token Google rotated in memory (save it) apart from one a
-# re-authentication put in settings (adopt it).
-_agreed_refresh_tokens: "weakref.WeakKeyDictionary[object, str]" = weakref.WeakKeyDictionary()
+# Set on each in-memory credentials object: the refresh token settings last agreed
+# with. It tells a refresh token Google rotated in memory (save it) apart from one a
+# re-authentication put in settings (adopt it). An attribute rather than a shared map,
+# because the event loop and the datasource's executor thread both read and write it.
+_AGREED_REFRESH_TOKEN_ATTR = "_pipeshub_agreed_refresh_token"
 
 
 class _Action(Enum):
@@ -116,9 +116,14 @@ def _choose(memory: _TokenState, saved: _TokenState, agreed_refresh_token: str |
     return _Action.KEEP
 
 
+def _agreed_refresh_token(credentials: object) -> str | None:
+    agreed = getattr(credentials, _AGREED_REFRESH_TOKEN_ATTR, None)
+    return agreed if isinstance(agreed, str) else None
+
+
 def _remember_agreement(credentials: object, refresh_token: str | None) -> None:
     if refresh_token:
-        _agreed_refresh_tokens[credentials] = refresh_token
+        setattr(credentials, _AGREED_REFRESH_TOKEN_ATTR, refresh_token)
 
 
 def _credentials_from_saved(saved: _TokenState, current: object) -> Credentials:
@@ -158,44 +163,32 @@ def _credentials_to_save(saved_credentials: dict, memory: _TokenState) -> dict:
 
 async def _save_refreshed_token(
     config_service: ConfigurationService,
-    connector_id: str,
+    config_path: str,
+    latest: dict,
     credentials: object,
     memory: _TokenState,
     logger: Logger,
     service_name: str,
 ) -> None:
-    config_path = f"/services/connectors/{connector_id}/config"
+    """Write a token refreshed in memory back to settings; the caller holds the connector's refresh lock."""
+    updated = {**latest, "credentials": _credentials_to_save(latest.get("credentials") or {}, memory)}
     try:
-        # Shared with TokenRefreshService so its read-refresh-write and this one don't interleave.
-        async with connector_refresh_lock(connector_id):
-            latest = await config_service.get_config(config_path)
-            if not isinstance(latest, dict):
-                logger.warning(
-                    "Google %s connector settings are missing; the refreshed token was not saved",
-                    service_name,
-                )
-                return
-            saved_credentials = latest.get("credentials") or {}
-            agreed = _agreed_refresh_tokens.get(credentials)
-            if _choose(memory, _saved_state(saved_credentials), agreed) is not _Action.SAVE_IN_MEMORY:
-                return
-            updated = {**latest, "credentials": _credentials_to_save(saved_credentials, memory)}
-            if not await config_service.set_config(config_path, updated):
-                logger.warning(
-                    "Could not save the refreshed Google %s token to connector settings; "
-                    "it stays in use and saving is retried on the next call",
-                    service_name,
-                )
-                return
-        _remember_agreement(credentials, memory.refresh_token)
-        logger.info("Saved the refreshed Google %s token to connector settings", service_name)
+        saved = await config_service.set_config(config_path, updated)
     except Exception as e:
+        saved = False
         logger.warning(
-            "Could not save the refreshed Google %s token to connector settings (%s); "
-            "it stays in use and saving is retried on the next call",
+            "Could not save the refreshed Google %s token to connector settings (%s)",
             service_name,
             type(e).__name__,
         )
+    if not saved:
+        logger.warning(
+            "The refreshed Google %s token stays in use; saving it is retried on the next call",
+            service_name,
+        )
+        return
+    _remember_agreement(credentials, memory.refresh_token)
+    logger.info("Saved the refreshed Google %s token to connector settings", service_name)
 
 
 async def refresh_google_datasource_credentials(
@@ -215,9 +208,8 @@ async def refresh_google_datasource_credentials(
     Raises:
         GoogleAuthError: If config not found or no OAuth credentials available
     """
-    config = await config_service.get_config(
-        f"/services/connectors/{connector_id}/config"
-    )
+    config_path = f"/services/connectors/{connector_id}/config"
+    config = await config_service.get_config(config_path)
     if not config:
         raise GoogleAuthError(f"Google {service_name} configuration not found")
 
@@ -230,22 +222,37 @@ async def refresh_google_datasource_credentials(
         return
 
     in_memory = http.credentials
-    if _choose(_memory_state(in_memory), saved, _agreed_refresh_tokens.get(in_memory)) is _Action.KEEP:
+    if _choose(_memory_state(in_memory), saved, _agreed_refresh_token(in_memory)) is _Action.KEEP:
         _remember_agreement(in_memory, saved.refresh_token)
         return
 
-    def reconcile() -> tuple[_Action, object, _TokenState]:
-        # Runs on the datasource's transport, so no refresh is half-written while we read.
-        credentials = http.credentials
-        memory = _memory_state(credentials)
-        action = _choose(memory, saved, _agreed_refresh_tokens.get(credentials))
-        if action is _Action.ADOPT_SAVED:
-            http.credentials = _credentials_from_saved(saved, credentials)
-            _remember_agreement(http.credentials, saved.refresh_token)
-        return action, credentials, memory
+    # Decide from settings read under TokenRefreshService's lock, so a token it saves
+    # after the read above is seen here, and nothing it writes lands between our read
+    # and our write.
+    async with connector_refresh_lock(connector_id):
+        latest = await config_service.get_config(config_path)
+        if not isinstance(latest, dict):
+            raise GoogleAuthError(f"Google {service_name} configuration not found")
+        saved = _saved_state(latest.get("credentials") or {})
+        if not saved.access_token and not saved.refresh_token:
+            raise GoogleAuthError("No OAuth credentials available")
 
-    action, credentials, memory = await data_source.execute(reconcile)
-    if action is _Action.ADOPT_SAVED:
-        logger.info("Using the Google %s token saved in connector settings", service_name)
-    elif action is _Action.SAVE_IN_MEMORY:
-        await _save_refreshed_token(config_service, connector_id, credentials, memory, logger, service_name)
+        def reconcile() -> tuple[_Action, object, _TokenState]:
+            # Runs on the datasource's transport, so no refresh is half-written while we read.
+            credentials = http.credentials
+            memory = _memory_state(credentials)
+            action = _choose(memory, saved, _agreed_refresh_token(credentials))
+            if action is _Action.ADOPT_SAVED:
+                http.credentials = _credentials_from_saved(saved, credentials)
+                _remember_agreement(http.credentials, saved.refresh_token)
+            elif action is _Action.KEEP:
+                _remember_agreement(credentials, saved.refresh_token)
+            return action, credentials, memory
+
+        action, credentials, memory = await data_source.execute(reconcile)
+        if action is _Action.ADOPT_SAVED:
+            logger.info("Using the Google %s token saved in connector settings", service_name)
+        elif action is _Action.SAVE_IN_MEMORY:
+            await _save_refreshed_token(
+                config_service, config_path, latest, credentials, memory, logger, service_name
+            )

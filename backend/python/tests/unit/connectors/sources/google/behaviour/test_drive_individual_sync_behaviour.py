@@ -22,6 +22,7 @@ from google_behaviour_fakes import (
 )
 from googleapiclient.errors import HttpError
 
+from app.connectors.sources.google.common import datasource_refresh
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
 )
@@ -769,6 +770,38 @@ async def test_an_older_saved_token_does_not_replace_a_fresher_one_in_memory(dri
 
     assert drive.http.requests[-1].headers["authorization"] == f"Bearer {fresh}"
     assert drive.config["credentials"]["access_token"] == fresh
+
+
+@pytest.mark.parametrize("first_seen_lifetime_s", [1800, 5400], ids=["older-than-memory", "newer-than-memory"])
+async def test_a_token_saved_while_the_check_waits_for_the_refresh_lock_is_used_at_once(
+    drive: Harness, monkeypatch: pytest.MonkeyPatch, first_seen_lifetime_s: int
+) -> None:
+    my_file(drive.world, "f1", "one.txt")
+    saved_token(drive.config, "expired-token", age=timedelta(hours=2))
+    await drive.sync()
+    for token in ("first-seen-token", "winning-token"):
+        drive.http.accept_token(token, ME)
+    saved_token(drive.config, "first-seen-token", age=timedelta(0), lifetime_s=first_seen_lifetime_s)
+
+    real_lock = datasource_refresh.connector_refresh_lock
+    raced: list[str] = []
+
+    def lock_after_the_token_refresher_saved(connector_id: str) -> object:
+        if not raced:
+            raced.append(connector_id)
+            saved_token(drive.config, "winning-token", age=timedelta(0), lifetime_s=7200)
+        return real_lock(connector_id)
+
+    monkeypatch.setattr(datasource_refresh, "connector_refresh_lock", lock_after_the_token_refresher_saved)
+    requests_before = len(drive.http.requests)
+    my_file(drive.world, "f2", "two.txt")
+    await drive.sync()
+
+    sent = {r.headers["authorization"] for r in drive.http.requests[requests_before:]}
+    assert sent == {"Bearer winning-token"}
+    assert raced == [CONNECTOR_ID]
+    assert drive.config["credentials"]["access_token"] == "winning-token"
+    assert drive.names() == {"one.txt", "two.txt"}
 
 
 async def test_a_revoked_refresh_token_fails_the_run_without_a_checkpoint(drive: Harness) -> None:
