@@ -418,14 +418,6 @@ class TestIncrementalSync:
         assert "updated >= -" in search.jql[0], "the next run resumes from the saved page, not from scratch"
         assert "1003" in tickets(db)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: one issue that fails to "
-            "process aborts its whole page and project, so the healthy issues next to it are not "
-            "saved, and every later run fails on the same issue."
-        ),
-    )
     async def test_one_bad_issue_does_not_stop_the_rest_of_the_project(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         search.add("ENG", 0, [issue("1001", "ENG-1", ts(1)), issue("1002", "ENG-2", ts(2)), issue("1004", "ENG-4", ts(3))])
@@ -435,6 +427,34 @@ class TestIncrementalSync:
         await connector.run_sync()
 
         assert {"1001", "1004"} <= set(tickets(db))
+        assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(2)), (
+            "the checkpoint waits at the failed issue"
+        )
+
+        db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert {"1001", "1002", "1004"} <= set(tickets(db))
+        assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
+        assert not store.values_for("project_ENG").get("failed_issue_attempts")
+
+    async def test_an_issue_that_keeps_failing_is_given_up_on_after_five_syncs(self, jira, db, store, search, caplog) -> None:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1", ts(1)), issue("1002", "ENG-2", ts(2)), issue("1004", "ENG-4", ts(3))])
+        db.fail_lookup_for = {"1002"}
+        connector, _ = await make_connector(db, store)
+        held_at = connector._parse_jira_timestamp(ts(2))
+
+        for attempt in range(1, 5):
+            await connector.run_sync()
+            assert store.values_for("project_ENG")["last_issue_updated"] == held_at
+            assert store.values_for("project_ENG")["failed_issue_attempts"] == {"1002": attempt}
+
+        with caplog.at_level(logging.ERROR):
+            await connector.run_sync()
+
+        assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
+        assert any("ENG-2" in r.getMessage() and "after 5 syncs" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.xfail(
         strict=True,
