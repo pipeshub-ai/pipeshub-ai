@@ -142,6 +142,7 @@ import {
   loadProjectForSession,
   resolveProjectLink,
 } from '../utils/project-context';
+import { buildAiRequestLogMetadata } from '../utils/ai-request-log';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
@@ -1471,8 +1472,7 @@ export const addMessageStream =
         requestId,
         conversationId,
         userId,
-        query: req.body.query,
-        filters: req.body.filters,
+        ...buildAiRequestLogMetadata(req.body),
         timestamp: new Date().toISOString(),
       });
 
@@ -2193,7 +2193,7 @@ export const getAllConversations = async (
       message: 'Fetching conversations',
       userId,
       conversationId: req.query.conversationId,
-      query: req.query,
+      queryParams: Object.keys(req.query),
     });
 
     const source = req.query.source ?? 'owned';
@@ -5602,7 +5602,7 @@ export const search =
 
       logger.debug('Attempting to search', {
         requestId,
-        query,
+        queryLength: typeof query === 'string' ? query.length : 0,
         limit,
         filters,
         timestamp: new Date().toISOString(),
@@ -7461,8 +7461,7 @@ export const addMessageStreamToAgentConversation =
         conversationId,
         userId,
         agentKey,
-        query: req.body.query,
-        filters: req.body.filters,
+        ...buildAiRequestLogMetadata(req.body),
         timestamp: new Date().toISOString(),
       });
 
@@ -8273,7 +8272,7 @@ export const getAllAgentConversations = async (
       userId,
       agentKey,
       conversationId: req.params.conversationId,
-      query: req.query,
+      queryParams: Object.keys(req.query),
     });
 
     const { skip, limit, page } = getPaginationParams(req);
