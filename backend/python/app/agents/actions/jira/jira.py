@@ -412,6 +412,11 @@ def _jira_failure(doing: str, error: Exception) -> tuple[bool, str]:
     return False, json.dumps({"error": message})
 
 
+# Backstops against a server that keeps pointing to more pages.
+_MAX_SEARCH_PAGES = 50
+_MAX_CREATE_FIELD_PAGES = 100
+
+
 def _next_page_token(page: dict) -> str | None:
     """Jira's token for the next page of an enhanced search, or None on the last page."""
     token = page.get("nextPageToken")
@@ -1043,7 +1048,7 @@ class Jira:
             "so the required fields are not known yet. Try again in a moment."
         )
 
-        while True:
+        for _page in range(_MAX_CREATE_FIELD_PAGES):
             try:
                 response = await self.client.get_create_issue_meta_issue_type_id(
                     projectIdOrKey=project_key,
@@ -1067,7 +1072,10 @@ class Jira:
                 return [], fields_unreadable
 
             page_fields = data.get("fields", []) if isinstance(data, dict) else None
-            if not isinstance(page_fields, list):
+            if not isinstance(page_fields, list) or not all(isinstance(f, dict) for f in page_fields):
+                return [], fields_unreadable
+            total = data.get("total")
+            if not isinstance(total, int) or isinstance(total, bool):
                 return [], fields_unreadable
 
             for f in page_fields:
@@ -1086,13 +1094,14 @@ class Jira:
                 }
 
             fetched = start_at + len(page_fields)
-            total = data.get("total", 0)
-            if not isinstance(total, int) or fetched >= total:
+            if fetched >= total:
                 break
             if not page_fields:
                 # Jira says more fields exist but sent none; a short list would hide required ones.
                 return [], fields_unreadable
             start_at = fetched
+        else:
+            return [], fields_unreadable
 
         fields = list(fields_by_id.values())
         logger.info(
@@ -1363,13 +1372,18 @@ class Jira:
         Returns the first page's payload holding every issue read, and a note for
         the agent when the list is not the whole result (None when it is).
         """
-        if not isinstance(first_page, dict):
+        if not isinstance(first_page, dict) or not isinstance(first_page.get("issues", []), list):
             return first_page, None
         issues = list(first_page.get("issues") or [])
         token = _next_page_token(first_page)
         seen = {token}
         failure: str | None = None
+        pages_read = 1
         while token and len(issues) < limit:
+            if pages_read >= _MAX_SEARCH_PAGES:
+                failure = f"the search stopped after {_MAX_SEARCH_PAGES} pages"
+                break
+            pages_read += 1
             try:
                 page = await self.client.search_and_reconsile_issues_using_jql_post(
                     jql=jql, maxResults=limit - len(issues), fields=["*all"], nextPageToken=token,
@@ -1382,10 +1396,18 @@ class Jira:
                 logger.warning("Reading the next page of Jira issues failed: %s", e)
                 failure = "Jira could not be reached"
                 break
-            if not isinstance(payload, dict):
+            page_issues = payload.get("issues") if isinstance(payload, dict) else None
+            if not isinstance(page_issues, list):
                 failure = "Jira sent a page that could not be read"
                 break
-            issues.extend(payload.get("issues") or [])
+            if not page_issues:
+                if _next_page_token(payload):
+                    # Following an empty page that still points further could go on forever.
+                    failure = "Jira sent an empty page"
+                else:
+                    token = None
+                break
+            issues.extend(page_issues)
             token = _next_page_token(payload)
             if token in seen:
                 # The rest can't be read, and whether more match is unknown: report it as incomplete.

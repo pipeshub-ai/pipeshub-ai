@@ -350,6 +350,48 @@ class TestSearchPaging:
         assert data["has_more"] is True
         assert "could not be read" in data["message"] and "incomplete" in data["message"]
 
+    async def test_an_empty_page_that_points_further_ends_the_read_as_incomplete(self, jira, api) -> None:
+        api.on("POST", SEARCH, search_pages((["PA-1"], "t1"), ([], "t2"), (["PA-3"], None)))
+
+        ok, data = result(await jira.search_issues('project = "PA"', maxResults=10))
+
+        assert ok is True
+        assert [i["key"] for i in data["data"]["issues"]] == ["PA-1"]
+        assert len(api.calls("POST", SEARCH)) == 2
+        assert "incomplete" in data["message"]
+
+    async def test_an_empty_last_page_ends_the_read_as_complete(self, jira, api) -> None:
+        api.on("POST", SEARCH, search_pages((["PA-1"], "t1"), ([], None)))
+
+        ok, data = result(await jira.search_issues('project = "PA"', maxResults=10))
+
+        assert ok is True
+        assert [i["key"] for i in data["data"]["issues"]] == ["PA-1"]
+        assert data.get("has_more") is not True
+
+    async def test_a_page_whose_issues_are_not_a_list_keeps_the_issues_already_read(self, jira, api) -> None:
+        api.on("POST", SEARCH, search_pages((["PA-1", "PA-2"], "t1")),
+               (200, {"issues": 5, "isLast": False, "nextPageToken": "t9"}))
+
+        ok, data = result(await jira.search_issues('project = "PA"', maxResults=10))
+
+        assert ok is True
+        assert [i["key"] for i in data["data"]["issues"]] == ["PA-1", "PA-2"]
+        assert data["has_more"] is True and "incomplete" in data["message"]
+
+    async def test_a_search_that_keeps_pointing_further_stops_at_the_page_cap(self, jira, api) -> None:
+        def endless(request: RecordedRequest) -> dict[str, Any]:
+            n = len(api.calls("POST", SEARCH))
+            return {"issues": [issue(f"PA-{n}")], "isLast": False, "nextPageToken": f"t{n}"}
+
+        api.on("POST", SEARCH, endless)
+
+        ok, data = result(await jira.search_issues('project = "PA"', maxResults=1000))
+
+        assert ok is True
+        assert len(api.calls("POST", SEARCH)) == 50
+        assert "incomplete" in data["message"]
+
     async def test_project_issues_say_when_more_match(self, jira, api) -> None:
         api.on("POST", SEARCH, search_pages((["PA-1", "PA-2"], "t1"), (["PA-3"], None)))
 
@@ -620,6 +662,35 @@ class TestCreateIssueFields:
         ok, _ = result(await jira.get_create_issue_fields("PA", "Bug"))
 
         assert ok is True
+
+    @pytest.mark.parametrize("second_page", [
+        {"fields": [], "total": None}, {"fields": [], "total": "2"}, {"fields": ["summary"], "total": 2},
+    ])
+    async def test_an_unreadable_total_or_field_entry_fails_and_is_not_remembered(self, jira, api, second_page) -> None:
+        api.on("GET", CREATEMETA, BUG_TYPES)
+        api.on("GET", f"{CREATEMETA}/1",
+               {"fields": [meta_field("summary", "Summary", required=True)], "total": 2},
+               second_page,
+               {"fields": [meta_field("summary", "Summary", required=True),
+                           meta_field("customfield_10020", "Team", required=True)], "total": 2})
+
+        first_ok, first = result(await jira.get_create_issue_fields("PA", "Bug"))
+        calls_after_first = len(api.calls("GET", f"{CREATEMETA}/1"))
+        second_ok, second = result(await jira.get_create_issue_fields("PA", "Bug"))
+
+        assert first_ok is False
+        assert "required fields are not known yet" in assert_safe_error(first)
+        assert len(api.calls("GET", f"{CREATEMETA}/1")) > calls_after_first
+        assert second_ok is True and "customfield_10020" in json_text(second)
+
+    async def test_a_null_total_on_the_first_page_fails(self, jira, api) -> None:
+        api.on("GET", CREATEMETA, BUG_TYPES)
+        api.on("GET", f"{CREATEMETA}/1", {"fields": [], "total": None})
+
+        ok, data = result(await jira.get_create_issue_fields("PA", "Bug"))
+
+        assert ok is False
+        assert "required fields are not known yet" in assert_safe_error(data)
 
     async def test_a_failed_read_is_not_remembered(self, jira, api) -> None:
         api.on("GET", CREATEMETA, BUG_TYPES)
