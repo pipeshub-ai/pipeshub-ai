@@ -87,6 +87,34 @@ import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-ser
 import { ProjectService } from '../../projects/services/project.service';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
 
+/**
+ * Only the account's owner may change its email address.
+ *
+ * Connector permissions attach to the address, so an admin who could move a
+ * colleague's account to an address they control could reset its password,
+ * sign in, and read everything the colleague is allowed to see — then move
+ * it back. Verifying the new address does not help, because the admin
+ * chooses it. An invitation sent to the wrong address is fixed by deleting
+ * it and inviting again, which never carries a credential.
+ */
+function assertEmailChangeIsSelf(
+  actorUserId: unknown,
+  targetUserId: unknown,
+): void {
+  const actor = typeof actorUserId === 'string' ? actorUserId : '';
+  const target = typeof targetUserId === 'string' ? targetUserId : '';
+  const isSelf =
+    actor !== '' &&
+    target !== '' &&
+    mongoose.Types.ObjectId.isValid(actor) &&
+    new mongoose.Types.ObjectId(actor).equals(target);
+  if (!isSelf) {
+    throw new ForbiddenError(
+      'Only the account owner can change its email address. To fix an invitation sent to the wrong address, delete it and invite again.',
+    );
+  }
+}
+
 export const MAX_BULK_INVITE = 1000;
 
 // Linear-time email check: each segment excludes its following separator
@@ -1057,6 +1085,12 @@ export class UserController {
       }
 
       const { id } = req.params;
+      // Refuse before looking the target up: whether the operation is allowed
+      // does not depend on whether the user exists, and answering 404 first
+      // reports the wrong reason to someone who was never permitted to try.
+      if (updateFields.email !== undefined) {
+        assertEmailChangeIsSelf(req.user.userId, id);
+      }
       const user = await Users.findOne({
         orgId: req.user.orgId,
         _id: id,
@@ -1100,9 +1134,11 @@ export class UserController {
         const newEmail = email?.toLowerCase().trim();
 
         if (currentEmail !== newEmail) {
-          // Email is being changed - validate uniqueness
+          // Stored addresses are lowercased and the unique index is
+          // case-sensitive, so the raw request value can miss an existing
+          // lowercase match and the change would only fail later on save.
           const existingUser = await Users.findOne({
-            email: email,
+            email: newEmail,
             _id: { $ne: id },
             orgId: req.user.orgId,
             isDeleted: false,
@@ -1407,6 +1443,11 @@ export class UserController {
       }
 
       const { id } = req.params;
+      // Same rules as the email branch of updateUser: owner only, checked
+      // before the lookup so a non-owner is refused rather than told whether
+      // the id exists. The address is applied by /validateEmailChange once
+      // the link sent to the new address is opened — never written here.
+      assertEmailChangeIsSelf(req.user.userId, id);
       const user = await Users.findOne({
         orgId: req.user.orgId,
         _id: id,
@@ -1416,28 +1457,36 @@ export class UserController {
       if (!user) {
         throw new NotFoundError('User not found');
       }
-
-      user.email = req.body.email;
-      await user.save();
-
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId.toString(),
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
-      res.json(user.toObject());
+      const body = req.body as { email?: unknown };
+      const requested = typeof body.email === 'string' ? body.email : '';
+      const newEmail = requested.toLowerCase().trim();
+      if (newEmail === '') {
+        throw new BadRequestError('email is required');
+      }
+      if (newEmail === user.email.toLowerCase().trim()) {
+        res.json({ email: user.email, emailChangeMailStatus: 'notNeeded' });
+        return;
+      }
+      const existingUser = await Users.findOne({
+        email: newEmail,
+        _id: { $ne: id },
+        orgId: req.user.orgId,
+        isDeleted: false,
+      });
+      if (existingUser) {
+        throw new BadRequestError('Email already exists for another user');
+      }
+      const emailSentResponse = await this.emailChange(
+        requested,
+        newEmail,
+        user,
+      );
+      if (emailSentResponse.statusCode !== 200) {
+        throw new InternalServerError(
+          'Could not send the verification email to the new address',
+        );
+      }
+      res.json({ email: user.email, emailChangeMailStatus: 'sent' });
     } catch (error) {
       next(error);
     }
@@ -2753,6 +2802,43 @@ export class UserController {
           statusCode: 400,
           data: 'Failed to send email',
         };
+      }
+
+      // Tell the current address too, so an account moved by someone who
+      // has the user's session is not moved silently. Best effort: the
+      // verification mail is what matters, and the change still needs the
+      // link at the new address to be opened.
+      const currentEmail = typeof user.email === 'string' ? user.email : '';
+      const userIdForLog = String(user._id ?? '');
+      try {
+        const notice = await this.mailService.sendMail({
+          emailTemplateType: 'emailChangeNotice',
+          initiator: {
+            jwtAuthToken: mailAuthToken,
+            orgId: String(user.orgId ?? ''),
+          },
+          usersMails: [currentEmail],
+          subject: 'PipesHub | Your email address is being changed',
+          templateData: {
+            orgName: org?.shortName ?? org?.registeredName,
+            name: user.fullName,
+            newEmail,
+          },
+        });
+        if (notice.statusCode !== 200) {
+          this.logger.warn(
+            'Email-change notice to the current address was not sent',
+            { userId: userIdForLog, statusCode: notice.statusCode },
+          );
+        }
+      } catch (noticeError) {
+        this.logger.warn('Email-change notice to the current address failed', {
+          userId: userIdForLog,
+          error:
+            noticeError instanceof Error
+              ? noticeError.message
+              : String(noticeError),
+        });
       }
 
       return {
