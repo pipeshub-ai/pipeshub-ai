@@ -1093,7 +1093,12 @@
       "webSearch": "Web Search"
     },
     "resizePanels": "Resize chat and preview panels",
-    "mobileProfileComingSoon": "Profile page on mobile is coming soon."
+    "mobileProfileComingSoon": "Profile page on mobile is coming soon.",
+    "remoteImage": {
+      "notLoaded": "Image from {{host}} not loaded",
+      "load": "Load image",
+      "loadFromHost": "Load image from {{host}}"
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",

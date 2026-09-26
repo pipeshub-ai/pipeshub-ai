@@ -659,6 +659,38 @@ describe('Application', () => {
         restoreEnv('STRICT_MODE', original);
       }
     });
+
+    // T32 (P0.11): forms rendered from model output must not post off-origin.
+    it("should send a CSP with form-action 'self' when STRICT_MODE=true", async () => {
+      const original = process.env.STRICT_MODE;
+      process.env.STRICT_MODE = 'true';
+      try {
+        const strictApp = new Application();
+        await strictApp.initialize();
+
+        const expressApp = (strictApp as any).app as express.Express;
+        const helmetLayer = (expressApp as any)._router.stack.find(
+          (layer: any) => layer.name === 'helmetMiddleware',
+        );
+        expect(helmetLayer, 'helmet middleware layer').to.exist;
+
+        const headers: Record<string, string> = {};
+        const res = {
+          setHeader: (name: string, value: string) => { headers[name.toLowerCase()] = value; },
+          removeHeader: () => {},
+          getHeader: (name: string) => headers[name.toLowerCase()],
+        };
+        await new Promise<void>((resolve, reject) =>
+          helmetLayer.handle({ headers: {} }, res, (err?: unknown) => (err ? reject(err) : resolve())),
+        );
+
+        const csp = headers['content-security-policy'];
+        expect(csp).to.be.a('string');
+        expect(csp).to.include("form-action 'self'");
+      } finally {
+        restoreEnv('STRICT_MODE', original);
+      }
+    });
   });
 
   // =========================================================================

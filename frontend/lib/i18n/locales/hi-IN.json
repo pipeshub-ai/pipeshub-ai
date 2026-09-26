@@ -1093,7 +1093,12 @@
       "webSearch": "वेब खोज"
     },
     "resizePanels": "चैट और पूर्वावलोकन पैनल का आकार बदलें",
-    "mobileProfileComingSoon": "मोबाइल पर प्रोफ़ाइल पेज जल्द ही आ रहा है।"
+    "mobileProfileComingSoon": "मोबाइल पर प्रोफ़ाइल पेज जल्द ही आ रहा है।",
+    "remoteImage": {
+      "notLoaded": "{{host}} की छवि लोड नहीं की गई",
+      "load": "छवि लोड करें",
+      "loadFromHost": "{{host}} से छवि लोड करें"
+    }
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",

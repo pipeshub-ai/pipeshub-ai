@@ -1109,7 +1109,12 @@
       "webSearch": "網路搜尋"
     },
     "resizePanels": "調整對話與預覽面板大小",
-    "mobileProfileComingSoon": "行動版個人資料頁面即將推出。"
+    "mobileProfileComingSoon": "行動版個人資料頁面即將推出。",
+    "remoteImage": {
+      "notLoaded": "未載入來自 {{host}} 的圖片",
+      "load": "載入圖片",
+      "loadFromHost": "載入來自 {{host}} 的圖片"
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",

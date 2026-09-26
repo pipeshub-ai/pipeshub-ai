@@ -1109,7 +1109,12 @@
       "webSearch": "网络搜索"
     },
     "resizePanels": "调整聊天和预览面板大小",
-    "mobileProfileComingSoon": "移动端个人资料页面即将推出。"
+    "mobileProfileComingSoon": "移动端个人资料页面即将推出。",
+    "remoteImage": {
+      "notLoaded": "未加载来自 {{host}} 的图片",
+      "load": "加载图片",
+      "loadFromHost": "加载来自 {{host}} 的图片"
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",

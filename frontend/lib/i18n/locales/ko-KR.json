@@ -1109,7 +1109,12 @@
       "webSearch": "웹 검색"
     },
     "resizePanels": "채팅 및 미리보기 패널 크기 조정",
-    "mobileProfileComingSoon": "모바일 프로필 페이지는 곧 제공됩니다."
+    "mobileProfileComingSoon": "모바일 프로필 페이지는 곧 제공됩니다.",
+    "remoteImage": {
+      "notLoaded": "{{host}}의 이미지를 불러오지 않았습니다",
+      "load": "이미지 불러오기",
+      "loadFromHost": "{{host}}에서 이미지 불러오기"
+    }
   },
   "workspaceMenu": {
     "appearance": "화면 모드",

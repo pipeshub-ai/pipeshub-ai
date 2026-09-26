@@ -1093,7 +1093,12 @@
     "sendMessage": "Nachricht senden",
     "demoHide": "Demodaten ausblenden",
     "demoRestrictedHint": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. So wirken Berechtigungen.",
-    "demoRestrictedHintSignIn": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. Melden Sie sich als {{email}} an, um die Antwort zu sehen."
+    "demoRestrictedHintSignIn": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. Melden Sie sich als {{email}} an, um die Antwort zu sehen.",
+    "remoteImage": {
+      "notLoaded": "Bild von {{host}} nicht geladen",
+      "load": "Bild laden",
+      "loadFromHost": "Bild von {{host}} laden"
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",

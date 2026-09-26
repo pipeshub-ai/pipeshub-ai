@@ -1111,7 +1111,12 @@
     "sendMessage": "Send message",
     "demoHide": "Hide demo data",
     "demoRestrictedHint": "Pricing committee only, so you'll get no answer here. That's permissions at work.",
-    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer."
+    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer.",
+    "remoteImage": {
+      "notLoaded": "Image from {{host}} not loaded",
+      "load": "Load image",
+      "loadFromHost": "Load image from {{host}}"
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",

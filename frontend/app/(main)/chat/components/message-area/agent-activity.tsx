@@ -18,6 +18,8 @@ import { Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { SafeMarkdownImage } from '@/app/components/ui/safe-markdown-image';
+import { markdownUrlTransform } from '@/lib/utils/image-url-policy';
 import type { MessagePart, StatusMessage } from '../../types';
 import { parseArtifactMarkers, parseDownloadMarkers } from '../../utils/parse-download-markers';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
@@ -388,7 +390,7 @@ function NarrationTextImpl({ content, citationMaps, citationCallbacks }: { conte
 
   return (
     <Box className="narration-text agent-activity-enter" style={{ color: 'var(--slate-12)', fontSize: 'var(--font-size-2)', lineHeight: 1.6 }}>
-      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} components={components}>
+      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} urlTransform={markdownUrlTransform} components={components}>
         {cleanContent}
       </ReactMarkdown>
     </Box>
@@ -433,7 +435,7 @@ function LiveNarrationTextImpl({ content, citationMaps, citationCallbacks }: { c
         lineHeight: 1.6,
       }}
     >
-      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} components={components}>
+      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} urlTransform={markdownUrlTransform} components={components}>
         {cleanContent}
       </ReactMarkdown>
     </Box>
@@ -554,7 +556,9 @@ function ToolSummaryText({ content }: { content: string }) {
     <Box style={{ fontSize: 'var(--font-size-1)', color: 'var(--slate-11)', lineHeight: 1.6 }}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={markdownUrlTransform}
         components={{
+          img: ({ src, alt }) => <SafeMarkdownImage src={src} alt={alt} style={{ maxWidth: '100%', height: 'auto' }} />,
           p: ({ children }) => (
             <Text size="1" as="p" style={{ margin: '0 0 var(--space-1) 0', color: 'inherit' }}>
               {children}

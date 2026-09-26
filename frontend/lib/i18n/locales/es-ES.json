@@ -1108,7 +1108,12 @@
       "webSearch": "Búsqueda web"
     },
     "resizePanels": "Redimensionar los paneles de chat y vista previa",
-    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente."
+    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente.",
+    "remoteImage": {
+      "notLoaded": "Imagen de {{host}} no cargada",
+      "load": "Cargar imagen",
+      "loadFromHost": "Cargar imagen de {{host}}"
+    }
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
