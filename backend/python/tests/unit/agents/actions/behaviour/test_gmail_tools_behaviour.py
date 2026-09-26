@@ -204,6 +204,31 @@ class TestReply:
             "<orig@mail.example.com>", "<orig@mail.example.com>")
 
 
+    async def test_a_reply_to_a_name_is_refused_before_reading_or_sending(self, gmail, http) -> None:
+        ok, data = result(await gmail.reply(message_id="m-1", mail_to=["Ada"], mail_subject="Re: x"))
+
+        assert ok is False and "Ada" in assert_safe_error(data)
+        assert http.requests == []
+
+    async def test_a_reply_gmail_refused_is_not_reported_as_sent(self, gmail, http) -> None:
+        http.on("GET", f"{MESSAGES}/m-1", metadata("m-1", "Budget"), base=GMAIL)
+        http.on("POST", SEND, google_error(400, "Invalid To header", "invalidArgument"), base=GMAIL)
+
+        ok, data = result(await gmail.reply(message_id="m-1", mail_to=["ada@example.com"], mail_subject="Re: Budget"))
+
+        assert ok is False
+        assert "send the reply" in assert_safe_error(data)
+
+    async def test_an_answer_to_a_message_that_cannot_be_read_is_not_sent(self, gmail, http) -> None:
+        http.on("GET", f"{MESSAGES}/m-gone", google_error(404, "Not Found", "notFound"), base=GMAIL)
+
+        ok, data = result(await gmail.send_email(mail_to=["ada@example.com"], mail_subject="Re: x", message_id="m-gone"))
+
+        assert ok is False
+        assert "nothing was sent" in assert_safe_error(data)
+        assert sends(http) == []
+
+
 # ---------------------------------------------------------------------------
 # search_emails
 # ---------------------------------------------------------------------------
@@ -380,6 +405,22 @@ class TestFailures:
 
         assert ok is False
         assert "Reconnect the Gmail toolset" in assert_safe_error(data)
+
+    async def test_a_draft_without_permission_says_how_to_allow_it(self, gmail, http) -> None:
+        http.on("POST", DRAFTS, google_error(403, "Insufficient Permission", "insufficientPermissions"), base=GMAIL)
+
+        ok, data = result(await gmail.draft_email(mail_to=["ada@example.com"], mail_subject="x"))
+
+        assert ok is False
+        assert "save the draft" in assert_safe_error(data) and "allow Gmail access" in data["error"]
+
+    async def test_attachments_of_a_missing_message_point_to_search(self, gmail, http) -> None:
+        http.on("GET", f"{MESSAGES}/m-1", google_error(404, "Not Found", "notFound"), base=GMAIL)
+
+        ok, data = result(await gmail.get_email_attachments(message_id="m-1"))
+
+        assert ok is False
+        assert "search_emails" in assert_safe_error(data)
 
     async def test_a_failed_send_explains_itself(self, gmail, http) -> None:
         http.on("POST", SEND, google_error(403, "Daily sending quota exceeded", "dailyLimitExceeded"), base=GMAIL)

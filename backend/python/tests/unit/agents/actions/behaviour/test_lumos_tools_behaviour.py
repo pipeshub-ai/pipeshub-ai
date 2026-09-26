@@ -303,6 +303,30 @@ class TestWrites:
         assert ok is True
         assert api.calls[0].body == {"label": "Admins", "request_config": {"request_approval_config": {}}}
 
+    async def test_a_refusal_with_a_short_reason_passes_the_reason_on(self, lumos, api) -> None:
+        api.on("POST", "/appstore/access_request", lumos_error(409, "An open request for this app already exists"))
+
+        ok, data = result(await lumos.create_access_request(app_id="app-1", confirm=True))
+
+        assert ok is False
+        assert "already exists" in assert_safe_error(data)
+
+    async def test_a_refusal_without_a_readable_reason_gives_the_status(self, lumos, api) -> None:
+        api.on("GET", "/apps", httpx.Response(400, content=b"bad request"))
+
+        ok, data = result(await lumos.list_platforms())
+
+        assert ok is False
+        assert "status 400" in assert_safe_error(data)
+
+    async def test_a_slow_lumos_is_a_plain_failure(self, lumos, api) -> None:
+        api.on("GET", "/apps", httpx.ReadTimeout("timed out"))
+
+        ok, data = result(await lumos.list_platforms())
+
+        assert ok is False
+        assert "did not answer in time" in assert_safe_error(data)
+
     async def test_a_failed_mutation_is_not_reported_as_done(self, lumos, api) -> None:
         api.on("POST", "/users/u-1/roles/Admin", lumos_error(403, "Forbidden"))
 

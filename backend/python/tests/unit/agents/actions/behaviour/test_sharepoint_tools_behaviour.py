@@ -116,6 +116,21 @@ class TestReads:
 
         assert ok is False
 
+    async def test_get_page_returns_the_html_of_its_text_web_parts(self, sp, stub) -> None:
+        stub.on("GET", f"{SITE_PATH}/pages/p-1/microsoft.graph.sitePage", {
+            "id": "p-1", "title": "Onboarding", "webUrl": "https://contoso.sharepoint.com/Onboarding.aspx",
+            "canvasLayout": {"horizontalSections": [{"columns": [{"webparts": [
+                {"@odata.type": "#microsoft.graph.textWebPart", "innerHtml": "<h1>Welcome</h1>"},
+                {"@odata.type": "#microsoft.graph.textWebPart", "innerHtml": "<p>Day one</p>"},
+            ]}]}]},
+        })
+
+        ok, data = result(await sp.get_page(site_id=SITE, page_id="p-1"))
+
+        assert ok is True
+        assert data["content_html"] == "<h1>Welcome</h1>\n\n<p>Day one</p>"
+        assert stub.query(stub.graph_calls()[0])["$expand"] == "canvasLayout"
+
     async def test_list_drives_names_each_library(self, sp, stub) -> None:
         stub.on("GET", f"{SITE_PATH}/drives", page([{"id": DRIVE, "name": "Documents", "driveType": "documentLibrary"}]))
 
@@ -206,6 +221,43 @@ class TestWrites:
         assert ok is False
         assert stub.graph_calls() == []
 
+    async def test_update_page_patches_then_publishes_and_links_the_page(self, sp, stub) -> None:
+        page_path = f"{SITE_PATH}/pages/p-1/microsoft.graph.sitePage"
+        stub.on("PATCH", page_path, httpx.Response(204))
+        stub.on("POST", f"{page_path}/publish", httpx.Response(204))
+        stub.on("GET", page_path, {"id": "p-1", "title": "Runbook", "webUrl": "https://contoso.sharepoint.com/Runbook.aspx"})
+
+        ok, data = result(await sp.update_page(site_id=SITE, page_id="p-1", title="Runbook",
+                                              content_html="<p>v2</p>", publish=True))
+
+        assert ok is True
+        assert (data["published"], data["web_url"]) == (True, "https://contoso.sharepoint.com/Runbook.aspx")
+        assert "published" in data["message"]
+        body = json.loads(stub.calls("PATCH", page_path)[0].content)
+        assert body["title"] == "Runbook"
+        assert body["canvasLayout"]["horizontalSections"][0]["columns"][0]["webparts"][0]["innerHtml"] == "<p>v2</p>"
+
+    async def test_an_update_whose_publish_failed_is_not_called_published(self, sp, stub) -> None:
+        page_path = f"{SITE_PATH}/pages/p-1/microsoft.graph.sitePage"
+        stub.on("PATCH", page_path, httpx.Response(204))
+        stub.on("POST", f"{page_path}/publish", graph_error(403, "accessDenied", "Publishing is not allowed"))
+        stub.on("GET", page_path, {"id": "p-1"})
+
+        ok, data = result(await sp.update_page(site_id=SITE, page_id="p-1", title="Runbook", publish=True))
+
+        assert ok is True
+        assert data["published"] is False
+        assert "draft" in data["message"] and data["publish_error"]
+
+    async def test_move_item_returns_where_the_item_now_lives(self, sp, stub) -> None:
+        parent = {"driveId": DRIVE, "id": "f-2", "path": "/drive/root:/Archive"}
+        stub.on("PATCH", f"{V1}/drives/{DRIVE}/items/d-1", drive_item("d-1", "a.txt", parentReference=parent))
+
+        ok, data = result(await sp.move_item(site_id=SITE, drive_id=DRIVE, item_id="d-1", destination_folder_id="f-2"))
+
+        assert ok is True
+        assert data["parent_reference"]["path"] == "/drive/root:/Archive"
+
     async def test_update_page_needs_something_to_change(self, sp, stub) -> None:
         ok, _ = result(await sp.update_page(site_id=SITE, page_id="p-1"))
 
@@ -273,6 +325,16 @@ class TestNotebooks:
 
         assert ok is True
         assert (data["resolved"], data["notebook_id"]) == (True, "nb-1")
+
+    async def test_a_site_with_more_notebooks_than_can_be_checked_resolves_nothing(self, sp, stub) -> None:
+        stub.on("GET", NOTEBOOKS, lambda request: httpx.Response(200, json=page(
+            [notebook(f"nb-{i}", f"Roadmap {i}") for i in range(50)])))
+
+        ok, data = result(await sp.find_notebook(site_id=SITE, notebook_query="roadmap 3"))
+
+        assert ok is False
+        assert data["resolved"] is False
+        assert "1000" in data["error"]
 
     async def test_list_notebook_pages_groups_pages_by_section(self, sp, stub) -> None:
         stub.on("GET", f"{NOTEBOOKS}/nb-1/sections", page([section("s-1", "Q1"), section("s-2", "Q2")]))
@@ -356,6 +418,31 @@ class TestFailures:
 
         assert ok is False
         assert expected in assert_safe_error(data)
+
+    async def test_a_graph_error_raised_while_listing_pages_is_explained(self, sp, stub) -> None:
+        stub.on("GET", f"{SITE_PATH}/pages", graph_error(403, "accessDenied", "Access denied"))
+
+        ok, data = result(await sp.get_pages(site_id=SITE))
+
+        assert ok is False
+        assert "does not have access" in assert_safe_error(data)
+
+    async def test_a_refusal_keeps_graphs_reason(self, sp, stub) -> None:
+        stub.on("GET", SITE_PATH, graph_error(400, "invalidRequest", "Invalid hostname for this tenancy"))
+
+        ok, data = result(await sp.get_site(site_id=SITE))
+
+        assert ok is False
+        assert assert_safe_error(data) == "SharePoint refused to read that site: Invalid hostname for this tenancy"
+
+    async def test_a_refusal_without_a_reason_says_to_check_the_arguments(self, sp, stub) -> None:
+        stub.on("POST", f"{V1}/drives/{DRIVE}/root/children", graph_error(409, "nameAlreadyExists", "x"))
+
+        ok, data = result(await sp.create_folder(site_id=SITE, drive_id=DRIVE, folder_name="Q3"))
+
+        assert ok is False
+        message = assert_safe_error(data)
+        assert "status 409" in message and "unexpected status code" not in message
 
     async def test_rate_limit_tells_the_agent_how_long_to_wait(self, sp, stub) -> None:
         stub.on("GET", SITE_PATH, graph_error(429, "TooManyRequests", "Too many requests", {"Retry-After": "12"}))
