@@ -24,6 +24,8 @@ import { TableFullscreenWrapper } from './table-fullscreen-wrapper';
 import { MermaidDiagram } from './mermaid-diagram';
 import { parseCsvContent, parseCsvCellContent } from './csv-utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { SafeMarkdownImage } from '@/app/components/ui/safe-markdown-image';
+import { markdownUrlTransform, rehypeStripStyleUrls } from '@/lib/utils/image-url-policy';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
 import type { Root, Blockquote } from 'mdast';
@@ -41,10 +43,16 @@ import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
  *
  * The schema only needs to cover raw HTML that the LLM may embed (callouts,
  * details/summary, styled spans, etc.). Dangerous constructs — <script>,
- * on* event handlers, javascript:/data: URLs — remain blocked by defaultSchema.
+ * on* event handlers, javascript: URLs — remain blocked by defaultSchema.
+ * `data:`/`blob:` are allowed for `src` only; `SafeMarkdownImage` decides
+ * which image URLs load.
  */
 const SANITIZE_SCHEMA: Schema = {
   ...defaultSchema,
+  protocols: {
+    ...defaultSchema.protocols,
+    src: [...(defaultSchema.protocols?.src ?? []), 'data', 'blob'],
+  },
   tagNames: [
     ...(defaultSchema.tagNames ?? []),
     // Collapsible sections the LLM may emit
@@ -297,6 +305,7 @@ const REMARK_PLUGINS: PluggableList = [
 const REHYPE_PLUGINS: PluggableList = [
   rehypeRaw,
   [rehypeSanitize, SANITIZE_SCHEMA],
+  rehypeStripStyleUrls,
   rehypeKatex,
 ];
 
@@ -1044,12 +1053,11 @@ export function createMarkdownComponents(
         }}
       />
     ),
-    img: ({ src, alt }: { src?: string; alt?: string }) => (
+    img: ({ src, alt }: { src?: string | Blob; alt?: string }) => (
       <Box as="span" style={{ margin: 'var(--space-3) 0', textAlign: 'center', display: 'block' }}>
-        <img
+        <SafeMarkdownImage
           src={src}
-          alt={alt ?? ''}
-          loading="lazy"
+          alt={alt}
           style={{
             maxWidth: '100%',
             height: 'auto',
@@ -1190,6 +1198,7 @@ function MarkdownBlockImpl({ source, components }: MarkdownBlockProps) {
     <ReactMarkdown
       remarkPlugins={REMARK_PLUGINS}
       rehypePlugins={REHYPE_PLUGINS}
+      urlTransform={markdownUrlTransform}
       components={components}
     >
       {source}

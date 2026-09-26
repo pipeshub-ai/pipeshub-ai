@@ -1,17 +1,22 @@
 import type { ChatArtifact } from '../types';
 import { buildChatArtifact } from './build-chat-artifact';
 
+export interface DownloadTask {
+  fileName: string;
+  url: string;
+}
+
 /**
- * Parse `::download_conversation_task[label](url)` markers out of streamed
- * assistant content. The backend emits one marker per downloadable artifact
- * (e.g. "the full CSV of the query result"). We strip them from the rendered
- * markdown and surface them as Download buttons instead.
+ * Parse `::download_conversation_task[label](url)` markers out of assistant
+ * content. The backend emits one marker per downloadable artifact (e.g. "the
+ * full CSV of the query result"). We strip them from the rendered markdown and
+ * surface them as Download buttons instead.
  */
-export function parseDownloadMarkers(content: string): {
+function parseDownloadMarkers(content: string): {
   text: string;
-  tasks: Array<{ fileName: string; url: string }>;
+  tasks: DownloadTask[];
 } {
-  const tasks: Array<{ fileName: string; url: string }> = [];
+  const tasks: DownloadTask[] = [];
   const regex = /::download_conversation_task\[([^\]]+)\]\(([^)]+)\)/g;
   const text = content.replace(regex, (_, fileName, url) => {
     tasks.push({ fileName: fileName?.trim() || 'Download', url: (url ?? '').trim() });
@@ -37,16 +42,11 @@ const RECORD_PLACEHOLDER_PREFIX = 'record:';
  * output files, and are the persistent record of artifacts once SSE streaming
  * ends.
  *
- * During streaming, artifacts are delivered via SSE `artifact` events; those
- * live in the slot's transient `artifacts` array. After completion, the saved
- * message content is the source of truth — parse the markers back into
- * `ChatArtifact` entries so the panel keeps rendering.
- *
  * Deduplicates by artifact identity: conversations persisted with repeated
  * markers for the same artifact version (a model re-running the same code)
  * render one card per artifact, not one per re-run.
  */
-export function parseArtifactMarkers(content: string): {
+function parseArtifactMarkers(content: string): {
   text: string;
   artifacts: ChatArtifact[];
 } {
@@ -96,6 +96,44 @@ export function parseArtifactMarkers(content: string): {
   // for rendering a download card, so remove them entirely.
   text = text.replace(/::artifact\[[^\]]+\](?:\([^)]*\))?(?:\{[^}]*\})?/g, '');
   return { text: text.trimEnd(), artifacts };
+}
+
+/**
+ * Where marker-bearing text came from, which decides whether its markers may
+ * become cards:
+ *
+ * - `persisted`: a saved answer. The backend strips every model-authored
+ *   marker before saving and appends only its own, so these markers are
+ *   backend-authored and are turned into artifact cards / download tasks.
+ * - `streamed`: live model output. The model can be steered by any document it
+ *   reads, so a marker here may be forged (a genuine-looking card pointing at
+ *   an attacker file). Markers are removed from display and never become
+ *   cards; live cards come only from the typed artifact events instead.
+ */
+export type MarkerSource = 'streamed' | 'persisted';
+
+export interface AnswerMarkers {
+  text: string;
+  artifacts: ChatArtifact[];
+  downloadTasks: DownloadTask[];
+}
+
+// A marker still being typed (no closing segment yet) at the end of the
+// stream. Hidden so it does not flash as raw text before it completes.
+const PARTIAL_MARKER_TAIL = /::artifact\[[^\n}]*$|::download_conversation_task\[[^\n)]*$/;
+
+/** The only entry point for answer markers — every call site states the source. */
+export function extractAnswerMarkers(content: string, source: MarkerSource): AnswerMarkers {
+  const complete = source === 'streamed' ? content.replace(PARTIAL_MARKER_TAIL, '') : content;
+  const { text: withoutArtifacts, artifacts } = parseArtifactMarkers(complete);
+  const { text, tasks } = parseDownloadMarkers(withoutArtifacts);
+  if (source === 'streamed') return { text, artifacts: [], downloadTasks: [] };
+  return { text, artifacts, downloadTasks: tasks };
+}
+
+/** Marker-free display text, for content that never yields cards. */
+export function stripAnswerMarkers(content: string): string {
+  return extractAnswerMarkers(content, 'streamed').text;
 }
 
 /**

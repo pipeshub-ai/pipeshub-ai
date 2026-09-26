@@ -1093,7 +1093,12 @@
       "webSearch": "वेब खोज"
     },
     "resizePanels": "चैट और पूर्वावलोकन पैनल का आकार बदलें",
-    "mobileProfileComingSoon": "मोबाइल पर प्रोफ़ाइल पेज जल्द ही आ रहा है।"
+    "mobileProfileComingSoon": "मोबाइल पर प्रोफ़ाइल पेज जल्द ही आ रहा है।",
+    "remoteImage": {
+      "notLoaded": "{{host}} की छवि लोड नहीं की गई",
+      "load": "छवि लोड करें",
+      "loadFromHost": "{{host}} से छवि लोड करें"
+    }
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",
@@ -2540,6 +2545,12 @@
         "command": "कमांड",
         "args": "आर्गुमेंट्स",
         "argsPlaceholder": "एक आर्गुमेंट जोड़ें",
+        "stdioWarningTitle": "यह कमांड PipesHub सर्वर पर चलती है",
+        "stdioWarning": "कस्टम STDIO MCP सर्वर PipesHub सर्वर पर उसकी पहुँच के साथ एक प्रोसेस के रूप में चलता है: सर्वर का नेटवर्क, फ़ाइलें और आपके द्वारा दिए गए सभी क्रेडेंशियल। यह सैंडबॉक्स में नहीं है। केवल भरोसेमंद कमांड और पैकेज जोड़ें।",
+        "stdioAcknowledge": "मैं समझता/समझती हूँ कि यह कमांड PipesHub सर्वर पर बिना सैंडबॉक्स के चलती है और मुझे इस पर भरोसा है।",
+        "stdioPackageNotPinned": "\"{{spec}}\" को एक सटीक संस्करण पर पिन करें (उदाहरण के लिए {{example}})। latest जैसे टैग, संस्करण रेंज, git और URL स्पेक की अनुमति नहीं है।",
+        "stdioShellOptionNotAllowed": "लॉन्चर विकल्प {{option}} कोई भी शेल कमांड चलाता है और इसकी अनुमति नहीं है।",
+        "stdioPackageMissing": "चलाने के लिए पैकेज जोड़ें, जो सटीक संस्करण पर पिन हो (उदाहरण के लिए name@1.2.3)।",
         "requiredEnv": "आवश्यक env",
         "requiredEnvPlaceholder": "एक env वेरिएबल नाम जोड़ें (जैसे API_KEY)",
         "url": "URL",

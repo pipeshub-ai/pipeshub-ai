@@ -106,6 +106,8 @@ class MCPServerInstanceConfig(MCPCamelModel):
     # Custom STDIO only — catalog templates supply required_env from the template.
     required_env: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+    # Custom STDIO only — the admin confirms the command runs unsandboxed on the server. Not persisted.
+    acknowledge_unsandboxed_execution: bool = False
 
     # SSE / Streamable HTTP
     url: Optional[str] = None

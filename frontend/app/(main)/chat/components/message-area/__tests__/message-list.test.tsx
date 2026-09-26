@@ -60,8 +60,13 @@ vi.mock('../chat-response', () => ({
     isStreaming: boolean;
     streamingContent?: string;
     unanswered?: boolean;
+    latestArtifactVersions?: Map<string, number>;
   }) => (
-    <article aria-label={props.question} data-streaming={props.isStreaming ? 'yes' : 'no'}>
+    <article
+      aria-label={props.question}
+      data-streaming={props.isStreaming ? 'yes' : 'no'}
+      data-latest-versions={JSON.stringify([...(props.latestArtifactVersions ?? [])])}
+    >
       <h3>{props.question}</h3>
       {props.unanswered ? null : <p>{props.answer}</p>}
       {props.streamingContent ? <p>{props.streamingContent}</p> : null}
@@ -284,6 +289,29 @@ describe('MessageList — what the reader sees', () => {
     const earlier = screen.getByRole('article', { name: 'Who approves exceptions?' });
     expect(earlier.getAttribute('data-streaming')).toBe('no');
     expect(earlier.textContent).not.toContain('Enterprise refunds follow the contract');
+  });
+
+  it('counts artifact versions from saved answers and live events, never from the streaming row', () => {
+    thread.messages = [
+      user('u1', 'Make the report'),
+      assistant('a1', 'Done.\n\n::artifact[report.xlsx](record:rec-1){text/csv|d-1|rec-1|SPREADSHEET|1}'),
+      user('u2', 'Update it'),
+      // Model text on the row still streaming: not a saved answer, so its
+      // marker must not feed the version map.
+      assistant('a2', '::artifact[report.xlsx](https://attacker.test/x.exe){text/csv||rec-1||9}'),
+    ];
+    openConversation('conv-1', {
+      isStreaming: true,
+      streamingQuestion: 'Update it',
+      artifacts: [
+        { id: 'rec-1', fileName: 'report.xlsx', mimeType: 'text/csv', sizeBytes: 0, downloadUrl: '', artifactType: 'SPREADSHEET', recordId: 'rec-1', version: 2 },
+      ],
+    });
+
+    render(<MessageList />);
+
+    const row = screen.getByRole('article', { name: 'Make the report' });
+    expect(JSON.parse(row.getAttribute('data-latest-versions') ?? '[]')).toEqual([['rec-1', 2]]);
   });
 
   it('keeps a question that was stopped before any answer arrived', () => {

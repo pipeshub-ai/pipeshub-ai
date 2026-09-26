@@ -586,6 +586,53 @@ class TestRunAgentLoopStream:
         assert events[1].startswith("event: complete\n")
         assert json.loads(events[1].split("data: ", 1)[1].strip()) == {"answer": "42"}
 
+    async def test_attachments_authorized_for_caller_or_run_identity(self) -> None:
+        """Service-account agents run as the creator but the caller uploaded
+        the file: either identity may read it; nobody else's survives (P0.1b)."""
+        from types import SimpleNamespace
+
+        from app.agents.agent_loop.cancellation.registry import RunOwner
+
+        mine = {"recordId": "r-caller", "virtualRecordId": "vr-caller"}
+        foreign = {"recordId": "r-bob", "virtualRecordId": "vr-bob"}
+        records = {
+            "r-caller": SimpleNamespace(id="r-caller", org_id="org-1", virtual_record_id="vr-caller"),
+            "r-bob": SimpleNamespace(id="r-bob", org_id="org-1", virtual_record_id="vr-bob"),
+        }
+        kwargs = self._base_kwargs()
+        kwargs["query_info"] = {
+            **kwargs["query_info"],
+            "attachments": [mine, foreign],
+            "previous_conversations": [{"role": "user_query", "attachments": [foreign, mine]}],
+        }
+        kwargs["cancellation_owner"] = RunOwner(user_id="caller-1", org_id="org-1")
+        graph = kwargs["graph_provider"]
+        graph.get_record_by_id = AsyncMock(side_effect=lambda rid, *a, **k: records.get(rid))
+        graph.get_user_by_user_id = AsyncMock(side_effect=lambda uid: {"_key": f"key-{uid}"})
+        graph.get_edge = AsyncMock(
+            side_effect=lambda *, from_id, to_id, **_: (
+                {"_key": "e"} if (from_id, to_id) == ("key-caller-1", "r-caller") else None
+            ),
+        )
+        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        captured: dict[str, Any] = {}
+
+        def _capture_state(query_info: dict[str, Any], *args: object, **kw: object) -> None:
+            captured.update(query_info)
+            raise RuntimeError("stop after state build")
+
+        with (
+            patch(
+                "app.utils.connector_instances.fetch_user_connector_instances",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("app.modules.agents.qna.chat_state.build_initial_state", new=_capture_state),
+        ):
+            [chunk async for chunk in run_agent_loop_stream(**kwargs)]
+
+        assert captured["attachments"] == [mine]
+        assert captured["previous_conversations"][0]["attachments"] == [mine]
+
     async def test_terminal_answer_streamed_live_before_finalizer_runs(self) -> None:
         """`_produce()` must drive the agent via `agent.stream(goal)` and
         feed every yielded event through `TerminalAnswerStreamer` — a

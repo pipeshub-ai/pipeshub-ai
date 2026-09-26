@@ -1108,7 +1108,12 @@
       "webSearch": "Búsqueda web"
     },
     "resizePanels": "Redimensionar los paneles de chat y vista previa",
-    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente."
+    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente.",
+    "remoteImage": {
+      "notLoaded": "Imagen de {{host}} no cargada",
+      "load": "Cargar imagen",
+      "loadFromHost": "Cargar imagen de {{host}}"
+    }
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -2562,6 +2567,12 @@
         "command": "Comando",
         "args": "Argumentos",
         "argsPlaceholder": "Añadir un argumento",
+        "stdioWarningTitle": "Este comando se ejecuta en el servidor de PipesHub",
+        "stdioWarning": "Un servidor MCP STDIO personalizado se ejecuta como un proceso en el servidor de PipesHub con su acceso: la red, los archivos y cualquier credencial que le proporciones. No está aislado en un sandbox. Añade solo comandos y paquetes de confianza.",
+        "stdioAcknowledge": "Entiendo que este comando se ejecuta sin sandbox en el servidor de PipesHub y confío en él.",
+        "stdioPackageNotPinned": "Fija \"{{spec}}\" a una versión exacta (por ejemplo {{example}}). No se permiten etiquetas como latest, rangos de versiones ni especificaciones git o URL.",
+        "stdioShellOptionNotAllowed": "La opción del lanzador {{option}} ejecuta un comando de shell arbitrario y no está permitida.",
+        "stdioPackageMissing": "Añade el paquete que se ejecutará, fijado a una versión exacta (por ejemplo name@1.2.3).",
         "requiredEnv": "Variables de entorno requeridas",
         "requiredEnvPlaceholder": "Añadir un nombre de variable (p. ej. API_KEY)",
         "url": "URL",

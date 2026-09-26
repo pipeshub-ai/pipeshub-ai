@@ -313,6 +313,20 @@ describe('es_controller listing and paging', () => {
     beforeEach(() => {
       sinon.stub(Users, 'findOne').resolves(null)
       sinon.stub(Org, 'findOne').resolves({ _id: ORG } as never)
+      sinon.stub(Org, 'find').resolves([{ _id: ORG }] as never)
+    })
+
+    it('mints the service-account identity in the bot\'s org, not whichever org comes first', async () => {
+      const { ai } = fresh()
+      ai.reply(/internal\/service-account/, 200, { isServiceAccount: true })
+      const req = serviceRequest()
+      req.tokenPayload = { email: 'Guest@Example.com', orgId: ORG.toString() }
+
+      await controller.hydrateScopedRequestAsUser(req as never, appConfig, kv([AGENT_KEY]))
+
+      expect(String(req.user?.orgId)).to.equal(String(ORG))
+      expect((Org.findOne as sinon.SinonStub).firstCall.args[0]).to.deep.include({ _id: ORG.toString() })
+      expect(String((Users.findOne as sinon.SinonStub).firstCall.args[0].orgId)).to.equal(String(ORG))
     })
 
     it('lets an email without an account in only for an agent set up for Slack that is a service account', async () => {

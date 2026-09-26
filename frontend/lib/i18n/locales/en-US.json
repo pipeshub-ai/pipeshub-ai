@@ -1111,7 +1111,12 @@
     "sendMessage": "Send message",
     "demoHide": "Hide demo data",
     "demoRestrictedHint": "Pricing committee only, so you'll get no answer here. That's permissions at work.",
-    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer."
+    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer.",
+    "remoteImage": {
+      "notLoaded": "Image from {{host}} not loaded",
+      "load": "Load image",
+      "loadFromHost": "Load image from {{host}}"
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -2624,6 +2629,12 @@
         "command": "Command",
         "args": "Arguments",
         "argsPlaceholder": "Add an argument",
+        "stdioWarningTitle": "This command runs on the PipesHub server",
+        "stdioWarning": "A custom STDIO MCP server runs as a process on the PipesHub server with its access: the server's network, files and any credentials you give it. It is not sandboxed. Only add commands and packages you trust.",
+        "stdioAcknowledge": "I understand this command runs unsandboxed on the PipesHub server and I trust it.",
+        "stdioPackageNotPinned": "Pin \"{{spec}}\" to an exact version (for example {{example}}). Tags such as latest, version ranges, git and URL specs are not allowed.",
+        "stdioShellOptionNotAllowed": "The launcher option {{option}} runs an arbitrary shell command and is not allowed.",
+        "stdioPackageMissing": "Add the package to run, pinned to an exact version (for example name@1.2.3).",
         "requiredEnv": "Required env",
         "requiredEnvPlaceholder": "Add an env var name (e.g. API_KEY)",
         "url": "URL",

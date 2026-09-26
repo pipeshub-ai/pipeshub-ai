@@ -93,6 +93,9 @@ type SlackBotConfigEntry = {
   botToken: string;
   signingSecret: string;
   agentId?: string;
+  // Org of the admin who configured the bot; the bot resolves Slack users only
+  // inside it. Absent on bots saved before it was recorded.
+  orgId?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -639,6 +642,7 @@ const slackBotConfig = (config: SlackBotConfigEntry) => ({
   id: config.id,
   name: config.name,
   agentId: config.agentId ?? null,
+  orgId: config.orgId ?? null,
   createdAt: config.createdAt,
   updatedAt: config.updatedAt,
   botToken: config.botToken,
@@ -672,6 +676,7 @@ export const createSlackBotConfig =
         typeof agentId === 'string' && agentId.trim().length > 0
           ? agentId.trim()
           : undefined;
+      const callerOrgId = req.user?.orgId ? String(req.user.orgId) : undefined;
       const config = await updateSlackBotStoreWithCAS(
         keyValueStoreService,
         (store): SlackBotConfigEntry => {
@@ -693,6 +698,7 @@ export const createSlackBotConfig =
             botToken,
             signingSecret,
             agentId: normalizedAgentId,
+            orgId: callerOrgId,
             createdAt: timestamp,
             updatedAt: timestamp,
           };
@@ -725,6 +731,7 @@ export const updateSlackBotConfig =
         typeof agentId === 'string' && agentId.trim().length > 0
           ? agentId.trim()
           : undefined;
+      const callerOrgId = req.user?.orgId ? String(req.user.orgId) : undefined;
       const updatedConfig = await updateSlackBotStoreWithCAS(
         keyValueStoreService,
         (store): SlackBotConfigEntry => {
@@ -756,6 +763,7 @@ export const updateSlackBotConfig =
             botToken,
             signingSecret,
             agentId: normalizedAgentId,
+            orgId: previousConfig.orgId ?? callerOrgId,
             updatedAt: new Date().toISOString(),
           };
 

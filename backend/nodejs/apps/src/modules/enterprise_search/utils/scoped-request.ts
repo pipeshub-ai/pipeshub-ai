@@ -38,6 +38,36 @@ export const stableObjectIdHexForExternalEmail = (email: string): string =>
     .digest('hex')
     .slice(0, 24);
 
+/**
+ * The org a Slack scoped token acts in. The bot puts its own org on the token;
+ * the email on it is then looked up only inside that org, since the same
+ * address can belong to members of different orgs. A token without an org
+ * (a bot configured before bots recorded one) is only unambiguous on a
+ * single-org instance, so anything else is refused.
+ */
+const resolveScopedTokenOrgId = async (
+  tokenOrgId: unknown,
+): Promise<Types.ObjectId> => {
+  if (tokenOrgId !== undefined && tokenOrgId !== null) {
+    if (typeof tokenOrgId !== 'string' || !Types.ObjectId.isValid(tokenOrgId)) {
+      throw new UnauthorizedError('Invalid organization in scoped token');
+    }
+    const org = await Org.findOne({ _id: tokenOrgId, isDeleted: false }, { _id: 1 });
+    if (!org?._id) {
+      throw new UnauthorizedError('Organization in scoped token not found');
+    }
+    return org._id as Types.ObjectId;
+  }
+
+  const orgs = await Org.find({ isDeleted: false }, { _id: 1 }, { limit: 2 });
+  if (orgs.length !== 1 || !orgs[0]?._id) {
+    throw new UnauthorizedError(
+      'Scoped token does not name an organization; re-save the Slack bot configuration',
+    );
+  }
+  return orgs[0]._id as Types.ObjectId;
+};
+
 export const hydrateScopedRequestAsUser = async (
   req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
   appConfig: AppConfig,
@@ -53,8 +83,13 @@ export const hydrateScopedRequestAsUser = async (
     throw new UnauthorizedError('Email not found in scoped token');
   }
 
+  const orgId = await resolveScopedTokenOrgId(
+    (req as AuthenticatedServiceRequest).tokenPayload?.orgId,
+  );
+
   const user = await Users.findOne({
     email,
+    orgId,
     isDeleted: false,
   });
 
@@ -75,15 +110,11 @@ export const hydrateScopedRequestAsUser = async (
             appConfig,
           );
           if (isServiceAccount) {
-            const org = await Org.findOne({ isDeleted: false });
-            if (!org?._id) {
-              throw new NotFoundError('Organization not found');
-            }
             const stableUserIdHex = stableObjectIdHexForExternalEmail(email);
             const scopedJwtToken = authTokenService.generateScopedToken(
               {
                 userId: stableUserIdHex,
-                orgId: org._id,
+                orgId,
                 email: email,
                 scopes: [TokenScopes.CONVERSATION_CREATE],
                 isServiceAccount: true,
@@ -94,7 +125,7 @@ export const hydrateScopedRequestAsUser = async (
               `Bearer ${scopedJwtToken}`;
             (req as AuthenticatedServiceRequest).user = {
               userId: new Types.ObjectId(stableUserIdHex),
-              orgId: org._id,
+              orgId,
               email: email,
               scopes: [TokenScopes.CONVERSATION_CREATE],
               isServiceAccount: true,

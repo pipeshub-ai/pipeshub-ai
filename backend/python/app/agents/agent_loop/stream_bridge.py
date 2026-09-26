@@ -47,6 +47,7 @@ from app.modules.demo_data.chat import (
     exclude_from_query,
     exclude_from_state,
 )
+from app.utils.attachment_access import actors_for_run, authorize_query_attachments
 
 if TYPE_CHECKING:
     from app.utils.stage_timer import StageTimer
@@ -303,6 +304,10 @@ async def run_agent_loop_stream(
     )
     if cancellation_registry is not None:
         await cancellation_registry.register(run_id, cancellation_token, run_owner)
+
+    query_info = await authorize_query_attachments(
+        query_info, actors_for_run(user_info, run_owner), graph_provider, log,
+    )
 
     try:
         # One query feeds both flags; they used to be two identical lookups.

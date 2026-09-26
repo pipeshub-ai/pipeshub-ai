@@ -58,6 +58,8 @@ export interface McpServerInstancePayload {
   args?: string[];
   /** Custom STDIO only — env var names the process expects (e.g. API_KEY). Catalog templates supply this. */
   requiredEnv?: string[];
+  /** Custom STDIO only — the admin confirms the command runs unsandboxed on the server. */
+  acknowledgeUnsandboxedExecution?: boolean;
   env?: Record<string, string>;
 
   // SSE / Streamable HTTP

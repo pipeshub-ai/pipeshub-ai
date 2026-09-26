@@ -81,7 +81,7 @@ function ensureInit(): Promise<void> {
     mermaid.initialize({
       startOnLoad: false,
       theme: 'default',
-      securityLevel: 'antiscript',
+      securityLevel: 'strict',
       fontFamily: 'inherit',
     });
   });
