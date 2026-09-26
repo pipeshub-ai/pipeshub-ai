@@ -305,6 +305,14 @@ def parse_webdav_propfind_response(xml_response: bytes) -> List[Dict]:
     return entries
 
 
+def is_multistatus(xml_response: bytes) -> bool:
+    """Whether ``xml_response`` parses as a WebDAV multistatus, which an empty result still is."""
+    try:
+        return ET.fromstring(xml_response).tag == "{DAV:}multistatus"
+    except ET.ParseError:
+        return False
+
+
 def parse_share_response(response_body: bytes) -> List[Dict]:
     """
     Parse an OCS share response JSON into a list of share dictionaries.
@@ -1621,7 +1629,8 @@ class NextcloudConnector(BaseConnector):
                 self.logger.debug(f"Search by ID failed for {file_id}: {get_response_error(response)}")
                 return None
             body = extract_response_body(response)
-            if not body:
+            # An empty multistatus is a real miss; an answer that isn't one is not.
+            if not body or not is_multistatus(body):
                 return None
             return any(e.get("file_id") == file_id for e in parse_webdav_propfind_response(body))
         except Exception as e:

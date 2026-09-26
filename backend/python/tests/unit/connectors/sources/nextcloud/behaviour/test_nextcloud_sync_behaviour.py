@@ -1086,6 +1086,27 @@ class TestIncrementalSync:
             assert db.path_of("notes.txt") == "Docs/notes.txt"
             assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
 
+    @pytest.mark.parametrize("answer", [
+        pytest.param(b"<not xml", id="garbled"),
+        pytest.param(b'<?xml version="1.0"?><d:error xmlns:d="DAV:"/>', id="not-a-multistatus"),
+    ])
+    async def test_a_search_answer_that_cannot_be_read_keeps_a_folder_queued(self, server, db, store, answer) -> None:
+        connector = await synced(server, db, store)
+        docs = server.nodes["Docs"]
+        inside = {db.by_name(n).id for n in ("Reports", "q1.pdf", "notes.txt")}
+        db.fail_delete_for = {docs.file_id}
+        server.delete("Docs")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        db.fail_delete_for.clear()
+        del db.records[docs.file_id]  # a cascade that committed partway: the folder went, its contents did not
+        server.outage("SEARCH", lambda p: True, lambda: httpx.Response(207, content=answer))
+
+        await connector.run_sync()
+
+        assert {r.id for r in db.records.values()} >= inside
+        assert store.checkpoint()["pending_deletes"] == [docs.file_id]
+
     @pytest.mark.parametrize("search", [pytest.param(True, id="found-by-id"), pytest.param(False, id="no-search")])
     async def test_a_queued_folder_that_moved_keeps_its_contents(self, server, db, store, search) -> None:
         connector = await synced(server, db, store)
