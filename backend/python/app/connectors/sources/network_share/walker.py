@@ -198,7 +198,12 @@ class ShareWalker:
             for entry in entries:
                 try:
                     child_dir = await handle_entry(entry, directory_path)
-                    if child_dir is not None and entry.is_directory and not entry.is_symlink:
+                    if (
+                        child_dir is not None
+                        and entry.is_directory
+                        and not entry.is_symlink
+                        and not entry.is_reparse
+                    ):
                         await traverse(child_dir)
                 except Exception:
                     complete = False

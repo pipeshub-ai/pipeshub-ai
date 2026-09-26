@@ -18,6 +18,7 @@ class DirectoryEntry:
     created_time: datetime | None
     last_write_time: datetime | None
     file_id: int | None
+    is_reparse: bool = False
 
 
 @dataclass(frozen=True)

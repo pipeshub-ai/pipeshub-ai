@@ -255,9 +255,8 @@ class CifsClient(IClient):
     def _from_shared_file(self, item: object, name_override: str | None = None) -> DirectoryEntry:
         name = name_override or getattr(item, "filename", "") or ""
         attrs = int(getattr(item, "file_attributes", 0) or 0)
-        is_dir = bool(getattr(item, "isDirectory", False))
-        if callable(getattr(item, "isDirectory", None)):
-            is_dir = bool(item.isDirectory)
+        is_dir_value = getattr(item, "isDirectory", False)
+        is_dir = bool(is_dir_value()) if callable(is_dir_value) else bool(is_dir_value)
         file_id = getattr(item, "file_id", None)
         try:
             file_id_int = int(file_id) if file_id is not None else None
@@ -266,7 +265,8 @@ class CifsClient(IClient):
         return DirectoryEntry(
             name=name,
             is_directory=is_dir,
-            is_symlink=bool(attrs & REPARSE_POINT),
+            is_symlink=False,
+            is_reparse=bool(attrs & REPARSE_POINT),
             size=int(getattr(item, "file_size", 0) or 0),
             created_time=_as_datetime(getattr(item, "create_time", None)),
             last_write_time=_as_datetime(getattr(item, "last_write_time", None)),

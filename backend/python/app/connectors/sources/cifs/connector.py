@@ -326,9 +326,7 @@ class CifsConnector(BaseConnector):
             self.config_service, self.filter_key, self.connector_id, self.logger
         )
         await self._ensure_scope_edges()
-        shares = await resolve_shares(
-            self.data_source, self.sync_filters, self.configured_share, self.logger
-        )
+        shares = await resolve_shares(self.sync_filters, self.configured_share)
         if not shares:
             self.logger.warning("No CIFS shares to sync")
             return

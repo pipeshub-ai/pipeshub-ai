@@ -140,7 +140,8 @@ class SmbClient(IClient):
         return DirectoryEntry(
             name=name,
             is_directory=is_dir,
-            is_symlink=bool(attrs & REPARSE_POINT) or stat.S_ISLNK(result.st_mode),
+            is_symlink=stat.S_ISLNK(result.st_mode),
+            is_reparse=bool(attrs & REPARSE_POINT),
             size=int(result.st_size or 0),
             created_time=_as_datetime(getattr(result, "st_ctime", None)),
             last_write_time=_as_datetime(getattr(result, "st_mtime", None)),
@@ -172,13 +173,12 @@ class SmbClient(IClient):
         created = _as_datetime(getattr(info, "creation_time", None) if info is not None else None)
         written = _as_datetime(getattr(info, "last_write_time", None) if info is not None else None)
         attrs = int(getattr(info, "file_attributes", 0) or 0) if info is not None else 0
-        if attrs & REPARSE_POINT:
-            is_link = True
         file_id = int(inode) if inode else None
         return DirectoryEntry(
             name=name,
             is_directory=is_dir,
             is_symlink=is_link,
+            is_reparse=bool(attrs & REPARSE_POINT),
             size=size,
             created_time=created,
             last_write_time=written,

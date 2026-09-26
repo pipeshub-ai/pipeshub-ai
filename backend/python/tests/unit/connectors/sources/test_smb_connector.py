@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import stat
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +16,12 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.core.registry.filters import FilterCollection
+from app.connectors.core.registry.filters import (
+    Filter,
+    FilterCollection,
+    FilterType,
+    MultiselectOperator,
+)
 from app.connectors.sources.network_share.entry import DirectoryEntry, ShareInfo
 from app.connectors.sources.network_share.errors import (
     NetworkShareAuthError,
@@ -25,6 +31,7 @@ from app.connectors.sources.network_share.record_mapper import revision_id
 from app.connectors.sources.smb.connector import SmbConnector
 from app.models.entities import FileRecord, RecordGroupType, RecordType, User
 from app.models.permission import EntityType, PermissionType
+from app.sources.client.smb.smb import REPARSE_POINT, SmbClient
 from tests.unit.connectors.sources.test_network_share_walker import (
     FakeNetworkShareDataSource,
 )
@@ -166,6 +173,31 @@ def _ds(**kwargs) -> FakeNetworkShareDataSource:
 
 def _empty_filters():
     return (FilterCollection(), FilterCollection())
+
+
+class _SmbInfo:
+    def __init__(self, attributes: int) -> None:
+        self.file_attributes = attributes
+        self.end_of_file = 8
+        self.creation_time = NOW
+        self.last_write_time = NOW
+
+
+class _DirItem:
+    def __init__(self, name: str, *, directory: bool, inode: int) -> None:
+        self.name = name
+        self.smb_info = _SmbInfo(REPARSE_POINT)
+        self._directory = directory
+        self._inode = inode
+
+    def is_dir(self) -> bool:
+        return self._directory
+
+    def is_symlink(self) -> bool:
+        return False
+
+    def inode(self) -> int:
+        return self._inode
 
 
 class TestSmbConnectorInit:
@@ -367,6 +399,91 @@ class TestSmbConnectorSync:
         assert perms[0].external_id == "org-1"
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_empty_shares_filter_syncs_only_the_configured_share(
+        self, mock_filters, smb_connector, mock_processor
+    ):
+        mock_filters.return_value = _empty_filters()
+        finance = "Finance"
+        ds = FakeNetworkShareDataSource(
+            tree={(finance, ""): [_entry("a.txt", file_id=5)]},
+            shares=[
+                ShareInfo(name="C$", share_type="disk"),
+                ShareInfo(name="IPC$", share_type="ipc"),
+                ShareInfo(name=finance, share_type="disk"),
+            ],
+        )
+        smb_connector.data_source = ds
+        smb_connector.configured_share = finance
+        await smb_connector.run_sync()
+        assert {share for share, _path in ds.list_calls} == {finance}
+        upserted = [
+            record.external_record_id
+            for call in mock_processor.on_new_records.await_args_list
+            for record, _perms in call.args[0]
+        ]
+        assert f"{finance}/a.txt" in upserted
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_selected_admin_share_is_still_crawled(
+        self, mock_filters, smb_connector, mock_processor
+    ):
+        mock_filters.return_value = (
+            FilterCollection(
+                filters=[
+                    Filter(
+                        key="shares",
+                        value=["C$"],
+                        type=FilterType.MULTISELECT,
+                        operator=MultiselectOperator.IN,
+                    )
+                ]
+            ),
+            FilterCollection(),
+        )
+        ds = FakeNetworkShareDataSource(
+            tree={("C$", ""): [_entry("admin.txt", file_id=3)]},
+            shares=[
+                ShareInfo(name="C$", share_type="disk"),
+                ShareInfo(name="Finance", share_type="disk"),
+            ],
+        )
+        smb_connector.data_source = ds
+        smb_connector.configured_share = "Finance"
+        await smb_connector.run_sync()
+        assert {share for share, _path in ds.list_calls} == {"C$"}
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_reparse_file_is_upserted_and_directory_reparse_is_not_walked(
+        self, mock_filters, smb_connector, mock_processor
+    ):
+        mock_filters.return_value = _empty_filters()
+        client = SmbClient(server="files", username="u", password="p")
+        deduped = client._from_dir_entry(_DirItem("deduped.bin", directory=False, inode=41))
+        junction = client._from_dir_entry(_DirItem("junction", directory=True, inode=40))
+        assert deduped.is_symlink is False
+        assert deduped.is_reparse is True
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, ""): [deduped, junction],
+                (SHARE, "junction"): [_entry("secret.txt", file_id=10)],
+            }
+        )
+        smb_connector.data_source = ds
+        smb_connector.configured_share = SHARE
+        kept = _file_record(ext_id=f"{SHARE}/deduped.bin", revision="old", record_id="keep")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[kept])
+        await smb_connector.run_sync()
+        upserted = [
+            record.external_record_id
+            for call in mock_processor.on_new_records.await_args_list
+            for record, _perms in call.args[0]
+        ]
+        assert f"{SHARE}/deduped.bin" in upserted
+        assert (SHARE, "junction") not in ds.list_calls
+        deleted = [call.args[0] for call in mock_processor.on_record_deleted.await_args_list]
+        assert kept.id not in deleted
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_incremental_sync_lists_directories_older_than_the_checkpoint(
         self, mock_filters, smb_connector, mock_processor
     ):
@@ -452,6 +569,44 @@ class TestSmbConnectorStreamAndFilters:
         assert [opt.id for opt in page2.options] == ["charlie"]
         with pytest.raises(ValueError):
             await smb_connector.get_filter_options("nope")
+
+    async def test_filter_options_hide_drive_admin_shares(self, smb_connector):
+        smb_connector.data_source = FakeNetworkShareDataSource(
+            shares=[
+                ShareInfo(name="Finance", share_type="disk"),
+                ShareInfo(name="C$", share_type="disk"),
+                ShareInfo(name="D$", share_type="disk"),
+                ShareInfo(name="IPC$", share_type="ipc"),
+                ShareInfo(name="ADMIN$", share_type="disk"),
+                ShareInfo(name="archive$", share_type="disk"),
+            ]
+        )
+        result = await smb_connector.get_filter_options("shares")
+        assert [opt.id for opt in result.options] == ["Finance", "archive$"]
+
+    def test_stat_reparse_file_is_not_a_symlink(self):
+        client = SmbClient(server="files", username="u", password="p")
+        listed = client._from_dir_entry(_DirItem("deduped.bin", directory=False, inode=41))
+        assert listed.is_symlink is False
+        assert listed.is_reparse is True
+        assert listed.is_directory is False
+        result = MagicMock()
+        result.st_mode = stat.S_IFREG
+        result.st_file_attributes = REPARSE_POINT
+        result.st_size = 8
+        result.st_ctime = None
+        result.st_mtime = None
+        result.st_ino = 41
+        with (
+            patch.object(client, "register"),
+            patch.object(client, "_smbclient") as smbclient,
+        ):
+            smbclient.return_value.stat.return_value = result
+            entry = client.stat("Finance", "deduped.bin")
+        assert entry is not None
+        assert entry.is_symlink is False
+        assert entry.is_reparse is True
+        assert entry.is_directory is False
 
     async def test_get_filter_options_enum_failure_returns_configured_share(self, smb_connector):
         ds = FakeNetworkShareDataSource(shares=ShareListingError("NetrShareEnum failed"))

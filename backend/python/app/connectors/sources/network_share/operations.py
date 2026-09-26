@@ -65,27 +65,27 @@ def _disk_shares(shares: list[ShareInfo]) -> list[str]:
     return names
 
 
+def _is_admin_share(name: str) -> bool:
+    """Windows admin shares: ADMIN$, IPC$, and a drive letter plus $ (C$, D$)."""
+    upper = name.upper()
+    if upper in {"IPC$", "ADMIN$"}:
+        return True
+    return len(upper) == 2 and upper[0].isalpha() and upper[1] == "$"
+
+
 def _drop_admin_shares(shares: list[ShareInfo]) -> list[ShareInfo]:
-    skip = {"IPC$", "ADMIN$"}
-    return [s for s in shares if s.name.upper() not in skip]
+    return [share for share in shares if not _is_admin_share(share.name)]
 
 
 async def resolve_shares(
-    data_source: INetworkShareDataSource,
     sync_filters: FilterCollection,
     configured_share: str | None,
-    logger: Logger,
 ) -> list[str]:
+    """Names to crawl. An empty filter uses the configured share, not every listed disk."""
     share_filter = sync_filters.get("shares")
     selected = share_filter.value if share_filter and share_filter.value else []
     if selected:
         return [str(name) for name in selected if name]
-    try:
-        listed = _disk_shares(_drop_admin_shares(await data_source.list_shares()))
-        if listed:
-            return listed
-    except ShareListingError as exc:
-        logger.warning("Share enumeration failed: %s", exc)
     if configured_share:
         return [configured_share]
     return []

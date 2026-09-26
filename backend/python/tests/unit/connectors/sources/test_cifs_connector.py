@@ -30,7 +30,7 @@ from app.connectors.sources.network_share.errors import (
 from app.connectors.sources.network_share.record_mapper import revision_id
 from app.models.entities import FileRecord, RecordGroupType, RecordType, User
 from app.models.permission import EntityType, PermissionType
-from app.sources.client.cifs.cifs import CLIENT_NETBIOS_NAME, CifsClient
+from app.sources.client.cifs.cifs import CLIENT_NETBIOS_NAME, REPARSE_POINT, CifsClient
 from app.sources.external.cifs.cifs import CifsDataSource
 from tests.unit.connectors.sources.test_network_share_walker import (
     FakeNetworkShareDataSource,
@@ -625,6 +625,40 @@ class TestCifsConnectorStreamAndFilters:
         )
         result = await cifs_connector.get_filter_options("shares")
         assert [opt.id for opt in result.options] == ["public"]
+
+    def test_reparse_attribute_is_not_a_symlink(self):
+        client = CifsClient(server="h", username="u", password="p", remote_name="HOST")
+
+        class _File:
+            filename = "deduped.bin"
+            file_attributes = REPARSE_POINT
+            file_size = 8
+            file_id = 3
+            create_time = None
+            last_write_time = None
+
+            def isDirectory(self) -> bool:
+                return False
+
+        class _Junction:
+            filename = "junction"
+            file_attributes = REPARSE_POINT | 0x10
+            file_size = 0
+            file_id = 4
+            create_time = None
+            last_write_time = None
+
+            def isDirectory(self) -> bool:
+                return True
+
+        deduped = client._from_shared_file(_File())
+        junction = client._from_shared_file(_Junction())
+        assert deduped.is_symlink is False
+        assert deduped.is_reparse is True
+        assert deduped.is_directory is False
+        assert junction.is_symlink is False
+        assert junction.is_reparse is True
+        assert junction.is_directory is True
 
     async def test_filter_options_page_and_enum_fallback(self, cifs_connector):
         cifs_connector.data_source = FakeNetworkShareDataSource(

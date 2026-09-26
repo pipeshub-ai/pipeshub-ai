@@ -35,6 +35,7 @@ def _entry(
     *,
     is_directory: bool = False,
     is_symlink: bool = False,
+    is_reparse: bool = False,
     size: int = 4,
     file_id: int | None = None,
     created_time: datetime | None = NEW,
@@ -44,6 +45,7 @@ def _entry(
         name=name,
         is_directory=is_directory,
         is_symlink=is_symlink,
+        is_reparse=is_reparse,
         size=size,
         created_time=created_time,
         last_write_time=last_write_time,
@@ -194,6 +196,22 @@ def _ids(upserts) -> set[str]:
 
 
 class TestShareWalker:
+    async def test_reparse_file_is_upserted_and_directory_reparse_is_not_walked(self):
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, ""): [
+                    _entry("deduped.bin", file_id=8, is_reparse=True),
+                    _entry("junction", is_directory=True, file_id=9, is_reparse=True),
+                ],
+                (SHARE, "junction"): [_entry("secret.txt", file_id=10)],
+            }
+        )
+        result, upserts, _moves = await _walk(ds)
+        assert f"{SHARE}/deduped.bin" in _ids(upserts)
+        assert f"{SHARE}/junction" in result.seen
+        assert (SHARE, "junction") not in ds.list_calls
+        assert f"{SHARE}/junction/secret.txt" not in result.seen
+
     async def test_recurses_into_nested_directories(self):
         ds = FakeNetworkShareDataSource(
             tree={
