@@ -1571,9 +1571,15 @@ class NextcloudConnector(BaseConnector):
     async def _is_gone_from_nextcloud(self, file_id: str, deleted_path: str) -> tuple[bool | None, str]:
         """(True, "") when the file is gone, (False, "") when it is still there, (None, why) when unknown.
 
-        ``deleted_path`` is where the deletion activity said the file was.
+        Looked up by ID, so a file or folder that moved is still found. When the lookup
+        can't be made, a stored record falls back to its stored path; a folder whose
+        record is gone stays unknown, since a 404 at its old path can't tell a move from
+        a deletion and its contents would be deleted on that alone.
         """
         try:
+            found = await self._find_in_nextcloud_by_id(file_id)
+            if found is not None:
+                return not found, ""
             record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, file_id)
             if record is None:
                 children = await self.data_entities_processor.get_records_by_parent(
@@ -1581,19 +1587,14 @@ class NextcloudConnector(BaseConnector):
                 )
                 if not children:
                     return True, ""
-                # A cascade that committed partway left the folder's contents; the folder
-                # may be back in Nextcloud, so it is checked where it was deleted from.
-                if not deleted_path:
-                    return None, "the folder's location is not known"
-                path = deleted_path
-            else:
-                # A 404 proves the file gone only at its full stored path. The graph returns None
-                # when the path read fails, and a bare name for a file with a parent isn't that path.
-                path = await self.data_entities_processor.get_record_path(record.id)
-                if not path:
-                    return None, "could not read its stored path"
-                if record.parent_external_record_id and "/" not in path.strip("/"):
-                    return None, "its stored path is incomplete"
+                return None, "could not look it up in Nextcloud by ID"
+            # A 404 proves the file gone only at its full stored path. The graph returns None
+            # when the path read fails, and a bare name for a file with a parent isn't that path.
+            path = await self.data_entities_processor.get_record_path(record.id)
+            if not path:
+                return None, "could not read its stored path"
+            if record.parent_external_record_id and "/" not in path.strip("/"):
+                return None, "its stored path is incomplete"
             async with self.rate_limiter:
                 response = await self.data_source.list_directory(
                     user_id=self.current_user_id, path=path, depth=0
@@ -1610,6 +1611,22 @@ class NextcloudConnector(BaseConnector):
             return entries[0].get("file_id") != file_id, ""
         except Exception as e:
             return None, f"could not check Nextcloud: {str(e) or type(e).__name__}"
+
+    async def _find_in_nextcloud_by_id(self, file_id: str) -> bool | None:
+        """Whether the user's files (not the trash) hold ``file_id``; None when the search fails."""
+        try:
+            async with self.rate_limiter:
+                response = await self.data_source.get_file_by_internal_id(self.current_user_id, file_id)
+            if not is_response_successful(response):
+                self.logger.debug(f"Search by ID failed for {file_id}: {get_response_error(response)}")
+                return None
+            body = extract_response_body(response)
+            if not body:
+                return None
+            return any(e.get("file_id") == file_id for e in parse_webdav_propfind_response(body))
+        except Exception as e:
+            self.logger.debug(f"Search by ID failed for {file_id}: {e}")
+            return None
 
     async def run_incremental_sync(self) -> None:
         """

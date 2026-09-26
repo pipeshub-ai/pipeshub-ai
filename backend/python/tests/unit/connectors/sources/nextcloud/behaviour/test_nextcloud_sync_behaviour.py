@@ -1086,11 +1086,32 @@ class TestIncrementalSync:
             assert db.path_of("notes.txt") == "Docs/notes.txt"
             assert db.path_of("q1.pdf") == "Docs/Reports/q1.pdf"
 
+    @pytest.mark.parametrize("search", [pytest.param(True, id="found-by-id"), pytest.param(False, id="no-search")])
+    async def test_a_queued_folder_that_moved_keeps_its_contents(self, server, db, store, search) -> None:
+        connector = await synced(server, db, store)
+        docs = server.nodes["Docs"]
+        inside = {db.by_name(n).id for n in ("Reports", "q1.pdf", "notes.txt")}
+        db.fail_delete_for = {docs.file_id}
+        server.delete("Docs")
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+        db.fail_delete_for.clear()
+        del db.records[docs.file_id]  # a cascade that committed partway: the folder went, its contents did not
+        server.restore(docs)
+        server.move("Docs", "Archive/Docs")  # back, but not where it was deleted from, so that path 404s
+        server.search_supported = search
+
+        await connector.run_sync()
+
+        assert {r.id for r in db.records.values()} >= inside, "a 404 at the old path is not proof"
+        assert store.checkpoint()["pending_deletes"] == ([] if search else [docs.file_id])
+
     @pytest.mark.parametrize("break_path", [
         pytest.param(lambda db, record: db.unreadable_paths.add(record.id), id="path-read-fails"),
         pytest.param(lambda db, record: db.edges.pop(record.id), id="path-is-only-the-name"),
     ])
     async def test_a_queued_deletion_waits_when_the_stored_path_is_not_known(self, server, db, store, break_path) -> None:
+        server.search_supported = False  # without a lookup by ID, the stored path is all there is to check
         connector = await synced(server, db, store)
         notes = db.by_name("notes.txt")
         db.fail_delete_for = {notes.external_record_id}

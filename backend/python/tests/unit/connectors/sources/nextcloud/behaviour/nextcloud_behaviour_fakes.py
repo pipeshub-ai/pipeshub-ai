@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import itertools
 import json
+import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -91,6 +92,7 @@ class FakeNextcloud:
     unrouted: list[str] = field(default_factory=list)
     faults: list[Fault] = field(default_factory=list)
     trash: dict[str, list[Node]] = field(default_factory=dict)
+    search_supported: bool = True
 
     def __post_init__(self) -> None:
         self._ids = itertools.count(100)
@@ -248,6 +250,8 @@ class FakeNextcloud:
                 if node is None or node.is_dir:
                     return httpx.Response(404)
                 return httpx.Response(200, content=node.content, headers={"content-type": node.content_type})
+        if request.method == "SEARCH" and path.rstrip("/") == "/remote.php/dav":
+            return self._search(request.content.decode())
         if request.method == "GET" and path == ACTIVITY_PATH:
             return self._activity(request.url.params)
         if request.method == "GET" and path == USERS_PREFIX + self.user:
@@ -278,6 +282,22 @@ class FakeNextcloud:
             '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" '
             'xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">'
             f"{body}</d:multistatus>"
+        )
+        return httpx.Response(207, content=xml.encode(), headers={"content-type": "application/xml; charset=utf-8"})
+
+    def _search(self, body: str) -> httpx.Response:
+        """WebDAV SEARCH for one file ID in the user's files (the trash is not searched)."""
+        if not self.search_supported:
+            return httpx.Response(501)
+        scope = re.search(r"<d:href>/files/([^<]+)</d:href>", body)
+        wanted = re.search(r"<d:literal>([^<]+)</d:literal>", body)
+        if not scope or not wanted or scope.group(1) != self.user:
+            return httpx.Response(400)
+        found = [n for p, n in self.nodes.items() if p and n.file_id == wanted.group(1)]
+        xml = (
+            '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" '
+            'xmlns:nc="http://nextcloud.org/ns">'
+            f"{''.join(self._response_xml(n) for n in found)}</d:multistatus>"
         )
         return httpx.Response(207, content=xml.encode(), headers={"content-type": "application/xml; charset=utf-8"})
 
