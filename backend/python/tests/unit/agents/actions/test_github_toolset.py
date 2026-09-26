@@ -8,8 +8,10 @@ method, path, query and JSON body GitHub would receive, and responses are
 parsed into real PyGithub objects.
 """
 
+import asyncio
 import json
 import re
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -58,7 +60,8 @@ class FakeGitHubAPI:
     routes: list[tuple[str, re.Pattern, list[tuple[int, object]]]] = field(default_factory=list)
 
     def on(self, method: str, path_regex: str, *responses: object) -> "FakeGitHubAPI":
-        """Each response is (status, payload), (status, payload, headers), or an exception to raise."""
+        """Each response is (status, payload), (status, payload, headers), an exception to raise,
+        or a callable returning one of those."""
         self.routes.append((method, re.compile(rf"^{path_regex}$"), list(responses)))
         return self
 
@@ -81,6 +84,8 @@ class FakeGitHubAPI:
                 response = responses.pop(0) if len(responses) > 1 else responses[0]
                 if isinstance(response, BaseException):
                     raise response
+                if callable(response):
+                    response = response()
                 return _Response(*response)
         return _Response(404, {"message": "Not Found", "documentation_url": "https://docs.github.com/rest"})
 
@@ -636,3 +641,24 @@ class TestFailuresInPlainLanguage:
     async def test_unreachable_github_is_explained(self, github, api) -> None:
         api.on("GET", REPO_PATH, ConnectionError(f"connection reset while sending Authorization: token {TOKEN}"))
         assert "could not be reached" in err(await github.get_repository("acme", "web"))
+
+
+class TestEventLoop:
+    @pytest.mark.asyncio
+    async def test_other_work_keeps_running_while_github_answers(self, github, api) -> None:
+        # PyGithub is synchronous; run on the event loop it would freeze every other chat until GitHub answered.
+        released = threading.Event()
+        waited: list[bool] = []
+
+        def slow_repository() -> tuple[int, object]:
+            waited.append(released.wait(timeout=2))
+            return 200, repo()
+
+        async def release() -> None:
+            released.set()
+
+        api.on("GET", REPO_PATH, slow_repository)
+        other_work = asyncio.create_task(release())
+        ok(await github.get_repository("acme", "web"))
+        await other_work
+        assert waited == [True]

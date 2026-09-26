@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from http import HTTPStatus
@@ -563,7 +564,8 @@ class GitHub:
         """Create a new repository on GitHub."""
         try:
             logger.info("github.create_repository called with args: %s", {"name": name, "private": private, "description": description, "auto_init": auto_init})
-            response = self.client.create_repo(
+            response = await asyncio.to_thread(
+                self.client.create_repo,
                 name=name,
                 private=private,
                 description=description,
@@ -595,7 +597,7 @@ class GitHub:
         """Get details of a specific GitHub repository."""
         try:
             logger.info("github.get_repository called with args: %s", {"owner": owner, "repo": repo})
-            response = self.client.get_repo(owner=owner, repo=repo)
+            response = await asyncio.to_thread(self.client.get_repo, owner=owner, repo=repo)
             return self._handle_response(response, "Repository fetched successfully", "get the repository")
         except Exception as e:
             return _unexpected_failure("getting repository", e)
@@ -630,7 +632,7 @@ class GitHub:
             if kind not in ("user", "organization"):
                 kind = "user"
             logger.info("github.get_owner called with args: %s", {"owner": owner, "owner_type": kind})
-            response = self.client.get_owner(login=owner, kind=kind)
+            response = await asyncio.to_thread(self.client.get_owner, login=owner, kind=kind)
             return self._handle_response(response, "Owner details fetched successfully", "get the owner's profile")
         except Exception as e:
             return _unexpected_failure("getting owner", e)
@@ -670,7 +672,8 @@ class GitHub:
             page = page if page is not None else 1
             page = max(1, page)
             logger.info("github.list_repositories called with args: %s", {"user": user, "type": type, "per_page": per_page, "page": page})
-            response = self.client.list_user_repos(
+            response = await asyncio.to_thread(
+                self.client.list_user_repos,
                 user=user, type=type, per_page=per_page, page=page
             )
             return self._handle_response(response, "Repositories fetched successfully", "list the repositories")
@@ -718,7 +721,8 @@ class GitHub:
         labels = _normalize_labels(labels) or None
         try:
             logger.info("github.create_issue called with args: %s", {"owner": owner, "repo": repo, "title": title, "body": body, "assignees": assignees, "labels": labels})
-            response = self.client.create_issue(
+            response = await asyncio.to_thread(
+                self.client.create_issue,
                 owner=owner,
                 repo=repo,
                 title=title,
@@ -752,7 +756,7 @@ class GitHub:
         """Get details of a specific issue from a GitHub repository."""
         try:
             logger.info("github.get_issue called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.get_issue(owner=owner, repo=repo, number=number)
+            response = await asyncio.to_thread(self.client.get_issue, owner=owner, repo=repo, number=number)
             return self._handle_response(response, "Issue fetched successfully", "get the issue")
         except Exception as e:
             return _unexpected_failure("getting issue", e)
@@ -798,7 +802,8 @@ class GitHub:
             _per_page = min(50, max(1, per_page))
             _page = max(1, page)
             logger.info("github.list_issues called with args: %s", {"owner": owner, "repo": repo, "state": state, "labels": _labels, "assignee": _assignee, "per_page": _per_page, "page": _page})
-            response = self.client.list_issues_only(
+            response = await asyncio.to_thread(
+                self.client.list_issues_only,
                 owner=owner,
                 repo=repo,
                 state=state,
@@ -832,7 +837,7 @@ class GitHub:
         """Close an issue in a GitHub repository."""
         try:
             logger.info("github.close_issue called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.close_issue(owner=owner, repo=repo, number=number)
+            response = await asyncio.to_thread(self.client.close_issue, owner=owner, repo=repo, number=number)
             return self._handle_response(response, "Issue closed successfully", "close the issue")
         except Exception as e:
             return _unexpected_failure("closing issue", e)
@@ -894,7 +899,8 @@ class GitHub:
             })
         try:
             logger.info("github.update_issue called with args: %s", {"owner": owner, "repo": repo, "number": number, "title": title, "body": body, "state": state, "assignees": assignees, "labels": labels})
-            response = self.client.update_issue(
+            response = await asyncio.to_thread(
+                self.client.update_issue,
                 owner=owner,
                 repo=repo,
                 number=number,
@@ -934,7 +940,7 @@ class GitHub:
         """List all comments on an issue."""
         try:
             logger.info("github.list_issue_comments called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.list_issue_comments(owner=owner, repo=repo, number=number)
+            response = await asyncio.to_thread(self.client.list_issue_comments, owner=owner, repo=repo, number=number)
             return self._handle_response(response, "Issue comments listed successfully", "list the issue's comments")
         except Exception as e:
             return _unexpected_failure("listing issue comments", e)
@@ -963,7 +969,7 @@ class GitHub:
         """Get a single issue comment by ID."""
         try:
             logger.info("github.get_issue_comment called with args: %s", {"owner": owner, "repo": repo, "number": number, "comment_id": comment_id})
-            response = self.client.get_issue_comment(owner=owner, repo=repo, number=number, comment_id=comment_id)
+            response = await asyncio.to_thread(self.client.get_issue_comment, owner=owner, repo=repo, number=number, comment_id=comment_id)
             return self._handle_response(response, "Issue comment fetched successfully", "get the comment")
         except Exception as e:
             return _unexpected_failure("getting issue comment", e)
@@ -991,7 +997,7 @@ class GitHub:
         """Add a comment to an issue."""
         try:
             logger.info("github.create_issue_comment called with args: %s", {"owner": owner, "repo": repo, "number": number, "body": body[:100] + "..." if len(body) > 100 else body})
-            response = self.client.create_issue_comment(owner=owner, repo=repo, number=number, body=body)
+            response = await asyncio.to_thread(self.client.create_issue_comment, owner=owner, repo=repo, number=number, body=body)
             return self._handle_response(response, "Issue comment created successfully", "add the comment")
         except Exception as e:
             return _unexpected_failure("creating issue comment", e)
@@ -1035,7 +1041,8 @@ class GitHub:
         """Create a new pull request in a GitHub repository."""
         try:
             logger.info("github.create_pull_request called with args: %s", {"owner": owner, "repo": repo, "title": title, "head": head, "base": base, "body": body, "draft": draft})
-            response = self.client.create_pull(
+            response = await asyncio.to_thread(
+                self.client.create_pull,
                 owner=owner,
                 repo=repo,
                 title=title,
@@ -1072,11 +1079,11 @@ class GitHub:
         """Get details of a specific pull request and its conversation comments (issue comments)."""
         try:
             logger.info("github.get_pull_request called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            pr_response = self.client.get_pull(owner=owner, repo=repo, number=number)
+            pr_response = await asyncio.to_thread(self.client.get_pull, owner=owner, repo=repo, number=number)
             success_pr, json_str_pr = self._handle_response(pr_response, "Pull request fetched successfully", "get the pull request")
             if not success_pr:
                 return False, json_str_pr
-            comments_response = self.client.list_issue_comments(owner=owner, repo=repo, number=number)
+            comments_response = await asyncio.to_thread(self.client.list_issue_comments, owner=owner, repo=repo, number=number)
             success_comments, json_str_comments = self._handle_response(
                 comments_response, "Issue comments listed successfully", "list the issue's comments"
             )
@@ -1122,7 +1129,7 @@ class GitHub:
         """Get commits of a pull request. Use the last commit's sha as commit_id for create_pull_request_review_comment."""
         try:
             logger.info("github.get_pull_request_commits called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.get_pull_commits(owner=owner, repo=repo, number=number)
+            response = await asyncio.to_thread(self.client.get_pull_commits, owner=owner, repo=repo, number=number)
             success, json_str = self._handle_response(response, "Pull request commits fetched successfully", "list the pull request's commits")
             if not success:
                 return success, json_str
@@ -1176,7 +1183,8 @@ class GitHub:
     ) -> Tuple[bool, str]:
         """Get PR file changes with complete diffs and safety limits."""
         try:
-            response = self.client.get_pull_file_changes(
+            response = await asyncio.to_thread(
+                self.client.get_pull_file_changes,
                 owner=owner,
                 repo=repo,
                 number=number,
@@ -1234,7 +1242,8 @@ class GitHub:
             _per_page = min(50, max(1, per_page))
             _page = max(1, page)
             logger.info("github.list_pull_requests called with args: %s", {"owner": owner, "repo": repo, "state": state, "head": _head, "base": _base, "per_page": _per_page, "page": _page})
-            response = self.client.list_pulls(
+            response = await asyncio.to_thread(
+                self.client.list_pulls,
                 owner=owner,
                 repo=repo,
                 state=state,
@@ -1280,7 +1289,8 @@ class GitHub:
         """Merge a pull request in a GitHub repository."""
         try:
             logger.info("github.merge_pull_request called with args: %s", {"owner": owner, "repo": repo, "number": number, "commit_message": commit_message, "merge_method": merge_method})
-            response = self.client.merge_pull(
+            response = await asyncio.to_thread(
+                self.client.merge_pull,
                 owner=owner,
                 repo=repo,
                 number=number,
@@ -1317,7 +1327,7 @@ class GitHub:
         """Get reviews (approve / request changes / comment) on a pull request."""
         try:
             logger.info("github.get_pull_request_reviews called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.get_pull_reviews(owner=owner, repo=repo, number=number)
+            response = await asyncio.to_thread(self.client.get_pull_reviews, owner=owner, repo=repo, number=number)
             return self._handle_response(response, "Pull request reviews fetched successfully", "get the pull request's reviews")
         except Exception as e:
             return _unexpected_failure("getting pull request reviews", e)
@@ -1354,7 +1364,8 @@ class GitHub:
         """Submit a PR review (approve, request changes, or comment). Default event is COMMENT."""
         try:
             logger.info("github.create_pull_request_review called with args: %s", {"owner": owner, "repo": repo, "number": number, "event": event, "body": body})
-            response = self.client.create_pull_request_review(
+            response = await asyncio.to_thread(
+                self.client.create_pull_request_review,
                 owner=owner, repo=repo, number=number, event=event, body=body
             )
             return self._handle_response(response, "Pull request review submitted successfully", "submit the review")
@@ -1383,7 +1394,7 @@ class GitHub:
         """List review comments on a pull request."""
         try:
             logger.info("github.list_pull_request_comments called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.get_pull_review_comments(owner=owner, repo=repo, number=number)
+            response = await asyncio.to_thread(self.client.get_pull_review_comments, owner=owner, repo=repo, number=number)
             return self._handle_response(response, "Pull request comments listed successfully", "list the pull request's review comments")
         except Exception as e:
             return _unexpected_failure("listing pull request comments", e)
@@ -1427,7 +1438,8 @@ class GitHub:
         """Create a new review comment on a PR (line or file)."""
         try:
             logger.info("github.create_pull_request_review_comment called with args: %s", {"owner": owner, "repo": repo, "number": number, "body": body[:100] + "..." if len(body) > 100 else body, "commit_id": commit_id, "path": path, "line": line, "side": side})
-            response = self.client.create_pull_request_review_comment(
+            response = await asyncio.to_thread(
+                self.client.create_pull_request_review_comment,
                 owner=owner,
                 repo=repo,
                 number=number,
@@ -1478,7 +1490,8 @@ class GitHub:
             page = page if page is not None else 1
             page = max(1, page)
             logger.info("github.search_repositories called with args: %s", {"query": query, "per_page": per_page, "page": page})
-            response = self.client.search_repositories(
+            response = await asyncio.to_thread(
+                self.client.search_repositories,
                 query=query, per_page=per_page, page=page
             )
             return self._handle_response(response, "Repository search completed successfully", "search repositories")
