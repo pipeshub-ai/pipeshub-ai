@@ -406,7 +406,7 @@ async def test_every_url_that_redirects_to_a_gone_page_has_its_record_removed(
 
 
 @pytest.mark.parametrize("links", [("/old", "/new"), ("/new", "/old")], ids=["source-first", "landing-first"])
-async def test_robust_mode_keeps_a_redirecting_source_when_the_landing_also_fails_directly(
+async def test_robust_mode_removes_a_redirecting_source_even_when_the_landing_also_fails_directly(
     links: tuple[str, str], browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     old, new = "http://site.test/old", "http://site.test/new"
