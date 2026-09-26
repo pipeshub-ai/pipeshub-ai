@@ -337,6 +337,8 @@ class TestSearchPaging:
         assert [i["key"] for i in data["data"]["issues"]] == ["PA-1", "PA-2"]
         assert len(api.calls("POST", SEARCH)) == 2
         assert data["has_more"] is True
+        assert "Only the first 2 matching issues could be read" in data["message"]
+        assert "incomplete" in data["message"] and "more match" not in data["message"]
 
     async def test_project_issues_say_when_more_match(self, jira, api) -> None:
         api.on("POST", SEARCH, search_pages((["PA-1", "PA-2"], "t1"), (["PA-3"], None)))

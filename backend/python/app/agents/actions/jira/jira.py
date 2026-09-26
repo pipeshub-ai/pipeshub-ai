@@ -1382,6 +1382,8 @@ class Jira:
             issues.extend(payload.get("issues") or [])
             token = _next_page_token(payload)
             if token in seen:
+                # The rest can't be read, and whether more match is unknown: report it as incomplete.
+                failure = "Jira sent the same page again"
                 break
             seen.add(token)
         first_page["issues"] = issues[:limit]
