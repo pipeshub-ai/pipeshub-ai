@@ -63,9 +63,9 @@ def fx(fixture_text: str) -> dict:
 
 
 def test_every_link_stays_on_the_reserved_demo_domain(fixture_text: str) -> None:
-    # Demo records show "Open in GitHub/Jira/Slack" links. A real host there
-    # (github.com/acme-demo, acme-demo.slack.com, ...) sends a first-time user
-    # to an account somebody else can register and fill.
+    # The connector doesn't send these links, but a real host here
+    # (github.com/acme-demo, acme-demo.slack.com, ...) would be one edit away
+    # from sending a first-time user to an account somebody else can register.
     urls = re.findall(r"https?://[^\s\"')\]]+", fixture_text)
     assert urls, "the fixture should carry source links"
     outside = sorted({u for u in urls if not _on_reserved_domain(u)})
@@ -175,3 +175,31 @@ def test_the_chat_landing_marks_the_restricted_question_from_the_fixture(fx: dic
         chips = json.loads((root / "frontend/lib/i18n/locales" / f"{locale}.json").read_text(encoding="utf-8"))
         marked = [c["text"] for c in chips["chat"]["demoSuggestions"].values() if c.get("restricted")]
         assert marked == [restricted_q["ask"]], locale
+
+
+def test_record_text_carries_no_links(fx: dict) -> None:
+    # The model quotes what it reads; a made-up address in the text ends up in answers.
+    bodies = demo_connector.DemoConnector._render_bodies(fx)
+    linked = sorted(k for k, body in bodies.items() if re.search(r"https?://|\*\*Link:\*\*", body))
+    assert not linked, f"records whose text carries a link: {linked}"
+
+
+def test_records_are_sent_without_their_made_up_address(fx: dict) -> None:
+    # "Open in Jira/GitHub/..." on a demo record leads nowhere; without an
+    # address, and with hide_weburl, citations open the record in PipesHub.
+    from types import SimpleNamespace
+
+    connector = demo_connector.DemoConnector.__new__(demo_connector.DemoConnector)
+    connector.data_entities_processor = SimpleNamespace(org_id="org-1")
+    connector.connector_id = "demo-1"
+    connector._bodies = demo_connector.DemoConnector._render_bodies(fx)
+    containers = {c["id"]: c for c in fx["containers"]}
+    people = {p["id"]: p for p in fx["people"]}
+    kinds = set()
+    for rec in fx["records"]:
+        if rec["id"] not in connector._bodies:
+            continue  # a message inside a thread; the thread is the record
+        built = connector._build_record(rec, containers[rec["container"]], people, SimpleNamespace(id="rg-1"), 0)
+        assert built.weburl is None and built.hide_weburl is True, rec["id"]
+        kinds.add(rec["type"])
+    assert {"FILE", "TICKET", "PULL_REQUEST", "MESSAGE", "COMMENT"} <= kinds

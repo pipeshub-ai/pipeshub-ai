@@ -261,8 +261,7 @@ class DemoConnector(BaseConnector):
                 f"# {rec['title']}",
                 "",
                 f"**System:** {_SYSTEM_LABEL[c['system']]} · **Type:** {_TYPE_LABEL[rec['type']]} · **In:** {c['name']}",
-                f"**Author:** {people[rec['author']]['name']} · **Date:** {str(rec['created'])[:10]}"
-                + (f" · **Link:** {rec['web_url']}" if rec.get("web_url") else ""),
+                f"**Author:** {people[rec['author']]['name']} · **Date:** {str(rec['created'])[:10]}",
                 "",
             ]
             out[rec["id"]] = "\n".join(head) + rec["body"].rstrip() + "\n"
@@ -442,7 +441,6 @@ class DemoConnector(BaseConnector):
                 external_group_id=c["id"],
                 connector_name=_SYSTEM_TO_CONNECTOR[c["system"]],
                 connector_id=self.connector_id,
-                web_url=c.get("web_url"),
                 group_type=_KIND_TO_GROUP_TYPE[c["kind"]],
                 created_at=now,
                 updated_at=now,
@@ -483,7 +481,9 @@ class DemoConnector(BaseConnector):
                 connector_name=Connectors.SLACK,
                 connector_id=self.connector_id,
                 mime_type=_MARKDOWN,
-                weburl=c.get("web_url"),
+                # The fixture's addresses are made up; see _build_record.
+                weburl=None,
+                hide_weburl=True,
                 source_created_at=_epoch_ms(msgs[0]["created"]),
                 source_updated_at=_epoch_ms(msgs[-1]["created"]),
                 created_at=now,
@@ -540,7 +540,10 @@ class DemoConnector(BaseConnector):
             connector_name=_SYSTEM_TO_CONNECTOR[container["system"]],
             connector_id=self.connector_id,
             mime_type=_MARKDOWN,
-            weburl=rec.get("web_url") or container.get("web_url"),
+            # The fixture's addresses are made up, so "Open in Jira/GitHub/..."
+            # would lead nowhere. Without one, citations open the record in PipesHub.
+            weburl=None,
+            hide_weburl=True,
             source_created_at=_epoch_ms(rec["created"]),
             source_updated_at=_epoch_ms(rec.get("updated") or rec["created"]),
             created_at=now,

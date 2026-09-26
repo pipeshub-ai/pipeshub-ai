@@ -76,7 +76,7 @@ def render(rec: dict, fx: dict) -> str:
         f"# {rec['title']}",
         "",
         f"**System:** {SYSTEM_LABEL[c['system']]} · **Type:** {TYPE_LABEL[rec['type']]} · **In:** {c['name']}",
-        f"**Author:** {author} · **Date:** {str(rec['created'])[:10]}" + (f" · **Link:** {rec['web_url']}" if rec.get("web_url") else ""),
+        f"**Author:** {author} · **Date:** {str(rec['created'])[:10]}",
         "",
     ]
     return "\n".join(head) + rec["body"].rstrip() + "\n"
