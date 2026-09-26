@@ -33,7 +33,7 @@ from typing import (
     Tuple,
     cast,
 )
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urldefrag, urljoin, urlparse
 
 import aiohttp
 
@@ -385,6 +385,19 @@ class _Hop:
     headers: dict
     body: bytes = b""
     too_large: bool = False
+    # Where the answer came from, when the client followed a redirect on its own (cloudscraper
+    # requests the Location of a solved challenge itself).
+    url: str | None = None
+
+
+def _refused(target: str) -> FetchResponse:
+    return FetchResponse(
+        status_code=200,
+        content_bytes=b"",
+        headers={"X-Fetch-Skip-Reason": "redirect_refused"},
+        final_url=target,
+        strategy="redirect_guard",
+    )
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:
@@ -420,17 +433,17 @@ async def _walk_hops(
         if walk.validators_for is not None:
             headers.update(await walk.validators_for(current) or {})
         hop = await get(current, headers)
+        if hop.url and urldefrag(hop.url).url != urldefrag(current).url:
+            # The client went somewhere on its own; that page is already fetched, so check it
+            # and drop its bytes if it's refused.
+            if not await walk.allow_hop(hop.url):
+                return _refused(hop.url)
+            current = hop.url
         location = _header(hop.headers, "Location")
         if hop.status in _HEAD_REDIRECT_CODES and location:
             target = urljoin(current, location)  # handles relative and //host/path Locations
             if not await walk.allow_hop(target):
-                return FetchResponse(
-                    status_code=200,
-                    content_bytes=b"",
-                    headers={"X-Fetch-Skip-Reason": "redirect_refused"},
-                    final_url=target,
-                    strategy="redirect_guard",
-                )
+                return _refused(target)
             current = target
             continue
         if hop.too_large:
@@ -482,12 +495,13 @@ def _sync_hop(client: _RequestsLike, url: str, headers: dict, timeout: int, max_
     response = client.get(url, headers=headers, timeout=timeout, allow_redirects=False, stream=True)
     try:
         hop_headers = dict(response.headers)
+        answered_by = str(response.url) if getattr(response, "url", None) else None
         if response.status_code in _HEAD_REDIRECT_CODES:
-            return _Hop(response.status_code, hop_headers)
+            return _Hop(response.status_code, hop_headers, url=answered_by)
         if _declared_too_large(hop_headers, max_bytes):
-            return _Hop(response.status_code, hop_headers, too_large=True)
+            return _Hop(response.status_code, hop_headers, too_large=True, url=answered_by)
         body, too_large = _read_capped(response.iter_content(_READ_CHUNK), max_bytes)
-        return _Hop(response.status_code, hop_headers, body, too_large)
+        return _Hop(response.status_code, hop_headers, body, too_large, url=answered_by)
     finally:
         response.close()
 

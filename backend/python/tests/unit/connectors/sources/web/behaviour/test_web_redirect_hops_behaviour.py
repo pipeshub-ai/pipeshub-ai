@@ -115,6 +115,25 @@ async def test_a_cloudflare_challenge_that_ends_in_a_redirect_is_followed_by_the
     assert _served_by(site, "cloudscraper", protected)  # no fallback to aiohttp
 
 
+@pytest.mark.parametrize("target", [SECRET, "http://elsewhere.test/landing"], ids=["disallowed", "off-site"])
+async def test_a_cloudflare_challenge_that_lands_somewhere_refused_is_not_stored(
+    target: str, site: FakeWeb, db: FakeRecordsDb, use_strategy: Callable[[str], None],
+    make_connector: MakeConnector,
+) -> None:
+    # cloudscraper requests the solved challenge's target itself, so the check comes after.
+    use_strategy("cloudscraper")
+    _robots(site)
+    protected = "http://site.test/protected"
+    site.html(START_URL, "Home", "/protected")
+    site.html(protected, "Protected", cloudflare_challenge=True, cloudflare_challenge_redirect=target)
+    site.html(target, "Secret")
+
+    await (await make_connector()).run_sync()
+
+    assert set(db.pages()) == {START_URL}
+    assert "Secret" not in {record.record_name for record in db.pages().values()}
+
+
 @pytest.mark.parametrize("chunked", [False, True], ids=["declared-size", "streamed"])
 @pytest.mark.parametrize("strategy", STRATEGIES)
 async def test_a_site_that_refuses_head_still_gets_the_size_limit_at_the_final_hop(

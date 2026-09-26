@@ -80,6 +80,8 @@ class Page:
     requires_cookie: str | None = None
     # Served behind a Cloudflare-style challenge that only the cloudscraper fake can solve.
     cloudflare_challenge: bool = False
+    # Where the solved challenge sends the scraper; the page itself by default.
+    cloudflare_challenge_redirect: str | None = None
 
 
     # Validators: sent with the page, and a matching If-None-Match / If-Modified-Since gets a 304.
@@ -534,8 +536,9 @@ class FakeRequestsClient:
 
 
 class FakeScraper(FakeRequestsClient):
-    """cloudscraper's scraper: solves a challenge by setting a clearance cookie, then, like
-    cloudscraper, answers with a redirect back to the page unless it may follow redirects itself."""
+    """cloudscraper 1.2.71's scraper: solving a challenge sets a clearance cookie, and the library
+    then requests the challenge's redirect target itself (with the caller's allow_redirects for
+    that one hop) and hands back whatever that URL answered, at that URL."""
 
     def get(self, url: str, headers: dict | None = None, timeout: object = None,
             allow_redirects: bool = True, stream: bool = False) -> FakeResponse:
@@ -543,6 +546,5 @@ class FakeScraper(FakeRequestsClient):
         if page.cloudflare_challenge and "cf_clearance" not in self.cookies:
             self.site.clients.append((self.label, url))
             self.cookies["cf_clearance"] = "solved"
-            if not allow_redirects:
-                return FakeResponse(302, {"Location": url}, b"", url)
+            url = urljoin(url, page.cloudflare_challenge_redirect or url)
         return super().get(url, headers, timeout, allow_redirects, stream)
