@@ -1118,16 +1118,14 @@ records:
       whose team runs the monthly full-workspace export into their reporting.
 
       ## Renewal status (updated 16 April)
-      **On track.** Their full-workspace export ran on 15 April as a background
-      job after the fix shipped (PR #211), monthly reporting is back on schedule,
-      and they are no longer evaluating alternatives: renewal expected on time.
-      See the call notes from 16 April.
+      **On track.** Their monthly reporting is back on schedule after the
+      engineering fix, and they are no longer evaluating alternatives: renewal
+      expected on time. See the call notes from 16 April.
 
       ## History
-      From early April the renewal was **at risk**: their full-workspace export
-      timed out (ServiceNow case CS0004471, escalated to engineering as SUP-114),
-      monthly reporting slipped, and on 9 April the champion said they were
-      evaluating alternatives.
+      From early April the renewal was **at risk**: the April export problem
+      (tracked by support) broke their monthly reporting, and on 9 April the
+      champion said they were evaluating alternatives.
 
       ## Plan
       1. Done: got the fix date from engineering and shared it with the champion.
@@ -1200,8 +1198,8 @@ records:
       **Owner:** Omar Haddad · Enterprise, 610 seats · renews 30 September 2026.
 
       ## Watch items
-      - Hit the April export timeouts (CS0004478); accepted the workaround and
-        was told when the fix shipped.
+      - Affected by the April export problem; told when the fix shipped, no
+        complaints since.
       - Received an invoice with VAT on an exempt line (SUP-121, April). Finance
         reissued it; keep an eye on their accounts-payable team's mood.
 
@@ -1277,7 +1275,7 @@ records:
 
       ## What we're launching
       Large workspace exports now run in the background and arrive as a download
-      link by email, instead of timing out.
+      link by email.
 
       ## Why 21 April
       The launch waits for engineering: the change (PR #211) had to be in
@@ -1286,7 +1284,7 @@ records:
 
       ## Channels
       Blog post, an email to Enterprise admins, the in-app release note, and a note
-      for account executives to share with customers who hit the timeouts.
+      for account executives to share with customers who had asked about exports.
 
       ## Success measures
       Email open rate, exports scheduled in the first week, and support tickets
@@ -1338,7 +1336,8 @@ records:
       - 312 background exports scheduled in the first week.
       - 2 support tickets about exports in two weeks, down from 14 in the two
         weeks before the fix.
-      - Account executives shared the note with Northwind, Contoso and Fabrikam.
+      - Account executives shared the note with every customer who had asked about
+        exports.
 
       ## Learnings
       Waiting a week after the engineering release cost nothing and meant the

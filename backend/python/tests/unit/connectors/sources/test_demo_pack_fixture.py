@@ -154,3 +154,22 @@ def test_the_onboarding_checklist_is_named_for_the_first_week(fx: dict) -> None:
     rec = next(r for r in fx["records"] if r["id"] == "drive-people-onboarding-eng")
     assert "first week" in rec["title"].lower()
     assert "## First week" in rec["body"]
+
+
+
+def test_team_records_do_not_retell_the_export_timeout_story(fx: dict) -> None:
+    # q2 ("which customers reported export timeouts, and what fixed it?") must find
+    # the support cases and the engineering fix. Team records that restate the
+    # symptom or the customer list pushed the fix out of search results.
+    import re
+
+    teams = {"drive-sales", "slack-deals", "drive-marketing", "slack-launch", "drive-deal-desk", "drive-launch-core"}
+    symptom = re.compile(r"timed out|timing out|timeout|CS00044", re.I)
+    customers = ("Northwind", "Contoso", "Fabrikam")
+    offenders = []
+    for r in fx["records"]:
+        if r["container"] not in teams:
+            continue
+        if symptom.search(r["body"]) or sum(c in r["body"] for c in customers) > 1:
+            offenders.append(r["id"])
+    assert offenders == [], offenders
