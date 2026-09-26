@@ -40,6 +40,7 @@ def _build_openai_compat(provider_label: str) -> Callable[
         api_key=config.api_key,
         model_name=config.model_name,
         provider_label=provider_label,
+        request_format=config.multimodal_request_format,
         normalize_fn=config.normalize_fn,
         logger=config.logger,
     )
