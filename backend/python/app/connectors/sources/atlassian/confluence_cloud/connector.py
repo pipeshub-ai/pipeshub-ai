@@ -50,6 +50,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.constants import OAuthConfigKeys
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.core.registry.connector_builder import (
     AuthField,
@@ -919,6 +920,28 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
 
+    async def _include_jira_scope_setting(self, auth_config: dict[str, Any]) -> Any:
+        """The connector's own includeJiraScope, else the one saved on its OAuth app."""
+        value = auth_config.get("includeJiraScope")
+        oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+        if value not in (None, "") or not oauth_config_id:
+            return value
+        try:
+            from app.edition_config import fetch_oauth_config_by_id
+            shared = await fetch_oauth_config_by_id(
+                oauth_config_id=oauth_config_id,
+                connector_type="Confluence",
+                config_service=self.config_service,
+                logger=self.logger,
+                org_id=auth_config.get("inheritedFromOrgId"),
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not read the OAuth app for the Jira access setting: %s", type(e).__name__
+            )
+            return value
+        return ((shared or {}).get(OAuthConfigKeys.CONFIG) or {}).get("includeJiraScope")
+
     async def _link_platform_users_via_jira(self) -> None:
         """
         Link active platform users to Confluence via Jira user search.
@@ -934,7 +957,7 @@ class ConfluenceConnector(BaseConnector):
         auth_config = (config or {}).get("auth") or {}
         auth_type = (auth_config.get("authType") or "OAUTH").upper()
         if auth_type == "OAUTH":
-            if not include_jira_scope_enabled(auth_config.get("includeJiraScope")):
+            if not include_jira_scope_enabled(await self._include_jira_scope_setting(auth_config)):
                 return
 
         datasource = await self._get_fresh_datasource()

@@ -2012,6 +2012,51 @@ class TestDiscoverConnectorsDeep:
 class TestUpdateConnectorInstanceDeep:
     """Deeper tests for update_connector_instance."""
 
+    @staticmethod
+    def _registry_with_team_connector(name, *, name_taken=True):
+        registry, container = _make_registry()
+        gp = _make_graph_provider()
+        gp.get_document.return_value = {
+            "_key": "c1", "type": "Gmail", "name": name,
+            "scope": ConnectorScope.TEAM.value, "createdBy": "user-1",
+        }
+        gp.update_node.return_value = True
+        gp.check_connector_name_exists.return_value = name_taken
+        mock_data_store = MagicMock()
+        mock_data_store.graph_provider = gp
+        container.data_store = AsyncMock(return_value=mock_data_store)
+        return registry, gp
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("new_name", ["jira", " jira ", "Jira"])
+    async def test_rename_never_clashes_with_the_connector_itself(self, new_name):
+        """The name lookup excludes the connector being renamed, so resaving its
+        name or changing only case/spacing is not reported as taken."""
+        registry, gp = self._registry_with_team_connector("jira", name_taken=False)
+
+        result = await registry.update_connector_instance(
+            "c1", {"name": new_name}, "user-1", "org-1", is_admin=True
+        )
+
+        assert result is not None
+        kwargs = gp.check_connector_name_exists.call_args.kwargs
+        assert kwargs["exclude_connector_id"] == "c1"
+        assert kwargs["instance_name"] == new_name
+
+    @pytest.mark.asyncio
+    async def test_rename_to_name_held_by_another_connector_is_rejected(self):
+        registry, gp = self._registry_with_team_connector("jira", name_taken=True)
+
+        with pytest.raises(ValueError, match="already exists"):
+            await registry.update_connector_instance(
+                "c1", {"name": "Confluence"}, "user-1", "org-1", is_admin=True
+            )
+
+        kwargs = gp.check_connector_name_exists.call_args.kwargs
+        assert kwargs["org_id"] == "org-1"
+        assert kwargs["exclude_connector_id"] == "c1"
+        gp.update_node.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_update_without_name_change(self):
         """Update without name change skips uniqueness check."""

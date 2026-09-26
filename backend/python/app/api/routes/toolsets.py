@@ -729,6 +729,7 @@ async def _create_or_update_toolset_oauth_config(
                             continue  # Keep existing clientSecret if not provided / redacted
                         cfg["config"][k] = v
                     cfg["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+                    cfg["updatedBy"] = user_id
                     oauth_configs[idx] = cfg
                     path = _get_toolset_oauth_config_path(toolset_type)
                     await config_service.set_config(path, oauth_configs)
@@ -742,6 +743,10 @@ async def _create_or_update_toolset_oauth_config(
         )
         # Store all fields dynamically (except type)
         config_data = {k: v for k, v in enriched.items() if k != "type"}
+        # Imported here: edition_config imports this module before it binds this hook.
+        from app.edition_config import oauth_create_extra_fields
+
+        now = get_epoch_timestamp_in_ms()
         new_cfg = {
             "_id": _generate_oauth_config_id(),
             "oauthInstanceName": instance_name,
@@ -749,8 +754,11 @@ async def _create_or_update_toolset_oauth_config(
             "userId": user_id,
             "orgId": org_id,
             "config": config_data,
-            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "createdAtTimestamp": now,
+            "updatedAtTimestamp": now,
+            "createdBy": user_id,
+            "updatedBy": user_id,
+            **oauth_create_extra_fields(connector_scope=None, oauth_instance_name=instance_name),
         }
         oauth_configs.append(new_cfg)
         path = _get_toolset_oauth_config_path(toolset_type)

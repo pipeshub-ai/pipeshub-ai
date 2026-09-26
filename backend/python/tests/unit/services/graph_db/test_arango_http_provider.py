@@ -22477,3 +22477,27 @@ class TestGetConnectorStatsKB:
         assert bind_vars["origin_filter"] == OriginTypes.UPLOAD.value
         assert bind_vars["kb_app_id"] == f"{CollectionNames.APPS.value}/kb1"
         assert bind_vars["record_group_prefix"] is None
+
+
+class TestCheckConnectorNameExistsExcludesSelf:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", ["personal", "team"])
+    async def test_rename_excludes_the_connector_itself(self, connected_provider, scope):
+        with patch.object(connected_provider, "execute_query", new_callable=AsyncMock, return_value=[]) as mock_query:
+            await connected_provider.check_connector_name_exists(
+                "apps", "Jira", scope, org_id="org-1", user_id="user-1", exclude_connector_id="c1"
+            )
+
+        query = mock_query.call_args.args[0]
+        bind_vars = mock_query.call_args.kwargs["bind_vars"]
+        assert "FILTER doc._key != @exclude_key" in query
+        assert bind_vars["exclude_key"] == "c1"
+
+    @pytest.mark.asyncio
+    async def test_create_binds_no_exclusion(self, connected_provider):
+        # Arango rejects bind variables the query does not reference.
+        with patch.object(connected_provider, "execute_query", new_callable=AsyncMock, return_value=[]) as mock_query:
+            await connected_provider.check_connector_name_exists("apps", "Jira", "team", org_id="org-1")
+
+        assert "exclude_key" not in mock_query.call_args.kwargs["bind_vars"]
+        assert "@exclude_key" not in mock_query.call_args.args[0]

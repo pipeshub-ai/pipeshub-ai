@@ -1233,17 +1233,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str | None = None,
         user_id: str | None = None,
         transaction: str | None = None,
+        exclude_connector_id: str | None = None,
     ) -> bool:
         """Check if a connector instance name already exists for the given scope."""
         try:
             normalized_name = instance_name.strip().lower()
+            # Arango rejects bind variables a query does not reference.
+            exclude_filter = "FILTER doc._key != @exclude_key" if exclude_connector_id else ""
 
             if scope == "personal":
-                query = """
+                query = f"""
                 FOR doc IN @@collection
                     FILTER doc.scope == @scope
                     FILTER doc.createdBy == @user_id
                     FILTER LOWER(TRIM(doc.name)) == @normalized_name
+                    {exclude_filter}
                     LIMIT 1
                     RETURN doc._key
                 """
@@ -1254,13 +1258,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "normalized_name": normalized_name,
                 }
             else:  # team scope
-                query = """
+                query = f"""
                 FOR edge IN @@edge_collection
                     FILTER edge._from == @org_id
                     FOR doc IN @@collection
                         FILTER doc._id == edge._to
                         FILTER doc.scope == @scope
                         FILTER LOWER(TRIM(doc.name)) == @normalized_name
+                        {exclude_filter}
                         LIMIT 1
                         RETURN doc._key
                 """
@@ -1271,6 +1276,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "scope": scope,
                     "normalized_name": normalized_name,
                 }
+
+            if exclude_connector_id:
+                bind_vars["exclude_key"] = exclude_connector_id
 
             results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
             return len(results) > 0

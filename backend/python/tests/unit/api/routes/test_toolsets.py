@@ -1562,6 +1562,13 @@ class TestCreateOrUpdateToolsetOAuthConfig:
         assert result_id is not None
         uuid.UUID(result_id)
         config_service.set_config.assert_awaited_once()
+        saved = config_service.set_config.call_args.args[1][0]
+        assert saved["createdBy"] == "user-1"
+        assert saved["updatedBy"] == "user-1"
+        assert saved["userId"] == "user-1"
+        assert saved["toolsetType"] == "jira"
+        # Toolset OAuth apps have no connector scope.
+        assert "connectorScope" not in saved
 
     @pytest.mark.asyncio
     async def test_update_existing_config(self) -> None:
@@ -1606,6 +1613,7 @@ class TestCreateOrUpdateToolsetOAuthConfig:
         )
         assert result_id == "existing-cfg"
         config_service.set_config.assert_awaited_once()
+        assert config_service.set_config.call_args.args[1][0]["updatedBy"] == "user-1"
 
     @pytest.mark.asyncio
     async def test_update_not_found_falls_through_to_create(self) -> None:

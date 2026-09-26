@@ -3557,6 +3557,7 @@ async def _handle_oauth_config_creation(
     auth_type: str,
     base_url: str,
     logger: logging.Logger,
+    connector_scope: str | None = None,
 ) -> str | None:
     """
     Handle OAuth config creation or update for a new connector instance.
@@ -3667,7 +3668,8 @@ async def _handle_oauth_config_creation(
         config_service=config_service,
         base_url=base_url,
         oauth_app_id=oauth_app_id,
-        logger=logger
+        logger=logger,
+        connector_scope=connector_scope,
     )
 
 
@@ -4067,7 +4069,8 @@ async def create_connector_instance(
                     oauth_config_id=oauth_config_id,
                     auth_type=selected_auth_type,
                     base_url=base_url,
-                    logger=logger
+                    logger=logger,
+                    connector_scope=scope,
                 )
 
                 if created_oauth_id:
@@ -4505,7 +4508,8 @@ async def update_connector_instance_auth_config(
                     config_service=config_service,
                     base_url=base_url,
                     oauth_app_id=oauth_app_id,
-                    logger=logger
+                    logger=logger,
+                    connector_scope=instance.get("scope"),
                 )
 
                 if created_or_updated_oauth_app_id:
@@ -5663,8 +5667,11 @@ async def _build_oauth_flow_config(
     raw_scopes = oauth_flow_config.get("scopes") or []
     if not isinstance(raw_scopes, list):
         raw_scopes = list(raw_scopes) if raw_scopes else []
+    # oauth_flow_config already carries the OAuth app's settings; a value set on
+    # the connector itself takes precedence over the app's.
+    connector_settings = {k: v for k, v in auth_config.items() if v not in (None, "")}
     oauth_flow_config["scopes"] = _apply_confluence_optional_jira_scope(
-        connector_type, auth_config, raw_scopes
+        connector_type, {**oauth_flow_config, **connector_settings}, raw_scopes
     )
 
     return oauth_flow_config
@@ -8107,6 +8114,7 @@ async def _create_or_update_oauth_config(
     base_url: str,
     oauth_app_id: str | None = None,
     logger: logging.Logger | None = None,
+    connector_scope: str | None = None,
 ) -> str | None:
     """
     Create or update an OAuth config based on auth_config fields.
@@ -8148,8 +8156,8 @@ async def _create_or_update_oauth_config(
             oauth_config = None
             for idx, oauth_cfg in enumerate(oauth_configs):
                 if oauth_cfg.get("_id") == oauth_app_id:
-                    # Check permissions
-                    oauth_user_id = oauth_cfg.get("userId")
+                    # Check permissions; "userId" is the author field on older records
+                    oauth_user_id = oauth_cfg.get("createdBy") or oauth_cfg.get("userId")
                     oauth_org_id = oauth_cfg.get("orgId")
                     if (is_admin and oauth_org_id == org_id) or (oauth_user_id == user_id and oauth_org_id == org_id):
                         # Update the config with new credentials from form
@@ -8172,6 +8180,7 @@ async def _create_or_update_oauth_config(
                         await _update_oauth_infrastructure_fields(oauth_cfg, connector_type, config_service, base_url)
 
                         oauth_cfg["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+                        oauth_cfg["updatedBy"] = user_id
                         oauth_configs[idx] = oauth_cfg
                         oauth_config = oauth_cfg
                         logger.info(f"Updated existing OAuth config for connector {connector_type}")
@@ -8185,6 +8194,7 @@ async def _create_or_update_oauth_config(
             # Create new OAuth config
             logger.info(f"Auto-creating OAuth config for connector {connector_type}")
 
+            now = get_epoch_timestamp_in_ms()
             new_oauth_config = {
                 "_id": _generate_oauth_config_id(),
                 OAUTH_INSTANCE_NAME: instance_name,
@@ -8192,8 +8202,16 @@ async def _create_or_update_oauth_config(
                 "userId": user_id,
                 "orgId": org_id,
                 "config": {},
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "createdAtTimestamp": now,
+                "updatedAtTimestamp": now,
+                "createdBy": user_id,
+                "updatedBy": user_id,
+                # Without connectorScope, scope-filtered lists (the connector
+                # panel's OAuth app picker) never show this app.
+                **oauth_create_extra_fields(
+                    connector_scope=connector_scope,
+                    oauth_instance_name=instance_name,
+                ),
             }
 
             # Populate all OAuth credential fields dynamically from auth_config first

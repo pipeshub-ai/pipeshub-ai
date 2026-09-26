@@ -388,6 +388,7 @@ class ConnectorRegistry:
         scope: str,
         org_id: str,
         user_id: str,
+        exclude_connector_id: str | None = None,
     ) -> bool:
         """
         Check if connector instance name is unique based on scope.
@@ -397,6 +398,7 @@ class ConnectorRegistry:
             scope: Connector scope (personal/team)
             org_id: Organization ID
             user_id: User ID (for personal scope)
+            exclude_connector_id: Connector being renamed, which never clashes with itself
 
         Returns:
             True if name is unique, False if already exists
@@ -411,6 +413,7 @@ class ConnectorRegistry:
                 scope=scope,
                 org_id=org_id,
                 user_id=user_id,
+                exclude_connector_id=exclude_connector_id,
             )
 
             # Return True if name is unique (does NOT exist)
@@ -1609,6 +1612,7 @@ class ConnectorRegistry:
                     scope=scope,
                     org_id=org_id,
                     user_id=created_by,
+                    exclude_connector_id=connector_id,
                 )
 
                 if not is_unique:

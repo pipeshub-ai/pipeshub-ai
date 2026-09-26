@@ -21,6 +21,7 @@ import {
 import { toast } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { useShouldPollServiceHealth } from '@/config';
 
 const CRITICAL_APP_SERVICES = new Set(['query', 'connector']);
 const NON_CRITICAL_TOAST_INTERVAL = 60 * 60 * 1000; // 1 hour
@@ -124,6 +125,7 @@ function BackendUnavailableScreen() {
 export function HealthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const isAdmin = useUserStore(selectIsAdmin);
+  const shouldPoll = useShouldPollServiceHealth();
 
   const startBackgroundPolling = useServicesHealthStore((s) => s.startBackgroundPolling);
   const stopBackgroundPolling = useServicesHealthStore((s) => s.stopBackgroundPolling);
@@ -140,10 +142,14 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasUnreachableRef = useRef(false);
 
-  // ── Start background polling on mount ────────────────────────────────────
   useEffect(() => {
-    startBackgroundPolling();
     fetchFeatureFlags();
+  }, [fetchFeatureFlags]);
+
+  // ── Background polling, only while this user is allowed to watch health ──
+  useEffect(() => {
+    if (!shouldPoll) return;
+    startBackgroundPolling();
     return () => {
       stopBackgroundPolling();
       if (criticalToastIdRef.current) {
@@ -151,7 +157,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         criticalToastIdRef.current = null;
       }
     };
-  }, [startBackgroundPolling, stopBackgroundPolling, fetchFeatureFlags]);
+  }, [shouldPoll, startBackgroundPolling, stopBackgroundPolling]);
 
   // ── Refresh data on server recovery to clear stale state ────────────────
   useEffect(() => {
