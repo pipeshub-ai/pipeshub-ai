@@ -62,6 +62,14 @@ class Fault:
     matches: Callable[[str], bool]
     responses: list[httpx.Response | Exception]
     hits: int = 0
+    make: Callable[[], httpx.Response | Exception] | None = None
+
+    def live(self) -> bool:
+        return bool(self.responses) or self.make is not None
+
+    def end(self) -> None:
+        self.responses.clear()
+        self.make = None
 
 
 @dataclass
@@ -184,6 +192,12 @@ class FakeNextcloud:
         self.faults.append(fault)
         return fault
 
+    def outage(self, method: str, matches: Callable[[str], bool], make: Callable[[], httpx.Response | Exception]) -> Fault:
+        """Answer every matching request with a fresh ``make()``, retries included, until ``end()`` is called."""
+        fault = Fault(method.upper(), matches, [], make=make)
+        self.faults.append(fault)
+        return fault
+
     @property
     def latest_activity_id(self) -> int:
         return self.activities[-1]["activity_id"] if self.activities else 0
@@ -209,9 +223,9 @@ class FakeNextcloud:
         self.requests.append(request)
         path = self._decoded_path(request)
         for fault in self.faults:
-            if fault.responses and fault.method == request.method and fault.matches(path):
+            if fault.live() and fault.method == request.method and fault.matches(path):
                 fault.hits += 1
-                answer = fault.responses.pop(0)
+                answer = fault.responses.pop(0) if fault.responses else fault.make()
                 if isinstance(answer, Exception):
                     raise answer
                 return answer

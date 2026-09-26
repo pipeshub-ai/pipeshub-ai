@@ -318,24 +318,28 @@ class TestAppPasswordAuth:
         assert store.cursor() == before
         assert [n["type"] for n in await notifications()] == [NotificationType.CONNECTOR_AUTH_ERROR]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: a temporary error reading the "
-            "user's profile is treated like 'this user has no email', so files are saved as owned "
-            "by a made-up address and the real user can't see them."
-        ),
+    @pytest.mark.parametrize(
+        "make",
+        [
+            pytest.param(lambda: httpx.Response(503), id="server-error"),
+            pytest.param(lambda: httpx.ConnectError("connection reset"), id="network-error"),
+            pytest.param(lambda: httpx.Response(200, content=b"{not json"), id="garbled"),
+        ],
     )
-    async def test_a_temporary_profile_error_does_not_invent_an_owner(self, server, db, store) -> None:
+    async def test_a_temporary_profile_error_does_not_invent_an_owner(self, server, db, store, make) -> None:
         seed_drive(server)
-        server.fail("GET", lambda p: p.startswith(USERS_PREFIX), httpx.Response(503))
-        connector = build(server, db, store)
+        outage = server.outage("GET", lambda p: p.startswith(USERS_PREFIX), make)
+        connector = await make_connector(server, db, store)
 
-        if await connector.init():
-            await connector.run_sync()
+        await connector.run_sync()
+        assert connector.current_user_email is None
+        assert db.records == {} and db.app_users == [] and store.cursor() is None, "the run is held, not guessed"
 
+        outage.end()
+        await connector.run_sync()
         emails = {p.email for perms in db.permissions.values() for p in perms}
-        assert not any(e.endswith(MADE_UP_DOMAIN) for e in emails)
+        assert emails == {"alice@example.com"}
+        assert owners(db, "q1.pdf") == ALICE_OWNER
 
 
 class TestFullSync:

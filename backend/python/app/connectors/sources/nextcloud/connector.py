@@ -551,24 +551,7 @@ class NextcloudConnector(BaseConnector):
             data_source = NextcloudDataSource(NextcloudClient(client))
             self.current_user_id = username
 
-            # Try to get user email from Nextcloud
-            try:
-                response = await data_source.get_user_details(self.current_user_id)
-                await self._raise_if_app_password_rejected(response)
-                if is_response_successful(response):
-                    body = extract_response_body(response)
-                    if body:
-                        data = json.loads(body)
-                        user_data = data.get('ocs', {}).get('data', {})
-                        self.current_user_email = user_data.get('email') or f"{self.current_user_id}@nextcloud.local"
-                else:
-                    self.current_user_email = f"{self.current_user_id}@nextcloud.local"
-            except NextcloudAppPasswordRejectedError:
-                raise
-            except Exception as e:
-                self.logger.warning(f"Could not fetch user email: {e}")
-                self.current_user_email = f"{self.current_user_id}@nextcloud.local"
-
+            self.current_user_email = await self._read_user_email(data_source)
             self.data_source = data_source
             self.logger.info(f"Nextcloud client initialized for user: {self.current_user_id}")
             return True
@@ -577,6 +560,26 @@ class NextcloudConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to initialize Nextcloud client: {e}", exc_info=True)
             return False
+
+    async def _read_user_email(self, data_source: NextcloudDataSource) -> str | None:
+        """The user's email from their Nextcloud profile, or None when the profile can't be read.
+
+        Only a profile that was read and has no email gets the stand-in address;
+        a failed read must not, or files are saved as owned by an address nobody has.
+        """
+        try:
+            response = await data_source.get_user_details(self.current_user_id)
+            await self._raise_if_app_password_rejected(response)
+            if not is_response_successful(response):
+                self.logger.warning(f"Could not read the Nextcloud profile: {get_response_error(response)}")
+                return None
+            user_data = json.loads(extract_response_body(response) or b"")["ocs"]["data"]
+            return user_data.get("email") or f"{self.current_user_id}@nextcloud.local"
+        except NextcloudAppPasswordRejectedError:
+            raise
+        except Exception as e:
+            self.logger.warning(f"Could not read the Nextcloud profile: {e}")
+            return None
 
     async def _raise_if_app_password_rejected(self, response: object) -> None:
         if getattr(response, "status", None) != HttpStatusCode.UNAUTHORIZED.value:
@@ -1090,8 +1093,13 @@ class NextcloudConnector(BaseConnector):
                     )
                     return
 
+            if self.current_user_id and not self.current_user_email:
+                self.current_user_email = await self._read_user_email(self.data_source)
             if not self.current_user_id or not self.current_user_email:
-                self.logger.error("Current user info not available")
+                self.logger.error(
+                    "❌ Could not read the Nextcloud user's profile, so the owner of the files is unknown. "
+                    "Nothing was synced; the next sync will try again."
+                )
                 return
 
             # 1. Check if we have an existing activity cursor
@@ -1222,8 +1230,12 @@ class NextcloudConnector(BaseConnector):
                 self.logger.error("Current user ID not set")
                 return
 
+            if not self.current_user_email:
+                self.logger.error("Current user email not known; nothing synced")
+                return
+
             user_id = self.current_user_id
-            user_email = self.current_user_email or f"{user_id}@nextcloud.local"
+            user_email = self.current_user_email
 
             # Get existing record group
             existing_group = await self.data_entities_processor.get_record_group_by_external_id(

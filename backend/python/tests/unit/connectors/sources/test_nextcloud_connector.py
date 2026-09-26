@@ -667,7 +667,7 @@ class TestConnectorInitEdges:
             mock_ds.return_value = mock_ds_instance
             result = await nextcloud_connector.init()
             assert result is True
-            assert "nextcloud.local" in nextcloud_connector.current_user_email
+            assert nextcloud_connector.current_user_email is None, "a failed read must not invent an owner"
 
     @pytest.mark.asyncio
     async def test_init_user_details_exception(self, nextcloud_connector):
@@ -682,7 +682,7 @@ class TestConnectorInitEdges:
             mock_ds.return_value = mock_ds_instance
             result = await nextcloud_connector.init()
             assert result is True
-            assert "nextcloud.local" in nextcloud_connector.current_user_email
+            assert nextcloud_connector.current_user_email is None, "a failed read must not invent an owner"
 
     @pytest.mark.asyncio
     async def test_init_exception(self, nextcloud_connector):
