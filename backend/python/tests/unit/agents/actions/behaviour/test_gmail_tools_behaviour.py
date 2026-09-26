@@ -130,7 +130,6 @@ class TestSend:
         assert ok is False
         assert "message_id" not in data
 
-    @pending("files")
     @pytest.mark.parametrize("tool", ["send_email", "draft_email", "reply"])
     async def test_a_server_file_path_is_never_attached(self, gmail, http, tmp_path: Path, tool) -> None:
         secret = tmp_path / "service.env"
@@ -147,7 +146,6 @@ class TestSend:
         assert ok is False
         assert "attachment_record_ids" in assert_safe_error(data)
 
-    @pending("files")
     @pytest.mark.parametrize("tool", ["send_email", "draft_email", "reply"])
     def test_the_model_is_not_offered_file_paths_to_attach(self, gmail, tool) -> None:
         names = [p.name for p in getattr(getattr(gmail, tool), TOOL_META_ATTR).parameters]

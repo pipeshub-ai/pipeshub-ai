@@ -48,6 +48,16 @@ def _gmail_message_label(message: dict) -> str:
     return subject or message.get("snippet") or message.get("id") or "?"
 
 
+def _refuse_file_paths() -> tuple[bool, str]:
+    # Paths would be read from the server's own disk, so the model could mail out any file there.
+    return False, json.dumps({
+        "error": (
+            "Files can't be attached by path. Attach PipesHub files (chat uploads, artifacts, knowledge-base "
+            "files) by passing their record IDs in attachment_record_ids instead."
+        )
+    })
+
+
 # Pydantic schemas for Gmail tools
 class SendEmailInput(BaseModel):
     """Schema for sending an email"""
@@ -56,7 +66,6 @@ class SendEmailInput(BaseModel):
     mail_cc: Optional[List[str]] = Field(default=None, description="List of email addresses to CC")
     mail_bcc: Optional[List[str]] = Field(default=None, description="List of email addresses to BCC")
     mail_body: Optional[str] = Field(default=None, description="The body content of the email")
-    mail_attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
     thread_id: Optional[str] = Field(default=None, description="The thread ID to maintain conversation context")
     message_id: Optional[str] = Field(default=None, description="The message ID for threading")
 
@@ -69,7 +78,6 @@ class ReplyInput(BaseModel):
     mail_cc: Optional[List[str]] = Field(default=None, description="List of email addresses to CC")
     mail_bcc: Optional[List[str]] = Field(default=None, description="List of email addresses to BCC")
     mail_body: Optional[str] = Field(default=None, description="The body content of the reply email")
-    mail_attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
     thread_id: Optional[str] = Field(default=None, description="The thread ID to maintain conversation context")
 
 
@@ -80,7 +88,6 @@ class DraftEmailInput(BaseModel):
     mail_cc: Optional[List[str]] = Field(default=None, description="List of email addresses to CC")
     mail_bcc: Optional[List[str]] = Field(default=None, description="List of email addresses to BCC")
     mail_body: Optional[str] = Field(default=None, description="The body content of the email")
-    mail_attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
 
 
 class SearchEmailsInput(BaseModel):
@@ -280,7 +287,6 @@ class Gmail:
             ToolParameter(name="mail_cc", type=ParameterType.ARRAY, description="List of email addresses to CC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_bcc", type=ParameterType.ARRAY, description="List of email addresses to BCC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_body", type=ParameterType.STRING, description="The body content of the reply email", required=False),
-            ToolParameter(name="mail_attachments", type=ParameterType.ARRAY, description="List of file paths to attach (legacy; prefer attachment_record_ids)", required=False, items={"type": "string"}),
             ToolParameter(name="thread_id", type=ParameterType.STRING, description="The thread ID to maintain conversation context", required=False),
             attachment_record_ids_parameter(required=False),
         ],
@@ -299,6 +305,8 @@ class Gmail:
         attachment_record_ids: Optional[List[str]] = None,
     ) -> tuple[bool, str]:
         """Reply to an email, optionally attaching PipesHub records."""
+        if mail_attachments:
+            return _refuse_file_paths()
         try:
             destination = ", ".join(mail_to) if mail_to else ""
             in_memory = await self._resolve_in_memory_attachments(attachment_record_ids, destination=destination)
@@ -308,7 +316,7 @@ class Gmail:
                 mail_cc,
                 mail_bcc,
                 mail_body,
-                mail_attachments,
+                None,
                 thread_id,
                 message_id,
                 in_memory_attachments=in_memory,
@@ -333,7 +341,6 @@ class Gmail:
             ToolParameter(name="mail_cc", type=ParameterType.ARRAY, description="List of email addresses to CC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_bcc", type=ParameterType.ARRAY, description="List of email addresses to BCC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_body", type=ParameterType.STRING, description="The body content of the email", required=False),
-            ToolParameter(name="mail_attachments", type=ParameterType.ARRAY, description="List of file paths to attach (legacy; prefer attachment_record_ids)", required=False, items={"type": "string"}),
             attachment_record_ids_parameter(required=False),
         ],
         tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
@@ -349,6 +356,8 @@ class Gmail:
         attachment_record_ids: Optional[List[str]] = None,
     ) -> tuple[bool, str]:
         """Draft an email, optionally attaching PipesHub records."""
+        if mail_attachments:
+            return _refuse_file_paths()
         try:
             destination = ", ".join(mail_to) if mail_to else ""
             in_memory = await self._resolve_in_memory_attachments(attachment_record_ids, destination=destination)
@@ -358,7 +367,7 @@ class Gmail:
                 mail_cc,
                 mail_bcc,
                 mail_body,
-                mail_attachments,
+                None,
                 in_memory_attachments=in_memory,
             )
             draft = await self.client.users_drafts_create(
@@ -384,7 +393,6 @@ class Gmail:
             ToolParameter(name="mail_cc", type=ParameterType.ARRAY, description="List of email addresses to CC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_bcc", type=ParameterType.ARRAY, description="List of email addresses to BCC", required=False, items={"type": "string"}),
             ToolParameter(name="mail_body", type=ParameterType.STRING, description="The body content of the email", required=False),
-            ToolParameter(name="mail_attachments", type=ParameterType.ARRAY, description="List of file paths to attach (legacy; prefer attachment_record_ids)", required=False, items={"type": "string"}),
             ToolParameter(name="thread_id", type=ParameterType.STRING, description="The thread ID to maintain conversation context", required=False),
             ToolParameter(name="message_id", type=ParameterType.STRING, description="The message ID for threading", required=False),
             attachment_record_ids_parameter(required=False),
@@ -406,6 +414,8 @@ class Gmail:
         attachment_record_ids: Optional[List[str]] = None,
     ) -> tuple[bool, str]:
         """Send an email, optionally attaching PipesHub records."""
+        if mail_attachments:
+            return _refuse_file_paths()
         try:
             destination = ", ".join(mail_to) if mail_to else ""
             in_memory = await self._resolve_in_memory_attachments(attachment_record_ids, destination=destination)
@@ -415,7 +425,7 @@ class Gmail:
                 mail_cc,
                 mail_bcc,
                 mail_body,
-                mail_attachments,
+                None,
                 thread_id,
                 message_id,
                 in_memory_attachments=in_memory,
