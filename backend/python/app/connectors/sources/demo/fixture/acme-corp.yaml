@@ -1247,35 +1247,6 @@ records:
       export fix and SSO group sync as the two things that tipped it.
 
   # ---------------------------------------------------------------------------
-  # Support — when to escalate (the rule behind SUP-114)
-  # ---------------------------------------------------------------------------
-
-  - id: drive-support-escalation-policy
-    container: drive-support
-    type: FILE
-    title: "Support escalation policy"
-    author: bob
-    created: 2025-09-15T10:00:00Z
-    updated: 2026-03-30T10:00:00Z
-    web_url: https://docs.acme-demo.example/document/d/acme-escalation-policy
-    body: |
-      **Owner:** Bob Okafor
-
-      ## When to escalate to engineering
-      Open a SUP ticket in Jira when **either** is true:
-      - two or more customers report the same product problem within a week, or
-      - one Enterprise customer is blocked from a core workflow with no workaround.
-
-      ## How
-      Link every related ServiceNow case to the SUP ticket, post it in
-      #support-escalations, and tag the owning engineering team. The support engineer
-      who opened it owns customer updates until it closes.
-
-      ## After the fix
-      Update each linked case, confirm with the customers, and add a runbook entry
-      if support may see the problem again.
-
-  # ---------------------------------------------------------------------------
   # Story 5 — launching background exports (Marketing, gated on engineering)
   # ---------------------------------------------------------------------------
 
@@ -1668,11 +1639,6 @@ pack_questions:
       must_not_cite: [drive-pricing-2026]
       personas: { alice: cites, bob: cites }
   support:
-    - id: u1
-      ask: "When should a support case be escalated to engineering, and how do we do it?"
-      must_cite: [drive-support-escalation-policy]
-      must_not_cite: [drive-pricing-2026]
-      personas: { alice: cites, bob: cites }
     - id: u2
       ask: "What happened with Contoso's invoice that showed VAT on an exempt line?"
       must_cite_any_of: [jira-sup-121, jira-fin-37, jira-fin-38]
