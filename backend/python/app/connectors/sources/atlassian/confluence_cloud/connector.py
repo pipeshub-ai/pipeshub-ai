@@ -1719,24 +1719,14 @@ class ConfluenceConnector(BaseConnector):
                                 embedded_image_ids: set[str] = set()
 
                                 try:
-                                    if content_type == "page":
-                                        v2_response = await datasource.get_page_attachments(
-                                            id=int(item_id),
-                                            status=["current"],  # Only fetch current version attachments
-                                            limit=100
-                                        )
-                                    else:  # blogpost
-                                        v2_response = await datasource.get_blogpost_attachments(
-                                            id=int(item_id),
-                                            status=["current"],  # Only fetch current version attachments
-                                            limit=100
-                                        )
-                                    if v2_response and v2_response.status == HttpStatusCode.SUCCESS.value:
-                                        v2_data = v2_response.json()
-                                        attachments_v2 = v2_data.get("results", [])
-                                        if attachments_v2:
-                                            attachments = attachments_v2
-                                            v2_attachments_base_url = v2_data.get("_links", {}).get("base")
+                                    attachments_v2, v2_base_url, attachments_cut_short = (
+                                        await self._list_current_attachments_v2(datasource, item_id, content_type)
+                                    )
+                                    if attachments_v2:
+                                        attachments = attachments_v2
+                                        v2_attachments_base_url = v2_base_url
+                                    if attachments_cut_short:
+                                        listing_complete = False
                                 except Exception as v2_error:
                                     self.logger.debug(f"Error fetching v2 attachments: {v2_error}")
 
@@ -3936,6 +3926,49 @@ class ConfluenceConnector(BaseConnector):
         if value.lower().startswith("att"):
             return value
         return f"att{value}"
+
+    async def _list_current_attachments_v2(
+        self,
+        datasource: ConfluenceDataSource,
+        content_id: str,
+        content_type: str,
+    ) -> tuple[list[dict[str, Any]], str | None, bool]:
+        """Every current attachment of a page or blog post, following the v2 cursor.
+
+        Returns the attachments, the listing's base URL, and whether a page after the
+        first could not be read, so the caller keeps its checkpoint. When the first
+        page fails nothing is returned and the caller keeps its fallback.
+        """
+        list_attachments = (
+            datasource.get_page_attachments if content_type == "page" else datasource.get_blogpost_attachments
+        )
+        attachments: list[dict[str, Any]] = []
+        base_url: str | None = None
+        cursor: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"id": int(content_id), "status": ["current"], "limit": 100}
+            if cursor:
+                kwargs["cursor"] = cursor
+            try:
+                response = await list_attachments(**kwargs)
+            except Exception as e:
+                self.logger.warning(f"Could not list attachments of {content_type} {content_id}: {e}")
+                response = None
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                if attachments:
+                    self.logger.warning(
+                        f"Listed only {len(attachments)} attachments of {content_type} {content_id} before the "
+                        "listing failed; the rest are read again next sync"
+                    )
+                return attachments, base_url, bool(attachments)
+            data = response.json() or {}
+            attachments.extend(data.get("results") or [])
+            links = data.get("_links") or {}
+            base_url = base_url or links.get("base")
+            next_cursor = self._extract_cursor_from_next_link(links["next"]) if links.get("next") else None
+            if not next_cursor or next_cursor == cursor:
+                return attachments, base_url, False
+            cursor = next_cursor
 
     async def _fetch_page_attachments_list(
         self,

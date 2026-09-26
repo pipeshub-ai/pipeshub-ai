@@ -354,33 +354,42 @@ class TestPageSync:
         assert "500" in db.records
         assert checkpoints.values_for("confluence_folders/ENG") is None
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: only the first 100 "
-            "attachments of a page are listed; the rest are never synced."
-        ),
-    )
-    async def test_every_attachment_of_a_page_is_synced(self, api, db, checkpoints, search) -> None:
+    @staticmethod
+    def _many_attachments(api: AtlassianApiStub, search: ContentSearch, second_page: object) -> None:
         def att(i: int) -> dict[str, Any]:
             return {"id": f"att{i}", "title": f"file{i}.pdf", "mediaType": "application/pdf", "fileSize": 10,
                     "version": {"number": 1}, "_links": {"download": f"/download/attachments/10/file{i}.pdf"}}
 
         search.by_cursor[None] = search_page([v1_page("10", attachments=[att(0)])])
         first = {"results": [att(i) for i in range(100)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}}
-        second = {"results": [att(i) for i in range(100, 130)], "_links": {"base": WIKI}}
+        second = second_page if second_page is not None else {"results": [att(i) for i in range(100, 130)], "_links": {"base": WIKI}}
 
         def attachments(request: httpx.Request) -> httpx.Response:
-            return json_response(second if AtlassianApiStub.query(request).get("cursor") == "A2" else first)
+            page = second if AtlassianApiStub.query(request).get("cursor") == "A2" else first
+            return page if isinstance(page, httpx.Response) else json_response(page)
 
         api.on("GET", f"{V2}/pages/10/attachments", attachments)
         api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+
+    async def test_every_attachment_of_a_page_is_synced(self, api, db, checkpoints, search) -> None:
+        self._many_attachments(api, search, None)
         connector, _ = await ready_connector(db, checkpoints)
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         files = [r for r in db.records.values() if isinstance(r, FileRecord)]
         assert len(files) == 130
+        assert checkpoints.values_for("confluence_pages/ENG") is not None
+
+    async def test_a_failed_second_page_of_attachments_keeps_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        self._many_attachments(api, search, json_response({"message": "Service Unavailable"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        files = [r for r in db.records.values() if isinstance(r, FileRecord)]
+        assert len(files) == 100, "what was listed is still saved"
+        assert checkpoints.values_for("confluence_pages/ENG") is None, "the rest are listed again next sync"
 
     async def test_images_shown_inside_the_page_are_not_duplicated_as_files(self, api, db, checkpoints, search) -> None:
         shot = {"id": "att1", "title": "shot.png", "mediaType": "image/png", "fileId": "media-1", "version": {"number": 1}}
