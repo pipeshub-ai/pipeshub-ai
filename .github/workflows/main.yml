@@ -101,11 +101,11 @@ jobs:
 
       # The Electron local-sync tests drive a real file watcher against a real
       # temporary directory, so they are slower than the vitest suite (~45s) and
-      # must run one file at a time — see the note on test:electron:local-sync.
-      - name: Run Electron local-sync tests
+      # must run one file at a time — see the note on test:electron.
+      - name: Run Electron main-process tests
         run: |
           cd frontend
-          npm run test:electron:local-sync
+          npm run test:electron
 
       - name: Build frontend
         run: |

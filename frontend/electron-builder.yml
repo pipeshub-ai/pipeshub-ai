@@ -6,6 +6,7 @@ directories:
 files:
   - electron/compile/main.js
   - electron/compile/preload.js
+  - electron/compile/deep-link.js
   - electron/package.json
   - electron/compile/local-sync/**/*.js
   - "!electron/compile/local-sync/**/*.test.js"
@@ -42,6 +43,13 @@ files:
   - node_modules/ms/**/*
 asarUnpack:
   - electron/compile/preload.js
+# Sign-in opens in the default browser, which returns the result through this
+# scheme. Writes CFBundleURLTypes on macOS and the .desktop MimeType on Linux;
+# Windows is registered at runtime by app.setAsDefaultProtocolClient.
+protocols:
+  - name: PipesHub
+    schemes:
+      - pipeshub
 afterPack: scripts/electron/after-pack.cjs
 mac:
   category: public.app-category.productivity

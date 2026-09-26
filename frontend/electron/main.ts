@@ -15,6 +15,7 @@ import {
 } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { pathToFileURL } from 'url';
 import {
   ContentStreamer,
   DesktopCredentialsStore,
@@ -27,6 +28,12 @@ import {
   openLocalFsRecordSource,
   type OpenLocalFsRecordSourcePayload,
 } from './local-sync/open-record-source';
+import {
+  DEEP_LINK_SCHEME,
+  findDeepLinkInArgv,
+  parseOAuthDeepLink,
+  type OAuthDeepLink,
+} from './deep-link';
 
 // Directory where `next build` (static export) output lands after electron:copy
 // Static export lives at electron/out/ (see electron-prepare); main runs from electron/compile/
@@ -44,17 +51,69 @@ let desktopSocket: DesktopSocketClient | null = null;
 let deviceIdentityReady: Promise<void> = Promise.resolve();
 let deviceIdentityError: string | null = null;
 let isQuitting = false;
+/** Last OAuth deep link, held until a renderer subscriber takes it (see handleDeepLinkUrl). */
+let pendingDeepLink: (OAuthDeepLink & { receivedAt: number }) | null = null;
+
+// Sign-in runs in the user's default browser because no provider accepts an
+// app:// redirect URI. Registering this scheme is how the result gets back.
+if (process.defaultApp && process.argv.length >= 2) {
+  // Running from source: argv[0] is electron itself, so the entry path has to be
+  // registered with it or the OS launches a bare Electron shell instead of us.
+  app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME, process.execPath, [
+    path.resolve(process.argv[1]),
+  ]);
+} else {
+  app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+}
+
+/** A link older than this is stale; a sign-in attempt has long since timed out. */
+const DEEP_LINK_TTL_MS = 5 * 60 * 1000;
+
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+}
+
+function deliverDeepLink(link: OAuthDeepLink & { receivedAt: number }): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('oauth/callback', link);
+}
+
+/**
+ * Buffer as well as send: on a cold start the window exists well before React
+ * mounts a subscriber, and a send with no listener is simply dropped. The
+ * renderer drains the buffer when it subscribes, and consumes single-use, so
+ * receiving the same link both ways is harmless.
+ *
+ * Never log rawUrl — it carries the id_token or auth code.
+ */
+function handleDeepLinkUrl(rawUrl: string | null | undefined): void {
+  if (!rawUrl) return;
+  const parsed = parseOAuthDeepLink(rawUrl);
+  if (!parsed) return;
+
+  pendingDeepLink = { ...parsed, receivedAt: Date.now() };
+  focusMainWindow();
+  deliverDeepLink(pendingDeepLink);
+}
+
+// macOS delivers deep links as an event, and can do so before the app is ready,
+// so this has to be registered at module scope rather than inside whenReady().
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleDeepLinkUrl(url);
+});
 
 // Single-instance lock so only one app instance runs watchers / dispatch.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+  app.on('second-instance', (_event, argv) => {
+    focusMainWindow();
+    // Windows and Linux hand the link to the second instance as an argument.
+    handleDeepLinkUrl(findDeepLinkInArgv(argv));
   });
 }
 
@@ -245,21 +304,20 @@ app.whenReady().then(() => {
     // Resolve to a file inside the static export directory
     let filePath = path.join(STATIC_DIR, pathname);
 
-    // If the path is a directory, serve index.html (Next.js trailingSlash output)
-    if (filePath.endsWith('/') || filePath.endsWith(path.sep)) {
-      filePath = path.join(filePath, 'index.html');
-    }
-
-    // If file doesn't exist and has no extension, try appending /index.html
-    // (handles routes like /login -> /login/index.html)
-    if (!path.extname(filePath) && !fs.existsSync(filePath)) {
+    // An extensionless route resolves to the directory the export wrote it as
+    // (/login -> out/login), whether or not it carries a trailing slash.
+    // Fetching the directory itself fails with ERR_UNEXPECTED, so prefer the
+    // index.html inside it -- this is what a full navigation to a route hits.
+    if (!path.extname(filePath)) {
       const withIndex = path.join(filePath, 'index.html');
       if (fs.existsSync(withIndex)) {
         filePath = withIndex;
       }
     }
 
-    return net.fetch('file://' + filePath);
+    // pathToFileURL, not string concatenation: the install path can contain
+    // spaces and a bare drive letter is not a valid file:// host.
+    return net.fetch(pathToFileURL(filePath).toString());
   });
 
   // Set the dock icon on macOS
@@ -447,12 +505,95 @@ app.whenReady().then(() => {
     }
   });
 
+  // The renderer cannot open a browser window itself — setWindowOpenHandler
+  // denies every popup. https-only so that a renderer-side injection cannot
+  // turn this into "launch any URL, in any scheme, as a trusted local app".
+  ipcMain.handle('oauth/open-external', async (_event: IpcMainInvokeEvent, payload: { url?: string }) => {
+    const url = payload?.url;
+    if (!url) return { ok: false, error: 'No URL supplied.' };
+    try {
+      if (new URL(url).protocol !== 'https:') {
+        return { ok: false, error: 'Only https URLs can be opened externally.' };
+      }
+    } catch {
+      return { ok: false, error: 'Malformed URL.' };
+    }
+    await shell.openExternal(url);
+    return { ok: true };
+  });
+
+  /**
+   * Redeem an OAuth authorization code from the main process.
+   *
+   * Microsoft redeems a single-page-application code only cross-origin
+   * (AADSTS9002327), so the request has to carry the Origin that app
+   * registration lists. The renderer cannot supply it — its origin is app://
+   * and fetch refuses to let a caller override Origin — and net.fetch strips it
+   * as a forbidden header, so this goes over net.request where it is ours to set.
+   */
+  ipcMain.handle('oauth/token-exchange', async (
+    _event: IpcMainInvokeEvent,
+    payload: { url?: string; body?: string; origin?: string },
+  ) => {
+    const { url, body, origin } = payload || {};
+    if (!url || !body) return { ok: false, error: 'url and body are required.' };
+    try {
+      if (new URL(url).protocol !== 'https:') {
+        return { ok: false, error: 'Only https token endpoints can be used.' };
+      }
+      if (origin) {
+        const originProtocol = new URL(origin).protocol;
+        if (originProtocol !== 'https:' && originProtocol !== 'http:') {
+          return { ok: false, error: 'Origin must be an http or https URL.' };
+        }
+      }
+    } catch {
+      return { ok: false, error: 'Malformed URL.' };
+    }
+
+    return new Promise((resolve) => {
+      const request = net.request({ method: 'POST', url });
+      request.setHeader('Content-Type', 'application/x-www-form-urlencoded');
+      if (origin) request.setHeader('Origin', origin);
+
+      request.on('response', (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => {
+          resolve({
+            ok: true,
+            status: response.statusCode,
+            body: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+      });
+      // Never include the body in an error: it carries the code and the tokens.
+      request.on('error', (error: Error) => resolve({ ok: false, error: error.message }));
+      request.write(body);
+      request.end();
+    });
+  });
+
+  ipcMain.handle('oauth/pending', () => {
+    const link = pendingDeepLink;
+    pendingDeepLink = null;
+    if (!link) return null;
+    return Date.now() - link.receivedAt > DEEP_LINK_TTL_MS ? null : link;
+  });
+
   ipcMain.on('stream/abort', (_event: IpcMainEvent, payload: { streamId?: string }) => {
     const controller = payload?.streamId ? activeStreams.get(payload.streamId) : undefined;
     if (controller) controller.abort();
   });
 
   createWindow();
+  // Cold start from a deep link: it arrives in argv, not through an event.
+  handleDeepLinkUrl(findDeepLinkInArgv(process.argv));
+  // A reload drops any listener the renderer had registered; re-send so a link
+  // that landed during startup is not lost.
+  mainWindow?.webContents.on('did-finish-load', () => {
+    if (pendingDeepLink) deliverDeepLink(pendingDeepLink);
+  });
   // Mount watchers up front so the journal is warm by the time the renderer
   // pushes a token; connect() no-ops until then.
   deviceIdentityReady

@@ -1,4 +1,4 @@
-import { publicAuthClient } from '@/lib/api/public-auth-client';
+import { publicAuthClient, ensureDesktopFrontendOrigin } from '@/lib/api/public-auth-client';
 import type { AuthMethod, SignInResponse } from '@/lib/api/auth-public-types';
 import {
   getAuthSessionRequestConfig,
@@ -80,7 +80,12 @@ export const AuthApi = {
    * long-lived credential.
    */
   async initAuth(): Promise<AuthInitResponse> {
-    const response = await publicAuthClient.post<AuthInitResponse>('/api/v1/userAccount/initAuth');
+    const [response] = await Promise.all([
+      publicAuthClient.post<AuthInitResponse>('/api/v1/userAccount/initAuth'),
+      // Desktop needs the frontend origin before any provider button renders.
+      // Run it beside this call so it adds no latency of its own.
+      ensureDesktopFrontendOrigin(),
+    ]);
 
     // Persist the session token so subsequent requests carry it
     const sessionToken = response.headers['x-session-token'];
