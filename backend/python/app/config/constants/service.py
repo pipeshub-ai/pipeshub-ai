@@ -52,6 +52,8 @@ class TokenScopes(Enum):
     # (the name predates the route; it is not tied to signed URLs).
     CONNECTOR_SIGNED_URL = "connector:signedUrl"
     CONVERSATION_CREATE = "conversation:create"
+    # Node -> connectors: write verified profile email onto the graph user.
+    ENTITY_USER_WRITE = "entity:user:write"
 
 
 class OAuthScopes(str, Enum):

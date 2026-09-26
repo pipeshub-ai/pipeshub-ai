@@ -165,6 +165,18 @@ export const fetchConfigJwtGenerator = (
   );
 };
 
+export const entityUserWriteJwtGenerator = (
+  userId: string,
+  orgId: string,
+  scopedJwtSecret: string,
+) => {
+  return jwt.sign(
+    { userId, orgId, scopes: [TokenScopes.ENTITY_USER_WRITE] },
+    scopedJwtSecret,
+    { expiresIn: '5m' },
+  );
+};
+
 export const scopedStorageServiceJwtGenerator = (
   orgId: string,
   scopedJwtSecret: string,

@@ -17665,8 +17665,9 @@ paths:
         **Flow:**
 
         1. User requests email change and receives a token via email
-        2. This endpoint validates the token and returns success if valid
-        3. If valid, user can proceed to change their email address
+        2. This endpoint validates the token, updates MongoDB, then PATCHes
+           `/api/v1/entity/user/email` on the connectors service so the graph
+           user email matches. Graph is not updated when the change is only requested.
       operationId: validateEmailChangeToken
       security:
         - scopedToken: []
@@ -41234,6 +41235,61 @@ paths:
           description: Unauthorized
 
   # ── Connector Internal Endpoints (Python connector service, port 8088) ──
+  /entity/user/email:
+    patch:
+      tags:
+        - Entity
+      summary: Update a graph user's email after verified profile change
+      description: |
+        Internal service-to-service call from Node after
+        `PUT /userAccount/validateEmailChange` writes the new address to Mongo.
+        The service JWT must include `entity:user:write`; `userId` and `orgId`
+        are taken from that token, not from the body.
+      operationId: updateGraphUserEmail
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: new@example.com
+      responses:
+        '200':
+          description: Graph user email updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  email:
+                    type: string
+                    example: new@example.com
+                  mergedStubKeys:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          description: Missing userId/orgId on the token or invalid email
+        '403':
+          description: Service token missing entity:user:write
+        '404':
+          description: Graph user not found for the token userId
+        '409':
+          description: Another real login graph user already has this email
+        '500':
+          description: Failed to write the graph user
   /connectors/internal/all-scheduled:
     get:
       tags:

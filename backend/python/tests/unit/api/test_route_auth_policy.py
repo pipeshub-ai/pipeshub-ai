@@ -53,6 +53,7 @@ _SERVICE_TOKEN_ROUTES = {
     },
     ("connectors", "GET", "/api/v1/internal/records/{record_id}/content"): {"record:content"},
     ("connectors", "GET", "/api/v1/connectors/internal/all-scheduled"): {"fetch:config"},
+    ("entity", "PATCH", "/api/v1/entity/user/email"): {"entity:user:write"},
 }
 
 

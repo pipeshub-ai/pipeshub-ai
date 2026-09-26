@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 
 import {
+  entityUserWriteJwtGenerator,
   iamJwtGenerator,
   iamUserLookupJwtGenerator,
   jwtGeneratorForForgotPasswordLink,
@@ -72,6 +73,11 @@ import {
   assertMethodAllowedAtStep,
   IOrgAuthConfigLike,
 } from '../utils/authMethodGuard';
+import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import {
+  executeConnectorCommand,
+  handleBackendError,
+} from '../../tokens_manager/utils/connector.utils';
 
 const {
   LOGIN,
@@ -2005,8 +2011,9 @@ export class UserAccountController {
       if (exists) {
         throw new BadRequestError(`Email already in use: ${newEmail}`);
       }
+      const normalizedEmail = newEmail.toLowerCase().trim();
       await Users.findByIdAndUpdate(userId, {
-        email: newEmail.toLowerCase().trim(),
+        email: normalizedEmail,
       });
 
       await UserActivities.create({
@@ -2016,12 +2023,48 @@ export class UserAccountController {
         ipAddress: req.ip || '',
       });
 
+      if (userId && orgId) {
+        await this.syncVerifiedEmailToGraph(
+          String(userId),
+          String(orgId),
+          normalizedEmail,
+        );
+      }
+
       res.status(200).json({ message: 'Email updated successfully' });
 
 
     } catch (err) {
 
       next(err);
+    }
+  }
+
+  protected async syncVerifiedEmailToGraph(
+    userId: string,
+    orgId: string,
+    email: string,
+  ): Promise<void> {
+    const token = entityUserWriteJwtGenerator(
+      userId,
+      orgId,
+      this.config.scopedJwtSecret,
+    );
+    const response = await executeConnectorCommand(
+      `${this.config.connectorBackend}/api/v1/entity/user/email`,
+      HttpMethod.PATCH,
+      { Authorization: `Bearer ${token}` },
+      { email },
+    );
+    if (response?.statusCode === 404) {
+      this.logger.warn('Graph user not found while syncing verified email', {
+        userId,
+      });
+      return;
+    }
+    const statusCode = response?.statusCode;
+    if (!statusCode || statusCode < 200 || statusCode >= 300) {
+      throw handleBackendError(response, 'sync verified email to graph');
     }
   }
 

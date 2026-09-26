@@ -37,6 +37,10 @@ describe('TokenScopes', () => {
     expect(TokenScopes.VALIDATE_EMAIL).to.equal('email:validate');
   });
 
+  it('should have ENTITY_USER_WRITE as "entity:user:write"', () => {
+    expect(TokenScopes.ENTITY_USER_WRITE).to.equal('entity:user:write');
+  });
+
   it('should have ORG_EMAIL_VERIFY as "org:email:verify"', () => {
     expect(TokenScopes.ORG_EMAIL_VERIFY).to.equal('org:email:verify');
   });
@@ -45,8 +49,8 @@ describe('TokenScopes', () => {
     expect(TokenScopes.EMAIL_VERIFIED).to.equal('email:verified');
   });
 
-  it('should have exactly 11 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(11);
+  it('should have exactly 12 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(12);
   });
 
   it('should contain only the expected keys', () => {
@@ -59,6 +63,7 @@ describe('TokenScopes', () => {
       'STORAGE_TOKEN',
       'CONVERSATION_CREATE',
       'VALIDATE_EMAIL',
+      'ENTITY_USER_WRITE',
       'ORG_EMAIL_VERIFY',
       'EMAIL_VERIFIED',
       'DESKTOP_COMMAND',
@@ -102,6 +107,7 @@ describe('isUserActionScope', () => {
       TokenScopes.USER_LOOKUP,
       TokenScopes.STORAGE_TOKEN,
       TokenScopes.CONVERSATION_CREATE,
+      TokenScopes.ENTITY_USER_WRITE,
       'not:a:scope',
     ].forEach((scope) => expect(isUserActionScope(scope)).to.be.false);
   });

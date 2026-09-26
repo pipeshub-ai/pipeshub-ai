@@ -1,19 +1,38 @@
 import json
+import re
 import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import require_scopes, require_service_token
 from app.config.constants.arangodb import CollectionNames
-from app.config.constants.service import OAuthScopes
+from app.config.constants.service import OAuthScopes, TokenScopes
+from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 
 MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
+
+
+_GRAPH_EMAIL = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+
+
+class UserEmailUpdateRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=320)
+
+    @field_validator("email")
+    @classmethod
+    def require_mailbox_shape(cls, value: str) -> str:
+        email = value.lower().strip()
+        if not _GRAPH_EMAIL.fullmatch(email):
+            raise ValueError("Invalid email")
+        return email
+
 
 async def get_services(request: Request) -> Dict[str, Any]:
     """Get all required services from the container"""
@@ -742,3 +761,52 @@ async def get_team_users(
     except Exception as e:
         logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team users")
+
+
+@router.patch(
+    "/user/email",
+    dependencies=[Depends(require_service_token(TokenScopes.ENTITY_USER_WRITE))],
+)
+async def update_user_email(
+    request: Request,
+    body: UserEmailUpdateRequest,
+) -> JSONResponse:
+    """Set the graph user's email after Mongo has already accepted a verified change."""
+    services = await get_services(request)
+    graph_provider = services["graph_provider"]
+    logger = services["logger"]
+
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    email = body.email
+    if not user_id or not org_id:
+        raise HTTPException(status_code=400, detail="userId and orgId are required")
+
+    try:
+        result = await graph_provider.apply_verified_user_email(user_id, org_id, email)
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+        logger.info("Updated graph email for userId %s", user_id)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "email": result.get("email", email),
+                "mergedStubKeys": result.get("mergedStubKeys", []),
+            },
+        )
+    except HTTPException:
+        raise
+    except GraphUserEmailConflictError as e:
+        logger.warning(
+            "Graph email conflict for userId %s: %s",
+            user_id,
+            e,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="Email already belongs to another login user in the graph",
+        ) from e
+    except Exception as e:
+        logger.error(f"Error updating graph user email: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update user email")

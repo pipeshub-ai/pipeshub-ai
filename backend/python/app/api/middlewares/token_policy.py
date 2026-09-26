@@ -30,6 +30,7 @@ ACCEPTED_SERVICE_SCOPES: Final[frozenset[str]] = frozenset(
         TokenScopes.RECORD_CONTENT.value,  # query -> connectors ACL-checked record content
         TokenScopes.CONVERSATION_CREATE.value,  # Node Slack service account -> query chat
         TokenScopes.FETCH_CONFIG.value,  # Node scheduled-jobs backfill -> connectors
+        TokenScopes.ENTITY_USER_WRITE.value,  # Node verified-email change -> connectors graph
     }
 )
 
