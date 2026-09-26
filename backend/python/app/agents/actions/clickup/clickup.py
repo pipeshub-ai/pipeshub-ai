@@ -90,20 +90,35 @@ def _unexpected_failure(tool_name: str, error: Exception) -> tuple[bool, str]:
 _COMMENTS_PAGE_SIZE = 25
 
 
-def _mark_older_comments(data: dict[str, Any]) -> None:
-    """A full page of comments may not be all of them: say so, and how to read the older ones."""
+def _mark_older_comments(data: dict[str, Any]) -> bool:
+    """A full page of comments may not be all of them: say so, and how to read the older ones.
+
+    Returns False when the page is full but no comment carries a cursor (numeric date and id) to continue from.
+    """
     page = data["comments"]
     data["has_more"] = len(page) >= _COMMENTS_PAGE_SIZE
-    comments = [c for c in page if isinstance(c, dict)]
-    if not data["has_more"] or not comments:
-        return
-    oldest = comments[-1]
-    data["next_start"] = int(oldest["date"]) if str(oldest.get("date", "")).isdigit() else None
-    data["next_start_id"] = str(oldest["id"]) if oldest.get("id") is not None else None
+    if not data["has_more"]:
+        return True
+    oldest = next(
+        (c for c in reversed(page)
+         if isinstance(c, dict) and c.get("id") is not None and str(c.get("date", "")).isdigit()),
+        None,
+    )
+    if oldest is None:
+        return False
+    data["next_start"] = int(oldest["date"])
+    data["next_start_id"] = str(oldest["id"])
     data["note"] = (
-        f"These are the {len(comments)} most recent comments; there may be older ones. To read them, call "
+        f"These are the {len(page)} most recent comments; there may be older ones. To read them, call "
         "get_comments again with start=next_start and start_id=next_start_id."
     )
+    return True
+
+
+def _unreadable_comments() -> tuple[bool, str]:
+    return False, json.dumps({
+        "error": "ClickUp's reply did not include a readable list of comments. Try again in a moment.",
+    })
 
 
 def _missing_text(**fields: object) -> tuple[bool, str] | None:
@@ -1319,9 +1334,7 @@ class ClickUp:
                 # Treating an unreadable page as empty would claim there are no more comments.
                 page = data.get("comments") if isinstance(data, dict) else None
                 if not isinstance(page, list) or (page and not any(isinstance(c, dict) for c in page)):
-                    return False, json.dumps({
-                        "error": "ClickUp's reply did not include a readable list of comments. Try again in a moment.",
-                    })
+                    return _unreadable_comments()
                 if task_id:
                     for item in data["comments"]:
                         if isinstance(item, dict) and item.get("id") is not None:
@@ -1330,7 +1343,8 @@ class ClickUp:
                                 task_id=task_id,
                                 comment_id=str(item["id"]),
                             )
-                _mark_older_comments(data)
+                if not _mark_older_comments(data):
+                    return _unreadable_comments()
                 return self._handle_response(response, data_override=data)
         except Exception as e:
             return _unexpected_failure("get_comments", e)

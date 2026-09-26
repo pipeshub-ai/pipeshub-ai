@@ -624,10 +624,19 @@ class TestUnreadableCommentPage:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("payload", [
         {}, {"comments": None}, {"comments": "25 comments"}, [{"id": "c1"}], {"comments": ["garbled"] * 25},
+        {"comments": [{}] * 25}, {"comments": [{"id": str(i)} for i in range(25)]},
     ])
     async def test_a_reply_without_a_comment_list_is_a_failure_not_an_empty_page(self, clickup, api, payload) -> None:
         api.on("GET", f"{V2}/task/t1/comment", (200, payload))
         assert "comments" in fail(await clickup.get_comments(task_id="t1"))["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_full_page_continues_from_the_last_comment_with_a_cursor(self, clickup, api) -> None:
+        comments = [*TestCommentPaging._comments(24), {"comment_text": "no id or date"}]
+        api.on("GET", f"{V2}/task/t1/comment", (200, {"comments": comments}))
+        data = ok(await clickup.get_comments(task_id="t1"))["data"]
+        assert data["has_more"] is True
+        assert (data["next_start"], data["next_start_id"]) == (1_700_000_000_077, "77")
 
     @pytest.mark.asyncio
     async def test_malformed_entries_still_count_toward_a_full_page(self, clickup, api) -> None:
