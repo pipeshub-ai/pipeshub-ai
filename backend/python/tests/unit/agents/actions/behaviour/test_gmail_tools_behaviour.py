@@ -338,7 +338,6 @@ class TestReadOne:
         assert ok is True
         assert data == {"email_address": "me@example.com", "messages_total": 12, "threads_total": 7, "history_id": "99"}
 
-    @pending("profile")
     async def test_another_persons_mailbox_is_never_asked_for(self, gmail, http) -> None:
         ok, data = result(await gmail.get_user_profile(user_id="ceo@example.com"))
 

@@ -608,7 +608,7 @@ class Gmail:
         short_description="Get the authenticated user's Gmail profile",
         description="Get the authenticated user's Gmail profile including email address, total messages, and threads count.",
         parameters=[
-            ToolParameter(name="user_id", type=ParameterType.STRING, description="The user ID (use 'me' for authenticated user)", required=False, default="me"),
+            ToolParameter(name="user_id", type=ParameterType.STRING, description="Always 'me': only the signed-in user's own profile can be read", required=False, default="me"),
         ],
         tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
     )
@@ -623,11 +623,15 @@ class Gmail:
         Returns:
             tuple[bool, str]: True if successful, False otherwise
         """
+        if (user_id or "me").strip().lower() != "me":
+            return False, json.dumps({
+                "error": (
+                    "get_user_profile reads only the signed-in user's own mailbox. "
+                    "Call it again without user_id."
+                )
+            })
         try:
-            # Use GoogleGmailDataSource method
-            profile = await self.client.users_get_profile(
-                userId=user_id
-            )
+            profile = await self.client.users_get_profile(userId="me")
             return True, json.dumps({
                 "email_address": profile.get("emailAddress", ""),
                 "messages_total": profile.get("messagesTotal", 0),
