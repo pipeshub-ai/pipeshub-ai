@@ -29,8 +29,8 @@ class TestPromptPins:
         verify_prompt_pins()
 
     def test_an_edited_prompt_is_caught(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setitem(ANSWER_PROMPT_PINS, "frames-answer-v2", "0" * 64)
-        with pytest.raises(Exception, match="frames-answer-v2"):
+        monkeypatch.setitem(ANSWER_PROMPT_PINS, "frames-answer-v3", "0" * 64)
+        with pytest.raises(Exception, match="frames-answer-v3"):
             verify_prompt_pins()
 
 

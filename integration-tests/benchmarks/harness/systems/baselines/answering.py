@@ -21,15 +21,30 @@ from benchmarks.harness.systems.base import AdapterCapabilities, CorpusIngestor,
 
 logger = logging.getLogger(__name__)
 
-ANSWER_PROMPT_VERSION = "frames-answer-v2"
+ANSWER_PROMPT_VERSION = "frames-answer-v3"
+#: Separate version so the pin registry covers the grounded text too, and so
+#: a cached closed-book answer can never be served to a document-bearing run.
+GROUNDED_ANSWER_PROMPT_VERSION = "frames-answer-grounded-v1"
 ANSWER_MAX_TOKENS = 2048
 _DEFAULT_CONTEXT_TOKENS = 128_000
 _RESERVED_TOKENS = 8_000
 _CHARS_PER_TOKEN = 4
 _SYSTEM_PROMPT = (
-    "You answer factual questions. When Wikipedia articles are provided, base your "
-    "answer on them. Reason carefully, then state the final answer explicitly and "
-    "concisely on the last line."
+    "You answer factual questions. Reason carefully, then state the final answer "
+    "explicitly and concisely on the last line."
+)
+#: Used only when articles are actually supplied. `closed_book` deliberately keeps
+#: the prompt above: it is the memory-only floor, and telling it to answer solely
+#: from documents it was never given would turn it into a refusal machine and
+#: destroy the very baseline the board needs.
+_GROUNDED_SYSTEM_PROMPT = (
+    "You answer factual questions from the Wikipedia articles provided.\n\n"
+    "Answer ONLY from those articles. You may know an answer from your own training "
+    "data — do not use it. If the articles do not contain what is needed, say exactly "
+    "what is missing instead of filling the gap from memory: an unsupported answer is "
+    "worse than an incomplete one. Combining facts that are each stated in the articles "
+    "is expected; supplying a fact that is in none of them is not.\n\n"
+    "Reason carefully, then state the final answer explicitly and concisely on the last line."
 )
 
 
@@ -85,8 +100,9 @@ def build_messages(
         user = f"Wikipedia articles:\n\n{articles}\n\nQuestion: {prompt}"
     else:
         user = f"Question: {prompt}"
+    system = _GROUNDED_SYSTEM_PROMPT if docs else _SYSTEM_PROMPT
     return (
-        ChatMessage(role="system", content=dated_system_prompt(_SYSTEM_PROMPT, current_time)),
+        ChatMessage(role="system", content=dated_system_prompt(system, current_time)),
         ChatMessage(role="user", content=user),
     )
 
@@ -115,7 +131,8 @@ class BaselineAnswerer(ABC):
         docs, truncated = fit_documents(self.documents_for(item), self._context_budget())
         request = LLMRequest(
             model=self._model, messages=build_messages(item.prompt, docs, self._current_time),
-            max_tokens=ANSWER_MAX_TOKENS, prompt_version=ANSWER_PROMPT_VERSION,
+            max_tokens=ANSWER_MAX_TOKENS,
+            prompt_version=GROUNDED_ANSWER_PROMPT_VERSION if docs else ANSWER_PROMPT_VERSION,
         )
         base = Prediction(
             system=self.system_id, question_id=item.question_id, repeat=repeat,

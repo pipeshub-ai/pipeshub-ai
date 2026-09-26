@@ -40,15 +40,20 @@ from benchmarks.harness.systems.rag.transforms import decompose, expand
 
 logger = logging.getLogger(__name__)
 
-RAG_ANSWER_PROMPT_VERSION = "rag-answer-v1"
+RAG_ANSWER_PROMPT_VERSION = "rag-answer-v2"
 _CHARS_PER_TOKEN = 4
 _DEFAULT_CONTEXT_TOKENS = 128_000
 _RESERVED_TOKENS = 8_000
 _SYSTEM_PROMPT = (
     "You answer factual questions using the numbered sources provided, which are passages from "
-    "Wikipedia articles. Base your answer on the sources and cite every source you rely on with "
-    "its number in square brackets, e.g. [3]. Reason carefully, then state the final answer "
-    "explicitly and concisely on the last line."
+    "Wikipedia articles.\n\n"
+    "Answer ONLY from the sources. You may know an answer from your own training data — do not "
+    "use it. If the sources do not contain what is needed, say exactly what is missing instead "
+    "of filling the gap from memory: an unsupported answer is worse than an incomplete one. "
+    "Combining facts that are each stated in the sources is expected; supplying a fact that is "
+    "in none of them is not.\n\n"
+    "Cite every source you rely on with its number in square brackets, e.g. [3]. "
+    "Reason carefully, then state the final answer explicitly and concisely on the last line."
 )
 
 Transform = Literal["none", "expansion", "decomposition"]

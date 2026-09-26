@@ -59,8 +59,9 @@ ALL_PROMPTS = (FRAMES_AUTORATER, SIMPLEQA_GRADER, CLAIM_SUPPORT)
 # board, and a version string alone does not notice. Bump the version in the
 # owning module and the sha here together.
 ANSWER_PROMPT_PINS: dict[str, str] = {
-    "frames-answer-v2": "75daad82e88d644242038ba92f92eb24231550d24fd5aa749d217abb340774a8",
-    "rag-answer-v1": "0561613330ed497c652871d2f1e9b021710f20c0686c2ffc3e0350274ee83335",
+    "frames-answer-v3": "ebb2d970d9d12f71ffc9f6f9510e8460a4bfa68f61cb394d17f8c0c4598f24cb",
+    "frames-answer-grounded-v1": "d2eaae9a7dbbf583b4e546bbf2bff02ebe087c473fc433a29c3688b0accab01e",
+    "rag-answer-v2": "b71b091d1c49d601bcf4397134c905c532ce7879ede7a42f9a4234c4c8962844",
     "rag-expand-v1": "e76faa0ef91e5b6b111ccfc904a628c188a165116346a567f1e8e6d7b5b2e1c6",
     "rag-decompose-v1": "8f47dd340531aa7fc64902d12a456021e47fff2c9ed936e386cf0907d5331f53",
 }
@@ -73,6 +74,8 @@ def answer_prompt_texts() -> dict[str, str]:
     helpers, so a module-level import here would be a cycle."""
     from benchmarks.harness.systems.baselines.answering import (
         ANSWER_PROMPT_VERSION,
+        GROUNDED_ANSWER_PROMPT_VERSION,
+        _GROUNDED_SYSTEM_PROMPT as BASELINE_GROUNDED,
         _SYSTEM_PROMPT as BASELINE_SYSTEM,
     )
     from benchmarks.harness.systems.rag.answerer import (
@@ -88,6 +91,7 @@ def answer_prompt_texts() -> dict[str, str]:
 
     return {
         ANSWER_PROMPT_VERSION: BASELINE_SYSTEM,
+        GROUNDED_ANSWER_PROMPT_VERSION: BASELINE_GROUNDED,
         RAG_ANSWER_PROMPT_VERSION: RAG_SYSTEM,
         EXPANSION_PROMPT_VERSION: _EXPANSION_SYSTEM,
         DECOMPOSITION_PROMPT_VERSION: _DECOMPOSITION_SYSTEM,

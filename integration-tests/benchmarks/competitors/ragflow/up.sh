@@ -40,6 +40,14 @@ def call(method, path, **kw):
         raise SystemExit(f"{method} {path}: {body}")
     return body.get("data")
 
+def add_provider(name):
+    r = requests.put(f"{base}/api/v1/providers", headers=auth, timeout=120, json={"provider_name": name})
+    r.raise_for_status()
+    body = r.json()
+    # 102: already added by an earlier run.
+    if body.get("code") not in (0, 102):
+        raise SystemExit(f"PUT /providers {name}: {body}")
+
 token = call("POST", "/system/tokens")
 api_key = token["token"] if isinstance(token, dict) else token
 os.umask(0o077)
@@ -47,7 +55,7 @@ open(key_file, "w").write(api_key)
 
 # Azure OpenAI with both models. The key is JSON: RAGFlow's Azure chat model
 # parses it for the api_version.
-call("PUT", "/providers", json={"provider_name": "Azure-OpenAI"})
+add_provider("Azure-OpenAI")
 instances = call("GET", "/providers/Azure-OpenAI/instances") or []
 if not any((i.get("instance_name") or i.get("name")) == "azure" for i in instances):
     call("POST", "/providers/Azure-OpenAI/instances", json={
@@ -60,9 +68,27 @@ if not any((i.get("instance_name") or i.get("name")) == "azure" for i in instanc
         }),
         "model_info": [
             # max_tokens caps how much retrieved text fits in the prompt.
-            {"model_type": ["chat"], "model_name": "gpt-5.6-luna", "max_tokens": 272000},
+            # is_tools: RAGFlow's reasoning mode falls back to one-shot
+            # retrieval for a model not marked as tool-calling.
+            {"model_type": ["chat"], "model_name": "gpt-5.6-luna", "max_tokens": 272000, "is_tools": True},
             {"model_type": ["embedding"], "model_name": "text-embedding-3-small", "max_tokens": 8191},
         ],
+    })
+# An instance registered before is_tools was set keeps its old model record.
+call("PATCH", "/providers/Azure-OpenAI/instances/azure/models/gpt-5.6-luna",
+     json={"max_tokens": 272000, "extra": {"max_tokens": 272000, "is_tools": True}})
+
+# The RAG baselines' cross-encoder, served on the host by
+# `python -m benchmarks.harness.systems.rag.rerank_server` (TEI's /rerank shape).
+add_provider("HuggingFace")
+instances = call("GET", "/providers/HuggingFace/instances") or []
+if not any((i.get("instance_name") or i.get("name")) == "frames-rerank" for i in instances):
+    call("POST", "/providers/HuggingFace/instances", json={
+        "instance_name": "frames-rerank",
+        "base_url": os.environ.get("FRAMES_RERANK_URL", "http://host.docker.internal:8787"),
+        "region": "",
+        "api_key": "unused",
+        "model_info": [{"model_type": ["rerank"], "model_name": "cross-encoder/ms-marco-MiniLM-L-6-v2", "max_tokens": 512}],
     })
 print(f"RAGFlow is up at {base}; API key written to {key_file}")
 PY

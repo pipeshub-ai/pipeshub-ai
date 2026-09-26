@@ -27,6 +27,23 @@ class InstanceSettings:
 
     query_generation: bool = False
     rag_template: str = ""
+    # Chunks retrieved, then how many the reranker keeps; no reranker by default.
+    top_k: int = 50
+    top_k_reranker: int = 50
+    reranking_engine: str = ""
+    reranking_model: str = ""
+    external_reranker_url: str = ""
+
+
+# InstanceSettings field -> key in /api/v1/retrieval/config (read and update).
+_RETRIEVAL_KEYS = {
+    "rag_template": "RAG_TEMPLATE",
+    "top_k": "TOP_K",
+    "top_k_reranker": "TOP_K_RERANKER",
+    "reranking_engine": "RAG_RERANKING_ENGINE",
+    "reranking_model": "RAG_RERANKING_MODEL",
+    "external_reranker_url": "RAG_EXTERNAL_RERANKER_URL",
+}
 
 
 @dataclass(frozen=True)
@@ -106,10 +123,12 @@ class OpenWebUIClient:
     def instance_settings(self) -> InstanceSettings:
         tasks = self._request("GET", "/api/v1/tasks/config").json()
         retrieval = self._request("GET", "/api/v1/retrieval/config").json()
-        return InstanceSettings(
-            query_generation=bool(tasks.get("ENABLE_RETRIEVAL_QUERY_GENERATION")),
-            rag_template=str(retrieval.get("RAG_TEMPLATE") or ""),
-        )
+        defaults = InstanceSettings()
+        values = {
+            name: type(getattr(defaults, name))(retrieval.get(key) or getattr(defaults, name))
+            for name, key in _RETRIEVAL_KEYS.items()
+        }
+        return InstanceSettings(query_generation=bool(tasks.get("ENABLE_RETRIEVAL_QUERY_GENERATION")), **values)
 
     @http_retry()
     def apply_settings(self, wanted: InstanceSettings) -> InstanceSettings:
@@ -121,13 +140,30 @@ class OpenWebUIClient:
             tasks = self._request("GET", "/api/v1/tasks/config").json()
             tasks["ENABLE_RETRIEVAL_QUERY_GENERATION"] = wanted.query_generation
             self._request("POST", "/api/v1/tasks/config/update", json=tasks)
-        if held.rag_template != wanted.rag_template:
-            self._request("POST", "/api/v1/retrieval/config/update", json={"RAG_TEMPLATE": wanted.rag_template})
+        changed = {
+            key: getattr(wanted, name) for name, key in _RETRIEVAL_KEYS.items()
+            if getattr(held, name) != getattr(wanted, name)
+        }
+        if changed:
+            self._request("POST", "/api/v1/retrieval/config/update", json=changed)
         return self.instance_settings()
 
     @http_retry(attempts=3)
     def retrieval_config(self) -> dict[str, Any]:
         return self._request("GET", "/api/v1/retrieval/config").json()
+
+    @http_retry(attempts=3)
+    def start_ui_chat(self, body: dict[str, Any]) -> str:
+        """Start a chat the way the web UI does; the answer is produced in the
+        background and saved to the chat. Returns the chat id."""
+        return str(self._request("POST", "/api/chat/completions", json=body).json()["chat_id"])
+
+    @http_retry()
+    def saved_chat(self, chat_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/v1/chats/{chat_id}").json()
+
+    def delete_chat(self, chat_id: str) -> None:
+        self._request("DELETE", f"/api/v1/chats/{chat_id}")
 
     @http_retry(attempts=3)
     def chat(self, body: dict[str, Any]) -> dict[str, Any]:

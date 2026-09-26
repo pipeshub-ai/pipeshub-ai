@@ -96,12 +96,17 @@ class RagflowClient:
         self._call("PATCH", f"/chats/{chat_id}", json=body)
 
     @http_retry(attempts=3)
-    def complete(self, chat_id: str, question: str) -> dict[str, Any]:
+    def complete(self, chat_id: str, question: str, reasoning: str | None = None) -> dict[str, Any]:
         """One question in a fresh session. `store_history_messages=False`
         keeps the session out of RAGFlow's history; it then needs the whole
-        conversation, which is the one message."""
-        return self._call("POST", "/chat/completions", json={
+        conversation, which is the one message. `reasoning` ("1".."4": low,
+        medium, high, ultra) runs RAGFlow's agentic research loop instead of
+        one retrieval; the level is read from the request, not the chat."""
+        body: dict[str, Any] = {
             "chat_id": chat_id, "stream": False,
             "messages": [{"role": "user", "content": question}],
             "store_history_messages": False, "pass_all_history_messages": True,
-        }) or {}
+        }
+        if reasoning:
+            body["reasoning"] = reasoning
+        return self._call("POST", "/chat/completions", json=body) or {}

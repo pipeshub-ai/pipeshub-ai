@@ -35,6 +35,7 @@ from benchmarks.harness.systems.baselines.closed_book import ClosedBookAnswerer
 from benchmarks.harness.systems.baselines.oracle import OracleAnswerer
 from benchmarks.harness.systems.pipeshub.adapter import PipesHubAdapter, build_stream_body
 from benchmarks.harness.systems.pipeshub.indexing import IndexWaiter
+from benchmarks.harness.errors import IngestError
 from benchmarks.harness.systems.pipeshub.ingest import PipesHubIngestor
 from benchmarks.harness.systems.pipeshub.kb_api import RecordStatus, UploadResult
 from benchmarks.harness.systems.pipeshub.session import PIPESHUB_CLIENT_ERRORS, UserSession
@@ -341,3 +342,79 @@ class TestPipesHubAdapter:
         ranking = _adapter(session).ranked_search(ITEM, PREPARED_PH, 100)
         assert ranking.ranked_refs == ["https://en.wikipedia.org/wiki/Harriet_Lane"]
         assert session.calls[0][2]["json"]["limit"] == 100
+
+
+class TestManifestCoversEveryDocument:
+    """The ingest manifest maps a record id back to an article. A short one is
+    worse than a loud failure: scoring reads the absent records as never
+    retrieved, so context recall and every citation metric quietly collapse.
+    Observed for real — 1,291 of 12,441 uploads landed in the KB without their
+    ids reaching the manifest, and the run went on to index them happily."""
+
+    def test_uploads_that_land_without_returning_an_id_are_recovered(
+        self, corpus: CorpusView, tmp_path: Path,
+    ) -> None:
+        api = FakeKbApi()
+        real_upload = api.upload
+
+        def silent_upload(kb_id: str, files: list[tuple[str, bytes, str]]) -> UploadResult:
+            result = real_upload(kb_id, files)
+            # The write succeeded; the response just omits the ids.
+            for name in (f[0] for f in files):
+                api.existing[name.removesuffix(".html")] = f"rec-{name}"
+            return UploadResult(record_ids={}, failed=[])
+
+        api.upload = silent_upload  # type: ignore[method-assign]
+        prepared = _ingestor(api, corpus, tmp_path).prepare(corpus.manifest)
+
+        assert prepared.ingest is not None
+        assert len(prepared.ingest.records) == len(corpus.manifest.documents)
+
+    def test_a_short_manifest_raises_instead_of_scoring_silently(
+        self, corpus: CorpusView, tmp_path: Path,
+    ) -> None:
+        api = FakeKbApi()
+        real_upload = api.upload
+
+        def losing_upload(kb_id: str, files: list[tuple[str, bytes, str]]) -> UploadResult:
+            result = real_upload(kb_id, files)
+            # One document is neither returned nor present in the KB.
+            return UploadResult(
+                record_ids={n: r for n, r in list(result.record_ids.items())[1:]}, failed=[],
+            )
+
+        api.upload = losing_upload  # type: ignore[method-assign]
+        with pytest.raises(IngestError, match="ingest manifest has"):
+            _ingestor(api, corpus, tmp_path).prepare(corpus.manifest)
+
+
+class TestGroundingInstruction:
+    """The answerer knows 69.5% of FRAMES answers with no documents at all
+    (`closed_book`), so without an explicit rule a "RAG" score is mostly model
+    memory. Both prompts now forbid answering from training data — except
+    closed_book, whose whole job is to measure that memory."""
+
+    def test_documents_present_uses_the_grounded_prompt(self) -> None:
+        from benchmarks.harness.systems.baselines.answering import ContextDocument, build_messages
+        msgs = build_messages("q?", [ContextDocument("u", "T", "body")])
+        system = msgs[0].content
+        assert "Answer ONLY from those articles" in system
+        assert "do not use it" in system
+
+    def test_closed_book_keeps_the_memory_only_prompt(self) -> None:
+        from benchmarks.harness.systems.baselines.answering import build_messages
+        system = build_messages("q?", [])[0].content
+        assert "Answer ONLY" not in system, "closed_book must still answer from memory"
+
+    def test_rag_prompt_forbids_memory_and_still_asks_for_citations(self) -> None:
+        from benchmarks.harness.systems.rag.answerer import _SYSTEM_PROMPT
+        assert "Answer ONLY from the sources" in _SYSTEM_PROMPT
+        assert "square brackets" in _SYSTEM_PROMPT
+
+    def test_prompt_versions_were_bumped_with_the_text(self) -> None:
+        from benchmarks.harness.systems.baselines.answering import ANSWER_PROMPT_VERSION
+        from benchmarks.harness.systems.rag.answerer import RAG_ANSWER_PROMPT_VERSION
+        # The version is pinned into RunMeta and the LLM cache key; leaving it
+        # stale would serve cached answers generated under the old prompt.
+        assert ANSWER_PROMPT_VERSION == "frames-answer-v3"
+        assert RAG_ANSWER_PROMPT_VERSION == "rag-answer-v2"

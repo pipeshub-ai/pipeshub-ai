@@ -12,8 +12,10 @@ restart, and keeps whatever the previous run set until then.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -53,6 +55,47 @@ def build_chat_body(
         # its own `reasoning_effort` model param is not translated there.
         body["reasoning"] = {"effort": reasoning_effort}
     return body
+
+
+def build_ui_chat_body(
+    item: AskItem, knowledge_id: str, model: str, reasoning_effort: str | None, current_time: datetime,
+) -> tuple[dict[str, Any], str]:
+    """The request the web UI sends for a new chat with the knowledge base
+    attached, and the id of the assistant message it will produce.
+
+    A `session_id` is what makes Open WebUI run the chat as its UI does:
+    native tool calling with its builtin knowledge tools, alongside the
+    up-front retrieval. No socket is needed; the result is saved to the chat.
+    The date line goes in as the chat's system prompt.
+    """
+    user_id, assistant_id = str(uuid.uuid4()), str(uuid.uuid4())
+    files = [{"type": "collection", "id": knowledge_id}]
+    body: dict[str, Any] = {
+        "model": model,
+        "stream": True,
+        "params": {"system": f"Today's date is {current_time.astimezone(UTC).date().isoformat()}."},
+        "features": {},
+        "files": files,
+        "session_id": f"frames-{uuid.uuid4()}",
+        "id": assistant_id,
+        "parent_id": None,
+        "user_message": {
+            "id": user_id, "parentId": None, "childrenIds": [assistant_id], "role": "user",
+            "content": item.prompt, "files": files, "timestamp": int(time.time()), "models": [model],
+        },
+        "background_tasks": {},
+    }
+    if reasoning_effort:
+        body["reasoning"] = {"effort": reasoning_effort}
+    return body, assistant_id
+
+
+def tool_calls(message: dict[str, Any]) -> list[str]:
+    """The tools the model called, as `name(arguments)`, in order."""
+    return [
+        f"{item.get('name')}({item.get('arguments') if isinstance(item.get('arguments'), str) else json.dumps(item.get('arguments'))})"
+        for item in message.get("output") or [] if isinstance(item, dict) and item.get("type") == "function_call"
+    ]
 
 
 def answer_text(body: dict[str, Any]) -> str:
@@ -112,6 +155,9 @@ class OpenWebUIAdapter:
         current_time: datetime,
         price: ModelPrice | None,
         settings: InstanceSettings | None = None,
+        ui_chat: bool = False,
+        poll_interval_s: float = 2.0,
+        answer_timeout_s: float = 1_800.0,
     ) -> None:
         self.system_id = system_id
         self._client = client
@@ -122,6 +168,9 @@ class OpenWebUIAdapter:
         self._price = price
         self._url_of_file: dict[str, str] | None = None
         self._settings = settings or InstanceSettings()
+        self._ui_chat = ui_chat
+        self._poll_interval_s = poll_interval_s
+        self._answer_timeout_s = answer_timeout_s
 
     def _ensure_settings(self) -> None:
         if self._client.instance_settings() != self._settings:
@@ -140,14 +189,13 @@ class OpenWebUIAdapter:
             raise ValueError(f"{self.system_id}: corpus was not ingested")
         started_at = datetime.now(UTC)
         started = time.monotonic()
-        body = build_chat_body(
-            item, prepared.ingest.kb_id, self._model.deployment or self._model.model_name,
-            self._reasoning_effort, self._current_time,
-        )
         base = Prediction(system=self.system_id, question_id=item.question_id, repeat=repeat, started_at=started_at)
         try:
             self._ensure_settings()
-            response = self._client.chat(body)
+            response = self._ui_answer(item, prepared) if self._ui_chat else self._client.chat(build_chat_body(
+                item, prepared.ingest.kb_id, self._model.deployment or self._model.model_name,
+                self._reasoning_effort, self._current_time,
+            ))
             settings_held = self._client.instance_settings() == self._settings
         except Exception as exc:  # noqa: BLE001 — recorded on the prediction and scored FALSE
             logger.warning("%s q%s failed: %s", self.system_id, item.question_id, exc)
@@ -165,9 +213,42 @@ class OpenWebUIAdapter:
             "latency_ms": int((time.monotonic() - started) * 1000),
             "retrieved": chunks,
             "context_urls": list(dict.fromkeys(c.url for c in chunks)),
+            "queries": tool_calls(response),
             "error": error,
             **usage_fields(call_usage_of(response), self._price),
         })
+
+    def _ui_answer(self, item: AskItem, prepared: PreparedCorpus) -> dict[str, Any]:
+        """The saved assistant message once it is done, shaped like a
+        completion response: `content`, `sources`, `usage`, `output`."""
+        assert prepared.ingest is not None
+        body, message_id = build_ui_chat_body(
+            item, prepared.ingest.kb_id, self._model.deployment or self._model.model_name,
+            self._reasoning_effort, self._current_time,
+        )
+        chat_id = self._client.start_ui_chat(body)
+        deadline = time.monotonic() + self._answer_timeout_s
+        try:
+            while True:
+                chat = self._client.saved_chat(chat_id)
+                message = (((chat.get("chat") or {}).get("history") or {}).get("messages") or {}).get(message_id) or {}
+                if message.get("error"):
+                    raise RuntimeError(f"Open WebUI: {str(message['error'])[:500]}")
+                if message.get("done"):
+                    return {
+                        "choices": [{"message": {"content": message.get("content", "")}}],
+                        "sources": message.get("sources") or [],
+                        "usage": message.get("usage") or {},
+                        "output": message.get("output") or [],
+                    }
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"Open WebUI chat {chat_id} not done after {self._answer_timeout_s}s")
+                time.sleep(self._poll_interval_s)
+        finally:
+            try:
+                self._client.delete_chat(chat_id)
+            except Exception:  # noqa: BLE001 — a leftover chat only costs disk
+                logger.warning("could not delete Open WebUI chat %s", chat_id)
 
     def ingestor(self) -> CorpusIngestor | None:
         return self._ingestor

@@ -1,0 +1,101 @@
+# Strongest configuration B: one retrieval with keyword extraction (an LLM
+# call adding keywords to the query) and the RAG baselines' cross-encoder as
+# RAGFlow's reranker over 100 candidates, registered by up.sh as
+# frames-rerank and served by benchmarks.harness.systems.rag.rerank_server.
+# RAGFlow blends it as (1 - w) * keyword score + w * rerank score, w being
+# vector_similarity_weight (its default 0.3).
+#
+# Best configuration: RAGFlow with its default system prompt ("summarize the
+# content of the dataset... list the data") replaced by the RAG baseline's
+# answer prompt (rag-answer-v1, minus its citation-format sentence, since
+# RAGFlow adds its own citation instructions). Everything else as below.
+#
+# RAGFlow v0.27.2 on the same corpus, answer model, embedding model and
+# judges as blog-dev-v7d-tables, so its row compares directly with PipesHub
+# v7d, the RAG baseline and Open WebUI. Parity contract and deviations: the
+# "FRAMES: other RAG systems" plan.
+#
+# Bring RAGFlow up with benchmarks/competitors/ragflow/up.sh (it registers
+# Azure OpenAI and writes an API key), stop PipesHub's stack first, and
+# export RAGFLOW_API_KEY. Retrieval: weighted hybrid (term 0.7, vector 0.3,
+# RAGFlow's default), 50 chunks to the model, no reranker, no keyword or
+# knowledge-graph step. Answers go through Chat Completions (LiteLLM), not
+# the Responses API. oracle rides along as the in-run control.
+run_name: blog-dev-ragflow-strongest-rerank
+dataset:
+  split: dev
+corpus:
+  tier: GD
+  scope: all
+  distractor_count: 10000
+pipeshub:
+  index_timeout_s: 172800
+  stream_timeout_s: 1800
+  min_gold_indexed_ratio: 1.0
+  min_indexed_ratio: 0.999
+answerer:
+  model: gpt-5.6-luna
+  provider: azureOpenAI
+  is_reasoning: true
+  reasoning_effort: high
+embedding:
+  model: text-embedding-3-small
+  provider: azureOpenAI
+pricing:
+  gpt-5.6-luna:
+    input_per_mtok: 0.2
+    cached_input_per_mtok: 0.02
+    output_per_mtok: 1.2
+    long_context_threshold: 272000
+    long_context_input_multiplier: 2.0
+    long_context_output_multiplier: 1.5
+    source: OpenAI API pricing, standard tier, effective 2026-07-30
+systems:
+- kind: oracle
+  concurrency: 8
+- kind: ragflow
+  label: ragflow-rerank
+  concurrency: 6
+  options:
+    base_url: http://localhost:9380
+    api_key_env: RAGFLOW_API_KEY
+    prompt_options: {keyword: true}
+    system_prompt: |-
+      You answer factual questions using the passages below, which are from Wikipedia articles. Base your answer on the passages. Reason carefully, then state the final answer explicitly and concisely on the last line.
+
+      Here are the passages:
+      {knowledge}
+    batch_size: 50
+    upload_workers: 4
+    # Applied when the corpus dataset is first created. RAGFlow's defaults,
+    # except chunk size set to the contract's 512 tokens; LLM enrichment
+    # (keywords, questions, RAPTOR, GraphRAG) is off, as by default.
+    dataset:
+      embedding_model: text-embedding-3-small@azure@Azure-OpenAI
+      chunk_method: naive
+      parser_config:
+        chunk_token_num: 512
+        auto_keywords: 0
+        auto_questions: 0
+        raptor: {use_raptor: false}
+        graphrag: {use_graphrag: false}
+    # Applied when the chat is first created; the adapter appends the
+    # snapshot date to RAGFlow's default system prompt.
+    chat:
+      llm_id: gpt-5.6-luna@azure@Azure-OpenAI
+      llm_setting: {reasoning_effort: high}
+      top_n: 50
+      similarity_threshold: 0
+      vector_similarity_weight: 0.3
+      rerank_id: "cross-encoder/ms-marco-MiniLM-L-6-v2@frames-rerank@HuggingFace"
+      rerank_candidates_count: 100
+grading:
+  primary:
+    model: claude-sonnet-5
+    provider: anthropic
+  secondary:
+    model: gemini-3.8-flash
+    provider: gemini
+limits:
+  max_cost_usd: 300
+  max_error_rate: 0.2

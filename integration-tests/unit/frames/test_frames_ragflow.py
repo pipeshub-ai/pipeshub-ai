@@ -40,6 +40,7 @@ class _FakeClient:
         self.reply: Any = {}
         self.chats: dict[str, dict[str, Any]] = {}
         self.asked: list[str] = []
+        self.reasoning: list[str | None] = []
 
     def dataset_id(self, name: str) -> str | None:
         return self.datasets[name][0] if name in self.datasets else None
@@ -78,8 +79,9 @@ class _FakeClient:
     def update_chat(self, chat_id: str, body: dict[str, Any]) -> None:
         self.chats[chat_id].update(body)
 
-    def complete(self, chat_id: str, question: str) -> dict[str, Any]:
+    def complete(self, chat_id: str, question: str, reasoning: str | None = None) -> dict[str, Any]:
         self.asked.append(chat_id)
+        self.reasoning.append(reasoning)
         if isinstance(self.reply, Exception):
             raise self.reply
         return self.reply
@@ -284,4 +286,51 @@ class TestChat:
         )
 
         assert len(client.chats) == 3
+
+    def test_prompt_options_are_set_on_the_chat(self, tmp_path: Path) -> None:
+        docs = [_doc(0)]
+        client = _FakeClient()
+        ingestor = _ingestor(client, tmp_path, docs)
+        prepared = ingestor.prepare(_manifest(docs))
+        client.reply = {"answer": "x", "reference": {"chunks": [{"document_id": "doc-Article_0.html"}]}}
+
+        RagflowAdapter(
+            "r", client, ingestor, chat_config=_CHAT, current_time=_SNAPSHOT, prompt_options={"keyword": True},
+        ).answer(AskItem(question_id="1", prompt="q"), prepared, 0)
+
+        [chat] = client.chats.values()
+        assert chat["prompt_config"]["keyword"] is True
+        assert chat["prompt_config"]["system"].startswith("Default prompt"), "the default prompt is kept"
+
+
+class TestReasoning:
+    def _run(self, tmp_path: Path, reply: dict[str, Any]) -> tuple[_FakeClient, Any]:  # noqa: ANN401
+        docs = [_doc(0)]
+        client = _FakeClient()
+        ingestor = _ingestor(client, tmp_path, docs)
+        prepared = ingestor.prepare(_manifest(docs))
+        client.reply = reply
+        prediction = RagflowAdapter(
+            "r", client, ingestor, chat_config=_CHAT, current_time=_SNAPSHOT, reasoning="3",
+        ).answer(AskItem(question_id="1", prompt="q"), prepared, 0)
+        return client, prediction
+
+    def test_the_level_rides_on_every_request(self, tmp_path: Path) -> None:
+        client, _ = self._run(tmp_path, {"answer": "x", "reference": {"chunks": [{"document_id": "doc-Article_0.html"}]}})
+
+        assert client.reasoning == ["3"]
+
+    def test_the_loops_note_to_itself_is_not_part_of_the_answer(self, tmp_path: Path) -> None:
+        answer = "Dora Wilson [ID:0].\n\n[Research status] evidence is not yet sufficient. If these gaps are material, call rag again."
+
+        _, prediction = self._run(tmp_path, {"answer": answer, "reference": {"chunks": [{"document_id": "doc-Article_0.html"}]}})
+
+        assert prediction.answer == "Dora Wilson [ID:0]."
+
+    def test_an_uncited_answer_is_not_a_retrieval_failure(self, tmp_path: Path) -> None:
+        """The loop returns no reference when its answer cites nothing, though
+        it did retrieve."""
+        _, prediction = self._run(tmp_path, {"answer": "It cannot be determined.", "reference": []})
+
+        assert prediction.error is None
 

@@ -30,13 +30,18 @@ class CrossEncoderReranker:
             self._model = CrossEncoder(self.model_name, max_length=_MAX_LENGTH, device=_DEVICE)
         return self._model
 
-    def rerank(self, query: str, chunks: Sequence[Chunk], top_k: int) -> list[Chunk]:
-        if not chunks:
+    def scores(self, query: str, texts: Sequence[str]) -> list[float]:
+        """Raw cross-encoder logits, one per text, in input order."""
+        if not texts:
             return []
         # One model instance; the lock serialises concurrent askers on it.
         with self._lock:
             scores = self._ensure().predict(
-                [(query, c.text) for c in chunks], batch_size=_BATCH_SIZE, show_progress_bar=False,
+                [(query, t) for t in texts], batch_size=_BATCH_SIZE, show_progress_bar=False,
             )
-        order = sorted(range(len(chunks)), key=lambda i: -float(scores[i]))
+        return [float(x) for x in scores]
+
+    def rerank(self, query: str, chunks: Sequence[Chunk], top_k: int) -> list[Chunk]:
+        scores = self.scores(query, [c.text for c in chunks])
+        order = sorted(range(len(chunks)), key=lambda i: -scores[i])
         return [chunks[i] for i in order[:top_k]]

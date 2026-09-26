@@ -188,7 +188,25 @@ def _advanced_rag(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
 
 _OPENWEBUI_OPTIONS = frozenset({
     "base_url", "api_key_env", "upload_workers", "request_timeout_s", "query_generation", "rag_template",
+    "ui_chat", "reranker",
 })
+
+
+def _openwebui_settings(options: dict[str, Any]) -> InstanceSettings:
+    """`reranker` is {url, model, candidates}: the external reranker Open WebUI
+    calls, and how many retrieved chunks it reranks down to the usual 50."""
+    reranker = options.get("reranker") or {}
+    if reranker and not {"url", "model"} <= set(reranker):
+        raise ConfigError("openwebui `reranker` needs `url` and `model`")
+    return InstanceSettings(
+        query_generation=bool(options.get("query_generation", False)),
+        rag_template=str(options.get("rag_template") or ""),
+        top_k=int(reranker.get("candidates", 50)) if reranker else 50,
+        top_k_reranker=50,
+        reranking_engine="external" if reranker else "",
+        reranking_model=str(reranker.get("model", "")),
+        external_reranker_url=str(reranker.get("url", "")),
+    )
 
 
 def _openwebui(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
@@ -215,15 +233,14 @@ def _openwebui(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
         system.id, client, ingestor, model,
         reasoning_effort=model.reasoning_effort, current_time=deps.config.corpus.snapshot,
         price=_answerer_kwargs(deps)["price"],
-        settings=InstanceSettings(
-            query_generation=bool(system.options.get("query_generation", False)),
-            rag_template=str(system.options.get("rag_template") or ""),
-        ),
+        settings=_openwebui_settings(system.options),
+        ui_chat=bool(system.options.get("ui_chat", False)),
     )
 
 
 _RAGFLOW_OPTIONS = frozenset({
-    "base_url", "api_key_env", "dataset", "chat", "system_prompt", "batch_size", "upload_workers", "request_timeout_s",
+    "base_url", "api_key_env", "dataset", "chat", "system_prompt", "prompt_options", "reasoning",
+    "batch_size", "upload_workers", "request_timeout_s",
 })
 
 
@@ -256,6 +273,8 @@ def _ragflow(system: SystemConfig, deps: AdapterDeps) -> SystemAdapter:
     return RagflowAdapter(
         system.id, client, ingestor, chat_config=chat, current_time=deps.config.corpus.snapshot,
         system_prompt=None if system_prompt is None else str(system_prompt),
+        prompt_options=dict(system.options.get("prompt_options") or {}),
+        reasoning=None if system.options.get("reasoning") is None else str(system.options["reasoning"]),
     )
 
 

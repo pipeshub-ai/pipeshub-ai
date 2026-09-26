@@ -60,6 +60,9 @@ class _FakeClient:
         self.server = InstanceSettings(rag_template="<built-in default>")
         self.server_ignores_writes = False
         self.restart_during_chat = False
+        self.ui_bodies: list[dict[str, Any]] = []
+        self.ui_polls: list[dict[str, Any]] = []
+        self.deleted: list[str] = []
 
     def knowledge_id(self, name: str) -> str | None:
         return self.knowledge.get(name)
@@ -95,6 +98,17 @@ class _FakeClient:
         if not self.server_ignores_writes:
             self.server = wanted
         return self.server
+
+    def start_ui_chat(self, body: dict[str, Any]) -> str:
+        self.ui_bodies.append(body)
+        return "chat-1"
+
+    def saved_chat(self, chat_id: str) -> dict[str, Any]:
+        message = self.ui_polls.pop(0) if len(self.ui_polls) > 1 else self.ui_polls[0]
+        return {"chat": {"history": {"messages": {self.ui_bodies[-1]["id"]: message}}}}
+
+    def delete_chat(self, chat_id: str) -> None:
+        self.deleted.append(chat_id)
 
     def chat(self, body: dict[str, Any]) -> dict[str, Any]:
         self.chats.append(body)
@@ -315,12 +329,14 @@ class TestResponse:
 
 
 class TestAnswer:
-    def _adapter(self, client: _FakeClient, settings: InstanceSettings | None = None) -> OpenWebUIAdapter:
+    def _adapter(
+        self, client: _FakeClient, settings: InstanceSettings | None = None, *, ui_chat: bool = False,
+    ) -> OpenWebUIAdapter:
         model = ResolvedModel(model_key="answerer", provider="azureOpenAI", model_name="gpt-5.6-luna",
                               reasoning_effort="high")
         return OpenWebUIAdapter("openwebui", client, None, model,  # type: ignore[arg-type]
                                 reasoning_effort="high", current_time=_SNAPSHOT, price=None,
-                                settings=settings)
+                                settings=settings, ui_chat=ui_chat, poll_interval_s=0)
 
     def _prepared(self, tmp_path: Path) -> PreparedCorpus:
         docs = [_doc(0), _doc(1)]
@@ -402,6 +418,39 @@ class TestAnswer:
 
         assert prediction.error is not None and client.chats == []
 
+    def test_a_ui_chat_is_read_back_with_its_tool_calls_and_then_deleted(self, tmp_path: Path) -> None:
+        prepared = self._prepared(tmp_path)
+        client = _FakeClient()
+        client.ui_polls = [
+            {"done": False},
+            {"done": True, "content": "Dora Wilson [1].",
+             "sources": [{"metadata": [{"file_id": "file-Article_1.html"}]}],
+             "usage": {"input_tokens": 40_000, "output_tokens": 300},
+             "output": [{"type": "function_call", "name": "query_knowledge_files", "arguments": '{"query": "Reve d Or"}'},
+                        {"type": "function_call_output", "output": []}]},
+        ]
+
+        prediction = self._adapter(client, ui_chat=True).answer(AskItem(question_id="1", prompt="Who?"), prepared, 0)
+
+        body = client.ui_bodies[0]
+        assert body["session_id"] and body["files"] == [{"type": "collection", "id": prepared.ingest.kb_id}]
+        assert "2024-10-15" in body["params"]["system"] and body["reasoning"] == {"effort": "high"}
+        assert prediction.answer == "Dora Wilson [1]." and prediction.error is None
+        assert prediction.context_urls == [_doc(1).canonical_url]
+        assert prediction.queries == ['query_knowledge_files({"query": "Reve d Or"})']
+        assert prediction.prompt_tokens == 40_000
+        assert client.deleted == ["chat-1"]
+
+    def test_a_ui_chat_that_errored_is_a_failure(self, tmp_path: Path) -> None:
+        prepared = self._prepared(tmp_path)
+        client = _FakeClient()
+        client.ui_polls = [{"done": True, "error": {"content": "Server Connection Error"}}]
+
+        prediction = self._adapter(client, ui_chat=True).answer(AskItem(question_id="1", prompt="Who?"), prepared, 0)
+
+        assert prediction.error is not None and "Server Connection Error" in prediction.error.message
+        assert client.deleted == ["chat-1"]
+
     def test_an_answer_with_no_retrieved_context_is_a_failure(self, tmp_path: Path) -> None:
         """With the vector store down Open WebUI still answers, from the model
         alone; that is not a measurement of its retrieval."""
@@ -463,3 +512,21 @@ class TestModelsWithoutPipesHub:
 
         assert services.model(services.config.answerer) == "from-registry"
         assert asked
+
+
+class TestRerankerSettings:
+    def test_a_reranker_widens_retrieval_and_keeps_fifty_for_the_model(self) -> None:
+        from benchmarks.harness.systems import _openwebui_settings
+
+        settings = _openwebui_settings({"reranker": {"url": "http://r/v1/rerank", "model": "m", "candidates": 100}})
+
+        assert (settings.top_k, settings.top_k_reranker) == (100, 50)
+        assert (settings.reranking_engine, settings.external_reranker_url, settings.reranking_model) == (
+            "external", "http://r/v1/rerank", "m",
+        )
+
+    def test_no_reranker_is_the_default_instance(self) -> None:
+        from benchmarks.harness.systems import _openwebui_settings
+
+        assert _openwebui_settings({}) == InstanceSettings()
+

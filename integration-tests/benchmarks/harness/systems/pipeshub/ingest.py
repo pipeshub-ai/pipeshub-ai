@@ -83,6 +83,25 @@ class PipesHubIngestor:
         existing.update(self._upload(kb_id, missing))
         still_missing = [d for d in missing if record_name(d.filename) not in existing]
         if still_missing:
+            # A record can land in the KB without its id reaching us — a batch
+            # response that omits entries is enough. Re-list before concluding
+            # the upload failed: re-uploading what is already there would both
+            # risk duplicates and still leave the id out of the manifest, and a
+            # record missing from the manifest is invisible to scoring even
+            # though it is indexed and searchable.
+            landed = {r.record_name: r.record_id for r in self._api.list_records(kb_id)}
+            existing.update({
+                name: landed[name] for d in still_missing
+                if (name := record_name(d.filename)) in landed
+            })
+            recovered = [d for d in still_missing if record_name(d.filename) in existing]
+            still_missing = [d for d in still_missing if record_name(d.filename) not in existing]
+            if recovered:
+                logger.info(
+                    "KB %s: %d upload(s) landed without returning an id; recovered from the listing",
+                    kb_id, len(recovered),
+                )
+        if still_missing:
             logger.warning("KB %s: retrying %d failed uploads one at a time", kb_id, len(still_missing))
             for doc in still_missing:
                 existing.update(self._upload_batch(kb_id, [doc]))
@@ -93,6 +112,15 @@ class PipesHubIngestor:
                 for d in manifest.documents if (name := record_name(d.filename)) in existing
             ],
         )
+        if len(ingest.records) != len(manifest.documents):
+            # Not a warning: the manifest is what maps a record id back to an
+            # article, so a short one reads downstream as a retrieval failure
+            # rather than an error — a plausible-looking wrong answer.
+            raise IngestError(
+                f"KB {kb_id}: ingest manifest has {len(ingest.records)} records for "
+                f"{len(manifest.documents)} corpus documents; scoring would silently "
+                f"treat the missing ones as unretrievable"
+            )
         self._write_cache(ingest)
         return PreparedCorpus(system=self._system_id, corpus_version=version, ingest=ingest)
 

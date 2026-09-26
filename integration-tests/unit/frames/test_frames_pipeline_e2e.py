@@ -10,7 +10,10 @@ from pathlib import Path
 import pytest
 from frames_testkit import FakeArticleSource, FakeLLM, write_frames_tsv
 
-from benchmarks.harness.systems.baselines.answering import ANSWER_PROMPT_VERSION
+from benchmarks.harness.systems.baselines.answering import (
+    ANSWER_PROMPT_VERSION,
+    GROUNDED_ANSWER_PROMPT_VERSION,
+)
 from benchmarks.harness.config import RunConfig
 from benchmarks.harness.corpus.manifest import record_name
 from benchmarks.harness.credentials import Credentials
@@ -80,7 +83,7 @@ def _field(text: str, label: str) -> str:
 
 def _responder(request) -> str:  # noqa: ANN001
     content = request.messages[-1].content
-    if request.prompt_version == ANSWER_PROMPT_VERSION:
+    if request.prompt_version in (ANSWER_PROMPT_VERSION, GROUNDED_ANSWER_PROMPT_VERSION):
         question = _field(content, "Question")
         answer = EVIDENCE[question]
         return f"The answer is {answer}." if "Wikipedia articles" in content and answer in content else "I don't know."
