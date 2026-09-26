@@ -340,33 +340,44 @@ def mentions(answer: str, phrase: str) -> bool:
     number is not read inside another ("21" in "#211", "250" in "$2500" or "$250,000").
     Used for the pack questions' any-of and must-not phrases; `answer_must_mention`
     stays a plain substring check, as the chat landing's questions were scored."""
+    return bool(mention_spans(_normalized(answer), phrase))
+
+
+def _normalized(answer: str) -> str:
     # Markdown emphasis and curly apostrophes are how the chat writes "up to **$250**" and "don’t".
-    text = answer.lower().replace("*", "").replace("\u2019", "'")
+    return answer.lower().replace("*", "").replace("\u2019", "'")
+
+
+def mention_spans(text: str, phrase: str) -> list[tuple[int, int]]:
+    """Where `mentions` finds `phrase` in already-normalized text, as (start, end)."""
     p = phrase.lower().replace("\u2019", "'")
     before = r"(?<![\d#.,])" if p[:1].isdigit() else ""
     after = r"(?!\d|[.,]\d)" if p[-1:].isdigit() else ""
-    return any(not _negated(text[:m.start()]) for m in re.finditer(before + re.escape(p) + after, text))
+    return [
+        m.span() for m in re.finditer(before + re.escape(p) + after, text) if not _negated(text[:m.start()])
+    ]
 
 
 # Sentence ends, not clause breaks: "Up to $250 per purchase: no approval needed" is one statement.
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
-# Clauses inside a sentence; a colon joins, and "$2,500" is one number.
-_CLAUSE = re.compile(r";|,(?=\s)|\bbut\b")
+# "$2,500" is one amount; the comma in "$250, no approval" is punctuation.
+_AMOUNT = re.compile(r"\$\s?\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s?dollars\b")
 
 
-def states_together(answer: str, first: list[str], second: list[str], against: list[str] = ()) -> bool:
-    """Whether one sentence states a phrase from each list, so both facts are about
-    the same thing: "$250 needs your manager. No approval above $2,500" is two. A
-    first-list hit whose own clause says one of `against` ("up to $250 needs your
-    manager's approval; none above $2,500") is about something else, unless that
-    clause also states the second fact ("up to $250 without your manager's approval")."""
-    for sentence in _SENTENCE_END.split(answer):
-        if not any(mentions(sentence, m) for m in second):
+def states_together(answer: str, first: list[str], second: list[str]) -> bool:
+    """Whether a second-list phrase is about a first-list amount: in one sentence,
+    the amount nearest that phrase lies inside a first-list hit. So "up to $250
+    without approval" and "for purchases up to $250, no approval is needed" count,
+    and "up to $250 needs your manager, and there is no approval above $2,500"
+    doesn't: the amount nearest "no approval" there is $2,500."""
+    for sentence in _SENTENCE_END.split(_normalized(answer)):
+        bands = [span for m in first for span in mention_spans(sentence, m)]
+        amounts = [m.span() for m in _AMOUNT.finditer(sentence)]
+        if not bands or not amounts:
             continue
-        for clause in _CLAUSE.split(sentence):
-            if any(mentions(clause, m) for m in first) and (
-                not any(mentions(clause, c) for c in against) or any(mentions(clause, m) for m in second)
-            ):
+        for start, end in (span for m in second for span in mention_spans(sentence, m)):
+            nearest = min(amounts, key=lambda a: max(0, a[0] - end, start - a[1]))
+            if any(b0 <= nearest[0] and nearest[1] <= b1 for b0, b1 in bands):
                 return True
     return False
 
@@ -390,11 +401,10 @@ def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool,
     mention_any = q.get("answer_must_mention_any_of", [])
     if mention_any and not any(mentions(answer, m) for m in mention_any):
         unmentioned.append(" | ".join(mention_any))
-    # A second fact about the same thing, stated in the same sentence (f2: the amount needs no approval).
+    # A second fact about the first one's amount (f2: that amount needs no approval).
     mention_any2 = q.get("answer_must_mention_any_of_2", [])
-    against = q.get("answer_any_of_contradicted_by", [])
-    if mention_any2 and not states_together(answer, mention_any or [""], mention_any2, against):
-        unmentioned.append(" | ".join(mention_any2) + " (in the same sentence)")
+    if mention_any2 and not states_together(answer, mention_any, mention_any2):
+        unmentioned.append(" | ".join(mention_any2) + " (about the amount)")
     # Statements that make an answer wrong however well it cites ("still open").
     unmentioned += [f"not: {m}" for m in q.get("answer_must_not_mention", []) if mentions(answer, m)]
     if expect == "none":

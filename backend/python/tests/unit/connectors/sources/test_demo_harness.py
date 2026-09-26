@@ -150,6 +150,9 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
         "You need no approval for purchases up to $250.",
         "You can spend up to $250 without approval. Above that, your manager approves.",
         "For purchases up to $250, no approval is needed.",
+        "You can spend up to $250 without approval, and there is no approval above $2,500.",
+        "You can spend up to $250 without approval, and above $2,500 finance approves.",
+        "Up to $250: no approval needed; your manager approves above that, up to $2,500.",
         "You can spend up to $250 without approval; above that, your manager approves.",
         "You can spend up to $250 without your manager\u2019s approval, and finance approves above $2,500.",
     ],
@@ -288,6 +291,13 @@ def test_negation_reaches_three_words_back_and_includes_no(
         "Purchases of up to $250 require your manager's approval, and there is no approval above $2,500.",
         "Up to $250 needs your manager's approval, but no approval is needed above $2,500.",
         "Purchases up to $250,000, no approval.",
+        # "no approval" is nearest a different amount, however the clauses are joined.
+        "Purchases of up to $250 require your manager's approval and there is no approval above $2,500.",
+        "Up to $250, your manager approves, and there is no approval above $2,500.",
+        "Up to $250: your manager's approval is required and there is no approval above $2,500.",
+        "Purchases of up to $250 must be approved by your manager; there is no approval above $2,500.",
+        "Purchases of up to $250 have to be signed off by your manager, and there is no approval above $2,500.",
+        "The policy lists up to $250, and there is no approval above $2,500.",
     ],
 )
 def test_f2_needs_the_no_approval_amount_not_just_the_words(fx: dict, answer: str) -> None:
