@@ -162,3 +162,22 @@ async def test_a_file_reached_only_through_a_redirect_is_asked_about_before_down
 
     assert site.not_modified == [moved]
     assert site.storage_uploads == uploads
+
+
+async def test_a_304_carrying_the_old_url_s_etag_does_not_vouch_for_an_older_copy_at_the_new_url(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old, new = "http://site.test/old.pdf", "http://site.test/new.pdf"
+    site.html(START_URL, "Home", "/old.pdf", "/new.pdf")
+    site.add(old, Page(body=b"%PDF-1.4 v2", content_type="application/pdf", etag='"v2"'))
+    site.add(new, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector()
+    await connector.run_sync()
+
+    # A site that refuses HEAD: the GET follows the redirect carrying /old.pdf's ETag, which /new.pdf now has.
+    site.html(START_URL, "Home", "/old.pdf")
+    site.add(old, Page(status=301, location="/new.pdf", content_type=None, head_status=405))
+    site.add(new, Page(body=b"%PDF-1.4 v2", content_type="application/pdf", etag='"v2"'))
+    await connector.run_sync()
+
+    assert site.storage_docs[db.pages()[new].storage_document_id] == b"%PDF-1.4 v2"

@@ -2023,8 +2023,10 @@ class WebConnector(BaseConnector):
                     return None  # the site confirmed our stored copy is current
                 moved_to = result.final_url
                 stored_there = await self._stored_record(moved_to)
-                if stored_there is not None and stored_there.storage_document_id:
-                    # Our copy at the new URL is current; only the old URL's record needs cleaning up.
+                if stored_there is not None and stored_there.storage_document_id and self._validators_match(
+                    result, stored_there
+                ):
+                    # The 304 vouches for our copy at the new URL; only the old URL's record needs cleaning up.
                     await self._handle_gone_page(url, keep_id=stored_there.id)
                     return None
                 # The validators came from the old URL (a HEAD-refusing site's GET followed the
@@ -2448,6 +2450,15 @@ class WebConnector(BaseConnector):
             return
         if self._normalize_url(requested_url) != self._normalize_url(record.weburl):
             await self._handle_gone_page(requested_url, keep_id=record.id)
+
+    def _validators_match(self, response: FetchResponse, record: Record) -> bool:
+        """Whether a 304 answered the validators stored with ``record``, and not another URL's."""
+        etag = self._header(response.headers, "ETag")
+        last_modified = self._header(response.headers, "Last-Modified")
+        return bool(
+            (etag and etag == getattr(record, "etag", None))
+            or (last_modified and last_modified == getattr(record, "ctag", None))
+        )
 
     async def _stored_record(self, url: str) -> Record | None:
         for candidate in self._stored_ids_for(url):
