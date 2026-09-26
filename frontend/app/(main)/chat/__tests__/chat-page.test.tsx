@@ -53,13 +53,14 @@ vi.mock('../components', async () => {
 });
 
 let demoDataActive = false;
+// Unknown (null) reads as shown.
+let demoDataStatus: { include: boolean } | null = null;
 vi.mock('@/app/(main)/workspace/connectors/demo-data/use-demo-data', () => ({
   useDemoDataActive: () => demoDataActive,
-  // The chat page also reads this person's demo switch; unknown reads as shown.
-  useDemoDataStatus: () => null,
+  useDemoDataStatus: () => demoDataStatus,
 }));
 vi.mock('@/app/(main)/workspace/connectors/demo-data/components', () => ({
-  DemoDataRemovalNotice: () => null,
+  DemoDataRemovalNotice: () => <div>Demo removal notice</div>,
 }));
 
 vi.mock('@/config', () => ({
@@ -229,6 +230,7 @@ beforeEach(() => {
   useFeatureFlagsStore.setState({ flags: {} } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
   useServicesHealthStore.setState({ apiServerReachable: true });
   demoDataActive = false;
+  demoDataStatus = null;
   window.history.replaceState(null, '', '/chat/');
   fetchConversations.mockResolvedValue({ conversations: [], pagination: PAGINATION });
   fetchModelsForContext.mockResolvedValue(undefined);
@@ -292,6 +294,20 @@ describe('Chat page — new chat', () => {
       content: [{ type: 'text', text: 'What is our refund policy?' }],
       startRun: true,
     });
+  });
+
+  it('keeps the demo questions off the landing for someone who hid the demo data', () => {
+    demoDataActive = true;
+    demoDataStatus = { include: false };
+    renderPage();
+
+    expect(screen.queryByRole('button', { name: 'What is our refund policy?' })).toBeNull();
+  });
+
+  it('offers the demo removal notice on the landing even when the demo is off', () => {
+    renderPage();
+
+    expect(screen.getByText('Demo removal notice')).toBeTruthy();
   });
 
   it('sends the question handed over from the chat widget, scoped to its collections', async () => {
