@@ -933,8 +933,11 @@ class NextcloudConnector(BaseConnector):
                     deleted, record.id,
                 )
 
-    async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
-        """Handle record updates (modified or deleted records). Follows Box connector pattern."""
+    async def _handle_record_updates(self, record_update: RecordUpdate) -> bool:
+        """Handle record updates (modified or deleted records). Follows Box connector pattern.
+
+        Returns False when the change could not be saved.
+        """
         try:
             if record_update.is_deleted:
                 existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -952,16 +955,20 @@ class NextcloudConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error handling record update: {e}", exc_info=True)
+            return False
+        return True
 
     async def _sync_user_files(
         self,
         user_id: str,
         user_email: str,
         record_group_id: str
-    ) -> None:
+    ) -> bool:
         """
         Synchronize all files for a specific user using WebDAV PROPFIND.
         Hardcoded depth to 100
+
+        Returns True only when the whole drive was listed and every change saved.
         """
         try:
             self.logger.info(f"Syncing files for user: {user_email}")
@@ -978,15 +985,19 @@ class NextcloudConnector(BaseConnector):
                 self.logger.error(
                     f"Failed to list directory for {user_email}: {get_response_error(response)}"
                 )
-                return
+                return False
 
             body = extract_response_body(response)
             if not body:
                 self.logger.error(f"Empty response for {user_email}")
-                return
+                return False
 
             # Parse WebDAV response
             entries = parse_webdav_propfind_response(body)
+            if not entries:
+                # A readable listing always includes the home folder itself.
+                self.logger.error(f"Could not read the file listing for {user_email}")
+                return False
 
             # 1. Capture the Root Path
             user_root_path = None
@@ -1004,7 +1015,7 @@ class NextcloudConnector(BaseConnector):
 
             if not entries:
                 self.logger.info(f"No files to sync for {user_email}")
-                return
+                return True
 
             # Sort entries by hierarchy (folders first, by depth)
             sorted_entries = self._sort_entries_by_hierarchy(entries)
@@ -1018,6 +1029,7 @@ class NextcloudConnector(BaseConnector):
             batch_count = 0
             updated_count = 0
             new_count = 0
+            all_saved = True
 
             # Pass correct variable name to generator
             async for file_record, permissions, record_update in self._process_nextcloud_items_generator(
@@ -1030,7 +1042,7 @@ class NextcloudConnector(BaseConnector):
             ):
                 # Handle updates separately from new records
                 if record_update.is_updated and not record_update.is_new:
-                    await self._handle_record_updates(record_update)
+                    all_saved = await self._handle_record_updates(record_update) and all_saved
                     updated_count += 1
                     continue
 
@@ -1057,11 +1069,13 @@ class NextcloudConnector(BaseConnector):
             self.logger.info(
                 f"Sync complete for {user_email}: {new_count} new, {updated_count} updated"
             )
+            return all_saved
 
         except NextcloudAppPasswordRejectedError:
             raise
         except Exception as e:
             self.logger.error(f"Error syncing files for {user_email}: {e}", exc_info=True)
+            return False
 
     async def run_sync(self) -> None:
         """
@@ -1174,11 +1188,18 @@ class NextcloudConnector(BaseConnector):
 
             # Sync files for the current user only
             self.logger.info(f"Syncing files for user: {self.current_user_email}")
-            await self._sync_user_files(
+            if not await self._sync_user_files(
                 self.current_user_id,
                 self.current_user_email,
                 self.current_user_id
-            )
+            ):
+                # The cursor only covers changes made after it, so saving one now would
+                # leave whatever this run missed unsynced until it next changes.
+                self.logger.error(
+                    "❌ [Full Sync] The drive could not be read or saved in full. The activity cursor "
+                    "was not saved, so the next sync runs a full sync again."
+                )
+                return
 
             # Initialize cursor for incremental sync
             # Fetch the latest activity ID to use as baseline for next incremental sync

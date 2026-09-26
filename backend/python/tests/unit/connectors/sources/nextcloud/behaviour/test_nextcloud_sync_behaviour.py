@@ -411,21 +411,13 @@ class TestFullSync:
     @pytest.mark.parametrize(
         "break_it",
         [
-            pytest.param(lambda server, db: server.fail("PROPFIND", lambda p: True, httpx.Response(503)), id="listing-fails"),
-            pytest.param(lambda server, db: server.fail("PROPFIND", lambda p: True, httpx.Response(429, headers={"Retry-After": "1"})), id="listing-rate-limited"),
-            pytest.param(lambda server, db: server.fail("PROPFIND", lambda p: True, httpx.Response(207, content=b"<not xml")), id="listing-garbled"),
-            pytest.param(lambda server, db: server.fail("PROPFIND", lambda p: True, httpx.Response(207, content=b"")), id="listing-empty"),
+            pytest.param(lambda server, db: server.outage("PROPFIND", lambda p: True, lambda: httpx.Response(503)), id="listing-fails"),
+            pytest.param(lambda server, db: server.outage("PROPFIND", lambda p: True, lambda: httpx.Response(429, headers={"Retry-After": "1"})), id="listing-rate-limited"),
+            pytest.param(lambda server, db: server.outage("PROPFIND", lambda p: True, lambda: httpx.Response(207, content=b"<not xml")), id="listing-garbled"),
+            pytest.param(lambda server, db: server.outage("PROPFIND", lambda p: True, lambda: httpx.Response(207, content=b"")), id="listing-empty"),
+            pytest.param(lambda server, db: server.outage("PROPFIND", lambda p: True, lambda: httpx.ConnectError("reset")), id="listing-unreachable"),
             pytest.param(lambda server, db: db.fail_write_for.add("Docs"), id="first-write-fails"),
         ],
-    )
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: when the first full sync "
-            "can't list or save the drive, the error is swallowed and the activity cursor is still "
-            "anchored to 'now', so later runs only look for newer changes and the files that were "
-            "missed are never synced."
-        ),
     )
     async def test_a_failed_first_sync_is_retried_on_the_next_run(self, server, db, store, break_it) -> None:
         seed_drive(server)
@@ -433,10 +425,31 @@ class TestFullSync:
         break_it(server, db)
 
         await connector.run_sync()
+        assert store.cursor() is None, "nothing may be anchored over files that were never saved"
+
+        server.faults.clear()
         db.fail_write_for.clear()
         await connector.run_sync()
 
         assert {"q1.pdf", "notes.txt", "cat.png", "readme.txt"} <= db.names()
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_an_update_that_fails_to_save_during_a_full_sync_is_retried(self, server, db, store) -> None:
+        seed_drive(server)
+        server.activities.clear()  # activity app disabled: every run is a full sync
+        connector = await make_connector(server, db, store)
+        await connector.run_sync()
+        server.change("Docs/notes.txt", b"v2")
+        server.add_file("later.txt")  # gives the run something to anchor to
+        db.fail_write_for.add("notes.txt")
+
+        await connector.run_sync()
+        assert store.cursor() is None
+
+        db.fail_write_for.clear()
+        await connector.run_sync()
+        assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+        assert store.cursor() == str(server.latest_activity_id)
 
     async def test_a_failed_cursor_anchor_leaves_the_next_run_a_full_sync(self, server, db, store) -> None:
         seed_drive(server)
