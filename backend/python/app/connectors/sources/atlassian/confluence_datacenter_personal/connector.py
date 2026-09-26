@@ -1416,6 +1416,8 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                                         rec[0].external_record_id 
                                         for rec in comment_file_records
                                     }
+                                    # The page's own attachments are saved under the page in this same batch.
+                                    synced_attachment_ids.update(att.get("id") for att in page_attachments or [])
                                     
                                     # Resolve each embedded filename and create FileRecord if not already synced
                                     for filename in embedded_filenames:
@@ -1599,6 +1601,8 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                                         rec[0].external_record_id 
                                         for rec in child_file_records
                                     }
+                                    # The page's own attachments are saved under the page in this same batch.
+                                    synced_attachment_ids.update(att.get("id") for att in page_attachments or [])
                                     
                                     # Resolve each embedded filename and create FileRecord if not already synced
                                     for filename in embedded_filenames:
