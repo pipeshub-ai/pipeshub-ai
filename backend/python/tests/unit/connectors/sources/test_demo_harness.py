@@ -206,6 +206,11 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
         "Up to $250: no approval needed; your manager approves above that, up to $2,500.",
         "You can spend up to $250 without approval; above that, your manager approves.",
         "You can spend up to $250 without your manager\u2019s approval, and finance approves above $2,500.",
+        # The chat's preamble runs into the answer with no space after its period.
+        "I\u2019ll check the expense policy for the approval threshold.You can spend up to **$250** "
+        "on a purchase without your manager\u2019s approval [source](ref7).",
+        "I\u2019ll look for the spending-approval policy.You can spend up to **$250 per purchase** without "
+        "manager approval. Purchases **more than $250 and up to $2,500** need your manager\u2019s approval.",
     ],
 )
 def test_f2_passes_the_amount_with_no_approval_however_the_chat_formats_it(fx: dict, answer: str) -> None:
@@ -469,6 +474,7 @@ def test_negation_reaches_three_words_back_and_includes_no(
         "You can spend up to $250 with no approval and your manager must sign this purchase off.",
         "Up to $250. Your manager's approval is required. You can spend up to $250 with no approval.",
         "Up to $250. Your manager's approval is required, but you can spend up to $250 with no approval.",
+        "Up to $250.Your manager's approval is required.You can spend up to $250 with no approval.",
         "The band is up to $250. Manager approval is required. Purchases up to $250 need no approval.",
         "You can spend up to $250 with no approval by submitting it for your manager to approve.",
         "You can spend up to $250 with no approval, above that your manager must approve it, and also the $250 purchase.",
