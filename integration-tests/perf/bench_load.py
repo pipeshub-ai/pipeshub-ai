@@ -121,8 +121,11 @@ class Stage:
 # The same grammar as the workflow's "Validate inputs" step, which
 # unit/test_perf_load.py checks against these parsers. No spaces, and no
 # number form that float() would take but the step cannot, such as 1e3 or nan.
-_NUMBER = r"[0-9]+(?:\.[0-9]+)?"
-_STAGE = re.compile(rf"({_NUMBER}):([0-9]+)")
+# Digit counts are capped so every value is finite and sane: a 400-digit
+# duration would become inf, and 10,000 users would be 10,000 threads.
+# Seconds up to 999999.999 (about 11 days), users up to 9999, docs up to 999999.
+_NUMBER = r"[0-9]{1,6}(?:\.[0-9]{1,3})?"
+_STAGE = re.compile(rf"({_NUMBER}):([0-9]{{1,4}})")
 _THINK_TIME = re.compile(rf"({_NUMBER})(?::({_NUMBER}))?")
 
 
@@ -132,9 +135,12 @@ def parse_stages(text: str) -> tuple[Stage, ...]:
     for part in text.split(","):
         match = _STAGE.fullmatch(part)
         if not match:
-            raise ValueError(f"a stage is seconds:users with no spaces, like 120:4; got {part!r}")
+            raise ValueError(
+                f"a stage is seconds:users with no spaces, up to 999999.999 seconds and 9999 users, "
+                f"like 120:4; got {part!r}"
+            )
         seconds, users = float(match.group(1)), int(match.group(2))
-        if seconds <= 0:
+        if not math.isfinite(seconds) or seconds <= 0:
             raise ValueError(f"a stage must last longer than 0 seconds; got {part!r}")
         stages.append(Stage(seconds, users))
     if not stages:
@@ -146,8 +152,8 @@ def parse_stages(text: str) -> tuple[Stage, ...]:
 
 def parse_docs(text: str) -> int:
     """A whole number of at least 1, in plain ASCII digits: int() alone takes " 80", "+80" and "8_0"."""
-    if not re.fullmatch(r"[0-9]+", text) or int(text) < 1:
-        raise argparse.ArgumentTypeError(f"--docs must be a whole number of at least 1; got {text!r}")
+    if not re.fullmatch(r"[0-9]{1,6}", text) or int(text) < 1:
+        raise argparse.ArgumentTypeError(f"--docs must be a whole number from 1 to 999999; got {text!r}")
     return int(text)
 
 
@@ -158,6 +164,8 @@ def parse_think_time(text: str) -> tuple[float, float]:
         raise ValueError(f"think time is seconds or min:max with no spaces, like 1:3; got {text!r}")
     low = float(match.group(1))
     high = float(match.group(2)) if match.group(2) is not None else low
+    if not (math.isfinite(low) and math.isfinite(high)):
+        raise ValueError(f"think time must be a finite number of seconds; got {text!r}")
     if high < low:
         raise ValueError(f"think time is seconds or min:max with min <= max, like 1:3; got {text!r}")
     return low, high

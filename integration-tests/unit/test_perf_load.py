@@ -456,20 +456,25 @@ def _parses(parser: Any, text: str) -> bool:
     return True
 
 
+# 400 digits: float() of it is inf, which a positivity check alone lets through.
+OVERSIZED = "9" * 400
+
 # Spaces, leading and trailing dots, and number forms float() takes (1e3, nan,
 # inf, +1, 1_0, non-ASCII digits) are where a regex and a parser drift apart.
 STAGE_SAMPLES = (
     "120:4,120:8,900:8", "1.5:4", "0.5:1,30:0", "10:010",
     "0:4", "0.0:4", "00.00:4", "10:0,5:0", "120", "1.:4", ".5:4", "120:4,", "-1:4", "1:1.5", "a:b",
     "120:4, 60:8", " 120:4", "120 :4", "120: 4", "120:4 ", "1e3:4", "+1:4", "1_0:4", "\u0661\u0662:4",
-    "nan:4", "inf:4", "", ",", "10:99999999999999999999", "10:18446744073709551616", "10:00,5:000", "99999999999999999999:1",
+    "nan:4", "inf:4", "", ",", "999999.999:9999", "1000000:4", "1.1234:4", "10:10000", "0001:4",
+    OVERSIZED + ":4", "1." + OVERSIZED + ":4", "10:99999999999999999999", "10:18446744073709551616", "10:00,5:000", "99999999999999999999:1",
 )
 THINK_SAMPLES = (
     "1:3", "2", "0", "0.5:2.5", "2:2", "3:1", "2.5:1", "1:", ":3", "-1", "1:2:3", "a",
     "1 : 3", " 2", "2 ", ".5", "1.", "1e3", "nan", "inf", "+1", "1_0", "\u0661", "",
+    "999999.999", "1000000", "1:1000000", OVERSIZED, "1:" + OVERSIZED,
 )
 DOCS_SAMPLES = ("80", "1", "0", "000", "0010", "-1", "", " 80", "+80", "8_0", "1.5", "\u0668\u0660",
-                "99999999999999999999")
+                "999999", "1000000", "000001", "99999999999999999999", OVERSIZED)
 
 
 @pytest.mark.parametrize("stages", STAGE_SAMPLES)
@@ -499,3 +504,16 @@ def test_the_samples_cover_both_verdicts(capsys) -> None:
                             (_docs_parse, DOCS_SAMPLES)):
         verdicts = {_parses(parser, s) for s in samples}
         assert verdicts == {True, False}
+
+
+def test_no_input_can_make_the_run_endless() -> None:
+    """float() of a long enough number is inf, which "longer than 0" lets through."""
+    for stages in (OVERSIZED + ":4", "1000000:4", "10:10000"):
+        with pytest.raises(ValueError):
+            parse_stages(stages)
+        assert not _workflow_accepts(_validate_step(), stages=stages)
+    for think_time in (OVERSIZED, "1:" + OVERSIZED):
+        with pytest.raises(ValueError):
+            parse_think_time(think_time)
+        assert not _workflow_accepts(_validate_step(), think_time=think_time)
+    assert parse_stages("999999.999:9999") == (Stage(999999.999, 9999),)
