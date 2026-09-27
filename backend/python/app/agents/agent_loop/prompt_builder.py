@@ -122,17 +122,16 @@ _ORG_SCOPE_RULE = (
     "User Information; discard retrieved results that clearly belong to "
     "a different organization.\n"
 )
-# With the Acme Corp sample data loaded, "our" still means the user's own
-# organization; Acme Corp is only the fallback, which is what lets the demo's
-# "our" questions answer before any real data exists.
+# With the Acme Corp sample data loaded, "our" also covers the demo: it was
+# provided for this workspace, so its differently named company is no reason
+# to discard it or to search it only after everything else.
 _ORG_SCOPE_RULE_WITH_DEMO = (
     '- **Organization scope**: "our", "we", and "my [company/team/org]" mean '
-    "the organization in Current User Information. Answer from its records "
-    "first. Use the Acme Corp sample records in the Demo source (see Knowledge "
-    "Sources) only when none of that organization's records answer the "
-    "question, and then say whose they are: \"Acme Corp's policy is ...\", "
-    "never \"our policy is ...\". Discard retrieved results that clearly belong "
-    "to any other organization.\n"
+    "the organization in Current User Information. The Demo source's Acme Corp "
+    "sample data was provided for this workspace (see Knowledge Sources): answer "
+    "from it as from the organization's own records, even though the names differ. "
+    "Discard retrieved results that clearly belong to a different organization; "
+    "Demo records never count as one.\n"
 )
 _OPERATING_RULES = """
 ## Operating Rules

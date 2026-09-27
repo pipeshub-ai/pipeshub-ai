@@ -30,16 +30,22 @@ from app.modules.agents.context.retrieval_routing import build_routing_guidance
 DEMO_APP = "demo"
 
 # Mirrors the chat landing ("Acme Corp, a small fictional company loaded as
-# demo data"), so answers and UI describe the same thing.
+# demo data"), so answers and UI describe the same thing. The prompt names the
+# workspace's organization, never Acme Corp, and a model that reads the demo as
+# another company's data declines it or searches it last.
 DEMO_SOURCE_NOTE = (
-    "**Demo data.** The Demo source holds sample records for Acme Corp, a small "
-    "fictional company loaded into this workspace so people can try it out; its "
-    "records carry GitHub, Jira, Slack, Google Drive and ServiceNow labels. Only "
-    "records from the Demo source are Acme Corp's: never call a record from any "
-    "other source (a Collection, another connector) Acme Corp's, and never present "
-    "an Acme Corp fact as the user's organization's. When you answer from Acme Corp "
-    "records, name Acme Corp (\"Acme Corp's on-call policy is ...\"). Do not decline "
-    "or discard them only because this workspace's organization has a different name."
+    "**Demo data.** The Demo source is sample data provided for this workspace: records "
+    "for Acme Corp, a small fictional company, loaded so people can try the product; they "
+    "carry GitHub, Jira, Slack, Google Drive and ServiceNow labels. Answer from it as you "
+    "would from the workspace's own data, including questions that say \"our\", \"we\" or "
+    "\"my company\". The workspace's organization may have a different name; that is "
+    "expected, so never decline, discard or doubt Demo records because of it, never add the "
+    "organization's name to a search, and search the Demo source together with the other "
+    "sources rather than as a later fallback. When an answer comes from Demo records, say "
+    "it is demo data (\"In the Acme Corp demo data, the on-call policy is ...\"); if a "
+    "record from another source contradicts one, prefer that record and point out the "
+    "difference. Only records from the Demo source are Acme Corp's: never call a record "
+    "from any other source (a Collection, another connector) Acme Corp's or demo data."
 )
 
 

@@ -382,6 +382,18 @@ class TestDemoSourceNote:
         assert "Only records from the Demo source are Acme Corp's" in DEMO_SOURCE_NOTE
         assert "never call a record from any other source" in DEMO_SOURCE_NOTE
 
+    def test_demo_is_this_workspaces_data_not_a_fallback(self) -> None:
+        # The org scope's "Acme Corp only as a fallback" had the model refuse, or
+        # search everything else first and run out of turns before answering.
+        assert "sample data provided for this workspace" in DEMO_SOURCE_NOTE
+        assert "as you would from the workspace's own data" in DEMO_SOURCE_NOTE
+        assert "never add the organization's name to a search" in DEMO_SOURCE_NOTE
+        assert "rather than as a later fallback" in DEMO_SOURCE_NOTE
+        assert "never present an Acme Corp fact" not in DEMO_SOURCE_NOTE
+
+    def test_answers_still_say_they_are_demo_data(self) -> None:
+        assert "say it is demo data" in DEMO_SOURCE_NOTE
+
     def test_the_note_sits_with_the_sources_not_in_place_of_them(self) -> None:
         cat = _catalog_from_knowledge([_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID)])
         text = cat.render()
