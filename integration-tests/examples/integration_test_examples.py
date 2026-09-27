@@ -123,6 +123,20 @@ class TestSdkStarter:
         _assert_starter_found_it(result, seeded_record)
 
 
+    def test_go(self, examples_dir, examples_base_url, examples_token, seeded_record) -> None:
+        cwd = examples_dir / "sdk-starter/go"
+        if not cwd.is_dir():
+            pytest.skip("this examples checkout has no Go starter yet (pipeshub-ai/examples#9)")
+        if shutil.which("go") is None:
+            pytest.skip("go is not on PATH, so the Go starter cannot be built")
+        result = run(
+            ["go", "run", ".", seeded_record["question"]],
+            cwd=cwd,
+            env=_reader_env(examples_base_url, examples_token),
+        )
+        _assert_starter_found_it(result, seeded_record)
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
