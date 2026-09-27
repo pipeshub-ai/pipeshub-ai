@@ -38,8 +38,10 @@ export interface HealthStatus {
   };
 }
 
+// Not `status`: readiness scripts grep the body for "status":"healthy", which a
+// healthy sub-service would otherwise match while the overall status is unhealthy.
 interface ServiceHealthDetail {
-  status: 'healthy' | 'unhealthy' | 'starting' | 'pending' | 'unknown';
+  state:'healthy' | 'unhealthy' | 'starting' | 'pending' | 'unknown';
   message: string;
   endpoint?: string;
   latencyMs?: number;
@@ -128,20 +130,20 @@ export function createHealthRouter(
       try {
         await redis.get('health-check');
         services.redis = 'healthy';
-        details.redis = { status: 'healthy', message: 'Redis responded to ping' };
+        details.redis = { state: 'healthy', message: 'Redis responded to ping' };
       } catch (error) {
         services.redis = 'unhealthy';
-        details.redis = { status: 'starting', message: 'Waiting for Redis connection' };
+        details.redis = { state: 'starting', message: 'Waiting for Redis connection' };
         overallHealthy = false;
       }
 
       try {
         await tokenEventProducer.healthCheck();
         services.messageBroker = 'healthy';
-        details.messageBroker = { status: 'healthy', message: `${brokerName} is reachable` };
+        details.messageBroker = { state: 'healthy', message: `${brokerName} is reachable` };
       } catch (error) {
         services.messageBroker = 'unhealthy';
-        details.messageBroker = { status: 'starting', message: `Waiting for ${brokerName}` };
+        details.messageBroker = { state: 'starting', message: `Waiting for ${brokerName}` };
         overallHealthy = false;
       }
 
@@ -149,13 +151,13 @@ export function createHealthRouter(
         const isMongoHealthy = await mongooseService.healthCheck();
         services.mongodb = isMongoHealthy ? 'healthy' : 'unhealthy';
         details.mongodb = {
-          status: isMongoHealthy ? 'healthy' : 'starting',
+          state: isMongoHealthy ? 'healthy' : 'starting',
           message: isMongoHealthy ? 'MongoDB connection is ready' : 'Waiting for MongoDB connection',
         };
         if (!isMongoHealthy) overallHealthy = false;
       } catch (error) {
         services.mongodb = 'unhealthy';
-        details.mongodb = { status: 'starting', message: 'Waiting for MongoDB connection' };
+        details.mongodb = { state: 'starting', message: 'Waiting for MongoDB connection' };
         overallHealthy = false;
       }
 
@@ -165,13 +167,13 @@ export function createHealthRouter(
           const isKVServiceHealthy = await keyValueStoreService.healthCheck();
           services.KVStoreservice = isKVServiceHealthy ? 'healthy' : 'unhealthy';
           details.KVStoreservice = {
-            status: isKVServiceHealthy ? 'healthy' : 'starting',
+            state: isKVServiceHealthy ? 'healthy' : 'starting',
             message: isKVServiceHealthy ? 'etcd is reachable' : 'Waiting for etcd',
           };
           if (!isKVServiceHealthy) overallHealthy = false;
         } catch (exception) {
           services.KVStoreservice = 'unhealthy';
-          details.KVStoreservice = { status: 'starting', message: 'Waiting for etcd' };
+          details.KVStoreservice = { state: 'starting', message: 'Waiting for etcd' };
           overallHealthy = false;
         }
       }
@@ -181,7 +183,7 @@ export function createHealthRouter(
         // Python backend hasn't written dataStoreType to KV store yet
         services.graphDb = 'pending';
         details.graphDb = {
-          status: 'pending',
+          state: 'pending',
           message: 'Waiting for backend deployment configuration',
         };
         logger.info('dataStoreType not yet available in deployment config — Python backend may not have started');
@@ -201,7 +203,7 @@ export function createHealthRouter(
           );
           services.graphDb = graphDbResp.status === 200 ? 'healthy' : 'unhealthy';
           details.graphDb = {
-            status: graphDbResp.status === 200 ? 'healthy' : 'unhealthy',
+            state: graphDbResp.status === 200 ? 'healthy' : 'unhealthy',
             message: graphDbResp.status === 200 ? `${graphDbName} is reachable` : `${graphDbName} responded with HTTP ${graphDbResp.status}`,
             endpoint,
             latencyMs: Date.now() - startedAt,
@@ -210,7 +212,7 @@ export function createHealthRouter(
         } catch (error) {
           services.graphDb = 'unhealthy';
           details.graphDb = {
-            status: 'starting',
+            state: 'starting',
             message: `Waiting for ${graphDbName}`,
             endpoint,
             latencyMs: Date.now() - startedAt,
@@ -224,7 +226,7 @@ export function createHealthRouter(
       if (!deployment.vectorDbType) {
         services.vectorDb = 'pending';
         details.vectorDb = {
-          status: 'pending',
+          state: 'pending',
           message: 'Waiting for vector DB configuration',
         };
         logger.info('vectorDbType not yet available in deployment config — Python backend may not have started');
@@ -239,7 +241,7 @@ export function createHealthRouter(
           const ok = vectorDbResp.status === 200;
           services.vectorDb = ok ? 'healthy' : 'unhealthy';
           details.vectorDb = {
-            status: ok ? 'healthy' : 'unhealthy',
+            state: ok ? 'healthy' : 'unhealthy',
             message: ok
               ? `${vectorDbName} is reachable`
               : `${vectorDbName} responded with HTTP ${vectorDbResp.status}`,
@@ -250,7 +252,7 @@ export function createHealthRouter(
         } catch (error) {
           services.vectorDb = 'unhealthy';
           details.vectorDb = {
-            status: 'starting',
+            state: 'starting',
             message: `Waiting for ${vectorDbName}`,
             endpoint: vectorDbEndpoint,
             latencyMs: Date.now() - vectorDbStartedAt,
@@ -304,7 +306,7 @@ export function createHealthRouter(
           return {
             ok,
             detail: {
-              status: ok ? 'healthy' : 'unhealthy',
+              state: ok ? 'healthy' : 'unhealthy',
               message: ok ? `${label} is ready` : `${label} responded but is not healthy`,
               endpoint,
               latencyMs: Date.now() - startedAt,
@@ -314,7 +316,7 @@ export function createHealthRouter(
           return {
             ok: false,
             detail: {
-              status: 'starting',
+              state: 'starting',
               message: `Waiting for ${label}`,
               endpoint,
               latencyMs: Date.now() - startedAt,

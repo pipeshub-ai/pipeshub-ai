@@ -157,7 +157,7 @@ function ServiceRow({
   detail?: ServiceHealthDetail;
   displayName?: string;
 }) {
-  const displayStatus = detail?.status ?? status;
+  const displayStatus = detail?.state ?? status;
   const detailColor =
     displayStatus === 'healthy'
       ? 'var(--green-11)'
@@ -252,7 +252,7 @@ function hasPendingServices(
 ): boolean {
   if (!services) return false;
   return Object.entries(services).some(([key, status]) => {
-    const detailStatus = details?.[key]?.status;
+    const detailStatus = details?.[key]?.state;
     return (
       status === 'starting' ||
       status === 'pending' ||

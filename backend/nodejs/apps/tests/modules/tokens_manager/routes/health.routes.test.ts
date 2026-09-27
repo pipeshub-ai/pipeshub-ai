@@ -1061,8 +1061,24 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.status).to.equal('unhealthy')
       expect(jsonArg.services.query).to.equal('unhealthy')
       expect(jsonArg.services.connector).to.equal('unhealthy')
-      expect(jsonArg.details.query.status).to.equal('starting')
+      expect(jsonArg.details.query.state).to.equal('starting')
       expect(jsonArg.details.query.message).to.equal('Waiting for Query Service')
+    })
+
+    it('never says "status":"healthy" anywhere in the body while a critical service is down', async () => {
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('8088')) return Promise.reject(new Error('ECONNREFUSED'))
+        return Promise.resolve({ status: 200, data: { status: 'healthy' } })
+      })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      await handler({}, res, sinon.stub())
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.details.query.state).to.equal('healthy')
+      expect(JSON.stringify(jsonArg)).to.not.include('"status":"healthy"')
     })
 
     it('should still be healthy when only indexing is down (non-critical)', async () => {
@@ -1532,8 +1548,8 @@ describe('tokens_manager/routes/health.routes', () => {
         const jsonArg = res.json.firstCall.args[0]
         expect(jsonArg.services.parsing).to.equal('unhealthy')
         expect(jsonArg.services.extraction).to.equal('unhealthy')
-        expect(jsonArg.details.parsing.status).to.equal('starting')
-        expect(jsonArg.details.extraction.status).to.equal('starting')
+        expect(jsonArg.details.parsing.state).to.equal('starting')
+        expect(jsonArg.details.extraction.state).to.equal('starting')
       })
     })
   })

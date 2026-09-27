@@ -12,7 +12,7 @@ import { apiClient } from '@/lib/api/axios-instance';
 export type ServiceStatus = 'healthy' | 'unhealthy' | 'unknown' | 'pending' | 'starting';
 
 export interface ServiceHealthDetail {
-  status: ServiceStatus;
+  state: ServiceStatus;
   message?: string;
   endpoint?: string;
   latencyMs?: number;
