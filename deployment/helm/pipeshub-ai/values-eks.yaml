@@ -1,0 +1,315 @@
+# PipesHub on Amazon EKS. No NFS and no EFS.
+#
+# Databases use one encrypted gp3 volume each (ReadWriteOnce). The app does not
+# share a disk: uploaded files belong in S3, which you set in the product after
+# the first login. See docs/deployment/aws-eks.md.
+#
+#   helm dependency build ./deployment/helm/pipeshub-ai
+#   ./deployment/helm/aws/install.sh
+#
+# Release name must be pipeshub-ai so the Service name matches the ingress.
+
+image:
+  repository: pipeshubai/pipeshub-ai
+  tag: "0.8.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+# Two app nodes hold four pods. A surge pod needs a free 3 CPU and stays Pending.
+rollingUpdate:
+  maxSurge: 0
+  maxUnavailable: 1
+# 4 app pods fit on the two app nodes. Add Karpenter or Cluster Autoscaler
+# before raising maxReplicas, or extra pods stay Pending.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  requests:
+    cpu: 2
+    memory: 4Gi
+  limits:
+    cpu: 8
+    memory: 8Gi
+
+# App pods share nothing. Local disk would not be visible across replicas.
+persistence:
+  enabled: false
+
+# pipeshubai/pipeshub-ai runs as root. process_monitor.sh tees to
+# /app/process_monitor.log, which is not writable by uid 1000, and the
+# container-level securityContext overrides the pod one. Both must be root
+# or the app container exits before it listens.
+podSecurityContext:
+  runAsNonRoot: false
+  runAsUser: 0
+  runAsGroup: 0
+  fsGroup: 0
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  runAsNonRoot: false
+  runAsUser: 0
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+# Privileged DinD only on the app node group. See deployment/helm/aws/cluster.yaml.
+nodeSelector:
+  pipeshub/role: app
+tolerations:
+  - key: pipeshub/role
+    operator: Equal
+    value: app
+    effect: NoSchedule
+
+global:
+  storageClass: gp3
+  applyStorageClassToStatefulSets: true
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:REGION:ACCOUNT:certificate/ID
+    # alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:REGION:ACCOUNT:regional/webacl/NAME/ID
+  # hosts, frontendPublicUrl, and allowedOrigins are not set here. An empty
+  # value in this file would override the --set values from install.sh on the
+  # next `helm upgrade -f values-eks.yaml --reuse-values`.
+  tls: []
+
+config:
+  kvStoreType: redis
+  sandboxMode: docker
+  sandboxDockerImage: "pipeshubai/pipeshub-sandbox:0.8.0"
+  sandboxAllowNetwork: false
+  sandboxEgressNetwork: pipeshub_sandbox_egress
+
+sandbox:
+  dind:
+    enabled: true
+    resources:
+      requests:
+        cpu: "1"
+        memory: 1Gi
+      limits:
+        cpu: "4"
+        memory: 4Gi
+    storage:
+      sizeLimit: 30Gi
+
+messageBroker:
+  type: redis
+
+mongodb:
+  enabled: false
+  builtin:
+    enabled: true
+    cacheSizeGB: 1
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 3Gi
+    nodeSelector:
+      pipeshub/role: data
+    tolerations:
+      - key: pipeshub/role
+        operator: Equal
+        value: data
+        effect: NoSchedule
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: pipeshub-ai
+            app.kubernetes.io/instance: pipeshub-ai
+            app.kubernetes.io/component: mongodb
+  architecture: replicaset
+  replicaSetName: rs0
+  replicaCount: 3
+  arbiter:
+    enabled: false
+  persistence:
+    size: 50Gi
+    storageClass: gp3
+
+redis:
+  enabled: false
+  builtin:
+    enabled: true
+    maxmemory: 2gb
+    maxmemoryPolicy: noeviction
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 3Gi
+    persistence:
+      size: 20Gi
+    nodeSelector:
+      pipeshub/role: data
+    tolerations:
+      - key: pipeshub/role
+        operator: Equal
+        value: data
+        effect: NoSchedule
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: pipeshub-ai
+            app.kubernetes.io/instance: pipeshub-ai
+            app.kubernetes.io/component: redis
+  architecture: replication
+  replica:
+    replicaCount: 1
+  sentinel:
+    enabled: false
+  mode: standalone
+  persistence:
+    storageClass: gp3
+
+qdrant:
+  replicaCount: 3
+  orderedStartup: true
+  resources:
+    requests:
+      cpu: "4"
+      memory: 8Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  persistence:
+    size: 100Gi
+    storageClass: gp3
+  env:
+    QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
+    QDRANT__SERVICE__MAX_REQUEST_SIZE_MB: "64"
+    QDRANT__SERVICE__GRPC_PORT: "6334"
+    QDRANT__SERVICE__HTTP_PORT: "6333"
+    QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS: "4"
+    QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER: "8"
+    QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD: "10000"
+    QDRANT__STORAGE__WAL__WAL_CAPACITY_MB: "256"
+    QDRANT__CLUSTER__CONSENSUS__MAX_MESSAGE_QUEUE_SIZE: "1000"
+    QDRANT__STORAGE__COLLECTION__REPLICATION_FACTOR: "2"
+    QDRANT__STORAGE__COLLECTION__WRITE_CONSISTENCY_FACTOR: "1"
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: pipeshub-ai
+              app.kubernetes.io/instance: pipeshub-ai
+              app.kubernetes.io/component: qdrant
+          topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: pipeshub-ai
+          app.kubernetes.io/instance: pipeshub-ai
+          app.kubernetes.io/component: qdrant
+  nodeSelector:
+    pipeshub/role: data
+  tolerations:
+    - key: pipeshub/role
+      operator: Equal
+      value: data
+      effect: NoSchedule
+
+neo4j:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "4"
+      memory: 8Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  persistence:
+    size: 100Gi
+    logsSize: 10Gi
+    storageClass: gp3
+  env:
+    NEO4J_PLUGINS: '["apoc"]'
+    NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+    NEO4J_dbms_memory_heap_initial__size: 1g
+    NEO4J_dbms_memory_heap_max__size: 4g
+    NEO4J_dbms_memory_pagecache_size: 2g
+  nodeSelector:
+    pipeshub/role: data
+  tolerations:
+    - key: pipeshub/role
+      operator: Equal
+      value: data
+      effect: NoSchedule
+
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+        - podSelector: {}
+    # ALB target-type ip is not a pod. Nodes are private; these are the only
+    # Service ports the chart publishes.
+    - ports:
+        - protocol: TCP
+          port: 3001
+        - protocol: TCP
+          port: 8088
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+    - ports:
+        - protocol: TCP
+          port: 443
+    # EKS Pod Identity agent on the node; S3 credentials come from here.
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 2703
+
+monitoring:
+  serviceMonitor:
+    enabled: false

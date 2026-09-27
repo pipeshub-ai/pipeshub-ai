@@ -35,6 +35,8 @@ import {
   shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
 import { useTranslation } from 'react-i18next';
+import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
+import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import {
   getReindexMenuState,
   getReindexNodeForTableItem,
@@ -520,6 +522,9 @@ function TableRow({
             {item.name}
           </Text>
         )}
+        {!isEditing && isKnowledgeHubNode(item) && (
+          <DemoSourceBadge connectorId={item.connectorId} />
+        )}
         {isFolder && !item.hasChildren && (
           <Text
             size="1"
@@ -724,6 +729,8 @@ export function KbListView({
   onDelete,
   onDownload,
 }: KbListViewProps) {
+  // Once per page, so each row's Demo badge is a cheap lookup.
+  useDemoDataActive();
   const isMobile = useIsMobile();
 
   return (

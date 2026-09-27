@@ -1526,15 +1526,15 @@ class TestSyncSharedWithMeErrorHandling:
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
-    async def test_non_retryable_403_is_skipped(self, mock_refresh, connector):
-        """A 403 without a retryable reason (or genuinely revoked access) is
-        still safe to skip permanently."""
+    async def test_permission_refused_403_is_skipped(self, mock_refresh, connector):
+        """A 403 whose reason is a known permission refusal (access revoked since
+        the folder was listed) is safe to skip permanently."""
         mock_refresh.return_value = None
         resp = MagicMock()
         resp.status = 403
         resp.reason = "Forbidden"
         not_found_error = HttpError(resp, b"forbidden")
-        not_found_error.error_details = [{"reason": "insufficientPermissions"}]
+        not_found_error.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.files_list = AsyncMock(
             side_effect=_shared_with_me_files_list_side_effect(not_found_error)
         )

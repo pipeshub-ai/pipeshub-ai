@@ -1734,6 +1734,7 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error="query is required")
         try:
             candidates: List[Dict[str, str]] = []
+            first_failure: TeamsResponse | None = None
             if team_id and channel_id:
                 candidates.append({"team_id": team_id, "channel_id": channel_id})
             elif team_id:
@@ -1756,6 +1757,7 @@ class TeamsDataSource:
                         continue
                     channels_response = await self.teams_get_channels(team_id=current_team_id)
                     if not channels_response.success:
+                        first_failure = first_failure or channels_response
                         continue
                     channels = self._extract_collection_items(channels_response.data)
                     for channel in channels:
@@ -1764,13 +1766,18 @@ class TeamsDataSource:
                             candidates.append({"team_id": current_team_id, "channel_id": current_channel_id})
 
             results: List[Dict[str, Any]] = []
-            for candidate in candidates[:50]:
+            channels_read = 0
+            searched_channels_cap = 50
+            truncated = len(candidates) > searched_channels_cap
+            for candidate in candidates[:searched_channels_cap]:
                 messages_response = await self.teams_get_channel_messages(
                     team_id=candidate["team_id"],
                     channel_id=candidate["channel_id"],
                 )
                 if not messages_response.success:
+                    first_failure = first_failure or messages_response
                     continue
+                channels_read += 1
                 messages = self._extract_collection_items(messages_response.data)
                 for message in messages[: max(top_per_channel, 1)]:
                     message_dict = self._to_simple_dict(message)
@@ -1780,14 +1787,32 @@ class TeamsDataSource:
                         message_dict["channel_id"] = candidate["channel_id"]
                         results.append(message_dict)
 
-            return TeamsResponse(
-                success=True,
-                data={
-                    "results": results,
-                    "count": len(results),
-                    "query": query,
-                },
-            )
+            # Some channels were not searched, so "nothing matches" is not something we know.
+            if not results and first_failure is not None:
+                return first_failure
+            if not results and truncated:
+                return TeamsResponse(
+                    success=False,
+                    error=(
+                        f"Searched only the first {searched_channels_cap} of {len(candidates)} channels, and none "
+                        "of them matched. Narrow the search to one team (team_id) or one channel (team_id "
+                        "and channel_id) and try again."
+                    ),
+                )
+            complete = first_failure is None and not truncated
+            data: dict[str, Any] = {
+                "results": results,
+                "count": len(results),
+                "query": query,
+                "complete": complete,
+            }
+            if not complete:
+                data["message"] = (
+                    f"Only the first {searched_channels_cap} of {len(candidates)} channels were searched"
+                    if first_failure is None
+                    else "Some channels could not be searched"
+                ) + ", so there may be more matches. Narrow the search to a team or a channel to cover it fully."
+            return TeamsResponse(success=True, data=data)
         except Exception as e:
             logger.error(f"Error in teams_search_messages: {e}")
             return TeamsResponse(success=False, error=str(e))

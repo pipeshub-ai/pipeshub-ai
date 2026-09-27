@@ -139,6 +139,18 @@ run python "python service tests (no infra)" \
       -q -p no:warnings --timeout=300"
 
 # ── frontend ─────────────────────────────────────────────────────────────────
+run frontend "locale parity" \
+  'have node' \
+  node frontend/scripts/check-i18n-parity.mjs
+
+run frontend "translation keys resolve" \
+  'have node' \
+  node frontend/scripts/check-i18n-keys.mjs
+
+run frontend "i18n checker tests" \
+  'have node' \
+  node --test frontend/scripts/check-i18n-parity.test.mjs frontend/scripts/check-i18n-keys.test.mjs
+
 run frontend "frontend unit tests (vitest)" \
   'exists frontend/node_modules && have npm' \
   bash -c "cd frontend && npm run --silent test:unit"

@@ -1,12 +1,15 @@
 'use client';
 
+import type React from 'react';
 import { Badge, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useIsDemoSource } from '../use-demo-data';
 
 interface DemoSourceBadgeProps {
   /** Connector instance the cited record came from. */
-  connectorId?: string;
+  connectorId?: string | null;
+  /** Layout overrides from the parent, e.g. keeping it compact in a column. */
+  style?: React.CSSProperties;
 }
 
 /**
@@ -17,14 +20,14 @@ interface DemoSourceBadgeProps {
  * data is connected. Renders nothing for any other source. Text, not colour
  * alone, and not inside a button.
  */
-export function DemoSourceBadge({ connectorId }: DemoSourceBadgeProps) {
+export function DemoSourceBadge({ connectorId, style }: DemoSourceBadgeProps) {
   const { t } = useTranslation();
   const isDemo = useIsDemoSource(connectorId);
   if (!isDemo) return null;
 
   return (
     <Tooltip content={t('demoData.badge.tooltip')}>
-      <Badge size="1" variant="soft" color="orange" style={{ flexShrink: 0 }}>
+      <Badge size="1" variant="soft" color="orange" style={{ flexShrink: 0, ...style }}>
         {t('demoData.badge.label')}
       </Badge>
     </Tooltip>

@@ -126,7 +126,7 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
   }
 
   const chatCases: JsonCase[] = [
-    { name: 'getConversationById', handler: () => controller.getConversationById as JsonHandler, params: (s) => ({ conversationId: s.chatId }) },
+    { name: 'getConversationById', handler: () => controller.getConversationById(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.chatId }) },
     { name: 'addMessage', handler: () => controller.addMessage(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { query: 'And Q4?' } },
     { name: 'updateTitle', handler: () => controller.updateTitle as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { title: 'Hijacked' } },
     { name: 'updateFeedback', handler: () => controller.updateFeedback as JsonHandler, params: (s) => ({ conversationId: s.chatId, messageId: s.botMessageId }), body: { isHelpful: false } },
@@ -175,14 +175,14 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
 
   it('getConversationById: a user from another organisation gets 404 even with the right id', async () => {
     const s = setup()
-    const out = await callJson(controller.getConversationById as JsonHandler, request(outsider, { conversationId: s.chatId }))
+    const out = await callJson(controller.getConversationById(appConfig) as JsonHandler, request(outsider, { conversationId: s.chatId }))
     expect(out.error?.statusCode).to.equal(404)
   })
 
   it('getConversationById: the owner and a recipient it was shared with can read it', async () => {
     const s = setup()
     for (const user of [owner, recipient]) {
-      const out = await callJson(controller.getConversationById as JsonHandler, request(user, { conversationId: s.chatId }))
+      const out = await callJson(controller.getConversationById(appConfig) as JsonHandler, request(user, { conversationId: s.chatId }))
       expect(out.status).to.equal(200)
       const conversation = (out.body as { conversation: { title: string; messages: unknown[] } }).conversation
       expect(conversation.title).to.equal('Quarterly numbers')
@@ -197,11 +197,11 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     chat?.set({ projectId, projectVisibility: 'private' })
     ;(ProjectService.getAccessibleProjectIds as sinon.SinonStub).resolves([projectId])
 
-    const hidden = await callJson(controller.getConversationById as JsonHandler, request(stranger, { conversationId: s.chatId }))
+    const hidden = await callJson(controller.getConversationById(appConfig) as JsonHandler, request(stranger, { conversationId: s.chatId }))
     expect(hidden.error?.statusCode).to.equal(404)
 
     chat?.set({ projectVisibility: 'project' })
-    const visible = await callJson(controller.getConversationById as JsonHandler, request(stranger, { conversationId: s.chatId }))
+    const visible = await callJson(controller.getConversationById(appConfig) as JsonHandler, request(stranger, { conversationId: s.chatId }))
     expect(visible.status).to.equal(200)
   })
 

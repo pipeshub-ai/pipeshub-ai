@@ -266,6 +266,7 @@ class FakeRecordsDb:
         self.deleted_groups: list[str] = []
         self.fail_group_delete: set[str] = set()
         self.removed_members: list[tuple[str, str]] = []
+        self.fail_member_removal: set[tuple[str, str]] = set()
         self.deleted: list[str] = []
         self.metadata_updates: list[Any] = []
         self.content_updates: list[Any] = []
@@ -356,10 +357,12 @@ class FakeRecordsDb:
         return True
 
     async def on_user_group_member_removed(self, external_group_id: str, user_email: str, connector_id: str) -> bool:
-        self.removed_members.append((external_group_id, user_email))
+        # Like the real processor: False when the user or the edge isn't stored, or the delete fails.
         members = self.user_groups.get(external_group_id, [])
-        if user_email in members:
-            members.remove(user_email)
+        if user_email not in members or (external_group_id, user_email) in self.fail_member_removal:
+            return False
+        members.remove(user_email)
+        self.removed_members.append((external_group_id, user_email))
         return True
 
     async def reindex_existing_records(self, records: list[Any]) -> None:

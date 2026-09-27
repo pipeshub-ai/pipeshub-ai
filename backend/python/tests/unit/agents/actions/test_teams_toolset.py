@@ -1328,3 +1328,355 @@ class TestSerializeResponse:
         assert Teams._extract_next_link({"odata_next_link": " https://next "}) == "https://next"
         assert Teams._extract_next_link({"nextLink": ""}) is None
         assert Teams._extract_next_link([]) is None
+
+
+# ===========================================================================
+# Failures the agent must be able to act on, directory lookups, limits
+# ===========================================================================
+
+
+def _call_and_route(case: str) -> tuple[Any, str, str]:
+    """(tool call, method, path) for every tool whose Graph failure should reach the agent."""
+    return {
+        "get_teams": (lambda t: t.get_teams(), "GET", r"/me/joinedTeams"),
+        "get_team": (lambda t: t.get_team("t1"), "GET", r"/teams/t1"),
+        "get_channels": (lambda t: t.get_channels("t1"), "GET", r"/teams/t1/channels"),
+        "create_channel": (lambda t: t.create_channel("t1", "Ops"), "POST", r"/teams/t1/channels"),
+        "send_channel_message": (lambda t: t.send_channel_message("t1", "c1", "hi"), "POST", r"/teams/t1/channels/c1/messages"),
+        "reply_to_message": (lambda t: t.reply_to_message("t1", "c1", "m1", "hi"), "POST", r"/teams/t1/channels/c1/messages/m1/replies"),
+        "get_channel_messages": (lambda t: t.get_channel_messages("t1", "c1"), "GET", r"/teams/t1/channels/c1/messages"),
+        "get_thread_replies": (lambda t: t.get_thread_replies("t1", "c1", "m1"), "GET", r"/teams/t1/channels/c1/messages/m1/replies"),
+        "get_message_permalink": (lambda t: t.get_message_permalink("t1", "c1", "m1"), "GET", r"/teams/t1/channels/c1/messages/m1"),
+        "get_reactions": (lambda t: t.get_reactions("t1", "c1", "m1"), "GET", r"/teams/t1/channels/c1/messages/m1"),
+        "add_reaction": (lambda t: t.add_reaction("t1", "c1", "m1", "like"), "POST", r"/teams/t1/channels/c1/messages/m1/setReaction"),
+        "remove_reaction": (lambda t: t.remove_reaction("t1", "c1", "m1", "like"), "POST", r"/teams/t1/channels/c1/messages/m1/unsetReaction"),
+        "search_messages": (lambda t: t.search_messages("x", team_id="t1", channel_id="c1"), "GET", r"/teams/t1/channels/c1/messages"),
+        "update_message": (lambda t: t.update_message("m1", "x", team_id="t1", channel_id="c1"), "PATCH", r"/teams/t1/channels/c1/messages/m1"),
+        "create_chat": (lambda t: t.create_chat("group", ["u-me", "u-2"]), "POST", r"/chats"),
+        "get_chat": (lambda t: t.get_chat("chat-1"), "GET", r"/me/chats/chat-1"),
+        "get_members": (lambda t: t.get_members("t1"), "GET", r"/teams/t1/members"),
+        "get_users_list": (lambda t: t.get_users_list(limit=5), "GET", r"/users"),
+        "get_meetings": (lambda t: t.get_meetings(), "GET", r"/me/.*"),
+        "create_event": (lambda t: t.create_event("Sync", "2026-03-02T10:00:00", "2026-03-02T11:00:00"), "POST", r"/me/calendar/events"),
+        "edit_event": (lambda t: t.edit_event("ev-1", subject="New"), "PATCH", r"/me/events/ev-1"),
+        "get_user_channels": (lambda t: t.get_user_channels(team_id="t1"), "GET", r"/teams/t1/channels"),
+        "search_calendar_events_in_range": (
+            lambda t: t.search_calendar_events_in_range("sync", "2026-03-01T00:00:00Z", "2026-03-31T00:00:00Z"),
+            "GET", r"/me/calendar/calendarView",
+        ),
+        "get_people_attended": (lambda t: t.get_people_attended(meeting_id="om-1"), "GET", r"/me/onlineMeetings/om-1/attendanceReports"),
+        "get_people_invited": (lambda t: t.get_people_invited("ev-1"), "GET", r"/me/events"),
+        "add_member_private": (lambda t: t.add_member("t1", "u-1", channel_id="c-priv"), "POST", r"/teams/t1/channels/c-priv/members"),
+        "add_member_standard": (lambda t: t.add_member("t1", "u-1", channel_id="c-std"), "POST", r"/teams/t1/members"),
+    }[case]
+
+
+FAILING_TOOLS = [
+    "get_teams", "get_team", "get_channels", "create_channel", "send_channel_message", "reply_to_message",
+    "get_channel_messages", "get_thread_replies", "get_message_permalink", "get_reactions", "add_reaction",
+    "remove_reaction", "update_message", "create_chat", "get_chat", "get_members",
+    "get_users_list", "get_meetings", "create_event", "edit_event", "get_user_channels",
+    "search_calendar_events_in_range", "get_people_attended", "get_people_invited",
+    "add_member_private", "add_member_standard",
+]
+
+
+class TestFailuresTellTheAgentWhatToDo:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", FAILING_TOOLS)
+    async def test_throttling_says_wait_and_retry(self, teams, graph, case) -> None:
+        call, method, path = _call_and_route(case)
+        if case.startswith("add_member"):
+            graph.on("GET", r"/teams/t1/channels", CHANNELS)
+        graph.on(method, path, graph_error(429, "TooManyRequests", "Too many requests"))
+        message = err(await call(teams))
+        assert "Too many requests" in message
+        assert "try again" in message.lower() and "wait" in message.lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ["get_teams", "send_channel_message", "create_event"])
+    async def test_rejected_sign_in_asks_to_reconnect(self, teams, graph, case) -> None:
+        call, method, path = _call_and_route(case)
+        graph.on(method, path, graph_error(401, "InvalidAuthenticationToken", "Access token has expired or is not yet valid."))
+        assert "Reconnect the Teams toolset" in err(await call(teams))
+
+    @pytest.mark.asyncio
+    async def test_forbidden_explains_the_missing_permission(self, teams, graph) -> None:
+        graph.on("POST", r"/teams/t1/channels/c1/messages", graph_error(403, "Forbidden", "Missing ChannelMessage.Send"))
+        message = err(await teams.send_channel_message("t1", "c1", "hi"))
+        assert "Missing ChannelMessage.Send" in message and "permission" in message
+
+    @pytest.mark.asyncio
+    async def test_not_found_says_how_to_find_the_right_id(self, teams, graph) -> None:
+        graph.on("GET", r"/teams/t-x", graph_error(404, "NotFound", "No team found with Group Id t-x"))
+        message = err(await teams.get_team("t-x"))
+        assert "No team found" in message and "get_teams" in message
+
+    @pytest.mark.asyncio
+    async def test_outage_is_reported_as_temporary(self, teams, graph) -> None:
+        graph.on("GET", r"/me/joinedTeams", graph_error(503, "ServiceUnavailable", "Service unavailable"))
+        assert "temporary" in err(await teams.get_teams()).lower()
+
+    @pytest.mark.asyncio
+    async def test_datasource_messages_without_a_status_are_left_alone(self, teams, graph) -> None:
+        assert err(await teams.search_messages("   ", team_id="t1", channel_id="c1")) == "query is required"
+
+
+class TestMoreFailurePaths:
+    @pytest.mark.asyncio
+    async def test_direct_message_that_graph_refuses_is_a_failure(self, teams, graph) -> None:
+        graph.on("GET", r"/users/(sam@contoso.com|u-sam)", SAM_PATEL)
+        graph.on("GET", r"/me/chats", {"value": [{"id": "chat-1", "chatType": "oneOnOne"}]})
+        graph.on("GET", r"/chats/chat-1/members", {"value": [{"@odata.type": "#microsoft.graph.aadUserConversationMember", "userId": "u-sam"}]})
+        graph.on("POST", r"/chats/chat-1/messages", graph_error(403, "Forbidden", "Chat is read-only"))
+        message = err(await teams.send_user_message("sam@contoso.com", "hi"))
+        assert "Chat is read-only" in message and "permission" in message
+
+    @pytest.mark.asyncio
+    async def test_members_of_a_channel_whose_list_fails_are_not_guessed(self, teams, graph) -> None:
+        graph.on("GET", r"/teams/t1/channels", graph_error(503, "ServiceUnavailable", "Service unavailable"))
+        message = err(await teams.get_members("t1", channel_id="c-priv"))
+        assert "temporary" in message.lower()
+        assert not graph.calls("GET", r"/teams/t1/members")
+
+    @pytest.mark.asyncio
+    async def test_conversation_read_failure_is_reported(self, teams, graph) -> None:
+        graph.on("GET", r"/users/(sam@contoso.com|u-sam)", SAM_PATEL)
+        graph.on("GET", r"/me/chats", graph_error(429, "TooManyRequests", "Too many requests"))
+        assert "try again" in err(await teams.get_user_conversations("sam@contoso.com")).lower()
+
+    @pytest.mark.asyncio
+    async def test_numbered_and_end_date_recurrences_are_sent_in_graph_shape(self, teams, graph) -> None:
+        graph.on("POST", r"/me/calendar/events", {"id": "ev-1"})
+        ok(await teams.create_event("Standup", "2026-03-02T09:00:00", "2026-03-02T09:15:00", recurrence={
+            "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["monday"]},
+            "range": {"type": "numbered", "startDate": "2026-03-02", "numberOfOccurrences": 4},
+        }))
+        ok(await teams.create_event("Retro", "2026-03-02T15:00:00", "2026-03-02T16:00:00", recurrence={
+            "pattern": {"type": "daily", "interval": 2},
+            "range": {"type": "endDate", "startDate": "2026-03-02", "endDate": "2026-03-20"},
+        }))
+        numbered, end_dated = [c.body["recurrence"]["range"] for c in graph.calls("POST", r"/me/calendar/events")]
+        assert numbered["type"] == "numbered" and numbered["numberOfOccurrences"] == 4
+        assert end_dated["type"] == "endDate" and end_dated["endDate"] == "2026-03-20"
+
+
+class TestSearchWhenChannelsCannotBeRead:
+    @pytest.mark.asyncio
+    async def test_search_where_no_channel_could_be_read_is_a_failure(self, teams, graph) -> None:
+        # Every channel read failed, so "no messages match" would be a claim the tool cannot make.
+        graph.on("GET", r"/teams/t1/channels", {"value": [{"id": "c1"}, {"id": "c2"}]})
+        graph.on("GET", r"/teams/t1/channels/c\d/messages", graph_error(429, "TooManyRequests", "Too many requests"))
+        message = err(await teams.search_messages("incident", team_id="t1"))
+        assert "Too many requests" in message and "try again" in message.lower()
+
+    @pytest.mark.asyncio
+    async def test_workspace_search_where_no_channel_list_could_be_read_is_a_failure(self, teams, graph) -> None:
+        graph.on("GET", r"/me/joinedTeams", {"value": [{"id": "t1"}, {"id": "t2"}]})
+        graph.on("GET", r"/teams/t\d/channels", graph_error(403, "Forbidden", "No access to channels"))
+        message = err(await teams.search_messages("incident"))
+        assert "No access to channels" in message and "permission" in message
+
+    @pytest.mark.asyncio
+    async def test_workspace_search_with_no_joined_teams_is_an_empty_success(self, teams, graph) -> None:
+        graph.on("GET", r"/me/joinedTeams", {"value": []})
+        assert ok(await teams.search_messages("incident"))["count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_search_that_read_some_channels_reports_what_it_found_as_partial(self, teams, graph) -> None:
+        graph.on("GET", r"/teams/t1/channels", {"value": [{"id": "c1"}, {"id": "c2"}]})
+        graph.on("GET", r"/teams/t1/channels/c1/messages", {"value": [{"id": "m1", "body": {"content": "incident"}}]})
+        graph.on("GET", r"/teams/t1/channels/c2/messages", graph_error(403, "Forbidden", "No access"))
+        data = ok(await teams.search_messages("incident", team_id="t1"))
+        assert data["count"] == 1
+        assert data["complete"] is False
+        assert "could not be searched" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_no_match_with_a_team_whose_channels_failed_is_not_a_finished_search(self, teams, graph) -> None:
+        graph.on("GET", r"/me/joinedTeams", {"value": [{"id": "t1"}, {"id": "t2"}]})
+        graph.on("GET", r"/teams/t1/channels", graph_error(403, "Forbidden", "No access to channels"))
+        graph.on("GET", r"/teams/t2/channels", {"value": [{"id": "c1"}]})
+        graph.on("GET", r"/teams/t2/channels/c1/messages", {"value": [{"id": "m1", "body": {"content": "lunch"}}]})
+        message = err(await teams.search_messages("incident"))
+        assert "No access to channels" in message
+
+    @pytest.mark.asyncio
+    async def test_hit_past_the_channel_cap_is_not_reported_as_no_match(self, teams, graph) -> None:
+        graph.on("GET", r"/teams/t1/channels", {"value": [{"id": f"c{i}"} for i in range(51)]})
+        graph.on("GET", r"/teams/t1/channels/c50/messages", {"value": [{"id": "hit", "body": {"content": "incident"}}]})
+        graph.on("GET", r"/teams/t1/channels/c\d+/messages", {"value": [{"id": "m", "body": {"content": "lunch"}}]})
+        message = err(await teams.search_messages("incident", team_id="t1"))
+        assert "first 50 of 51 channels" in message and "channel_id" in message
+
+    @pytest.mark.asyncio
+    async def test_full_search_is_complete(self, teams, graph) -> None:
+        graph.on("GET", r"/teams/t1/channels", {"value": [{"id": "c1"}]})
+        graph.on("GET", r"/teams/t1/channels/c1/messages", {"value": [{"id": "m1", "body": {"content": "lunch"}}]})
+        data = ok(await teams.search_messages("incident", team_id="t1"))
+        assert data["count"] == 0 and data["complete"] is True
+
+
+class TestDirectoryLookupFailures:
+    @pytest.mark.asyncio
+    async def test_failed_directory_lookup_is_not_reported_as_unknown_person(self, teams, graph) -> None:
+        graph.on("GET", r"/users/Zoe Park", graph_error(404, "Request_ResourceNotFound", "not found"))
+        graph.on("GET", r"/users", graph_error(429, "TooManyRequests", "Too many requests"))
+        message = err(await teams.send_user_message("Zoe Park", "Welcome"))
+        assert "No Teams user matches" not in message
+        assert "look up" in message and "Too many requests" in message
+        assert graph.writes() == []
+
+    @pytest.mark.asyncio
+    async def test_failed_lookup_reads_no_chat(self, teams, graph) -> None:
+        graph.on("GET", r"/users/Zoe Park", graph_error(404, "Request_ResourceNotFound", "not found"))
+        graph.on("GET", r"/users", graph_error(403, "Authorization_RequestDenied", "Insufficient privileges"))
+        message = err(await teams.get_user_conversations("Zoe Park"))
+        assert "Insufficient privileges" in message
+        assert not graph.calls("GET", r"/me/chats")
+
+    @pytest.mark.asyncio
+    async def test_user_info_reports_the_failed_lookup(self, teams, graph) -> None:
+        graph.on("GET", r"/users/Zoe Park", graph_error(404, "Request_ResourceNotFound", "not found"))
+        graph.on("GET", r"/users", graph_error(503, "ServiceUnavailable", "Service unavailable"))
+        message = err(await teams.get_user_info("Zoe Park"))
+        assert "look up" in message and "Service unavailable" in message
+
+    @pytest.mark.asyncio
+    async def test_exact_match_on_page_one_is_not_messaged_when_page_two_failed(self, teams, graph) -> None:
+        # Page two could hold a second "Zoe Park", so the recipient is not known.
+        zoe = {"id": "u-zoe", "displayName": "Zoe Park", "mail": "zoe@contoso.com"}
+        graph.on("GET", r"/users/Zoe Park", graph_error(404, "Request_ResourceNotFound", "not found"))
+        graph.on("GET", r"/users", _users_page([zoe], next_link="https://graph.microsoft.com/v1.0/users?$skiptoken=p2"), graph_error(429, "TooManyRequests", "Too many requests"))
+        graph.on("GET", r"/users/u-zoe", zoe)
+        graph.on("GET", r"/me/chats", {"value": [{"id": "chat-z", "chatType": "oneOnOne"}]})
+        graph.on("GET", r"/chats/chat-z/members", {"value": [{"@odata.type": "#microsoft.graph.aadUserConversationMember", "userId": "u-zoe"}]})
+        graph.on("POST", r"/chats/chat-z/messages", {"id": "msg-1"})
+        message = err(await teams.send_user_message("Zoe Park", "Welcome"))
+        assert "look up" in message and "Too many requests" in message
+        assert graph.writes() == []
+
+    @pytest.mark.asyncio
+    async def test_directory_beyond_the_page_cap_is_not_used_to_pick_a_recipient(self, teams, graph) -> None:
+        # 50 pages of 100 are read at most; the unread rest could hold a second "Zoe Park".
+        zoe = {"id": "u-zoe", "displayName": "Zoe Park", "mail": "zoe@contoso.com"}
+        pages = [_users_page([zoe] if i == 0 else [{"id": f"u{i}", "displayName": f"Person {i}"}],
+                             next_link=f"https://graph.microsoft.com/v1.0/users?$skiptoken=p{i + 1}") for i in range(60)]
+        graph.on("GET", r"/users/Zoe Park", graph_error(404, "Request_ResourceNotFound", "not found"))
+        graph.on("GET", r"/users", *pages)
+        graph.on("GET", r"/users/u-zoe", zoe)
+        graph.on("GET", r"/me/chats", {"value": [{"id": "chat-z", "chatType": "oneOnOne"}]})
+        graph.on("GET", r"/chats/chat-z/members", {"value": [{"@odata.type": "#microsoft.graph.aadUserConversationMember", "userId": "u-zoe"}]})
+        graph.on("POST", r"/chats/chat-z/messages", {"id": "msg-1"})
+        message = err(await teams.send_user_message("Zoe Park", "Welcome"))
+        assert "look up" in message and "No Teams user matches" not in message
+        assert graph.writes() == []
+
+    @pytest.mark.asyncio
+    async def test_empty_page_with_a_next_link_does_not_end_the_directory(self, teams, graph) -> None:
+        # Graph may send value: [] with a next link; the page after it holds a second "Zoe Park".
+        zoe = {"id": "u-zoe", "displayName": "Zoe Park", "mail": "zoe@contoso.com"}
+        other_zoe = {"id": "u-zoe2", "displayName": "Zoe Park", "mail": "zoe.park@contoso.com"}
+        graph.on("GET", r"/users/Zoe Park", graph_error(404, "Request_ResourceNotFound", "not found"))
+        graph.on("GET", r"/users",
+                 _users_page([zoe], next_link="https://graph.microsoft.com/v1.0/users?$skiptoken=p2"),
+                 _users_page([], next_link="https://graph.microsoft.com/v1.0/users?$skiptoken=p3"),
+                 _users_page([other_zoe]))
+        graph.on("GET", r"/users/u-zoe", zoe)
+        graph.on("GET", r"/me/chats", {"value": [{"id": "chat-z", "chatType": "oneOnOne"}]})
+        graph.on("GET", r"/chats/chat-z/members", {"value": [{"@odata.type": "#microsoft.graph.aadUserConversationMember", "userId": "u-zoe"}]})
+        graph.on("POST", r"/chats/chat-z/messages", {"id": "msg-1"})
+        message = err(await teams.send_user_message("Zoe Park", "Welcome"))
+        assert "Zoe Park" in message
+        assert len(graph.calls("GET", r"/users")) == 3
+        assert graph.writes() == []
+
+    @pytest.mark.asyncio
+    async def test_repeating_next_link_is_not_a_finished_directory_read(self, teams, graph) -> None:
+        zoe = {"id": "u-zoe", "displayName": "Zoe Park", "mail": "zoe@contoso.com"}
+        graph.on("GET", r"/users/Zoe Park", graph_error(404, "Request_ResourceNotFound", "not found"))
+        graph.on("GET", r"/users", _users_page([zoe], next_link="https://graph.microsoft.com/v1.0/users?$skiptoken=same"))
+        graph.on("GET", r"/users/u-zoe", zoe)
+        assert "look up" in err(await teams.get_user_info("Zoe Park"))
+
+    @pytest.mark.asyncio
+    async def test_user_info_is_not_read_from_a_directory_that_failed_part_way(self, teams, graph) -> None:
+        zoe = {"id": "u-zoe", "displayName": "Zoe Park", "mail": "zoe@contoso.com"}
+        graph.on("GET", r"/users/Zoe Park", graph_error(404, "Request_ResourceNotFound", "not found"))
+        graph.on("GET", r"/users", _users_page([zoe], next_link="https://graph.microsoft.com/v1.0/users?$skiptoken=p2"), graph_error(503, "ServiceUnavailable", "Service unavailable"))
+        graph.on("GET", r"/users/u-zoe", zoe)
+        assert "look up" in err(await teams.get_user_info("Zoe Park"))
+
+
+class TestLimitsAcrossPages:
+    @pytest.mark.asyncio
+    async def test_users_limit_larger_than_a_page_reads_on(self, teams, graph) -> None:
+        # Graph returns 100 users a page here; asking for 150 must not stop at 100.
+        page_one = [{"id": f"u{i}"} for i in range(100)]
+        page_two = [{"id": f"u{i}"} for i in range(100, 200)]
+        graph.on("GET", r"/users", _users_page(page_one, next_link="https://graph.microsoft.com/v1.0/users?$skiptoken=p2"), _users_page(page_two))
+        data = ok(await teams.get_users_list(limit=150))
+        assert data["count"] == 150
+        assert data["members"][-1]["id"] == "u149"
+        assert len(graph.calls("GET", r"/users")) == 2
+
+    @pytest.mark.asyncio
+    async def test_users_list_cut_short_by_a_failed_page_says_so(self, teams, graph) -> None:
+        page_one = [{"id": f"u{i}"} for i in range(100)]
+        graph.on("GET", r"/users", _users_page(page_one, next_link="https://graph.microsoft.com/v1.0/users?$skiptoken=p2"), graph_error(429, "TooManyRequests", "Too many requests"))
+        data = ok(await teams.get_users_list(limit=150))
+        assert data["count"] == 100
+        assert data["complete"] is False
+        assert "only part" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_users_list_that_never_ends_is_not_called_complete(self, teams, graph) -> None:
+        # Graph handing back a new next link forever stops at the page cap, not at the end.
+        pages = [_users_page([{"id": f"u{i}"}], next_link=f"https://graph.microsoft.com/v1.0/users?$skiptoken=p{i + 1}") for i in range(60)]
+        graph.on("GET", r"/users", *pages)
+        data = ok(await teams.get_users_list())
+        assert data["count"] == 50
+        assert data["complete"] is False
+
+    @pytest.mark.asyncio
+    async def test_users_list_with_a_repeating_next_link_is_not_complete(self, teams, graph) -> None:
+        graph.on("GET", r"/users", _users_page([SAM_PATEL], next_link="https://graph.microsoft.com/v1.0/users?$skiptoken=same"))
+        data = ok(await teams.get_users_list())
+        assert data["count"] == 1
+        assert data["complete"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_page_served_twice_does_not_fill_the_limit(self, teams, graph) -> None:
+        graph.on("GET", r"/users", _users_page([SAM_PATEL], next_link="https://graph.microsoft.com/v1.0/users?$skiptoken=same"))
+        data = ok(await teams.get_users_list(limit=2))
+        assert [u["id"] for u in data["members"]] == ["u-sam"]
+        assert data["complete"] is False
+
+    @pytest.mark.asyncio
+    async def test_users_list_that_reached_its_end_is_complete(self, teams, graph) -> None:
+        graph.on("GET", r"/users", _users_page([SAM_PATEL]))
+        assert ok(await teams.get_users_list())["complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_users_limit_of_zero_reads_nothing(self, teams, graph) -> None:
+        graph.on("GET", r"/users", _users_page([SAM_PATEL]))
+        data = ok(await teams.get_users_list(limit=0))
+        assert data["count"] == 0
+        assert graph.requests == []
+
+    @pytest.mark.asyncio
+    async def test_users_limit_within_one_page_reads_one_page(self, teams, graph) -> None:
+        graph.on("GET", r"/users", _users_page([SAM_PATEL, SAMANTHA, ME], next_link="https://graph.microsoft.com/v1.0/users?$skiptoken=p2"))
+        assert ok(await teams.get_users_list(limit=2))["count"] == 2
+        assert len(graph.calls("GET", r"/users")) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.xfail(strict=True, reason=(
+        "Graph pages channel messages (20 by default) and TeamsDataSource.teams_get_channel_messages "
+        "reads only the first page, so top=50 returns 20. Needs paging support in the data source."
+    ))
+    async def test_channel_messages_limit_reads_past_the_first_page(self, teams, graph) -> None:
+        graph.on("GET", r"/teams/t1/channels/c1/messages",
+                 {"value": [{"id": f"m{i}"} for i in range(20)], "@odata.nextLink": "https://graph.microsoft.com/v1.0/teams/t1/channels/c1/messages?$skiptoken=p2"},
+                 {"value": [{"id": f"m{i}"} for i in range(20, 40)]})
+        assert ok(await teams.get_channel_messages("t1", "c1", top=30))["count"] == 30

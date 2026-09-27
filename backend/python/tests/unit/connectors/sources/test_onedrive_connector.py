@@ -1388,7 +1388,8 @@ class TestPerformDeltaSync:
             'delta_link': 'https://graph.microsoft.com/v1.0/delta-final',
         })
 
-        connector.handle_group_create = AsyncMock(return_value=True)
+        # Members unreadable for good (None): the listed member changes are applied instead.
+        connector.handle_group_create = AsyncMock(return_value=None)
         connector._process_member_change = AsyncMock()
 
         await connector._perform_delta_sync(
@@ -2919,7 +2920,8 @@ class TestPerformDeltaSyncCoverage:
             "next_link": None,
             "delta_link": "https://delta",
         })
-        connector.handle_group_create = AsyncMock(return_value=True)
+        # Members unreadable for good (None): the listed member changes are applied instead.
+        connector.handle_group_create = AsyncMock(return_value=None)
         connector._process_member_change = AsyncMock()
 
         await connector._perform_delta_sync("https://url", "key")

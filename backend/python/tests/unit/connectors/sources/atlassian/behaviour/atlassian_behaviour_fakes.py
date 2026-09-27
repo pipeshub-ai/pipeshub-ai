@@ -14,15 +14,37 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
+from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 if TYPE_CHECKING:
+    from app.connectors.core.base.connector.connector_service import BaseConnector
     from app.models.entities import Record
     from app.sources.client.http.http_client import HTTPClient
 
 Handler = Callable[[httpx.Request], httpx.Response]
+
+
+def record_logs(connector: BaseConnector) -> MagicMock:
+    """Record the connector's own log calls.
+
+    Unlike caplog, this does not depend on global logging state, which other tests in
+    the suite can leave disabled or non-propagating. The real logger is still called.
+    """
+    recorder = MagicMock(wraps=connector.logger)
+    connector.logger = recorder
+    return recorder
+
+
+def logged(recorder: MagicMock, level: str = "error") -> list[str]:
+    """Messages logged at ``level`` through a ``record_logs`` recorder, %-args applied."""
+    return [
+        str(call.args[0]) % call.args[1:] if len(call.args) > 1 else str(call.args[0])
+        for call in getattr(recorder, level).call_args_list
+        if call.args
+    ]
 
 
 def json_response(payload: object, status: int = 200, headers: Optional[dict[str, str]] = None) -> httpx.Response:
@@ -125,6 +147,15 @@ class FakeRecordsDb:
             raise RuntimeError(f"database unavailable for {external_record_id}")
         return self.records.get(external_record_id)
 
+    async def get_records_by_parent(
+        self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None
+    ) -> list[Record]:
+        """Copies, as a real read would return: changing them does not change what is stored."""
+        return [
+            r.model_copy() for r in self.records.values()
+            if r.parent_external_record_id == parent_external_record_id and record_type in (None, r.record_type)
+        ]
+
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         self.record_batches.append([rec for rec, _ in records_with_permissions])
         for record, permissions in records_with_permissions:
@@ -165,6 +196,11 @@ class FakeCheckpointStore:
         return self.sync_points.get(key)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
+        # Neo4j (the default DATA_STORE) only stores primitives or lists of primitives as properties.
+        for field, value in data.items():
+            items = value if isinstance(value, list) else [value]
+            if any(isinstance(item, (dict, list, tuple, set)) for item in items):
+                raise TypeError(f"sync point field {field!r} is not a primitive: {value!r}")
         self.sync_points[key] = dict(data)
 
     async def delete_sync_point(self, key: str) -> None:

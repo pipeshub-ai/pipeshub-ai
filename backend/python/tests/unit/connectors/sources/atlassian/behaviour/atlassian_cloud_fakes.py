@@ -80,6 +80,9 @@ class CloudRecordsDb(FakeRecordsDb):
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)
 
+    async def get_all_app_users(self, connector_id: str) -> list[Any]:
+        return list(self.app_users)
+
     async def on_records_deleted_cascade(self, record_ids: list[str], connector_id: str, **_: object) -> None:
         self.cascade_deleted.extend(record_ids)
 

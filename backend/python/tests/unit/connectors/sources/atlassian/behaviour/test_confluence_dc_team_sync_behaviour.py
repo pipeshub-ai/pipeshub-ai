@@ -7,6 +7,7 @@ page restrictions, and the audit-log pass that catches restriction changes.
 """
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -321,6 +322,126 @@ class TestUsersAndGroups:
         assert db.members_of("eng") == ["alice@example.com"]
 
 
+    async def test_a_failed_email_lookup_does_not_drop_the_member(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(
+            atlassian_api,
+            [user("alice", "alice@example.com"), user("ldap", "ldap@example.com")],
+            {"eng": [user("alice", "alice@example.com"), user("ldap", None)]},
+        )
+        atlassian_api.on("GET", f"{API}/user", json_response(user("ldap", "ldap@example.com")))
+        await connector._sync_users()
+        await connector._sync_user_groups()
+        assert db.members_of("eng") == ["alice@example.com", "ldap@example.com"]
+
+        atlassian_api.on("GET", f"{API}/user", json_response({"message": "busy"}, status=503))
+        await connector._sync_user_groups()
+
+        assert db.members_of("eng") == ["alice@example.com", "ldap@example.com"]
+
+    async def test_an_unauthorized_email_lookup_does_not_drop_the_member(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(
+            atlassian_api,
+            [user("alice", "alice@example.com"), user("ldap", "ldap@example.com")],
+            {"eng": [user("alice", "alice@example.com"), user("ldap", None)]},
+        )
+        atlassian_api.on("GET", f"{API}/user", json_response(user("ldap", "ldap@example.com")))
+        await connector._sync_users()
+        await connector._sync_user_groups()
+        saves_before = len(db.user_groups)
+
+        atlassian_api.on("GET", f"{API}/user", json_response({"message": "token expired"}, status=401))
+        await connector._sync_user_groups()
+
+        assert db.members_of("eng") == ["alice@example.com", "ldap@example.com"]
+        assert len(db.user_groups) == saves_before, "the group is not saved again with a shorter list"
+
+    async def test_a_group_that_disappears_part_way_through_its_members_ends_up_empty(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        people = [user(f"m{i}", f"m{i}@example.com") for i in range(200)]
+
+        def users(request: httpx.Request) -> httpx.Response:
+            return json_response({"results": people if AtlassianApiStub.query(request).get("start", "0") == "0" else []})
+
+        def members(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("start", "0") == "0":
+                return json_response({"results": people})
+            return json_response({"message": "no group"}, status=404)
+
+        atlassian_api.on("GET", f"{API}/user/list", users)
+        atlassian_api.on("GET", f"{API}/group", {"results": [{"type": "group", "name": "eng"}]})
+        atlassian_api.on("GET", f"{API}/group/eng/member", members)
+        await connector._sync_users()
+
+        await connector._sync_user_groups()
+
+        assert db.members_of("eng") == [], "a deleted group keeps no members"
+
+
+    async def test_short_pages_that_say_more_follow_are_followed(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com"), user("bob", "bob@example.com")], {})
+        await connector._sync_users()
+
+        def paged(first: list, second: list, path: str) -> Callable[[httpx.Request], httpx.Response]:
+            def handler(request: httpx.Request) -> httpx.Response:
+                if AtlassianApiStub.query(request).get("start", "0") == "0":
+                    return json_response({"results": first, "size": len(first), "_links": {"base": BASE, "next": f"{path}?start=1"}})
+                return json_response({"results": second, "size": len(second), "_links": {"base": BASE}})
+            return handler
+
+        atlassian_api.on("GET", f"{API}/group", paged(
+            [{"type": "group", "name": "ops"}], [{"type": "group", "name": "eng"}], "/rest/api/group",
+        ))
+        atlassian_api.on("GET", f"{API}/group/ops/member", {"results": [], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/group/eng/member", paged(
+            [user("alice", "alice@example.com")], [user("bob", "bob@example.com")], "/rest/api/group/eng/member",
+        ))
+
+        await connector._sync_user_groups()
+
+        assert db.members_of("ops") == []
+        assert db.members_of("eng") == ["alice@example.com", "bob@example.com"], (
+            "eng is on the second page of groups, and bob on the second page of its members"
+        )
+
+    async def test_a_capped_member_page_is_followed_by_the_rows_it_returned(self, atlassian_api, db, store) -> None:
+        # Data Center caps a page below the limit but still links to start + limit (CONFSERVER-95272).
+        connector = await make_connector(atlassian_api, db, store)
+        alice, bob, eve = user("alice", "alice@example.com"), user("bob", "bob@example.com"), user("eve", "eve@example.com")
+        with_directory(atlassian_api, [alice, bob, eve], {"eng": []})
+        await connector._sync_users()
+        pages = {
+            "0": {"results": [alice], "size": 1, "_links": {"base": BASE, "next": "/rest/api/group/eng/member?start=200&limit=200"}},
+            "1": {"results": [bob], "size": 1, "_links": {"base": BASE}},
+            "200": {"results": [eve], "size": 1, "_links": {"base": BASE}},
+        }
+        atlassian_api.on("GET", f"{API}/group/eng/member", lambda r: json_response(pages[AtlassianApiStub.query(r).get("start", "0")]))
+
+        await connector._sync_user_groups()
+
+        assert db.members_of("eng") == ["alice@example.com", "bob@example.com"]
+
+    async def test_a_failure_after_a_short_member_page_keeps_the_stored_members(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        alice, bob = user("alice", "alice@example.com"), user("bob", "bob@example.com")
+        with_directory(atlassian_api, [alice, bob], {"eng": [alice, bob]})
+        await connector._sync_users()
+        await connector._sync_user_groups()
+        assert db.members_of("eng") == ["alice@example.com", "bob@example.com"]
+
+        def members(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("start", "0") == "0":
+                return json_response({"results": [alice], "size": 1, "_links": {"base": BASE, "next": "/rest/api/group/eng/member?start=1"}})
+            return json_response({"message": "busy"}, status=503)
+
+        atlassian_api.on("GET", f"{API}/group/eng/member", members)
+        await connector._sync_user_groups()
+
+        assert db.members_of("eng") == ["alice@example.com", "bob@example.com"]
+
+
 class TestSpacePermissions:
     async def test_space_grants_map_to_known_users_and_groups(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -475,6 +596,20 @@ class TestPageRestrictions:
         assert [(p.entity_type, p.external_id) for p in db.record_permissions["p1"]] == [(EntityType.GROUP, "finance")]
 
 
+    async def test_page_restricted_only_to_a_group_we_have_not_synced_is_not_opened(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")]))
+        atlassian_api.on(
+            "GET",
+            f"{API}/content/p1/restriction/relevantViewRestrictions",
+            restricted_to(groups=[{"type": "group", "name": "new-hires"}]),
+        )
+
+        await connector.run_sync()
+
+        assert db.records["p1"].inherit_permissions is False, "space members must not see it"
+
+
 class TestContentSync:
     async def test_all_listing_pages_are_synced_then_only_recent_changes_are_asked_for(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -595,6 +730,28 @@ class TestAuditLogRestrictionChanges:
         assert "filtered-out-page" not in db.records, "pages excluded by filters are not created by the audit pass"
         assert db.records["p2"].inherit_permissions is True, "space-level 'Permissions' events are not page restrictions"
         assert audit_key(store)["last_sync_time_ms"] > first_clock
+
+    async def test_a_page_restricted_later_takes_its_stored_files_and_comments_with_it(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
+        search.add("page", 0, listing([content("p1", attachments=[attachment("att1")])]))
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/c1/child/attachment", {"results": [attachment("c1file")], "_links": {"base": BASE}})
+        await connector.run_sync()
+        assert all(db.records[k].inherit_permissions is True for k in ("att1", "c1", "c1file"))
+
+        search.add("page", 0, listing([]))
+        event = {"type": {"category": "Pages and Blogs"}, "affectedObjects": [{"type": "Page", "id": "p1"}, {"type": "Space", "id": "10"}]}
+        atlassian_api.on("GET", AUDIT, {"entities": [event], "pagingInfo": {"lastPage": True}})
+        atlassian_api.on("GET", f"{API}/content/p1", {**content("p1"), "type": "page"})
+        atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
+        await connector.run_sync()
+
+        assert db.records["p1"].inherit_permissions is False
+        updated = {r.external_record_id: (r.inherit_permissions, [p.email for p in perms]) for r, perms in db.permission_updates}
+        assert updated == {k: (False, ["alice@example.com"]) for k in ("att1", "c1", "c1file")}, (
+            "the page's files and comments stop inheriting the space's access and get the page's grants"
+        )
 
     async def test_a_failed_page_lookup_keeps_the_audit_clock_so_the_change_is_retried(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -797,22 +954,17 @@ class TestFiltersAndIndexingSwitches:
         for rid in ("p1", "att1", "c1file"):
             assert db.records[rid].indexing_status == "AUTO_INDEX_OFF", rid
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: the 'Index Page Comments' "
-            "switch is read but never applied, so comments are indexed even when an admin turns "
-            "comment indexing off."
-        ),
-    )
     async def test_switching_off_comment_indexing_is_respected(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store, filters=_filters(indexing={"page_comments": False}))
         search.add("page", 0, listing([content("p1")]))
         atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/c1/child/attachment", {"results": [attachment("c1file")], "_links": {"base": BASE}})
 
         await connector.run_sync()
 
         assert db.records["c1"].indexing_status == "AUTO_INDEX_OFF"
+        assert db.records["p1"].indexing_status != "AUTO_INDEX_OFF"
+        assert db.records["c1file"].indexing_status != "AUTO_INDEX_OFF", "a comment's files follow the attachments switch"
 
     async def test_truncated_attachment_list_and_offsetless_next_link_are_followed(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)

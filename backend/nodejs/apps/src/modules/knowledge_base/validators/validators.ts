@@ -363,3 +363,8 @@ export const moveRecordSchema = z.object({
 export const demoDataPreferenceSchema = z.object({
   body: z.object({ include: z.boolean().nullable() }).strict(),
 });
+
+// Admins only: turn the demo off, or back on, for the whole organization.
+export const demoDataWorkspaceSchema = z.object({
+  body: z.object({ enabled: z.boolean() }).strict(),
+});

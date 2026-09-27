@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import {
   ADMIN,
   KB_ID,
@@ -60,12 +61,12 @@ describe('Knowledge base routes over HTTP: who may call what', () => {
   })
 
   it("forwards only the caller's own sign-in, never identity headers the client added", async () => {
-    const token = sessionToken(h, MEMBER)
     const spoofed = { 'x-org-id': ORG_B, 'x-user-id': OUTSIDER._id, 'x-forwarded-user': OUTSIDER.email }
     for (const route of KB_ROUTES) {
       if (!route.forwards) continue
       h.backend.reset()
       stubRoute(h, route)
+      const token = sessionToken(h, route.caller ?? MEMBER)
       await callRoute(h, route, token, spoofed)
       const [method, path] = route.forwards.split(' ')
       const forwarded = h.backend.calls.find((c) => c.method === method && c.path === path)
@@ -81,17 +82,25 @@ describe('Knowledge base routes over HTTP: who may call what', () => {
     for (const route of KB_ROUTES) {
       it(`${route.method} ${route.pattern} needs ${route.scope}`, async () => {
         stubRoute(h, route)
-        const without = oauthToken(h, MEMBER, ALL_KB_SCOPES.filter((s) => s !== route.scope).join(' '))
+        const caller = route.caller ?? MEMBER
+        const without = oauthToken(h, caller, ALL_KB_SCOPES.filter((s) => s !== route.scope).join(' '))
         const refused = await callRoute(h, route, without)
         expect(refused.status).to.equal(403)
         expect(errorMessage(refused)).to.include(route.scope)
         expect(h.backend.calls).to.deep.equal([])
 
-        const allowed = await callRoute(h, route, oauthToken(h, MEMBER, route.scope))
+        const allowed = await callRoute(h, route, oauthToken(h, caller, route.scope))
         expect(allowed.status).to.be.within(200, 299)
         if (route.forwards) expect(h.backend.calls.map((c) => `${c.method} ${c.path}`)).to.include(route.forwards)
       })
     }
+  })
+
+  it('refuses a member turning the demo off for everyone, before any other call', async () => {
+    const r = await call(h, 'PUT', '/demo-data/workspace', { token: sessionToken(h, MEMBER), json: { enabled: false } })
+    expect(r.status).to.equal(403)
+    expect(h.backend.calls).to.deep.equal([])
+    expect((Users.updateMany as sinon.SinonStub).called).to.equal(false)
   })
 
   describe('request bodies carry no identity the client chose', () => {

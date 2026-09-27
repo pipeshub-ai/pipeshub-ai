@@ -105,6 +105,8 @@ export const SIGN_IN_ACCOUNT_CHANGED =
   'This step was completed with a different account than the step before it. Start again from the sign-in page and use the same account for every step.';
 export const OAUTH_SIGN_IN_FAILED =
   "Sign-in with your identity provider didn't complete. Try again; if it keeps happening, ask your admin to check the sign-in settings.";
+export const SAML_HAS_ITS_OWN_SIGN_IN =
+  "Single sign-on (SAML) can't be completed with this request. On the sign-in page, choose your organisation's single sign-on option. Apps calling the API directly should send the browser to /api/v1/saml/signIn instead.";
 export const WRONG_EMAIL_OR_PASSWORD =
   'The email or password is incorrect. Check both and try again, or use Forgot password to set a new password.';
 export const WRONG_SIGN_IN_CODE =
@@ -1593,9 +1595,9 @@ export class UserAccountController {
         }
       }
 
-      // SAML_SSO follows a different flow - handling it early as per original code
+      // SAML completes in the identity provider's redirect to /saml/signIn/callback.
       if (method === AuthMethodType.SAML_SSO) {
-        return;
+        throw new BadRequestError(SAML_HAS_ITS_OWN_SIGN_IN);
       }
 
       const orgId = sessionInfo.orgId;
@@ -1746,8 +1748,6 @@ export class UserAccountController {
           break;
         case AuthMethodType.OAUTH:
           await this.authenticateWithOAuth(user, credentials, req.ip!);
-          break;
-        case AuthMethodType.SAML_SSO:
           break;
         default:
           throw new BadRequestError('Unsupported authentication method');

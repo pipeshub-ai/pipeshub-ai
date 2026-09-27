@@ -160,6 +160,8 @@ export const startKbHarness = async (): Promise<KbHarness> => {
       ) ?? null,
     )) as unknown as typeof Users.findOne)
   sinon.stub(UserActivities, 'findOne').callsFake((() => query(null)) as unknown as typeof UserActivities.findOne)
+  // Turning the demo off or on for everyone also switches the sample accounts' sign-in.
+  sinon.stub(Users, 'updateMany').resolves({ modifiedCount: 0 } as unknown as Awaited<ReturnType<typeof Users.updateMany>>)
 
   const router = createKnowledgeBaseRouter(container)
   const app = express()
@@ -339,6 +341,10 @@ export interface KbRoute {
   forwards?: string
   /** What the connector answers with for the route to succeed. */
   reply?: { status: number; body?: unknown; raw?: string }
+  /** Later connector calls the route needs answered to succeed. */
+  also?: Array<{ call: string; reply: { status: number; body?: unknown } }>
+  /** Who may call it, when not every member may. */
+  caller?: KbUser
 }
 
 export const KB_ROUTES: KbRoute[] = [
@@ -346,6 +352,7 @@ export const KB_ROUTES: KbRoute[] = [
   { method: 'GET', pattern: '/', path: '/', scope: 'kb:read', forwards: 'GET /api/v1/kb/', reply: { status: 200, body: { knowledgeBases: [] } } },
   { method: 'GET', pattern: '/demo-data/status', path: '/demo-data/status', scope: 'kb:read', forwards: 'GET /api/v1/demo-data/status', reply: { status: 200, body: { include: true } } },
   { method: 'PUT', pattern: '/demo-data/preference', path: '/demo-data/preference', json: { include: false }, scope: 'kb:write', forwards: 'PUT /api/v1/demo-data/preference', reply: { status: 200, body: { include: false } } },
+  { method: 'PUT', pattern: '/demo-data/workspace', path: '/demo-data/workspace', json: { enabled: true }, scope: 'kb:write', caller: ADMIN, forwards: 'GET /api/v1/demo-data/status', reply: { status: 200, body: { offForEveryone: true } }, also: [{ call: 'PUT /api/v1/demo-data/workspace', reply: { status: 200, body: { offForEveryone: false } } }] },
   { method: 'GET', pattern: '/knowledge-hub/nodes', path: '/knowledge-hub/nodes', scope: 'kb:read', forwards: 'GET /api/v1/knowledge-hub/nodes', reply: { status: 200, body: { items: [] } } },
   { method: 'GET', pattern: '/knowledge-hub/nodes/:parentType/:parentId', path: `/knowledge-hub/nodes/kb/${KB_ID}`, scope: 'kb:read', forwards: `GET /api/v1/knowledge-hub/nodes/kb/${KB_ID}`, reply: { status: 200, body: { items: [] } } },
   { method: 'GET', pattern: '/record/:recordId', path: `/record/${RECORD_ID}`, scope: 'kb:read', forwards: `GET /api/v1/records/${RECORD_ID}`, reply: { status: 200, body: { record: { id: RECORD_ID } } } },
@@ -374,8 +381,10 @@ export const callRoute = (h: KbHarness, route: KbRoute, token?: string, headers?
 
 export const stubRoute = (h: KbHarness, route: KbRoute): void => {
   if (!route.forwards || !route.reply) return
-  const [method, path] = route.forwards.split(' ') as [string, string]
-  h.backend.on(method, path, route.reply)
+  for (const { call: c, reply } of [{ call: route.forwards, reply: route.reply }, ...(route.also ?? [])]) {
+    const [method, path] = c.split(' ') as [string, string]
+    h.backend.on(method, path, reply)
+  }
 }
 
 /** Every route the router declares, as `METHOD /pattern`. */

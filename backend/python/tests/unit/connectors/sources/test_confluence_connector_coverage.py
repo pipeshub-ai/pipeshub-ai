@@ -811,22 +811,18 @@ class TestFetchGroupMembers:
         assert account_ids == []
 
     @pytest.mark.asyncio
-    async def test_api_failure(self):
+    async def test_api_failure_returns_none(self):
         c = _conn()
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails, account_ids = await c._fetch_group_members("g1", "G")
-        assert emails == []
-        assert account_ids == []
+        assert await c._fetch_group_members("g1", "G") is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         c = _conn()
         c._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
-        emails, account_ids = await c._fetch_group_members("g1", "G")
-        assert emails == []
-        assert account_ids == []
+        assert await c._fetch_group_members("g1", "G") is None
 
 
 # ===========================================================================

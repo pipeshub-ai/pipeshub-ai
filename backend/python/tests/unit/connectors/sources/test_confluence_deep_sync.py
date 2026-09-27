@@ -51,6 +51,7 @@ def _make_mock_deps():
     dep.on_record_deleted = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_by_parent = AsyncMock(return_value=[])
     dep.get_placeholder_records = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
 
@@ -840,22 +841,22 @@ class TestFetchSpacePermissions:
         assert {p.external_id for p in perms} == {"g1", "g2"}
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_returns_none(self):
         connector = _make_connector()
         ds = MagicMock()
         ds.get_space_permissions_assignments = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         perms = await connector._fetch_space_permissions("s1", "Dev")
-        assert perms == []
+        assert perms is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         connector = _make_connector()
         connector._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("boom"))
 
         perms = await connector._fetch_space_permissions("s1", "Dev")
-        assert perms == []
+        assert perms is None
 
 
 # ===========================================================================

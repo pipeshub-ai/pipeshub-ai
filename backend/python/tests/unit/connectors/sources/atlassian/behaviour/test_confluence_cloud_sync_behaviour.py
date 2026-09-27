@@ -7,6 +7,7 @@ in-memory fakes.
 """
 
 import logging
+from collections.abc import Callable
 from typing import Any, Optional
 
 import httpx
@@ -36,7 +37,13 @@ from app.connectors.core.base.connector.connector_service import ConnectorInitEr
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
-from app.models.entities import FileRecord, RecordType, WebpageRecord
+from app.models.entities import (
+    AppUser,
+    CommentRecord,
+    FileRecord,
+    RecordType,
+    WebpageRecord,
+)
 from app.models.permission import EntityType, PermissionType
 from app.sources.client.confluence.confluence import ConfluenceRESTClientViaToken
 from app.sources.external.confluence.confluence import ConfluenceDataSource
@@ -98,6 +105,16 @@ def search_page(results: list, cursor: Optional[str] = None) -> dict[str, Any]:
     if cursor:
         links["next"] = f"/rest/api/content/search?next=true&cursor={cursor}&limit=50"
     return {"results": results, "_links": links}
+
+
+def read_restricted_to(*account_ids: str, groups: tuple[str, ...] = ()) -> dict[str, Any]:
+    return {"results": [{"operation": "read", "restrictions": {
+        "user": {"results": [{"accountId": a} for a in account_ids]},
+        "group": {"results": [{"id": g, "name": g} for g in groups]},
+    }}]}
+
+
+SPEC = {"id": "att2", "title": "spec.pdf", "mediaType": "application/pdf", "fileSize": 10, "version": {"number": 1}}
 
 
 class ContentSearch:
@@ -217,6 +234,22 @@ class TestSpacesAndPermissions:
         assert not any("stranger" in str(g) or "unknown" in str(g) for g in grants), "unknown principals get nothing"
         assert db.record_group_permissions["2"] == []
 
+    async def test_a_failed_space_permission_read_keeps_the_stored_access(self, api, db, checkpoints) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        api.on("GET", f"{V2}/spaces", {"results": [{"id": "1", "key": "ENG", "name": "Engineering"}], "_links": {"base": WIKI}})
+        grant = {"principal": {"type": "user", "id": "acc-ana"}, "operation": {"key": "read", "targetType": "space"}}
+        api.on("GET", f"{V2}/spaces/1/permissions", {"results": [grant]})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces()
+        before = [(p.email, p.type) for p in db.record_group_permissions["1"]]
+        assert before, "the first sync grants access"
+
+        api.on("GET", f"{V2}/spaces/1/permissions", json_response({"message": "busy"}, status=503))
+        spaces_synced = await connector._sync_spaces()
+
+        assert [s.short_name for s in spaces_synced] == ["ENG"], "the space's content is still synced"
+        assert [(p.email, p.type) for p in db.record_group_permissions["1"]] == before
+
     async def test_excluded_space_is_not_saved(self, api, db, checkpoints) -> None:
         api.on("GET", f"{V2}/spaces", {"results": [{"id": "1", "key": "ENG", "name": "E"}, {"id": "9", "key": "HR", "name": "H"}]})
         api.on_suffix("GET", "/permissions", {"results": []})
@@ -321,33 +354,104 @@ class TestPageSync:
         assert "500" in db.records
         assert checkpoints.values_for("confluence_folders/ENG") is None
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: only the first 100 "
-            "attachments of a page are listed; the rest are never synced."
-        ),
-    )
-    async def test_every_attachment_of_a_page_is_synced(self, api, db, checkpoints, search) -> None:
+    @staticmethod
+    def _many_attachments(api: AtlassianApiStub, search: ContentSearch, second_page: object) -> None:
         def att(i: int) -> dict[str, Any]:
             return {"id": f"att{i}", "title": f"file{i}.pdf", "mediaType": "application/pdf", "fileSize": 10,
                     "version": {"number": 1}, "_links": {"download": f"/download/attachments/10/file{i}.pdf"}}
 
         search.by_cursor[None] = search_page([v1_page("10", attachments=[att(0)])])
         first = {"results": [att(i) for i in range(100)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}}
-        second = {"results": [att(i) for i in range(100, 130)], "_links": {"base": WIKI}}
+        second = second_page if second_page is not None else {"results": [att(i) for i in range(100, 130)], "_links": {"base": WIKI}}
 
         def attachments(request: httpx.Request) -> httpx.Response:
-            return json_response(second if AtlassianApiStub.query(request).get("cursor") == "A2" else first)
+            page = second if AtlassianApiStub.query(request).get("cursor") == "A2" else first
+            return page if isinstance(page, httpx.Response) else json_response(page)
 
         api.on("GET", f"{V2}/pages/10/attachments", attachments)
         api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+
+    async def test_every_attachment_of_a_page_is_synced(self, api, db, checkpoints, search) -> None:
+        self._many_attachments(api, search, None)
         connector, _ = await ready_connector(db, checkpoints)
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         files = [r for r in db.records.values() if isinstance(r, FileRecord)]
         assert len(files) == 130
+        assert checkpoints.values_for("confluence_pages/ENG") is not None
+
+    @pytest.mark.parametrize(
+        ("first_page", "checkpoint_moves"),
+        [
+            (json_response({"message": "Service Unavailable"}, status=503), False),
+            (json_response({"message": "Not Found"}, status=404), True),
+            ({"results": [], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?limit=100"}}, False),
+        ],
+        ids=["temporary-first-page-failure-holds", "permanent-failure-falls-back", "unfollowable-next-link-holds"],
+    )
+    async def test_an_attachment_list_that_cannot_be_read_in_full_keeps_the_checkpoint(
+        self, api, db, checkpoints, search, first_page, checkpoint_moves
+    ) -> None:
+        att = {"id": "att0", "title": "file0.pdf", "mediaType": "application/pdf", "fileSize": 10,
+               "version": {"number": 1}, "_links": {"download": "/download/attachments/10/file0.pdf"}}
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[att])])
+        api.on("GET", f"{V2}/pages/10/attachments", first_page if isinstance(first_page, httpx.Response) else json_response(first_page))
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att0" in db.records, "the attachment from the search result is still saved"
+        assert (checkpoints.values_for("confluence_pages/ENG") is not None) is checkpoint_moves
+
+    async def test_a_cursor_that_comes_round_again_ends_the_list_and_keeps_the_checkpoint(
+        self, api, db, checkpoints, search
+    ) -> None:
+        def att(i: int) -> dict[str, Any]:
+            return {"id": f"att{i}", "title": f"file{i}.pdf", "mediaType": "application/pdf", "fileSize": 10,
+                    "version": {"number": 1}, "_links": {"download": f"/download/attachments/10/file{i}.pdf"}}
+
+        pages = {
+            None: {"results": [att(0)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}},
+            "A2": {"results": [att(1)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A3"}},
+            "A3": {"results": [att(2)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}},
+        }
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[att(0)])])
+        api.on("GET", f"{V2}/pages/10/attachments", lambda r: json_response(pages[AtlassianApiStub.query(r).get("cursor")]))
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert len(api.calls("GET", f"{V2}/pages/10/attachments")) == 3, "A2 is not read a second time"
+        assert {"att0", "att1", "att2"} <= set(db.records)
+        assert checkpoints.values_for("confluence_pages/ENG") is None
+
+    async def test_opening_a_page_reads_every_attachment_for_its_images(self, api, db, checkpoints, search) -> None:
+        self._many_attachments(api, search, None)
+        connector, _ = await ready_connector(db, checkpoints)
+        page = WebpageRecord(
+            org_id="org-1", record_name="Page 10", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR, version=0,
+            weburl=f"{WIKI}/pages/10",
+        )
+
+        await connector.stream_record(page)
+
+        listed = [AtlassianApiStub.query(r).get("cursor") for r in api.calls("GET", f"{V2}/pages/10/attachments")]
+        assert "A2" in listed, "the attachment list is followed past the first 100"
+        assert len(await connector._fetch_page_attachments_list("10", RecordType.CONFLUENCE_PAGE)) == 130
+
+    async def test_a_failed_second_page_of_attachments_keeps_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        self._many_attachments(api, search, json_response({"message": "Service Unavailable"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        files = [r for r in db.records.values() if isinstance(r, FileRecord)]
+        assert len(files) == 100, "what was listed is still saved"
+        assert checkpoints.values_for("confluence_pages/ENG") is None, "the rest are listed again next sync"
 
     async def test_images_shown_inside_the_page_are_not_duplicated_as_files(self, api, db, checkpoints, search) -> None:
         shot = {"id": "att1", "title": "shot.png", "mediaType": "image/png", "fileId": "media-1", "version": {"number": 1}}
@@ -362,6 +466,331 @@ class TestPageSync:
 
         assert "att2" in db.records and "att1" not in db.records
         assert db.records["att2"].parent_node_id == db.records["10"].id
+
+
+class TestGroups:
+    async def test_a_failed_member_read_does_not_empty_the_group(self, api, db, checkpoints) -> None:
+        db.app_users.append(AppUser(
+            app_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, source_user_id="acc-ana",
+            org_id="org-1", email="ana@acme.com", full_name="Ana",
+        ))
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        members = f"{V1}/group/grp-eng/membersByGroupId"
+        api.on("GET", members, {"results": [{"accountId": "acc-ana", "email": "ana@acme.com"}], "size": 1})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+        api.on("GET", members, json_response({"message": "busy"}, status=503))
+        await connector._sync_user_groups()
+
+        group, saved_members = db.user_groups[-1]
+        assert group.source_user_group_id == "grp-eng"
+        assert [m.email for m in saved_members] == ["ana@acme.com"]
+
+    async def test_short_pages_that_say_more_follow_are_followed(self, api, db, checkpoints) -> None:
+        for source_id, email in (("acc-ana", "ana@acme.com"), ("acc-bo", "bo@acme.com")):
+            db.app_users.append(AppUser(
+                app_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, source_user_id=source_id,
+                org_id="org-1", email=email, full_name=email,
+            ))
+
+        def paged(first: list, second: list, path: str) -> Callable[[httpx.Request], httpx.Response]:
+            def handler(request: httpx.Request) -> httpx.Response:
+                if AtlassianApiStub.query(request).get("start") == "0":
+                    return json_response({"results": first, "size": len(first), "_links": {"base": WIKI, "next": f"{path}?start=1"}})
+                return json_response({"results": second, "size": len(second), "_links": {"base": WIKI}})
+            return handler
+
+        api.on("GET", f"{V1}/group", paged(
+            [{"id": "grp-ops", "name": "ops"}], [{"id": "grp-eng", "name": "eng"}], "/rest/api/group",
+        ))
+        api.on("GET", f"{V1}/group/grp-ops/membersByGroupId", {"results": [], "size": 0, "_links": {"base": WIKI}})
+        api.on("GET", f"{V1}/group/grp-eng/membersByGroupId", paged(
+            [{"accountId": "acc-ana", "email": "ana@acme.com"}], [{"accountId": "acc-bo", "email": "bo@acme.com"}],
+            "/rest/api/group/grp-eng/membersByGroupId",
+        ))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_user_groups()
+
+        saved = {g.source_user_group_id: sorted(m.email for m in members) for g, members in db.user_groups}
+        assert saved == {"grp-ops": [], "grp-eng": ["ana@acme.com", "bo@acme.com"]}
+
+    def _members_by_start(self, pages: dict[str, dict]) -> Callable[[httpx.Request], httpx.Response]:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return json_response(pages[AtlassianApiStub.query(request).get("start", "0")])
+        return handler
+
+    def _people(self, db) -> None:
+        for source_id, email in (("acc-ana", "ana@acme.com"), ("acc-bo", "bo@acme.com"), ("acc-eve", "eve@acme.com")):
+            db.app_users.append(AppUser(
+                app_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, source_user_id=source_id,
+                org_id="org-1", email=email, full_name=email,
+            ))
+
+    async def test_the_next_member_page_is_read_at_the_offset_its_link_gives(self, api, db, checkpoints) -> None:
+        self._people(db)
+        path = f"{V1}/group/grp-eng/membersByGroupId"
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        api.on("GET", path, self._members_by_start({
+            "0": {"results": [{"accountId": "acc-ana", "email": "ana@acme.com"}], "size": 1,
+                  "_links": {"base": WIKI, "next": "/rest/api/group/grp-eng/membersByGroupId?start=100&limit=100"}},
+            "1": {"results": [{"accountId": "acc-eve", "email": "eve@acme.com"}], "size": 1, "_links": {"base": WIKI}},
+            "100": {"results": [{"accountId": "acc-bo", "email": "bo@acme.com"}], "size": 1, "_links": {"base": WIKI}},
+        }))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_user_groups()
+
+        assert sorted(m.email for m in db.user_groups[-1][1]) == ["ana@acme.com", "bo@acme.com"]
+
+    async def test_a_next_link_without_an_offset_keeps_the_stored_members(self, api, db, checkpoints) -> None:
+        self._people(db)
+        path = f"{V1}/group/grp-eng/membersByGroupId"
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        both = [{"accountId": "acc-ana", "email": "ana@acme.com"}, {"accountId": "acc-bo", "email": "bo@acme.com"}]
+        api.on("GET", path, {"results": both, "size": 2, "_links": {"base": WIKI}})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        saves = len(db.user_groups)
+
+        api.on("GET", path, self._members_by_start({
+            "0": {"results": both[:1], "size": 1, "_links": {"base": WIKI, "next": "/rest/api/group/grp-eng/membersByGroupId?cursor=opaque"}},
+            "1": {"results": [{"accountId": "acc-eve", "email": "eve@acme.com"}], "size": 1, "_links": {"base": WIKI}},
+        }))
+        await connector._sync_user_groups()
+
+        assert len(db.user_groups) == saves, "the group is not saved from a guessed page"
+        assert sorted(m.email for m in db.user_groups[-1][1]) == ["ana@acme.com", "bo@acme.com"]
+
+    async def test_a_group_that_disappears_part_way_through_its_members_ends_up_empty(self, api, db, checkpoints) -> None:
+        db.app_users.append(AppUser(
+            app_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, source_user_id="acc-ana",
+            org_id="org-1", email="ana@acme.com", full_name="Ana",
+        ))
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        first_page = {"results": [{"accountId": "acc-ana", "email": "ana@acme.com"}] * 100, "size": 100}
+        api.on("GET", f"{V1}/group/grp-eng/membersByGroupId", lambda r: json_response(
+            first_page if AtlassianApiStub.query(r).get("start") == "0" else {"message": "no group"},
+            status=200 if AtlassianApiStub.query(r).get("start") == "0" else 404,
+        ))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_user_groups()
+
+        group, saved_members = db.user_groups[-1]
+        assert group.source_user_group_id == "grp-eng" and saved_members == [], "a deleted group keeps no members"
+
+
+class TestRestrictedPageFiles:
+    async def test_a_page_restricted_to_a_group_we_have_not_synced_is_not_opened(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([v1_page("10")])
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to(groups=("grp-new",)))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].inherit_permissions is False
+
+    async def test_files_of_a_restricted_page_stay_restricted(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[SPEC])])
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].inherit_permissions is False
+        assert db.records["att2"].inherit_permissions is False
+        assert [p.email for p in db.record_permissions["att2"]] == ["ana@acme.com"]
+
+    async def test_a_reindexed_file_of_a_restricted_page_stays_restricted(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[SPEC])])
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        api.on("GET", f"{V2}/attachments/att2", {**SPEC, "version": {"number": 2}, "_links": {"base": WIKI}})
+
+        await connector.reindex_records([db.records["att2"]])
+
+        (updated,) = db.content_updates
+        assert updated.external_record_id == "att2" and updated.inherit_permissions is False
+
+    async def test_a_reindexed_reply_on_a_restricted_page_stays_restricted(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        search.by_cursor[None] = search_page([v1_page("10")])
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        reply = CommentRecord(
+            org_id="org-1", record_name="Re: c1", record_type=RecordType.COMMENT, external_record_id="202",
+            external_revision_id="1", connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, author_source_id="acc-ana",
+            parent_external_record_id="201", parent_record_type=RecordType.COMMENT,
+            external_record_group_id="77", parent_node_id=db.records["10"].id,
+        )
+        api.on("GET", f"{V2}/footer-comments/202", {
+            "id": "202", "title": "Re: c1", "pageId": "10", "parentCommentId": "201",
+            "version": {"number": 2, "authorId": "acc-ana", "createdAt": "2024-05-02T10:00:00.000Z"},
+            "_links": {"base": WIKI, "webui": "/x/202"},
+        })
+
+        await connector.reindex_records([reply])
+
+        (updated,) = db.content_updates
+        assert updated.inherit_permissions is False, "a reply gets its page's restriction, not its parent comment's"
+        assert (updated.parent_external_record_id, updated.parent_record_type) == ("201", RecordType.COMMENT)
+        (update,) = db.permission_updates
+        assert [p.email for p in update[1]] == ["ana@acme.com"]
+
+    async def test_a_file_first_seen_while_opening_a_restricted_page_stays_restricted(self, api, db, checkpoints) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._process_page_attachments_for_children([SPEC], "10", "page-node-10", "77", None)
+
+        assert db.records["att2"].inherit_permissions is False
+        assert [p.email for p in db.record_permissions["att2"]] == ["ana@acme.com"]
+
+
+class TestAuditLog:
+    async def test_a_short_audit_page_that_says_more_follow_is_followed(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._sync_permission_changes_from_audit_log()
+        change = {"category": "Permissions", "associatedObjects": [
+            {"objectType": "Page", "name": "Page 10"}, {"objectType": "Space", "name": "ENG"},
+        ]}
+        noise = {"category": "Users", "associatedObjects": []}
+
+        def audit(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("start") == "0":
+                return json_response({"results": [noise], "size": 1, "_links": {"base": WIKI, "next": "/rest/api/audit?start=1"}})
+            return json_response({"results": [change], "size": 1, "_links": {"base": WIKI}})
+
+        api.on("GET", f"{V1}/audit", audit)
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+
+        await connector._sync_permission_changes_from_audit_log()
+
+        assert db.records["10"].inherit_permissions is False, "the change on the second audit page is applied"
+
+    async def test_every_page_of_the_title_search_is_read(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        search.by_cursor[None] = search_page([v1_page("10"), v1_page("11")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._sync_permission_changes_from_audit_log()
+        change = {"category": "Permissions", "associatedObjects": [
+            {"objectType": "Page", "name": "Page 10"}, {"objectType": "Space", "name": "ENG"},
+        ]}
+        api.on("GET", f"{V1}/audit", {"results": [change], "size": 1})
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        search.by_cursor = {None: search_page([v1_page("11")], cursor="T2"), "T2": search_page([v1_page("10")])}
+
+        await connector._sync_permission_changes_from_audit_log()
+
+        assert [q.get("cursor") for q in search.queries if q["cql"].startswith("title IN")] == [None, "T2"]
+        assert db.records["10"].inherit_permissions is False, "the page on the search's second page gets its restriction"
+
+    async def test_a_failed_second_page_of_the_title_search_keeps_the_audit_clock(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._sync_permission_changes_from_audit_log()
+        checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] = 1_000
+        change = {"category": "Permissions", "associatedObjects": [
+            {"objectType": "Page", "name": "Page 10"}, {"objectType": "Space", "name": "ENG"},
+        ]}
+        api.on("GET", f"{V1}/audit", {"results": [change], "size": 1})
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        others = [{**v1_page(f"9{i:02d}"), "title": "Page 10"} for i in range(200)]
+        search.by_cursor = {None: search_page(others, cursor="T2"), "T2": json_response({"message": "busy"}, status=503)}
+
+        with pytest.raises(ValueError):
+            await connector._sync_permission_changes_from_audit_log()
+
+        assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
+        assert db.records["10"].inherit_permissions is True, "page 10 was on the page that failed; the next run reads it"
+
+    async def test_a_failed_title_search_does_not_move_the_audit_clock(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._sync_permission_changes_from_audit_log()
+        checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] = 1_000
+        change = {"category": "Permissions", "associatedObjects": [
+            {"objectType": "Page", "name": "Page 10"}, {"objectType": "Space", "name": "ENG"},
+        ]}
+        api.on("GET", f"{V1}/audit", {"results": [change], "size": 1})
+        search.by_cursor[None] = json_response({"message": "busy"}, status=503)
+
+        with pytest.raises(ValueError):
+            await connector._sync_permission_changes_from_audit_log()
+
+        assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
+
+    async def test_an_unreadable_audit_log_does_not_move_the_audit_clock(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_permission_changes_from_audit_log()
+        checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] = 1_000
+        api.on("GET", f"{V1}/audit", json_response({"message": "busy"}, status=503))
+
+        await connector._sync_permission_changes_from_audit_log()
+
+        assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
+
+    async def test_a_page_restricted_later_takes_its_stored_files_with_it(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[SPEC])])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._sync_permission_changes_from_audit_log()
+        assert db.records["att2"].inherit_permissions is True
+
+        change = {"category": "Permissions", "associatedObjects": [
+            {"objectType": "Page", "name": "Page 10"}, {"objectType": "Space", "name": "ENG"},
+        ]}
+        api.on("GET", f"{V1}/audit", {"results": [change], "size": 1})
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        await connector._sync_permission_changes_from_audit_log()
+
+        assert db.records["10"].inherit_permissions is False
+        (file_update,) = [(r, perms) for r, perms in db.permission_updates if r.external_record_id == "att2"]
+        assert file_update[0].inherit_permissions is False, "the page's file no longer inherits the space's access"
+        assert [p.email for p in file_update[1]] == ["ana@acme.com"]
+
+    async def test_a_folder_under_a_page_keeps_its_own_access_when_the_page_is_restricted(
+        self, api, db, checkpoints, search
+    ) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._sync_permission_changes_from_audit_log()
+        db.records["500"] = FileRecord(
+            org_id="org-1", record_name="Specs", record_type=RecordType.FILE, external_record_id="500",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+            version=1, is_file=False, mime_type="text/directory", parent_external_record_id="10",
+        )
+
+        change = {"category": "Permissions", "associatedObjects": [
+            {"objectType": "Page", "name": "Page 10"}, {"objectType": "Space", "name": "ENG"},
+        ]}
+        api.on("GET", f"{V1}/audit", {"results": [change], "size": 1})
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        await connector._sync_permission_changes_from_audit_log()
+
+        assert db.records["10"].inherit_permissions is False
+        assert not [r for r, _ in db.permission_updates if r.external_record_id == "500"], (
+            "a folder has restrictions of its own and does not take the page's"
+        )
 
 
 class TestPlaceholderSweep:

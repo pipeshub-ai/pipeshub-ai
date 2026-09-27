@@ -338,19 +338,6 @@ class GitHubTeamsConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "githubteams", self.connector_id, self.logger
             )
-            # PipesHub users reach this connector through the org's "All" team,
-            # not a per-user edge. The record-access query pre-filters on
-            # `connectorId IN user_apps_ids`, which is satisfied via
-            # (User)-[:PERMISSION]->(Teams)-[:USER_APP_RELATION]->(App) — so
-            # without this edge a public repo's ORG grant is unreachable for
-            # anyone whose GitHub account never resolved to an AppUser. The edge
-            # grants nothing by itself; every access path still requires a real
-            # PERMISSION edge.
-            async with self.data_store_provider.transaction() as tx_store:
-                await tx_store.ensure_team_app_edge(
-                    self.connector_id, self.data_entities_processor.org_id,
-                )
-
             self.logger.info("Starting sync of GitHub org members")
             await self.users.sync_users()
             self.logger.info("Starting sync of GitHub repositories")

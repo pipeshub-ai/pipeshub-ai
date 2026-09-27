@@ -4,7 +4,8 @@ import React, { useState } from 'react';
 import { Button, Callout, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useDemoDataActive, useDemoRemovalNotice } from '../use-demo-data';
+import { useDemoDataActive, useDemoDataStatus, useDemoRemovalNotice } from '../use-demo-data';
+import { useDemoSwitch } from '../use-demo-switch';
 import { RemoveDemoDataDialog } from './remove-demo-data-dialog';
 
 interface DemoDataRemovalNoticeProps {
@@ -15,14 +16,19 @@ interface DemoDataRemovalNoticeProps {
 
 /**
  * Tells an admin that answers still include the Acme Corp demo data once the
- * company's own data has arrived, and offers to remove it. Nothing is removed
- * without asking; "Keep for now" hides the notice for a week in this browser.
+ * company's own data has arrived. Offers to turn it off for everyone (undoable)
+ * or remove it permanently. Nothing is removed without asking; "Keep for now"
+ * hides the notice for a week in this browser.
  */
 export function DemoDataRemovalNotice({ isAdmin, style }: DemoDataRemovalNoticeProps) {
   const { t } = useTranslation();
   useDemoDataActive();
-  const { show, demoConnectors, snooze } = useDemoRemovalNotice(isAdmin);
+  const { show: showRemoval, demoConnectors, snooze } = useDemoRemovalNotice(isAdmin);
+  const offForEveryone = useDemoDataStatus()?.offForEveryone === true;
+  const { setEnabledForEveryone, busy } = useDemoSwitch();
   const [dialogOpen, setDialogOpen] = useState(false);
+  // Already off for everyone: nothing is mixing into answers any more.
+  const show = showRemoval && !offForEveryone;
 
   if (!show && !dialogOpen) return null;
 
@@ -41,7 +47,10 @@ export function DemoDataRemovalNotice({ isAdmin, style }: DemoDataRemovalNoticeP
             </Text>
             <Text size="2">{t('demoData.removalNotice.description')}</Text>
             <Flex gap="2" wrap="wrap">
-              <Button size="1" color="orange" onClick={() => setDialogOpen(true)}>
+              <Button size="1" color="orange" disabled={busy} onClick={() => void setEnabledForEveryone(false)}>
+                {t('demoData.removalNotice.turnOff')}
+              </Button>
+              <Button size="1" variant="soft" color="red" onClick={() => setDialogOpen(true)}>
                 {t('demoData.removalNotice.remove')}
               </Button>
               <Button size="1" variant="soft" color="gray" onClick={snooze}>

@@ -918,7 +918,31 @@ class TestGroups:
         await connector._sync_user_groups()
 
         assert db.user_groups == {"g-eng": ["ana@acme.com"]}
-        assert db.removed_members == [("g-eng", "ben@acme.com")]
+        assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G2"), "the saved member list already applied the removal"
+        assert not groups_checkpoint(checkpoints).get("fullSyncIncomplete")
+
+    async def test_a_failed_member_removal_for_a_group_whose_members_are_forbidden_holds_the_group_delta(self, cloud, tenant, db, checkpoints) -> None:
+        tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com"), member("u-ben", "ben@acme.com")])
+        tenant.groups_delta.by_token["G1"] = page(
+            [{"id": "g-eng", "displayName": "Eng", "members@delta": [{"id": "u-ben", "@removed": {"reason": "deleted"}}]}],
+            delta_link=groups_link("G2"),
+        )
+        cloud.on("GET", "/v1.0/users/u-ben", {"id": "u-ben", "mail": "ben@acme.com"})
+        connector = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        cloud.on("GET", "/v1.0/groups/g-eng/members", graph_error(403, "Authorization_RequestDenied", "hidden membership"))
+        db.fail_member_removal.add(("g-eng", "ben@acme.com"))
+
+        await connector._sync_user_groups()
+
+        assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G1")
+        assert db.user_groups == {"g-eng": ["ana@acme.com", "ben@acme.com"]}
+
+        db.fail_member_removal.clear()
+        await connector._sync_user_groups()
+
+        assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G2")
+        assert db.user_groups == {"g-eng": ["ana@acme.com"]}
 
     async def test_a_failed_member_read_during_delta_keeps_the_groups_stored_members(self, cloud, tenant, db, checkpoints) -> None:
         tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com")])
@@ -1046,18 +1070,16 @@ class TestGroups:
         assert groups_checkpoint(checkpoints)["fullSyncIncomplete"] is False
 
     async def test_a_group_given_up_on_while_an_earlier_full_sync_is_retried_is_still_read_again(self, cloud, tenant, db, checkpoints) -> None:
-        tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com"), member("u-ben", "ben@acme.com")])
+        tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com")])
         tenant.add_group("g-ops", "Ops", graph_error(503, "serviceNotAvailable"))
-        tenant.groups_delta.by_token["G1"] = page(
-            [{"id": "g-eng", "displayName": "Eng", "members@delta": [{"id": "u-ben", "@removed": {"reason": "deleted"}}]}],
-            delta_link=groups_link("G2"),
-        )
+        # g-new is only in the delta, so the full sync never reads it.
+        tenant.groups_delta.by_token["G1"] = page([{"id": "g-new", "displayName": "New"}], delta_link=groups_link("G2"))
         tenant.groups_delta.by_token["G2"] = page([], delta_link=groups_link("G3"))
-        cloud.on("GET", "/v1.0/users/u-ben", graph_error(503, "serviceNotAvailable"))
+        cloud.on("GET", "/v1.0/groups/g-new/members", graph_error(503, "serviceNotAvailable"))
         connector = await ready_connector(db, checkpoints)
         await connector._sync_user_groups()
         assert groups_checkpoint(checkpoints)["fullSyncIncomplete"] is True
-        # Four earlier runs already held the G1 page, so this run gives up on g-eng.
+        # Four earlier runs already held the G1 page, so this run gives up on g-new.
         groups_checkpoint(checkpoints).update({"heldPage": groups_link("G1"), "heldPageAttempts": 4})
         cloud.on("GET", "/v1.0/groups/g-ops/members", page([member("u-cal", "cal@acme.com")]))
 

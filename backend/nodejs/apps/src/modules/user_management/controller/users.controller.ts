@@ -58,16 +58,9 @@ import { UserCredentials } from '../../auth/schema/userCredentials.schema';
 import { passwordValidator } from '../../auth/utils/passwordValidator';
 import { SALT_ROUNDS } from '../../auth/controller/userAccount.controller';
 import bcrypt from 'bcryptjs';
+import { DEMO_ACCOUNT_DOMAIN, clearRemovedSampleAccount, isDemoAccountEmail } from '../services/demo-accounts.service';
 
-/** Reserved domain of the bundled demo personas (RFC 2606 `.example`). */
-export const DEMO_ACCOUNT_DOMAIN = 'acme-demo.example';
-
-export function isDemoAccountEmail(email: unknown): boolean {
-  return (
-    typeof email === 'string' &&
-    email.trim().toLowerCase().endsWith(`@${DEMO_ACCOUNT_DOMAIN}`)
-  );
-}
+export { DEMO_ACCOUNT_DOMAIN, isDemoAccountEmail } from '../services/demo-accounts.service';
 import { UserActivities } from '../../auth/schema/userActivities.schema';
 import { userActivitiesType } from '../../../libs/utils/userActivities.utils';
 import { AICommandOptions } from '../../../libs/commands/ai_service/ai.service.command';
@@ -658,6 +651,9 @@ export class UserController {
         const existing = await Users.findOne({ email, isDeleted: false });
         if (existing) {
           throw new BadRequestError('A user with this email already exists');
+        }
+        if (isDemoAccountEmail(email)) {
+          await clearRemovedSampleAccount(email, String(newUser.orgId));
         }
       }
 

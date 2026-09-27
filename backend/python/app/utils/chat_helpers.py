@@ -838,6 +838,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 mime_type=record_dict.get("mime_type", ""),
                 external_record_id=record_dict.get("external_record_id", ""),
                 weburl=record_dict.get("weburl", ""),
+                hide_weburl=bool(record_dict.get("hide_weburl")),
                 location=record_dict.get("location"),
                 version=version,
                 origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
@@ -868,6 +869,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
             "source_updated_at": record_dict.get("source_updated_at") or None,
             "location": record_dict.get("location"),
             "weburl": record_dict.get("weburl", ""),
+            "hide_weburl": bool(record_dict.get("hide_weburl")),
             "semantic_metadata": SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
         }
 
@@ -1071,6 +1073,8 @@ def _merge_graph_into_blob_record(
         val = base_doc.get(graph_key)
         if val:
             merged.setdefault(record_key_name, val)
+    # A link the graph hides stays hidden, whatever the blob copy says.
+    merged["hide_weburl"] = bool(merged.get("hide_weburl") or base_doc.get("hideWeburl"))
     return merged
 
 def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, Any]:
@@ -1084,6 +1088,7 @@ def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, An
         record_dict[record_key_name] = base_doc.get(graph_key) or ""
     record_dict["source_created_at"] = base_doc.get("sourceCreatedAtTimestamp")
     record_dict["source_updated_at"] = base_doc.get("sourceLastModifiedTimestamp")
+    record_dict["hide_weburl"] = bool(base_doc.get("hideWeburl"))
     return record_dict
 
 async def _fetch_type_specific_doc(
@@ -1178,7 +1183,7 @@ def _base_record_context_metadata_from_graph(
     ]
     if mime_type:
         lines.append(f"MIME Type: {mime_type}")
-    if web_url:
+    if web_url and not base_graph_doc.get("hideWeburl"):
         if not str(web_url).startswith("http") and frontend_url:
             web_url = f"{frontend_url.rstrip('/')}/{str(web_url).lstrip('/')}"
         lines.append(f"Web URL: {web_url}")

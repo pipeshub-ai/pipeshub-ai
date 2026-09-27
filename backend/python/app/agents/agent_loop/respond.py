@@ -73,6 +73,9 @@ from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
 from app.agents.agent_loop.reasoning_persistence import build_reasoning_payload, filter_reasoning_parts
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
+from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.citations import normalize_citations_and_chunks
 from app.utils.streaming import parse_confidence_from_answer
 
@@ -298,6 +301,9 @@ class AnswerFinalizer:
                 await event_sink.write(evt)
             state["response"] = answer_text
             state["completion_data"] = fallback_response
+            # The user received an answer, sourceless. Leaving it out would
+            # make the "answers with sources" ratio look better than it is.
+            _record_answer_generated(self._context, state, [])
             return fallback_response
 
         final_results = self._collector.final_results
@@ -413,6 +419,7 @@ class AnswerFinalizer:
             "AnswerFinalizer: finalized response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
+        _record_answer_generated(self._context, state, citations)
         return completion_data
 
     async def _run_cancelled_path(
@@ -495,6 +502,9 @@ class AnswerFinalizer:
             "AnswerFinalizer: finalized STOPPED response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
+        # A stop during "Thinking" left nothing on screen, so it is not an answer.
+        if normalized.strip():
+            _record_answer_generated(self._context, state, citations, stopped=True)
         return completion_data
 
     async def _emit_ask_user_question_fallback(self, state: dict[str, Any], event_sink: EventSink) -> None:
@@ -549,3 +559,68 @@ class AnswerFinalizer:
 
 
 __all__ = ["AnswerFinalizer"]
+
+
+def _record_answer_generated(
+    context: "AgentContext", state: dict[str, Any], citations: list[dict[str, Any]],
+    *, stopped: bool = False,
+) -> None:
+    """Activation signal: an answer with (or without) sources reached the user.
+
+    Records counts and source *types* only — never the question, the answer,
+    or record names. ``demo_sources`` is true when any cited record comes from
+    the bundled Demo connector, which is how "demo query run" is measured.
+    """
+    try:
+        # The agent route describes its sources in `agent_knowledge`
+        # ({connectorId, type}); the chat route in `available_connectors`
+        # ({id, type}). Either may be present, so read both.
+        demo_ids: set[str] = set()
+        sources: list[object] = list(state.get("agent_knowledge") or []) + list(
+            state.get("available_connectors") or []
+        )
+        for entry in sources:
+            if not isinstance(entry, dict):
+                continue
+            typed: dict[str, object] = dict(entry)  # type: ignore[arg-type]
+            if str(typed.get("type") or "").lower() == "demo":
+                demo_ids.add(str(typed.get("connectorId") or typed.get("id") or ""))
+        demo_ids.discard("")
+        connectors: set[str] = set()
+        demo_sources = False
+        for citation in citations:
+            meta_obj: object = citation.get("metadata")
+            if not isinstance(meta_obj, dict):
+                continue
+            meta: dict[str, object] = dict(meta_obj)  # type: ignore[arg-type]
+            name = meta.get("connector") or meta.get("origin")
+            if name:
+                connectors.add(str(name))
+            if str(meta.get("connectorId") or "") in demo_ids:
+                demo_sources = True
+        # The address itself stays out: the domain says which organisation
+        # without naming a person, and the user id already identifies them.
+        record_event("answer_generated", {
+            "orgId": context.org_id,
+            "userId": context.user_id,
+            "domain": domain_from_email(str(context.user_email or "")),
+            "chat_mode": state.get("chat_mode"),
+            "citation_count": len(citations),
+            "connectors": sorted(connectors),
+            "demo_sources": demo_sources,
+            # Stopped by the person after text was on screen: kept apart so
+            # the cited ratio of finished answers stays comparable.
+            "stopped": stopped,
+        })
+        # The Grafana counter for the same step: org and domain only. The
+        # connector label marks demo answers so the demo funnel has its own line.
+        record_service_activity(
+            "query_service",
+            "answer_generated",
+            connector="demo" if demo_sources else "none",
+            status="stopped" if stopped else ("cited" if citations else "uncited"),
+            org=str(context.org_id or "unknown"),
+            domain=domain_from_email(str(context.user_email or "")),
+        )
+    except Exception as exc:  # telemetry must never break an answer
+        logging.getLogger(__name__).debug("telemetry: answer_generated not recorded: %s", exc)

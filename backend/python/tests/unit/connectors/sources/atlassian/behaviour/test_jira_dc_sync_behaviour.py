@@ -18,6 +18,8 @@ from atlassian_behaviour_fakes import (
     FakeConfigService,
     FakeRecordsDb,
     json_response,
+    logged,
+    record_logs,
 )
 from fastapi import HTTPException
 
@@ -418,14 +420,6 @@ class TestIncrementalSync:
         assert "updated >= -" in search.jql[0], "the next run resumes from the saved page, not from scratch"
         assert "1003" in tickets(db)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: one issue that fails to "
-            "process aborts its whole page and project, so the healthy issues next to it are not "
-            "saved, and every later run fails on the same issue."
-        ),
-    )
     async def test_one_bad_issue_does_not_stop_the_rest_of_the_project(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         search.add("ENG", 0, [issue("1001", "ENG-1", ts(1)), issue("1002", "ENG-2", ts(2)), issue("1004", "ENG-4", ts(3))])
@@ -435,24 +429,60 @@ class TestIncrementalSync:
         await connector.run_sync()
 
         assert {"1001", "1004"} <= set(tickets(db))
+        assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(2)), (
+            "the checkpoint waits at the failed issue"
+        )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: issue search is not retried "
-            "when Jira answers 429 (rate limited), so the project is skipped for this run instead "
-            "of waiting and continuing."
-        ),
-    )
-    async def test_a_rate_limited_issue_search_is_retried(self, jira, db, store, search) -> None:
+        db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert {"1001", "1002", "1004"} <= set(tickets(db))
+        assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
+        assert json.loads(store.values_for("project_ENG").get("failed_issue_attempts") or "{}") == {}
+
+    async def test_an_issue_that_keeps_failing_is_given_up_on_after_five_syncs(self, jira, db, store, search) -> None:
         stub_site(jira, search)
-        limited = httpx.Response(429, headers={"Retry-After": "1"}, content=b"{}")
+        search.add("ENG", 0, [issue("1001", "ENG-1", ts(1)), issue("1002", "ENG-2", ts(2)), issue("1004", "ENG-4", ts(3))])
+        db.fail_lookup_for = {"1002"}
+        connector, _ = await make_connector(db, store)
+        logs = record_logs(connector)
+        held_at = connector._parse_jira_timestamp(ts(2))
+
+        for attempt in range(1, 5):
+            await connector.run_sync()
+            assert store.values_for("project_ENG")["last_issue_updated"] == held_at
+            assert json.loads(store.values_for("project_ENG")["failed_issue_attempts"]) == {"1002": attempt}
+
+        await connector.run_sync()
+
+        assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
+        assert any("ENG-2" in m and "after 5 syncs" in m for m in logged(logs))
+
+        errors_before = len(logged(logs))
+        await connector.run_sync()
+
+        assert not any("ENG-2" in m for m in logged(logs)[errors_before:]), "an unchanged given-up issue is not tried again"
+        assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(3))
+        assert json.loads(store.values_for("project_ENG")["given_up_issues"]) == {"1002": ts(2)}
+
+        search.pages.clear()
+        search.add("ENG", 0, [issue("1002", "ENG-2", ts(4))])
+        db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert "1002" in tickets(db), "once it changes it is tried afresh"
+        assert json.loads(store.values_for("project_ENG")["given_up_issues"]) == {}
+
+    async def test_a_rate_limited_issue_search_is_retried(self, jira, db, store, search, backoff_sleeps) -> None:
+        stub_site(jira, search)
+        limited = httpx.Response(429, headers={"Retry-After": "7"}, content=b"{}")
         search.add("ENG", 0, [limited, {"issues": [issue("1001", "ENG-1")], "total": 1}])
         connector, _ = await make_connector(db, store)
 
         await connector.run_sync()
 
         assert "1001" in tickets(db)
+        assert 7.0 in backoff_sleeps, "the wait Jira asked for is respected"
 
 
 def acl_summary(permissions: list[Any]) -> list[tuple[str, str, Optional[str], Optional[str]]]:
@@ -518,6 +548,18 @@ class TestAccessControlSafety:
         (acl,) = db.record_group_permissions.values()
         assert [(p.entity_type, p.email) for p in acl] == [(EntityType.USER, "owner@example.com")]
 
+    async def test_a_forbidden_scheme_with_no_owner_email_keeps_the_project_acl(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+
+        connector.creator_email = None
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["no"]}, status=403))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "a 403 doesn't mean no one can see the project"
+
     async def test_application_roles_forbidden_grants_only_the_configuring_user(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         jira.on("GET", f"{API}/applicationrole", json_response({}, status=403))
@@ -531,6 +573,129 @@ class TestAccessControlSafety:
         assert not any(p.external_id == "jira-software-users" for p in acl)
         assert not any(p.entity_type == EntityType.ORG for p in acl), "never widen to the whole org"
         assert any("admin permission" in t for t in notes.titles())
+
+    async def test_an_unreadable_group_list_skips_role_sync(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = sorted(m.email for m in db.app_roles["ENG_10002"])
+        assert "alice@example.com" in before, "alice is in the role only through the devs group"
+        role_reads = len(jira.calls("GET", f"{API}/project/ENG/role"))
+
+        jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == before
+        assert len(jira.calls("GET", f"{API}/project/ENG/role")) == role_reads, "roles are not synced this run"
+
+    @staticmethod
+    def _stub_more_roles(jira, reviewer: str) -> None:
+        """Adds a role made only of the jira-software-users group and a role made only of one user."""
+        jira.on("GET", f"{API}/project/ENG/role", {
+            "Developers": f"{BASE}{API}/project/ENG/role/10002",
+            "Testers": f"{BASE}{API}/project/ENG/role/10004",
+            "Reviewers": f"{BASE}{API}/project/ENG/role/10005",
+        })
+        jira.on("GET", f"{API}/project/ENG/role/10004", {"name": "Testers", "actors": [
+            {"type": "atlassian-group-role-actor", "name": "jira-software-users"},
+        ]})
+        jira.on("GET", f"{API}/project/ENG/role/10005", {"name": "Reviewers", "actors": [
+            {"type": "atlassian-user-role-actor", "name": reviewer},
+        ]})
+
+    async def test_a_group_list_cut_off_at_the_picker_limit_holds_back_only_the_roles_that_need_a_missing_group(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_more_roles(jira, reviewer="alice")
+        connector, notes = await make_connector(db, store)
+        await connector.run_sync()
+        developers_before = sorted(m.email for m in db.app_roles["ENG_10002"])
+        assert "alice@example.com" in developers_before, "alice is in the role only through the devs group"
+        devs_before = sorted(m.email for m in db.groups_saved["devs"])
+        assert [m.email for m in db.app_roles["ENG_10004"]] == ["bob@example.com"]
+        assert [m.email for m in db.app_roles["ENG_10005"]] == ["alice@example.com"]
+
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "jira-software-users"}], "total": 2})
+
+        def members(request: httpx.Request) -> httpx.Response:
+            assert AtlassianApiStub.query(request)["groupname"] == "jira-software-users"
+            return json_response({"values": [{"key": "bob-key"}, {"key": "carol-key"}], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        self._stub_more_roles(jira, reviewer="bob")
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.groups_saved["jira-software-users"]) == ["bob@example.com", "carol@example.com"], (
+            "the group the picker returned is saved with its new members"
+        )
+        assert sorted(m.email for m in db.groups_saved["devs"]) == devs_before, "the group past the limit is left as stored"
+        assert sorted(m.email for m in db.app_roles["ENG_10004"]) == ["bob@example.com", "carol@example.com"], (
+            "a role made only of a returned group is updated"
+        )
+        assert [m.email for m in db.app_roles["ENG_10005"]] == ["bob@example.com"], "a role of users only is updated"
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == developers_before, (
+            "a role that includes the group past the limit keeps its stored members"
+        )
+        assert not any("couldn't sync project roles" in t for t in notes.titles()), (
+            "a group past the limit is not reported as a role-sync failure"
+        )
+
+    async def test_a_cut_off_group_list_that_normalises_to_no_groups_keeps_the_roles_that_need_a_group(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        connector, notes = await make_connector(db, store)
+        await connector.run_sync()
+        before = sorted(m.email for m in db.app_roles["ENG_10002"])
+        assert "alice@example.com" in before
+
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"html": "a row without a name"}], "total": 2})
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == before
+        assert not any("couldn't sync project roles" in t for t in notes.titles())
+
+    async def test_a_group_list_of_unexpected_shape_keeps_the_roles(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = sorted(m.email for m in db.app_roles["ENG_10002"])
+
+        jira.on("GET", f"{API}/groups/picker", json_response(["devs", "jira-software-users"]))
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == before
+
+    async def test_a_group_that_fails_to_process_keeps_the_roles_that_include_it(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = sorted(m.email for m in db.app_roles["ENG_10002"])
+        devs_before = sorted(m.email for m in db.groups_saved["devs"])
+
+        def members(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request)["groupname"] == "devs":
+                return json_response({"values": [{"key": ["not", "a", "key"]}], "isLast": True})
+            return json_response({"values": [{"key": "bob-key"}], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == before
+        assert sorted(m.email for m in db.groups_saved["devs"]) == devs_before, "the group is not saved again"
+
+    async def test_a_group_missing_from_the_list_does_not_hold_back_the_role(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role/10002", {"name": "Developers", "actors": [
+            {"type": "atlassian-group-role-actor", "name": "devs"},
+            {"type": "atlassian-group-role-actor", "name": "retired-team"},
+        ]})
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert "alice@example.com" in {m.email for m in db.app_roles["ENG_10002"]}
 
     async def test_a_failed_role_keeps_the_others_and_warns(self, jira, db, store, search) -> None:
         stub_site(jira, search)
@@ -901,6 +1066,24 @@ class TestGroupMemberPaging:
         devs_calls = [r for r in jira.calls("GET", f"{API}/group/member") if AtlassianApiStub.query(r)["groupname"] == "devs"]
         assert [AtlassianApiStub.query(r).get("startAt") for r in devs_calls] == ["0", "1"]
         assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "carol@example.com"]
+
+    async def test_a_group_that_disappears_part_way_through_its_members_ends_up_empty(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+
+        def members(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q["groupname"] != "devs":
+                return json_response({"values": [], "isLast": True})
+            if q.get("startAt", "0") == "0":
+                return json_response({"values": [{"key": "alice-key"}], "isLast": False})
+            return json_response({"errorMessages": ["no group"]}, status=404)
+
+        jira.on("GET", f"{API}/group/member", members)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.groups_saved["devs"] == [], "a deleted group keeps no members"
 
 
 class TestDirectoryEdgeCases:

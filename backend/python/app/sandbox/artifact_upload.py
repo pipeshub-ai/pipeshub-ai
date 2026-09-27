@@ -15,7 +15,7 @@ from typing import Any, Optional
 from app.config.constants.arangodb import Connectors
 from app.models.entities import ArtifactType
 from app.sandbox.models import ArtifactOutput, ExecutionResult
-from app.utils.conversation_tasks import register_task
+from app.utils.conversation_tasks import _rows_to_csv_bytes, register_task
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ async def create_artifact_record(
     conversation_id: str,
     connector_name: Connectors = Connectors.CODING_SANDBOX,
     source_tool: str | None = None,
+    content_hash: str | None = None,
 ) -> str:
     """Create an ArtifactRecord in ArangoDB with permission edges, for a
     blob the caller already uploaded elsewhere (e.g. `database_sandbox.py`'s
@@ -86,12 +87,103 @@ async def create_artifact_record(
         conversation_id=conversation_id,
         connector_name=connector_name,
         source_tool=source_tool,
+        content_hash=content_hash,
     )
     logger.info(
         "Created ArtifactRecord %s for document %s (user=%s, conversation=%s)",
         metadata.artifact_id, document_id, user_id, conversation_id,
     )
     return metadata.artifact_id
+
+
+async def save_query_result_csv(
+    *,
+    blob_store: Any,
+    graph_provider: Any,
+    org_id: str,
+    user_id: str | None,
+    conversation_id: str,
+    columns: list[str],
+    rows: list[tuple],
+    file_name: str,
+    source_tool: str,
+) -> dict[str, Any] | None:
+    """Store a SQL tool's full result as a CSV artifact record of the conversation.
+
+    With a user and graph, this writes what `VersionManager.create` writes —
+    a version-enabled blob plus the record/artifact/OWNER-edge triple — so the
+    CSV is downloaded through the permission-checked record stream, follows the
+    conversation when it is shared, and can take new versions like any other
+    artifact. It skips the registry's size cap on purpose: a query export is
+    not a sandbox artifact. Without them it falls back to an unregistered
+    upload, which only cloud storage can link to (by signed URL).
+
+    An export left with neither a record nor a signed URL counts as failed.
+
+    Returns a conversation-task result (``{"type": "artifacts", ...}``), or
+    ``None`` on failure.
+    """
+    from app.services.artifact_registry.versioning import compute_content_hash
+
+    try:
+        csv_bytes = _rows_to_csv_bytes(columns, rows)
+        registrable = bool(user_id and graph_provider)
+        if registrable:
+            upload_info = await blob_store.save_versioned_artifact_to_storage(
+                org_id=org_id,
+                conversation_id=conversation_id,
+                file_name=file_name,
+                file_bytes=csv_bytes,
+                content_type="text/csv",
+            )
+        else:
+            upload_info = await blob_store.save_conversation_file_to_storage(
+                org_id=org_id,
+                conversation_id=conversation_id,
+                file_name=file_name,
+                file_bytes=csv_bytes,
+            )
+        entry: dict[str, Any] = {
+            **upload_info,
+            "mimeType": "text/csv",
+            "sizeBytes": len(csv_bytes),
+            "artifactType": infer_artifact_type("text/csv").value,
+        }
+        document_id = upload_info.get("documentId")
+        if user_id and graph_provider and document_id:
+            try:
+                entry["recordId"] = await create_artifact_record(
+                    graph_provider=graph_provider,
+                    document_id=document_id,
+                    file_name=file_name,
+                    mime_type="text/csv",
+                    size_bytes=len(csv_bytes),
+                    org_id=org_id,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    connector_name=Connectors.DATABASE_SANDBOX,
+                    source_tool=source_tool,
+                    content_hash=compute_content_hash(csv_bytes),
+                )
+                entry["version"] = 1
+            except Exception:
+                logger.exception("Failed to create ArtifactRecord for CSV export %s", file_name)
+        # Without a record or a signed URL nobody can download it; storage itself
+        # has no user-facing route, so report the export as failed.
+        if not entry.get("recordId") and not entry.get("signedUrl"):
+            logger.warning(
+                "CSV export %s for conversation %s has no downloadable link; dropping it",
+                file_name, conversation_id,
+            )
+            return None
+        logger.info(
+            "CSV export %s saved for conversation %s (%d rows)",
+            file_name, conversation_id, len(rows),
+        )
+        return {"type": "artifacts", "artifacts": [entry]}
+    except Exception:
+        logger.exception("CSV export failed for conversation %s", conversation_id)
+        return None
 
 
 async def upload_bytes_artifact(

@@ -524,7 +524,7 @@
       "citation_metadata": null,
       "code_metadata": null,
       "comments": [],
-      "data": "class Handler:\n    def __init__(self, settings: Settings) -&gt; None:\n        self.settings = settings",
+      "data": "class Handler:\n    def __init__(self, settings: Settings) -> None:\n        self.settings = settings",
       "file_metadata": null,
       "format": "markdown",
       "image_metadata": null,
@@ -561,7 +561,7 @@
         "start_line": null
       },
       "comments": [],
-      "data": "def handle(self, payload: dict) -&gt; dict:\n    if not isinstance(payload, dict):\n        raise TypeError(\"payload must be a dict\")\n    return {\"ok\": True, \"echo\": payload, \"env\": self.settings.env}",
+      "data": "def handle(self, payload: dict) -> dict:\n    if not isinstance(payload, dict):\n        raise TypeError(\"payload must be a dict\")\n    return {\"ok\": True, \"echo\": payload, \"env\": self.settings.env}",
       "file_metadata": null,
       "format": "code",
       "image_metadata": null,
@@ -648,7 +648,7 @@
         "start_line": null
       },
       "comments": [],
-      "data": " def handle(self, payload: dict) -&gt; dict:",
+      "data": " def handle(self, payload: dict) -> dict:",
       "file_metadata": null,
       "format": "code",
       "image_metadata": null,

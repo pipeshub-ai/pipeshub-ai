@@ -148,19 +148,11 @@ _USER_VISIBLE = [
 ]
 
 
-_KB_APPS = frozenset({"kb-hr", "kb-finance"})
-
-KB_SEARCH_GAP = pytest.mark.xfail(
-    strict=True,
-    reason="graph providers null connectorId on KB records before the connector filter",
-)
-
-
-def _project_like_current_providers(connector_id: str, node: dict[str, Any]) -> dict[str, Any]:
-    """Mirror both graph providers' current search projection, which sets
-    connectorId to null on knowledge-base records before the connector filter."""
-    # When the providers stop nulling connectorId, change this helper and remove KB_SEARCH_GAP.
-    return {**node, "connectorId": None if connector_id in _KB_APPS else connector_id}
+def _project_like_providers(connector_id: str, node: dict[str, Any]) -> dict[str, Any]:
+    """Mirror both graph providers' search projection, which keeps each
+    record's own connectorId (a knowledge base's id for its files) for the
+    connector filter."""
+    return {**node, "connectorId": connector_id}
 
 
 def _passes_connector_filter(node: dict[str, Any], connector_ids: list[str]) -> bool:
@@ -174,7 +166,7 @@ def _provider_search(
 ) -> dict[str, Any]:
     # The connector filter runs on the projection, before skip/limit, and only
     # when the list is non-empty.
-    projected = [_project_like_current_providers(cid, node) for cid, node in _USER_VISIBLE]
+    projected = [_project_like_providers(cid, node) for cid, node in _USER_VISIBLE]
     matches = [n for n in projected if not connector_ids or _passes_connector_filter(n, connector_ids)]
     return {"nodes": matches[skip:skip + limit], "total": len(matches)}
 
@@ -198,7 +190,6 @@ class TestSearchStaysInsideTheAgentsSources:
         assert not _item_ids(payload) & other_sources
         assert _search_kwargs(graph)["connector_ids"] == ["kb-hr"]
 
-    @KB_SEARCH_GAP
     async def test_kb_only_agent_finds_its_kb_files(self, graph: MagicMock) -> None:
         graph.get_knowledge_hub_search.side_effect = _provider_search
         _, payload = await KnowledgeHub(_state(graph, apps=[], kb=["kb-hr"])).list_files(query="budget")
@@ -211,7 +202,6 @@ class TestSearchStaysInsideTheAgentsSources:
         assert _item_ids(payload) <= {"jira-1", "hr-1", "hr-2"}
         assert "jira-1" in _item_ids(payload)
 
-    @KB_SEARCH_GAP
     async def test_mixed_agent_finds_its_kb_files_too(self, graph: MagicMock) -> None:
         graph.get_knowledge_hub_search.side_effect = _provider_search
         _, payload = await KnowledgeHub(_state(graph, apps=["app-jira"], kb=["kb-hr"])).list_files(query="budget")

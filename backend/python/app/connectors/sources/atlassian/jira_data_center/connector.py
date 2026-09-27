@@ -3,12 +3,13 @@
 
 import asyncio
 import base64
+import json
 import re
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
@@ -96,6 +97,8 @@ from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
 )
+from app.sources.client.http.http_response import HTTPResponse
+from app.sources.client.http.http_retry import call_with_retry
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
@@ -105,6 +108,25 @@ from app.utils.streaming import create_stream_record_response
 # Pagination/constants
 DEFAULT_MAX_RESULTS: int = 50
 BATCH_PROCESSING_SIZE: int = 100
+# How many runs an issue that fails to process holds its project's checkpoint
+# before it is given up on, so one broken issue can't stop a project for good.
+MAX_FAILED_ISSUE_ATTEMPTS: int = 5
+# A given-up issue is remembered while the search can still return it: the search
+# re-reads about a minute before the checkpoint, so a day is ample.
+GIVEN_UP_ISSUE_MEMORY_MS: int = 24 * 60 * 60 * 1000
+
+
+def _stored_map(value: object) -> dict[str, Any]:
+    """A map kept in a sync point as JSON text (graph stores such as Neo4j can't hold nested maps)."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 USER_PAGE_SIZE: int = 50
 # /user/list supports up to 2000; use a moderate page to cut round-trips vs USER_PAGE_SIZE.
 USER_LIST_PAGE_SIZE: int = 100
@@ -136,6 +158,24 @@ ANCESTOR_STUB_FIELDS: list[str] = [
     "project", "parent", "created", "updated",
     "creator", "reporter", "assignee",
 ]
+
+
+class GroupPickerPage(NamedTuple):
+    """One ``/groups/picker`` answer. ``cut_off`` when Jira matched more groups than it returned."""
+
+    groups: list[dict[str, Any]]
+    cut_off: bool = False
+
+
+class GroupMemberships(NamedTuple):
+    """Group id/name -> members for role resolution. None marks a group whose members are unknown.
+
+    ``cut_off`` when the group list stopped at the picker limit: a group missing from
+    ``members`` may then exist past it, so its members are unknown too.
+    """
+
+    members: dict[str, Optional[list[AppUser]]]
+    cut_off: bool = False
 
 
 def _normalize_jira_dc_group_row(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -376,6 +416,12 @@ class JiraDataCenterConnector(BaseConnector):
         self._parent_link_field_id: str | None = None
         # Issue key -> numeric id; cleared at start of each project sync
         self._issue_key_to_id_cache: dict[str, str] = {}
+        # Issues that failed to process in the project being synced: attempts so far
+        # (from the checkpoint) and the ones this run holds, id -> (attempts, updated ms).
+        self._failed_issue_attempts_before: dict[str, int] = {}
+        self._held_issues: dict[str, tuple[int, int | None]] = {}
+        # Issues given up on, id -> the ``updated`` value seen then; skipped until it changes.
+        self._given_up_issues: dict[str, str] = {}
 
     def _notification_title(self, event: str) -> str:
         return f"{self.connector_instance_name or 'Jira Data Center'} connector {event}"
@@ -627,7 +673,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
 
             # Fetch and sync user groups (returns mapping for role resolution)
-            groups_members_map = await self._sync_user_groups(jira_users)
+            group_memberships = await self._sync_user_groups(jira_users)
 
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
@@ -656,7 +702,18 @@ class JiraDataCenterConnector(BaseConnector):
 
             # Sync project roles BEFORE RecordGroups
             project_keys_for_roles = [proj.short_name for proj, _ in projects]
-            await self._sync_project_roles(project_keys_for_roles, jira_users, groups_members_map)
+            if group_memberships is None:
+                # A role saved without a group's members would take their access away.
+                self.logger.warning(
+                    "Keeping the stored members of every project role: the group list could not be read in full"
+                )
+            else:
+                await self._sync_project_roles(
+                    project_keys_for_roles,
+                    jira_users,
+                    group_memberships.members,
+                    groups_cut_off=group_memberships.cut_off,
+                )
 
             # Sync project lead roles
             await self._sync_project_lead_roles(raw_projects, jira_users)
@@ -764,7 +821,9 @@ class JiraDataCenterConnector(BaseConnector):
         self,
         project_key: str,
         last_sync_time: Optional[int] = None,
-        last_issue_updated: Optional[int] = None
+        last_issue_updated: Optional[int] = None,
+        failed_issue_attempts: dict[str, int] | None = None,
+        given_up_issues: dict[str, str] | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -773,6 +832,8 @@ class JiraDataCenterConnector(BaseConnector):
             project_key: Project key (e.g., "PROJ")
             last_sync_time: Timestamp when checkpoint was updated (metadata only)
             last_issue_updated: Updated timestamp of last processed issue (used for resume AND next incremental sync)
+            failed_issue_attempts: Issue id -> runs it has failed to process, for issues holding the checkpoint
+            given_up_issues: Issue id -> updated value when it was given up on, for issues skipped until they change
         """
         sync_point_key = f"project_{project_key}"
 
@@ -783,6 +844,11 @@ class JiraDataCenterConnector(BaseConnector):
             "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
             "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated")
         }
+        # Written even when empty: Neo4j merges sync point fields, so an omitted field would keep its old value.
+        for field, value in (("failed_issue_attempts", failed_issue_attempts), ("given_up_issues", given_up_issues)):
+            stored = value if value is not None else _stored_map(existing.get(field))
+            if stored or existing.get(field):
+                sync_point_data[field] = json.dumps(stored, sort_keys=True)
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
@@ -1535,7 +1601,7 @@ class JiraDataCenterConnector(BaseConnector):
         project_key: str,
         status: int,
         stage: str,
-    ) -> list[Permission]:
+    ) -> Optional[list[Permission]]:
         """Build a single-user BROWSE permission for the configuring user when
         the permission-scheme endpoints return 401/403 for this project.
 
@@ -1568,12 +1634,13 @@ class JiraDataCenterConnector(BaseConnector):
                 type=PermissionType.READ,
             )]
 
+        # A 403 doesn't say the project grants no one; saving [] would replace its stored access.
         self.logger.warning(
             "⚠️ %s for %s returned %s and no configuring user email resolved — "
-            "project will be indexed with no BROWSE permissions.",
+            "keeping the project's stored access.",
             stage, project_key, status,
         )
-        return []
+        return None
 
     async def _fetch_project_permission_scheme(
         self,
@@ -1600,8 +1667,9 @@ class JiraDataCenterConnector(BaseConnector):
         - sd.customer.portal.only: JSM portal customers (external users)
         - groupCustomField/userCustomField: Dynamic permissions based on issue fields
 
-        Returns None when the scheme could not be read for a reason other than 401/403,
-        so the caller keeps the project's stored access instead of replacing it.
+        Returns None when the scheme could not be read (on a 401/403, only when the
+        configuring user's email can't be resolved for the fallback grant), so the caller
+        keeps the project's stored access instead of replacing it.
         """
         permissions: list[Permission] = []
 
@@ -1839,20 +1907,26 @@ class JiraDataCenterConnector(BaseConnector):
             ),
         )
 
-    async def _sync_user_groups(self, jira_users: list[AppUser]) -> dict[str, Optional[list[AppUser]]]:
+    async def _sync_user_groups(self, jira_users: list[AppUser]) -> Optional[GroupMemberships]:
         """
-        Sync user groups and return a mapping of group_id/name -> list of AppUser members.
-        This mapping is used to resolve group members for project roles. A group whose
-        members could not be read maps to None and is not saved.
+        Sync user groups and return their members, for resolving project roles.
+
+        A group whose members could not be read maps to None and is not saved. Returns
+        None when the group list itself could not be read, so roles can't be resolved
+        this run. A list cut off at the picker limit still saves the groups it holds
+        (saving only upserts those groups, so the ones past the limit keep what is
+        stored) and comes back marked ``cut_off``.
         """
         try:
             self.logger.info("🚀 Starting Jira user group synchronization")
 
-            # Fetch all groups
-            groups = await self._fetch_groups()
+            page = await self._fetch_groups()
+            if page is None:
+                return None
+            groups, cut_off = page
             if not groups:
                 self.logger.info("ℹ️ No groups found in Jira")
-                return {}
+                return GroupMemberships({}, cut_off)
 
             self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
 
@@ -1927,6 +2001,10 @@ class JiraDataCenterConnector(BaseConnector):
 
                 except Exception as group_error:
                     self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
+                    # Unknown members, not no members: roles that include this group keep what is stored.
+                    for key in (group.get("groupId"), group.get("name")):
+                        if key:
+                            groups_members_map[key] = None
                     continue
 
             # Save all groups in one batch
@@ -1935,15 +2013,21 @@ class JiraDataCenterConnector(BaseConnector):
             else:
                 self.logger.info("ℹ️ No groups with valid members to sync")
 
-            return groups_members_map
+            return GroupMemberships(groups_members_map, cut_off)
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing user groups: {e}")
             await self._notify_group_sync_failed()
-            return {}
+            return None
 
-    async def _fetch_groups(self) -> list[dict[str, Any]]:
-        """List DC groups via ``GET /rest/api/2/groups/picker?query=&maxResults=1000``."""
+    async def _fetch_groups(self) -> Optional[GroupPickerPage]:
+        """List DC groups via ``GET /rest/api/2/groups/picker?query=&maxResults=1000``.
+
+        Returns None when the list could not be read (an error status, an unexpected
+        response shape or a network error), so callers don't mistake it for "no groups".
+        The picker has no offset, so when Jira matched more groups than it returned the
+        page is marked ``cut_off``: the groups past the limit can't be read at all.
+        """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
@@ -1962,15 +2046,26 @@ class JiraDataCenterConnector(BaseConnector):
                 )
                 if response.status == HttpStatusCode.FORBIDDEN.value:
                     await self._notify_group_sync_failed()
-                return []
+                return None
 
             payload = response.json() or {}
             if not isinstance(payload, dict):
-                return []
+                return None
 
             raw_groups = payload.get("groups") or []
             if not isinstance(raw_groups, list):
-                return []
+                return None
+
+            total = payload.get("total")
+            cut_off = isinstance(total, int) and not isinstance(total, bool) and total > len(raw_groups)
+            if cut_off:
+                self.logger.warning(
+                    "More than %s groups (Jira reports %s): roles that include groups past "
+                    "the first %s were left unchanged.",
+                    len(raw_groups),
+                    total,
+                    len(raw_groups),
+                )
 
             groups = [
                 norm for row in raw_groups
@@ -1982,11 +2077,11 @@ class JiraDataCenterConnector(BaseConnector):
                 len(groups),
                 payload.get("total"),
             )
-            return groups
+            return GroupPickerPage(groups, cut_off)
 
         except Exception as e:
             self.logger.error("❌ Error fetching groups via /groups/picker: %s", e)
-            return []
+            return None
 
     async def _fetch_group_members(self, group_id: str, group_name: str) -> Optional[list[str]]:
         """
@@ -2019,9 +2114,9 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
                 if response.status == HttpStatusCode.NOT_FOUND.value:
-                    # The group no longer exists, so it has no members to keep.
+                    # The group no longer exists, so it has no members to keep (not even earlier pages).
                     self.logger.warning("Group %s was not found while reading its members", group_name)
-                    return member_keys
+                    return []
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(
@@ -2116,7 +2211,9 @@ class JiraDataCenterConnector(BaseConnector):
         self,
         project_keys: list[str],
         jira_users: list[AppUser],
-        groups_members_map: dict[str, Optional[list[AppUser]]] = None
+        groups_members_map: dict[str, Optional[list[AppUser]]] = None,
+        *,
+        groups_cut_off: bool = False,
     ) -> None:
         """
         Sync project roles as AppRole entities using DC
@@ -2124,6 +2221,8 @@ class JiraDataCenterConnector(BaseConnector):
 
         groups_members_map: Mapping of group_id/name -> list of AppUser members (from _sync_user_groups);
             None marks a group whose members could not be read.
+        groups_cut_off: The group list stopped at the picker limit, so a group missing
+            from the map may exist past it; a role that includes one keeps its stored members.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -2213,6 +2312,7 @@ class JiraDataCenterConnector(BaseConnector):
                         # Step 3: Extract member users from actors
                         member_users: list[AppUser] = []
                         unreadable_group: Optional[str] = None
+                        group_past_cap: str | None = None
 
                         for actor in actors:
                             actor_type = actor.get("type", "")
@@ -2248,6 +2348,9 @@ class JiraDataCenterConnector(BaseConnector):
                                     group_members = groups_members_map[group_id]
                                 elif group_name and group_name in groups_members_map:
                                     group_members = groups_members_map[group_name]
+                                elif groups_cut_off:
+                                    group_past_cap = group_name or group_id
+                                    break
                                 else:
                                     self.logger.debug(
                                         f"  {project_key}/{role_name}: Group actor '{group_name}' "
@@ -2264,6 +2367,15 @@ class JiraDataCenterConnector(BaseConnector):
                                 )
                                 # Add all group members directly to role members (USER->ROLE, not GROUP->ROLE)
                                 member_users.extend(group_members)
+
+                        if group_past_cap:
+                            # Past the picker limit on every sync, so not a failure to report;
+                            # _fetch_groups already warns about the limit once per run.
+                            self.logger.info(
+                                f"  {project_key}: Keeping the stored members of role {role_name}: "
+                                f"group '{group_past_cap}' is past the first groups Jira lists"
+                            )
+                            continue
 
                         if unreadable_group:
                             # Saving the role now would drop that group's members from it.
@@ -2602,6 +2714,18 @@ class JiraDataCenterConnector(BaseConnector):
 
         # Per-project sync: reset Epic Link key→id cache
         self._issue_key_to_id_cache.clear()
+        self._failed_issue_attempts_before = _stored_map((project_sync_data or {}).get("failed_issue_attempts"))
+        self._held_issues = {}
+        self._given_up_issues = _stored_map((project_sync_data or {}).get("given_up_issues"))
+
+        def checkpoint_at(last_seen: int | None) -> int | None:
+            # A failed issue keeps the checkpoint at its own updated time so the next search finds it again.
+            held = [updated for _, updated in self._held_issues.values()]
+            if not held:
+                return last_seen
+            if None in held:
+                return resume_from_timestamp
+            return min(held + ([last_seen] if last_seen else []))
 
         # Fetch and process issues in batches
         total_issues_processed = 0
@@ -2633,7 +2757,9 @@ class JiraDataCenterConnector(BaseConnector):
                     await self._update_project_sync_checkpoint(
                         project_key,
                         last_sync_time=current_time,
-                        last_issue_updated=last_issue_updated_in_batch
+                        last_issue_updated=checkpoint_at(last_issue_updated_in_batch),
+                        failed_issue_attempts=self._held_issue_attempts(),
+                        given_up_issues=self._given_up_issues_to_keep(checkpoint_at(last_issue_updated_in_batch)),
                     )
                 continue
 
@@ -2649,7 +2775,9 @@ class JiraDataCenterConnector(BaseConnector):
                 await self._update_project_sync_checkpoint(
                     project_key,
                     last_sync_time=current_time,
-                    last_issue_updated=last_issue_updated_in_batch
+                    last_issue_updated=checkpoint_at(last_issue_updated_in_batch),
+                    failed_issue_attempts=self._held_issue_attempts(),
+                    given_up_issues=self._given_up_issues_to_keep(checkpoint_at(last_issue_updated_in_batch)),
                 )
 
         # Final checkpoint update if we processed any issues (ensures last_sync_time stays close to last_issue_updated)
@@ -2658,7 +2786,9 @@ class JiraDataCenterConnector(BaseConnector):
             await self._update_project_sync_checkpoint(
                 project_key,
                 last_sync_time=current_time,
-                last_issue_updated=last_issue_updated_in_batch
+                last_issue_updated=checkpoint_at(last_issue_updated_in_batch),
+                failed_issue_attempts=self._held_issue_attempts(),
+                given_up_issues=self._given_up_issues_to_keep(checkpoint_at(last_issue_updated_in_batch)),
             )
 
         if total_issues_processed == 0:
@@ -3577,6 +3707,52 @@ class JiraDataCenterConnector(BaseConnector):
             "updated_at": updated_at,
         }
 
+    def _held_issue_attempts(self) -> dict[str, int]:
+        return {issue_id: attempts for issue_id, (attempts, _) in self._held_issues.items()}
+
+    def _given_up_issues_to_keep(self, checkpoint_ms: int | None) -> dict[str, str]:
+        """Given-up issues the search can still return; older ones are forgotten so the record stays small."""
+        if not checkpoint_ms:
+            return dict(self._given_up_issues)
+        return {
+            issue_id: updated
+            for issue_id, updated in self._given_up_issues.items()
+            if self._parse_jira_timestamp(updated) >= checkpoint_ms - GIVEN_UP_ISSUE_MEMORY_MS
+        }
+
+    def _is_given_up_issue(self, issue: dict[str, Any]) -> bool:
+        """True for an issue given up on that hasn't changed since; a changed one is tried afresh."""
+        issue_id = str(issue.get("id") or "")
+        if issue_id not in self._given_up_issues:
+            return False
+        if self._given_up_issues[issue_id] == (issue.get("fields") or {}).get("updated"):
+            return True
+        del self._given_up_issues[issue_id]
+        return False
+
+    def _note_failed_issue(self, issue: dict[str, Any], error: Exception) -> None:
+        """Hold the checkpoint for an issue that failed to process, until it has failed too many runs."""
+        issue_id = str(issue.get("id") or "") if isinstance(issue, dict) else ""
+        issue_key = (issue.get("key") if isinstance(issue, dict) else None) or issue_id or "unknown"
+        attempts = self._failed_issue_attempts_before.get(issue_id, 0) + 1
+        if attempts >= MAX_FAILED_ISSUE_ATTEMPTS:
+            self.logger.error(
+                f"❌ Issue {issue_key} still could not be processed after {attempts} syncs; moving on without it. "
+                f"It is read again when it next changes. Last error: {error}"
+            )
+            self._given_up_issues[issue_id] = str((issue.get("fields") or {}).get("updated") or "")
+            return
+        try:
+            updated: int | None = self._parse_jira_timestamp((issue.get("fields") or {}).get("updated")) or None
+        except Exception:
+            updated = None
+        self._held_issues[issue_id] = (attempts, updated)
+        self.logger.error(
+            f"❌ Failed to process issue {issue_key}; it is read again next sync "
+            f"(attempt {attempts} of {MAX_FAILED_ISSUE_ATTEMPTS}): {error}",
+            exc_info=True,
+        )
+
     async def _build_issue_records(
         self,
         issues: list[dict[str, Any]],
@@ -3602,137 +3778,143 @@ class JiraDataCenterConnector(BaseConnector):
         user_by_account_id = {user.source_user_id: user for user in users if user.source_user_id}
 
         for issue in issues:
-            issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
-
-            issue_id = issue_data["issue_id"]
-            issue_key = issue_data["issue_key"]
-            issue_name = issue_data["issue_name"]
-            issue_type = issue_data["issue_type"]
-            parent_external_id = issue_data["parent_external_id"]
-            status = issue_data["status"]
-            priority = issue_data["priority"]
-            creator_email = issue_data["creator_email"]
-            creator_name = issue_data["creator_name"]
-            reporter_email = issue_data["reporter_email"]
-            reporter_name = issue_data["reporter_name"]
-            assignee_email = issue_data["assignee_email"]
-            assignee_name = issue_data["assignee_name"]
-            created_at = issue_data["created_at"]
-            updated_at = issue_data["updated_at"]
-
-            # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
-            permissions = []
-
-            fields = issue.get("fields", {})
-
-            # Check for existing record (works for both Epics and regular issues)
-            existing_record = await self.data_entities_processor.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_record_id=issue_id
-            )
-
-            record_id = existing_record.id if existing_record else str(uuid4())
-            is_new = existing_record is None
-            # Stub created by _handle_parent_record when a child arrived before this
-            # ancestor was in scope — promote it like a new record so revision/content
-            # replace the placeholder breadcrumb.
-            is_placeholder = bool(existing_record and existing_record.is_placeholder)
-
-            # Only increment version if issue content actually changed
-            is_issue_changed = False
-            if is_new or is_placeholder:
-                version = 0
-                is_issue_changed = True
-                self.logger.debug(f"🆕 New issue found: {issue_key} (external_id: {issue_id})")
-            elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
-                version = existing_record.version + 1
-                is_issue_changed = True
-                self.logger.debug(f"📝 Issue {issue_key} updated, incrementing version to {version}")
-            else:
-                version = existing_record.version if existing_record else 0
-                # Skip unchanged issues silently - no need to log every unchanged issue
-
-            # Skip processing if issue is unchanged, unless this is a full sync
-            # (is_new_project=True means sync points were wiped, so edges need to be
-            # recreated even for unchanged issues; _process_record is idempotent).
-            if not is_issue_changed and not is_new_project:
+            if isinstance(issue, dict) and self._is_given_up_issue(issue):
                 skipped_unchanged_count += 1
                 continue
-
-            # Set parent relationships and record group
-            external_record_group_id = project_id
-            record_group_type = RecordGroupType.PROJECT
-            parent_record_id = None
-            parent_record_type = None
-
-            if parent_external_id:
-                parent_record_id = parent_external_id
-                parent_record_type = RecordType.TICKET
-
-            # Every ticket is a root node
-            issue_record = TicketRecord(
-                id=record_id,
-                org_id=self.data_entities_processor.org_id,
-                priority=priority,
-                status=status,
-                type=issue_type,
-                creator_email=creator_email,
-                creator_name=creator_name,
-                reporter_email=reporter_email,
-                reporter_name=reporter_name,
-                assignee=assignee_name,
-                assignee_email=assignee_email,
-                external_record_id=issue_id,
-                external_revision_id=str(updated_at) if updated_at else None,
-                record_name=issue_name,
-                record_type=RecordType.TICKET,
-                origin=OriginTypes.CONNECTOR,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-                record_group_type=record_group_type,
-                external_record_group_id=external_record_group_id,
-                parent_external_record_id=parent_record_id,
-                parent_record_type=parent_record_type,
-                version=version,
-                mime_type=MimeTypes.BLOCKS.value,
-                weburl=f"{atlassian_domain}/browse/{issue_key}" if atlassian_domain else None,
-                source_created_at=created_at,
-                source_updated_at=updated_at,
-                created_at=created_at,
-                updated_at=updated_at,
-                inherit_permissions=True,
-                preview_renderable=False,
-                is_dependent_node=False,  # Tickets are not dependent
-                parent_node_id=None,  # Tickets have no parent node
-            )
-
-            # Set indexing status based on filters
-            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
-                issue_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-            # Parse issue links and set related_external_records for creating LINKED_TO edges
-            related_external_records = self._parse_issue_links(issue)
-            if related_external_records:
-                issue_record.related_external_records = related_external_records
-                self.logger.debug(f"🔗 Issue {issue_key} has {len(related_external_records)} linked issues")
-
-            all_records.append((issue_record, permissions))
-
-            # Fetch attachments and create FileRecords
             try:
-                attachment_records = await self._fetch_issue_attachments(
-                    issue_id,
-                    issue_key,
-                    fields,
-                    permissions,
-                    external_record_group_id,
-                    record_group_type,
-                    parent_node_id=issue_record.id,
+                issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
+
+                issue_id = issue_data["issue_id"]
+                issue_key = issue_data["issue_key"]
+                issue_name = issue_data["issue_name"]
+                issue_type = issue_data["issue_type"]
+                parent_external_id = issue_data["parent_external_id"]
+                status = issue_data["status"]
+                priority = issue_data["priority"]
+                creator_email = issue_data["creator_email"]
+                creator_name = issue_data["creator_name"]
+                reporter_email = issue_data["reporter_email"]
+                reporter_name = issue_data["reporter_name"]
+                assignee_email = issue_data["assignee_email"]
+                assignee_name = issue_data["assignee_name"]
+                created_at = issue_data["created_at"]
+                updated_at = issue_data["updated_at"]
+
+                # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
+                permissions = []
+
+                fields = issue.get("fields", {})
+
+                # Check for existing record (works for both Epics and regular issues)
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=issue_id
                 )
-                if attachment_records:
-                    all_records.extend(attachment_records)
+
+                record_id = existing_record.id if existing_record else str(uuid4())
+                is_new = existing_record is None
+                # Stub created by _handle_parent_record when a child arrived before this
+                # ancestor was in scope — promote it like a new record so revision/content
+                # replace the placeholder breadcrumb.
+                is_placeholder = bool(existing_record and existing_record.is_placeholder)
+
+                # Only increment version if issue content actually changed
+                is_issue_changed = False
+                if is_new or is_placeholder:
+                    version = 0
+                    is_issue_changed = True
+                    self.logger.debug(f"🆕 New issue found: {issue_key} (external_id: {issue_id})")
+                elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
+                    version = existing_record.version + 1
+                    is_issue_changed = True
+                    self.logger.debug(f"📝 Issue {issue_key} updated, incrementing version to {version}")
+                else:
+                    version = existing_record.version if existing_record else 0
+                    # Skip unchanged issues silently - no need to log every unchanged issue
+
+                # Skip processing if issue is unchanged, unless this is a full sync
+                # (is_new_project=True means sync points were wiped, so edges need to be
+                # recreated even for unchanged issues; _process_record is idempotent).
+                if not is_issue_changed and not is_new_project:
+                    skipped_unchanged_count += 1
+                    continue
+
+                # Set parent relationships and record group
+                external_record_group_id = project_id
+                record_group_type = RecordGroupType.PROJECT
+                parent_record_id = None
+                parent_record_type = None
+
+                if parent_external_id:
+                    parent_record_id = parent_external_id
+                    parent_record_type = RecordType.TICKET
+
+                # Every ticket is a root node
+                issue_record = TicketRecord(
+                    id=record_id,
+                    org_id=self.data_entities_processor.org_id,
+                    priority=priority,
+                    status=status,
+                    type=issue_type,
+                    creator_email=creator_email,
+                    creator_name=creator_name,
+                    reporter_email=reporter_email,
+                    reporter_name=reporter_name,
+                    assignee=assignee_name,
+                    assignee_email=assignee_email,
+                    external_record_id=issue_id,
+                    external_revision_id=str(updated_at) if updated_at else None,
+                    record_name=issue_name,
+                    record_type=RecordType.TICKET,
+                    origin=OriginTypes.CONNECTOR,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    record_group_type=record_group_type,
+                    external_record_group_id=external_record_group_id,
+                    parent_external_record_id=parent_record_id,
+                    parent_record_type=parent_record_type,
+                    version=version,
+                    mime_type=MimeTypes.BLOCKS.value,
+                    weburl=f"{atlassian_domain}/browse/{issue_key}" if atlassian_domain else None,
+                    source_created_at=created_at,
+                    source_updated_at=updated_at,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    inherit_permissions=True,
+                    preview_renderable=False,
+                    is_dependent_node=False,  # Tickets are not dependent
+                    parent_node_id=None,  # Tickets have no parent node
+                )
+
+                # Set indexing status based on filters
+                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
+                    issue_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+                # Parse issue links and set related_external_records for creating LINKED_TO edges
+                related_external_records = self._parse_issue_links(issue)
+                if related_external_records:
+                    issue_record.related_external_records = related_external_records
+                    self.logger.debug(f"🔗 Issue {issue_key} has {len(related_external_records)} linked issues")
+
+                all_records.append((issue_record, permissions))
+
+                # Fetch attachments and create FileRecords
+                try:
+                    attachment_records = await self._fetch_issue_attachments(
+                        issue_id,
+                        issue_key,
+                        fields,
+                        permissions,
+                        external_record_group_id,
+                        record_group_type,
+                        parent_node_id=issue_record.id,
+                    )
+                    if attachment_records:
+                        all_records.extend(attachment_records)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to fetch attachments for issue {issue_key}: {e}")
             except Exception as e:
-                self.logger.error(f"❌ Failed to fetch attachments for issue {issue_key}: {e}")
+                self._note_failed_issue(issue, e)
 
         # Log summary only if there were skipped issues
         if skipped_unchanged_count > 0:
@@ -4200,46 +4382,32 @@ class JiraDataCenterConnector(BaseConnector):
         fields: list[str],
         max_attempts: int = 3,
     ) -> Any:
-        """Search Jira issues, retrying on transient httpx transport errors.
+        """Search Jira issues, retrying transport errors and 429 / 5xx answers with backoff.
 
-        Targeted at stale keep-alive sockets that raise ``RemoteProtocolError``
-        before any HTTP response is received during paginated sync. Replaying the
-        same JQL and ``startAt`` is safe when no response was received — search is
-        read-only and httpx evicts the broken connection on failure.
+        Honours ``Retry-After`` on 429. Replaying the same JQL and ``startAt`` is safe:
+        search is read-only and httpx evicts a broken connection on failure.
         """
-        last_exc: Exception | None = None
-        for attempt in range(max_attempts):
-            try:
-                datasource = await self._get_fresh_datasource()
-                return await datasource.search_issues_post_v2(
-                    jql=jql,
-                    startAt=start_at,
-                    maxResults=max_results,
-                    fields=fields,
-                )
-            except (
-                httpx.RemoteProtocolError,
-                httpx.ReadError,
-                httpx.WriteError,
-                httpx.ConnectError,
-                httpx.PoolTimeout,
-                httpx.ReadTimeout,
-            ) as e:
-                last_exc = e
-                if attempt == max_attempts - 1:
-                    break
-                backoff = 0.5 * (2 ** attempt)  # 0.5s, 1.0s, ...
-                self.logger.warning(
-                    "Transient transport error searching issues for project %s "
-                    "(startAt=%s, attempt %s/%s): %s — retrying in %.1fs",
-                    project_key, start_at, attempt + 1, max_attempts, e, backoff,
-                )
-                await asyncio.sleep(backoff)
+        async def _search() -> HTTPResponse:
+            datasource = await self._get_fresh_datasource()
+            return await datasource.search_issues_post_v2(
+                jql=jql,
+                startAt=start_at,
+                maxResults=max_results,
+                fields=fields,
+            )
 
-        raise Exception(
-            f"Failed to fetch issues for {project_key} (startAt={start_at}) "
-            f"after {max_attempts} attempts: {last_exc}"
-        ) from last_exc
+        try:
+            return await call_with_retry(
+                _search,
+                logger=self.logger,
+                label=f"issue search {project_key} startAt={start_at}",
+                max_attempts=max_attempts,
+            )
+        except httpx.HTTPError as e:
+            raise Exception(
+                f"Failed to fetch issues for {project_key} (startAt={start_at}) "
+                f"after {max_attempts} attempts: {e}"
+            ) from e
 
     async def _get_issue_with_retry(
         self,

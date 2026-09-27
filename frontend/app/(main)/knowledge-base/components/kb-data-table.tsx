@@ -204,7 +204,7 @@ export function KbDataTable({
   if (isRefreshing) {
     return (
       <Flex align="center" justify="center" style={{ flex: 1 }}>
-        <LottieLoader variant="loader" size={32} showLabel label="Refreshing..." />
+        <LottieLoader variant="loader" size={32} showLabel label={t('common.refreshing')} />
       </Flex>
     );
   }
@@ -227,7 +227,7 @@ export function KbDataTable({
         {onRefresh && (
           <Button onClick={onRefresh} variant="soft" size="2">
             <MaterialIcon name="refresh" size={16} />
-            Retry
+            {t('action.tryAgain')}
           </Button>
         )}
       </Flex>
@@ -287,7 +287,7 @@ export function KbDataTable({
               onClick={onCreateFolder}
             >
               <MaterialIcon name="create_new_folder" size={16} />
-              Create Collection
+              {t('dialog.createCollection')}
             </Button>
           )}
         </Flex>
@@ -312,26 +312,26 @@ export function KbDataTable({
             {(hasSearchQuery || hasActiveFilters) && <NotFoundIcon size={56} color="var(--slate-12)" />}
             <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {hasActiveFilters || hasSearchQuery
-                ? 'No results found'
+                ? t('message.noResults')
                 : pageViewMode === 'all-records'
                   ? allRecordsSidebarSelection?.type === 'collection'
-                    ? `${allRecordsSidebarSelection.name} is empty`
-                    : 'No records found'
+                    ? t('kb.namedEmpty', { name: allRecordsSidebarSelection.name })
+                    : t('kb.noRecords')
                   : currentNodeName
-                    ? `${currentNodeName} is empty`
-                    : 'This folder is empty'
+                    ? t('kb.namedEmpty', { name: currentNodeName })
+                    : t('kb.folderEmpty')
               }
             </Text>
             <Text size="2" style={{ color: 'var(--slate-10)' }}>
               {hasSearchQuery
-                ? "Couldn't find what you are searching for. Try searching for something else."
+                ? t('kb.searchEmptyHint')
                 : hasActiveFilters
-                  ? 'Select a different source or adjust your filters'
+                  ? t('kb.adjustFiltersHint')
                   : pageViewMode === 'all-records'
                     ? allRecordsSidebarSelection?.type === 'collection'
-                      ? 'You can add your company files or folders from the Collections'
-                      : 'Select a different source or adjust your filters'
-                    : permissions?.canCreateFolders ? 'Add your files or folders' : ''
+                      ? t('kb.addFromCollectionsHint')
+                      : t('kb.adjustFiltersHint')
+                    : permissions?.canCreateFolders ? t('kb.addFilesHint') : ''
               }
             </Text>
           </Flex>
@@ -348,7 +348,7 @@ export function KbDataTable({
                   onClick={onCreateFolder}
                 >
                   <MaterialIcon name="create_new_folder" size={16} />
-                  Create Folder
+                  {t('kb.createFolder')}
                 </Button>
               )}
               {/* Show Upload if callback is provided and not explicitly denied */}
@@ -363,7 +363,7 @@ export function KbDataTable({
                   onClick={onUpload}
                 >
                   <MaterialIcon name="upload" size={16} />
-                  Upload
+                  {t('action.upload')}
                 </Button>
               )}
             </Flex>
@@ -385,7 +385,7 @@ export function KbDataTable({
                 }}
                 onClick={onGoToCollection}
               >
-                Go to Collections
+                {t('kb.goToCollections')}
               </Button>
             </Flex>
           )}

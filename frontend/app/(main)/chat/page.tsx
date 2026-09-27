@@ -71,6 +71,7 @@ const footerLinkStyle: React.CSSProperties = {
 };
 
 function ChatFooterLinks() {
+  const { t } = useTranslation();
   const stars = useGitHubStars();
 
   return (
@@ -132,7 +133,7 @@ function ChatFooterLinks() {
           style={{ flexShrink: 0 }}
         />
         <span style={{ fontSize: 12, color: 'var(--olive-9)', whiteSpace: 'nowrap' }}>
-          Docs
+          {t('common.docs')}
         </span>
       </a>
     </Flex>
@@ -1417,10 +1418,10 @@ function ChatContent() {
                     <ChatInputWrapper />
                   </Box>
                 )}
-                {showChatInput && !demoHidden && (
+                {showChatInput && (
                   // Shows itself only when it applies, including for a disabled demo
-                  // whose records are still searchable. Not while this admin has it hidden:
-                  // it would say their answers include it.
+                  // whose records are still searchable. Not tied to this admin's own
+                  // switch: others may still show it, and its sample accounts can sign in.
                   <DemoDataRemovalNotice isAdmin={isAdmin} style={{ marginTop: 'var(--space-5)' }} />
                 )}
                 {demoDataActive && showChatInput && !demoHidden && (
@@ -1501,7 +1502,7 @@ function ChatContent() {
             <Box
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize chat and preview panels"
+              aria-label={t('chat.resizePanels')}
               onPointerDown={beginSplitResize}
               style={{
                 width: '8px',

@@ -331,15 +331,6 @@ DELETE {{esbackend}}/api/v1/knowledgeBase/263984c4-104b-4b59-96e8-d20f2f4ecabe
 Authorization: Bearer {{authToken}}
 ```
 
-#### 18. Download Record
-**GET** `/api/v1/document/:recordId/download`
-
-**Example:**
-```bash
-GET {{esbackend}}/api/v1/document/6964abcf41522eb41abd220/download
-Authorization: Bearer {{authToken}}
-```
-
 #### 20. Stream Record Content
 **GET** `/api/v1/knowledgeBase/stream/record/:recordId`
 

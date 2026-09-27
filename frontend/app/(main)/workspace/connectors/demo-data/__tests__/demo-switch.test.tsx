@@ -9,6 +9,8 @@ import { useDemoDataStore } from '../store';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useDemoSwitch } from '../use-demo-switch';
 import { DemoDataSection } from '@/app/(main)/workspace/profile/components/demo-data-section';
+import { DemoDataRemovalNotice } from '../components/demo-data-removal-notice';
+import type { Connector } from '../../types';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -22,15 +24,17 @@ vi.mock('react-i18next', () => ({
     },
   }),
 }));
-vi.mock('../api', () => ({ DemoDataApi: { getStatus: vi.fn(), setInclude: vi.fn() } }));
+vi.mock('../api', () => ({ DemoDataApi: { getStatus: vi.fn(), setInclude: vi.fn(), setEnabledForEveryone: vi.fn() } }));
 vi.mock('../../api', () => ({ ConnectorsApi: { getActiveConnectors: vi.fn(), getConnectorStats: vi.fn() } }));
-vi.mock('@/app/(main)/knowledge-base/api', () => ({ KnowledgeHubApi: { searchAllRecords: vi.fn() } }));
+vi.mock('@/app/(main)/knowledge-base/api', () => ({ KnowledgeHubApi: { searchAllRecords: vi.fn(async () => ({ items: [] })) } }));
+vi.mock('../remove-demo-data', () => ({ findSampleAccounts: vi.fn(async () => []), removeDemoData: vi.fn() }));
 
 const getStatus = vi.mocked(DemoDataApi.getStatus);
 const setInclude = vi.mocked(DemoDataApi.setInclude);
+const setEnabledForEveryone = vi.mocked(DemoDataApi.setEnabledForEveryone);
 
 function status(over: Partial<DemoDataStatus> = {}): DemoDataStatus {
-  return { hasDemo: true, include: true, chosen: null, realData: false, demoConnectorIds: ['demo-1'], ...over };
+  return { hasDemo: true, include: true, chosen: null, realData: false, offForEveryone: false, demoConnectorIds: ['demo-1'], ...over };
 }
 
 beforeEach(() => {
@@ -133,7 +137,7 @@ describe('status races', () => {
 describe('DemoDataSection on the profile page', () => {
   it('is not shown when there is no demo', async () => {
     getStatus.mockResolvedValue(status({ hasDemo: false, include: false, demoConnectorIds: [] }));
-    render(<Theme><DemoDataSection /></Theme>);
+    render(<Theme><DemoDataSection isAdmin={false} /></Theme>);
     await waitFor(() => expect(getStatus).toHaveBeenCalled());
     expect(screen.queryByText(en.workspace.profile.demoData.title)).toBeNull();
   });
@@ -141,7 +145,7 @@ describe('DemoDataSection on the profile page', () => {
   it('switches the demo off for this person', async () => {
     getStatus.mockResolvedValue(status());
     setInclude.mockResolvedValue(status({ include: false, chosen: false }));
-    render(<Theme><DemoDataSection /></Theme>);
+    render(<Theme><DemoDataSection isAdmin={false} /></Theme>);
 
     const toggle = await screen.findByRole('switch', { name: en.workspace.profile.demoData.label });
     expect(toggle.getAttribute('aria-checked')).toBe('true');
@@ -156,10 +160,59 @@ describe('DemoDataSection on the profile page', () => {
   it('goes back to the default', async () => {
     getStatus.mockResolvedValue(status({ include: false, chosen: false }));
     setInclude.mockResolvedValue(status());
-    render(<Theme><DemoDataSection /></Theme>);
+    render(<Theme><DemoDataSection isAdmin={false} /></Theme>);
 
     fireEvent.click(await screen.findByRole('button', { name: en.workspace.profile.demoData.useDefault }));
 
     await waitFor(() => expect(setInclude).toHaveBeenCalledWith(null));
+  });
+});
+
+
+describe('turning the demo off for everyone', () => {
+  it('lets an admin do it from the profile page, and a member cannot', async () => {
+    getStatus.mockResolvedValue(status());
+    setEnabledForEveryone.mockResolvedValue(status({ include: false, offForEveryone: true }));
+    const { unmount } = render(<Theme><DemoDataSection isAdmin={false} /></Theme>);
+    await screen.findByRole('switch', { name: en.workspace.profile.demoData.label });
+    expect(screen.queryByRole('switch', { name: en.workspace.profile.demoData.everyoneLabel })).toBeNull();
+    unmount();
+
+    render(<Theme><DemoDataSection isAdmin /></Theme>);
+    fireEvent.click(await screen.findByRole('switch', { name: en.workspace.profile.demoData.everyoneLabel }));
+
+    await waitFor(() => expect(setEnabledForEveryone).toHaveBeenCalledWith(false));
+    const toast = await waitFor(() => {
+      const found = useToastStore.getState().toasts.find((t) => t.title === en.demoData.everyone.offTitle);
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    setEnabledForEveryone.mockResolvedValue(status());
+    toast.action?.onClick?.();
+    await waitFor(() => expect(setEnabledForEveryone).toHaveBeenLastCalledWith(true));
+  });
+
+  it('shows everyone else that an admin turned it off, and their switch cannot override it', async () => {
+    getStatus.mockResolvedValue(status({ include: false, chosen: true, offForEveryone: true }));
+    render(<Theme><DemoDataSection isAdmin={false} /></Theme>);
+
+    const toggle = await screen.findByRole('switch', { name: en.workspace.profile.demoData.label });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(toggle.hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText(en.workspace.profile.demoData.offForEveryone)).toBeTruthy();
+  });
+
+  it('is the first choice in the admin notice once real data arrives, and the notice goes once it is off', async () => {
+    const demo = { _key: 'demo-1', type: 'Demo', name: 'Acme', isActive: true } as Connector;
+    useDemoDataStore.setState({ demoConnectors: [demo], realDataIndexed: true });
+    getStatus.mockResolvedValue(status({ include: true, realData: true }));
+    setEnabledForEveryone.mockResolvedValue(status({ include: false, offForEveryone: true }));
+    render(<Theme><DemoDataRemovalNotice isAdmin /></Theme>);
+
+    fireEvent.click(await screen.findByRole('button', { name: en.demoData.removalNotice.turnOff }));
+
+    await waitFor(() => expect(setEnabledForEveryone).toHaveBeenCalledWith(false));
+    await waitFor(() => expect(screen.queryByText(en.demoData.removalNotice.title)).toBeNull());
+    expect(screen.queryByRole('button', { name: en.demoData.removalNotice.remove })).toBeNull();
   });
 });

@@ -1191,10 +1191,14 @@ class OneDriveConnector(BaseConnector):
 
                 # Handle ADD/UPDATE
                 self.logger.info(f"[DELTA] ✅ ADD/UPDATE Group: {getattr(group, 'display_name', 'N/A')} ({group.id})")
-                success = await self.handle_group_create(group)
-                if not success:
+                saved = await self.handle_group_create(group)
+                if saved is False:
                     self.logger.error(f"❌ Error handling group create for {group.id}")
                     unapplied.append(group.id)
+                if saved:
+                    # The saved list replaced the group's stored members and already leaves
+                    # out anyone removed here, so there is nothing left to remove.
+                    continue
 
                 # Applied even when the member read above failed: a removal listed here needs
                 # no other read, and is lost for good once the delta link moves past this page.
@@ -1298,15 +1302,15 @@ class OneDriveConnector(BaseConnector):
             self.logger.error(f"❌ Error removing member {email} from group {group_id}")
         return bool(success)
 
-    async def handle_group_create(self, group: Group) -> bool:
+    async def handle_group_create(self, group: Group) -> bool | None:
         """
         Handles the creation or update of a single user group.
         Fetches members and sends to data processor.
 
         Returns:
-            False if the change should be tried again later. A group whose members
-            can never be read (403/404) is skipped, keeping its stored members, and
-            counts as handled.
+            True once the group's current members are saved. None when they can never
+            be read (403/404): the group keeps its stored members and counts as handled.
+            False if the change should be tried again later.
         """
         try:
             await self._save_group(group)
@@ -1315,7 +1319,7 @@ class OneDriveConnector(BaseConnector):
         except GraphReadFailedError as e:
             if e.permanent:
                 self.logger.warning(f"Skipping group {group.id}: {e}; it keeps its stored members")
-                return True
+                return None
             self.logger.error(f"❌ Error handling group create for {group.id}: {e}")
             return False
         except Exception as e:

@@ -8,6 +8,7 @@ import {
   SALT_ROUNDS,
   SIGN_IN_SESSION_EXPIRED,
   OAUTH_SIGN_IN_FAILED,
+  SAML_HAS_ITS_OWN_SIGN_IN,
   EMAIL_MISMATCH,
   OTP_SEND_FAILED,
   OTP_ALREADY_USED,
@@ -2082,7 +2083,7 @@ describe('UserAccountController', () => {
       }
     });
 
-    it('should handle SAML SSO method (pass-through)', async () => {
+    it('refuses SAML and points to the SAML sign-in route', async () => {
       const req: any = {
         body: {
           method: 'samlSso',
@@ -2102,10 +2103,10 @@ describe('UserAccountController', () => {
 
       await controller.authenticate(req, res, next);
 
-      // SAML SSO now does an early return without writing any response
-      expect(res.status.called).to.be.false;
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0].message).to.equal(SAML_HAS_ITS_OWN_SIGN_IN);
       expect(res.json.called).to.be.false;
-      expect(next.called).to.be.false;
     });
   });
 

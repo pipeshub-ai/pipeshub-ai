@@ -136,6 +136,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 org_id=state.get("org_id"),
                 conversation_id=state.get("conversation_id"),
                 blob_store=state.get("blob_store"),
+                user_id=state.get("user_id"),
             )
             setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")
             app_name, tool_name = split_original_tool_name(execute_query_tool)

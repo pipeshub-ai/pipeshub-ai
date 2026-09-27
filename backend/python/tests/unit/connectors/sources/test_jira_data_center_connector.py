@@ -17,6 +17,7 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.jira_data_center.connector import (
+    GroupMemberships,
     JiraDataCenterConnector,
     _normalize_jira_dc_group_row,
 )
@@ -431,7 +432,7 @@ class TestJiraDataCenterRunSyncSmoke:
         conn.data_source = MagicMock()
         conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
         conn._fetch_users = AsyncMock(return_value=[])
-        conn._sync_user_groups = AsyncMock(return_value={})
+        conn._sync_user_groups = AsyncMock(return_value=GroupMemberships({}))
         conn._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
         conn._fetch_projects = AsyncMock(return_value=([], []))
         conn._sync_all_project_issues = AsyncMock(
@@ -477,7 +478,7 @@ class TestJiraDataCenterRunSyncSmoke:
             return_value=[MagicMock()]
         )
         conn._fetch_users = AsyncMock(return_value=[])
-        conn._sync_user_groups = AsyncMock(return_value={})
+        conn._sync_user_groups = AsyncMock(return_value=GroupMemberships({}))
         roles_mapping = {"jira-software": [{"name": "g1", "groupId": "g1"}]}
         conn._fetch_application_roles_to_groups_mapping = AsyncMock(
             return_value=roles_mapping
@@ -516,7 +517,7 @@ class TestJiraDataCenterRunSyncSmoke:
             return_value=[MagicMock()]
         )
         conn._fetch_users = AsyncMock(return_value=[])
-        conn._sync_user_groups = AsyncMock(return_value={})
+        conn._sync_user_groups = AsyncMock(return_value=GroupMemberships({}))
         conn._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
         conn._fetch_projects = AsyncMock(return_value=([], []))
         conn._sync_project_roles = AsyncMock()

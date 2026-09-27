@@ -200,7 +200,7 @@ export function FilePreviewMobile({
                   blob: file.blob,
                 })
               }
-              title="Download"
+              title={t('action.download')}
             >
               <MaterialIcon name="download" size={16} color="var(--slate-11)" />
             </IconButton>
@@ -353,7 +353,7 @@ export function FilePreviewMobile({
                   onClick={handlePdfZoomOut}
                   disabled={pdfScale <= PDF_ZOOM_MIN}
                   style={{ width: '24px', height: '24px', padding: 0 }}
-                  aria-label="Zoom out"
+                  aria-label={t('chat.zoomOut')}
                 >
                   <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
@@ -379,7 +379,7 @@ export function FilePreviewMobile({
                   onClick={handlePdfZoomIn}
                   disabled={pdfScale >= PDF_ZOOM_MAX}
                   style={{ width: '24px', height: '24px', padding: 0 }}
-                  aria-label="Zoom in"
+                  aria-label={t('chat.zoomIn')}
                 >
                   <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
@@ -472,7 +472,7 @@ export function FilePreviewMobile({
                 onClick={() => setShowCitationsSheet(true)}
               >
                 <Text size="1" style={{ color: 'var(--accent-12)', whiteSpace: 'nowrap' }}>
-                  View Citations
+                  {t('filePreview.viewCitations')}
                 </Text>
               </Flex>
             )}

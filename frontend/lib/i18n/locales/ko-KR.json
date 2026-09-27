@@ -19,6 +19,13 @@
       "resetExpiredMessage": "이 비밀번호 재설정 링크가 만료되었습니다. 로그인 페이지의 비밀번호 찾기 옵션에서 새 링크를 요청해 주세요.",
       "backToSignIn": "로그인으로 돌아가기",
       "genericLinkInvalidMessage": "이 링크가 만료되었을 수 있습니다. 조직 관리자에게 새 초대를 요청해 주세요."
+    },
+    "form": {
+      "title": "비밀번호 변경",
+      "newPasswordLabel": "새 비밀번호*",
+      "newPasswordPlaceholder": "새 비밀번호를 입력하세요",
+      "confirmPasswordLabel": "비밀번호 확인*",
+      "confirmPasswordPlaceholder": "비밀번호를 다시 입력하세요"
     }
   },
   "agents": {
@@ -217,6 +224,10 @@
       "visitDocs": "자세한 내용은",
       "docsLabel": "문서",
       "toLearnMore": "를 참조하세요."
+    },
+    "tour": {
+      "dismiss": "둘러보기 닫기",
+      "completedDescription": "이제 모두 준비되었습니다. 더 알아보려면 <docs>문서</docs>를 확인하세요."
     }
   },
   "nav": {
@@ -277,7 +288,10 @@
     "uploading": "업로드 중...",
     "saving": "저장 중...",
     "processing": "처리 중...",
-    "reindexing": "재색인 중..."
+    "reindexing": "재색인 중...",
+    "tryAgain": "다시 시도",
+    "edit": "편집",
+    "remove": "제거"
   },
   "filter": {
     "type": "유형",
@@ -429,10 +443,19 @@
     "english": "영어",
     "german": "독일어",
     "rotateLandscape": "최적의 환경을 위해 기기를 가로로 돌려 주세요",
+    "errorOccurred": "오류가 발생했습니다. 다시 시도해 주세요.",
     "beta": {
       "label": "베타",
       "tooltip": "이 기능은 베타 버전이며 변경될 수 있습니다."
-    }
+    },
+    "you": "나",
+    "refreshing": "새로 고치는 중...",
+    "clear": "지우기",
+    "current": "현재",
+    "openProfile": "프로필 열기",
+    "loading": "불러오는 중...",
+    "moreOptions": "추가 옵션",
+    "docs": "문서"
   },
   "units": {
     "bytes": "바이트",
@@ -471,7 +494,11 @@
     "more": "더 보기",
     "loadMore": "더 불러오기",
     "moreCollections": "더 많은 컬렉션",
-    "searchCollections": "검색"
+    "searchCollections": "검색",
+    "open": "사이드바 열기",
+    "expand": "사이드바 펼치기",
+    "close": "사이드바 닫기",
+    "collapse": "사이드바 접기"
   },
   "menu": {
     "reindex": "다시 인덱싱",
@@ -507,7 +534,15 @@
     "folderEmpty": "이 폴더는 비어 있습니다",
     "itemStats": "이 컬렉션 폴더에는 컬렉션 {{collections}}개, 파일 {{files}}개가 있습니다",
     "searchPlaceholder": "예: 영업 문서",
-    "searchMinChars": "검색하려면 최소 2자 이상 입력해야 합니다"
+    "searchMinChars": "검색하려면 최소 2자 이상 입력해야 합니다",
+    "createFolder": "폴더 만들기",
+    "goToCollections": "컬렉션으로 이동",
+    "namedEmpty": "{{name}}이(가) 비어 있습니다",
+    "noRecords": "레코드를 찾을 수 없습니다",
+    "searchEmptyHint": "찾으시는 항목이 없습니다. 다른 검색어로 시도해 보세요.",
+    "adjustFiltersHint": "다른 소스를 선택하거나 필터를 조정하세요",
+    "addFromCollectionsHint": "컬렉션에서 회사 파일이나 폴더를 추가할 수 있습니다",
+    "addFilesHint": "파일이나 폴더를 추가하세요"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -568,7 +603,15 @@
       "browseWorkspaceActionsAria": "워크스페이스 액션을 열어 통합을 추가하거나 관리",
       "actionsCount": "액션 {{count}}개",
       "resetDefaults": "기본값으로 재설정",
-      "knowledgeScopeClearedWarning": "이번 실행에는 포함된 지식 소스가 없으므로 에이전트가 답변을 위해 커넥터나 컬렉션을 검색하지 않습니다."
+      "knowledgeScopeClearedWarning": "이번 실행에는 포함된 지식 소스가 없으므로 에이전트가 답변을 위해 커넥터나 컬렉션을 검색하지 않습니다.",
+      "searchMcp": "MCP 서버 검색",
+      "mcpTab": "MCP",
+      "noMcpServers": "이 에이전트에 구성된 MCP 서버가 없습니다.",
+      "configureMoreMcp": "MCP 서버 추가 구성",
+      "browseWorkspaceMcp": "MCP 서버 살펴보기",
+      "browseWorkspaceMcpAria": "연결을 추가하거나 관리하려면 MCP 서버를 여세요",
+      "noActionMatches": "검색과 일치하는 작업이 없습니다.",
+      "noMcpMatches": "검색과 일치하는 MCP 서버가 없습니다."
     },
     "projectResources": {
       "noConnectors": "이 프로젝트에 활성화된 커넥터가 없습니다.",
@@ -788,6 +831,8 @@
         ]
       }
     },
+    "demoBanner": "데모 데이터로 불러온 가상의 소규모 회사 Acme Corp를 보고 계십니다. 아래 예시를 사용해 보거나,",
+    "demoConnectYourOwn": "직접 소스를 연결하세요",
     "askMoreQuestionSets": [
       [
         "주요 과제는 무엇이며 어떻게 해결되고 있나요",
@@ -861,6 +906,7 @@
       },
       "workspace": {
         "failedToLoad": "이 프로젝트를 불러오지 못했습니다",
+        "failedToLoadFiles": "파일을 불러오지 못했습니다",
         "instructionsTitle": "지침",
         "instructionsPlaceholder": "이 프로젝트의 모든 채팅에서 어시스턴트가 따라야 할 지침을 추가하세요…",
         "noInstructions": "아직 지침이 추가되지 않았습니다",
@@ -936,7 +982,8 @@
         "title": "프로젝트로 이동",
         "noProjects": "아직 프로젝트가 없습니다",
         "removeOption": "프로젝트 없음",
-        "moving": "이동 중…"
+        "moving": "이동 중…",
+        "moveFailed": "대화를 이동하지 못했습니다"
       },
       "deleteDialog": {
         "title": "이 프로젝트를 삭제하시겠습니까?",
@@ -950,7 +997,119 @@
         "editor": "편집자",
         "viewer": "뷰어"
       }
-    }
+    },
+    "demoHide": "데모 데이터 숨기기",
+    "scrollAttachmentsLeft": "첨부 파일 왼쪽으로 스크롤",
+    "scrollAttachmentsRight": "첨부 파일 오른쪽으로 스크롤",
+    "demoSuggestions": {
+      "1": {
+        "text": "결제 서비스 아키텍처는 왜 변경되었고, 그 결정은 어떻게 이루어졌나요?",
+        "icons": [
+          "github",
+          "jira",
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "내보내기 시간 초과를 보고한 고객은 누구이며, 무엇으로 해결되었나요?",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      },
+      "3": {
+        "text": "공휴일 온콜 근무에 대한 우리 정책은 무엇인가요?",
+        "icons": [
+          "sheets"
+        ]
+      },
+      "4": {
+        "text": "빌링 워커의 PR #482는 누가 검토하고 승인했으며, 병합 전에 Dana는 무엇을 요청했나요?",
+        "icons": [
+          "github"
+        ]
+      },
+      "5": {
+        "text": "2026년 엔터프라이즈 가격 전략은 무엇인가요?",
+        "icons": [
+          "sheets",
+          "slack"
+        ],
+        "restricted": true
+      }
+    },
+    "demoRestrictedHint": "가격 위원회 전용이므로 여기서는 답변을 받을 수 없습니다. 권한이 작동하는 방식입니다.",
+    "demoRestrictedHintSignIn": "가격 위원회 전용이므로 여기서는 답변을 받을 수 없습니다. 답변을 보려면 {{email}}(으)로 로그인하세요.",
+    "toolValidation": {
+      "tooManyTools": "선택한 도구가 너무 많습니다. 성능 제한으로 요청당 최대 1024개의 도구만 사용할 수 있습니다.",
+      "multipleInstances": "같은 작업 유형({{types}})의 인스턴스를 여러 개 함께 사용할 수 없습니다. 작업 패널을 열고 유형별로 하나씩만 선택하세요."
+    },
+    "attachments": {
+      "uploadFailed": "업로드 실패",
+      "uploadFailedNamed": "{{name}} 업로드에 실패했습니다: {{error}}",
+      "unsupportedType": "지원하지 않는 파일 형식: {{names}}. 지원 형식: {{types}}.",
+      "fileTooLarge": "파일이 너무 큽니다: {{names}}. 파일당 최대 크기는 {{maxMb}} MB입니다.",
+      "tooManyFiles": "메시지당 첨부 파일은 최대 {{max}}개입니다.",
+      "pasteTruncated": "\n\n[내용이 잘렸습니다 — 붙여넣은 텍스트가 최대 첨부 크기를 초과했습니다.]",
+      "uploading": "업로드 중…",
+      "retry": "업로드 재시도",
+      "pastedText": "붙여넣은 텍스트",
+      "uploadingNamed": "붙여넣은 텍스트 업로드 중",
+      "removePastedText": "붙여넣은 텍스트 제거",
+      "showInTextField": "텍스트 입력란에 표시",
+      "previewLoadFailed": "내용을 불러오지 못했습니다",
+      "copyText": "복사",
+      "closePreview": "닫기",
+      "loadingPreview": "불러오는 중…",
+      "pasteMeta_other": "{{chars}}자 · {{count}}줄"
+    },
+    "voiceSttNotConfigured": "음성 입력을 사용하려면 AI 모델 설정에서 음성 인식(STT) 모델을 구성하세요.",
+    "voiceSttLoading": "음성 기능을 확인하는 중…",
+    "expandComposer": "입력창 펼치기",
+    "stopGenerating": "생성 중지",
+    "backToChat": "채팅으로 돌아가기",
+    "searchToggle": {
+      "ariaLabel": "검색 보기로 전환"
+    },
+    "plusMenu": {
+      "ariaLabelFiltersApplied": "파일 및 기능 첨부. 검색 필터 적용됨",
+      "ariaLabel": "파일 및 기능 첨부",
+      "title": "파일 및 기능 추가"
+    },
+    "stopListening": "듣기 중지",
+    "voiceInput": "음성 입력",
+    "regenerateResponse": "응답 다시 생성",
+    "editQuery": "질문 편집",
+    "queryOptions": "질문 옵션",
+    "models": "모델",
+    "manage": "관리",
+    "configuredModels": "구성된 모델",
+    "reasoningEffort": {
+      "label": "추론 강도",
+      "overrideHint": "기본값을 사용하려면 다시 클릭하세요.",
+      "defaultHintWithLevel": "설정하지 않으면 기본값은 {{level}}입니다.",
+      "low": "낮음",
+      "medium": "보통",
+      "high": "높음",
+      "max": "최대"
+    },
+    "universalAgent": {
+      "toolsLoadError": "사용 가능한 작업을 불러오지 못했습니다.",
+      "mcpLoadError": "MCP 서버를 불러오지 못했습니다.",
+      "noReasoningModel": "추론이 가능한 모델이 구성되어 있지 않습니다. 에이전트 모드를 사용하기 전에 설정 → AI 모델에서 구성하세요.",
+      "loadingTools": "작업을 불러오는 중…",
+      "noActions": "인증된 작업을 찾을 수 없습니다. 워크스페이스 → 작업에서 통합을 연결하세요.",
+      "loadingMcp": "MCP 서버를 불러오는 중…",
+      "noMcpServers": "인증된 MCP 서버를 찾을 수 없습니다. 워크스페이스 → MCP 서버에서 연결하세요.",
+      "toolCount_other": "도구 {{count}}개"
+    },
+    "agentCapabilities": {
+      "notConfiguredOnAgent": "이 에이전트에 구성되지 않음",
+      "internalSearch": "내부 검색",
+      "webSearch": "웹 검색"
+    },
+    "resizePanels": "채팅 및 미리보기 패널 크기 조정",
+    "mobileProfileComingSoon": "모바일 프로필 페이지는 곧 제공됩니다."
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -1023,7 +1182,10 @@
         "unblockSuccess": "사용자 차단이 성공적으로 해제되었습니다",
         "unblockError": "사용자 차단을 해제하지 못했습니다",
         "unblocking": "차단 해제 중…",
-        "edit": "편집"
+        "edit": "편집",
+        "resendInviteSuccess": "초대 재발송됨",
+        "resendInviteSuccessDescription": "{{email}}(으)로 초대를 다시 보냈습니다",
+        "resendInviteError": "초대를 다시 보내지 못했습니다"
       },
       "profile": {
         "title": "프로필",
@@ -1078,8 +1240,29 @@
         "importSkippedDescription": "잘못된 항목은 목록에 표시되어 있습니다 — 보내기 전에 제거하세요.",
         "importFailed": "가져오기 실패",
         "importFailedDescription": "파일을 읽을 수 없습니다. 유효한 CSV 또는 Excel 파일을 업로드하세요.",
-        "adminGroupWarning": "여기서 초대된 모든 사람은 파일에서 가져온 주소를 포함하여 전체 조직 관리자가 됩니다. 관리자는 사용자, 그룹 및 조직 설정을 관리할 수 있습니다."
-      }
+        "adminGroupWarning": "여기서 초대된 모든 사람은 파일에서 가져온 주소를 포함하여 전체 조직 관리자가 됩니다. 관리자는 사용자, 그룹 및 조직 설정을 관리할 수 있습니다.",
+        "editSuccessTitle": "초대 업데이트됨",
+        "editSuccessDescription": "{{email}}의 초대가 업데이트되었습니다",
+        "editError": "초대를 업데이트하지 못했습니다",
+        "editTitle": "초대 편집",
+        "update": "초대 업데이트",
+        "smtpNotConfiguredTooltip": "SMTP가 구성되지 않았습니다. 초대를 보내기 전에 이메일 설정을 완료하세요."
+      },
+      "bulk": {
+        "resendInvite": "초대 다시 보내기",
+        "adminInviteCantBeCancelled": "관리자 초대는 취소할 수 없습니다",
+        "cancelInvite": "초대 취소",
+        "adminCantBeRemoved": "관리자 사용자는 제거할 수 없습니다",
+        "removeFromWorkspace": "워크스페이스에서 제거",
+        "removeSuccess_other": "사용자 {{count}}명을 워크스페이스에서 제거했습니다",
+        "removePartialError_other": "사용자 {{count}}명을 제거하지 못했습니다",
+        "resendSuccess_other": "사용자 {{count}}명에게 초대를 다시 보냈습니다",
+        "resendPartialError_other": "사용자 {{count}}명에게 초대를 다시 보내지 못했습니다",
+        "cancelSuccess_other": "초대 {{count}}건을 취소했습니다",
+        "cancelPartialError_other": "초대 {{count}}건을 취소하지 못했습니다"
+      },
+      "inviteDisabledSmtp": "SMTP가 구성되지 않았습니다. 사용자를 초대하기 전에 이메일 설정을 완료하세요.",
+      "bulkLabel": "사용자"
     },
     "groups": {
       "title": "그룹",
@@ -1105,7 +1288,8 @@
         "delete": "삭제",
         "deleteSuccess": "그룹이 삭제되었습니다",
         "deleteError": "그룹 삭제에 실패했습니다",
-        "managePermissions": "권한 관리"
+        "managePermissions": "권한 관리",
+        "deleteSystemTooltip": "사용자 지정 그룹만 삭제할 수 있습니다"
       },
       "create": {
         "title": "그룹 생성",
@@ -1131,7 +1315,8 @@
         "users": "사용자",
         "noUsers": "이 그룹에 사용자가 없습니다",
         "accessPermissions": "접근 권한",
-        "accessComingSoon": "접근 권한 기능 준비 중"
+        "accessComingSoon": "접근 권한 기능 준비 중",
+        "searchUsers": "사용자 검색..."
       },
       "edit": {
         "edit": "그룹 편집",
@@ -1151,7 +1336,8 @@
         "deleting": "삭제 중...",
         "deleteSuccess": "그룹이 삭제되었습니다",
         "deleteSuccessDescription": "\"{{name}}\"이(가) 삭제되었습니다",
-        "deleteError": "그룹 삭제에 실패했습니다"
+        "deleteError": "그룹 삭제에 실패했습니다",
+        "nameRequired": "그룹 이름은 필수입니다"
       },
       "permissions": {
         "title": "접근 권한",
@@ -1203,7 +1389,9 @@
         "cancel": "취소",
         "successTitle": "팀이 생성되었습니다!",
         "successDescription": "\"{{name}}\"이(가) 성공적으로 생성되었습니다",
-        "errorGeneric": "팀을 생성하지 못했습니다"
+        "errorGeneric": "팀을 생성하지 못했습니다",
+        "applyToAll": "전체에 적용",
+        "memberRoles": "멤버 역할"
       },
       "detail": {
         "nameLabel": "팀 이름",
@@ -1214,7 +1402,8 @@
         "noMembers": "이 팀에 멤버가 없습니다",
         "roleLabel": "역할",
         "accessPermissions": "액세스 권한",
-        "accessComingSoon": "액세스 권한 기능 출시 예정"
+        "accessComingSoon": "액세스 권한 기능 출시 예정",
+        "searchMembers": "멤버 검색..."
       },
       "edit": {
         "edit": "팀 편집",
@@ -1233,7 +1422,10 @@
         "deleting": "삭제 중...",
         "deleteSuccess": "팀이 삭제되었습니다",
         "deleteSuccessDescription": "\"{{name}}\"이(가) 삭제되었습니다",
-        "deleteError": "팀을 삭제하지 못했습니다"
+        "deleteError": "팀을 삭제하지 못했습니다",
+        "saveErrorDescription": "팀을 업데이트하지 못했습니다. 다시 시도해 주세요.",
+        "applyToAll": "전체에 적용",
+        "newMemberRoles": "새 멤버 역할"
       }
     },
     "oauth2": {
@@ -1394,7 +1586,6 @@
       "columnCreated": "생성일",
       "columnExpires": "만료일",
       "columnLastUsed": "마지막 사용",
-      "scopeCount": "범위 {{count}}개",
       "neverUsed": "사용한 적 없음",
       "neverExpires": "만료 없음",
       "revokeAria": "{{name}} 해지",
@@ -1439,7 +1630,8 @@
         "copyPasteBlockAria": "붙여넣기 블록 복사",
         "copySuccessTitle": "복사되었습니다",
         "copyErrorTitle": "복사할 수 없습니다"
-      }
+      },
+      "scopeCount_other": "범위 {{count}}개"
     },
     "aiModels": {
       "title": "AI 모델",
@@ -1472,6 +1664,8 @@
       "configUpdateModel": "모델 업데이트",
       "configFillRequiredTooltip": "모든 필수 필드를 입력하세요",
       "configSaveErrorFallback": "모델 구성을 저장하지 못했습니다",
+      "configSaveOutboundError": "PipesHub가 컨테이너 내부에서 이 모델 제공자에 연결할 수 없습니다. 클라우드 제공자에는 아웃바운드 인터넷이 필요합니다 — deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity를 참조하세요.",
+      "configSaveTimeoutError": "모델을 검증하는 동안 요청 시간이 초과되었습니다. 클라우드 제공자에는 PipesHub 컨테이너에서 나가는 아웃바운드 인터넷이 필요합니다 — deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity를 참조하세요.",
       "configNoConfigRequired": "이 제공업체에는 구성이 필요하지 않습니다.",
       "configDefaultModelNotice": "시스템에서 기본적으로 \"{{modelName}}\"을(를) 사용합니다.",
       "configSectionModelConfiguration": "모델 구성",
@@ -1621,7 +1815,8 @@
         "webSearch": "웹 검색",
         "tenants": "테넌트",
         "superOrgs": "조직",
-        "oauthApps": "OAuth 앱"
+        "oauthApps": "OAuth 앱",
+        "serviceAccounts": "서비스 계정"
       }
     },
     "actions": {
@@ -1647,7 +1842,8 @@
         "authenticate": "인증",
         "manage": "관리",
         "unavailable": "사용 불가",
-        "notConfigured": "구성되지 않음"
+        "notConfigured": "구성되지 않음",
+        "adminSetupRequired": "관리자 설정 필요"
       },
       "trailingYourActions": "내 액션",
       "loading": "액션을 불러오는 중…",
@@ -1749,7 +1945,11 @@
         "saveSuccess": "변경 사항이 저장되었습니다.",
         "saveDeauthNotice": "저장되었습니다. 사용자 {{count}}명이 로그아웃되었으며 다시 인증해야 합니다.",
         "missingInstance": "이 액션에 인스턴스 ID가 없습니다. 페이지를 새로고침해 보세요.",
-        "copyFailed": "클립보드에 복사할 수 없습니다."
+        "copyFailed": "클립보드에 복사할 수 없습니다.",
+        "loadingOauthApps": "OAuth 앱을 불러오는 중…",
+        "noOauthApps": "구성된 OAuth 앱이 없습니다",
+        "personalActionsHint": "사용자 자격 증명은 내 작업에서 관리합니다.",
+        "openPersonalActionsCta": "내 작업 열기"
       },
       "errors": {
         "instanceNameRequired": "인스턴스 이름을 입력하세요."
@@ -1757,8 +1957,15 @@
       "validation": {
         "fieldRequired": "{{field}}은(는) 필수입니다",
         "fieldMustBeTrue": "{{field}}은(는) true여야 합니다",
-        "fixErrorsAbove": "계속하려면 위에 강조 표시된 필드를 수정하세요."
-      }
+        "fixErrorsAbove": "계속하려면 위에 강조 표시된 필드를 수정하세요.",
+        "minLength": "{{field}}은(는) {{minLength}}자 이상이어야 합니다",
+        "maxLength": "{{field}}은(는) {{maxLength}}자를 넘을 수 없습니다",
+        "email": "{{field}}은(는) 올바른 이메일 주소여야 합니다",
+        "url": "{{field}}은(는) 올바른 URL이어야 합니다",
+        "urlProtocol": "{{field}}은(는) http 또는 https를 사용해야 합니다"
+      },
+      "adminRequiredToast": "관리자만 새 작업을 추가할 수 있습니다. 관리자에게 이 작업을 먼저 구성해 달라고 요청하세요.",
+      "personalNonAdminHint": "\"구성되지 않음\"으로 표시된 작업은 사용하기 전에 관리자가 설정해야 합니다."
     },
     "rightPanel": {
       "primaryDisabledHint": "위로 스크롤하여 필수 필드(* 표시)를 작성한 후 계속하세요.",
@@ -1876,6 +2083,14 @@
         "message": "취소하면 편집 내용이 저장되지 않습니다",
         "confirm": "취소",
         "cancel": "계속 편집"
+      },
+      "featureFlags": {
+        "title": "기능 플래그",
+        "subtitle": "이 워크스페이스의 모든 에이전트에 대해 실험적 기능을 켜거나 끕니다."
+      },
+      "vectorStore": {
+        "title": "벡터 스토어",
+        "subtitle": "모든 임베딩을 삭제하거나 저장된 콘텐츠에서 모든 레코드의 임베딩을 다시 생성합니다."
       }
     },
     "authentication": {
@@ -1926,6 +2141,10 @@
         "body": "<bold>비밀번호</bold> 및 <bold>일회용 비밀번호</bold> 인증이 비활성화되어 있습니다. 사용자는 다음 방식으로만 로그인할 수 있습니다:",
         "warningSingle": "저장하기 전에 {{method}}이(가) 완전히 구성되어 정상 작동하는지 확인하세요. 잘못된 구성으로 SSO(단일 로그인)가 실패하면 사용자가 로그인하지 못할 수 있습니다.",
         "warningMultiple": "저장하기 전에 선택한 모든 방식이 완전히 구성되어 정상 작동하는지 확인하세요. 잘못된 구성으로 SSO(단일 로그인)가 실패하면 사용자가 로그인하지 못할 수 있습니다."
+      },
+      "userMethods": {
+        "heading": "사용자 로그인 방법",
+        "subtitle": "모든 조직의 모든 사용자가 사용할 수 있는 로그인 방법을 제어합니다."
       }
     },
     "connectors": {
@@ -1947,6 +2166,7 @@
       "configPanelTitle": "{{name}} 설정",
       "instance": "인스턴스",
       "emailVisibilityDocLink": "이메일 표시 설정 가이드 →",
+      "personalConnectorLink": "대신 {{name}} 사용 →",
       "toasts": {
         "loadError": "커넥터를 불러오지 못했습니다",
         "syncStarted": "{{name}} 동기화가 시작되었습니다",
@@ -1965,7 +2185,8 @@
       },
       "tabs": {
         "authenticate": "인스턴스 인증",
-        "configureRecords": "레코드 구성"
+        "configureRecords": "레코드 구성",
+        "authorize": "승인"
       },
       "tooltips": {
         "authFirst": "설정을 저장하려면 먼저 인증을 완료하세요"
@@ -2028,7 +2249,8 @@
         "alreadyRemovingTitle": "이미 제거 진행 중",
         "alreadyRemovingDescription": "이 커넥터는 이미 제거되는 중입니다.",
         "successTitle": "커넥터가 제거되었습니다",
-        "errorTitle": "커넥터를 제거하지 못했습니다"
+        "errorTitle": "커넥터를 제거하지 못했습니다",
+        "errorDescription": "다시 시도해 주세요. 계속 발생하면 워크스페이스 관리자에게 문의하세요."
       },
       "selectRecords": {
         "title": "레코드 선택",
@@ -2055,6 +2277,7 @@
         "redirectUrlHelperNonOauth": "ID 공급자에 리디렉션/콜백 URL을 등록한 후 아래 항목을 입력하세요.",
         "noAuthRequired": "이 커넥터는 인증이 필요하지 않습니다",
         "emailVisibilityDocLink": "이메일 표시 설정 가이드 →",
+        "personalConnectorLink": "대신 {{name}} 사용 →",
         "oauthAppNameLabel": "OAuth 앱 이름",
         "oauthAppNamePlaceholder": "예: {{name}} OAuth",
         "oauthAppNameHelper": "이 이름은 OAuth 등록과 함께 저장되며, 사용자가 다른 인스턴스에서 저장된 앱을 선택할 때 표시됩니다.",
@@ -2136,13 +2359,21 @@
         "syncSettings": "동기화 설정",
         "syncStrategySettingsHint": "동기화 전략은 <bold>{{manageConfig}}</bold>에서 변경할 수 있습니다.",
         "syncInterval": "동기화 주기",
-        "syncIntervalHelper": "{{name}} 데이터를 새로 고칠 주기를 설정하세요"
+        "syncIntervalHelper": "{{name}} 데이터를 새로 고칠 주기를 설정하세요",
+        "removeInstance": "커넥터 인스턴스 제거",
+        "removeInstanceDescription": "이 커넥터 인스턴스를 영구적으로 제거하고 데이터 동기화를 중지합니다. 되돌릴 수 없습니다."
       },
       "instanceCard": {
         "recordsSelected": "선택된 레코드",
         "syncStrategy": "동기화 전략",
         "authBannerTitle": "개인 계정 인증",
-        "authBannerDescription": "계정을 연결하여 액세스 및 워크스페이스 구성을 활성화하세요"
+        "authBannerDescription": "계정을 연결하여 액세스 및 워크스페이스 구성을 활성화하세요",
+        "lastSynced": "마지막 동기화",
+        "syncEnabled": "동기화 사용",
+        "removing": "이 커넥터를 제거하는 중입니다.",
+        "configureFirst": "동기화를 사용하려면 먼저 구성을 완료하세요.",
+        "authenticateFirst": "동기화를 사용하려면 먼저 이 커넥터를 인증하세요.",
+        "selected": "{{field}} 선택됨"
       },
       "instanceStatus": {
         "setup": {
@@ -2192,6 +2423,109 @@
         "syncing": "레코드 동기화 중...",
         "synced": "레코드 동기화 완료",
         "failed": "동기화 실패"
+      },
+      "errors": {
+        "missingCreatedId": "생성에는 성공했지만 커넥터 ID가 반환되지 않았습니다",
+        "createdConfigUnavailable": "커넥터는 생성되었지만 구성을 불러오지 못했습니다. 패널을 다시 열어 보세요.",
+        "authenticateFirst": "커넥터 ID를 찾을 수 없습니다. 먼저 인증을 완료하세요."
+      },
+      "syncIntervals": {
+        "5": "5분마다",
+        "15": "15분마다",
+        "30": "30분마다",
+        "60": "1시간마다",
+        "240": "4시간마다",
+        "480": "8시간마다",
+        "720": "12시간마다",
+        "1440": "1일마다",
+        "10080": "1주마다",
+        "other": "{{minutes}}분마다"
+      },
+      "filters": {
+        "selectField": "{{field}} 선택",
+        "addFieldValue": "{{field}} 추가…",
+        "authenticateForOptions": "이 필터의 옵션을 불러오려면 인증을 완료하고 커넥터를 저장하세요.",
+        "manualIndexingInfo": "수동 인덱싱 정보",
+        "manualIndexingTooltip": "끄기(기본값): 아래 인덱싱 필터에 따라 레코드가 자동으로 인덱싱됩니다.\n\n켜기: 레코드가 자동으로 인덱싱되지 않습니다. 지식 베이스에서 인덱싱할 레코드를 직접 선택합니다.",
+        "title": "인덱싱 및 동기화 필터",
+        "description": "인덱싱 필터는 항상 적용됩니다. 필요에 따라 불리언을 전환하거나 값을 조정하세요. 동기화 필터는 필요한 것만 추가하세요. 목록 및 날짜 필터는 연산자와 값을 사용하며, 해당 제약이 필요 없으면 동기화 필터를 지울 수 있습니다.",
+        "syncTitle": "동기화 필터",
+        "indexingTitle": "인덱싱 필터",
+        "add": "필터 추가",
+        "incomplete": "여기에 요약을 보려면 아래 각 필터의 연산자와 값을 완성하세요.",
+        "empty": "아직 필터가 없습니다. \"필터 추가\"를 사용해 지원되는 필터 중 하나를 선택하세요.",
+        "operator": "연산자",
+        "chooseOperator": "연산자 선택…",
+        "value": "값",
+        "rollingWindow": "이 연산자는 이동 기간을 사용하므로 설정할 고정 날짜가 없습니다.",
+        "dateRange": "날짜 범위",
+        "operators": {
+          "is": "같음",
+          "is_not": "같지 않음",
+          "is_empty": "비어 있음",
+          "is_not_empty": "비어 있지 않음",
+          "contains": "포함",
+          "does_not_contain": "포함하지 않음",
+          "is_after": "이후",
+          "is_before": "이전",
+          "is_between": "사이",
+          "in": "다음 중 하나",
+          "not_in": "다음 중 아님",
+          "greater_than_or_equal": "크거나 같음",
+          "greater_than": "보다 큼",
+          "equal": "같음",
+          "less_than": "보다 작음",
+          "less_than_or_equal": "작거나 같음",
+          "last_7_days": "최근 7일",
+          "last_14_days": "최근 14일",
+          "last_30_days": "최근 30일",
+          "last_90_days": "최근 90일",
+          "last_180_days": "최근 180일",
+          "last_365_days": "최근 365일"
+        },
+        "fieldValues": "{{field}} 값",
+        "loadingOptions": "옵션을 불러오는 중…",
+        "noResults": "결과를 찾을 수 없습니다",
+        "optionsLoadFailed": "이 필터의 옵션을 불러오지 못했습니다. 목록을 닫았다가 다시 열어 재시도하세요.",
+        "loadingMore": "더 불러오는 중…"
+      },
+      "syncStrategies": {
+        "SCHEDULED": "예약됨",
+        "MANUAL": "수동",
+        "WEBHOOK": "웹훅",
+        "REALTIME": "실시간"
+      },
+      "syncIntervalOptions": {
+        "5": "5분",
+        "15": "15분",
+        "30": "30분",
+        "60": "1시간",
+        "240": "4시간",
+        "480": "8시간",
+        "720": "12시간",
+        "1440": "1일",
+        "10080": "1주"
+      },
+      "vectorStore": {
+        "cleanup": {
+          "label": "임베딩 정리",
+          "rowDescription": "모든 임베딩을 삭제하고 벡터 컬렉션을 비운 상태로 다시 만듭니다. 레코드는 삭제되지 않습니다.",
+          "buttonLabel": "정리",
+          "title": "모든 임베딩을 삭제할까요?",
+          "body": "공유 벡터 컬렉션을 삭제하고 비운 상태로 다시 만듭니다.",
+          "warning": "모든 사용자에게 검색 결과가 나오지 않으며, 다시 인덱싱이 끝날 때까지 그 상태가 유지됩니다. 대규모 배포에서는 다시 인덱싱에 몇 시간이 걸릴 수 있습니다. 레코드는 삭제되지 않고 임베딩만 삭제됩니다.",
+          "confirm": "임베딩 삭제"
+        },
+        "reindex": {
+          "label": "임베딩 다시 인덱싱",
+          "rowDescription": "저장된 콘텐츠에서 모든 레코드의 임베딩을 다시 생성합니다. 소스를 다시 다운로드하거나 구문 분석하지 않습니다.",
+          "buttonLabel": "다시 인덱싱",
+          "title": "모든 레코드를 다시 인덱싱할까요?",
+          "body": "저장된 콘텐츠에서 모든 레코드의 임베딩을 다시 생성합니다. 소스를 다시 다운로드하거나 구문 분석하지 않습니다.",
+          "warning": "대규모 배포에서는 오래 걸릴 수 있으며 백그라운드에서 실행됩니다.",
+          "confirm": "다시 인덱싱 시작"
+        },
+        "typePrompt": "확인하려면 {{token}}을(를) 입력하세요."
       }
     },
     "mcpServers": {
@@ -2200,6 +2534,9 @@
       "noResults": "검색과 일치하는 MCP 서버가 없습니다",
       "addServer": "서버 추가",
       "custom": "사용자 지정",
+      "inherited": "상속됨",
+      "inheritedDeleteTooltip": "상위 조직에서 관리됩니다",
+      "inheritedReadOnly": "이 MCP 서버는 상위 조직에서 상속되었으므로 여기서 편집할 수 없습니다.",
       "sharedAuth": "공유 관리자 인증",
       "toolsCount_one": "도구 {{count}}개",
       "toolsCount_other": "도구 {{count}}개",
@@ -2246,7 +2583,8 @@
         "authBannerTitle": "인증 필요",
         "authBannerDescription": "팀 에이전트가 사용할 수 있도록 이 MCP 서버를 인증하세요.",
         "authBannerAuthenticatedTitle": "연결됨",
-        "authBannerAuthenticatedDescription": "이 MCP 서버를 재인증하거나 연결을 해제할 수 있습니다."
+        "authBannerAuthenticatedDescription": "이 MCP 서버를 재인증하거나 연결을 해제할 수 있습니다.",
+        "createdBy": "만든 사람"
       },
       "deleteDialog": {
         "title": "MCP 서버를 삭제할까요?",
@@ -2334,7 +2672,8 @@
         "noCode": "인증 코드가 반환되지 않았습니다.",
         "noState": "state 매개변수가 반환되지 않았습니다.",
         "backendRejected": "서버가 인증 요청을 거부했습니다."
-      }
+      },
+      "deleteDisabledTooltip": "이 서버는 삭제할 수 없습니다"
     },
     "bots": {
       "subtitle": "봇 자격 증명을 구성하고 필요에 따라 각 봇을 에이전트에 연결합니다",
@@ -2415,7 +2754,12 @@
         "typeNameToConfirm": "확인하려면 \"{{name}}\"을(를) 입력하세요",
         "deleteBotBodyLine1": "{{name}}을(를) 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
         "deleteBotBodyLine2": "이 봇과 연결된 모든 구성과 자격 증명이 영구적으로 제거됩니다."
-      }
+      },
+      "errors": {
+        "loadConfigs": "봇 구성을 불러오지 못했습니다",
+        "loadData": "데이터를 불러오지 못했습니다"
+      },
+      "refreshed": "새로 고침됨"
     },
     "skills": {
       "title": "스킬",
@@ -2432,7 +2776,8 @@
       "status": {
         "active": "활성",
         "deprecated": "사용 중단됨",
-        "candidate": "후보"
+        "candidate": "후보",
+        "disabled": "비활성"
       },
       "cta": {
         "manage": "관리",
@@ -2450,6 +2795,9 @@
         "createError": "스킬을 생성하지 못했습니다",
         "deprecated": "스킬 \"{{name}}\"이(가) 사용 중단되었습니다",
         "deprecateError": "스킬을 사용 중단하지 못했습니다",
+        "disabled": "스킬 \"{{name}}\"을(를) 비활성화했습니다",
+        "enabled": "스킬 \"{{name}}\"을(를) 활성화했습니다",
+        "toggleError": "스킬 사용 가능 여부를 업데이트하지 못했습니다",
         "deleted": "스킬 \"{{name}}\"이(가) 삭제되었습니다",
         "deleteError": "스킬을 삭제하지 못했습니다",
         "imported": "스킬 \"{{name}}\"이(가) 가져와졌습니다",
@@ -2540,11 +2888,11 @@
         "previewError": "이 스킬을 미리보지 못했습니다",
         "confirmImport": "스킬 가져오기",
         "source": "출처: {{source}}",
-        "resourceCount": "리소스 {{count}}개",
-        "skippedBinary": "바이너리 파일 {{count}}개를 건너뛰었습니다 (아직 지원되지 않음)",
         "nameHint": "소문자와 하이픈만 사용하세요. 원래 이름이 내장 스킬(예: pptx)이면 다른 이름을 지정하세요.",
         "nameInvalid": "이름은 소문자, 숫자, 하이픈만 사용할 수 있습니다.",
-        "originalName": "원래 이름: {{name}}"
+        "originalName": "원래 이름: {{name}}",
+        "resourceCount_other": "리소스 {{count}}개",
+        "skippedBinary_other": "바이너리 파일 {{count}}개를 건너뛰었습니다(아직 지원되지 않음)"
       },
       "candidates": {
         "title": "대기 중인 스킬 후보",
@@ -2555,6 +2903,11 @@
         "view": "보기",
         "hide": "숨기기",
         "editAndApprove": "편집 후 승인"
+      },
+      "availability": {
+        "label": "에이전트에서 사용 가능",
+        "description": "끄면 이 스킬은 라이브러리에 남아 있지만 에이전트가 찾거나 불러올 수 없습니다.",
+        "descriptionBuiltin": "끄면 이 기본 제공 스킬은 라이브러리에 남아 있지만 조직 전체의 에이전트가 찾거나 불러올 수 없습니다."
       }
     },
     "mail": {
@@ -2644,7 +2997,15 @@
       "systemPrompt": "시스템 프롬프트",
       "systemPromptDescription": "AI 어시스턴트의 동작과 성격을 정의합니다",
       "configCalloutTitle": "프롬프트 구성",
-      "configCalloutDescription": "사용자 지정 시스템 프롬프트는 AI의 동작, 어조, 질문에 대한 답변 방식을 정의하는 데 도움이 됩니다. 프롬프트가 명확하고 조직의 요구에 부합하는지 확인하세요."
+      "configCalloutDescription": "사용자 지정 시스템 프롬프트는 AI의 동작, 어조, 질문에 대한 답변 방식을 정의하는 데 도움이 됩니다. 프롬프트가 명확하고 조직의 요구에 부합하는지 확인하세요.",
+      "resetToDefault": "기본값으로 재설정",
+      "customInstructionsTitle": "사용자 지정 지침",
+      "customInstructionsDescription": "채팅 어시스턴트를 위한 사용자 지정 지침을 추가하세요. 예를 들어 특정 언어로 답변하기, 서식 스타일 따르기, 원하는 동작 적용하기 등입니다. 아래 각 모드는 답변 방식이 다르므로 자체 지침을 갖습니다.",
+      "scopeHint": "이 지침은 <bold>채팅 어시스턴트</bold>(아래 에이전트 모드)에만 적용됩니다. <bold>Agent Builder</bold>에서 만든 사용자 지정 에이전트에는 영향을 주지 않으며, 각 에이전트는 자체 시스템 프롬프트와 해당 에이전트에 구성된 지침을 사용합니다.",
+      "agentTitle": "에이전트",
+      "agentDescription": "사용자가 에이전트 모드로 채팅할 때 적용됩니다. 어시스턴트가 질문마다 내부 지식, 웹 검색 또는 둘 다를 사용할지 결정합니다.",
+      "agentPlaceholder": "예: 회사 관련 질문에는 내부 지식을 우선하세요. 세부 내용을 제공하기 전에 항상 요약하세요.",
+      "agentHelperText": "이 프롬프트는 AI가 내부 지식과 웹 검색 중에서 자유롭게 선택할 수 있을 때 안내 역할을 합니다. 변경 사항은 새 대화에 즉시 적용됩니다."
     },
     "webSearch": {
       "loading": "웹 검색 설정을 불러오는 중…",
@@ -2791,7 +3152,25 @@
       "seeMore": "더 보기",
       "showMore": "더 보기",
       "moreAgents": "더 많은 에이전트",
-      "moreChats": "더 많은 채팅"
+      "moreChats": "더 많은 채팅",
+      "authentication": {
+        "title": "인증",
+        "subtitle": "계정에 사용 설정된 로그인 방법입니다. 워크스페이스 관리자가 관리합니다.",
+        "methodsLabel": "사용 설정된 로그인 방법",
+        "loading": "불러오는 중…",
+        "none": "사용 설정된 로그인 방법이 없습니다"
+      },
+      "demoData": {
+        "title": "데모 데이터",
+        "description": "Acme Corp는 PipesHub를 체험해 볼 수 있도록 불러온 가상의 회사입니다. 보이는 내용만 바뀌며 삭제되는 것은 없습니다.",
+        "label": "내 답변, 검색, 레코드에 Acme Corp 데모 데이터 표시",
+        "followingDefault": "기본값을 따릅니다. 조직에 자체 데이터가 생길 때까지 표시되고 이후에는 숨겨집니다.",
+        "yourChoice": "직접 선택한 설정입니다.",
+        "useDefault": "기본값 사용",
+        "offForEveryone": "관리자가 모든 사용자에 대해 껐습니다.",
+        "everyoneLabel": "모두에게 데모 제공",
+        "everyoneDescription": "끄면 모든 사용자의 답변, 검색, 레코드에서 데모가 숨겨지고 샘플 계정은 로그인할 수 없습니다. 삭제되는 것은 없습니다."
+      }
     },
     "services": {
       "pageTitle": "서비스",
@@ -3046,6 +3425,83 @@
         "loadToolsets": "액션 OAuth 앱을 불러오지 못했습니다.",
         "deleteGeneric": "OAuth 앱을 삭제하지 못했습니다."
       }
+    },
+    "serviceAccounts": {
+      "title": "서비스 계정",
+      "subtitle": "머신 ID입니다. 자동화가 다른 사람의 권한을 빌리지 않고 자체 권한으로 읽습니다.",
+      "newAccount": "새 서비스 계정",
+      "errorGeneric": "서비스 계정을 불러오지 못했습니다.",
+      "retry": "다시 시도",
+      "emptyTitle": "아직 서비스 계정이 없습니다",
+      "emptyDescription": "서비스 계정은 스크립트가 동료 계정으로 로그인하지 않고 PipesHub에서 읽는 방법입니다. 부여한 범위만 볼 수 있고, 담당자가 퇴사해도 계속 작동합니다.",
+      "columnName": "이름",
+      "columnDescription": "용도",
+      "columnStatus": "상태",
+      "statusActive": "활성",
+      "statusDisabled": "비활성",
+      "manageTokens": "토큰",
+      "enable": "사용",
+      "disable": "사용 안 함",
+      "delete": "삭제",
+      "enabledTitle": "서비스 계정을 사용 설정했습니다",
+      "disabledTitle": "서비스 계정을 사용 중지했습니다",
+      "disabledBody": "해당 토큰은 다음 로그인 때가 아니라 즉시 작동을 멈췄습니다.",
+      "updateErrorTitle": "서비스 계정을 업데이트하지 못했습니다",
+      "deleteTitle": "이 서비스 계정을 삭제할까요?",
+      "deleteDescription": "{{name}}은(는) 즉시 작동을 멈추고, 보유한 모든 토큰이 취소됩니다. 그 토큰을 사용하던 모든 것이 실패하기 시작합니다.",
+      "deleteSuccessTitle": "서비스 계정을 삭제했습니다",
+      "deleteErrorTitle": "서비스 계정을 삭제하지 못했습니다",
+      "create": {
+        "title": "새 서비스 계정",
+        "intro": "자동화는 사람이 아니라 이 계정으로 인증합니다. 따라서 읽을 수 있는 범위는 설정한 사람에게서 상속되지 않고 여기서 결정됩니다.",
+        "slugLabel": "짧은 이름",
+        "slugHelp": "소문자, 숫자, 단일 하이픈을 사용합니다. 계정 주소의 일부가 되며 나중에 변경할 수 없습니다.",
+        "slugLengthError": "3자에서 48자 사이로 입력하세요.",
+        "slugFormatError": "소문자, 숫자, 단일 하이픈을 사용하고 하이픈으로 시작하거나 끝내지 마세요.",
+        "nameLabel": "표시 이름",
+        "namePlaceholder": "야간 동기화",
+        "descriptionLabel": "용도",
+        "descriptionPlaceholder": "릴리스 요약을 위해 핸드북을 읽습니다",
+        "note": "서비스 계정으로는 누구도 로그인할 수 없으며, 항상 멤버이고 관리자가 될 수 없습니다. 동료에게 하듯 그룹과 팀을 통해 접근 권한을 부여하세요.",
+        "submit": "만들기",
+        "successTitle": "서비스 계정을 만들었습니다",
+        "errorTitle": "서비스 계정을 만들지 못했습니다"
+      },
+      "tokens": {
+        "title": "토큰",
+        "newToken": "새 토큰",
+        "mint": "토큰 만들기",
+        "nameLabel": "이 토큰의 용도",
+        "namePlaceholder": "릴리스 요약 작업",
+        "scopesLabel": "범위",
+        "scopesHelp": "이 토큰이 무엇을 할 수 있는지 선택하세요. 기본값은 없습니다. 무인으로 실행되는 자격 증명은 누군가 의도적으로 선택한 권한만 가져야 합니다.",
+        "expiryLabel": "만료 기간",
+        "expiryDays": "{{count}}일",
+        "existing": "토큰",
+        "none": "이 계정에는 아직 토큰이 없습니다.",
+        "lastUsed": "마지막 사용 {{date}}",
+        "neverUsed": "사용한 적 없음",
+        "expiresOn": "{{date}}에 만료",
+        "expiresInDays": "{{count}}일 남음",
+        "expired": "만료됨",
+        "expiringSoon": "토큰 {{count}}개가 곧 만료됩니다. 대체 토큰을 만들고 통합을 옮긴 다음 기존 토큰을 취소하세요.",
+        "revoke": "취소",
+        "revokeSuccessTitle": "토큰을 취소했습니다",
+        "revokeErrorTitle": "토큰을 취소하지 못했습니다",
+        "mintErrorTitle": "토큰을 만들지 못했습니다",
+        "loadErrorTitle": "토큰을 불러오지 못했습니다",
+        "copyNowTitle": "지금 이 토큰을 복사하세요",
+        "copyNowBody": "이번 한 번만 표시됩니다. 해시만 저장되므로 다시 확인할 수 없습니다.",
+        "disabledNote": "이 계정은 사용 중지되어 새 토큰을 만들 수 없습니다. 기존 토큰은 아래에 표시되며 여전히 취소할 수 있습니다.",
+        "rotationHelp": "교체하려면 새 토큰을 만들고 둘 다 작동하는 동안 통합을 옮긴 다음 기존 토큰을 취소하세요. 먼저 취소하면 사용 중인 것이 중단됩니다.",
+        "loading": "토큰을 불러오는 중…",
+        "copy": "토큰 복사",
+        "revokeTitle": "이 토큰을 취소할까요?",
+        "revokeDescription": "\"{{name}}\"은(는) 즉시 작동을 멈추며 되돌릴 수 없습니다. 이를 사용하던 모든 것이 실패하기 시작합니다. 교체 중이라면 먼저 대체 토큰을 만들고 통합을 옮기세요."
+      },
+      "disableTitle": "이 서비스 계정을 사용 중지할까요?",
+      "disableDescription": "{{name}}은(는) 즉시 작동을 멈춥니다. 다음 로그인 때가 아니라 이미 보유한 모든 토큰이 함께 중지됩니다. 다시 사용 설정할 때까지 그 토큰을 사용하는 모든 것이 실패합니다.",
+      "disableConfirm": "사용 안 함"
     }
   },
   "filePreview": {
@@ -3056,7 +3512,18 @@
     "showMore": "더 보기",
     "showLess": "간략히 보기",
     "lockZoom": "확대/축소 수준 잠금",
-    "unlockZoom": "확대/축소 수준 잠금 해제"
+    "unlockZoom": "확대/축소 수준 잠금 해제",
+    "closePreview": "미리보기 닫기",
+    "openWebUrl": "웹 URL 열기",
+    "openInSource": "원본에서 열기",
+    "noDetails": "파일 세부 정보가 없습니다",
+    "metadata": "메타데이터",
+    "webUrl": "웹 URL",
+    "fitToScreen": "화면에 맞추기",
+    "resizeCitations": "인용 패널 크기 조정",
+    "resizePreview": "파일 미리보기 패널 크기 조정",
+    "viewCitations": "인용 보기",
+    "openNamedInSource": "{{name}}을(를) 원본에서 열기"
   },
   "agentBuilder": {
     "goBack": "뒤로 가기",
@@ -3073,6 +3540,7 @@
     "agentActionsMenuAria": "에이전트 메뉴",
     "agentMenuCreateAsServiceAgent": "서비스 에이전트로 생성",
     "agentMenuConvertToServiceAgent": "서비스 에이전트로 전환",
+    "share": "공유",
     "shareWithOrg": "모두와 공유",
     "shareWithOrgTooltip": "조직의 모든 구성원과 이 에이전트를 공유합니다.",
     "serviceAccountShareTooltip": "서비스 에이전트는 항상 조직 전체와 공유됩니다.",
@@ -3112,6 +3580,7 @@
     "skillNodeTemplateDescription": "에이전트가 호출할 수 있는 사용자 지정 스킬",
     "skillDeprecated": "이 스킬은 더 이상 사용되지 않습니다",
     "skillDeprecatedReplacedBy": "이 스킬은 더 이상 사용되지 않습니다. 대신 {{name}}을(를) 사용하세요.",
+    "skillDisabled": "이 스킬은 비활성 상태이며 다시 활성화할 때까지 에이전트에서 사용할 수 없습니다",
     "collapse": "접기",
     "expand": "펼치기",
     "serviceAccountCreated": "서비스 에이전트가 생성되었습니다. 팔레트의 열쇠 아이콘으로 각 툴셋을 구성하세요.",
@@ -3229,6 +3698,8 @@
     "svcAcctCreateTitle": "서비스 에이전트 생성",
     "svcAcctConvertDesc": "이 에이전트는 공유 서비스 에이전트가 됩니다. 조직 전체에서 사용할 수 있고, 각 툴셋은 에이전트 수준에서 한 번만 인증하며, 지식은 플로우에서 연결한 항목으로 제한됩니다.",
     "svcAcctCreateDesc": "공유 서비스 에이전트를 생성하고 있습니다. 조직 전체에서 사용할 수 있고, 각 툴셋은 에이전트 수준에서 한 번만 인증하며, 지식은 플로우에서 연결한 항목으로 제한됩니다.",
+    "svcAcctConvertDescNoOrg": "이 에이전트는 서비스 에이전트가 됩니다. 각 툴셋은 에이전트 수준에서 한 번 인증하며, 지식은 플로우에 연결한 범위로 제한됩니다. 접근 권한은 공유 버튼으로 관리하세요.",
+    "svcAcctCreateDescNoOrg": "서비스 에이전트를 만들고 있습니다. 각 툴셋은 에이전트 수준에서 한 번 인증하며, 지식은 플로우에 연결한 범위로 제한됩니다. 접근 권한은 공유 버튼으로 관리하세요.",
     "svcAcctConvertLabel": "서비스 에이전트로 전환",
     "svcAcctCreateLabel": "서비스 에이전트 생성",
     "svcAcctConvertBusy": "전환 중…",
@@ -3259,6 +3730,8 @@
     "mcpCredentialsTitle": "MCP 서버 자격 증명",
     "mcpCredentialsDesc": "에이전트가 도구를 사용할 수 있도록 이 MCP 서버를 인증하세요.",
     "mcpServerDefaultName": "MCP 서버",
+    "configureMcpTooltip": "자격 증명 관리",
+    "authenticateMcpTooltip": "이 MCP 서버 인증",
     "mcpAuthUpdatedNotify": "MCP 인증이 업데이트되었습니다.",
     "mcpAuthSaveError": "MCP 자격 증명 저장에 실패했습니다.",
     "mcpAuthRemoveError": "MCP 자격 증명 제거에 실패했습니다.",
@@ -3355,10 +3828,21 @@
     "toolInlineSuffix": "{{name}} 도구",
     "paletteToolGroupLabel": "{{app}} 도구",
     "nodeTemplateChatResponseDesc": "사용자에게 답변을 전송합니다",
-    "deprecatedToolsBanner": "이 에이전트의 도구 {{count}}개가 지원 중단되었습니다. 제거하세요: {{tools}}",
     "removeDeprecatedTools": "지원 중단된 도구 제거",
     "showMore": "더 보기",
-    "showLess": "간략히 보기"
+    "showLess": "간략히 보기",
+    "mcpServerAlreadyAttachedNotify": "{{name}}은(는) 이미 이 에이전트에 연결되어 있습니다",
+    "webSearchOnlyOne": "웹 검색 제공자는 하나만 연결할 수 있습니다",
+    "mcpServerNodeSubtitle": "MCP 서버의 도구",
+    "noMcpServersAvailable": "사용 가능한 MCP 서버가 없습니다",
+    "webSearchLocked": "이 에이전트의 웹 검색은 변경할 수 없습니다",
+    "webSearchLoading": "웹 검색 제공자를 불러오는 중…",
+    "webSearchConfigureFirst": "먼저 {{name}}을(를) 구성하세요",
+    "webSearch": "웹 검색",
+    "toolsetOAuthServerError": "인증에 실패했습니다. 다시 시도하거나 관리자에게 문의하세요.",
+    "attached": "연결됨",
+    "mcpServerWithToolCount_other": "도구 {{count}}개가 있는 MCP 서버",
+    "deprecatedToolsBanner_other": "이 에이전트의 도구 {{count}}개가 더 이상 사용되지 않습니다. 제거하세요: {{tools}}"
   },
   "recordView": {
     "sections": {
@@ -3432,16 +3916,45 @@
       "folder": "폴더",
       "connectorId": "커넥터 ID",
       "notAvailable": "해당 없음",
-      "typeEmail": "이메일",
-      "typeFile": "파일",
-      "typeArtifact": "아티팩트",
-      "typeTicket": "티켓",
-      "typeWebpage": "웹 페이지",
-      "typeMessage": "메시지",
       "mailSubject": "제목",
       "ticketSummary": "요약",
-      "ticketDescription": "설명"
-    }
+      "ticketDescription": "설명",
+      "recordTypes": {
+        "FILE": "파일",
+        "DRIVE": "드라이브",
+        "WEBPAGE": "웹 페이지",
+        "DATABASE": "데이터베이스",
+        "DATASOURCE": "데이터 소스",
+        "MESSAGE": "메시지",
+        "MAIL": "이메일",
+        "EMAIL": "이메일",
+        "GROUP_MAIL": "그룹 이메일",
+        "TICKET": "티켓",
+        "COMMENT": "댓글",
+        "INLINE_COMMENT": "인라인 댓글",
+        "CONFLUENCE_PAGE": "Confluence 페이지",
+        "CONFLUENCE_BLOGPOST": "Confluence 블로그 게시물",
+        "SHAREPOINT_PAGE": "SharePoint 페이지",
+        "SHAREPOINT_LIST": "SharePoint 목록",
+        "SHAREPOINT_LIST_ITEM": "SharePoint 목록 항목",
+        "SHAREPOINT_DOCUMENT_LIBRARY": "SharePoint 문서 라이브러리",
+        "LINK": "링크",
+        "PROJECT": "프로젝트",
+        "PULL_REQUEST": "풀 리퀘스트",
+        "MEETING": "회의",
+        "PRODUCT": "제품",
+        "DEAL": "거래",
+        "CASE": "케이스",
+        "TASK": "작업",
+        "ARTIFACT": "아티팩트",
+        "CODE_FILE": "코드 파일",
+        "SQL_TABLE": "SQL 테이블",
+        "SQL_VIEW": "SQL 뷰",
+        "OTHERS": "기타"
+      }
+    },
+    "previewConversionFailed": "미리보기 변환에 실패했습니다. 파일은 계속 다운로드할 수 있습니다.",
+    "missingRecordId": "레코드 ID 없음"
   },
   "oauthConsent": {
     "loading": "승인 요청을 불러오는 중…",
@@ -3451,6 +3964,7 @@
     "errorTitle": "승인 오류",
     "signedInAs": "{{display}}(으)로 로그인됨",
     "requestHeading": "이 애플리케이션이 다음에 대한 액세스를 요청합니다:",
+    "unreviewedApp": "이 애플리케이션은 스스로 등록했습니다. 검토한 관리자가 없습니다.",
     "legalNotice": "“허용”을 클릭하면 위에 설명된 대로 {{appName}}이(가) 사용자의 데이터에 액세스하는 것을 승인하게 됩니다.",
     "privacyPolicy": "개인정보 처리방침",
     "deny": "거부",
@@ -3540,9 +4054,7 @@
         "emailNotePre": "가입에 사용한 이메일 —",
         "emailNotePost": "— 이 조직의 앱에서 사용하는 이메일과 동일해야 권한이 올바르게 인식됩니다.",
         "cancelButton": "취소",
-        "signUpButton": "가입",
-        "verificationNoteTitle": "인증 필요",
-        "verificationNoteBody": "위 이메일로 인증 링크가 전송됩니다. 인증을 완료한 후에만 조직에 접근할 수 있습니다."
+        "signUpButton": "가입"
       }
     },
     "login": {
@@ -3587,7 +4099,9 @@
       "microsoftUnavailable": "현재 Microsoft 로그인을 사용할 수 없습니다. 관리자에게 문의하세요.",
       "oauthUnavailable": "현재 OAuth 로그인을 사용할 수 없습니다. 관리자에게 문의하세요.",
       "showPassword": "비밀번호 표시",
-      "hidePassword": "비밀번호 숨기기"
+      "hidePassword": "비밀번호 숨기기",
+      "accountDisabled": "계정이 비활성화되었습니다.",
+      "tooManyIncorrectCredentials": "잘못된 자격 증명을 너무 여러 번 입력했습니다"
     }
   },
   "healthGate": {
@@ -3615,5 +4129,119 @@
     "skip": "건너뛰기",
     "next": "다음",
     "submit": "제출"
+  },
+  "oauthDevice": {
+    "title": "기기 연결",
+    "codeLabel": "터미널에 표시된 코드를 입력하세요",
+    "phishingWarning": "본인이 직접 제어하는 기기에서 시작한 경우에만 계속하세요. 누군가 이 코드를 보냈다면 이 페이지를 닫으세요.",
+    "codePlaceholder": "ABCD-EFGH",
+    "continue": "계속",
+    "loading": "이 기기를 확인하는 중…",
+    "doneTitle": "기기가 연결되었습니다",
+    "doneLine": "터미널로 돌아가셔도 됩니다. 이 창은 닫아도 좋습니다.",
+    "deniedTitle": "요청이 거부되었습니다",
+    "deniedLine": "기기에 접근 권한이 부여되지 않았습니다."
+  },
+  "validation": {
+    "password": {
+      "rules": "8자 이상: 소문자, 대문자, 숫자, 기호.",
+      "minLength": "비밀번호는 8자 이상이어야 합니다.",
+      "lowercase": "비밀번호에는 소문자가 포함되어야 합니다.",
+      "uppercase": "비밀번호에는 대문자가 포함되어야 합니다.",
+      "number": "비밀번호에는 숫자가 포함되어야 합니다.",
+      "symbol": "비밀번호에는 기호가 포함되어야 합니다.",
+      "mismatch": "비밀번호가 일치하지 않습니다."
+    }
+  },
+  "filterDropdown": {
+    "selectedCount": "{{count}}개 선택됨",
+    "is": "다음과 같음",
+    "isAnyOf": "다음 중 하나",
+    "loadingOptions": "옵션을 불러오는 중…",
+    "refreshingOptions": "옵션을 새로 고치는 중…",
+    "loadingMore": "더 불러오는 중…"
+  },
+  "moveFolder": {
+    "moving": "이동 중...",
+    "noFolders": "폴더를 찾을 수 없습니다"
+  },
+  "shareSidebar": {
+    "suggestedTeams": "추천 팀",
+    "suggestedMembers": "추천 멤버",
+    "loadingMoreUsers": "사용자를 더 불러오는 중...",
+    "noResults": "사용자나 팀을 찾을 수 없습니다",
+    "createNewTeam": "새 팀 만들기",
+    "sharing": "공유하는 중...",
+    "accessShared": "접근 권한을 공유했습니다",
+    "sharedWith": "{{names}}와(과) 공유했습니다",
+    "shareFailed": "공유하지 못했습니다",
+    "shareError": "접근 권한을 공유하지 못했습니다. 다시 시도해 주세요.",
+    "roleUpdated": "역할이 업데이트되었습니다",
+    "roleUpdatedDescription": "{{name}}이(가) 이제 {{role}}입니다",
+    "member": "멤버",
+    "roleError": "역할을 업데이트하지 못했습니다. 다시 시도해 주세요.",
+    "roleFailed": "역할을 업데이트하지 못했습니다",
+    "accessRevoked": "접근 권한이 취소되었습니다",
+    "accessRevokedDescription": "{{name}}에게 더 이상 접근 권한이 없습니다",
+    "revokeError": "접근 권한을 제거하지 못했습니다. 다시 시도해 주세요.",
+    "revokeFailed": "접근 권한을 취소하지 못했습니다",
+    "memberCount_other": "멤버 {{count}}명",
+    "roles": {
+      "owner": {
+        "label": "전체 권한",
+        "description": "컬렉션의 공동 소유"
+      },
+      "writer": {
+        "label": "편집 가능",
+        "description": "파일과 폴더의 편집 및 정리만 가능"
+      },
+      "reader": {
+        "label": "보기 가능",
+        "description": "보기 권한만"
+      }
+    },
+    "team": "팀",
+    "teamsNoRoles": "팀에는 역할이 없습니다",
+    "invite": "Pipeshub에 초대"
+  },
+  "demoData": {
+    "badge": {
+      "label": "데모",
+      "tooltip": "Acme Corp 데모의 샘플 데이터이며, 회사의 실제 레코드가 아닙니다"
+    },
+    "removalNotice": {
+      "title": "Acme Corp 데모 데이터가 아직 워크스페이스에 있습니다",
+      "description": "이제 회사의 실제 데이터가 PipesHub에 있습니다. 데모는 기본적으로 답변에서 숨겨지지만 누구나 다시 켤 수 있고 샘플 계정도 계속 로그인할 수 있습니다. 모두에 대해 끄거나 영구적으로 제거하세요.",
+      "remove": "영구 제거",
+      "keep": "일단 유지",
+      "turnOff": "모두에 대해 끄기"
+    },
+    "removeDialog": {
+      "title": "Acme Corp 데모 데이터를 영구적으로 제거할까요?",
+      "description": "Demo 커넥터와 그 모든 레코드, 그룹, 권한이 삭제됩니다. 아무것도 삭제하지 않고 숨기려면 대신 모두에 대해 끄세요. 나중에 커넥터 페이지에서 다시 추가할 수 있습니다.",
+      "deleteAccounts": "샘플 계정도 삭제: {{names}}",
+      "deleteAccountsHint": "초기 비밀번호로 만들어졌으므로 비밀번호를 아는 사람은 누구나 해당 계정으로 로그인할 수 있습니다.",
+      "cancel": "취소",
+      "confirm": "영구 제거",
+      "successTitle": "데모 데이터를 제거했습니다",
+      "successAccounts": "샘플 계정도 삭제되었습니다.",
+      "partialTitle": "데모 데이터를 제거했지만 일부 샘플 계정이 남아 있습니다",
+      "partialDescription": "워크스페이스 → 사용자에서 {{emails}}을(를) 삭제하세요.",
+      "errorTitle": "데모 데이터를 제거하지 못했습니다",
+      "errorDescription": "다시 시도해 주세요. 계속 발생하면 커넥터 페이지에서 Demo 커넥터를 제거하세요."
+    },
+    "switch": {
+      "errorTitle": "데모 데이터 설정을 변경하지 못했습니다",
+      "errorDescription": "변경된 내용이 없습니다. 잠시 후 다시 시도하세요.",
+      "hiddenTitle": "Acme Corp 데모 데이터를 숨겼습니다",
+      "hiddenDescription": "답변, 검색, 레코드에서 제외되었습니다. 프로필 → 데모 데이터에서 언제든 다시 켤 수 있습니다.",
+      "undo": "실행 취소"
+    },
+    "everyone": {
+      "offTitle": "모두에 대해 데모 데이터를 껐습니다",
+      "offDescription": "모든 사용자의 답변, 검색, 레코드에서 제외되었고 샘플 계정은 로그인할 수 없습니다. 프로필 → 데모 데이터에서 다시 켜세요.",
+      "onTitle": "모두에 대해 데모 데이터를 다시 켰습니다",
+      "errorTitle": "모두에 대한 데모 데이터를 변경하지 못했습니다"
+    }
   }
 }

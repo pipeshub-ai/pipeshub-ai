@@ -23,6 +23,8 @@ interface DemoDataState {
   loadStatus: () => Promise<void>;
   /** Show or hide the demo for this person; `null` goes back to the default. */
   setInclude: (include: boolean | null) => Promise<void>;
+  /** Admins only: turn the demo off, or back on, for everyone. */
+  setEnabledForEveryone: (enabled: boolean) => Promise<void>;
   /** Forget what was found, e.g. once the demo data has been removed. */
   reset: () => void;
 }
@@ -152,6 +154,13 @@ export const useDemoDataStore = create<DemoDataState>()(
         const started = generation;
         statusRevision += 1;
         const status = await DemoDataApi.setInclude(include);
+        if (started === generation) set({ status });
+      },
+
+      setEnabledForEveryone: async (enabled) => {
+        const started = generation;
+        statusRevision += 1;
+        const status = await DemoDataApi.setEnabledForEveryone(enabled);
         if (started === generation) set({ status });
       },
 

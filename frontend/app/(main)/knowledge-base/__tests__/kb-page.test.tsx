@@ -493,7 +493,7 @@ describe('Knowledge base page — failures the user must be able to recover from
     });
     openAt('/knowledge-base');
 
-    const retry = await screen.findByRole('button', { name: /Retry/ });
+    const retry = await screen.findByRole('button', { name: /Try again/ });
     expect(screen.queryByText(/KeyError/)).toBeNull();
     expect(screen.getByText("We couldn't load your collections. Check your connection, then select Retry.")).toBeTruthy();
 
@@ -1253,7 +1253,7 @@ describe('Knowledge base page — All Records', () => {
     api.hub.getAllRootItems.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(hubResponse([CONNECTOR_FILE]));
     openAt('/knowledge-base?view=all-records');
 
-    fireEvent.click(await screen.findByRole('button', { name: /Retry/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Try again/ }));
 
     expect(await screen.findByRole('row', { name: 'Budget.xlsx' })).toBeTruthy();
   });

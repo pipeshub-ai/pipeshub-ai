@@ -54,6 +54,11 @@ def make_mock_connector() -> MagicMock:
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
+    dep.ensure_team_app_edge = AsyncMock()
+    dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
+    dep.get_nodes_by_filters = AsyncMock(return_value=[])
+    dep.batch_update_nodes = AsyncMock(return_value=True)
     c.data_entities_processor = dep
 
     runtime = MagicMock()
@@ -72,14 +77,10 @@ def make_mock_connector() -> MagicMock:
 
     # transaction() context manager -> tx_store mock
     tx_store = MagicMock()
-    tx_store.get_user_by_source_id = AsyncMock(return_value=None)
     tx_store.get_user_group_by_external_id = AsyncMock(return_value=None)
     tx_store.get_record_group_by_external_id = AsyncMock(return_value=None)
     tx_store.get_records_by_status = AsyncMock(return_value=[])
-    tx_store.get_nodes_by_filters = AsyncMock(return_value=[])
     tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-    tx_store.batch_update_nodes = AsyncMock(return_value=True)
-    tx_store.ensure_team_app_edge = AsyncMock()
 
     class _TxCtx:
         async def __aenter__(self) -> MagicMock:

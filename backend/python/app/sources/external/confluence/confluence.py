@@ -123,15 +123,16 @@ class ConfluenceDataSource:
         """Resolve an attachment ``_links.download`` path to a full URL.
 
         Data Center returns paths like ``/download/attachments/{pageId}/{file}``
-        relative to the Confluence site origin (not ``/rest/api``).
+        relative to the site's base address, which keeps any context path the
+        site is served under (``https://host/confluence``), not to the bare host.
         """
         if download_path.startswith("http://") or download_path.startswith("https://"):
             return download_path
-        parsed = urlparse(self.base_url)
-        origin = f"{parsed.scheme}://{parsed.netloc}"
-        if download_path.startswith("/"):
-            return f"{origin}{download_path}"
-        return f"{self.base_url.rstrip('/')}/{download_path}"
+        site_root = self._v1_rest_api_base()[: -len("/rest/api")]
+        parsed = urlparse(site_root)
+        if parsed.path and download_path.startswith(f"{parsed.path}/"):
+            return f"{parsed.scheme}://{parsed.netloc}{download_path}"
+        return f"{site_root}/{download_path.lstrip('/')}"
 
     async def _stream_download_url(
         self,
@@ -9066,7 +9067,9 @@ class ConfluenceDataSource:
         content_type: Optional[str] = None,
         expand: str = "version,space,history.lastUpdated,ancestors",
         limit: int = 200,
-        headers: Optional[Dict[str, Any]] = None
+        headers: Optional[Dict[str, Any]] = None,
+        start: Optional[int] = None,
+        cursor: Optional[str] = None,
     ) -> HTTPResponse:
         """Search for content (pages/blogs) by their titles using CQL.
 
@@ -9081,6 +9084,8 @@ class ConfluenceDataSource:
             expand: Comma-separated properties to expand
             limit: Max results to return (default: 200)
             headers: Additional headers
+            start: Offset of the page to read, from the previous page's ``_links.next``
+            cursor: Cursor of the page to read, from the previous page's ``_links.next``
 
         Returns:
             HTTPResponse with matching content items
@@ -9116,6 +9121,10 @@ class ConfluenceDataSource:
 
         if expand:
             _query['expand'] = expand
+        if start is not None:
+            _query['start'] = start
+        if cursor:
+            _query['cursor'] = cursor
 
         # v1 content search (Cloud + DC)
         url = f"{self._v1_rest_api_base()}/content/search"

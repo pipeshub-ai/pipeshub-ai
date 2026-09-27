@@ -9,6 +9,8 @@ export interface DemoDataStatus {
   /** Their own choice; null while they follow the default. */
   chosen: boolean | null;
   realData: boolean;
+  /** An admin turned it off for the whole organization; overrides every choice. */
+  offForEveryone: boolean;
   demoConnectorIds: string[];
 }
 
@@ -22,6 +24,12 @@ export const DemoDataApi = {
   /** `null` goes back to the default. */
   async setInclude(include: boolean | null): Promise<DemoDataStatus> {
     const { data } = await apiClient.put<DemoDataStatus>(`${BASE_URL}/preference`, { include });
+    return data;
+  },
+
+  /** Admins only: the demo for everyone, including whether the sample accounts can sign in. */
+  async setEnabledForEveryone(enabled: boolean): Promise<DemoDataStatus> {
+    const { data } = await apiClient.put<DemoDataStatus>(`${BASE_URL}/workspace`, { enabled });
     return data;
   },
 };

@@ -25,6 +25,7 @@ import {
   moveRecord,
   getDemoDataStatus,
   setDemoDataPreference,
+  setDemoDataWorkspace,
 } from '../controllers/kb_controllers';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -48,6 +49,7 @@ import {
   reindexRecordSchema,
   moveRecordSchema,
   demoDataPreferenceSchema,
+  demoDataWorkspaceSchema,
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -206,6 +208,14 @@ export function createKnowledgeBaseRouter(
     requireScopes(OAuthScopeNames.KB_WRITE),
     ValidationMiddleware.validate(demoDataPreferenceSchema),
     setDemoDataPreference(appConfig),
+  );
+
+  router.put(
+    '/demo-data/workspace',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
+    ValidationMiddleware.validate(demoDataWorkspaceSchema),
+    setDemoDataWorkspace(appConfig),
   );
 
   // Knowledge Hub unified browse API - Root

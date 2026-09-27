@@ -1,4 +1,7 @@
 replicaCount: 2
+rollingUpdate:
+  maxSurge: 1
+  maxUnavailable: 0
 terminationGracePeriodSeconds: 300
 
 # Global configuration
@@ -12,6 +15,9 @@ global:
   
   # Storage class for persistent volumes
   storageClass: ""
+  # Existing StatefulSets cannot change volumeClaimTemplates. Only new installs
+  # that set this true render global.storageClass onto those claims.
+  applyStorageClassToStatefulSets: false
 
 # Secret management configuration
 secretManagement:
@@ -160,6 +166,17 @@ extraVolumes: []
 #     mountPath: /app/public/branding
 extraVolumeMounts: []
 
+# Extra env entries for the app container. Use a secretKeyRef for values that
+# must not sit in the release, such as E2B_API_KEY.
+# extraEnv:
+#   - name: E2B_API_KEY
+#     valueFrom:
+#       secretKeyRef:
+#         name: pipeshub-e2b
+#         key: api-key
+extraEnv: []
+extraEnvFrom: []
+
 volumes: {}
 
 volumeMounts: {}
@@ -304,7 +321,11 @@ config:
   # you want on this cluster, and understand the isolation you are giving up.
   sandboxMode: "docker"
   # Image `run_code` containers are started from (SANDBOX_MODE=docker only).
-  sandboxDockerImage: "pipeshub/sandbox:latest"
+  sandboxDockerImage: "pipeshubai/pipeshub-sandbox:latest"
+  # false: user code has no network, and package installs are skipped.
+  # true: a short-lived install container may reach the public package indexes.
+  sandboxAllowNetwork: true
+  sandboxEgressNetwork: "pipeshub_sandbox_egress"
   # Address of the Docker daemon for SANDBOX_MODE=docker. Leave empty to use
   # the DinD sidecar (see `sandbox.dind`) when it is enabled, or set it to
   # reach a daemon you run yourself, e.g. "tcp://docker-daemon.svc:2375".
@@ -408,6 +429,20 @@ sandbox:
 secretKey: "" # Fill
 
 mongodb:
+  # Bitnami subchart. Existing installs keep this. New AWS installs set it false
+  # and use mongodb.builtin instead (official mongo image, chart-owned StatefulSet).
+  enabled: true
+  builtin:
+    enabled: false
+    image:
+      repository: mongo
+      tag: "8.0.17"
+      pullPolicy: IfNotPresent
+    cacheSizeGB: 1
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+    topologySpreadConstraints: []
   architecture: replicaset
   replicaSetName: rs0
   replicaCount: 2  # 2 data nodes + 1 arbiter = quorum with less storage than 3 full copies
@@ -430,6 +465,7 @@ mongodb:
   persistence:
     enabled: true
     storageClass: "" # Fill
+    size: 8Gi
   arbiter:
     enabled: true  # Provides the quorum vote without storing a full data copy
   podSecurityContext:
@@ -445,12 +481,27 @@ mongodb:
       - ALL
 
 redis:
-  # Set to false (with redis.external.enabled=true) to skip deploying the
-  # bundled Bitnami subchart entirely, e.g. when pointing at AWS MemoryDB or a
-  # self-hosted Redis Cluster. Wired via `condition: redis.enabled` in
-  # Chart.yaml, so this must stay a plain boolean the chart can read before
-  # dependency resolution.
+  # Set to false (with redis.external.enabled=true, or redis.builtin.enabled=true)
+  # to skip deploying the bundled Bitnami subchart entirely. Wired via
+  # `condition: redis.enabled` in Chart.yaml, so this must stay a plain boolean
+  # the chart can read before dependency resolution.
   enabled: true
+  # Chart-owned Redis (official redis image). New AWS installs use this and set
+  # enabled=false. Do not enable both.
+  builtin:
+    enabled: false
+    image:
+      repository: redis
+      tag: "7.4-bookworm"
+      pullPolicy: IfNotPresent
+    maxmemory: 2gb
+    maxmemoryPolicy: noeviction
+    resources: {}
+    persistence:
+      size: 8Gi
+    nodeSelector: {}
+    tolerations: []
+    topologySpreadConstraints: []
   architecture: replication  # 1 master + 1 replica for minimal read failover
   master:
     count: 1
@@ -665,6 +716,8 @@ kafka:
 
 qdrant:
   replicaCount: 2  # 2 nodes: one can fail while the other keeps serving
+  # Existing releases were created with Parallel. OrderedReady is immutable to change.
+  orderedStartup: false
   image:
     repository: qdrant/qdrant
     tag: v1.15
@@ -706,6 +759,7 @@ qdrant:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  topologySpreadConstraints: []
   apiKey: "api_key"
 
 # Neo4j (enabled by default). When enabled, the app uses Neo4j as the graph database (DATA_STORE=neo4j).
@@ -730,6 +784,7 @@ neo4j:
   persistence:
     enabled: true
     size: 10Gi
+    logsSize: 5Gi
     accessModes:
       - ReadWriteOnce
     storageClass: "" # Fill
@@ -752,6 +807,8 @@ neo4j:
     capabilities:
       drop:
       - ALL
+  nodeSelector: {}
+  tolerations: []
   # apoc plugin and memory tuning for production (4Gi K8s limit).
   # heap (2g) + pagecache (1g) + JVM overhead (~500m) fits within 4Gi limit.
   env:

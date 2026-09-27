@@ -108,8 +108,8 @@ export function InstanceCard({
 
   const { status: effectiveStatus, oauthAuthIncompleteForSync: oauthAuthIncomplete } =
     deriveSyncStatusState(instance, undefined, config);
-  const syncStrategy = getSyncStrategyLabel(config);
-  const syncInterval = getSyncIntervalLabel(config);
+  const syncStrategy = getSyncStrategyLabel(t, config);
+  const syncInterval = getSyncIntervalLabel(t, config);
   const lastSynced = formatRelativeTime(instance.updatedAtTimestamp);
 
   const canToggleSync =
@@ -121,11 +121,11 @@ export function InstanceCard({
 
   const syncToggleHelp: string | null =
     instance.status === CONNECTOR_INSTANCE_STATUS.DELETING
-      ? 'This connector is being removed.'
+      ? t('workspace.connectors.instanceCard.removing')
       : !instance.isConfigured
-        ? 'Finish configuration before you can enable sync.'
+        ? t('workspace.connectors.instanceCard.configureFirst')
         : oauthAuthIncomplete
-          ? 'Authenticate this connector before you can enable sync.'
+          ? t('workspace.connectors.instanceCard.authenticateFirst')
           : null;
 
   const syncSwitchDisabled =
@@ -304,7 +304,7 @@ export function InstanceCard({
           <InfoRow label={t('workspace.connectors.settingsTab.enabledBy')} value="-" />
         )}
 
-        <InfoRow label="LAST SYNCED" value={lastSynced} />
+        <InfoRow label={t('workspace.connectors.instanceCard.lastSynced')} value={lastSynced} />
 
         {instance._key && instance.supportsSync ? (
           <ConnectorSyncProgress
@@ -328,7 +328,7 @@ export function InstanceCard({
                 lineHeight: '16px',
               }}
             >
-              SYNC ENABLED
+              {t('workspace.connectors.instanceCard.syncEnabled')}
             </Text>
             {syncToggleHelp && syncSwitchDisabled ? (
               <Tooltip content={syncToggleHelp} side="top">

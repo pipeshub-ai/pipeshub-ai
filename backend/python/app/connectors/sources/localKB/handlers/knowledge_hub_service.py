@@ -933,6 +933,7 @@ class KnowledgeHubService:
             parentId=doc.get('parentId'),
             origin=origin,
             connector=doc.get('connector'),
+            connectorId=doc.get('connectorId'),
             recordType=doc.get('recordType'),
             recordGroupType=doc.get('recordGroupType'),
             syncStatus=doc.get('syncStatus'),

@@ -183,7 +183,6 @@ async def execute_list_files(
             sort_order = "desc"
 
         # KB ids keep a KB-only agent's search scoped (None would search everything).
-        # Name search still finds no KB files: the providers null connectorId before filtering.
         agent_source_ids = list(dict.fromkeys([*agent_connector_ids, *scope.kb_ids]))
 
         # source_ids may name apps and KBs; narrow to them, never widen.

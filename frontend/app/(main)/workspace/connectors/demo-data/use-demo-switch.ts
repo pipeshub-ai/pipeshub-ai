@@ -12,6 +12,7 @@ export function useDemoSwitch() {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const setIncludeInStore = useDemoDataStore((s) => s.setInclude);
+  const setEnabledForEveryoneInStore = useDemoDataStore((s) => s.setEnabledForEveryone);
   const [busy, setBusy] = useState(false);
 
   const setInclude = useCallback(
@@ -46,5 +47,33 @@ export function useDemoSwitch() {
     });
   }, [addToast, setInclude, t]);
 
-  return { setInclude, hideWithUndo, busy };
+  /** Admins only. Turning it off also stops the sample accounts signing in. */
+  const setEnabledForEveryone = useCallback(
+    async (enabled: boolean): Promise<boolean> => {
+      setBusy(true);
+      try {
+        await setEnabledForEveryoneInStore(enabled);
+      } catch {
+        addToast({ variant: 'error', title: t('demoData.everyone.errorTitle'), description: t('demoData.switch.errorDescription') });
+        return false;
+      } finally {
+        setBusy(false);
+      }
+      addToast(
+        enabled
+          ? { variant: 'success', title: t('demoData.everyone.onTitle'), duration: 4000 }
+          : {
+              variant: 'info',
+              title: t('demoData.everyone.offTitle'),
+              description: t('demoData.everyone.offDescription'),
+              action: { label: t('demoData.switch.undo'), onClick: () => void setEnabledForEveryone(true) },
+              duration: UNDO_WINDOW_MS,
+            },
+      );
+      return true;
+    },
+    [addToast, setEnabledForEveryoneInStore, t],
+  );
+
+  return { setInclude, hideWithUndo, setEnabledForEveryone, busy };
 }

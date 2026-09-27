@@ -1960,14 +1960,15 @@ class BlobStorage(Transformer):
                 storage document.
 
         Returns:
-            dict with ``documentId``, ``fileName``, and either ``signedUrl``
-            (S3) or ``downloadUrl`` (local).
+            dict with ``documentId``, ``fileName`` and, when cloud storage issues
+            one, ``signedUrl``. There is no ``downloadUrl``: the storage service
+            has no user-facing route, so a caller that needs a link must register
+            the file as a record and use :meth:`get_record_stream_url`.
         """
         import os
 
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
-            public_base_url = await self._get_public_download_base_url()
 
             document_path = f"conversations/{conversation_id}"
             doc_name_no_ext = os.path.splitext(file_name)[0]
@@ -2008,14 +2009,9 @@ class BlobStorage(Transformer):
                         if not document_id:
                             raise Exception("No document ID in local upload response")
 
-                    download_url = (
-                        f"{public_base_url}"
-                        f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
-                    )
                     self.logger.info("✅ Conversation file saved (local): %s", document_id)
                     return {
                         "documentId": document_id,
-                        "downloadUrl": download_url,
                         "fileName": file_name,
                     }
             else:
@@ -2072,15 +2068,10 @@ class BlobStorage(Transformer):
                                 }
 
                     self.logger.info(
-                        "✅ Conversation file saved (fallback URL): %s", document_id,
-                    )
-                    download_url_external = (
-                        f"{public_base_url}"
-                        f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+                        "✅ Conversation file saved (no signed URL): %s", document_id,
                     )
                     return {
                         "documentId": document_id,
-                        "downloadUrl": download_url_external,
                         "fileName": file_name,
                     }
         except Exception as e:
@@ -2108,8 +2099,8 @@ class BlobStorage(Transformer):
         invariant :class:`~app.services.artifact_registry.versioning.VersionManager`
         depends on.
 
-        Returns dict with ``documentId``, ``fileName``, and either
-        ``signedUrl`` (S3) or ``downloadUrl`` (local).
+        Returns dict with ``documentId``, ``fileName`` and, on cloud storage,
+        ``signedUrl``.
         """
         import os as _os
 
@@ -2142,12 +2133,7 @@ class BlobStorage(Transformer):
                     if not document_id:
                         raise Exception("No document ID in local upload response")
 
-                public_base_url = await self._get_public_download_base_url()
-                download_url = (
-                    f"{public_base_url}"
-                    f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
-                )
-                return {"documentId": document_id, "downloadUrl": download_url, "fileName": file_name}
+                return {"documentId": document_id, "fileName": file_name}
         else:
             placeholder_data = {
                 "documentName": doc_name_no_ext,
@@ -2183,55 +2169,50 @@ class BlobStorage(Transformer):
                                 "signedUrl": data["signedUrl"],
                                 "fileName": file_name,
                             }
-                public_base_url = await self._get_public_download_base_url()
-                return {
-                    "documentId": document_id,
-                    "downloadUrl": f"{public_base_url}{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}",
-                    "fileName": file_name,
-                }
+                return {"documentId": document_id, "fileName": file_name}
 
-    async def get_download_url(self, org_id: str, document_id: str, version: int | None = None) -> str:
-        """Resolve a user-facing download URL for `document_id` — an S3/Azure
-        signed URL when available, else the org-scoped external download
-        route (local storage / any fallback where the download route
-        didn't return a `signedUrl`). Used by
-        `app.services.artifact_registry.signed_urls.SignedUrlBroker` so
-        that module never reaches into this class's private helpers.
+    async def get_download_url(
+        self, org_id: str, document_id: str, version: int | None = None,
+    ) -> str | None:
+        """S3/Azure signed download URL for `document_id`, or ``None`` when
+        storage cannot issue one (local storage). Callers that still need a
+        link fall back to :meth:`get_record_stream_url`, which checks the
+        viewer's record permissions; the storage service itself has no
+        user-facing route.
 
         `version` is a storage-layer `versionHistory` index (not a registry
-        version number); both the internal and external `/download` routes
-        accept it identically (same `downloadDocument` handler mounted
-        twice — see `storage.routes.ts`)."""
+        version number)."""
         headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+        # Local storage's download route streams the file bytes rather than
+        # returning `{signedUrl}` JSON; calling it would fetch the whole file.
+        if storage_type == "local":
+            return None
         version_query = f"?version={version}" if version is not None else ""
-        # Local storage's download route STREAMS the file bytes back
-        # (`serveFileFromLocalStorage` in storage.controller.ts) — there is
-        # no `{signedUrl}` JSON to fetch, so calling it here would download
-        # the whole file just to throw it away. Go straight to the
-        # org-scoped external route.
-        if storage_type != "local":
-            download_api = (
-                f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
-                f"{version_query}"
-            )
-            async with _borrowed_session() as session:
-                async with session.get(download_api, headers=headers) as resp:
-                    # Content-type guard: any storage vendor that streams the
-                    # file on this route (rather than returning JSON) falls
-                    # through to the external-route fallback below.
-                    if (
-                        resp.status == HttpStatusCode.SUCCESS.value
-                        and resp.content_type == "application/json"
-                    ):
-                        data = await resp.json()
-                        signed = data.get("signedUrl")
-                        if signed:
-                            return str(signed)
-        public_base_url = await self._get_public_download_base_url()
-        return (
-            f"{public_base_url}{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+        download_api = (
+            f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
             f"{version_query}"
         )
+        async with _borrowed_session() as session:
+            async with session.get(download_api, headers=headers) as resp:
+                # Any vendor that streams on this route instead of returning
+                # JSON has no signed URL to give.
+                if (
+                    resp.status == HttpStatusCode.SUCCESS.value
+                    and resp.content_type == "application/json"
+                ):
+                    data = await resp.json()
+                    signed = data.get("signedUrl")
+                    if signed:
+                        return str(signed)
+        return None
+
+    async def get_record_stream_url(self, record_id: str, version: int | None = None) -> str:
+        """User-facing link to a record's bytes through the knowledge-base
+        stream route, which enforces the viewer's record permissions.
+        `version` is the record's own version number, not a storage index."""
+        public_base_url = await self._get_public_download_base_url()
+        version_query = f"?version={version}" if version is not None else ""
+        return f"{public_base_url}{Routes.KB_STREAM_RECORD.value.format(recordId=record_id)}{version_query}"
 
     async def get_direct_upload_url(self, org_id: str, document_id: str) -> str:
         """Signed PUT URL for an EXISTING document — the first phase of the

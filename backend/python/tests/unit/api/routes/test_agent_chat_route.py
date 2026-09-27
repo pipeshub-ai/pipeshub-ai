@@ -319,14 +319,14 @@ class TestNonStreamingChat:
         )
         c, _ = make_client(graph)
         response = c.post("/api/v1/agent/private/chat", headers=as_user("alice"), json={"query": "hi"})
-        assert response.status_code == 400
+        assert response.status_code == 500
         assert response.json()["message"] == "The answer could not be saved. Try again."
 
     def test_run_error_is_returned_as_an_error(self, graph, loop) -> None:
         loop.frames = _sse(AGUI_FORMATTER.error(_CTX, message="The model is busy. Try again shortly.", code="rate_limit"))
         c, _ = make_client(graph)
         response = c.post("/api/v1/agent/private/chat", headers=as_user("alice"), json={"query": "hi"})
-        assert response.status_code == 400
+        assert response.status_code == 429
         assert response.json()["message"] == "The model is busy. Try again shortly."
 
     def test_missing_credentials_reach_the_caller_with_the_next_step(self, graph, loop) -> None:
@@ -334,10 +334,55 @@ class TestNonStreamingChat:
         graph.add_edge("agentHasToolset", {"_from": f"{AGENTS}/private", "_to": "agentToolsets/ts"})
         c, _ = make_client(graph)
         response = c.post("/api/v1/agent/private/chat", headers=as_user("alice"), json={"query": "hi"})
-        assert response.status_code == 400
+        assert response.status_code == 424
         assert "Workspace → Actions" in response.json()["message"]
 
     def test_agent_outside_reach_is_not_found(self, graph, loop) -> None:
         c, _ = make_client(graph)
         response = c.post("/api/v1/agent/private/chat", headers=as_user("bob"), json={"query": "hi"})
         assert response.status_code == 404
+
+    def test_a_disconnected_caller_closes_the_agent_loop(self, graph, loop, monkeypatch) -> None:
+        """The collector stops on disconnect; `aclosing` in `chat_stream` must then close
+        the loop's generator at once, so its producer task is cancelled rather than left
+        running until garbage collection."""
+        closed: list[bool] = []
+        # Held like a traceback or reference cycle would hold it: without an explicit
+        # close, garbage collection never gets the chance to finalize the generator.
+        live: list[object] = []
+
+        def loop_that_records_close(*_a: object, **_k: object) -> AsyncIterator[str]:
+            async def gen() -> AsyncIterator[str]:
+                try:
+                    for _ in range(1000):
+                        yield ": keep-alive\n\n"
+                finally:
+                    closed.append(True)
+            stream = gen()
+            live.append(stream)
+            return stream
+
+        async def disconnected(self) -> bool:  # noqa: ANN001 - patched Request method
+            return True
+
+        from app.api.routes import agent as agent_routes
+
+        collect = agent_routes.collect_stream_outcome
+        closed_when_collected: list[bool] = []
+
+        async def collect_and_check(*args: object, **kwargs: object):  # noqa: ANN202
+            outcome = await collect(*args, **kwargs)
+            # Checked inside the request: TestClient's loop shutdown would close
+            # every live async generator afterwards and hide a missing close.
+            closed_when_collected.append(bool(closed))
+            return outcome
+
+        monkeypatch.setattr("app.api.routes.agent.run_agent_loop_stream", loop_that_records_close)
+        monkeypatch.setattr("app.api.routes.agent.collect_stream_outcome", collect_and_check)
+        monkeypatch.setattr("starlette.requests.Request.is_disconnected", disconnected)
+        c, _ = make_client(graph)
+
+        response = c.post("/api/v1/agent/private/chat", headers=as_user("alice"), json={"query": "hi"})
+
+        assert response.status_code == 499
+        assert closed_when_collected == [True]

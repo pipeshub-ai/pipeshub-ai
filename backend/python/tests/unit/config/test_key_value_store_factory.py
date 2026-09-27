@@ -1,11 +1,16 @@
 """Tests for KeyValueStoreFactory and StoreConfig."""
 
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.config.constants.store_type import StoreType
 from app.config.key_value_store_factory import KeyValueStoreFactory, StoreConfig
+
+ETCD3_CLIENT = "app.config.providers.etcd.etcd3_connection_manager.etcd3.client"
 
 
 class TestStoreConfig:
@@ -207,3 +212,86 @@ class TestKeyValueStoreFactoryExceptionWrapping:
                 deserializer=lambda x: x,
                 config=config,
             )
+
+
+class _Recorder(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+@contextmanager
+def _record_every_log() -> Iterator[_Recorder]:
+    """App loggers don't propagate to the root, so caplog alone misses them."""
+    recorder = _Recorder()
+    loggers = [logging.getLogger()] + [
+        lg for lg in logging.Logger.manager.loggerDict.values() if isinstance(lg, logging.Logger)
+    ]
+    levels = [lg.level for lg in loggers]
+    for lg in loggers:
+        lg.addHandler(recorder)
+        lg.setLevel(logging.DEBUG)
+    try:
+        yield recorder
+    finally:
+        for lg, level in zip(loggers, levels):
+            lg.removeHandler(recorder)
+            lg.setLevel(level)
+
+
+class TestEtcd3Credentials:
+    """ETCD_USERNAME and ETCD_PASSWORD reach the etcd client through the factory."""
+
+    PASSWORD = "etcd-throwaway-test-password"
+
+    def _connect(self, username, password) -> MagicMock:
+        config = StoreConfig(host="etcd.test", port=2379, username=username, password=password)
+        store = KeyValueStoreFactory.create_store(
+            StoreType.ETCD3, serializer=lambda x: x, deserializer=lambda x: x, config=config
+        )
+        with patch(ETCD3_CLIENT) as client_factory:
+            store.connection_manager._create_client()
+        return client_factory
+
+    def test_both_set_logs_in(self) -> None:
+        client_factory = self._connect("pipeshub", self.PASSWORD)
+
+        kwargs = client_factory.call_args.kwargs
+        assert kwargs["user"] == "pipeshub"
+        assert kwargs["password"] == self.PASSWORD
+
+    @pytest.mark.parametrize(
+        ("username", "password"),
+        [(None, None), ("", ""), ("pipeshub", None), (None, PASSWORD), ("pipeshub", "")],
+    )
+    def test_login_is_skipped_unless_both_are_set(self, username, password) -> None:
+        kwargs = self._connect(username, password).call_args.kwargs
+
+        assert "user" not in kwargs
+        assert "password" not in kwargs
+
+    def test_only_one_set_is_warned_about(self) -> None:
+        with _record_every_log() as recorder:
+            self._connect("pipeshub", None)
+
+        assert any("Only one of ETCD_USERNAME and ETCD_PASSWORD" in m for m in recorder.messages)
+
+    def test_the_password_is_never_logged(self) -> None:
+        with _record_every_log() as recorder:
+            store = KeyValueStoreFactory.create_store(
+                StoreType.ETCD3,
+                serializer=lambda x: x,
+                deserializer=lambda x: x,
+                config=StoreConfig(
+                    host="etcd.test", port=2379, username="pipeshub", password=self.PASSWORD
+                ),
+            )
+            with patch(ETCD3_CLIENT):
+                store.connection_manager._create_client()
+
+        assert recorder.messages
+        assert not [m for m in recorder.messages if self.PASSWORD in m]
+        assert self.PASSWORD not in repr(store.connection_manager.config)

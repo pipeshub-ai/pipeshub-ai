@@ -87,6 +87,7 @@ class NodeItem(BaseModel):
     parentId: Optional[str] = Field(None, description="ID of the parent node")
     origin: OriginType = Field(..., description="Origin type (COLLECTION or CONNECTOR)")
     connector: Optional[str] = Field(None, description="Connector name (only for CONNECTOR origin)")
+    connectorId: Optional[str] = Field(None, description="Connector instance id (only for CONNECTOR origin)")
     recordType: Optional[str] = Field(None, description="Record type (only when nodeType is record)")
     recordGroupType: Optional[str] = Field(None, description="Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)")
     syncStatus: Optional[str] = Field(None, description="Owning connector's sync status (IDLE, SYNCING, FULL_SYNCING) for connector-origin container nodes")

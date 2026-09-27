@@ -571,9 +571,24 @@ class JiraConnector(BaseConnector):
 
             # 6. Sync roles, then record groups (projects + permissions)
             project_keys_for_roles = [proj.short_name for proj, _ in projects]
-            await self._sync_project_roles(project_keys_for_roles, jira_users, groups_members_map)
+            if groups_members_map is None:
+                # A role saved without a group's members would take their access away.
+                self.logger.warning(
+                    "Keeping the stored members of every project role: the group list could not be read in full"
+                )
+            else:
+                await self._sync_project_roles(project_keys_for_roles, jira_users, groups_members_map)
             await self._sync_project_lead_roles(raw_projects, jira_users)
-            await self.data_entities_processor.on_new_record_groups(projects)
+            # Saving a project replaces its access list, so projects whose scheme could not
+            # be read are left as stored; their issues are still synced below.
+            readable_projects = [(group, perms) for group, perms in projects if perms is not None]
+            for group, perms in projects:
+                if perms is None:
+                    self.logger.warning(
+                        "Keeping the stored access of project %s: its permission scheme could not be read",
+                        group.short_name,
+                    )
+            await self.data_entities_processor.on_new_record_groups(readable_projects)
 
             # 7. Sync issues (incremental via checkpoint), then deletions
             last_sync_time = await self._get_issues_sync_checkpoint()
@@ -1587,11 +1602,11 @@ class JiraConnector(BaseConnector):
         project_key: str,
         status: int,
         stage: str,
-    ) -> list[Permission]:
+    ) -> Optional[list[Permission]]:
         """Build a single-user BROWSE permission for the authenticated Jira account
         when the permission-scheme endpoints return 403 for this project (the
         account isn't a project admin). 401/transient failures return None from
-        the scheme fetch; the caller syncs the RecordGroup with an empty ACL.
+        the scheme fetch; the caller keeps the project's stored access.
 
         Mirrors the ``_app_roles_forbidden`` fallback in
         ``_fetch_application_roles_to_groups_mapping``: rather than indexing
@@ -1628,12 +1643,13 @@ class JiraConnector(BaseConnector):
                 type=PermissionType.READ,
             )]
 
+        # A 403 doesn't say the project grants no one; saving [] would replace its stored access.
         self.logger.warning(
             "⚠️ %s for %s returned %s and the authenticated Jira account email is unknown — "
-            "project will be indexed with no BROWSE permissions.",
+            "keeping the project's stored access.",
             stage, project_key, status,
         )
-        return []
+        return None
 
     async def _fetch_project_permission_scheme(
         self,
@@ -1655,9 +1671,9 @@ class JiraConnector(BaseConnector):
         - groupCustomField/userCustomField: Dynamic permissions based on issue fields
 
         Returns the BROWSE holders, or ``None`` when the scheme couldn't be determined due to a
-        transient failure (429 after retries / 5xx / parse error). The caller treats ``None`` as
-        an empty permission list and still syncs the RecordGroup. An empty list also means the
-        scheme was read and legitimately grants BROWSE to no one.
+        transient failure (429 after retries / 5xx / parse error). The caller then keeps the
+        project's stored access and still syncs its issues. An empty list means the scheme was
+        read and legitimately grants BROWSE to no one.
         """
         permissions: list[Permission] = []
 
@@ -1671,8 +1687,8 @@ class JiraConnector(BaseConnector):
             if scheme_response.status != HttpStatusCode.OK.value:
                 # Only a 403 is a genuine permission problem (the account isn't a project admin) →
                 # grant the creator direct BROWSE so the project isn't hidden, and notify. A 401
-                # (auth/token) or a 5xx/429 is transient — return None; caller still syncs the
-                # RecordGroup with an empty ACL this run.
+                # (auth/token) or a 5xx/429 is transient — return None; the caller keeps the
+                # project's stored access this run.
                 if scheme_response.status == HttpStatusCode.FORBIDDEN.value:
                     return await self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
@@ -1681,7 +1697,7 @@ class JiraConnector(BaseConnector):
                     )
                 self.logger.warning(
                     f"⚠️ Could not fetch permission scheme for {project_key} "
-                    f"(HTTP {scheme_response.status}); returning None so caller syncs with empty ACL"
+                    f"(HTTP {scheme_response.status}); keeping the project's stored access"
                 )
                 return None
 
@@ -1689,10 +1705,10 @@ class JiraConnector(BaseConnector):
             scheme_id = scheme_data.get("id")
             if not scheme_id:
                 # Without an id the grants URL is malformed and can only fail; skip rather
-                # than burn the retry budget. Caller syncs the RecordGroup with an empty ACL.
+                # than burn the retry budget. The caller keeps the project's stored access.
                 self.logger.warning(
                     f"⚠️ Permission scheme for {project_key} has no id; "
-                    "returning None so caller syncs with empty ACL"
+                    "keeping the project's stored access"
                 )
                 return None
 
@@ -1704,7 +1720,7 @@ class JiraConnector(BaseConnector):
 
             if grants_response.status != HttpStatusCode.OK.value:
                 # Same rule as the scheme fetch above: 403 → creator-browse fallback + notify;
-                # 401/5xx/429 → None; caller syncs RecordGroup with empty ACL.
+                # 401/5xx/429 → None; the caller keeps the project's stored access.
                 if grants_response.status == HttpStatusCode.FORBIDDEN.value:
                     return await self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
@@ -1714,7 +1730,7 @@ class JiraConnector(BaseConnector):
                 self.logger.warning(
                     f"⚠️ Could not fetch permission grants for scheme {scheme_id} "
                     f"({project_key}, HTTP {grants_response.status}); "
-                    "returning None so caller syncs with empty ACL"
+                    "keeping the project's stored access"
                 )
                 return None
 
@@ -1741,8 +1757,8 @@ class JiraConnector(BaseConnector):
             return permissions
 
         except Exception as e:
-            # Couldn't determine the scheme (transport exhaustion / parse error): caller syncs
-            # the RecordGroup with empty permissions.
+            # Couldn't determine the scheme (transport exhaustion / parse error): the caller
+            # keeps the project's stored access.
             self.logger.error(f"❌ Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
             return None
 
@@ -1937,11 +1953,12 @@ class JiraConnector(BaseConnector):
         self,
         group: dict[str, Any],
         user_by_account_id: dict[str, "AppUser"],
-    ) -> Optional[tuple[str, str, AppUserGroup, list["AppUser"]]]:
+    ) -> Optional[tuple[str, str, Optional[AppUserGroup], Optional[list["AppUser"]]]]:
         """Build an AppUserGroup and resolve its members.
 
         Returns ``(group_id, group_name, user_group, app_users)`` or ``None``
-        when the group should be skipped.
+        when the group is left out on purpose. ``app_users`` (and ``user_group``
+        after an error) is ``None`` when the group's members could not be read.
         """
         try:
             group_id = group.get("groupId")
@@ -1966,14 +1983,13 @@ class JiraConnector(BaseConnector):
             )
 
             member_account_ids, members_ok = await self._fetch_group_members(group_id, group_name)
-            # Transient membership failure → still sync the group (empty members) so it is
-            # not dropped this run. Next successful membership fetch refreshes members.
+            # Saving the group with no members would replace its stored members, taking away
+            # everyone's access through it until a later sync succeeds. Keep what is stored.
             if not members_ok:
                 self.logger.warning(
-                    f"⚠️ Membership unavailable for group {group_name}; "
-                    "syncing group with empty members this run"
+                    f"⚠️ Keeping the stored members of group {group_name}: its member list could not be read"
                 )
-                member_account_ids = []
+                return (group_id, group_name, user_group, None)
 
             app_users: list[AppUser] = []
             skipped_members = 0
@@ -2001,12 +2017,15 @@ class JiraConnector(BaseConnector):
 
         except Exception as group_error:
             self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
-            return None
+            # Unknown members, not no members: roles that include this group keep what is stored.
+            return (group.get("groupId"), group.get("name"), None, None)
 
-    async def _sync_user_groups(self, jira_users: list[AppUser]) -> dict[str, list[AppUser]]:
+    async def _sync_user_groups(self, jira_users: list[AppUser]) -> Optional[dict[str, Optional[list[AppUser]]]]:
         """
         Sync user groups and return a mapping of group_id/name -> list of AppUser members.
-        This mapping is used to resolve group members for project roles.
+        This mapping is used to resolve group members for project roles. A group whose
+        members could not be read maps to None and is not saved. Returns None when the
+        group list itself could not be read in full, so roles can't be resolved this run.
         """
         try:
             self.logger.info("🚀 Starting Jira user group synchronization")
@@ -2017,7 +2036,7 @@ class JiraConnector(BaseConnector):
                 # failure is already reported by the connection/sync-failed notification.
                 if self._group_bulk_forbidden:
                     await self._notify_group_sync_failed()
-                return {}
+                return None
             if not groups:
                 self.logger.info("ℹ️ No groups found in Jira")
                 return {}
@@ -2034,15 +2053,19 @@ class JiraConnector(BaseConnector):
 
             user_groups_batch = []
             # Mapping: group_id -> members, group_name -> members (for role actor lookup)
-            groups_members_map: dict[str, list[AppUser]] = {}
+            groups_members_map: dict[str, Optional[list[AppUser]]] = {}
 
             for res in results:
                 if res is None:
                     continue
                 group_id, group_name, user_group, app_users = res
                 # Store mapping by both group_id and group_name for flexible lookup
-                groups_members_map[group_id] = app_users
-                groups_members_map[group_name] = app_users
+                if group_id:
+                    groups_members_map[group_id] = app_users
+                if group_name:
+                    groups_members_map[group_name] = app_users
+                if app_users is None or user_group is None:
+                    continue
                 # Add group to batch (with or without members)
                 user_groups_batch.append((user_group, app_users))
 
@@ -2052,21 +2075,21 @@ class JiraConnector(BaseConnector):
             else:
                 self.logger.info("ℹ️ No groups with valid members to sync")
 
-            return groups_members_map
+            return None if fetch_failed else groups_members_map
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing user groups: {e}")
             await self._notify_group_sync_failed()
-            return {}
+            return None
 
     async def _fetch_groups(self) -> tuple[list[dict[str, Any]], bool]:
         """
         Fetch all Jira groups using the bulk_get_groups API.
 
         Returns:
-            (groups, fetch_failed) — fetch_failed is True when the groups API failed
-            before any groups were collected (permission/API error), not when Jira
-            simply has an empty group list.
+            (groups, fetch_failed) — fetch_failed is True when any page of the groups API
+            failed (permission/API error), so ``groups`` may be only the pages before it;
+            it is False when Jira simply has an empty group list.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -2090,8 +2113,8 @@ class JiraConnector(BaseConnector):
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.error(f"Failed to fetch groups: {response.text()}")
+                    fetch_failed = True
                     if not groups:
-                        fetch_failed = True
                         self._group_bulk_forbidden = (
                             response.status == HttpStatusCode.FORBIDDEN.value
                         )
@@ -2105,21 +2128,16 @@ class JiraConnector(BaseConnector):
 
                 groups.extend(batch_groups)
 
-                # Check pagination
-                is_last = groups_data.get("isLast", False)
-                if is_last:
+                # isLast decides where the list ends; a short page is the end only without it.
+                is_last = groups_data.get("isLast")
+                if is_last is True or (is_last is None and len(batch_groups) < max_results):
                     break
 
                 start_at += len(batch_groups)
 
-                # Also break if we got less than requested (safety check)
-                if len(batch_groups) < max_results:
-                    break
-
             except Exception as e:
                 self.logger.error(f"❌ Error fetching groups at offset {start_at}: {e}")
-                if not groups:
-                    fetch_failed = True
+                fetch_failed = True
                 break
 
         self.logger.info(f"👥 Fetched {len(groups)} total groups")
@@ -2130,8 +2148,9 @@ class JiraConnector(BaseConnector):
         Fetch all members of a Jira group.
 
         Returns ``(account_ids, ok)``. ``ok`` is False when a page couldn't be read (429 after
-        retries / 5xx / transport); the caller still syncs the group with empty members rather
-        than dropping it. ``ok`` is True on a clean read even if the group genuinely has no members.
+        retries / 5xx / transport); the caller then keeps the group's stored members. ``ok`` is
+        True on a clean read even if the group genuinely has no members, and when the group no
+        longer exists (404).
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -2153,6 +2172,11 @@ class JiraConnector(BaseConnector):
                     ctx=f"members of group {group_name}",
                 )
 
+                if response.status == HttpStatusCode.NOT_FOUND.value:
+                    # The group no longer exists, so it has no members to keep (not even earlier pages).
+                    self.logger.warning(f"Group {group_name} was not found while reading its members")
+                    return [], True
+
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"⚠️ Failed to fetch members for group {group_name}: HTTP {response.status}")
                     ok = False
@@ -2169,15 +2193,12 @@ class JiraConnector(BaseConnector):
                     if account_id:
                         member_account_ids.append(account_id)
 
-                # Check pagination
-                is_last = members_data.get("isLast", False)
-                if is_last:
+                # isLast decides where the list ends; a short page is the end only without it.
+                is_last = members_data.get("isLast")
+                if is_last is True or (is_last is None and len(batch_members) < max_results):
                     break
 
                 start_at += len(batch_members)
-
-                if len(batch_members) < max_results:
-                    break
 
             except Exception as e:
                 self.logger.error(f"❌ Error fetching members for group {group_name}: {e}")
@@ -2191,13 +2212,16 @@ class JiraConnector(BaseConnector):
         project_key: str,
         user_by_email: dict[str, "AppUser"],
         user_by_account_id: dict[str, "AppUser"],
-        groups_members_map: dict[str, list["AppUser"]],
+        groups_members_map: dict[str, Optional[list["AppUser"]]],
     ) -> tuple[str, list[tuple[AppRole, list["AppUser"]]], bool]:
         """Fetch a project's roles + actors and build ``(AppRole, members)`` tuples.
 
-        Returns ``(project_key, roles, failed)``.
+        Returns ``(project_key, roles, failed)``. A role that includes a group whose
+        members could not be read is left out (keeping its stored members) and marks
+        the project as failed.
         """
         project_roles: list[tuple[AppRole, list[AppUser]]] = []
+        role_skipped = False
         try:
             response = await self._call_with_retry(
                 lambda ds: ds.get_project_roles(projectIdOrKey=project_key),
@@ -2249,6 +2273,7 @@ class JiraConnector(BaseConnector):
                     )
 
                     member_users: list[AppUser] = []
+                    unreadable_group: Optional[str] = None
 
                     for actor in actors:
                         actor_type = actor.get("type", "")
@@ -2276,26 +2301,35 @@ class JiraConnector(BaseConnector):
                             group_name = actor.get("name") or actor.get("displayName")
                             group_id = actor.get("groupId")
 
-                            group_members = []
+                            group_members: Optional[list[AppUser]] = []
                             if group_id and group_id in groups_members_map:
                                 group_members = groups_members_map[group_id]
-                                self.logger.debug(
-                                    f"  {project_key}/{role_name}: Group actor '{group_name}' (id: {group_id}) "
-                                    f"found {len(group_members)} members"
-                                )
                             elif group_name and group_name in groups_members_map:
                                 group_members = groups_members_map[group_name]
-                                self.logger.debug(
-                                    f"  {project_key}/{role_name}: Group actor '{group_name}' "
-                                    f"found {len(group_members)} members"
-                                )
                             else:
                                 self.logger.debug(
                                     f"  {project_key}/{role_name}: Group actor '{group_name}' "
                                     f"(id: {group_id}) not found in synced groups"
                                 )
 
+                            if group_members is None:
+                                unreadable_group = group_name or group_id
+                                break
+
+                            self.logger.debug(
+                                f"  {project_key}/{role_name}: Group actor '{group_name}' (id: {group_id}) "
+                                f"found {len(group_members)} members"
+                            )
                             member_users.extend(group_members)
+
+                    if unreadable_group:
+                        # Saving the role now would drop that group's members from it.
+                        self.logger.warning(
+                            f"  {project_key}: Keeping the stored members of role {role_name}: "
+                            f"members of group '{unreadable_group}' could not be read"
+                        )
+                        role_skipped = True
+                        continue
 
                     project_roles.append((app_role, member_users))
 
@@ -2305,7 +2339,7 @@ class JiraConnector(BaseConnector):
                     )
                     continue
 
-            return project_key, project_roles, False
+            return project_key, project_roles, role_skipped
 
         except Exception as project_error:
             self.logger.error(f"❌ Error syncing roles for project {project_key}: {project_error}")
@@ -2315,11 +2349,12 @@ class JiraConnector(BaseConnector):
         self,
         project_keys: list[str],
         jira_users: list[AppUser],
-        groups_members_map: dict[str, list[AppUser]] = None
+        groups_members_map: dict[str, Optional[list[AppUser]]] = None
     ) -> None:
         """
         Sync project roles as AppRole entities.
-        groups_members_map: Mapping of group_id/name -> list of AppUser members (from _sync_user_groups)
+        groups_members_map: Mapping of group_id/name -> list of AppUser members (from _sync_user_groups);
+            None marks a group whose members could not be read.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -2566,8 +2601,8 @@ class JiraConnector(BaseConnector):
         project: dict[str, Any],
         app_roles_mapping: dict[str, Any],
         perm_user_by_account_id: dict[str, "AppUser"],
-    ) -> Optional[tuple[RecordGroup, list[Permission]]]:
-        """Build a project's RecordGroup and fetch its BROWSE permissions."""
+    ) -> Optional[tuple[RecordGroup, Optional[list[Permission]]]]:
+        """Build a project's RecordGroup and fetch its BROWSE permissions (None when unreadable)."""
         try:
             project_id = project.get("id")
             project_name = project.get("name")
@@ -2589,16 +2624,9 @@ class JiraConnector(BaseConnector):
                 project_key, app_roles_mapping, perm_user_by_account_id
             )
 
-            # Transient scheme failure returns None — still sync the RecordGroup so the
-            # project/issues are not dropped this run. Empty ACL; next successful scheme
-            # fetch will refresh permissions.
-            if project_permissions is None:
-                self.logger.warning(
-                    f"⚠️ Permission scheme unavailable for {project_key}; "
-                    "syncing project with empty permissions this run"
-                )
-                project_permissions = []
-
+            # None (a transient scheme failure) is passed on, not saved as an empty ACL: saving
+            # replaces the stored ACL, which would hide the project from everyone until a later
+            # sync succeeds. run_sync keeps the stored ACL and still syncs the project's issues.
             if project_permissions:
                 self.logger.info(f"🔐 Project {project_key}: {len(project_permissions)} permission grants from scheme")
 
@@ -2613,7 +2641,7 @@ class JiraConnector(BaseConnector):
     async def _fetch_filtered_projects(
         self,
         jira_users: list["AppUser"],
-    ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
+    ) -> tuple[list[tuple[RecordGroup, Optional[list[Permission]]]], list[dict[str, Any]]]:
         """Resolve the project-keys sync filter, then fetch matching projects."""
         allowed_keys = None
         project_keys_operator = None
@@ -2639,9 +2667,10 @@ class JiraConnector(BaseConnector):
         project_keys: Optional[list[str]] = None,
         project_keys_operator: Optional[FilterOperatorType] = None,
         jira_users: Optional[list["AppUser"]] = None
-    ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
+    ) -> tuple[list[tuple[RecordGroup, Optional[list[Permission]]]], list[dict[str, Any]]]:
         """
-        Fetch projects using DataSource. Returns (record_groups, raw_projects).
+        Fetch projects using DataSource. Returns (record_groups, raw_projects); a project's
+        permissions are None when its permission scheme could not be read.
 
         Args:
             project_keys: Optional list of project keys to include/exclude
@@ -2667,7 +2696,7 @@ class JiraConnector(BaseConnector):
             projects,
             lambda p: self._build_project_record_group(p, app_roles_mapping, perm_user_by_account_id),
         )
-        record_groups: list[tuple[RecordGroup, list[Permission]]] = [r for r in rg_results if r is not None]
+        record_groups: list[tuple[RecordGroup, Optional[list[Permission]]]] = [r for r in rg_results if r is not None]
 
         # Surface any project skipped this sync (transient scheme failure or a bad RecordGroup) so
         # a persistently-failing project isn't silently and indefinitely excluded. Its existing
@@ -2701,7 +2730,7 @@ class JiraConnector(BaseConnector):
 
     async def _sync_all_project_issues(
         self,
-        projects: list[tuple[RecordGroup, list[Permission]]],
+        projects: list[tuple[RecordGroup, Optional[list[Permission]]]],
         jira_users: list[AppUser],
         last_sync_time: Optional[int]
     ) -> dict[str, Any]:

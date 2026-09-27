@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -18,7 +20,7 @@ const SCROLL_THRESHOLD_PX = 40;
 import { ShareSearchInput } from './share-search-input';
 import { ShareableRow } from './shareable-row';
 import {
-  SHARE_ROLE_LABELS,
+  getShareRoleLabels,
   type ShareAdapter,
   type SharedMember,
   type ShareTeam,
@@ -47,6 +49,8 @@ export function ShareSidebar({
   onShareSuccess,
   headerContent,
 }: ShareSidebarProps) {
+  const { t } = useTranslation();
+  const roleLabels = getShareRoleLabels(t);
   const currentUser = useAuthStore((s) => s.user);
 
   // View toggle
@@ -251,7 +255,7 @@ export function ShareSidebar({
       setExistingMembers(updatedMembers);
 
       const names = selectedItems.map((s) => s.name).join(', ');
-      toast.success('Access shared', { description: `Shared with ${names}` });
+      toast.success(t('shareSidebar.accessShared'), { description: t('shareSidebar.sharedWith', { names }) });
 
       setSelectedItems([]);
       updateSearchQuery('');
@@ -260,12 +264,12 @@ export function ShareSidebar({
     } catch (error) {
       // Error is already processed by apiClient interceptor
       const processedError = error as { message?: string };
-      const message = processedError?.message ?? 'Could not share access. Please try again.';
-      toast.error('Failed to share', { description: message });
+      const message = processedError?.message ?? t('shareSidebar.shareError');
+      toast.error(t('shareSidebar.shareFailed'), { description: message });
     } finally {
       setIsSubmitting(false);
     }
-  }, [selectedItems, selectedRole, adapter, onShareSuccess, updateSearchQuery]);
+  }, [selectedItems, selectedRole, adapter, onShareSuccess, updateSearchQuery, t]);
 
   // Update role for existing member.
   // Note: the "at least one owner must remain" invariant is enforced server-side;
@@ -283,17 +287,20 @@ export function ShareSidebar({
             m.id === memberId ? { ...m, role: newRole, isOwner: newRole === 'OWNER' } : m
           )
         );
-        toast.success('Role updated', {
-          description: `${member?.name ?? 'Member'} is now a ${newRole.toLowerCase()}`,
+        toast.success(t('shareSidebar.roleUpdated'), {
+          description: t('shareSidebar.roleUpdatedDescription', {
+            name: member?.name ?? t('shareSidebar.member'),
+            role: t(`recordView.permission${newRole.charAt(0)}${newRole.slice(1).toLowerCase()}`),
+          }),
         });
       } catch (error) {
         // Error is already processed by apiClient interceptor
         const processedError = error as { message?: string };
-        const message = processedError?.message ?? 'Could not update role. Please try again.';
-        toast.error('Failed to update role', { description: message });
+        const message = processedError?.message ?? t('shareSidebar.roleError');
+        toast.error(t('shareSidebar.roleFailed'), { description: message });
       }
     },
-    [adapter, existingMembers]
+    [adapter, existingMembers, t]
   );
 
   // Remove member.
@@ -306,18 +313,18 @@ export function ShareSidebar({
       try {
         await adapter.removeMember(memberId, memberType);
         setExistingMembers((prev) => prev.filter((m) => m.id !== memberId));
-        toast.success('Access revoked', {
-          description: `${member?.name ?? 'Member'} no longer has access`,
+        toast.success(t('shareSidebar.accessRevoked'), {
+          description: t('shareSidebar.accessRevokedDescription', { name: member?.name ?? t('shareSidebar.member') }),
         });
         onShareSuccess?.();
       } catch (error) {
         // Error is already processed by apiClient interceptor
         const processedError = error as { message?: string };
-        const message = processedError?.message ?? 'Could not remove access. Please try again.';
-        toast.error('Failed to revoke access', { description: message });
+        const message = processedError?.message ?? t('shareSidebar.revokeError');
+        toast.error(t('shareSidebar.revokeFailed'), { description: message });
       }
     },
-    [adapter, existingMembers, onShareSuccess]
+    [adapter, existingMembers, onShareSuccess, t]
   );
 
   // Team created callback
@@ -395,7 +402,7 @@ export function ShareSidebar({
                   color="gray"
                   size="2"
                   onClick={() => setCurrentView('share')}
-                  aria-label="Back"
+                  aria-label={t('common.back')}
                 >
                   <MaterialIcon name="arrow_back" size={18} color="var(--slate-11)" />
                 </IconButton>
@@ -412,7 +419,7 @@ export function ShareSidebar({
                   <MaterialIcon name="group" size={16} color="var(--slate-11)" />
                 </Flex>
                 <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                  Create Team
+                  {t('workspace.teams.createTeam')}
                 </Text>
               </Flex>
               <IconButton
@@ -420,7 +427,7 @@ export function ShareSidebar({
                 color="gray"
                 size="2"
                 onClick={() => onOpenChange(false)}
-                aria-label="Close"
+                aria-label={t('common.close')}
               >
                 <MaterialIcon name="close" size={18} color="var(--slate-11)" />
               </IconButton>
@@ -456,7 +463,7 @@ export function ShareSidebar({
                 onClick={() => setCurrentView('share')}
                 disabled={createFormState.isSubmitting}
               >
-                Cancel
+                {t('action.cancel')}
               </Button>
               <LoadingButton
                 variant="solid"
@@ -464,9 +471,9 @@ export function ShareSidebar({
                 onClick={() => createFormRef.current?.submit()}
                 disabled={!createFormState.isValid}
                 loading={createFormState.isSubmitting}
-                loadingLabel="Creating..."
+                loadingLabel={t('action.creating')}
               >
-                Create Team
+                {t('workspace.teams.createTeam')}
               </LoadingButton>
             </Flex>
           </Flex>
@@ -549,14 +556,14 @@ export function ShareSidebar({
                           fontStyle: 'normal',
                         }}
                       >
-                        Suggested teams
+                        {t('shareSidebar.suggestedTeams')}
                       </Text>
                       {filteredTeams.map((team) => (
                         <ShareableRow
                           key={team.id}
                           type="team"
                           name={team.name}
-                          subtitle={`${team.memberCount} member${team.memberCount !== 1 ? 's' : ''}`}
+                          subtitle={t('shareSidebar.memberCount', { count: team.memberCount })}
                           isSelected={selectedIds.has(team.id)}
                           showRadio
                           onToggle={() =>
@@ -588,7 +595,7 @@ export function ShareSidebar({
                           fontStyle: 'normal',
                         }}
                       >
-                        Suggested members
+                        {t('shareSidebar.suggestedMembers')}
                       </Text>
                       {/* Cap suggestions at 5; search narrows further */}
                       {filteredMembers.slice(0, 5).map((user) => (
@@ -629,7 +636,7 @@ export function ShareSidebar({
                           letterSpacing: '0.05em',
                         }}
                       >
-                        Members
+                        {t('workspace.teams.detail.members')}
                       </Text>
                       {/* Teams first, then users */}
                       {[...existingMembers]
@@ -650,7 +657,7 @@ export function ShareSidebar({
                           showRoleDropdown={!member.isCurrentUser}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
-                              ? { title: SHARE_ROLE_LABELS[member.role]?.label ?? 'Can view', description: SHARE_ROLE_LABELS[member.role]?.description ?? '' }
+                              ? { title: roleLabels[member.role]?.label ?? roleLabels.READER.label, description: roleLabels[member.role]?.description ?? '' }
                               : undefined
                           }
                           onRoleChange={
@@ -668,7 +675,7 @@ export function ShareSidebar({
                   {/* Loading more indicator */}
                   {paginated.isLoadingMore && (
                     <Text size="1" style={{ color: 'var(--slate-9)', textAlign: 'center', padding: 8, display: 'block' }}>
-                      Loading more users...
+                      {t('shareSidebar.loadingMoreUsers')}
                     </Text>
                   )}
 
@@ -682,7 +689,7 @@ export function ShareSidebar({
                         style={{ padding: '40px 0' }}
                       >
                         <Text size="2" style={{ color: 'var(--slate-9)' }}>
-                          No users or teams found
+                          {t('shareSidebar.noResults')}
                         </Text>
                       </Flex>
                     )}
@@ -710,7 +717,7 @@ export function ShareSidebar({
                 onClick={() => onOpenChange(false)}
                 // style={{borderRadius: 'var(--radius-2)', border: '1px solid var(--slate-a8)'}}
               >
-                Cancel
+                {t('action.cancel')}
               </Button>
 
               {adapter.supportsTeams && (
@@ -719,7 +726,7 @@ export function ShareSidebar({
                   size="2"
                   onClick={() => setCurrentView('create-team')}
                 >
-                  Create a New Team
+                  {t('shareSidebar.createNewTeam')}
                 </Button>
               )}
 
@@ -729,10 +736,10 @@ export function ShareSidebar({
                 onClick={handleShare}
                 disabled={selectedItems.length === 0 || selectedItems.some((s) => s.isInvalid)}
                 loading={isSubmitting}
-                loadingLabel="Sharing..."
+                loadingLabel={t('shareSidebar.sharing')}
                 style={selectedItems.length > 0 && !isSubmitting && !selectedItems.some((s) => s.isInvalid) ? { backgroundColor: 'var(--emerald-10)' } : undefined}
               >
-                Share
+                {t('action.share')}
               </LoadingButton>
             </Flex>
           </Flex>

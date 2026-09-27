@@ -179,12 +179,12 @@ class TestCreateKey:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_store_failure_is_raised(self):
         eks, store_mock, enc_mock = _make_encrypted_store()
-        store_mock.get_key = AsyncMock(side_effect=Exception("connection error"))
+        store_mock.get_key = AsyncMock(side_effect=ConnectionError("connection error"))
 
-        result = await eks.create_key("/some/key", "value")
-        assert result is False
+        with pytest.raises(ConnectionError, match="connection error"):
+            await eks.create_key("/some/key", "value")
 
 
 # ===================================================================

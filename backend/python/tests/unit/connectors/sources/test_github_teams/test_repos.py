@@ -121,7 +121,7 @@ def _patch_calls(c: object, collection: str) -> list[list[dict]]:
     """All batch_update_nodes patch lists written to *collection*."""
     return [
         call.args[0]
-        for call in c.tx_store.batch_update_nodes.await_args_list
+        for call in c.data_entities_processor.batch_update_nodes.await_args_list
         if call.args[1] == collection
     ]
 
@@ -139,7 +139,7 @@ class TestTimestampBackfill:
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
 
-        c.tx_store.get_nodes_by_filters = AsyncMock(
+        c.data_entities_processor.get_nodes_by_filters = AsyncMock(
             side_effect=[[_code_node(1, "src/main.py")], [], []],
         )
         sync.timestamps.fetch_commit_dates = AsyncMock(return_value={"src/main.py": (100, 200)})
@@ -163,7 +163,7 @@ class TestTimestampBackfill:
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
 
-        c.tx_store.get_nodes_by_filters = AsyncMock(
+        c.data_entities_processor.get_nodes_by_filters = AsyncMock(
             side_effect=[[_code_node(1, "src/main.py")], [], []],
         )
         sync.timestamps.fetch_commit_dates = AsyncMock(return_value={"src/main.py": (None, 200)})
@@ -183,7 +183,7 @@ class TestTimestampBackfill:
         file_node = _code_node(1, "src/main.py")
         file_node["sourceCreatedAtTimestamp"] = 100
         file_node["sourceLastModifiedTimestamp"] = 200
-        c.tx_store.get_nodes_by_filters = AsyncMock(
+        c.data_entities_processor.get_nodes_by_filters = AsyncMock(
             side_effect=[[file_node], [_folder_node(1, "src")]],
         )
 
@@ -208,7 +208,7 @@ class TestTimestampBackfill:
         folder_node = _folder_node(1, "src")
         folder_node["sourceCreatedAtTimestamp"] = 100
         folder_node["sourceLastModifiedTimestamp"] = 200
-        c.tx_store.get_nodes_by_filters = AsyncMock(
+        c.data_entities_processor.get_nodes_by_filters = AsyncMock(
             side_effect=[[file_node], [folder_node]],
         )
 
@@ -922,10 +922,7 @@ class TestPruneDeletedPaths:
         every full sync as an empty ghost."""
         c = make_mock_connector()
         sync = ReposSync(c)
-        c.tx_store.get_record_group_by_external_id = AsyncMock(
-            return_value=SimpleNamespace(id="rg-1")
-        )
-        c.tx_store.get_records_by_status = AsyncMock(return_value=[
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[
             SimpleNamespace(id="rec-a", file_path="src/a.py",
                             external_record_id="/1/blob/src/a.py"),
             SimpleNamespace(id="rec-src", file_path=None,
@@ -950,10 +947,7 @@ class TestPruneDeletedPaths:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
-        c.tx_store.get_record_group_by_external_id = AsyncMock(
-            return_value=SimpleNamespace(id="rg-1")
-        )
-        c.tx_store.get_records_by_status = AsyncMock(
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(
             side_effect=GraphQueryError("db down")
         )
 
@@ -1214,7 +1208,7 @@ class TestTimestampLifecycle:
 
     async def test_apply_patches_failure_is_logged(self) -> None:
         c = make_mock_connector()
-        c.tx_store.batch_update_nodes = AsyncMock(side_effect=RuntimeError("db"))
+        c.data_entities_processor.batch_update_nodes = AsyncMock(side_effect=RuntimeError("db"))
         await ReposSync(c).timestamps._apply_patches(
             [{"id": "n1", "sourceCreatedAtTimestamp": 1}], "records", context="acme/widgets"
         )

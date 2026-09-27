@@ -162,6 +162,20 @@ _OPTIONAL_PACKAGES = [
 _MOCK_PACKAGE_NAMES.add("docling_parse")
 _mock_finder.load_module("docling_parse")
 
+# talon imports cchardet, which has no Python 3.12 build and is excluded from installs
+# ([tool.uv] in pyproject.toml). Production aliases it to chardet before importing talon
+# (gmail/talon_utils.py); without the same alias here the talon probe below fails and
+# every Gmail test silently runs against a MagicMock talon.
+try:
+    import cchardet  # noqa: F401
+except ImportError:
+    try:
+        import chardet as _chardet
+    except ImportError:
+        _chardet = None
+    if _chardet is not None:
+        sys.modules["cchardet"] = _chardet
+
 for _pkg in _OPTIONAL_PACKAGES:
     _ensure_module(_pkg)
 

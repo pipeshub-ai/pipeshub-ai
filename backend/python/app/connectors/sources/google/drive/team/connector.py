@@ -74,13 +74,18 @@ from app.connectors.sources.google.common.impersonation import (
 )
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     ANCESTOR_FETCH_CONCURRENCY,
+    HELD_FILTER_FOLDERS,
+    MAX_UNRECOGNISED_403_RUNS,
     PLACEHOLDER_SWEEP_SAFETY_MAX,
+    FolderFailureRuns,
+    SharedFolderWalkHolds,
     build_tracked_folder_ids,
     fetch_ancestor_metadata,
     fetch_folder_children,
     has_entered_scope,
     has_exited_scope,
     is_retryable_403,
+    is_unrecognised_403,
     pass_folder_filter,
     probe_can_list_children,
     static_data_source_provider,
@@ -119,6 +124,9 @@ _DRIVE_TEAM_MAX_CONCURRENCY = 4
 # 100 MB, which buffers a whole slice in memory before any of it reaches the
 # client and keeps one executor thread busy for that entire transfer.
 _DRIVE_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
+
+# Org-wide, not per user: the folder filter's scope is settled once per run for everyone.
+FOLDER_FILTER_SYNC_POINT_KEY = "folder_filter"
 
 
 @ConnectorBuilder("Drive Workspace")\
@@ -297,6 +305,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._expanded_folder_ids: set = set()
         self._blocked_folder_ids: set = set()
         self._tracked_folder_ids: set = set()
+        # Folders some user could not probe for an unrecognised 403, and folders that
+        # some user did probe cleanly, this run.
+        self._folder_probe_403s: dict[str, HttpError] = {}
+        self._folders_probed: set = set()
         self._folder_scope_lock = asyncio.Lock()
 
         # Shared drives that have a record group, from the org-wide domain-admin listing.
@@ -440,6 +452,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._expanded_folder_ids = set()
             self._blocked_folder_ids = set()
             self._tracked_folder_ids = set(self._folder_seed_ids)
+            self._folder_probe_403s = {}
+            self._folders_probed = set()
             self._synced_drive_ids = set()
             if self._folder_seed_ids:
                 self.logger.info(
@@ -1652,10 +1666,18 @@ class GoogleDriveTeamConnector(BaseConnector):
         async with self._folder_scope_lock:
             frontier: List[str] = []
             drive_id_by_folder: dict = {}
-            for folder_id in self._pending_folder_expansions():
-                probe = await probe_can_list_children(
-                    folder_id, get_data_source, self.logger
-                )
+            for folder_id in sorted(self._pending_folder_expansions()):
+                try:
+                    probe = await probe_can_list_children(
+                        folder_id, get_data_source, self.logger
+                    )
+                except HttpError as e:
+                    if not is_unrecognised_403(e):
+                        raise
+                    # Another user may still list it; the caller settles it once all have tried.
+                    self._folder_probe_403s.setdefault(folder_id, e)
+                    continue
+                self._folders_probed.add(folder_id)
                 if probe is None:
                     continue
                 if not probe.can_list_children:
@@ -2185,6 +2207,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         scope that later users go on to widen. Walking the users up front, stopping
         as soon as nothing is left to expand, gives every user the same complete set.
         """
+        stored = await self.drive_delta_sync_point.read_sync_point(FOLDER_FILTER_SYNC_POINT_KEY)
+        failing = FolderFailureRuns((stored or {}).get(HELD_FILTER_FOLDERS))
+
         for user in users:
             if not self._pending_folder_expansions():
                 break
@@ -2199,12 +2224,62 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             await self._expand_folder_scope(drive_data_source)
 
+        await self._settle_folder_probe_403s(failing)
+
         pending = self._pending_folder_expansions()
         if pending:
             self.logger.warning(
                 f"📁 {len(pending)} folder(s) could not be listed by any user, so their "
                 f"subtrees are not in scope: {sorted(pending)}"
             )
+
+    async def _settle_folder_probe_403s(self, failing: FolderFailureRuns) -> None:
+        """Fail the run over folders nobody could probe for an unrecognised 403, within a limit.
+
+        A folder refused this way is retried on the next run, up to
+        MAX_UNRECOGNISED_403_RUNS runs in a row; after that it is left out of scope, like a
+        folder no user can see, so it cannot stop file sync for every user for good.
+        """
+        pending = self._pending_folder_expansions()
+        refused = {
+            folder_id: error
+            for folder_id, error in self._folder_probe_403s.items()
+            if folder_id in pending
+        }
+        for folder_id in failing.folder_ids() - set(refused):
+            if folder_id in self._folders_probed or folder_id in self._expanded_folder_ids:
+                failing.clear(folder_id)
+        failing.keep_only(
+            self._folder_seed_ids | self._blocked_folder_ids | self._expanded_folder_ids
+        )
+
+        retry_error: HttpError | None = None
+        for folder_id, error in sorted(refused.items()):
+            runs = failing.record_failure(folder_id)
+            if runs < MAX_UNRECOGNISED_403_RUNS:
+                self.logger.warning(
+                    f"📁 Could not check folder {folder_id} for the folder filter: Google Drive "
+                    "refused it with no reason this connector recognises (HTTP 403) for every user who tried. This run "
+                    "stops before any files sync so the folder is not dropped by mistake, and it "
+                    f"is tried again next run (attempt {runs} of {MAX_UNRECOGNISED_403_RUNS})."
+                )
+                retry_error = retry_error or error
+            else:
+                self.logger.error(
+                    f"📁 Leaving folder {folder_id} out of the folder filter: Google Drive has "
+                    f"refused it with no reason this connector recognises (HTTP 403) on {MAX_UNRECOGNISED_403_RUNS} runs "
+                    "in a row, so files sync for everyone without it. Check that at least one "
+                    "synced user can open the folder in Google Drive, or remove it from the "
+                    "folder filter. It is tried again on every run: once it can be read, new "
+                    "changes inside it sync again, and a full sync brings in what it already holds."
+                )
+
+        if failing.changed:
+            await self.drive_delta_sync_point.update_sync_point(
+                FOLDER_FILTER_SYNC_POINT_KEY, {HELD_FILTER_FOLDERS: failing.to_stored()}
+            )
+        if retry_error is not None:
+            raise retry_error
 
     async def _run_sync_with_yield(self, user: AppUser) -> None:
         """
@@ -2399,19 +2474,26 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Seed shared-drive items shared individually with this user. Runs before the
             # page token is stored so a failure here replays on the next run instead of
             # being skipped for good; afterwards changes_list carries the deltas.
-            await self.sync_shared_with_me(
-                user=user,
-                user_drive_data_source=user_drive_data_source,
-                user_permission_id=user_permission_id,
-                drive_id=drive_id,
-                tracked_folder_ids=tracked_folder_ids,
-                member_drive_ids=member_drive_ids
-            )
+            holds = SharedFolderWalkHolds(sync_point)
+            try:
+                await self.sync_shared_with_me(
+                    user=user,
+                    user_drive_data_source=user_drive_data_source,
+                    user_permission_id=user_permission_id,
+                    drive_id=drive_id,
+                    tracked_folder_ids=tracked_folder_ids,
+                    member_drive_ids=member_drive_ids,
+                    holds=holds,
+                )
+            except Exception:
+                if holds.changes():
+                    await self.drive_delta_sync_point.update_sync_point(sync_point_key, holds.changes())
+                raise
 
             # Save start page token to sync point after initial sync
             await self.drive_delta_sync_point.update_sync_point(
                 sync_point_key,
-                {"pageToken": start_page_token}
+                {"pageToken": start_page_token, **holds.checkpoint_changes()}
             )
 
             self.logger.info(f"✅ Full sync completed for user {user.email}. Processed {total_files} files. Saved page token: {start_page_token[:20]}...")
@@ -2618,6 +2700,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         items: List[dict],
         seen_ids: set,
         drive_data_source: GoogleDriveDataSource,
+        *,
+        holds: SharedFolderWalkHolds | None = None,
     ) -> List[dict]:
         """
         Walk the subtree under every folder in `items`, returning the descendants.
@@ -2625,7 +2709,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         Drive sets sharedWithMeTime only on the item actually shared, and its `q` has no
         recursive parent operator, so a shared folder arrives with none of its contents.
         `seen_ids` is mutated as descendants are found, so overlapping shares and items
-        already in flight are processed once.
+        already in flight are processed once. `holds` counts the runs a folder's walk has
+        failed on an unrecognised 403, so one such folder is skipped after
+        MAX_UNRECOGNISED_403_RUNS instead of failing every full sync; without it every
+        such failure is raised.
         """
         folder_mime = MimeTypes.GOOGLE_DRIVE_FOLDER.value
         provider = static_data_source_provider(drive_data_source)
@@ -2661,6 +2748,25 @@ class GoogleDriveTeamConnector(BaseConnector):
                         f"Shared folder {folder_id} no longer accessible (HTTP {e.resp.status}); skipping"
                     )
                     continue
+                if holds is not None and is_unrecognised_403(e):
+                    if holds.give_up(folder_id, e):
+                        self.logger.error(
+                            f"Skipping the contents of shared folder {folder_id}: Google Drive has "
+                            "refused to list them with no reason this connector recognises (HTTP 403) on "
+                            f"{MAX_UNRECOGNISED_403_RUNS} runs in a row. The folder itself is synced "
+                            "and the rest of this user's sync goes on. Check that the folder is still "
+                            "shared with this user, then run a full sync of this connector to bring "
+                            "its files in."
+                        )
+                        continue
+                    self.logger.warning(
+                        f"Could not list shared folder {folder_id}: Google Drive refused with no "
+                        "reason this connector recognises (HTTP 403). The rest of the walk goes on, "
+                        "but this user's sync stops before saving its checkpoint, so the folder is "
+                        f"read again next run (attempt {holds.runs.runs(folder_id)} of "
+                        f"{MAX_UNRECOGNISED_403_RUNS})."
+                    )
+                    continue
                 # Anything else (rate limiting -- including a 403 with a
                 # rateLimitExceeded/userRateLimitExceeded reason -- transient 5xx,
                 # etc.) must not be swallowed: the sync-point save below would then
@@ -2676,6 +2782,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
                 raise
 
+            if holds is not None:
+                holds.walked(folder_id)
             seen_ids.update(child_id for child in found if (child_id := child.get("id")))
             descendants.extend(found)
 
@@ -2688,7 +2796,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         user_permission_id: str,
         drive_id: str,
         tracked_folder_ids: Optional[set] = None,
-        member_drive_ids: Optional[set] = None
+        member_drive_ids: Optional[set] = None,
+        holds: SharedFolderWalkHolds | None = None,
     ) -> None:
         """
         Seed items that live in a shared drive and were shared individually with this user.
@@ -2710,6 +2819,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             tracked_folder_ids: Folder scope for this run, or None to sync everything
             member_drive_ids: Shared drives this user belongs to, which sync_shared_drives
                 covers for them
+            holds: Runs each shared folder's walk has failed on an unrecognised 403
         """
         member_drive_ids = member_drive_ids or set()
         self.logger.info(f"Syncing shared with me items for user {user.email}")
@@ -2755,7 +2865,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             # A shared folder arrives without its contents; pull its subtree in behind it.
             seen_ids.update(file_id for f in files if (file_id := f.get("id")))
             files.extend(
-                await self._expand_shared_folders(files, seen_ids, user_drive_data_source)
+                await self._expand_shared_folders(
+                    files, seen_ids, user_drive_data_source, holds=holds
+                )
             )
 
             if files:
@@ -2779,6 +2891,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 break
 
         await self._process_remaining_batch_records(batch_records, context_name)
+
+        if holds is not None:
+            holds.raise_if_retrying()
 
         self.logger.info(
             f"✅ Synced {total_files} shared with me item(s) for user {user.email}"

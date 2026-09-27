@@ -68,6 +68,7 @@ def _make_mock_deps():
     data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
     data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_all_user_groups = AsyncMock(return_value=[])
+    data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
 
     data_store_provider = MagicMock()
     mock_tx = MagicMock()
@@ -1755,14 +1756,14 @@ class TestFetchPermissionAuditLogs:
         assert "Restricted Page" in titles
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_returns_none(self):
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_audit_logs = AsyncMock(return_value=_make_mock_response(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         titles = await connector._fetch_permission_audit_logs(1000, 2000)
-        assert titles == []
+        assert titles is None
 
 
 # ===========================================================================
@@ -2851,22 +2852,18 @@ class TestFetchGroupMembers:
         assert account_ids == []
 
     @pytest.mark.asyncio
-    async def test_api_failure(self):
+    async def test_api_failure_returns_none(self):
         c = _conn()
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails, account_ids = await c._fetch_group_members("g1", "G")
-        assert emails == []
-        assert account_ids == []
+        assert await c._fetch_group_members("g1", "G") is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         c = _conn()
         c._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
-        emails, account_ids = await c._fetch_group_members("g1", "G")
-        assert emails == []
-        assert account_ids == []
+        assert await c._fetch_group_members("g1", "G") is None
 
 
 # ===========================================================================
@@ -4197,12 +4194,12 @@ class TestFetchGroupMembersFullCoverage:
         assert account_ids == []
 
     @pytest.mark.asyncio
-    async def test_api_failure(self):
+    async def test_api_failure_returns_none(self):
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(500, {}))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        assert await c._fetch_group_members("g1", "devs") == ([], [])
+        assert await c._fetch_group_members("g1", "devs") is None
 
     @pytest.mark.asyncio
     async def test_skips_no_email(self):
@@ -5554,13 +5551,13 @@ class TestFetchPermissionAuditLogsEmpty:
 
 class TestFetchSpacePermissions:
     @pytest.mark.asyncio
-    async def test_failed_response_returns_empty(self):
+    async def test_failed_response_returns_none(self):
         c = _mk_connector()
         ds = MagicMock()
         ds.get_space_permissions_assignments = AsyncMock(return_value=_mk_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         result = await c._fetch_space_permissions("sp1", "Space1")
-        assert result == []
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_cursor_null_stops_pagination(self):
@@ -5580,11 +5577,11 @@ class TestFetchSpacePermissions:
         assert ds.get_space_permissions_assignments.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         c = _mk_connector()
         c._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("fail"))
         result = await c._fetch_space_permissions("sp1", "Space1")
-        assert result == []
+        assert result is None
 
 
 # ===========================================================================
@@ -6682,16 +6679,14 @@ class TestSyncContentPermissionsByTitlesAdditional:
     """Additional coverage for _sync_content_permissions_by_titles."""
 
     @pytest.mark.asyncio
-    async def test_failed_search_continues(self):
-        """When search fails, continue to next batch (lines 1465-1466)."""
+    async def test_failed_search_is_reported_as_a_failure(self):
+        """A failed search is a failure, so the audit clock is not moved past it."""
         c = _mk_connector()
         ds = MagicMock()
         ds.search_content_by_titles = AsyncMock(return_value=_mk_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        # Should not raise ValueError since has_failures will be set only for Exception, not for soft failure
-        # Actually looking at the code: if not response or response.status != 200: continue (no has_failures)
-        # So this should complete without raising
-        await c._sync_content_permissions_by_titles(["Title1"])
+        with pytest.raises(ValueError):
+            await c._sync_content_permissions_by_titles(["Title1"])
         # No exception = soft failure handled
 
     @pytest.mark.asyncio
@@ -6923,10 +6918,10 @@ class TestTransformPageRestrictionAdditional:
         assert len(permissions) == 1
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty_list(self):
-        """Exception returns empty list (lines 2392-2393)."""
+    async def test_unresolved_user_is_kept_as_a_restriction(self):
+        """A user that cannot be resolved still counts as a restriction."""
         c = _mk_connector()
-        c.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("tx fail"))
+        c._create_permission_from_principal = AsyncMock(return_value=None)
         restriction_data = {
             "operation": "read",
             "restrictions": {
@@ -6935,7 +6930,7 @@ class TestTransformPageRestrictionAdditional:
             },
         }
         permissions = await c._transform_page_restriction_to_permissions(restriction_data)
-        assert permissions == []
+        assert [(p.entity_type, p.external_id) for p in permissions] == [(EntityType.GROUP, "acc-1")]
 
 
 class TestFetchAttachmentContent:
@@ -8446,11 +8441,14 @@ class TestProcessPageAttachmentsForChildren:
             "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "_links": {},
         }]
+        c._fetch_page_permissions = AsyncMock(return_value=[])
         result = await c._process_page_attachments_for_children(
             attachments, "page-1", "node-1", "space-1", None,
         )
         assert "att-new" in result
         c.data_entities_processor.on_new_records.assert_awaited_once()
+        ((saved, _),) = c.data_entities_processor.on_new_records.call_args[0][0]
+        assert saved.inherit_permissions is True
 
     @pytest.mark.asyncio
     async def test_skips_attachment_without_id(self):
@@ -8778,7 +8776,7 @@ class TestCheckAndFetchUpdatedComment:
         assert len(perms) == 1
 
     @pytest.mark.asyncio
-    async def test_permission_fetch_failure_still_returns_record(self):
+    async def test_unreadable_page_restrictions_returns_none(self):
         c = _mk_connector()
         comment_data = {
             "id": "c2",
@@ -8787,7 +8785,7 @@ class TestCheckAndFetchUpdatedComment:
             "_links": {},
         }
         c._fetch_comment_data = AsyncMock(return_value=comment_data)
-        c._fetch_page_permissions = AsyncMock(side_effect=RuntimeError("perm fail"))
+        c._fetch_page_permissions = AsyncMock(return_value=None)
 
         record = MagicMock(
             external_record_id="c2",
@@ -8800,8 +8798,7 @@ class TestCheckAndFetchUpdatedComment:
             version=0,
         )
         result = await c._check_and_fetch_updated_comment("org-1", record)
-        assert result is not None
-        assert result[1] == []
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_transform_none_returns_none(self):

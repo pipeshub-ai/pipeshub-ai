@@ -121,6 +121,46 @@ class TestCatchesMistakes(unittest.TestCase):
                 f"{broad}: {problems}",
             )
 
+    def test_a_held_out_connector_must_stay_out_of_core(self) -> None:
+        pytest_ini = PYTEST_INI.replace(
+            "    cleanup:",
+            "    cifs: marks tests specific to the CIFS/SMB1 connector\n    cleanup:",
+        )
+        missing, _ = run(pytest_ini=pytest_ini)
+        self.assertTrue(any("cifs" in p and "fall into core" in p for p in missing), missing)
+        held_in_shard, _ = run(
+            workflow=WORKFLOW.replace('"gamma"', '"gamma or cifs"') + "\n# not cifs\n",
+            pytest_ini=pytest_ini,
+        )
+        self.assertTrue(any("still selects" in p for p in held_in_shard), held_in_shard)
+        # A comment is not an exclusion. Both core jobs still select cifs.
+        comment_only = WORKFLOW + (
+            '            core)         MARKERS="integration and not (alpha or beta or gamma)" ;;\n'
+            '            core)         MARKERS="integration and not (alpha or beta or gamma) and not cifs" ;;\n'
+            "# not cifs\n"
+        )
+        commented, _ = run(workflow=comment_only, pytest_ini=pytest_ini)
+        self.assertTrue(any("cifs" in p and "fall into core" in p for p in commented), commented)
+        excluded = WORKFLOW + (
+            '            core)         MARKERS="integration and not (alpha or beta or gamma) and not cifs" ;;\n'
+            '            core)         MARKERS="integration and not (alpha or beta or gamma) and not cifs" ;;\n'
+        )
+        allowed, _ = run(workflow=excluded, pytest_ini=pytest_ini)
+        self.assertEqual(allowed, [])
+        # "not cifs" as text is not enough: the or-branch still selects it.
+        disjunction = WORKFLOW + (
+            '            core)         MARKERS="not cifs or cifs" ;;\n'
+            '            core)         MARKERS="integration and not cifs" ;;\n'
+        )
+        or_selects, _ = run(workflow=disjunction, pytest_ini=pytest_ini)
+        self.assertTrue(any("cifs" in p and "fall into core" in p for p in or_selects), or_selects)
+        stronger = WORKFLOW + (
+            '            core)         MARKERS="integration and not (alpha or cifs)" ;;\n'
+            '            core)         MARKERS="integration and not (alpha or cifs)" ;;\n'
+        )
+        strong_ok, _ = run(workflow=stronger, pytest_ini=pytest_ini)
+        self.assertEqual(strong_ok, [])
+
     def test_an_unmeasured_suite_is_named_but_allowed(self) -> None:
         # beta has no measured time; the two shards still weigh the same without it.
         problems, report = run(minutes={"alpha": 30.0, "gamma": 30.0})

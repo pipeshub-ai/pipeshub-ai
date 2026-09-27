@@ -38,6 +38,7 @@ on:
             - google_drive_individual
             - gcs
             - azure_blob
+            - smb
             - azure_files
             - messaging
             - oauth_clients
@@ -104,7 +105,7 @@ permissions:
   contents: read
 
 # The matrix reads labels from each event's frozen payload, so an opened/synchronize
-# event firing before a label lands resolves to the default "both" and would otherwise
+# event firing before a label lands resolves to the neo4j default and would otherwise
 # burn a runner alongside the labeled run. Non-PR events get a unique group per run so
 # a manual dispatch never cancels the nightly cron.
 concurrency:
@@ -152,10 +153,10 @@ jobs:
       fail-fast: false
       matrix:
         # One job per value; "both" runs both backends sequentially in one job.
-        # Select backends via the graph_db dispatch input or the
-        # it-neo4j / it-arango / it-parallel PR labels (default: sequential "both").
+        # PRs default to neo4j alone; it-arango / it-both / it-parallel (or
+        # it-neo4j + it-arango) widen that. Cron and dispatch still get "both".
         # `strategy` can't read the job env block, so derive from inputs/labels here.
-        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
+        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request_target' && '["neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
         # slow connector suites do not all serialize on one worker. Three
         # connector shards (balanced on measured minutes, see
@@ -240,7 +241,7 @@ jobs:
       BOOKSTACK_DB_PORT: '3308'
       ZAMMAD_TEST_URL: http://localhost:8096
       ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
-      COMPOSE_PROFILES: ${{ format('{0},{1},{2}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
+      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
@@ -321,6 +322,19 @@ jobs:
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
+      # The SMB connector syncs from the smb-source Samba share in the compose
+      # stack, started by the smb-source profile for connectors-2 (or a dispatch
+      # of smb). The connector reaches it by service name; the test process
+      # writes files through the published port. A secret, when set, points
+      # both at an external share instead. CIFS is not registered, so it is
+      # not in a shard.
+      SMB_HOST: ${{ secrets.SMB_HOST || 'localhost' }}
+      SMB_PORT: ${{ secrets.SMB_HOST && (secrets.SMB_PORT || '445') || '1445' }}
+      SMB_CONNECTOR_HOST: ${{ secrets.SMB_HOST || 'smb-source' }}
+      SMB_CONNECTOR_PORT: ${{ secrets.SMB_HOST && (secrets.SMB_PORT || '445') || '445' }}
+      SMB_SHARE: ${{ secrets.SMB_SHARE || 'pipeshubtest' }}
+      SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
+      SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
       # Connector shards, one source of truth. The `core` shard is everything
       # these three do not own, built in the test step from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
@@ -329,7 +343,7 @@ jobs:
       # nextcloud and bookstack, the only suites needing selfhosted-sources.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files"
+      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files or smb"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
@@ -500,7 +514,7 @@ jobs:
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
@@ -683,7 +697,7 @@ jobs:
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as

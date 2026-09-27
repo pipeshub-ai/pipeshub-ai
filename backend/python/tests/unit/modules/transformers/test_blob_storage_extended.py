@@ -783,9 +783,8 @@ class TestSaveConversationFileToStorage:
             result = await bs.save_conversation_file_to_storage(
                 "org-1", "conv-1", "data.csv", b"col1,col2\n1,2\n"
             )
-            assert result["documentId"] == "local-doc-1"
-            assert result["fileName"] == "data.csv"
-            assert "downloadUrl" in result
+            # Storage has no user-facing route, so there is no link to hand out.
+            assert result == {"documentId": "local-doc-1", "fileName": "data.csv"}
 
     @pytest.mark.asyncio
     async def test_local_upload_includes_custom_metadata(self):
@@ -1073,13 +1072,11 @@ class TestSaveConversationFileToStorage:
             result = await bs.save_conversation_file_to_storage(
                 "org-1", "conv-1", "data.csv", b"col1,col2\n"
             )
-            assert result["documentId"] == "s3-doc-1"
-            assert "downloadUrl" in result
-            assert result["fileName"] == "data.csv"
+            assert result == {"documentId": "s3-doc-1", "fileName": "data.csv"}
 
     @pytest.mark.asyncio
     async def test_s3_download_non_200_falls_through(self):
-        """S3 path: download endpoint returns non-200 => falls to fallback URL."""
+        """S3 path: download endpoint returns non-200 => no link, never a storage route."""
         bs = _make_blob_storage()
         bs._get_auth_and_config = AsyncMock(
             return_value=(
@@ -1113,8 +1110,7 @@ class TestSaveConversationFileToStorage:
             result = await bs.save_conversation_file_to_storage(
                 "org-1", "conv-1", "data.csv", b"col1,col2\n"
             )
-            assert result["documentId"] == "s3-doc-1"
-            assert "downloadUrl" in result
+            assert result == {"documentId": "s3-doc-1", "fileName": "data.csv"}
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
