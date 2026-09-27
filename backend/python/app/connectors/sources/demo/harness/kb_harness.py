@@ -372,24 +372,46 @@ _RAISES = re.compile(
 )
 # What may follow the second-list phrase when it stands alone after the amount: "no approval is needed".
 _BARE_REST = re.compile(r"^(?:\s*\b(?:is|are|at all|needed|required|necessary)\b)*[\s.!]*$")
+# Someone approves the purchase: "require your manager's approval", "must be approved by".
+_APPROVES = re.compile(
+    r"\b(?:requires?|required|needs?|must (?:have|get)|subject to)\s+"
+    r"(?:(?:your|a|the|an|prior|written|manager'?s?)\s+){0,3}approval\b"
+    r"|\b(?:approved|signed off) by\b|\bmanager (?:must |has to |needs to |will )?(?:approves?|signs? off)\b"
+)
+# "no approval from finance" is about another approver, unless it's the manager.
+_OTHER_APPROVER = re.compile(r"^\s+from\s+(?!(?:your |a |the )?manager)")
+
+
+def _approves(text: str) -> bool:
+    return any(not _negated(text[:m.start()]) for m in _APPROVES.finditer(text))
 
 
 def states_together(answer: str, first: list[str], second: list[str]) -> bool:
     """Whether a second-list phrase is about a first-list amount. Either one part
-    of a sentence holds both ("up to $250 without approval"), or the part after
-    the amount is only that phrase ("up to $250: no approval needed"). A part that
-    moves to a higher band ("above that", "larger amounts") never counts."""
+    of a sentence holds both, with nothing before the later of the two that moves
+    to a higher band or says someone approves ("up to $250 without approval"), or
+    the part after the amount is only that phrase ("up to $250: no approval
+    needed"). "No approval from finance" is about someone else."""
 
     def phrase_spans(part: str) -> list[tuple[int, int]]:
-        return [span for m in second for span in mention_spans(part, m)]
+        return [
+            (start, end) for m in second for start, end in mention_spans(part, m)
+            if not _OTHER_APPROVER.match(part[end:])
+        ]
 
     for sentence in _SENTENCE_END.split(_normalized(answer)):
         parts = _PART.split(sentence)
         for i, part in enumerate(parts):
-            if _RAISES.search(part) or not any(mention_spans(part, m) for m in first):
+            bands = [span for m in first for span in mention_spans(part, m)]
+            if not bands:
                 continue
-            if phrase_spans(part):
-                return True
+            band_end = max(end for _, end in bands)
+            for _, end in phrase_spans(part):
+                upto = part[:max(end, band_end)]
+                if not _RAISES.search(upto) and not _approves(upto):
+                    return True
+            if _RAISES.search(part) or _approves(part):
+                continue
             after = parts[i + 1] if i + 1 < len(parts) else ""
             if _RAISES.search(after) or _AMOUNT.search(after):
                 continue
