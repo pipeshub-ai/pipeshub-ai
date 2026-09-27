@@ -352,7 +352,13 @@ def mention_spans(text: str, phrase: str) -> list[tuple[int, int]]:
     """Where `mentions` finds `phrase` in already-normalized text, as (start, end)."""
     p = phrase.lower().replace("\u2019", "'")
     before = r"(?<![\d#.,])" if p[:1].isdigit() else ""
-    after = r"(?!\d|[.,]\d)" if p[-1:].isdigit() else ""
+    if p[-1:].isdigit():
+        after = r"(?!\d|[.,]\d)"
+    elif " " in p and p[-1:].isalpha():
+        # "on time" isn't "on timeout"; a single word still reads inside a longer one ("reissued").
+        after = r"(?:e?s)?\b"
+    else:
+        after = ""
     return [
         m.span() for m in re.finditer(before + re.escape(p) + after, text) if not _negated(text[:m.start()])
     ]
@@ -371,13 +377,16 @@ _RAISES = re.compile(
     r"\b(?:above|over|more than|beyond|exceed\w*|greater|higher|larger|bigger|past)\b"
 )
 # What may follow the second-list phrase when it stands alone after the amount: "no approval is needed".
-_BARE_REST = re.compile(r"^(?:\s*\b(?:is|are|at all|needed|required|necessary)\b)*[\s.!]*$")
+_BARE_REST = re.compile(
+    r"^(?:\s*\b(?:is|are|at all|needed|required|necessary)\b)*"
+    r"(?:\s+(?:from|by)\s+(?:your |a |the |my )?manager)?[\s.!]*$"
+)
 # Any mention of approving, outside the no-approval phrases themselves: "must be
 # approved", "your manager's sign-off", "require your manager to approve them".
 _APPROVAL_WORD = re.compile(r"\bapprov\w*|\bsign(?:s|ed)?[- ]?off\b")
 # "no approval (is needed) from finance" is about another approver, unless it's the manager.
 _OTHER_APPROVER = re.compile(
-    r"^(?:\s+(?:is|are|needed|required|necessary))*\s+from\s+(?!(?:your |a |the |my )?manager)"
+    r"^(?:\s+(?:is|are|needed|required|necessary|at all))*\s+(?:from|by)\s+(?!(?:your |a |the |my )?manager)"
 )
 
 
@@ -402,6 +411,16 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             if not _OTHER_APPROVER.match(part[end:])
         ]
 
+    def approved_later(rest: list[str]) -> bool:
+        # Someone approves the purchase later on. Once the sentence moves to a higher
+        # band ("above that, your manager approves"), the rest is about that band.
+        for p in rest:
+            if _RAISES.search(p):
+                return False
+            if _approves(p, second):
+                return True
+        return False
+
     for sentence in _SENTENCE_END.split(_normalized(answer)):
         parts = _PART.split(sentence)
         for i, part in enumerate(parts):
@@ -411,7 +430,10 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             band_end = max(end for _, end in bands)
             for _, end in phrase_spans(part):
                 upto = part[:max(end, band_end)]
-                if not _RAISES.search(upto) and not _approves(upto, second):
+                if (
+                    not _RAISES.search(upto) and not _approves(upto, second)
+                    and not approved_later([part[max(end, band_end):], *parts[i + 1:]])
+                ):
                     return True
             if _RAISES.search(part) or _approves(part, second):
                 continue
@@ -419,7 +441,8 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             if _RAISES.search(after) or _AMOUNT.search(after):
                 continue
             stripped = after.strip()
-            if any(start == 0 and _BARE_REST.match(stripped[end:]) for start, end in phrase_spans(stripped)):
+            bare = any(start == 0 and _BARE_REST.match(stripped[end:]) for start, end in phrase_spans(stripped))
+            if bare and not approved_later(parts[i + 2:]):
                 return True
     return False
 

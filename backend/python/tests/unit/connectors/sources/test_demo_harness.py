@@ -156,6 +156,11 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
         "You can spend up to $250 with no approval from my manager.",
         "You can spend up to $250 without approval from your manager.",
         "You can spend up to $250 without your manager's approval.",
+        "You can spend up to $250 without approval but your manager approves above that.",
+        "For purchases up to $250, no approval is needed from your manager.",
+        "Up to $250: no approval is needed from your manager.",
+        "You can spend up to $250 and no approval is needed by your manager.",
+        "You can spend up to $250 with no approval at all from your manager.",
         "Up to $250: no approval needed; your manager approves above that, up to $2,500.",
         "You can spend up to $250 without approval; above that, your manager approves.",
         "You can spend up to $250 without your manager\u2019s approval, and finance approves above $2,500.",
@@ -342,6 +347,16 @@ def test_negation_reaches_three_words_back_and_includes_no(
         "You can spend up to $250 and no approval is needed from finance.",
         "Up to $250 with no approval needed from finance.",
         "No approval is needed from finance for purchases up to $250.",
+        # Someone approves later in the sentence, or "by finance" / "at all from finance".
+        "You can spend up to $250 with no approval and your manager must approve every purchase.",
+        "Purchases of up to $250 need no approval and your manager must approve them.",
+        "You can spend up to $250 without approval; your manager must approve every one of them.",
+        "You can spend up to $250 with no approval and your manager must approve it.",
+        "You can spend up to $250 without approval but your manager approves.",
+        "You can spend up to $250 and no approval is needed by finance.",
+        "No approval is needed by finance for purchases up to $250.",
+        "You can spend up to $250 with no approval at all from finance.",
+        "Anything $250 or less needs no approval by finance.",
     ],
 )
 def test_f2_needs_the_no_approval_amount_not_just_the_words(fx: dict, answer: str) -> None:
@@ -523,3 +538,19 @@ def test_record_states_read_every_page_of_the_knowledge_base() -> None:
     assert [r.url.path for r in seen] == ["/api/v1/knowledgeBase/knowledge-hub/nodes/app/kb-1"] * 2
     assert all(r.headers["Authorization"] == "Bearer jwt" for r in seen)
     assert seen[0].url.params["nodeTypes"] == "record" and seen[0].url.params["flattened"] == "true"
+
+
+@pytest.mark.parametrize(
+    ("answer", "ok"),
+    [
+        ("Northwind is back on track; renewal expected on time.", True),
+        ("Northwind is no longer at risk after the export fix.", True),
+        ("Northwind's renewal is not on time.", False),
+        # A phrase isn't read inside a longer word.
+        ("Northwind is still at risk; the renewal depends on timeout fixes.", False),
+        ("Yes, Northwind is still at risk while they wait on timeout resolution.", False),
+    ],
+)
+def test_s1_recovery_phrases_are_whole_words(fx: dict, answer: str, ok: bool) -> None:
+    cited = {"drive-sales-northwind-plan", "drive-sales-northwind-call-0416"}
+    assert kb_harness.score(_question(fx, "s1"), "cites", cited, answer)[0] is ok
