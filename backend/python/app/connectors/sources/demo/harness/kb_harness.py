@@ -511,7 +511,9 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
         # rejected …" is a finished claim); from before, the band's whole piece counts.
         lo, hi = segment(_PIECE, x)
         if x < at:
-            return not someone_approves(x if at < hi else lo, at)
+            # "Above $2,500 or it is rejected …": an alternative before the band governs anything.
+            governs = min((p for p in anchors if p > x), default=at)
+            return not someone_approves(x if at < hi else lo, at) and not re.search(r"\bor\b", sentence[x:governs])
         # A later band covers it in its piece, or right after a comma when the band
         # is all its piece says (", above $2,500"); not a new clause ("and above …")
         # or an alternative ("or above $2,500").
@@ -519,6 +521,11 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
             return False
         before = [m.group() for m in _PIECE.finditer(sentence) if m.end() == lo]
         return lo <= at < hi or (before == [","] and _only_range(sentence[lo:hi], band_amounts, raises=True))
+
+    # Where the band could first govern: a requirement word or a sign-off.
+    anchors = [m.start() for m in _REQUIRES_ANYWHERE.finditer(sentence)] + [
+        m.start() for m in _APPROVAL_WORD.finditer(sentence)
+    ]
 
     def covered(a: int, r: int) -> bool:
         # A higher band covers the sign-off when it shares their claim ("but" and ";"
@@ -552,15 +559,16 @@ def _without_cancels(before: str) -> bool:
 _BOUND = rf"(?:{_AMOUNT.pattern}|\b\d{{1,3}}(?:,\d{{3}})+\b|\b\d{{3,}}\b)"
 _DET = r"(?:(?:the|a|an|your|our)\s+)?"
 _RANGE = re.compile(
-    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:up\s+to|to|and|through|-|–|—)\s*{_DET}({_BOUND})"
+    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:up\s+to|to|and|through|until|-|–|—)\s*{_DET}({_BOUND})"
     rf"|({_AMOUNT.pattern})\s*(?:up\s+to|to|-|–|—)\s*{_DET}({_BOUND})"
 )
 
 
 # A ceiling: "up to $2,500", "under $2,500", "less than the $2,500 limit".
 _CEILING = re.compile(
-    r"\b(?:up\s+to|to|under|below|less\s+than|through|until|within|no\s+more\s+than|not\s+more\s+than"
-    r"|not\s+exceeding|(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+of)?)"
+    r"\b(?:up\s+to|to|under|below|less\s+than|through|until|within|no\s+more\s+than|at\s+most|capped\s+at"
+    r"|not\s+(?:more\s+than|above|over|beyond|past|exceeding|to\s+exceed)"
+    r"|(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+of)?)"
     rf"\s+{_DET}({_AMOUNT.pattern})"
 )
 _RANGE_MARK = "\0"
@@ -587,7 +595,7 @@ def _new_range(text: str, band_amounts: set[float]) -> bool:
 
 # Words that leave a piece's claim as the range: "only", "for purchases", "applicable".
 _RANGE_LEAD = re.compile(
-    r"\b(?:but|and|or|however|whereas|which|that|only|just|for|purchases?|amounts?|expenses?|spend\w*|the|a|an"
+    r"\b(?:but|and|or|else|however|whereas|which|that|only|just|for|purchases?|amounts?|expenses?|spend\w*|the|a|an"
     r"|range|applicable|applies|valid|in|of|is|are|limit|cap|ceiling|maximum|threshold)\b"
 )
 
@@ -697,6 +705,8 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 last = list(_APPROVAL_WORD.finditer(piece))
                 range_next = (
                     k is not None and any("," in sep for sep in seps[j + 1:k + 1])
+                    # ", or from $251 to $2,500" is an alternative, not what's approved.
+                    and not re.match(r"\s*(?:or|either)\b", pieces[k])
                     and _only_range(pieces[k], band_amounts, raises=True)
                     and not named and not band_amounts & _amount_values(piece)
                     and bool(last) and _BARE_APPROVAL_END.fullmatch(piece[last[-1].end():]) is not None
