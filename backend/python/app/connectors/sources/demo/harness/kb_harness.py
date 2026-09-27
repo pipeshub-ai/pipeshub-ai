@@ -471,8 +471,16 @@ _NOT_BLOCKED = re.compile(
 )
 
 
-# "or" / "either" offering an alternative; "or more", "or above" extend a band instead.
-_ALTERNATIVE = re.compile(r"\b(?:or|either)\b(?!\s+(?:more|above|higher|over|greater|beyond|larger|bigger)\b)")
+_EXTENDER = re.compile(r"\s+(?:more|above|higher|over|greater|beyond|larger|bigger)\s*(?:[,.;:!?]|$)")
+
+
+def _alternative(text: str) -> bool:
+    """Whether `text` offers an alternative with "or" / "either". A bare "or more" /
+    "or above" right after an amount or band ("Above $2,500 or higher,") extends it."""
+    return any(
+        not (_EXTENDER.match(text, m.end()) and re.search(r"(?:\d|\0|\bthat|\babove|\bover)\s*$", text[:m.start()]))
+        for m in re.finditer(r"\b(?:or|either)\b", text)
+    )
 _CLAIM_BREAK = re.compile(r"\b(?:but|however|whereas)\b|;")
 
 
@@ -485,7 +493,9 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
     # "It is not rejected without …" says the opposite.
     sentence = _mark_new_ranges(_NOT_BLOCKED.sub(lambda m: " " * len(m.group(0)), sentence), band_amounts)
     # Higher bands: "above that", and a range above $250.
-    bands = [m.start() for m in _RAISES.finditer(sentence)] + [
+    # A raise that starts on its joiner ("or higher") starts at the band word, so
+    # the "or" stays in view as a possible alternative.
+    bands = [m.start() + len(re.match(r"(?:or\s+)?", m.group()).group()) for m in _RAISES.finditer(sentence)] + [
         m.start() for m in re.finditer(rf"{_RANGE_MARK}+", sentence)
     ]
 
@@ -515,11 +525,11 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
         if x < at:
             # "Above $2,500 or it is rejected …": an alternative before the band governs anything.
             governs = min((p for p in anchors if p > x), default=at)
-            return not someone_approves(x if at < hi else lo, at) and not _ALTERNATIVE.search(sentence[x:governs])
+            return not someone_approves(x if at < hi else lo, at) and not _alternative(sentence[x:governs])
         # A later band covers it in its piece, or right after a comma when the band
         # is all its piece says (", above $2,500"); not a new clause ("and above …")
         # or an alternative ("or above $2,500").
-        if someone_approves(at, x) or _ALTERNATIVE.search(sentence[at:x]):
+        if someone_approves(at, x) or _alternative(sentence[at:x]):
             return False
         before = [m.group() for m in _PIECE.finditer(sentence) if m.end() == lo]
         return lo <= at < hi or (before == [","] and _only_range(sentence[lo:hi], band_amounts, raises=True))
@@ -561,17 +571,18 @@ def _without_cancels(before: str) -> bool:
 _BOUND = rf"(?:{_AMOUNT.pattern}|\b\d{{1,3}}(?:,\d{{3}})+\b|\b\d{{3,}}\b)"
 _DET = r"(?:(?:the|a|an|your|our)\s+)?"
 _RANGE = re.compile(
-    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:up\s+(?:to|until)|to|and|through|until|-|–|—)\s*{_DET}({_BOUND})"
-    rf"|({_AMOUNT.pattern})\s*(?:up\s+(?:to|until)|to|through|until|-|–|—)\s*{_DET}({_BOUND})"
+    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:up\s+(?:to|until|through)|to|and|through|until|-|–|—)\s*{_DET}({_BOUND})"
+    rf"|({_AMOUNT.pattern})\s*(?:up\s+(?:to|until|through)|to|through|until|-|–|—)\s*{_DET}({_BOUND})"
 )
 
 
 # A ceiling: "up to $2,500", "under $2,500", "less than the $2,500 limit".
 _CEILING = re.compile(
     r"\b(?:up\s+to|to|under|below|less\s+than|through|until|within|at\s+most|capped\s+at"
-    r"|(?:no|not|nothing)\s+(?:more|greater|higher|larger|bigger)\s+than"
-    r"|not\s+(?:above|over|beyond|past|exceeding|to\s+exceed)"
-    r"|(?:cannot|can't|can\s+not|does\s+not|doesn't|do\s+not|don't|must\s+not|may\s+not|should\s+not|won't|will\s+not)"
+    r"|(?:no|not|nothing|isn't|aren't|wasn't|weren't)\s+"
+    r"(?:(?:more|greater|higher|larger|bigger)\s+than|above|over|beyond|past|exceeding|to\s+exceed)"
+    r"|(?:cannot|can't|can\s+not|does\s+not|doesn't|do\s+not|don't|must\s+not|may\s+not|should\s+not|shall\s+not"
+    r"|shan't|won't|will\s+not)"
     r"\s+exceed"
     r"|(?:at\s+)?(?:an?\s+|the\s+)?(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+of)?)"
     rf"\s+{_DET}({_AMOUNT.pattern})"
