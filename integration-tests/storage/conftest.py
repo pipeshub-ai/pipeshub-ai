@@ -70,6 +70,7 @@ def _load_env() -> None:
 
 _load_env()
 
+from helper.source_credentials import secrets_required
 from local_auth import obtain_local_oauth_credentials
 from pipeshub_client import PipeshubClient
 from storage_backends import available_backends, parked_notice
@@ -302,10 +303,19 @@ def sc(
     s3_cleanup_tracker: _S3CleanupTracker,
 ) -> StorageClient:
     if not scoped_jwt_secret():
-        pytest.skip(
-            "Storage routes are service-to-service only; set SCOPED_JWT_SECRET to "
-            "the deployment's scoped JWT secret to run the storage suite."
+        reason = (
+            "Storage routes are service-to-service only, so the storage suite "
+            "needs SCOPED_JWT_SECRET set to the deployment's scoped JWT secret "
+            "to mint its tokens."
         )
+        # Skipped on the nightly, the whole suite would read as a pass.
+        if secrets_required():
+            pytest.fail(
+                f"{reason} This run is meant to cover storage: set "
+                "SCOPED_JWT_SECRET in the workflow's job environment (the "
+                "integration compose files default it to a test-only value)."
+            )
+        pytest.skip(reason)
     return StorageClient(
         pipeshub_client,
         register_document_id=s3_cleanup_tracker.add_document_id,

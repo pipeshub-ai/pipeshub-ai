@@ -59,6 +59,9 @@ services:
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+      # Signs service tokens. Fixed so the storage suite can mint tokens this
+      # stack accepts; the app only reads it on the first boot of a fresh volume.
+      - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-pipeshub-integration-scoped-jwt-secret-test-only}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}

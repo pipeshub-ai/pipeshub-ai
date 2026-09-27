@@ -180,6 +180,10 @@ jobs:
     env:
       MESSAGE_BROKER: ${{ needs.setup.outputs.message_broker }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      # One value for both sides: compose seeds the stack with it and the
+      # storage suite mints its service tokens with it. Test-only; a
+      # TEST_SCOPED_JWT_SECRET secret replaces it.
+      SCOPED_JWT_SECRET: ${{ secrets.TEST_SCOPED_JWT_SECRET || 'pipeshub-integration-scoped-jwt-secret-test-only' }}
       DOCKER_BUILDKIT: "1"
       PIPESHUB_TEST_ENV: local
       # A connector suite whose credential is missing skips itself, which on the
