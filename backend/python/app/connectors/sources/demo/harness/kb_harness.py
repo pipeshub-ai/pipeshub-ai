@@ -454,6 +454,23 @@ def _approves(text: str, no_approval: list[str]) -> bool:
 _REQUIRES_BEFORE = re.compile(r"\b(?:can't|cannot|can not|not|never|nothing|nobody|no one|won't)\b|n't\b")
 
 
+# "nothing goes through", "no purchase goes through", "you can't submit it".
+_REQUIRES_ANYWHERE = re.compile(
+    r"\b(?:can't|cannot|can not|not|never|nothing|nobody|no one|won't)\b|n't\b|\bno\s+(?!need|problem|worries)\w+"
+)
+
+
+def _required_without(sentence: str, no_approval: list[str]) -> bool:
+    """Whether a sentence makes an approval a condition: "without your manager's
+    sign-off" with a requirement anywhere in it ("…, nothing goes through")."""
+    for m in no_approval:
+        for start, end in mention_spans(sentence, m):
+            sentence = sentence[:start] + " " * (end - start) + sentence[end:]
+    if _RAISES.search(sentence) or not _REQUIRES_ANYWHERE.search(sentence):
+        return False
+    return any(_WITHOUT_BEFORE.search(sentence[:m.start()]) for m in _APPROVAL_WORD.finditer(sentence))
+
+
 def _without_cancels(before: str) -> bool:
     """Whether a "without" just before an approval word means nobody approves,
     rather than that nothing happens without the approval."""
@@ -477,10 +494,15 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
         # Read on past blank parts and lead-ins ("However,", "Please note:") until a
         # part approves, names an amount, or moves to a higher band.
         for after in parts[i + 1:]:
-            if _AMOUNT.search(after) or _RAISES.search(after):
+            if _RAISES.search(after):
                 break
-            if _approves(after, second):
+            # An approval before another amount is still about $250; one after it
+            # belongs to that amount's band ("Up to $2,500, your manager approves").
+            amount = _AMOUNT.search(after)
+            if _approves(after[:amount.start()] if amount else after, second):
                 return True
+            if amount:
+                break
     return False
 
 
@@ -502,6 +524,8 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
         # or in a later one. A piece naming a higher band ("above that, your manager
         # approves") covers the rest of its sentence, until the $250 amount returns.
         for sentence_rest in rest:
+            if _required_without(" ".join(sentence_rest), second):
+                return True
             raised = False
             skipped = False  # an approval set aside because a band was in force
             for piece in (p for text in sentence_rest for p in _PIECE.split(text)):
