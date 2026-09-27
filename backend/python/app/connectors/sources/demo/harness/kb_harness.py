@@ -497,11 +497,18 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
                 break
         return lo, hi
 
+    def someone_approves(text: str) -> bool:
+        # A finished approval; "without your manager's sign-off" is the condition itself.
+        return any(
+            not _negated(text[:m.start()]) and not _WITHOUT_BEFORE.search(text[:m.start()])
+            for m in _APPROVAL_WORD.finditer(text)
+        )
+
     def covers(x: int, at: int) -> bool:
-        # In the same piece, or before it unless its own piece already has someone
-        # approve ("Above $2,500 finance approves and …" is a finished claim).
+        # In the same piece, or before it with no approval from the band's piece up
+        # to it ("Above $2,500, finance approves, …" is a finished claim).
         lo, hi = segment(_PIECE, x)
-        return lo <= at < hi or (x < at and not _approves(sentence[lo:hi], no_approval))
+        return lo <= at < hi or (x < at and not someone_approves(sentence[lo:segment(_PIECE, at)[0]]))
 
     def covered(a: int, r: int) -> bool:
         # A higher band covers the sign-off when it shares their claim ("but" and ";"
@@ -561,6 +568,16 @@ def _new_range(text: str, band_amounts: set[float]) -> bool:
     return _RANGE_MARK in _mark_new_ranges(text, band_amounts)
 
 
+def _range_only_next(texts: list[str], band_amounts: set[float]) -> bool:
+    """Whether the first non-blank piece of `texts` is only a range reaching above
+    the $250 band (", from $251 to $2,500"): what came before is about that range."""
+    for text in texts:
+        for piece in _PIECE.split(_mark_new_ranges(text, band_amounts, reaching_above=True)):
+            if piece.strip():
+                return _RANGE_MARK in piece and not re.search(r"[^\s\0.!?]", piece)
+    return False
+
+
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
     """Whether these parts say someone approves the $250 purchase: a part that names
     that amount (outside a higher-band phrase such as "above $250") and approves, or
@@ -607,6 +624,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             skipped = False  # an approval set aside because a band was in force
             marked = (_mark_new_ranges(text, band_amounts) for text in sentence_rest)
             pieces = [p for text in marked for p in _PIECE.split(text)]
+            named = False  # an earlier piece names the $250 purchase ("The $250 purchase, …")
             for j, piece in enumerate(pieces):
                 if _OTHER_APPROVER_PIECE.match(piece):
                     return True
@@ -626,12 +644,16 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 last = list(_APPROVAL_WORD.finditer(piece))
                 range_next = (
                     _RANGE_MARK in nxt and not re.search(r"[^\s\0.!?]", nxt)
-                    and not band_amounts & _amount_values(piece)
+                    and not named and not band_amounts & _amount_values(piece)
                     and bool(last) and _BARE_APPROVAL_END.fullmatch(piece[last[-1].end():]) is not None
                 )
                 if approves and not raised and not range_next:
                     return True
                 skipped = skipped or approves
+                named = named or bool(
+                    band_amounts & _amount_values(_RAISES.sub(" ", piece))
+                    and not any(mention_spans(piece, m) for m in second)
+                )
         return False
 
     sentences = _SENTENCE_END.split(_normalized(answer))
@@ -660,6 +682,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 if (
                     not _RAISES.search(upto) and not _approves(upto, second)
                     and not _RAISES.search(own_piece_rest) and _RANGE_MARK not in own_piece_rest
+                    and not _range_only_next([part[max(end, band_end):], *parts[i + 1:]], band_amounts)
                     and not approved_later([[part[max(end, band_end):], *parts[i + 1:]], *later], band_amounts)
                 ):
                     return True
@@ -675,7 +698,10 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 start == 0 and _BARE_REST.match(stripped[end:]) and not _approves(stripped[end:], second)
                 for start, end in phrase_spans(stripped)
             )
-            if bare and not approved_later([[*more, *parts[i + 2:]], *later], band_amounts):
+            if (
+                bare and not _range_only_next([*more, *parts[i + 2:]], band_amounts)
+                and not approved_later([[*more, *parts[i + 2:]], *later], band_amounts)
+            ):
                 return True
     return False
 
