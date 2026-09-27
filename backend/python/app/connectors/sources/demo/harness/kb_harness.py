@@ -512,7 +512,11 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
         lo, hi = segment(_PIECE, x)
         if x < at:
             return not someone_approves(x if at < hi else lo, at)
-        return lo <= at < hi and not someone_approves(at, x)
+        # A later band covers it in its piece, or across a comma when the band is
+        # all its piece says (", above $2,500"), not a new clause ("and above …").
+        return not someone_approves(at, x) and (
+            lo <= at < hi or _only_range(sentence[lo:hi], band_amounts, raises=True)
+        )
 
     def covered(a: int, r: int) -> bool:
         # A higher band covers the sign-off when it shares their claim ("but" and ";"
@@ -544,9 +548,10 @@ def _without_cancels(before: str) -> bool:
 
 # Both bounds of a range: "from $251 to $2,500", "between $251 and $2,500", "$251–2,500".
 _BOUND = rf"(?:{_AMOUNT.pattern}|\b\d{{1,3}}(?:,\d{{3}})+\b|\b\d{{3,}}\b)"
+_DET = r"(?:(?:the|a|an|your|our)\s+)?"
 _RANGE = re.compile(
-    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:up\s+to|to|and|through|-|–|—)\s*({_BOUND})"
-    rf"|({_AMOUNT.pattern})\s*(?:up\s+to|to|-|–|—)\s*({_BOUND})"
+    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:up\s+to|to|and|through|-|–|—)\s*{_DET}({_BOUND})"
+    rf"|({_AMOUNT.pattern})\s*(?:up\s+to|to|-|–|—)\s*{_DET}({_BOUND})"
 )
 
 
@@ -574,18 +579,30 @@ def _new_range(text: str, band_amounts: set[float]) -> bool:
 
 # Words that leave a piece's claim as the range: "only", "for purchases", "applicable".
 _RANGE_LEAD = re.compile(
-    r"\b(?:but|and|only|just|for|purchases?|amounts?|expenses?|spend\w*|the|a|range|applicable|applies|valid|in|of|is|are)\b"
+    r"\b(?:but|and|however|whereas|which|that|only|just|for|purchases?|amounts?|expenses?|spend\w*|the|a|an"
+    r"|range|applicable|applies|valid|in|of|is|are|limit|cap|ceiling|maximum|threshold)\b"
 )
 
 
-def _range_only_next(texts: list[str], band_amounts: set[float]) -> bool:
-    """Whether the first non-blank piece of `texts` is only a range reaching above
-    the $250 band (", from $251 to $2,500"): what came before is about that range."""
+def _only_range(text: str, band_amounts: set[float], *, reaching_above: bool = False, raises: bool = False) -> bool:
+    """Whether `text` says nothing but a range above the $250 band ("only from $251
+    to $2,500", "up to the $2,500 limit"), or with `raises` a higher band (", above $2,500")."""
+    marked = _mark_new_ranges(text, band_amounts, reaching_above=reaching_above)
+    if raises and _RAISES.search(marked):
+        # The raise pattern ends at the amount's first character ("above $"); drop the rest.
+        marked = re.sub(r"\d[\d,.]*", " ", _RAISES.sub(_RANGE_MARK, marked))
+    return _RANGE_MARK in marked and not re.sub(r"[\s\0.!?,;:]", "", _RANGE_LEAD.sub(" ", marked))
+
+
+def _range_only_next(texts: list[str], band_amounts: set[float], next_sentence: str = "") -> bool:
+    """Whether the first piece of `texts` that says something is only a range reaching
+    above the $250 band (", however, from $251 to $2,500"), or, when the sentence
+    ends first, the next sentence is only that range: what came before is about it."""
     for text in texts:
         for piece in _PIECE.split(_mark_new_ranges(text, band_amounts, reaching_above=True)):
-            if piece.strip():
-                return _RANGE_MARK in piece and not _RANGE_LEAD.sub(" ", piece).strip(" \0.!?")
-    return False
+            if re.sub(r"[\s.!?]", "", _RANGE_LEAD.sub(" ", piece)):
+                return _only_range(piece, band_amounts, reaching_above=True)
+    return _only_range(next_sentence, band_amounts, reaching_above=True)
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
@@ -653,7 +670,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 nxt = next((p for p in pieces[j + 1:] if p.strip()), "")
                 last = list(_APPROVAL_WORD.finditer(piece))
                 range_next = (
-                    _RANGE_MARK in nxt and not re.search(r"[^\s\0.!?]", nxt)
+                    _only_range(nxt, band_amounts, raises=True)
                     and not named and not band_amounts & _amount_values(piece)
                     and bool(last) and _BARE_APPROVAL_END.fullmatch(piece[last[-1].end():]) is not None
                 )
@@ -669,6 +686,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
     sentences = _SENTENCE_END.split(_normalized(answer))
     for k, sentence in enumerate(sentences):
         later = [[s] for s in sentences[k + 1:]]
+        next_sentence = sentences[k + 1] if k + 1 < len(sentences) else ""
         parts = _PART.split(sentence)
         for i, part in enumerate(parts):
             bands = [span for m in first for span in mention_spans(part, m)]
@@ -692,7 +710,8 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 if (
                     not _RAISES.search(upto) and not _approves(upto, second)
                     and not _RAISES.search(own_piece_rest) and _RANGE_MARK not in own_piece_rest
-                    and not _range_only_next([part[max(end, band_end):], *parts[i + 1:]], band_amounts)
+                    and _RANGE_MARK not in _mark_new_ranges(upto, band_amounts, reaching_above=True)
+                    and not _range_only_next([part[max(end, band_end):], *parts[i + 1:]], band_amounts, next_sentence)
                     and not approved_later([[part[max(end, band_end):], *parts[i + 1:]], *later], band_amounts)
                 ):
                     return True
@@ -709,7 +728,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 for start, end in phrase_spans(stripped)
             )
             if (
-                bare and not _range_only_next([*more, *parts[i + 2:]], band_amounts)
+                bare and not _range_only_next([*more, *parts[i + 2:]], band_amounts, next_sentence)
                 and not approved_later([[*more, *parts[i + 2:]], *later], band_amounts)
             ):
                 return True
