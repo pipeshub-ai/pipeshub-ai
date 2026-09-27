@@ -471,6 +471,9 @@ _NOT_BLOCKED = re.compile(
 )
 
 
+_CLAIM_BREAK = re.compile(r"\b(?:but|however|whereas)\b|;")
+
+
 def _required_without(sentence: str, no_approval: list[str]) -> bool:
     """Whether a sentence makes an approval a condition: "without your manager's
     sign-off" with a requirement anywhere in it ("…, nothing goes through")."""
@@ -480,14 +483,32 @@ def _required_without(sentence: str, no_approval: list[str]) -> bool:
     # "It is not rejected without …" says the opposite.
     sentence = _NOT_BLOCKED.sub(lambda m: " " * len(m.group(0)), sentence)
 
-    def clause_end(at: int) -> int:
-        brk = _CLAUSE_BREAK.search(sentence, at)
-        return brk.start() if brk else len(sentence)
+    def segment(breaks: re.Pattern[str], at: int) -> tuple[int, int]:
+        lo, hi = 0, len(sentence)
+        for m in breaks.finditer(sentence):
+            if m.end() <= at:
+                lo = m.end()
+            elif m.start() >= at:
+                hi = m.start()
+                break
+        return lo, hi
 
-    # A higher band before the sign-off, or in its clause or the requirement's
-    # clause, is about that band ("Above that, it is rejected without …").
+    def covered(a: int, r: int) -> bool:
+        # A higher band covers the sign-off when it shares their claim ("but" and ";"
+        # start a new one) and comes before the later of the two or in its piece:
+        # "Above that, it is rejected without …", "… nothing above $2,500 goes through".
+        claim = segment(_CLAIM_BREAK, a)
+        if segment(_CLAIM_BREAK, r) != claim:
+            return False
+        later = max(a, r)
+        piece = segment(_PIECE, later)
+        return any(
+            claim[0] <= x.start() < claim[1] and (x.start() < later or piece[0] <= x.start() < piece[1])
+            for x in _RAISES.finditer(sentence)
+        )
+
     return any(
-        not _RAISES.search(sentence[:max(clause_end(a.end()), clause_end(r.end()))])
+        not covered(a.start(), r.start())
         for a in _APPROVAL_WORD.finditer(sentence) if _WITHOUT_BEFORE.search(sentence[:a.start()])
         for r in _REQUIRES_ANYWHERE.finditer(sentence)
     )
@@ -499,8 +520,8 @@ def _without_cancels(before: str) -> bool:
     m = _WITHOUT_BEFORE.search(before)
     if not m:
         return False
-    clause = _CLAUSE_BREAK.split(before[:m.start()])[-1]
-    return not _REQUIRES_BEFORE.search(_NOT_BLOCKED.sub(" ", clause))
+    clause = _NOT_BLOCKED.sub(" ", _CLAUSE_BREAK.split(before[:m.start()])[-1])
+    return not _REQUIRES_BEFORE.search(clause) and not re.search(_BLOCKED, clause)
 
 
 # Both bounds of a range: "from $251 to $2,500", "between $251 and $2,500", "$251–2,500".
@@ -574,7 +595,8 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             raised = False
             skipped = False  # an approval set aside because a band was in force
             marked = (_mark_new_ranges(text, band_amounts) for text in sentence_rest)
-            for piece in (p for text in marked for p in _PIECE.split(text)):
+            pieces = [p for text in marked for p in _PIECE.split(text)]
+            for j, piece in enumerate(pieces):
                 if _OTHER_APPROVER_PIECE.match(piece):
                     return True
                 # The band phrase's own amount ("over $250") is its object; $250
@@ -587,7 +609,12 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                     if raised and skipped:
                         return True
                     raised = False
-                if approves and not raised:
+                # "Your manager approves, from $251 to $2,500": the range that follows
+                # is what this approval is about.
+                range_next = j + 1 < len(pieces) and _RANGE_MARK in pieces[j + 1] and not re.search(
+                    r"[^\s\0.!?]", pieces[j + 1]
+                )
+                if approves and not raised and not range_next:
                     return True
                 skipped = skipped or approves
         return False
