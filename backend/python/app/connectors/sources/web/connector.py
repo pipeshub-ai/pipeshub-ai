@@ -2243,6 +2243,8 @@ class WebConnector(BaseConnector):
             await self._ensure_parent_records_exist(parent_url)
 
             if existing_record:
+                # Also on the legacy path: the stored validators below are kept only for unchanged content.
+                content_changed = existing_record.external_revision_id != content_md5_hash
                 if legacy_lookup:
                     is_new = True # Force record to be treated as new to migrate external_record_id to the normalized form
                 else:
@@ -2250,8 +2252,6 @@ class WebConnector(BaseConnector):
                         metadata_changed = True
                     elif existing_record.parent_external_record_id != parent_url:
                         metadata_changed = True
-                    if existing_record.external_revision_id != content_md5_hash:
-                        content_changed = True
                     is_updated = metadata_changed or content_changed
             else:
                 is_new = True

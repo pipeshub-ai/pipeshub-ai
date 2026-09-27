@@ -7,7 +7,9 @@ read links from. Everything else falls back to comparing content hashes, as befo
 import pytest
 from web_behaviour_fakes import START_URL, FakeRecordsDb, FakeWeb, MakeConnector, Page
 
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.sources.web.connector import WebConnector
+from app.models.entities import FileRecord, RecordType
 
 PDF = "http://site.test/manual.pdf"
 LAST_MODIFIED = "Wed, 01 Jul 2026 10:00:00 GMT"
@@ -71,6 +73,28 @@ async def test_a_changed_document_whose_answer_drops_its_etag_does_not_keep_the_
 
     assert site.not_modified == []
     assert site.storage_docs[db.pages()[PDF].storage_document_id] == b"%PDF-1.4 v3"
+
+
+async def test_a_record_migrated_from_an_older_address_does_not_keep_validators_for_changed_content(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    # Stored by an older version without the trailing slash; this sync migrates it to "/guide/".
+    guide = "http://site.test/guide"
+    db.records[guide] = FileRecord(
+        id="legacy-1", org_id="org-1", record_name="Guide", record_type=RecordType.FILE,
+        external_record_id=guide, version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.WEB,
+        connector_id="web-1", weburl=guide, is_file=True, mime_type=MimeTypes.HTML.value,
+        external_revision_id="hash-of-the-old-copy", storage_document_id="old-copy",
+        etag='"v1"', ctag=LAST_MODIFIED,
+    )
+    site.html(START_URL, "Home", "/guide")
+    site.html(guide, "Guide", text="Rewritten since the old copy")
+
+    await (await make_connector()).run_sync()
+
+    migrated = next(r for r in db.records.values() if r.id == "legacy-1")
+    assert migrated.external_record_id == guide + "/"
+    assert (migrated.etag, migrated.ctag) == (None, None)
 
 
 async def test_a_page_whose_links_are_needed_is_always_fetched_in_full(
