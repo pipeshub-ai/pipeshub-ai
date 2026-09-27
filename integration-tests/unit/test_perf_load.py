@@ -54,8 +54,9 @@ pytestmark = pytest.mark.unit
 
 
 def test_stages_parse_and_bad_ones_say_what_is_wrong() -> None:
-    assert parse_stages("120:4, 60:8,900:8") == (Stage(120, 4), Stage(60, 8), Stage(900, 8))
-    for bad, why in (("120", "seconds:users"), ("0:4", "longer than 0"), ("10:0", "a user"), ("", "seconds:users")):
+    assert parse_stages("120:4,60:8,900:8") == (Stage(120, 4), Stage(60, 8), Stage(900, 8))
+    for bad, why in (("120", "seconds:users"), ("0:4", "longer than 0"), ("10:0", "a user"), ("", "seconds:users"),
+                     ("120:4, 60:8", "no spaces")):
         with pytest.raises(ValueError, match=why):
             parse_stages(bad)
 
@@ -63,7 +64,7 @@ def test_stages_parse_and_bad_ones_say_what_is_wrong() -> None:
 def test_think_time_is_fixed_or_a_range() -> None:
     assert parse_think_time("2") == (2.0, 2.0)
     assert parse_think_time("1:3") == (1.0, 3.0)
-    for bad in ("3:1", "-1", "a:b", "1:2:3"):
+    for bad in ("3:1", "-1", "a:b", "1:2:3", "1 : 3", "nan", "inf", "1e3", ".5"):
         with pytest.raises(ValueError):
             parse_think_time(bad)
 
@@ -439,10 +440,11 @@ def _validate_step() -> str:
     return next(s["run"] for s in steps if s.get("name") == "Validate inputs")
 
 
-def _workflow_accepts(script: str, stages: str = "120:4", think_time: str = "1:3") -> bool:
+def _workflow_accepts(script: str, stages: str = "120:4", think_time: str = "1:3", docs: str = "80") -> bool:
     import subprocess
 
-    env = {"PATH": "/usr/bin:/bin", "STAGES_INPUT": stages, "THINK_TIME_INPUT": think_time, "DOCS_INPUT": "80"}
+    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "STAGES_INPUT": stages, "THINK_TIME_INPUT": think_time,
+           "DOCS_INPUT": docs}
     return subprocess.run(["bash", "-e", "-c", script], env=env, capture_output=True).returncode == 0
 
 
@@ -454,11 +456,20 @@ def _parses(parser: Any, text: str) -> bool:
     return True
 
 
+# Spaces, leading and trailing dots, and number forms float() takes (1e3, nan,
+# inf, +1, 1_0, non-ASCII digits) are where a regex and a parser drift apart.
 STAGE_SAMPLES = (
     "120:4,120:8,900:8", "1.5:4", "0.5:1,30:0", "10:010",
     "0:4", "0.0:4", "00.00:4", "10:0,5:0", "120", "1.:4", ".5:4", "120:4,", "-1:4", "1:1.5", "a:b",
+    "120:4, 60:8", " 120:4", "120 :4", "120: 4", "120:4 ", "1e3:4", "+1:4", "1_0:4", "\u0661\u0662:4",
+    "nan:4", "inf:4", "", ",", "10:99999999999999999999", "10:18446744073709551616", "10:00,5:000", "99999999999999999999:1",
 )
-THINK_SAMPLES = ("1:3", "2", "0", "0.5:2.5", "2:2", "3:1", "2.5:1", "1:", ":3", "-1", "1:2:3", "a")
+THINK_SAMPLES = (
+    "1:3", "2", "0", "0.5:2.5", "2:2", "3:1", "2.5:1", "1:", ":3", "-1", "1:2:3", "a",
+    "1 : 3", " 2", "2 ", ".5", "1.", "1e3", "nan", "inf", "+1", "1_0", "\u0661", "",
+)
+DOCS_SAMPLES = ("80", "1", "0", "000", "0010", "-1", "", " 80", "+80", "8_0", "1.5", "\u0668\u0660",
+                "99999999999999999999")
 
 
 @pytest.mark.parametrize("stages", STAGE_SAMPLES)
@@ -471,7 +482,20 @@ def test_the_workflow_accepts_exactly_the_think_times_the_parser_does(think_time
     assert _workflow_accepts(_validate_step(), think_time=think_time) == _parses(parse_think_time, think_time)
 
 
-def test_the_samples_cover_both_verdicts() -> None:
-    for parser, samples in ((parse_stages, STAGE_SAMPLES), (parse_think_time, THINK_SAMPLES)):
+def _docs_parse(text: str) -> None:
+    try:
+        parse_args(["--label", "unit", "--docs", text])
+    except SystemExit:
+        raise ValueError(text) from None
+
+
+@pytest.mark.parametrize("docs", DOCS_SAMPLES)
+def test_the_workflow_accepts_exactly_the_corpus_sizes_the_parser_does(docs: str, capsys) -> None:
+    assert _workflow_accepts(_validate_step(), docs=docs) == _parses(_docs_parse, docs)
+
+
+def test_the_samples_cover_both_verdicts(capsys) -> None:
+    for parser, samples in ((parse_stages, STAGE_SAMPLES), (parse_think_time, THINK_SAMPLES),
+                            (_docs_parse, DOCS_SAMPLES)):
         verdicts = {_parses(parser, s) for s in samples}
         assert verdicts == {True, False}

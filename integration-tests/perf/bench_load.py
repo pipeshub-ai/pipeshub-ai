@@ -20,8 +20,8 @@ loads and move with every change to the ramp.
 
 The run then applies its own pass-or-fail checks, which need no baseline: the
 error rate stays under ``--max-error-rate``, the steady window measured enough
-operations, every kind of operation succeeded at least once, and searches found
-something. ``--fail-on-violation`` turns a failed check into a failing exit
+operations, every kind of operation succeeded at least once, and plain and
+filtered searches each found something. ``--fail-on-violation`` turns a failed check into a failing exit
 code. If most recent operations are failing, the run stops early instead of
 spending the rest of its budget on a broken stack (k6's ``abortOnFail``).
 
@@ -118,19 +118,24 @@ class Stage:
     users: int
 
 
-_STAGE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+)\s*$")
+# The same grammar as the workflow's "Validate inputs" step, which
+# unit/test_perf_load.py checks against these parsers. No spaces, and no
+# number form that float() would take but the step cannot, such as 1e3 or nan.
+_NUMBER = r"[0-9]+(?:\.[0-9]+)?"
+_STAGE = re.compile(rf"({_NUMBER}):([0-9]+)")
+_THINK_TIME = re.compile(rf"({_NUMBER})(?::({_NUMBER}))?")
 
 
 def parse_stages(text: str) -> tuple[Stage, ...]:
     """``"120:4,120:8,900:8"``: seconds and the user count to reach by the end of each."""
     stages = []
     for part in text.split(","):
-        match = _STAGE.match(part)
+        match = _STAGE.fullmatch(part)
         if not match:
-            raise ValueError(f"a stage is seconds:users, like 120:4; got {part.strip()!r}")
+            raise ValueError(f"a stage is seconds:users with no spaces, like 120:4; got {part!r}")
         seconds, users = float(match.group(1)), int(match.group(2))
         if seconds <= 0:
-            raise ValueError(f"a stage must last longer than 0 seconds; got {part.strip()!r}")
+            raise ValueError(f"a stage must last longer than 0 seconds; got {part!r}")
         stages.append(Stage(seconds, users))
     if not stages:
         raise ValueError("at least one stage is needed")
@@ -139,18 +144,23 @@ def parse_stages(text: str) -> tuple[Stage, ...]:
     return tuple(stages)
 
 
+def parse_docs(text: str) -> int:
+    """A whole number of at least 1, in plain ASCII digits: int() alone takes " 80", "+80" and "8_0"."""
+    if not re.fullmatch(r"[0-9]+", text) or int(text) < 1:
+        raise argparse.ArgumentTypeError(f"--docs must be a whole number of at least 1; got {text!r}")
+    return int(text)
+
+
 def parse_think_time(text: str) -> tuple[float, float]:
     """``"1:3"`` is a random wait of one to three seconds; ``"2"`` is always two."""
-    parts = [p.strip() for p in text.split(":")]
-    try:
-        values = [float(p) for p in parts]
-    except ValueError:
-        raise ValueError(f"think time is seconds or min:max, like 1:3; got {text!r}") from None
-    if len(values) == 1:
-        values *= 2
-    if len(values) != 2 or values[0] < 0 or values[1] < values[0]:
+    match = _THINK_TIME.fullmatch(text)
+    if not match:
+        raise ValueError(f"think time is seconds or min:max with no spaces, like 1:3; got {text!r}")
+    low = float(match.group(1))
+    high = float(match.group(2)) if match.group(2) is not None else low
+    if high < low:
         raise ValueError(f"think time is seconds or min:max with min <= max, like 1:3; got {text!r}")
-    return values[0], values[1]
+    return low, high
 
 
 def total_seconds(stages: tuple[Stage, ...]) -> float:
@@ -680,7 +690,7 @@ def render_summary(result: dict[str, Any]) -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--docs", type=int, default=80, help="files to seed before the load")
+    parser.add_argument("--docs", type=parse_docs, default=80, help="files to seed before the load")
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--kinds", default="txt,md,html,docx,pdf",
                         help="file kinds to seed, comma-separated. Spreadsheets are left out by default: "
@@ -726,6 +736,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.think_time_range = parse_think_time(args.think_time)
     except ValueError as exc:
         parser.error(str(exc))
+    if args.min_operations < 0:
+        parser.error("--min-operations cannot be negative")
     if not 0 <= args.max_error_rate < 1:
         parser.error("--max-error-rate is a share from 0 up to (not including) 1")
     if not 0 < args.abort_error_rate <= 1:

@@ -179,7 +179,9 @@ It seeds 80 files, without spreadsheets (they index slowest, and this measures
 questions, not indexing), and waits for all of them to be indexed, the same way
 the query benchmark does. Then it runs **stages**. Each stage moves the number
 of active users in a straight line from the previous stage's count to its own,
-over its length, the way k6's `ramping-vus` stages work. The default,
+over its length, the way k6's `ramping-vus` stages work. Stages are written
+`seconds:users`, comma-separated and without spaces; the workflow's input check
+and the parser accept exactly the same values. The default,
 `120:4,120:8,900:8`, ramps to four users over two minutes, to eight over the
 next two, and holds eight for fifteen. A user the ramp drops finishes the
 operation it is in first.
