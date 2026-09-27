@@ -21,6 +21,7 @@ import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../utils/s3-credentials.util';
+import { escapeRegExp } from '../../../utils/escape-regexp';
 
 /**
  * Implementation of StorageServiceInterface for Amazon S3
@@ -574,7 +575,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
   private extractKeyFromUrl(url: string): string {
     try {
       const urlPattern = new RegExp(
-        `https?://${this.bucketName}\\.s3\\.(?:${this.region}\\.)?amazonaws\\.com/(.+)`,
+        `^https?://${escapeRegExp(this.bucketName)}\\.s3\\.(?:${escapeRegExp(this.region)}\\.)?amazonaws\\.com/(.+)`,
       );
       const match = url.match(urlPattern);
 
