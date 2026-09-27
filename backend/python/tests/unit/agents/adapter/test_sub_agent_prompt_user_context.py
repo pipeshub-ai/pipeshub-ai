@@ -2,6 +2,10 @@ from app.agents.agent_loop.sub_agent_prompt import (
     build_sub_agent_prompt,
     build_user_context_block,
 )
+from app.modules.agents.context.source_catalog import (
+    DEMO_ONLY_SOURCE_NOTE,
+    DEMO_SOURCE_NOTE,
+)
 from tests.unit.agents.adapter.conftest import make_context
 
 
@@ -40,14 +44,17 @@ def test_build_sub_agent_prompt_omits_user_block_when_disabled() -> None:
     assert "Jane Doe" not in prompt
 
 
-def test_sub_agent_prompt_explains_the_demo_data() -> None:
-    from app.modules.agents.context.source_catalog import DEMO_SOURCE_NOTE
 
+def test_sub_agent_prompt_gets_the_demo_note_that_fits() -> None:
     demo = {"displayName": "Acme Corp demo data", "type": "Demo", "connectorId": "demo-1"}
-    context = make_context(send_user_info=True, agent_knowledge=[demo], org_info={"name": "Initech"})
-    assert DEMO_SOURCE_NOTE in build_sub_agent_prompt("research", context)
+    jira = {"displayName": "Engineering Jira", "type": "JIRA", "connectorId": "jira-1"}
+    alone = make_context(send_user_info=True, agent_knowledge=[demo], org_info={"name": "Initech"})
+    mixed = make_context(send_user_info=True, agent_knowledge=[demo, jira], org_info={"name": "Initech"})
+    assert DEMO_ONLY_SOURCE_NOTE in build_sub_agent_prompt("research", alone)
+    assert DEMO_SOURCE_NOTE in build_sub_agent_prompt("research", mixed)
+    assert DEMO_ONLY_SOURCE_NOTE not in build_sub_agent_prompt("research", mixed)
     # The exploration agent's source table already carries it: once is enough.
-    prompt = build_sub_agent_prompt("internal_exploration", context, extra_instructions=DEMO_SOURCE_NOTE)
+    prompt = build_sub_agent_prompt("internal_exploration", mixed, extra_instructions=DEMO_SOURCE_NOTE)
     assert prompt.count(DEMO_SOURCE_NOTE) == 1
 
 

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.modules.agents.context.source_catalog import DEMO_SOURCE_NOTE
 from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
@@ -93,9 +92,10 @@ def build_sub_agent_prompt(
         parts.append(extra_instructions)
 
     if context is not None:
+        demo_note = context.get_source_catalog().demo_note()
         # The exploration agent already gets the note inside its source table.
-        if context.get_source_catalog().has_demo() and DEMO_SOURCE_NOTE not in (extra_instructions or ""):
-            parts.append(DEMO_SOURCE_NOTE)
+        if demo_note and demo_note not in (extra_instructions or ""):
+            parts.append(demo_note)
         user_block = build_user_context_block(context)
         if user_block:
             parts.append(user_block)

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.modules.agents.context.source_catalog import ORG_HAS_REAL_DATA_KEY
 from app.modules.demo_data.chat import (
     exclude_from_query,
     exclude_from_state,
     excluded_app_ids,
+    note_org_real_data,
 )
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 
@@ -46,3 +50,26 @@ def test_the_run_remembers_the_exclusion_and_the_catalog_drops_the_demo() -> Non
     assert excluded_app_ids(state) == OFF
     assert [c["id"] for c in state["available_connectors"]] == ["jira-1"]
     assert excluded_app_ids({}) == frozenset()
+
+
+async def test_the_catalog_learns_whether_real_data_sits_beside_the_demo() -> None:
+    state = {"available_connectors": [{"id": "demo-1", "type": "Demo"}]}
+    with patch("app.modules.demo_data.chat.org_has_real_data", AsyncMock(return_value=False)):
+        await note_org_real_data(state, MagicMock(), "org-1", MagicMock())
+    assert state[ORG_HAS_REAL_DATA_KEY] is False
+
+
+async def test_no_lookup_without_the_demo() -> None:
+    state = {"available_connectors": [{"id": "jira-1", "type": "JIRA"}]}
+    probe = AsyncMock(return_value=False)
+    with patch("app.modules.demo_data.chat.org_has_real_data", probe):
+        await note_org_real_data(state, MagicMock(), "org-1", MagicMock())
+    probe.assert_not_awaited()
+    assert ORG_HAS_REAL_DATA_KEY not in state
+
+
+async def test_a_failed_lookup_leaves_the_catalog_assuming_real_data() -> None:
+    state = {"available_connectors": [{"id": "demo-1", "type": "Demo"}]}
+    with patch("app.modules.demo_data.chat.org_has_real_data", AsyncMock(side_effect=RuntimeError("down"))):
+        await note_org_real_data(state, MagicMock(), "org-1", MagicMock())
+    assert ORG_HAS_REAL_DATA_KEY not in state

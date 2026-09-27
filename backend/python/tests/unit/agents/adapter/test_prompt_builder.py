@@ -22,7 +22,14 @@ from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.registry import ToolRegistry
-from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
+from app.agents.agent_loop.prompt_builder import (
+    _ORG_SCOPE_RULE_WITH_DEMO,
+    PipesHubPromptBuilder,
+)
+from app.modules.agents.context.source_catalog import (
+    DEMO_ONLY_SOURCE_NOTE,
+    DEMO_SOURCE_NOTE,
+)
 from tests.unit.agents.adapter.conftest import make_context
 
 if TYPE_CHECKING:
@@ -580,14 +587,14 @@ class TestIdentityAndOperatingRules:
         # The demo's questions say "our"; the plain rule would discard every
         # Acme Corp record whenever the workspace has another name.
         demo = {"displayName": "Acme Corp demo data", "type": "Demo", "connectorId": "demo-1"}
-        result = _build(make_context(send_user_info=True, agent_knowledge=[demo]))
+        jira = {"displayName": "Engineering Jira", "type": "JIRA", "connectorId": "jira-1"}
+        result = _build(make_context(send_user_info=True, agent_knowledge=[demo, jira]))
         rules = result.split("## Operating Rules", 1)[1].split("\n## ", 1)[0]
+        # Beside real data, "our" stays the user's organization; Acme Corp is the named fallback.
         assert "mean the organization in Current User Information" in rules
-        assert "sample data was provided for this workspace" in rules
-        assert "as from the organization's own records" in rules
-        assert "Demo records never count as one" in rules
-        # The old fallback wording had the model search everything else first.
-        assert "only when none of that organization's records answer" not in rules
+        assert "Answer from its records first" in rules
+        assert "only when none of that organization's records answer" in rules
+        assert "never \"our policy is ...\"" in rules
 
     def test_org_scope_rule_unchanged_without_the_demo(self) -> None:
         jira = {"displayName": "Engineering Jira", "type": "JIRA", "connectorId": "jira-1"}
@@ -601,15 +608,19 @@ class TestIdentityAndOperatingRules:
         assert "Organization scope" not in result
 
 
-_DEMO_CONNECTOR = {"id": "demo-1", "name": "Acme Corp demo data", "type": "Demo"}
-_JIRA_CONNECTOR = {"id": "jira-1", "name": "Engineering Jira", "type": "JIRA"}
+_DEMO = {"id": "demo-1", "name": "Acme Corp demo data", "type": "Demo"}
+_JIRA = {"id": "jira-1", "name": "Engineering Jira", "type": "JIRA"}
 
 
-def _context_for_route(route: str, connectors: list[dict[str, str]]) -> AgentContext:
-    """Chat modes (internal_search and agent) see connector types only; the
-    agent route sees the agent's knowledge with ids."""
-    if route == "chat":
-        return make_context(send_user_info=True, tool_state={"available_connectors": connectors})
+def _context_for(route: str, connectors: list[dict[str, str]], *, org_real_data: bool) -> AgentContext:
+    """`chat:<mode>` is /chat/stream, which lists connector types and also searches
+    Collections; `agent` is an agent's own knowledge, with ids."""
+    if route.startswith("chat:"):
+        return make_context(send_user_info=True, tool_state={
+            "chat_mode": route.split(":", 1)[1],
+            "available_connectors": connectors,
+            "org_has_real_data": org_real_data,
+        })
     knowledge = [{"displayName": c["name"], "type": c["type"], "connectorId": c["id"]} for c in connectors]
     return make_context(send_user_info=True, agent_knowledge=knowledge)
 
@@ -632,22 +643,25 @@ def _build_with_sources(context: AgentContext) -> str:
         )
 
 
-@pytest.mark.parametrize("route", ["chat", "agent"])
+@pytest.mark.parametrize("route", ["chat:internal_search", "chat:agent", "agent"])
 class TestDemoDataInstruction:
-    """The demo is sample data for this workspace, so the model must not refuse
-    it because the organization in the prompt has another name."""
+    def test_demo_only_answers_as_the_workspaces_data(self, route: str) -> None:
+        result = _build_with_sources(_context_for(route, [_DEMO], org_real_data=False))
+        assert result.count(DEMO_ONLY_SOURCE_NOTE) == 1
+        assert DEMO_SOURCE_NOTE not in result
+        assert "Its only knowledge here is the Demo source's sample data" in result
+        assert "only when none of that organization's records answer" not in result
 
-    def test_present_with_the_demo(self, route: str) -> None:
-        from app.modules.agents.context.source_catalog import DEMO_SOURCE_NOTE
-
-        result = _build_with_sources(_context_for_route(route, [_DEMO_CONNECTOR, _JIRA_CONNECTOR]))
+    def test_demo_beside_real_data_keeps_3500s_rule(self, route: str) -> None:
+        result = _build_with_sources(_context_for(route, [_DEMO, _JIRA], org_real_data=True))
         assert result.count(DEMO_SOURCE_NOTE) == 1
-        assert "sample data was provided for this workspace" in result
+        assert DEMO_ONLY_SOURCE_NOTE not in result
+        assert _ORG_SCOPE_RULE_WITH_DEMO.strip() in result
 
-    def test_absent_without_the_demo(self, route: str) -> None:
-        result = _build_with_sources(_context_for_route(route, [_JIRA_CONNECTOR]))
+    def test_no_demo_no_demo_text(self, route: str) -> None:
+        result = _build_with_sources(_context_for(route, [_JIRA], org_real_data=False))
         assert "Acme Corp" not in result
-        assert "demo data" not in result.lower()
+        assert "demo" not in result.lower()
         assert "belong to a different organization" in result
 
 

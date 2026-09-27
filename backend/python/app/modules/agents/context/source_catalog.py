@@ -30,24 +30,35 @@ from app.modules.agents.context.retrieval_routing import build_routing_guidance
 DEMO_APP = "demo"
 
 # Mirrors the chat landing ("Acme Corp, a small fictional company loaded as
-# demo data"), so answers and UI describe the same thing. The prompt names the
-# workspace's organization, never Acme Corp, and a model that reads the demo as
-# another company's data declines it or searches it last.
+# demo data"), so answers and UI describe the same thing.
+_DEMO_SEARCH_RULE = " Leave the organization's name out of searches of the Demo source."
+
 DEMO_SOURCE_NOTE = (
-    "**Demo data.** The Demo source is sample data provided for this workspace: records "
-    "for Acme Corp, a small fictional company, loaded so people can try the product; they "
-    "carry GitHub, Jira, Slack, Google Drive and ServiceNow labels. Answer from it as you "
-    "would from the workspace's own data, including questions that say \"our\", \"we\" or "
-    "\"my company\". The workspace's organization may have a different name; that is "
-    "expected, so never decline, discard or doubt Demo records because of it, never judge "
-    "whether a record is demo data by that name, and keep that name out of searches of "
-    "the Demo source (it still belongs in searches of the other sources). Search the Demo "
-    "source together with the other sources rather than as a later fallback. When an answer comes from Demo records, say "
-    "it is demo data (\"In the Acme Corp demo data, the on-call policy is ...\"); if a "
-    "record from another source contradicts one, prefer that record and point out the "
-    "difference. Only records from the Demo source are Acme Corp's: never call a record "
-    "from any other source (a Collection, another connector) Acme Corp's or demo data."
+    "**Demo data.** The Demo source holds sample records for Acme Corp, a small "
+    "fictional company loaded into this workspace so people can try it out; its "
+    "records carry GitHub, Jira, Slack, Google Drive and ServiceNow labels. Only "
+    "records from the Demo source are Acme Corp's: never call a record from any "
+    "other source (a Collection, another connector) Acme Corp's, and never present "
+    "an Acme Corp fact as the user's organization's. When you answer from Acme Corp "
+    "records, name Acme Corp (\"Acme Corp's on-call policy is ...\"). Do not decline "
+    "or discard them only because this workspace's organization has a different name."
+    + _DEMO_SEARCH_RULE
 )
+
+# When the demo is all the request can search there is no real data to protect,
+# so it answers "our" questions instead of standing aside as a fallback.
+DEMO_ONLY_SOURCE_NOTE = (
+    "**Demo data.** The Demo source, the only knowledge here, is sample data provided "
+    "for this workspace: records for Acme Corp, a small fictional company, labelled "
+    "GitHub, Jira, Slack, Google Drive and ServiceNow. Answer from it as from this "
+    "workspace's own data, \"our\" questions included, and say the answer comes from the "
+    "demo data (\"In the Acme Corp demo data, the on-call policy is ...\"). The "
+    "organization's different name is expected: never decline Demo records because of it."
+    + _DEMO_SEARCH_RULE
+)
+
+# Set by the chat route: it can also search Collections, which it does not list.
+ORG_HAS_REAL_DATA_KEY = "org_has_real_data"
 
 
 class SourceKind(StrEnum):
@@ -94,6 +105,8 @@ class SourceCatalog:
 
     sources: tuple[KnowledgeSource, ...]
     ids_actionable: bool  # False on the chat route — see Finding H
+    # Real records the request can search but `sources` does not list.
+    unlisted_real_data: bool = False
 
     # ---------------------------------------------------------------------------
     # Factory
@@ -145,7 +158,11 @@ class SourceCatalog:
                     app=t.lower(),
                     source_id="",  # no UUID on chat route
                 ))
-        return cls(sources=tuple(sources_chat), ids_actionable=False)
+        return cls(
+            sources=tuple(sources_chat),
+            ids_actionable=False,
+            unlisted_real_data=state.get(ORG_HAS_REAL_DATA_KEY) is not False,
+        )
 
     # ---------------------------------------------------------------------------
     # Queries
@@ -178,6 +195,19 @@ class SourceCatalog:
     def has_demo(self) -> bool:
         """Whether the Acme Corp sample data is one of the sources."""
         return any(s.kind == SourceKind.APP and s.app == DEMO_APP for s in self.sources)
+
+    def demo_only(self) -> bool:
+        """Whether the demo is the only knowledge this request can search."""
+        return (
+            self.has_demo()
+            and not self.unlisted_real_data
+            and all(s.kind == SourceKind.APP and s.app == DEMO_APP for s in self.sources)
+        )
+
+    def demo_note(self) -> str:
+        if not self.has_demo():
+            return ""
+        return DEMO_ONLY_SOURCE_NOTE if self.demo_only() else DEMO_SOURCE_NOTE
 
     def kb_sources(self) -> tuple[KnowledgeSource, ...]:
         return tuple(s for s in self.sources if s.kind == SourceKind.KB)
@@ -293,7 +323,7 @@ class SourceCatalog:
 
         if self.has_demo():
             lines.append("")
-            lines.append(DEMO_SOURCE_NOTE)
+            lines.append(self.demo_note())
 
         routing = build_routing_guidance(self)
         if routing:

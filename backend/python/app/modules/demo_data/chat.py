@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.agents.context.source_catalog import DEMO_APP, ORG_HAS_REAL_DATA_KEY
+from app.modules.demo_data.access import excluded_demo_connector_ids, org_has_real_data
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 
 if TYPE_CHECKING:
@@ -69,6 +70,24 @@ def exclude_from_state(chat_state: dict[str, Any], excluded: frozenset[str]) -> 
         chat_state["available_connectors"] = [
             c for c in connectors if not (isinstance(c, dict) and c.get("id") in excluded)
         ]
+
+
+async def note_org_real_data(
+    chat_state: dict[str, Any], graph_provider: IGraphDBProvider, org_id: str, log: logging.Logger
+) -> None:
+    """Tell the source catalog whether real records exist beyond the connectors it lists.
+
+    The chat route also searches Collections, which it does not list, so a demo
+    that looks like the only source may not be. Left unset, the catalog assumes
+    real data exists.
+    """
+    connectors = chat_state.get("available_connectors") or []
+    if not any(isinstance(c, dict) and str(c.get("type") or "").lower() == DEMO_APP for c in connectors):
+        return
+    try:
+        chat_state[ORG_HAS_REAL_DATA_KEY] = await org_has_real_data(graph_provider, org_id)
+    except Exception as exc:
+        log.warning("could not tell whether the organization has data besides the demo: %s", exc)
 
 
 def excluded_app_ids(state: dict[str, Any] | None) -> frozenset[str]:
