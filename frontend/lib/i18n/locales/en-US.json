@@ -3509,7 +3509,7 @@
         "selectAllScopes": "Select All",
         "clearAllScopes": "Clear all",
         "expiryDays": "{{count}} days",
-        "expiresInDays": "{{count}} days left",
+        "expiresInDays": "Days left: {{count}}",
         "expiringSoon": "Tokens expiring soon: {{count}}. Create a replacement for each one, move the integrations across, and then revoke the old tokens."
       },
       "disableTitle": "Disable this service account?",

@@ -218,8 +218,23 @@ export function ServiceAccountTokensPanel({
     return Array.from(groups, ([category, scopes]) => ({ category, scopes }));
   }, [availableScopes]);
 
+  const availableScopeNames = useMemo(
+    () => availableScopes.map((scope) => scope.name),
+    [availableScopes],
+  );
+
+  /**
+   * Whether every permission on offer is ticked.
+   *
+   * Asked by membership rather than by comparing lengths, because the two can
+   * agree while the contents do not: reloading the panel can replace one
+   * permission in the catalogue with another, leaving the same count with a
+   * selection that no longer covers it. Counting would then label the control
+   * "Clear all" and clear a selection the reader had not finished making.
+   */
   const allSelected =
-    availableScopes.length > 0 && selectedScopes.length === availableScopes.length;
+    availableScopeNames.length > 0 &&
+    availableScopeNames.every((name) => selectedScopes.includes(name));
 
   /**
    * One control that selects everything or clears it, matching the personal
@@ -229,11 +244,11 @@ export function ServiceAccountTokensPanel({
    */
   const toggleAllScopes = useCallback(() => {
     setSelectedScopes((current) =>
-      current.length === availableScopes.length
+      availableScopeNames.every((name) => current.includes(name))
         ? []
-        : availableScopes.map((scope) => scope.name),
+        : availableScopeNames,
     );
-  }, [availableScopes]);
+  }, [availableScopeNames]);
 
   const canMint = tokenName.trim().length > 0 && selectedScopes.length > 0;
 

@@ -197,4 +197,40 @@ describe('the permission picker', () => {
       SCOPES.map((s) => s.name).sort()
     );
   });
+  it('reads whether everything is selected from the permissions themselves', async () => {
+    // The panel refetches whenever it is told about a new account object, and
+    // it only clears the selection when it closes. So the catalogue can be
+    // replaced while a selection stands. Swapping one permission for another
+    // keeps the count the same, and counting would call that "all selected"
+    // and clear a selection the reader had not finished making.
+    const view = renderPanel();
+    await openCreateForm();
+
+    fireEvent.click(screen.getByText(tokensCopy.selectAllScopes));
+    expect(await screen.findByText(tokensCopy.clearAllScopes)).toBeTruthy();
+
+    getScopes.mockResolvedValue({
+      scopes: [
+        ...SCOPES.slice(0, SCOPES.length - 1),
+        {
+          name: 'team:read',
+          description: 'Read team information',
+          category: 'Teams',
+          requiresUserConsent: true,
+        },
+      ],
+    });
+    // A new object with the same contents, which is what makes the panel refetch.
+    view.rerender(
+      <Theme>
+        <ServiceAccountTokensPanel open account={{ ...ACCOUNT }} onOpenChange={vi.fn()} />
+      </Theme>
+    );
+    await screen.findByText('team:read');
+
+    // Same number of permissions, but the replacement is not ticked, so the
+    // control offers to select rather than to clear.
+    expect(screen.getAllByRole('checkbox')).toHaveLength(SCOPES.length);
+    expect(screen.getByText(tokensCopy.selectAllScopes)).toBeTruthy();
+  });
 });
