@@ -3317,6 +3317,8 @@
       "statusHealthy": "정상",
       "statusUnhealthy": "비정상",
       "statusUnknown": "알 수 없음",
+      "statusPending": "대기 중",
+      "statusStarting": "시작 중",
       "infra": {
         "redis": {
           "label": "Redis",

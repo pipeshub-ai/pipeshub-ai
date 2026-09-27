@@ -3317,6 +3317,8 @@
       "statusHealthy": "正常",
       "statusUnhealthy": "異常",
       "statusUnknown": "未知",
+      "statusPending": "待處理",
+      "statusStarting": "正在啟動",
       "infra": {
         "redis": {
           "label": "Redis",

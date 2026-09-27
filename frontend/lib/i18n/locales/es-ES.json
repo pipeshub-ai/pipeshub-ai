@@ -3122,6 +3122,8 @@
       "statusHealthy": "Funcionando",
       "statusUnhealthy": "No funcionando",
       "statusUnknown": "Desconocido",
+      "statusPending": "Pendiente",
+      "statusStarting": "Iniciando",
       "infra": {
         "redis": {
           "label": "Redis",

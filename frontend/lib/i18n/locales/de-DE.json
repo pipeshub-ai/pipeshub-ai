@@ -3101,6 +3101,8 @@
       "statusHealthy": "Funktionsfähig",
       "statusUnhealthy": "Nicht funktionsfähig",
       "statusUnknown": "Unbekannt",
+      "statusPending": "Ausstehend",
+      "statusStarting": "Wird gestartet",
       "infra": {
         "redis": {
           "label": "Redis",

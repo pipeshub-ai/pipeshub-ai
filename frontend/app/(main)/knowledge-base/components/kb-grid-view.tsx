@@ -194,7 +194,7 @@ function GridCard({
       switch (item.indexingStatus) {
         case 'COMPLETED':
           return (
-            <Tooltip content="Indexed" side="top" delayDuration={200}>
+            <Tooltip content={t('kb.indexingProgress.indexedTooltip')} side="top" delayDuration={200}>
               <Flex
                 align="center"
                 justify="center"
@@ -333,7 +333,7 @@ function GridCard({
     switch (item.status) {
       case 'indexed':
         return (
-          <Tooltip content="Indexed" side="top" delayDuration={200}>
+          <Tooltip content={t('kb.indexingProgress.indexedTooltip')} side="top" delayDuration={200}>
             <Flex
               align="center"
               justify="center"

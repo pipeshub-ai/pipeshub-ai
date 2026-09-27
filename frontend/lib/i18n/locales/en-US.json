@@ -3331,6 +3331,8 @@
       "statusHealthy": "Healthy",
       "statusUnhealthy": "Unhealthy",
       "statusUnknown": "Unknown",
+      "statusPending": "Pending",
+      "statusStarting": "Starting",
       "infra": {
         "redis": {
           "label": "Redis",

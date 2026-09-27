@@ -3096,6 +3096,8 @@
       "statusHealthy": "स्वस्थ",
       "statusUnhealthy": "अस्वस्थ",
       "statusUnknown": "अज्ञात",
+      "statusPending": "लंबित",
+      "statusStarting": "शुरू हो रहा है",
       "infra": {
         "redis": {
           "label": "Redis",

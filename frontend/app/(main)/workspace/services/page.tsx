@@ -128,7 +128,7 @@ function ServiceStatusBadge({ status }: { status: ServiceStatus | undefined }) {
   if (status === 'pending' || status === 'starting') {
     return (
       <Badge color="amber" variant="soft" size="1" style={{ flexShrink: 0 }}>
-        {status === 'pending' ? 'Pending' : 'Starting'}
+        {status === 'pending' ? t('workspace.services.statusPending') : t('workspace.services.statusStarting')}
       </Badge>
     );
   }
