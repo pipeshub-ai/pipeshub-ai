@@ -78,14 +78,14 @@ def exclude_from_state(chat_state: dict[str, Any], excluded: frozenset[str]) -> 
 async def note_org_real_data(
     chat_state: dict[str, Any], graph_provider: IGraphDBProvider, org_id: str, log: logging.Logger
 ) -> None:
-    """Tell the source catalog whether real records exist beyond the connectors it lists.
+    """Tell the source catalog whether anything besides the demo has an indexed record.
 
-    The chat route also searches Collections, which it does not list, so a demo
-    that looks like the only source may not be. Left unset, the catalog assumes
-    real data exists.
+    Collections look like real sources whether or not they hold anything: every
+    user owns one, and the chat route searches them without listing them. Left
+    unset, the catalog assumes real data exists.
     """
-    connectors = chat_state.get("available_connectors") or []
-    if not any(isinstance(c, dict) and str(c.get("type") or "").lower() == DEMO_APP for c in connectors):
+    sources = [*(chat_state.get("available_connectors") or []), *(chat_state.get("agent_knowledge") or [])]
+    if not any(isinstance(c, dict) and str(c.get("type") or "").lower() == DEMO_APP for c in sources):
         return
     try:
         found = await org_real_data_state(graph_provider, org_id)

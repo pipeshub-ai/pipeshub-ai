@@ -419,6 +419,18 @@ class TestDemoOnly:
         assert not cat.demo_only()
         assert DEMO_SOURCE_NOTE in cat.render()
 
+    def test_the_assistants_empty_collection_does_not_count(self) -> None:
+        # The universal agent lists every Collection, and every user owns one.
+        knowledge = [_make_kb_entry("Bob's Private", KB_ID), _make_app_entry("Acme Corp demo data", "Demo", DEMO_ID)]
+        empty = SourceCatalog.from_state({"agent_knowledge": knowledge, ORG_HAS_REAL_DATA_KEY: False})
+        assert empty.demo_only()
+        for state_extra in ({}, {ORG_HAS_REAL_DATA_KEY: True}):
+            assert not SourceCatalog.from_state({"agent_knowledge": knowledge, **state_extra}).demo_only()
+
+    def test_another_connector_counts_even_with_nothing_indexed(self) -> None:
+        knowledge = [_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID), _make_app_entry("Engineering Jira", "JIRA", JIRA_ID)]
+        assert not SourceCatalog.from_state({"agent_knowledge": knowledge, ORG_HAS_REAL_DATA_KEY: False}).demo_only()
+
     def test_chat_with_another_connector(self) -> None:
         cat = SourceCatalog.from_state(
             {"available_connectors": [{"type": "Demo"}, {"type": "SLACK"}], ORG_HAS_REAL_DATA_KEY: False}

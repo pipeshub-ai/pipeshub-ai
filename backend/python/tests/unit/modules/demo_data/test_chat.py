@@ -82,3 +82,10 @@ async def test_a_failed_app_listing_is_not_no_real_data() -> None:
     state = {"available_connectors": [{"id": "demo-1", "type": "Demo"}]}
     await note_org_real_data(state, graph, "org-failed-listing", MagicMock())
     assert ORG_HAS_REAL_DATA_KEY not in state
+
+
+async def test_the_agent_route_is_checked_too() -> None:
+    state = {"agent_knowledge": [{"connectorId": "kb-1", "type": "KB"}, {"connectorId": "demo-1", "type": "Demo"}]}
+    with patch("app.modules.demo_data.chat.org_real_data_state", AsyncMock(return_value=False)):
+        await note_org_real_data(state, MagicMock(), "org-1", MagicMock())
+    assert state[ORG_HAS_REAL_DATA_KEY] is False

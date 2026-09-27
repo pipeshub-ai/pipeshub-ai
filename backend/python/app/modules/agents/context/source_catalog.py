@@ -57,7 +57,8 @@ DEMO_ONLY_SOURCE_NOTE = (
     + _DEMO_SEARCH_RULE
 )
 
-# Set by the chat route: it can also search Collections, which it does not list.
+# Whether anything besides the demo has an indexed record; set per request when
+# the demo is a source (see demo_data.chat.note_org_real_data), else absent.
 ORG_HAS_REAL_DATA_KEY = "org_has_real_data"
 
 
@@ -105,8 +106,8 @@ class SourceCatalog:
 
     sources: tuple[KnowledgeSource, ...]
     ids_actionable: bool  # False on the chat route — see Finding H
-    # Real records the request can search but `sources` does not list.
-    unlisted_real_data: bool = False
+    # ORG_HAS_REAL_DATA_KEY; None when unknown.
+    org_real_data: bool | None = None
 
     # ---------------------------------------------------------------------------
     # Factory
@@ -142,7 +143,11 @@ class SourceCatalog:
                     source_id=s.get("connector_id", ""),
                     scope_lines=tuple(scope),
                 ))
-            return cls(sources=tuple(sources), ids_actionable=True)
+            return cls(
+                sources=tuple(sources),
+                ids_actionable=True,
+                org_real_data=state.get(ORG_HAS_REAL_DATA_KEY),
+            )
 
         # Chat route fallback: available_connectors gives type names only
         available_connectors: list = state.get("available_connectors") or []
@@ -161,7 +166,7 @@ class SourceCatalog:
         return cls(
             sources=tuple(sources_chat),
             ids_actionable=False,
-            unlisted_real_data=state.get(ORG_HAS_REAL_DATA_KEY) is not False,
+            org_real_data=state.get(ORG_HAS_REAL_DATA_KEY),
         )
 
     # ---------------------------------------------------------------------------
@@ -197,12 +202,22 @@ class SourceCatalog:
         return any(s.kind == SourceKind.APP and s.app == DEMO_APP for s in self.sources)
 
     def demo_only(self) -> bool:
-        """Whether the demo is the only knowledge this request can search."""
-        return (
-            self.has_demo()
-            and not self.unlisted_real_data
-            and all(s.kind == SourceKind.APP and s.app == DEMO_APP for s in self.sources)
-        )
+        """Whether the demo is the only knowledge this request can search.
+
+        Another connector always counts: it may sync later or answer live. A
+        Collection counts unless nothing besides the demo is indexed, since every
+        user owns an empty one. The chat route also searches Collections it does
+        not list, so there only a known "no real data" makes the demo the only one.
+        """
+        if not self.has_demo():
+            return False
+        others = [s for s in self.sources if not (s.kind == SourceKind.APP and s.app == DEMO_APP)]
+        if any(s.kind == SourceKind.APP for s in others):
+            return False
+        no_real_data = self.org_real_data is False
+        if others and not no_real_data:
+            return False
+        return self.ids_actionable or no_real_data
 
     def demo_note(self) -> str:
         if not self.has_demo():

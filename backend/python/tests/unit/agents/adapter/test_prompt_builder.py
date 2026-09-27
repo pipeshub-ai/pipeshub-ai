@@ -613,15 +613,22 @@ _JIRA = {"id": "jira-1", "name": "Engineering Jira", "type": "JIRA"}
 
 
 def _context_for(route: str, connectors: list[dict[str, str]], *, org_real_data: bool) -> AgentContext:
-    """`chat:<mode>` is /chat/stream, which lists connector types and also searches
-    Collections; `agent` is an agent's own knowledge, with ids."""
-    if route.startswith("chat:"):
-        return make_context(send_user_info=True, tool_state={
-            "chat_mode": route.split(":", 1)[1],
-            "available_connectors": connectors,
-            "org_has_real_data": org_real_data,
-        })
+    """How each route sees the sources.
+
+    - `chat:internal_search` is /chat/stream: connector types only, and it also
+      searches Collections it does not list.
+    - `chat:agent` is the universal agent (agentIdPlaceholder): every Collection
+      the user can see, including the empty private one each user gets, plus
+      their connectors, with ids.
+    - `agent` is an agent built on exactly these sources.
+    """
+    flag = {"org_has_real_data": org_real_data}
+    if route == "chat:internal_search":
+        return make_context(send_user_info=True, tool_state={"available_connectors": connectors, **flag})
     knowledge = [{"displayName": c["name"], "type": c["type"], "connectorId": c["id"]} for c in connectors]
+    if route == "chat:agent":
+        private = {"displayName": "Bob Okafor's Private", "type": "KB", "connectorId": "kb-bob"}
+        return make_context(send_user_info=True, agent_knowledge=[private, *knowledge], tool_state=dict(flag))
     return make_context(send_user_info=True, agent_knowledge=knowledge)
 
 
@@ -657,6 +664,15 @@ class TestDemoDataInstruction:
         assert result.count(DEMO_SOURCE_NOTE) == 1
         assert DEMO_ONLY_SOURCE_NOTE not in result
         assert _ORG_SCOPE_RULE_WITH_DEMO.strip() in result
+
+    def test_a_collection_with_real_records_keeps_3500s_rule(self, route: str) -> None:
+        result = _build_with_sources(_context_for(route, [_DEMO], org_real_data=True))
+        if route == "agent":
+            # An agent built on the demo alone searches nothing else.
+            assert result.count(DEMO_ONLY_SOURCE_NOTE) == 1
+        else:
+            assert result.count(DEMO_SOURCE_NOTE) == 1
+            assert DEMO_ONLY_SOURCE_NOTE not in result
 
     def test_no_demo_no_demo_text(self, route: str) -> None:
         result = _build_with_sources(_context_for(route, [_JIRA], org_real_data=False))
