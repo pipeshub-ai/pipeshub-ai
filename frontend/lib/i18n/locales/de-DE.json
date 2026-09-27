@@ -2383,6 +2383,8 @@
         "queuedCount": "{{count}} in der Warteschlange",
         "stillProcessing_one": "{{count}} Eintrag wird noch verarbeitet",
         "stillProcessing_other": "{{count}} Einträge werden noch verarbeitet",
+        "priorSyncStillProcessing_one": "{{count}} Eintrag aus der vorherigen Synchronisierung wird noch verarbeitet",
+        "priorSyncStillProcessing_other": "{{count}} Einträge aus der vorherigen Synchronisierung werden noch verarbeitet",
         "indexed": "Indexiert",
         "syncFailed": "Synchronisierung fehlgeschlagen",
         "failedCount": "{{count}} fehlgeschlagen",

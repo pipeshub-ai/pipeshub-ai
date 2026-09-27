@@ -2378,6 +2378,8 @@
         "queuedCount": "{{count}} कतार में",
         "stillProcessing_one": "{{count}} रिकॉर्ड अभी प्रोसेस हो रहा है",
         "stillProcessing_other": "{{count}} रिकॉर्ड अभी प्रोसेस हो रहे हैं",
+        "priorSyncStillProcessing_one": "पिछले सिंक का {{count}} रिकॉर्ड अभी प्रोसेस हो रहा है",
+        "priorSyncStillProcessing_other": "पिछले सिंक के {{count}} रिकॉर्ड अभी प्रोसेस हो रहे हैं",
         "indexed": "इंडेक्स हो गया",
         "syncFailed": "सिंक विफल",
         "failedCount": "{{count}} विफल",

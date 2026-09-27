@@ -2451,6 +2451,7 @@
         "discovering": "正在同步来源…",
         "queuedCount": "{{count}} 个排队中",
         "stillProcessing_other": "{{count}} 条记录仍在处理中",
+        "priorSyncStillProcessing_other": "上次同步的 {{count}} 条记录仍在处理中",
         "indexed": "已索引",
         "syncFailed": "同步失败",
         "failedCount": "{{count}} 个失败",

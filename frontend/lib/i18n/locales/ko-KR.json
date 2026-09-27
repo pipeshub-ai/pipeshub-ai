@@ -2451,6 +2451,7 @@
         "discovering": "소스 동기화 중…",
         "queuedCount": "{{count}}개 대기 중",
         "stillProcessing_other": "레코드 {{count}}개 아직 처리 중",
+        "priorSyncStillProcessing_other": "이전 동기화의 레코드 {{count}}개 아직 처리 중",
         "indexed": "인덱싱됨",
         "syncFailed": "동기화 실패",
         "failedCount": "{{count}}개 실패",

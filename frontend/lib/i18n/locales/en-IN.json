@@ -2374,6 +2374,8 @@
         "queuedCount": "{{count}} queued",
         "stillProcessing_one": "{{count}} record still processing",
         "stillProcessing_other": "{{count}} records still processing",
+        "priorSyncStillProcessing_one": "{{count}} record from the previous sync still processing",
+        "priorSyncStillProcessing_other": "{{count}} records from the previous sync still processing",
         "indexed": "Indexed",
         "syncFailed": "Sync failed",
         "failedCount": "{{count}} failed",
