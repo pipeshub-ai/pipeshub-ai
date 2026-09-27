@@ -9,6 +9,8 @@ setup against a share that was there all along.
 
 from __future__ import annotations
 
+import errno
+
 import pytest
 from smbprotocol.exceptions import LogonFailure, SMBOSError
 from smbprotocol.header import NtStatus
@@ -25,10 +27,33 @@ def _helper() -> SmbStorageHelper:
     return helper
 
 
-def _scandir_raising(error: Exception):
+SHARE_ROOT = r"\\smb.test\share"
+
+
+class _EmptyScan:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        return iter(())
+
+
+def _scandir_raising(error: Exception, share_root: Exception | None = None):
+    """``scandir`` that fails for the folder, and for the share root only when told to."""
+    calls: list[str] = []
+
     def scandir(path, **_):
+        calls.append(path)
+        if path == SHARE_ROOT:
+            if share_root is not None:
+                raise share_root
+            return _EmptyScan()
         raise error
 
+    scandir.calls = calls
     return scandir
 
 
@@ -38,10 +63,40 @@ def _scandir_raising(error: Exception):
     ids=["missing folder", "missing parent folder"],
 )
 def test_a_folder_that_does_not_exist_lists_as_empty(monkeypatch, status) -> None:
-    error = SMBOSError(status, r"\\smb.test\share\it-access-check")
+    error = SMBOSError(status, SHARE_ROOT + r"\it-access-check")
     assert not isinstance(error, FileNotFoundError)
-    monkeypatch.setattr(smb_storage_helper.smbclient, "scandir", _scandir_raising(error))
+    scandir = _scandir_raising(error)
+    monkeypatch.setattr(smb_storage_helper.smbclient, "scandir", scandir)
     assert _helper().list_objects("share", "it-access-check/") == []
+    assert scandir.calls[-1] == SHARE_ROOT, "the share must be read before a folder is called missing"
+
+
+@pytest.mark.parametrize(
+    "share_error",
+    [
+        # How smbprotocol reports a missing share when the server offers DFS
+        # and has no referral for it: the same errno as a missing folder.
+        SMBOSError(NtStatus.STATUS_NOT_FOUND, SHARE_ROOT),
+        SMBOSError(NtStatus.STATUS_OBJECT_PATH_NOT_FOUND, SHARE_ROOT),
+    ],
+    ids=["DFS lookup not found", "DFS path not found"],
+)
+def test_a_missing_share_is_not_an_empty_folder(monkeypatch, share_error) -> None:
+    folder_error = SMBOSError(NtStatus.STATUS_NOT_FOUND, SHARE_ROOT + r"\it-access-check")
+    assert folder_error.errno == share_error.errno == errno.ENOENT
+    monkeypatch.setattr(
+        smb_storage_helper.smbclient, "scandir", _scandir_raising(folder_error, share_root=share_error)
+    )
+    with pytest.raises(SMBOSError) as raised:
+        _helper().list_objects("share", "it-access-check/")
+    assert raised.value is share_error
+
+
+def test_listing_the_share_root_itself_never_calls_a_missing_share_empty(monkeypatch) -> None:
+    error = SMBOSError(NtStatus.STATUS_NOT_FOUND, SHARE_ROOT)
+    monkeypatch.setattr(smb_storage_helper.smbclient, "scandir", _scandir_raising(error, share_root=error))
+    with pytest.raises(SMBOSError):
+        _helper().list_objects("share", "")
 
 
 @pytest.mark.parametrize(

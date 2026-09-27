@@ -63,15 +63,21 @@ class SmbStorageHelper:
                             keys.append(rel.replace("\\", "/"))
             except OSError as exc:
                 # smbprotocol raises SMBOSError, an OSError that is never the
-                # FileNotFoundError subclass, so match on errno. A missing
-                # folder is an empty listing; a missing share or a refused
-                # login is not, and must still reach the caller.
-                if exc.errno == errno.ENOENT:
-                    return
-                raise
+                # FileNotFoundError subclass, so match on errno. ENOENT is also
+                # what a missing share becomes on a server that tries DFS
+                # resolution for it, so it only means "folder not created yet"
+                # once the share itself has been read.
+                if exc.errno != errno.ENOENT or not path:
+                    raise
+                self._read_share_root(share)
 
         walk(prefix.replace("\\", "/").strip("/"))
         return keys
+
+    def _read_share_root(self, share: str) -> None:
+        """Raise if the share itself is missing or unreadable."""
+        with smbclient.scandir(self._unc(share), **self._kwargs()) as scan:
+            next(iter(scan), None)
 
     def _ensure_dir(self, share: str, dir_name: str) -> None:
         if not dir_name:
