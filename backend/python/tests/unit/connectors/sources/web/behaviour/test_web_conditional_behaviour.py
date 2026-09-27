@@ -7,6 +7,8 @@ read links from. Everything else falls back to comparing content hashes, as befo
 import pytest
 from web_behaviour_fakes import START_URL, FakeRecordsDb, FakeWeb, MakeConnector, Page
 
+from app.connectors.sources.web.connector import WebConnector
+
 PDF = "http://site.test/manual.pdf"
 LAST_MODIFIED = "Wed, 01 Jul 2026 10:00:00 GMT"
 
@@ -199,3 +201,56 @@ async def test_a_matching_last_modified_does_not_vouch_for_a_copy_whose_etag_dif
     await connector.run_sync()
 
     assert site.storage_docs[db.pages()[new].storage_document_id] == b"%PDF-1.4 v2"
+
+
+def _moved_file_whose_304_does_not_match(site: FakeWeb, refetch: Page) -> None:
+    """/old.pdf now 301s to /new.pdf; /new.pdf's 304 carries an ETag its stored copy doesn't have,
+    so the connector fetches /new.pdf in full, and that fetch answers ``refetch``."""
+    site.html(START_URL, "Home", "/old.pdf")
+    site.add("http://site.test/old.pdf", Page(status=301, location="/new.pdf", content_type=None, head_status=405))
+    site.add("http://site.test/new.pdf", [
+        Page(body=b"%PDF-1.4 v2", content_type="application/pdf", etag='"v2"', last_modified=LAST_MODIFIED),
+        refetch,
+    ])
+
+
+async def _two_stored_files(site: FakeWeb, make_connector: MakeConnector) -> WebConnector:
+    site.html(START_URL, "Home", "/old.pdf", "/new.pdf")
+    site.add("http://site.test/old.pdf",
+             Page(body=b"%PDF-1.4 v2", content_type="application/pdf", etag='"v2"', last_modified=LAST_MODIFIED))
+    site.add("http://site.test/new.pdf",
+             Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"', last_modified=LAST_MODIFIED))
+    connector = await make_connector()
+    await connector.run_sync()
+    return connector
+
+
+async def test_a_moved_file_whose_new_address_is_gone_is_removed_from_its_old_address_too(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old = "http://site.test/old.pdf"
+    connector = await _two_stored_files(site, make_connector)
+    stale = db.pages()[old]
+
+    for _ in range(2):  # gone on two syncs in a row
+        _moved_file_whose_304_does_not_match(site, Page(status=404, body=b"gone"))
+        await connector.run_sync()
+
+    assert stale.id in db.deleted
+    assert stale.storage_document_id not in site.storage_docs
+    assert old not in db.pages() or not db.pages()[old].storage_document_id
+
+
+async def test_a_moved_file_whose_new_address_never_answers_keeps_its_old_copy(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    old = "http://site.test/old.pdf"
+    connector = await _two_stored_files(site, make_connector)
+    stale = db.pages()[old]
+
+    for _ in range(2):
+        _moved_file_whose_304_does_not_match(site, Page(hang_up=True))
+        await connector.run_sync()
+
+    assert stale.id not in db.deleted
+    assert site.storage_docs[db.pages()[old].storage_document_id] == b"%PDF-1.4 v2"
