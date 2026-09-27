@@ -49,6 +49,8 @@ _MARKER_LINE = re.compile(r"^\s{4}(\w+):\s*(.+)$")
 _MATRIX_LINE = re.compile(r"^\s*shard:\s.*$", re.MULTILINE)
 _MATRIX_SHARD = re.compile(r'"(connectors-\d+)"')
 _MATRIX_ANY_SHARD = re.compile(r'"([\w-]+)"')
+# One per test step (Neo4j, ArangoDB): the shell `case` that picks the markers.
+_SHARD_CASE_BLOCK = re.compile(r'case "\$SHARD" in\n(.*?)\n[ \t]*esac', re.DOTALL)
 _IDENT = re.compile(r"[A-Za-z_$][\w$]*")
 _Marker = tuple
 
@@ -191,11 +193,13 @@ def _solo_shard_problems(workflow_text: str, core_expressions: list[str]) -> lis
                     f"The matrix runs a '{name}' job, but a core job still selects the "
                     f"'{name}' marker, so those tests run twice, once on core's shared stack."
                 )
-            cases = re.findall(rf'^[ \t]*{name}\)[ \t]+MARKERS="{name}"', workflow_text, re.MULTILINE)
-            if len(cases) < len(core_expressions):
+            steps = [block for block in _SHARD_CASE_BLOCK.findall(workflow_text) if _CORE_MARKER_LINE.search(block)]
+            case_line = re.compile(rf'^[ \t]*{name}\)[ \t]+MARKERS="{name}"', re.MULTILINE)
+            if not steps or any(len(case_line.findall(block)) != 1 for block in steps):
                 problems.append(
-                    f"The matrix runs a '{name}' job, but not every test step has a "
-                    f'`{name}) MARKERS="{name}"` case, so it fails as an unknown shard.'
+                    f"The matrix runs a '{name}' job, but not every test step's `case \"$SHARD\"` "
+                    f'has exactly one `{name}) MARKERS="{name}"` line, so a step fails as an '
+                    f"unknown shard (or the lines disagree)."
                 )
         elif core_expressions and any(
             _always_excludes(expression, name) for expression in core_expressions

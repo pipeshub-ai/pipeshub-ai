@@ -165,15 +165,22 @@ class TestCatchesMistakes(unittest.TestCase):
         with_job = WORKFLOW.replace('"core"]', '"core","demo"]')
         core = '            core)         MARKERS="integration and not (alpha or beta or gamma){}" ;;\n'
         case = '            demo)         MARKERS="demo" ;;\n'
-        sound = with_job + (core.format(" and not demo") + case) * 2
+
+        def step(*lines: str) -> str:
+            return '          case "$SHARD" in\n' + "".join(lines) + "          esac\n"
+
+        sound = with_job + step(core.format(" and not demo"), case) * 2
         self.assertEqual(run(workflow=sound)[0], [])
-        twice, _ = run(workflow=with_job + (core.format("") + case) * 2)
+        twice, _ = run(workflow=with_job + step(core.format(""), case) * 2)
         self.assertTrue(any("run twice" in p for p in twice), twice)
-        one_leg, _ = run(workflow=with_job + core.format(" and not demo") * 2 + case)
+        one_leg, _ = run(workflow=with_job + step(core.format(" and not demo"), case) + step(core.format(" and not demo")))
         self.assertTrue(any("unknown shard" in p for p in one_leg), one_leg)
-        dropped, _ = run(workflow=WORKFLOW + core.format(" and not demo") * 2)
+        # Two in one step and none in the other still totals two; the second step fails.
+        lopsided = with_job + step(core.format(" and not demo"), case, case) + step(core.format(" and not demo"))
+        self.assertTrue(any("unknown shard" in p for p in run(workflow=lopsided)[0]))
+        dropped, _ = run(workflow=WORKFLOW + step(core.format(" and not demo")) * 2)
         self.assertTrue(any("stop running" in p for p in dropped), dropped)
-        self.assertEqual(run(workflow=WORKFLOW + core.format("") * 2)[0], [])
+        self.assertEqual(run(workflow=WORKFLOW + step(core.format("")) * 2)[0], [])
 
     def test_an_unmeasured_suite_is_named_but_allowed(self) -> None:
         # beta has no measured time; the two shards still weigh the same without it.
