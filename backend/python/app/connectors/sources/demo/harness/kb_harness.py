@@ -471,6 +471,8 @@ _NOT_BLOCKED = re.compile(
 )
 
 
+# "or" / "either" offering an alternative; "or more", "or above" extend a band instead.
+_ALTERNATIVE = re.compile(r"\b(?:or|either)\b(?!\s+(?:more|above|higher|over|greater|beyond|larger|bigger)\b)")
 _CLAIM_BREAK = re.compile(r"\b(?:but|however|whereas)\b|;")
 
 
@@ -513,11 +515,11 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
         if x < at:
             # "Above $2,500 or it is rejected …": an alternative before the band governs anything.
             governs = min((p for p in anchors if p > x), default=at)
-            return not someone_approves(x if at < hi else lo, at) and not re.search(r"\bor\b", sentence[x:governs])
+            return not someone_approves(x if at < hi else lo, at) and not _ALTERNATIVE.search(sentence[x:governs])
         # A later band covers it in its piece, or right after a comma when the band
         # is all its piece says (", above $2,500"); not a new clause ("and above …")
         # or an alternative ("or above $2,500").
-        if someone_approves(at, x) or re.search(r"\bor\b", sentence[at:x]):
+        if someone_approves(at, x) or _ALTERNATIVE.search(sentence[at:x]):
             return False
         before = [m.group() for m in _PIECE.finditer(sentence) if m.end() == lo]
         return lo <= at < hi or (before == [","] and _only_range(sentence[lo:hi], band_amounts, raises=True))
@@ -559,16 +561,19 @@ def _without_cancels(before: str) -> bool:
 _BOUND = rf"(?:{_AMOUNT.pattern}|\b\d{{1,3}}(?:,\d{{3}})+\b|\b\d{{3,}}\b)"
 _DET = r"(?:(?:the|a|an|your|our)\s+)?"
 _RANGE = re.compile(
-    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:up\s+to|to|and|through|until|-|–|—)\s*{_DET}({_BOUND})"
-    rf"|({_AMOUNT.pattern})\s*(?:up\s+to|to|-|–|—)\s*{_DET}({_BOUND})"
+    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:up\s+(?:to|until)|to|and|through|until|-|–|—)\s*{_DET}({_BOUND})"
+    rf"|({_AMOUNT.pattern})\s*(?:up\s+(?:to|until)|to|through|until|-|–|—)\s*{_DET}({_BOUND})"
 )
 
 
 # A ceiling: "up to $2,500", "under $2,500", "less than the $2,500 limit".
 _CEILING = re.compile(
-    r"\b(?:up\s+to|to|under|below|less\s+than|through|until|within|no\s+more\s+than|at\s+most|capped\s+at"
-    r"|not\s+(?:more\s+than|above|over|beyond|past|exceeding|to\s+exceed)"
-    r"|(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+of)?)"
+    r"\b(?:up\s+to|to|under|below|less\s+than|through|until|within|at\s+most|capped\s+at"
+    r"|(?:no|not|nothing)\s+(?:more|greater|higher|larger|bigger)\s+than"
+    r"|not\s+(?:above|over|beyond|past|exceeding|to\s+exceed)"
+    r"|(?:cannot|can't|can\s+not|does\s+not|doesn't|do\s+not|don't|must\s+not|may\s+not|should\s+not|won't|will\s+not)"
+    r"\s+exceed"
+    r"|(?:at\s+)?(?:an?\s+|the\s+)?(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+of)?)"
     rf"\s+{_DET}({_AMOUNT.pattern})"
 )
 _RANGE_MARK = "\0"
@@ -595,7 +600,7 @@ def _new_range(text: str, band_amounts: set[float]) -> bool:
 
 # Words that leave a piece's claim as the range: "only", "for purchases", "applicable".
 _RANGE_LEAD = re.compile(
-    r"\b(?:but|and|or|else|however|whereas|which|that|only|just|for|purchases?|amounts?|expenses?|spend\w*|the|a|an"
+    r"\b(?:but|and|or|else|either|however|whereas|which|that|only|just|for|purchases?|amounts?|expenses?|spend\w*|the|a|an"
     r"|range|applicable|applies|valid|in|of|is|are|limit|cap|ceiling|maximum|threshold)\b"
 )
 
