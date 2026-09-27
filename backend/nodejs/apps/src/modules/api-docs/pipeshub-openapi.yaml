@@ -18712,8 +18712,10 @@ paths:
         Restricted system fields (`_id`, `orgId`, `slug`, `__v`) cannot be updated and
         cause a `400` if included.
 
-        **Email change:** Only the account owner can change its email address; anyone
-        else, including an admin, gets `403` when the body contains `email`. The stored
+        **Email change:** Only the account owner can change its email address. Anyone
+        else, including an admin, gets `403` when `email` differs from the stored address
+        (compared lowercased and trimmed). Sending the stored address back is not a change
+        and succeeds with `meta.emailChangeMailStatus: notNeeded`. The stored
         address does not change here: a verification link is sent to the new address,
         and the change is applied when that link is opened (`PUT /userAccount/validateEmailChange`),
         which also publishes `UpdateUserEvent` with the new address. The response
@@ -18817,8 +18819,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Only the account owner can change its email address (`emailChangeSelfOnly`). Returned
-            before the user is looked up, so it does not reveal whether the id exists.
+            Only the account owner can change its email address: the request's `email`
+            differs from the stored address and the caller isn't that user. Checked after
+            the user is loaded, so a missing id is `404`; a caller who is neither an admin
+            nor that user is refused earlier with `400` by the admin-or-self check.
           content:
             application/json:
               schema:
@@ -19008,8 +19012,10 @@ paths:
         (`PUT /userAccount/validateEmailChange`), which also publishes `UpdateUserEvent`
         with the new address. If the link cannot be sent, the response is `500`.
 
-        **Authorization:** Only the account owner (`emailChangeSelfOnly` — `403` for anyone
-        else, including admins, before the user is looked up).
+        **Authorization:** An admin or the account owner may call it, but only the owner
+        can change the address. An unchanged address (compared lowercased and trimmed)
+        returns `200` with `emailChangeMailStatus: notNeeded` for either; a different
+        address from anyone but the owner is `403`, checked after the user is loaded.
       operationId: updateEmail
       security:
         - bearerAuth: []
@@ -19068,8 +19074,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Only the account owner can change its email address (`emailChangeSelfOnly`). Returned
-            before the user is looked up, so it does not reveal whether the id exists.
+            Only the account owner can change its email address: the request's `email`
+            differs from the stored address and the caller isn't that user. Checked after
+            the user is loaded, so a missing id is `404`; a caller who is neither an admin
+            nor that user is refused earlier with `400` by the admin-or-self check.
           content:
             application/json:
               schema:
