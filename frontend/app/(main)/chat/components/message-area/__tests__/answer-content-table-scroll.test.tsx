@@ -55,7 +55,7 @@ describe('AnswerContent — wide tables scroll inside the message', () => {
     expect(css).toMatch(/^\[data-table-scroll-area\]\s*\{\s*scrollbar-color:\s*auto;\s*\}/m);
     expect(css).not.toMatch(/^\[data-table-scroll-area\]\s*\{[^}]*scrollbar-width/m);
     expect(css).toMatch(
-      /@supports not selector\(::-webkit-scrollbar\)\s*\{\s*\[data-table-scroll-area\]\s*\{[^}]*scrollbar-width:\s*thin/,
+      /@supports not selector\(::-webkit-scrollbar-thumb\)\s*\{\s*\[data-table-scroll-area\]\s*\{[^}]*scrollbar-width:\s*thin/,
     );
   });
 });

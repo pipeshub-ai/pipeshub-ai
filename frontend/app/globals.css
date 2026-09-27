@@ -473,7 +473,8 @@ summary {
 /* Chat answer tables scroll sideways inside the message. Keep that scrollbar
    visible: with overlay scrollbars a wide table's last columns look cut off.
    Chrome ignores webkit scrollbar rules while scrollbar-color is set, and this
-   box inherits one from .chat-message-scroll, so reset it outside Firefox. */
+   box inherits one from .chat-message-scroll, so reset it. Firefox has no
+   webkit thumb, so it gets the standard properties instead. */
 [data-table-scroll-area] {
   scrollbar-color: auto;
 }
@@ -498,7 +499,7 @@ summary {
 [data-table-scroll-area]::-webkit-scrollbar-corner {
   background: var(--slate-3);
 }
-@supports not selector(::-webkit-scrollbar) {
+@supports not selector(::-webkit-scrollbar-thumb) {
   [data-table-scroll-area] {
     scrollbar-width: thin;
     scrollbar-color: var(--slate-8) var(--slate-3);
