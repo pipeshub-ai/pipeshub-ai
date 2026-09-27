@@ -348,10 +348,20 @@ def _normalized(answer: str) -> str:
     return answer.lower().replace("*", "").replace("\u2019", "'")
 
 
+_TENS = ("twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+_UNITS = {"one", "two", "three", "four", "five", "six", "seven", "eight", "nine"}
+
+
 def mention_spans(text: str, phrase: str) -> list[tuple[int, int]]:
     """Where `mentions` finds `phrase` in already-normalized text, as (start, end)."""
     p = phrase.lower().replace("\u2019", "'")
-    before = r"(?<![\d#.,])" if p[:1].isdigit() else ""
+    if p[:1].isdigit():
+        before = r"(?<![\d#.,])"
+    elif p[:1].isalpha():
+        # A word starts a word; "five" in "twenty-five" or "twenty five" is another number.
+        before = r"(?<![\w-])" + ("".join(rf"(?<!{t} )" for t in _TENS) if p in _UNITS else "")
+    else:
+        before = ""
     if p[-1:].isdigit():
         after = r"(?!\d|[.,]\d)"
     elif " " in p and p[-1:].isalpha():
@@ -376,8 +386,7 @@ _PART = re.compile(r";|:|,(?=\s)|\bbut\b")
 _BAND_OBJECT = r"(?:that|this|it|those|these|the limit|\$|\d)"
 _BIGGER = r"(?:higher|larger|greater|bigger)"
 _RAISES = re.compile(
-    r"\b(?:more than|beyond|exceed\w*)\b"
-    rf"|\b(?:above|over|past)\s+{_BAND_OBJECT}"
+    rf"\b(?:above|over|past|beyond|more than|exceeding|in excess of)\s+{_BAND_OBJECT}"
     # "higher amounts", "higher than that", "anything larger", "and higher,"; not "a larger team".
     rf"|\b{_BIGGER}\s+(?:than|amounts?|purchases?|sums?|values?|spend\w*)\b"
     rf"|\b(?:anything|and|or)\s+{_BIGGER}\b"
@@ -387,7 +396,12 @@ _PIECE = re.compile(r"\b(?:and|but)\b|[;:]|,(?=\s)")
 # The manager, however the answer names them: "your manager", "their manager".
 _MANAGER = r"(?:(?:your|a|an|the|my|our|their|his|her)\s+)?manager\b"
 # "by submitting the receipt", "by promptly submitting": how it's filed, not who approves.
-_FILING = r"(?:\w+ly\s+)?\w+ing\b"
+_FILING = r"(?:\w+ly\s+)?(?!sign|approv|authori)\w+ing\b"
+# Who else might approve: "by finance", "from the finance team", "by the CFO".
+_APPROVER = (
+    r"(?:(?:the|a|an|your|our)\s+)?(?:finance|accounting|accounts|procurement|legal|cfo|controller"
+    r"|director|vp|head of \w+|(?:finance|accounts|procurement|legal)\s+team)\b"
+)
 # What may follow the second-list phrase when it stands alone after the amount: "no approval is needed".
 _BARE_REST = re.compile(
     r"^(?:\s*\b(?:is|are|at all|needed|required|necessary)\b)*"
@@ -398,11 +412,10 @@ _BARE_REST = re.compile(
 _APPROVAL_WORD = re.compile(r"\bapprov\w*|\bsign(?:s|ed)?[- ]?off\b")
 # "no approval (is needed) from finance" is about another approver, unless it's the manager.
 _OTHER_APPROVER = re.compile(
-    r"^(?:\s+(?:is|are|needed|required|necessary|at all))*\s+(?:from|by)\s+"
-    rf"(?!{_MANAGER})(?!{_FILING})"
+    rf"^(?:\s+(?:is|are|needed|required|necessary|at all))*\s+(?:from|by)\s+(?:{_APPROVER}|signing|\w+ly\s+signing)"
 )
-# A later piece that is only "by finance" / "from the finance team".
-_OTHER_APPROVER_PIECE = re.compile(rf"^\s*(?:from|by)\s+(?!{_MANAGER})(?!{_FILING})\w")
+# A later piece that names another approver: "by finance", "from the finance team".
+_OTHER_APPROVER_PIECE = re.compile(rf"^\s*(?:from|by)\s+{_APPROVER}")
 
 
 def _approves(text: str, no_approval: list[str]) -> bool:
@@ -426,31 +439,38 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             if not _OTHER_APPROVER.match(part[end:])
         ]
 
-    def approved_later(rest: list[str]) -> bool:
-        # Someone approves the $250 purchase later on, in this sentence or a later
-        # one. Once a piece names a higher band ("above that, your manager
-        # approves"), the rest of the answer is about that band.
-        for piece in (p for text in rest for p in _PIECE.split(text)):
-            if _RAISES.search(piece):
-                return False
-            if _approves(piece, second) or _OTHER_APPROVER_PIECE.match(piece):
-                return True
+    def approved_later(rest: list[list[str]], band_amounts: set[str]) -> bool:
+        # Someone approves the $250 purchase later on: in the rest of this sentence
+        # or in a later one. A piece naming a higher band ("above that, your manager
+        # approves") covers the rest of its sentence, until the $250 amount returns.
+        for sentence_rest in rest:
+            raised = False
+            for piece in (p for text in sentence_rest for p in _PIECE.split(text)):
+                if _OTHER_APPROVER_PIECE.match(piece):
+                    return True
+                if _RAISES.search(piece):
+                    raised = True
+                elif band_amounts & {a.replace(" ", "") for a in _AMOUNT.findall(piece)}:
+                    raised = False
+                if not raised and _approves(piece, second):
+                    return True
         return False
 
     sentences = _SENTENCE_END.split(_normalized(answer))
     for k, sentence in enumerate(sentences):
-        later = sentences[k + 1:]
+        later = [[s] for s in sentences[k + 1:]]
         parts = _PART.split(sentence)
         for i, part in enumerate(parts):
             bands = [span for m in first for span in mention_spans(part, m)]
             if not bands:
                 continue
             band_end = max(end for _, end in bands)
+            band_amounts = {a.replace(" ", "") for b0, b1 in bands for a in _AMOUNT.findall(part[b0:b1])}
             for _, end in phrase_spans(part):
                 upto = part[:max(end, band_end)]
                 if (
                     not _RAISES.search(upto) and not _approves(upto, second)
-                    and not approved_later([part[max(end, band_end):], *parts[i + 1:], *later])
+                    and not approved_later([[part[max(end, band_end):], *parts[i + 1:]], *later], band_amounts)
                 ):
                     return True
             if _RAISES.search(part) or _approves(part, second):
@@ -461,7 +481,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 continue
             stripped = first_piece.strip()
             bare = any(start == 0 and _BARE_REST.match(stripped[end:]) for start, end in phrase_spans(stripped))
-            if bare and not approved_later([*more, *parts[i + 2:], *later]):
+            if bare and not approved_later([[*more, *parts[i + 2:]], *later], band_amounts):
                 return True
     return False
 

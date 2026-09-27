@@ -149,6 +149,10 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
         "Up to $250 per purchase: no approval needed.",
         "You need no approval for purchases up to $250.",
         "You can spend up to $250 without approval. Above that, your manager approves.",
+        "You can spend up to $250 without approval but your manager must approve more than that.",
+        "Up to $250 per purchase: no approval needed. More than $250, up to $2,500: your manager approves.",
+        "You can spend up to $250 with no approval, by Friday.",
+        "Up to $250: no approval needed, from the expense policy.",
         "For purchases up to $250, no approval is needed.",
         "You can spend up to $250 without approval, and there is no approval above $2,500.",
         "You can spend up to $250 without approval, and above $2,500 finance approves.",
@@ -174,7 +178,6 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
         "Up to $250 per purchase: no approval needed by submitting the receipt within 30 days.",
         "For purchases up to $250, no approval is needed by submitting the receipt within 30 days.",
         "You can spend up to $250 with no approval by promptly submitting the receipt within 30 days.",
-        "You can spend up to $250 without approval. Above that, your manager approves.",
         "Up to $250: no approval needed; your manager approves above that, up to $2,500.",
         "You can spend up to $250 without approval; above that, your manager approves.",
         "You can spend up to $250 without your manager\u2019s approval, and finance approves above $2,500.",
@@ -391,6 +394,16 @@ def test_negation_reaches_three_words_back_and_includes_no(
         "You can spend up to $250 without approval. Your manager must approve every purchase.",
         "You can spend up to $250 without approval. But your manager must approve every one of them.",
         "Up to $250: no approval needed. Your manager must approve every purchase.",
+        # Band words need an amount; a band ends with its sentence or when $250 returns.
+        "You can spend up to $250 with no approval and your manager must approve it more than once.",
+        "You can spend up to $250 without approval but your manager approves beyond question.",
+        "You can spend up to $250 with no approval and your manager must approve it exceedingly carefully.",
+        "You can spend up to $250 without approval. More than once, your manager must approve every purchase.",
+        "You can spend up to $250 without approval. We have more than one rule. Your manager must approve every purchase.",
+        "You can spend up to $250 without approval. Above that, finance approves. Your manager must approve every purchase.",
+        "You can spend up to $250 with no approval, above that your manager approves and your manager must approve the $250 purchase.",
+        "You can spend up to $250 with no approval, by finance above that.",
+        "You can spend up to $250 with no approval by signing off.",
     ],
 )
 def test_f2_needs_the_no_approval_amount_not_just_the_words(fx: dict, answer: str) -> None:
@@ -589,3 +602,16 @@ def test_record_states_read_every_page_of_the_knowledge_base() -> None:
 def test_s1_recovery_phrases_are_whole_words(fx: dict, answer: str, ok: bool) -> None:
     cited = {"drive-sales-northwind-plan", "drive-sales-northwind-call-0416"}
     assert kb_harness.score(_question(fx, "s1"), "cites", cited, answer)[0] is ok
+
+
+@pytest.mark.parametrize(
+    ("answer", "ok"),
+    [
+        ("You can carry over five days of unused leave.", True),
+        ("You can carry over twenty-five days.", False),
+        ("You can carry over twenty five days.", False),
+        ("It's twenty-five days, not five.", False),
+    ],
+)
+def test_h1_five_is_not_the_end_of_twenty_five(fx: dict, answer: str, ok: bool) -> None:
+    assert kb_harness.score(_question(fx, "h1"), "cites", {"slack-people-0302"}, answer)[0] is ok
