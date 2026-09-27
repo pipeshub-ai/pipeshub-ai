@@ -374,10 +374,14 @@ beside a 100,000-file one. Stress results are not compared at all — their
 verdicts are pass or fail, not faster or slower — and `compare.py` says so
 plainly if one is handed to it.
 
-The check does not fail the workflow. It writes its verdict into the job
-summary and exits 0. The thresholds above are reasoned, not yet measured. Once
-four or five weekly runs exist, look at how much they actually vary, adjust the
-numbers, and consider passing `--fail-on-regression`. If the baseline and the
+For the indexing, query and scale benchmarks the check does not fail the
+workflow. It writes its verdict into the job summary and exits 0. The
+thresholds above are reasoned, not yet measured. Once four or five weekly runs
+exist, look at how much they actually vary, adjust the numbers, and consider
+passing `--fail-on-regression`. **Sustained Load** is the exception: it passes
+`--fail-on-regression` already, so a gating row that regresses fails that
+workflow (see "When the run fails" above), while its placeholder baseline
+keeps the comparison reporting only until a real run replaces it. If the baseline and the
 result differ in label, graph DB, broker, AI models, corpus size, seed or file
 kinds, `compare.py` says so and ignores the verdicts.
 
