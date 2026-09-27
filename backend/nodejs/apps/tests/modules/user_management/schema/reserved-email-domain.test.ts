@@ -157,6 +157,18 @@ describe('only a service account may use the reserved email domain', () => {
         fullName: 'Invited Before The Rule',
         slug: 'user-legacy',
       });
+      // Pinned as an own property for the same reason as the create case
+      // above: `users.controller.test.ts` leaves `Users.prototype.email` as a
+      // getter returning its own address, so without this the hook would read
+      // that instead. These two cases only fail when the error carries the
+      // reserved-domain message, so an unpinned address would leave them green
+      // even if the gate were removed — which is the opposite of their purpose.
+      Object.defineProperty(person, 'email', {
+        value: reserved,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      });
       // Presented as a row that came back from the database rather than a new
       // one, which is the state every later save sees.
       person.isNew = false;
@@ -249,6 +261,28 @@ describe('only a service account may use the reserved email domain', () => {
           SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
         );
       }
+    });
+
+    it('allows an update that moves a person off the domain and makes them human', async () => {
+      // The final state breaks no rule, and this combination is how a row that
+      // should never have held a reserved address gets repaired. The stored
+      // record is never consulted, because the update settles it.
+      const findOne = sinon.stub(Users, 'findOne');
+
+      await withoutCommandBuffering(async () => {
+        try {
+          await Users.updateOne(
+            { orgId },
+            { $set: { email: 'a.real.person@example.com', kind: 'human' } },
+          ).exec();
+        } catch (error) {
+          expect((error as Error).message).to.not.contain(
+            SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
+          );
+        }
+      });
+
+      expect(findOne.called).to.equal(false);
     });
 
     it('allows a service account to be given its own reserved address', async () => {

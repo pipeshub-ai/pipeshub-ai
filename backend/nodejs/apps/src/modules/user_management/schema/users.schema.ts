@@ -220,7 +220,14 @@ async function refuseReservedEmailDomainOnPeople(
   }
 
   // Downgrading `kind` on a record that already holds a reserved address.
-  if (kind !== undefined && kind !== 'service') {
+  //
+  // Unless the same update also replaces the address with one outside the
+  // domain, which leaves a record that breaks no rule — and is exactly how
+  // someone would repair a row that should never have held one, so refusing it
+  // would close the only door out.
+  const replacesWithOrdinaryAddress =
+    typeof email === 'string' && !isServiceAccountEmail(email);
+  if (kind !== undefined && kind !== 'service' && !replacesWithOrdinaryAddress) {
     const offender = await this.model
       .findOne({ ...this.getQuery(), email: reservedEmailDomainPattern() })
       .select('_id')
