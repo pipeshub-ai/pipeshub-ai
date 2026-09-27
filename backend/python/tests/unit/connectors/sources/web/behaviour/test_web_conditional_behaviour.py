@@ -53,6 +53,26 @@ async def test_a_changed_document_is_downloaded_and_re_indexed(
     assert db.pages()[PDF].etag == '"v2"'
 
 
+async def test_a_changed_document_whose_answer_drops_its_etag_does_not_keep_the_old_one(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/manual.pdf")
+    site.add(PDF, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector()
+    await connector.run_sync()
+
+    site.add(PDF, Page(body=b"%PDF-1.4 v2", content_type="application/pdf"))
+    await connector.run_sync()
+    assert db.pages()[PDF].etag is None
+
+    # A later answer tagged "v1" again must not be taken as vouching for the stored v2 copy.
+    site.add(PDF, Page(body=b"%PDF-1.4 v3", content_type="application/pdf", etag='"v1"'))
+    await connector.run_sync()
+
+    assert site.not_modified == []
+    assert site.storage_docs[db.pages()[PDF].storage_document_id] == b"%PDF-1.4 v3"
+
+
 async def test_a_page_whose_links_are_needed_is_always_fetched_in_full(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
@@ -109,7 +129,7 @@ async def test_new_validators_on_an_unchanged_file_are_saved_for_the_next_sync(
     assert site.not_modified == [PDF]
 
 
-async def test_a_validator_the_site_stops_sending_is_kept(
+async def test_a_validator_the_site_stops_sending_is_kept_while_the_file_is_unchanged(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     site.html(START_URL, "Home", "/manual.pdf")
@@ -117,7 +137,7 @@ async def test_a_validator_the_site_stops_sending_is_kept(
     connector = await make_connector()
     await connector.run_sync()
 
-    site.add(PDF, Page(body=b"%PDF-1.4 v2", content_type="application/pdf"))
+    site.add(PDF, Page(body=b"%PDF-1.4 v1", content_type="application/pdf"))
     await connector.run_sync()
 
     assert db.pages()[PDF].etag == '"v1"'

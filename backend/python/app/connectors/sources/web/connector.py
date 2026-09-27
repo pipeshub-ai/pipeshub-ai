@@ -2323,10 +2323,12 @@ class WebConnector(BaseConnector):
                 parent_record_type=RecordType.FILE if parent_url else None,
                 storage_document_id=storage_document_id,
                 fetch_signed_url=fetch_signed_url,
-                # A validator the site didn't send this time is kept, not erased.
-                etag=self._header(result.headers, "ETag") or stored_etag,
+                # A validator the site didn't send this time is kept only while the content is the same;
+                # kept across a change, a later 304 would vouch for the old copy.
+                etag=self._header(result.headers, "ETag") or (None if content_changed else stored_etag),
                 # Last-Modified, kept verbatim to send back as If-Modified-Since.
-                ctag=self._header(result.headers, "Last-Modified") or stored_last_modified,
+                ctag=self._header(result.headers, "Last-Modified")
+                or (None if content_changed else stored_last_modified),
             )
 
             # New or rotated validators on an unchanged page are saved as metadata: no re-index, no version bump.
