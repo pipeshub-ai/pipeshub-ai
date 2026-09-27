@@ -12,8 +12,15 @@ vi.mock('../../../utils/fetch-instance-stats', () => ({
   fetchInstanceStats: (...args: unknown[]) => fetchInstanceStats(...args),
 }));
 const runConnectorResync = vi.fn();
-vi.mock('../../../utils/connector-sync-actions', () => ({
-  runConnectorResync: (...args: unknown[]) => runConnectorResync(...args),
+vi.mock('../../../utils/connector-sync-actions', async () => {
+  const actual = await vi.importActual<typeof import('../../../utils/connector-sync-actions')>(
+    '../../../utils/connector-sync-actions'
+  );
+  return { ...actual, runConnectorResync: (...args: unknown[]) => runConnectorResync(...args) };
+});
+let syncProgress: ConnectorSyncProgress | null = null;
+vi.mock('../../../utils/use-connector-sync-progress', () => ({
+  useConnectorSyncProgress: () => ({ progress: syncProgress, loading: false }),
 }));
 const routerPush = vi.fn();
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: routerPush }) }));
@@ -21,7 +28,8 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 
 import { OverviewTab } from '../overview-tab';
 import { useConnectorsStore } from '../../../store';
-import type { ConnectorStatsResponse } from '../../../types';
+import type { ConnectorStatsResponse, ConnectorSyncProgress } from '../../../types';
+import { ConnectorSyncInProgressError } from '../../../utils/connector-sync-actions';
 import {
   installDomShims,
   renderInTheme,
@@ -52,6 +60,7 @@ beforeEach(() => {
   reindexConnector.mockReset().mockResolvedValue({});
   fetchInstanceStats.mockReset().mockResolvedValue(undefined);
   runConnectorResync.mockReset().mockResolvedValue({ kind: 'backend' });
+  syncProgress = null;
   routerPush.mockReset();
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -83,13 +92,30 @@ describe('OverviewTab: record status', () => {
   });
 
   it('shows sync progress while a sync runs', () => {
+    syncProgress = {
+      connectorId: 'conn-1',
+      isActive: true,
+      phase: 'INDEXING',
+      run: {
+        runId: 'run-1',
+        phase: 'INDEXING',
+        discovered: 100,
+        indexed: 35,
+        failed: 0,
+        skipped: 0,
+        unchanged: 0,
+        total: 100,
+        processed: 35,
+        percent: 35,
+      },
+      coverage: {},
+    } as ConnectorSyncProgress;
     renderInTheme(
-      <OverviewTab
-        instance={makeInstance({ isActive: true, status: 'SYNCING', syncProgress: { percentage: 35 } })}
-        stats={null}
-      />
+      <OverviewTab instance={makeInstance({ isActive: true, status: 'SYNCING' })} stats={null} />
     );
-    expect(screen.getByText('35% Complete')).toBeTruthy();
+    expect(screen.getByText('Current sync')).toBeTruthy();
+    expect(screen.getByText('Indexing 35 of 100')).toBeTruthy();
+    expect(screen.getByText('35%')).toBeTruthy();
   });
 
   it('opens the failed records in the knowledge base', () => {
@@ -154,7 +180,7 @@ describe('OverviewTab: actions', () => {
     fireEvent.click(screen.getByRole('button', { name: /Sync now/ }));
 
     await waitFor(() =>
-      expect(runConnectorResync).toHaveBeenCalledWith({ connectorId: 'conn-1', connectorType: 'Jira' })
+      expect(runConnectorResync).toHaveBeenCalledWith({ connectorId: 'conn-1', connectorType: 'Jira', force: false })
     );
     await waitFor(() => expect(toastTitles()).toContain('Sync started'));
   });
@@ -169,6 +195,20 @@ describe('OverviewTab: actions', () => {
     expect(toasts().find((t) => t.title === 'Failed to start sync')?.description).toBe(
       'A sync is already running for this connector.'
     );
+  });
+
+  it('offers to restart a sync that is already running, and restarts it on confirm', async () => {
+    runConnectorResync.mockRejectedValueOnce(new ConnectorSyncInProgressError());
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={stats({ COMPLETED: 1 })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Sync now/ }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart sync' }));
+    await waitFor(() =>
+      expect(runConnectorResync).toHaveBeenLastCalledWith({ connectorId: 'conn-1', connectorType: 'Jira', force: true })
+    );
+    await waitFor(() => expect(toastTitles()).toContain('Sync started'));
+    expect(toastTitles()).not.toContain('Failed to start sync');
   });
 
   it('refreshes the record status and confirms it', async () => {
