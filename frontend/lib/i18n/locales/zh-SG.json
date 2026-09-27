@@ -3497,7 +3497,9 @@
         "loading": "正在加载令牌…",
         "copy": "复制令牌",
         "revokeTitle": "撤销此令牌？",
-        "revokeDescription": "「{{name}}」会立即停止工作且无法恢复。仍在使用它的一切都会开始失败。如果您正在轮换，请先创建替代令牌并将集成切换过去。"
+        "revokeDescription": "「{{name}}」会立即停止工作且无法恢复。仍在使用它的一切都会开始失败。如果您正在轮换，请先创建替代令牌并将集成切换过去。",
+        "selectAllScopes": "全选",
+        "clearAllScopes": "全部清除"
       },
       "disableTitle": "停用此服务账号？",
       "disableDescription": "{{name}} 会立即停止工作——包括它已持有的所有令牌，而不只是等到下次登录。在您重新启用之前，使用这些令牌的一切都会持续失败。",

@@ -3488,14 +3488,11 @@
         "copy": "Copy token",
         "revokeTitle": "Revoke this token?",
         "revokeDescription": "\"{{name}}\" will stop working immediately and cannot be restored. Any integration still using it will begin to fail. If you are replacing it, create the new token and move the integration across first.",
-        "selectAllScopes": "Select all",
+        "selectAllScopes": "Select All",
         "clearAllScopes": "Clear all",
-        "expiryDays_one": "{{count}} day",
-        "expiryDays_other": "{{count}} days",
-        "expiresInDays_one": "{{count}} day left",
-        "expiresInDays_other": "{{count}} days left",
-        "expiringSoon_one": "One token expires soon. Create a replacement, move the integration across to it, and then revoke the old token.",
-        "expiringSoon_other": "{{count}} tokens expire soon. Create a replacement for each one, move the integrations across, and then revoke the old tokens."
+        "expiryDays": "{{count}} days",
+        "expiresInDays": "{{count}} days left",
+        "expiringSoon": "Tokens expiring soon: {{count}}. Create a replacement for each one, move the integrations across, and then revoke the old tokens."
       },
       "disableTitle": "Disable this service account?",
       "disableDescription": "{{name}} will stop working immediately, including every token it already holds. Any integration using one of those tokens will fail until you enable the account again.",

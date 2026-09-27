@@ -3497,7 +3497,9 @@
         "loading": "正在載入 Token…",
         "copy": "複製 Token",
         "revokeTitle": "撤銷此 Token？",
-        "revokeDescription": "「{{name}}」會立即停止運作且無法復原。仍在使用它的一切都會開始失敗。若您正在輪替，請先建立替代的 Token 並將整合切換過去。"
+        "revokeDescription": "「{{name}}」會立即停止運作且無法復原。仍在使用它的一切都會開始失敗。若您正在輪替，請先建立替代的 Token 並將整合切換過去。",
+        "selectAllScopes": "全選",
+        "clearAllScopes": "全部清除"
       },
       "disableTitle": "停用此服務帳戶？",
       "disableDescription": "{{name}} 會立即停止運作——包括它已持有的所有 Token，而不只是等到下次登入。在您重新啟用之前，使用這些 Token 的一切都會持續失敗。",

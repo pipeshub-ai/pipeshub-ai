@@ -3490,7 +3490,9 @@
         "loading": "Tokens werden geladen…",
         "copy": "Token kopieren",
         "revokeTitle": "Dieses Token widerrufen?",
-        "revokeDescription": "„{{name}}“ funktioniert sofort nicht mehr und kann nicht wiederhergestellt werden. Alles, was es noch verwendet, schlägt anschließend fehl. Wenn Sie rotieren, erstellen Sie zuerst den Ersatz und stellen Sie die Integration darauf um."
+        "revokeDescription": "„{{name}}“ funktioniert sofort nicht mehr und kann nicht wiederhergestellt werden. Alles, was es noch verwendet, schlägt anschließend fehl. Wenn Sie rotieren, erstellen Sie zuerst den Ersatz und stellen Sie die Integration darauf um.",
+        "selectAllScopes": "Alle auswählen",
+        "clearAllScopes": "Auswahl aufheben"
       },
       "disableTitle": "Dieses Dienstkonto deaktivieren?",
       "disableDescription": "{{name}} funktioniert sofort nicht mehr – einschließlich aller bereits vorhandenen Tokens, nicht erst bei der nächsten Anmeldung. Alles, was eines dieser Tokens verwendet, schlägt fehl, bis Sie das Konto wieder aktivieren.",
