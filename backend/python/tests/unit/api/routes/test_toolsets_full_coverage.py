@@ -1304,7 +1304,13 @@ class TestHandleToolsetOAuthCallbackFlows:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("status_code", "expected_error"),
-        [(403, "agent_permission_denied"), (401, "agent_permission_denied"), (500, "agent_auth_error")],
+        [
+            (403, "agent_permission_denied"),
+            (401, "agent_permission_denied"),
+            (404, "agent_permission_denied"),
+            (400, "agent_auth_error"),
+            (500, "agent_auth_error"),
+        ],
     )
     async def test_agent_flow_access_check_failure_answers_json_not_redirect(self, status_code, expected_error):
         """The Node API follows redirects, so a failed agent access check must not redirect to the caller's base_url."""
@@ -1324,6 +1330,12 @@ class TestHandleToolsetOAuthCallbackFlows:
         assert result["success"] is False
         assert result["error"] == expected_error
         assert result["error_message"]
+        if status_code == 400:
+            assert result["error_message"] == "no access"
+        elif status_code == 500:
+            assert "try again" in result["error_message"]
+        else:
+            assert "permission" in result["error_message"]
 
     @pytest.mark.asyncio
     async def test_agent_flow_success(self):
