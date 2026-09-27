@@ -22,7 +22,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Union
 
-log = logging.getLogger("test")
+log = logging.getLogger(__name__)
 log.setLevel(logging.CRITICAL)
 
 
