@@ -474,14 +474,18 @@ _NOT_BLOCKED = re.compile(
 _CLAIM_BREAK = re.compile(r"\b(?:but|however|whereas)\b|;")
 
 
-def _required_without(sentence: str, no_approval: list[str]) -> bool:
+def _required_without(sentence: str, no_approval: list[str], band_amounts: set[float]) -> bool:
     """Whether a sentence makes an approval a condition: "without your manager's
     sign-off" with a requirement anywhere in it ("…, nothing goes through")."""
     for m in no_approval:
         for start, end in mention_spans(sentence, m):
             sentence = sentence[:start] + " " * (end - start) + sentence[end:]
     # "It is not rejected without …" says the opposite.
-    sentence = _NOT_BLOCKED.sub(lambda m: " " * len(m.group(0)), sentence)
+    sentence = _mark_new_ranges(_NOT_BLOCKED.sub(lambda m: " " * len(m.group(0)), sentence), band_amounts)
+    # Higher bands: "above that", and a range above $250.
+    bands = [m.start() for m in _RAISES.finditer(sentence)] + [
+        m.start() for m in re.finditer(rf"{_RANGE_MARK}+", sentence)
+    ]
 
     def segment(breaks: re.Pattern[str], at: int) -> tuple[int, int]:
         lo, hi = 0, len(sentence)
@@ -493,18 +497,21 @@ def _required_without(sentence: str, no_approval: list[str]) -> bool:
                 break
         return lo, hi
 
+    def covers(x: int, at: int) -> bool:
+        # In the same piece, or before it unless its own piece already has someone
+        # approve ("Above $2,500 finance approves and …" is a finished claim).
+        lo, hi = segment(_PIECE, x)
+        return lo <= at < hi or (x < at and not _approves(sentence[lo:hi], no_approval))
+
     def covered(a: int, r: int) -> bool:
         # A higher band covers the sign-off when it shares their claim ("but" and ";"
-        # start a new one) and comes before the later of the two or in its piece:
-        # "Above that, it is rejected without …", "… nothing above $2,500 goes through".
+        # start a new one) and covers the requirement, and the sign-off too unless it
+        # leads into the requirement ("Without …, nothing above $2,500 goes through").
         claim = segment(_CLAIM_BREAK, a)
         if segment(_CLAIM_BREAK, r) != claim:
             return False
-        later = max(a, r)
-        piece = segment(_PIECE, later)
         return any(
-            claim[0] <= x.start() < claim[1] and (x.start() < later or piece[0] <= x.start() < piece[1])
-            for x in _RAISES.finditer(sentence)
+            claim[0] <= x < claim[1] and covers(x, r) and (a < r or covers(x, a)) for x in bands
         )
 
     return any(
@@ -533,16 +540,20 @@ _RANGE = re.compile(
 
 
 _RANGE_MARK = "\0"
+# An approval with no object of its own: "your manager approves", "approval is required".
+_BARE_APPROVAL_END = re.compile(r"(?:\s*\b(?:is|are|needed|required|necessary)\b)*[\s.!]*")
 
 
-def _mark_new_ranges(text: str, band_amounts: set[float]) -> str:
+def _mark_new_ranges(text: str, band_amounts: set[float], *, reaching_above: bool = False) -> str:
     """`text` with every range above the $250 band replaced by a mark that no
     splitter breaks ("between $251 and $2,500"); what a sentence says about
-    approval there belongs to that range, not to $250."""
+    approval there belongs to that range, not to $250. With `reaching_above`, a
+    range that only ends above $250 ("from $250 to $2,500") is marked too."""
     def mark(m: re.Match[str]) -> str:
         low, high = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
         bounds = [float(re.sub(r"[^\d.]", "", b)) for b in (low, high)]
-        return _RANGE_MARK * len(m.group(0)) if min(bounds) > max(band_amounts) else m.group(0)
+        above = (max(bounds) if reaching_above else min(bounds)) > max(band_amounts)
+        return _RANGE_MARK * len(m.group(0)) if above else m.group(0)
     return _RANGE.sub(mark, text)
 
 
@@ -590,7 +601,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
         # or in a later one. A piece naming a higher band ("above that, your manager
         # approves") covers the rest of its sentence, until the $250 amount returns.
         for sentence_rest in rest:
-            if _required_without(" ".join(sentence_rest), second):
+            if _required_without(" ".join(sentence_rest), second, band_amounts):
                 return True
             raised = False
             skipped = False  # an approval set aside because a band was in force
@@ -611,8 +622,12 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                     raised = False
                 # "Your manager approves, from $251 to $2,500": the range that follows
                 # is what this approval is about.
-                range_next = j + 1 < len(pieces) and _RANGE_MARK in pieces[j + 1] and not re.search(
-                    r"[^\s\0.!?]", pieces[j + 1]
+                nxt = next((p for p in pieces[j + 1:] if p.strip()), "")
+                last = list(_APPROVAL_WORD.finditer(piece))
+                range_next = (
+                    _RANGE_MARK in nxt and not re.search(r"[^\s\0.!?]", nxt)
+                    and not band_amounts & _amount_values(piece)
+                    and bool(last) and _BARE_APPROVAL_END.fullmatch(piece[last[-1].end():]) is not None
                 )
                 if approves and not raised and not range_next:
                     return True
@@ -637,11 +652,14 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 continue
             for _, end in phrase_spans(part):
                 upto = part[:max(end, band_end)]
-                # "with no approval above $2,500": the phrase is about the higher band.
-                own_piece_rest = _PIECE.split(part[max(end, band_end):])[0]
+                # "with no approval above $2,500" or "… from $251 to $2,500": the phrase
+                # is about the higher band.
+                own_piece_rest = _PIECE.split(
+                    _mark_new_ranges(part[max(end, band_end):], band_amounts, reaching_above=True)
+                )[0]
                 if (
                     not _RAISES.search(upto) and not _approves(upto, second)
-                    and not _RAISES.search(own_piece_rest)
+                    and not _RAISES.search(own_piece_rest) and _RANGE_MARK not in own_piece_rest
                     and not approved_later([[part[max(end, band_end):], *parts[i + 1:]], *later], band_amounts)
                 ):
                     return True
