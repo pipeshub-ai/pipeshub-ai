@@ -454,9 +454,10 @@ def _approves(text: str, no_approval: list[str]) -> bool:
 _REQUIRES_BEFORE = re.compile(r"\b(?:can't|cannot|can not|not|never|nothing|nobody|no one|won't)\b|n't\b")
 
 
-# "nothing goes through", "no purchase goes through", "you can't submit it".
+# "nothing goes through", "no purchase goes through", "it is rejected".
 _REQUIRES_ANYWHERE = re.compile(
     r"\b(?:can't|cannot|can not|not|never|nothing|nobody|no one|won't)\b|n't\b|\bno\s+(?!need|problem|worries)\w+"
+    r"|\b(?:reject|block|fail|den(?:y|ie)|refus|declin|bounc|stopp|halt)\w*"
 )
 
 
@@ -481,9 +482,19 @@ def _without_cancels(before: str) -> bool:
     return not _REQUIRES_BEFORE.search(clause)
 
 
-_NEW_BAND = re.compile(
-    r"\b(?:from|between|up to|to|under|below|less than|within|until|through)\s+(?:\$\s?\d|\d)"
+# A range's lower bound: "from $251 to", "between $251 and", "$251–$2,500".
+_RANGE_START = re.compile(
+    rf"\b(?:from|between)\s+({_AMOUNT.pattern})|({_AMOUNT.pattern})\s*(?:to|-|–|—)\s*(?:\$\s?)?\d"
 )
+
+
+def _new_range(text: str, band_amounts: set[float]) -> bool:
+    """Whether `text` names a range that starts at or above the $250 band, so what it
+    says about approval belongs to that range ("required from $251 to $2,500")."""
+    return any(
+        (low := _amount_values(m.group(1) or m.group(2))) and min(low) >= max(band_amounts)
+        for m in _RANGE_START.finditer(text)
+    )
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
@@ -492,22 +503,18 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
     is followed by a part that only says someone approves ("Up to $250: your
     manager's approval is required")."""
     for i, part in enumerate(parts):
-        if not band_amounts & _amount_values(_RAISES.sub(" ", part)):
+        if not band_amounts & _amount_values(_RAISES.sub(" ", part)) or _new_range(part, band_amounts):
             continue
         if _approves(part, second):
             return True
         # Read on past blank parts and lead-ins ("However,", "Please note:") until a
-        # part approves, opens a new range, or moves to a higher band.
+        # part approves or moves to a higher band or a range above $250.
+        # A comparison, deadline or ceiling ("compared to $2,500") doesn't end it.
         for after in parts[i + 1:]:
-            if _RAISES.search(after):
+            if _RAISES.search(after) or _new_range(after, band_amounts):
                 break
-            # An approval after a new range belongs to it ("From $251 to $2,500, …");
-            # a passing amount ("compared with $2,500, …") doesn't end the walk.
-            band = _NEW_BAND.search(after)
-            if _approves(after[:band.start()] if band else after, second):
+            if _approves(after, second):
                 return True
-            if band:
-                break
     return False
 
 
@@ -539,10 +546,11 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 # The band phrase's own amount ("over $250") is its object; $250
                 # anywhere else is the $250 purchase again, and so was what the
                 # sentence approved while the band was in force.
-                if _RAISES.search(piece):
+                ranged = _new_range(piece, band_amounts)
+                if _RAISES.search(piece) or ranged:
                     raised = True
                 approves = _approves(piece, second)
-                if band_amounts & _amount_values(_RAISES.sub(" ", piece)):
+                if not ranged and band_amounts & _amount_values(_RAISES.sub(" ", piece)):
                     if raised and skipped:
                         return True
                     raised = False
