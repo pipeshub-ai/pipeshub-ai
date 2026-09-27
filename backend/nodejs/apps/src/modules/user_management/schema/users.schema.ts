@@ -5,7 +5,11 @@ import { jurisdictions } from '../../../libs/utils/juridiction.utils';
 import { Address } from '../../../libs/utils/address.utils';
 import { generateUniqueSlug } from '../../../libs/utils/counter';
 import {
+  assertReservedEmailDomainBelongsToServiceAccount,
   assertServiceAccountRole,
+  isServiceAccountEmail,
+  reservedEmailDomainPattern,
+  SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
   SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE,
 } from '../constants/service-account.constants';
 
@@ -108,6 +112,7 @@ userSchema.pre<User>('save', async function (next) {
       this.slug = await generateUniqueSlug('User');
     }
     assertServiceAccountRole(this.kind, this.role);
+    assertReservedEmailDomainBelongsToServiceAccount(this.kind, this.email);
     next();
   } catch (error) {
     next(error as Error);
@@ -161,9 +166,67 @@ async function refuseAdminRoleOnServiceAccount(
   }
 }
 
+/**
+ * Keeps the reserved domain reserved across updates as well as creates.
+ *
+ * Two ways an update can break the rule, and both are checked: it can move a
+ * record that is not a service account onto an address in the domain, or it
+ * can take `kind` away from a record that already holds one. Either leaves a
+ * human on addresses the rest of the product reads as machine identities.
+ *
+ * The stored record is consulted only when the update alone cannot settle it,
+ * so an ordinary update that touches neither field costs nothing.
+ */
+async function refuseReservedEmailDomainOnPeople(
+  this: mongoose.Query<unknown, User>,
+): Promise<void> {
+  const update = this.getUpdate() as Record<string, unknown> | null;
+  if (update === null) return;
+
+  // Read both shapes, for the same reason the role guard does: `timestamps`
+  // adds its own `$set`, so a field written at the top level stays there.
+  const set = (update.$set ?? {}) as Record<string, unknown>;
+  const email = set.email ?? update.email;
+  const kind = set.kind ?? update.kind;
+
+  if (typeof email === 'string' && isServiceAccountEmail(email)) {
+    if (kind === 'service') return;
+    if (kind !== undefined) {
+      throw new Error(SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE);
+    }
+    // Refuse if the update reaches anything that is not a service account.
+    // Asked as "is there an offender" rather than by sampling, because
+    // `updateMany` can cover a mix.
+    const offender = await this.model
+      .findOne({ ...this.getQuery(), kind: { $ne: 'service' } })
+      .select('_id')
+      .lean()
+      .exec();
+    if (offender) {
+      throw new Error(SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE);
+    }
+    return;
+  }
+
+  // Downgrading `kind` on a record that already holds a reserved address.
+  if (kind !== undefined && kind !== 'service') {
+    const offender = await this.model
+      .findOne({ ...this.getQuery(), email: reservedEmailDomainPattern() })
+      .select('_id')
+      .lean()
+      .exec();
+    if (offender) {
+      throw new Error(SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE);
+    }
+  }
+}
+
 userSchema.pre('findOneAndUpdate', refuseAdminRoleOnServiceAccount);
 userSchema.pre('updateOne', refuseAdminRoleOnServiceAccount);
 userSchema.pre('updateMany', refuseAdminRoleOnServiceAccount);
+userSchema.pre('findOneAndUpdate', refuseReservedEmailDomainOnPeople);
+userSchema.pre('updateOne', refuseReservedEmailDomainOnPeople);
+userSchema.pre('updateMany', refuseReservedEmailDomainOnPeople);
 
 export const Users: Model<User> =
   (mongoose.models['users'] as Model<User>) ||

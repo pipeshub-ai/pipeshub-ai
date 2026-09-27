@@ -31,6 +31,18 @@ function buildRouter() {
     // the request as carrying whatever credential the test is about.
     authenticate: (_req: any, _res: any, next: any) => next(),
   } as any);
+  container.bind('Logger').toConstantValue({
+    info: sinon.stub(),
+    warn: sinon.stub(),
+    error: sinon.stub(),
+    debug: sinon.stub(),
+  } as any);
+  // The router is rate limited, as the token and personal access token routers
+  // are. A ceiling high enough that it never trips is what keeps these cases
+  // about the gates they are named for.
+  container
+    .bind('AppConfig')
+    .toConstantValue({ maxOAuthClientRequestsPerMinute: 10_000 } as any);
   return { router: createServiceAccountsRouter(container), controller };
 }
 
@@ -191,5 +203,27 @@ describe('service account routes are gated for machine credentials too', () => {
 
     expect(outcome.error).to.exist;
     expect(controller.create.called).to.equal(false);
+  });
+});
+
+describe('service account routes are rate limited', () => {
+  it('puts a ceiling in front of the routes, as the token routes have', () => {
+    // Every route here is admin-only, so this is not about untrusted callers:
+    // it bounds what a stolen admin credential can do in one burst, since each
+    // created account is a principal with its own view of the organisation and
+    // an address that is taken for good. Identified by the limiter's own
+    // `resetKey`/`getKey` rather than by a function name, which is empty.
+    const { router } = buildRouter();
+    const stack = (router as unknown as { stack: { handle: unknown }[] }).stack;
+    const limiters = stack.filter((layer) => {
+      const handle = layer.handle as { resetKey?: unknown; getKey?: unknown };
+      return (
+        typeof handle === 'function' &&
+        typeof handle.resetKey === 'function' &&
+        typeof handle.getKey === 'function'
+      );
+    });
+
+    expect(limiters.length).to.equal(1);
   });
 });
