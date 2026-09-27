@@ -495,9 +495,18 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
     # Higher bands: "above that", and a range above $250.
     # A raise that starts on its joiner ("or higher") starts at the band word, so
     # the "or" stays in view as a possible alternative.
-    bands = [m.start() + len(re.match(r"(?:or\s+)?", m.group()).group()) for m in _RAISES.finditer(sentence)] + [
-        m.start() for m in re.finditer(rf"{_RANGE_MARK}+", sentence)
-    ]
+    # A raise inside a ceiling ("not above $2,500") is no higher band, except for the
+    # ceiling's own negation as the requirement ("nothing above $2,500 goes through");
+    # one after "except" / "unless" is the exception, so it covers nothing. Each band
+    # is (position, the requirement it alone serves, or None for any).
+    ceilings = [(m.start(), m.end()) for m in _CEILING.finditer(sentence)]
+    bands: list[tuple[int, int | None]] = []
+    for m in _RAISES.finditer(sentence):
+        if re.search(r"\b(?:except|unless)\b[^,;.]*$", sentence[:m.start()]):
+            continue
+        owner = next((c0 for c0, c1 in ceilings if c0 <= m.start() < c1), None)
+        bands.append((m.start() + len(re.match(r"(?:or\s+)?", m.group()).group()), owner))
+    bands += [(m.start(), None) for m in re.finditer(rf"{_RANGE_MARK}+", sentence)]
 
     def segment(breaks: re.Pattern[str], at: int) -> tuple[int, int]:
         lo, hi = 0, len(sentence)
@@ -547,7 +556,8 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
         if segment(_CLAIM_BREAK, r) != claim:
             return False
         return any(
-            claim[0] <= x < claim[1] and covers(x, r) and (a < r or covers(x, a)) for x in bands
+            claim[0] <= x < claim[1] and covers(x, r) and (a < r or covers(x, a))
+            for x, owner in bands if owner is None or owner == r
         )
 
     return any(
@@ -578,12 +588,11 @@ _RANGE = re.compile(
 
 # A ceiling: "up to $2,500", "under $2,500", "less than the $2,500 limit".
 _CEILING = re.compile(
-    r"\b(?:up\s+to|to|under|below|less\s+than|through|until|within|at\s+most|capped\s+at"
-    r"|(?:no|not|nothing|isn't|aren't|wasn't|weren't)\s+"
-    r"(?:(?:more|greater|higher|larger|bigger)\s+than|above|over|beyond|past|exceeding|to\s+exceed)"
-    r"|(?:cannot|can't|can\s+not|does\s+not|doesn't|do\s+not|don't|must\s+not|may\s+not|should\s+not|shall\s+not"
-    r"|shan't|won't|will\s+not)"
-    r"\s+exceed"
+    r"\b(?:up\s+(?:to|through|until)|to|under|below|less\s+than|through|until|within|at\s+most|capped\s+at"
+    # A negated comparison: "not above", "isn't greater than", "mustn't be more than",
+    # "hasn't exceeded", "not in excess of".
+    r"|(?:\w+n't|\w+\s+not|cannot|not|no|nothing)(?:\s+(?:be|been|have\s+been|has\s+been))?\s+"
+    r"(?:exceed\w*|to\s+exceed|(?:more|greater|higher|larger|bigger)\s+than|above|over|beyond|past|in\s+excess\s+of)"
     r"|(?:at\s+)?(?:an?\s+|the\s+)?(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+of)?)"
     rf"\s+{_DET}({_AMOUNT.pattern})"
 )
@@ -612,7 +621,8 @@ def _new_range(text: str, band_amounts: set[float]) -> bool:
 # Words that leave a piece's claim as the range: "only", "for purchases", "applicable".
 _RANGE_LEAD = re.compile(
     r"\b(?:but|and|or|else|either|however|whereas|which|that|only|just|for|purchases?|amounts?|expenses?|spend\w*|the|a|an"
-    r"|range|applicable|applies|valid|in|of|is|are|limit|cap|ceiling|maximum|threshold)\b"
+    r"|range|applicable|applies|valid|in|of|is|are|limit|cap|ceiling|maximum|threshold"
+    r"|it|this|these|those|they)\b"
 )
 
 
