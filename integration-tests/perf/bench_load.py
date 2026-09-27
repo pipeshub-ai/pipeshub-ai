@@ -455,12 +455,15 @@ def evaluate_gate(metrics: dict[str, Any], max_error_rate: float, min_operations
             violations.append(f"Every {name} operation in the steady window failed.")
         elif not op["count"]:
             violations.append(f"No {name} operation ran in the steady window.")
-    search = metrics["operations"].get("search", {})
-    if search.get("succeeded") and not search.get("with_sources"):
-        violations.append(
-            "No search found anything. An empty result is fast and counts as a success, so this "
-            "run measured the not-found path; check that the seeded documents were indexed."
-        )
+    # Filtered searches get their own check: a knowledge-base filter that
+    # stopped matching returns nothing while plain searches still find plenty.
+    for name, what in (("search", "search"), ("search_filtered", "search filtered to the seeded knowledge base")):
+        op = metrics["operations"].get(name, {})
+        if op.get("succeeded") and not op.get("with_sources"):
+            violations.append(
+                f"No {what} found anything. An empty result is fast and counts as a success, so "
+                "this run measured the not-found path; check that the seeded documents were indexed."
+            )
     return violations
 
 

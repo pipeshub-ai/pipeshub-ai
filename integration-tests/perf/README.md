@@ -214,8 +214,11 @@ very first run:
 - the steady window measured at least 50 operations, so its percentiles mean
   something (`--min-operations`);
 - every kind of operation succeeded at least once in the steady window;
-- searches found something. An empty result is fast and counts as a success, so
-  a run that found nothing measured the not-found path.
+- plain searches found something, and so did searches filtered to the seeded
+  knowledge base, checked separately. An empty result is fast and counts as a
+  success, so a run that found nothing measured the not-found path, and a
+  filter that stopped matching would hide behind plain searches that still
+  find plenty.
 
 If at least half of the last 30 operations failed (`--abort-error-rate`), the
 run stops early rather than spending the rest of its time and AI budget on a
@@ -225,10 +228,13 @@ The result and summary are written before the job fails, so a failed run still
 shows what it measured.
 
 Then `compare.py --fail-on-regression` puts the steady window next to the
-committed baseline. Only the **p95 latencies** fail the job: search, filtered
-search, streaming turn, first answer and non-streaming turn, each when it rises
-more than 30% **and** by more than a fixed amount (0.25 s for searches, 0.5 s
-for the first answer, 1 s for a whole turn). The fixed amount matters on short
+committed baseline. Two kinds of row fail the job. The **p95 latencies** of
+search, filtered search, streaming turn, first answer and non-streaming turn
+fail it when one rises more than 30% **and** by more than a fixed amount
+(0.25 s for searches, 0.5 s for the first answer, 1 s for a whole turn). The
+**share of searches, plain and filtered, that found a hit** fails it on any
+fall: the corpus and the questions are fixed, so a search that stops finding
+its documents is a fault, not noise. The fixed amount matters on short
 requests: a 100 ms search that becomes 150 ms is 50% slower and is still only
 a shared runner's jitter. Throughput, the median, the error rate and the share
 of answers citing a document are shown and flagged, marked "reported only":

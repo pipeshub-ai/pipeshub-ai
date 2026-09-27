@@ -274,6 +274,32 @@ def test_a_run_that_found_nothing_or_measured_too_little_fails() -> None:
     assert any("No search found anything" in v for v in violations)
 
 
+def test_filtered_searches_that_find_nothing_fail_even_when_plain_ones_do() -> None:
+    """A knowledge-base filter that stopped matching hides behind plain searches."""
+    parsed = parse_stages("60:4,300:4")
+    recorder = _recorder(parsed, per_stage=120)
+    for entry in recorder.entries:
+        if entry.sample.operation == "search_filtered":
+            entry.sample.with_sources = False
+    violations = _result("60:4,300:4", recorder=recorder)["gate"]["violations"]
+    assert [v for v in violations if "found anything" in v] == [
+        "No search filtered to the seeded knowledge base found anything. An empty result is fast and "
+        "counts as a success, so this run measured the not-found path; check that the seeded "
+        "documents were indexed."
+    ]
+
+
+def test_a_fall_in_search_hits_fails_the_comparison(monkeypatch, tmp_path) -> None:
+    base = _result()
+    for operation in ("search", "search_filtered"):
+        fewer_hits = copy.deepcopy(base)
+        fewer_hits["metrics"]["operations"][operation]["with_sources_rate"] = 0.0
+        rows, _ = compare.compare(base, fewer_hits)
+        flagged = [r for r in rows if r.regressed]
+        assert len(flagged) == 1 and flagged[0].gates is True, operation
+        assert _run_compare(monkeypatch, tmp_path, base, fewer_hits) == 1, operation
+
+
 def test_an_operation_that_always_failed_is_named() -> None:
     parsed = parse_stages("60:4,300:4")
     recorder = _recorder(parsed, per_stage=120)
@@ -364,11 +390,12 @@ def test_reported_only_rows_flag_without_failing(monkeypatch, tmp_path) -> None:
     base = _result()
     fewer_citations = copy.deepcopy(base)
     fewer_citations["metrics"]["operations"]["chat"]["with_sources_rate"] = 0.5
+    fewer_citations["metrics"]["operations"]["chat_sync"]["with_sources_rate"] = 0.5
     rows, mismatches = compare.compare(base, fewer_citations)
     assert not mismatches
     flagged = [r for r in rows if r.regressed]
-    assert [r.name for r in flagged] == ["Answers that cited a document"]
-    assert flagged[0].gates is False
+    assert [r.name for r in flagged] == ["Answers that cited a document", "Non-streaming answers that cited a document"]
+    assert not any(r.gates for r in flagged)
     assert "worse (reported only)" in compare.render(rows, mismatches, "base.json")
     assert _run_compare(monkeypatch, tmp_path, base, fewer_citations) == 0
 

@@ -8,7 +8,7 @@ results of different benchmarks are never compared.
 Reports only: it exits 0 whatever it finds unless ``--fail-on-regression`` is
 passed, so a noisy week cannot block anyone while the thresholds are still
 being learned. Even then, only the rows marked as gating fail it: for the load
-test, the p95 latencies. See README.md for why each threshold is where it is.
+test, the p95 latencies and the search hit rates. See README.md for why each threshold is where it is.
 """
 
 from __future__ import annotations
@@ -169,9 +169,10 @@ def compare(baseline: dict[str, Any], current: dict[str, Any]) -> tuple[list[Row
         mismatches += _partial_run_mismatches(baseline, "baseline") + _partial_run_mismatches(current, "this run")
     rows = [_check_row(check, baseline["metrics"], current["metrics"]) for check in checks]
     if benchmark in ("query", "load"):
-        # Under the load test's --fail-on-regression these stay reports: how
-        # often an answer cites a document moves with the model week to week.
-        rows += _rate_rows(baseline["metrics"], current["metrics"], gates=benchmark != "load")
+        # Under the load test's --fail-on-regression the citation rows stay
+        # reports: how often an answer cites a document moves with the model
+        # week to week. Whether a search over the seeded corpus finds it does not.
+        rows += _rate_rows(baseline["metrics"], current["metrics"], citations_gate=benchmark != "load")
     rows.append(_failure_row(benchmark, baseline["metrics"], current["metrics"]))
     return rows, mismatches
 
@@ -188,7 +189,7 @@ def _check_row(check: Check, base_m: dict[str, Any], cur_m: dict[str, Any]) -> R
     return Row(check.name, base, cur, change, regressed, f"flags beyond {limit}", check.unit, check.gates)
 
 
-def _rate_rows(base_m: dict[str, Any], cur_m: dict[str, Any], gates: bool = True) -> list[Row]:
+def _rate_rows(base_m: dict[str, Any], cur_m: dict[str, Any], citations_gate: bool = True) -> list[Row]:
     """Searches that found a hit, and answers that cited a document.
 
     An empty result is fast and counts as a success, so a run that stopped
@@ -209,6 +210,7 @@ def _rate_rows(base_m: dict[str, Any], cur_m: dict[str, Any], gates: bool = True
         # to show for them.
         if operation not in (base_m.get("operations") or {}) and operation not in (cur_m.get("operations") or {}):
             continue
+        gates = citations_gate or operation.startswith("search")
         base = _op(base_m, operation, "with_sources_rate")
         cur = _op(cur_m, operation, "with_sources_rate")
         if base is None or cur is None:
