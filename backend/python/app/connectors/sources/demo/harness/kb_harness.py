@@ -417,11 +417,13 @@ _BARE_REST = re.compile(
 )
 # Any mention of approving, outside the no-approval phrases themselves: "must be
 # approved", "your manager's sign-off", "require your manager to approve them".
-# "sign it off", "signing it off" and "sign-offs" are sign-offs too.
-_APPROVAL_WORD = re.compile(r"\bapprov\w*|\bauthori[sz]\w*|\bsign(?:s|ed|ing)?(?:\s+\w+)?[- ]?offs?\b")
+# "sign it off", "sign the purchase off" and "sign-offs" are sign-offs too.
+_APPROVAL_WORD = re.compile(r"\bapprov\w*|\bauthori[sz]\w*|\bsign(?:s|ed|ing)?(?:\s+\w+){0,3}?[- ]?offs?\b")
 # "authorization is not needed", "without signing off": the word is there, but nobody approves.
 _NOT_AFTER = re.compile(r"^\s+(?:is|are|was)\s+not\b|^\s+(?:isn't|aren't|wasn't)\b|^\s+not\s+(?:needed|required)\b")
-_WITHOUT_BEFORE = re.compile(r"\bwithout\s+(?:(?:any|a|an|the|your|a\s+\w+'s)\s+)?$")
+_WITHOUT_BEFORE = re.compile(
+    r"\bwithout\s+(?:(?:any|a|an|the|your|my|our|their|his|her)\s+)?(?:\w+'s\s+)?$"
+)
 # "no approval (is needed) from finance" is about another approver, unless it's the manager.
 _OTHER_APPROVER = re.compile(
     rf"^(?:\s+(?:is|are|needed|required|necessary|at all))*\s+(?:from|by)\s+(?:{_APPROVER}|signing|\w+ly\s+signing)"
@@ -514,9 +516,9 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             band_amounts = {v for b0, b1 in bands for v in _amount_values(part[b0:b1])}
             # An earlier sentence or part that has someone approve the $250 purchase
             # contradicts the no-approval answer that follows it.
-            if any(_band_approved(_PART.split(s), band_amounts, second) for s in sentences[:k]) or (
-                _band_approved(parts[:i], band_amounts, second)
-            ):
+            # Read as one run, so "Up to $250. Your manager's approval is required." counts.
+            earlier = [p for s in sentences[:k] for p in _PART.split(s)] + parts[:i]
+            if _band_approved(earlier, band_amounts, second):
                 continue
             for _, end in phrase_spans(part):
                 upto = part[:max(end, band_end)]
