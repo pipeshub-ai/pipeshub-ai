@@ -417,7 +417,7 @@ _BARE_REST = re.compile(
 )
 # Any mention of approving, outside the no-approval phrases themselves: "must be
 # approved", "your manager's sign-off", "require your manager to approve them".
-_APPROVAL_WORD = re.compile(r"\bapprov\w*|\bsign(?:s|ed)?[- ]?off\b")
+_APPROVAL_WORD = re.compile(r"\bapprov\w*|\bauthori[sz]\w*|\bsign(?:s|ed|ing)?[- ]?off\b")
 # "no approval (is needed) from finance" is about another approver, unless it's the manager.
 _OTHER_APPROVER = re.compile(
     rf"^(?:\s+(?:is|are|needed|required|necessary|at all))*\s+(?:from|by)\s+(?:{_APPROVER}|signing|\w+ly\s+signing)"
