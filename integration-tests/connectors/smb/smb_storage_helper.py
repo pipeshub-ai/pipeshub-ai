@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import smbclient
@@ -60,8 +61,14 @@ class SmbStorageHelper:
                             walk(rel)
                         else:
                             keys.append(rel.replace("\\", "/"))
-            except FileNotFoundError:
-                return
+            except OSError as exc:
+                # smbprotocol raises SMBOSError, an OSError that is never the
+                # FileNotFoundError subclass, so match on errno. A missing
+                # folder is an empty listing; a missing share or a refused
+                # login is not, and must still reach the caller.
+                if exc.errno == errno.ENOENT:
+                    return
+                raise
 
         walk(prefix.replace("\\", "/").strip("/"))
         return keys
