@@ -13,11 +13,22 @@ import pytest
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
 
 
-def pytest_unconfigure(config):
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    session.config._pipeshub_exitstatus = int(exitstatus)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
     """Force-exit the process when running under xdist to prevent hangs
-    caused by unawaited async coroutines keeping worker threads alive."""
-    if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
-        os._exit(getattr(config, "_exitcode", 0))
+    caused by unawaited async coroutines keeping worker threads alive.
+
+    os._exit skips interpreter shutdown, so flush first (a piped run would
+    otherwise lose its summary), and the controller exits with the session's
+    real status; workers report results over xdist and exit 0."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker or getattr(config.option, "numprocesses", None):
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0 if worker else getattr(config, "_pipeshub_exitstatus", 1))
 
 # ---------------------------------------------------------------------------
 # Auto-mock optional third-party modules that may not be installed in the
