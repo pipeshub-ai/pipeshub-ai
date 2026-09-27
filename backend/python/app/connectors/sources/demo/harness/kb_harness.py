@@ -356,7 +356,7 @@ def mention_spans(text: str, phrase: str) -> list[tuple[int, int]]:
         after = r"(?!\d|[.,]\d)"
     elif " " in p and p[-1:].isalpha():
         # "on time" isn't "on timeout"; a single word still reads inside a longer one ("reissued").
-        after = r"(?:e?s)?\b"
+        after = r"(?:e?s)?(?![\w-])"
     else:
         after = ""
     return [
@@ -374,19 +374,25 @@ _AMOUNT = re.compile(r"\$\s?\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\
 _PART = re.compile(r";|:|,(?=\s)|\bbut\b")
 # Words that move a part of the sentence to a higher band: "above that", "larger amounts".
 _RAISES = re.compile(
-    r"\b(?:above|over|more than|beyond|exceed\w*|greater|higher|larger|bigger|past)\b"
+    r"\b(?:above|more than|beyond|exceed\w*|greater|higher|larger|bigger)\b"
+    r"|\b(?:over|past)\s+(?:that|this|it|those|these|the limit|\$|\d)"
 )
+# Pieces of a part, for what follows the no-approval phrase: "and", "but", punctuation.
+_PIECE = re.compile(r"\b(?:and|but)\b|[;:]|,(?=\s)")
+# The manager, however the answer names them: "your manager", "their manager".
+_MANAGER = r"(?:(?:your|a|an|the|my|our|their|his|her)\s+)?manager\b"
 # What may follow the second-list phrase when it stands alone after the amount: "no approval is needed".
 _BARE_REST = re.compile(
     r"^(?:\s*\b(?:is|are|at all|needed|required|necessary)\b)*"
-    r"(?:\s+(?:from|by)\s+(?:your |a |the |my )?manager)?[\s.!]*$"
+    rf"(?:\s+(?:from|by)\s+{_MANAGER})?[\s.!]*$"
 )
 # Any mention of approving, outside the no-approval phrases themselves: "must be
 # approved", "your manager's sign-off", "require your manager to approve them".
 _APPROVAL_WORD = re.compile(r"\bapprov\w*|\bsign(?:s|ed)?[- ]?off\b")
 # "no approval (is needed) from finance" is about another approver, unless it's the manager.
 _OTHER_APPROVER = re.compile(
-    r"^(?:\s+(?:is|are|needed|required|necessary|at all))*\s+(?:from|by)\s+(?!(?:your |a |the |my )?manager)"
+    r"^(?:\s+(?:is|are|needed|required|necessary|at all))*\s+(?:from|by)\s+"
+    rf"(?!{_MANAGER})(?!\w+ing\b)"
 )
 
 
@@ -412,13 +418,19 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
         ]
 
     def approved_later(rest: list[str]) -> bool:
-        # Someone approves the purchase later on. Once the sentence moves to a higher
-        # band ("above that, your manager approves"), the rest is about that band.
-        for p in rest:
-            if _RAISES.search(p):
-                return False
-            if _approves(p, second):
+        # Someone approves the $250 purchase later on: a piece that approves and
+        # names no higher band ("your manager approves amounts above that" is about
+        # that band). A piece that is only the band ("above that") covers the next.
+        raised = False
+        for piece in (p for text in rest for p in _PIECE.split(text)):
+            if not piece.strip():
+                continue
+            if _RAISES.search(piece):
+                raised = not _approves(piece, second)
+                continue
+            if _approves(piece, second) and not raised:
                 return True
+            raised = False
         return False
 
     for sentence in _SENTENCE_END.split(_normalized(answer)):
@@ -438,11 +450,12 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             if _RAISES.search(part) or _approves(part, second):
                 continue
             after = parts[i + 1] if i + 1 < len(parts) else ""
-            if _RAISES.search(after) or _AMOUNT.search(after):
+            first_piece, *more = _PIECE.split(after)
+            if _RAISES.search(first_piece) or _AMOUNT.search(first_piece):
                 continue
-            stripped = after.strip()
+            stripped = first_piece.strip()
             bare = any(start == 0 and _BARE_REST.match(stripped[end:]) for start, end in phrase_spans(stripped))
-            if bare and not approved_later(parts[i + 2:]):
+            if bare and not approved_later([*more, *parts[i + 2:]]):
                 return True
     return False
 
