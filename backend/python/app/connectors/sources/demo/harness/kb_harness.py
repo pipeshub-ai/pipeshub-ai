@@ -454,11 +454,14 @@ def _approves(text: str, no_approval: list[str]) -> bool:
 _REQUIRES_BEFORE = re.compile(r"\b(?:can't|cannot|can not|not|never|nothing|nobody|no one|won't)\b|n't\b")
 
 
+# "It is rejected", "filing fails"; "a validation failure" is a noun, not a block.
+_BLOCKED = r"\b(?:reject(?:s|ed)?|block(?:s|ed)?|fail(?:s|ed)?|den(?:y|ies|ied)|refuse[sd]?|decline[sd]?|bounce[sd]?|stop(?:s|ped)?|halt(?:s|ed)?)\b"
 # "nothing goes through", "no purchase goes through", "it is rejected".
 _REQUIRES_ANYWHERE = re.compile(
     r"\b(?:can't|cannot|can not|not|never|nothing|nobody|no one|won't)\b|n't\b|\bno\s+(?!need|problem|worries)\w+"
-    r"|\b(?:reject|block|fail|den(?:y|ie)|refus|declin|bounc|stopp|halt)\w*"
+    rf"|{_BLOCKED}"
 )
+_NOT_BLOCKED = re.compile(rf"(?:\b(?:not|never)\b|n't\b)\s*(?:\w+\s+){{0,2}}?{_BLOCKED}")
 
 
 def _required_without(sentence: str, no_approval: list[str]) -> bool:
@@ -467,6 +470,8 @@ def _required_without(sentence: str, no_approval: list[str]) -> bool:
     for m in no_approval:
         for start, end in mention_spans(sentence, m):
             sentence = sentence[:start] + " " * (end - start) + sentence[end:]
+    # "It is not rejected without …" says the opposite.
+    sentence = _NOT_BLOCKED.sub(lambda m: " " * len(m.group(0)), sentence)
     if _RAISES.search(sentence) or not _REQUIRES_ANYWHERE.search(sentence):
         return False
     return any(_WITHOUT_BEFORE.search(sentence[:m.start()]) for m in _APPROVAL_WORD.finditer(sentence))
@@ -479,22 +484,29 @@ def _without_cancels(before: str) -> bool:
     if not m:
         return False
     clause = _CLAUSE_BREAK.split(before[:m.start()])[-1]
-    return not _REQUIRES_BEFORE.search(clause)
+    return not _REQUIRES_BEFORE.search(_NOT_BLOCKED.sub(" ", clause))
 
 
-# A range's lower bound: "from $251 to", "between $251 and", "$251–$2,500".
-_RANGE_START = re.compile(
-    rf"\b(?:from|between)\s+({_AMOUNT.pattern})|({_AMOUNT.pattern})\s*(?:to|-|–|—)\s*(?:\$\s?)?\d"
+# Both bounds of a range: "from $251 to $2,500", "between $251 and $2,500", "$251–2,500".
+_BOUND = rf"(?:{_AMOUNT.pattern}|\b\d{{1,3}}(?:,\d{{3}})+\b|\b\d{{3,}}\b)"
+_RANGE = re.compile(
+    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:to|and|through|-|–|—)\s*({_BOUND})"
+    rf"|({_AMOUNT.pattern})\s*(?:to|-|–|—)\s*({_BOUND})"
 )
 
 
+def _without_new_ranges(text: str, band_amounts: set[float]) -> str:
+    """`text` with every range that starts above the $250 band blanked out; what a
+    sentence says about approval there belongs to that range, not to $250."""
+    def blank(m: re.Match[str]) -> str:
+        low, high = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+        bounds = [float(re.sub(r"[^\d.]", "", b)) for b in (low, high)]
+        return " " * len(m.group(0)) if min(bounds) > max(band_amounts) else m.group(0)
+    return _RANGE.sub(blank, text)
+
+
 def _new_range(text: str, band_amounts: set[float]) -> bool:
-    """Whether `text` names a range that starts at or above the $250 band, so what it
-    says about approval belongs to that range ("required from $251 to $2,500")."""
-    return any(
-        (low := _amount_values(m.group(1) or m.group(2))) and min(low) >= max(band_amounts)
-        for m in _RANGE_START.finditer(text)
-    )
+    return _without_new_ranges(text, band_amounts) != text
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
@@ -546,11 +558,11 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 # The band phrase's own amount ("over $250") is its object; $250
                 # anywhere else is the $250 purchase again, and so was what the
                 # sentence approved while the band was in force.
-                ranged = _new_range(piece, band_amounts)
-                if _RAISES.search(piece) or ranged:
+                outside = _without_new_ranges(piece, band_amounts)
+                if _RAISES.search(piece) or outside != piece:
                     raised = True
                 approves = _approves(piece, second)
-                if not ranged and band_amounts & _amount_values(_RAISES.sub(" ", piece)):
+                if band_amounts & _amount_values(_RAISES.sub(" ", outside)):
                     if raised and skipped:
                         return True
                     raised = False
