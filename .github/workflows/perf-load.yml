@@ -81,14 +81,34 @@ jobs:
         with:
           persist-credentials: false
 
+      # Accepts exactly what bench_load.py's parse_stages and parse_think_time
+      # do, so a bad input stops here rather than after the stack is built.
+      # unit/test_perf_load.py runs this step against both parsers.
       - name: Validate inputs
         run: |
-          if ! [[ "$STAGES_INPUT" =~ ^[0-9]+:[0-9]+(,[0-9]+:[0-9]+)*$ ]]; then
+          number='[0-9]+(\.[0-9]+)?'
+          stage="$number:[0-9]+"
+          if ! [[ "$STAGES_INPUT" =~ ^$stage(,$stage)*$ ]]; then
             echo "stages must be seconds:users pairs separated by commas, like 120:4,900:8; got '$STAGES_INPUT'"
             exit 1
           fi
-          if ! [[ "$THINK_TIME_INPUT" =~ ^[0-9]+(\.[0-9]+)?(:[0-9]+(\.[0-9]+)?)?$ ]]; then
-            echo "think_time must be seconds or min:max, like 1:3; got '$THINK_TIME_INPUT'"
+          peak=0
+          IFS=',' read -ra pairs <<< "$STAGES_INPUT"
+          for pair in "${pairs[@]}"; do
+            if [[ "${pair%%:*}" =~ ^0+(\.0+)?$ ]]; then
+              echo "every stage must last longer than 0 seconds; got '$pair'"
+              exit 1
+            fi
+            users=$((10#${pair#*:}))
+            if [ "$users" -gt "$peak" ]; then peak=$users; fi
+          done
+          if [ "$peak" -lt 1 ]; then
+            echo "at least one stage must have a user in it; got '$STAGES_INPUT'"
+            exit 1
+          fi
+          if ! [[ "$THINK_TIME_INPUT" =~ ^$number(:$number)?$ ]] \
+            || ! awk -v a="${THINK_TIME_INPUT%%:*}" -v b="${THINK_TIME_INPUT#*:}" 'BEGIN { exit !(a + 0 <= b + 0) }'; then
+            echo "think_time must be seconds or min:max with min no more than max, like 1:3; got '$THINK_TIME_INPUT'"
             exit 1
           fi
           if ! [[ "$DOCS_INPUT" =~ ^[0-9]+$ ]] || [ "$DOCS_INPUT" -lt 1 ]; then

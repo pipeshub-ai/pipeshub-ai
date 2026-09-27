@@ -424,3 +424,54 @@ def test_query_comparisons_are_unchanged_by_the_load_rows() -> None:
     rows, _ = compare.compare(base, copy.deepcopy(base))
     assert "Non-streaming answers that cited a document" not in [r.name for r in rows]
     assert all(r.gates for r in rows)
+
+
+# --------------------------------------------------------------------------
+# The workflow's input check agrees with the parsers
+# --------------------------------------------------------------------------
+
+
+def _validate_step() -> str:
+    import yaml
+
+    workflow = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "perf-load.yml"
+    steps = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["load-test"]["steps"]
+    return next(s["run"] for s in steps if s.get("name") == "Validate inputs")
+
+
+def _workflow_accepts(script: str, stages: str = "120:4", think_time: str = "1:3") -> bool:
+    import subprocess
+
+    env = {"PATH": "/usr/bin:/bin", "STAGES_INPUT": stages, "THINK_TIME_INPUT": think_time, "DOCS_INPUT": "80"}
+    return subprocess.run(["bash", "-e", "-c", script], env=env, capture_output=True).returncode == 0
+
+
+def _parses(parser: Any, text: str) -> bool:
+    try:
+        parser(text)
+    except ValueError:
+        return False
+    return True
+
+
+STAGE_SAMPLES = (
+    "120:4,120:8,900:8", "1.5:4", "0.5:1,30:0", "10:010",
+    "0:4", "0.0:4", "00.00:4", "10:0,5:0", "120", "1.:4", ".5:4", "120:4,", "-1:4", "1:1.5", "a:b",
+)
+THINK_SAMPLES = ("1:3", "2", "0", "0.5:2.5", "2:2", "3:1", "2.5:1", "1:", ":3", "-1", "1:2:3", "a")
+
+
+@pytest.mark.parametrize("stages", STAGE_SAMPLES)
+def test_the_workflow_accepts_exactly_the_stages_the_parser_does(stages: str) -> None:
+    assert _workflow_accepts(_validate_step(), stages=stages) == _parses(parse_stages, stages)
+
+
+@pytest.mark.parametrize("think_time", THINK_SAMPLES)
+def test_the_workflow_accepts_exactly_the_think_times_the_parser_does(think_time: str) -> None:
+    assert _workflow_accepts(_validate_step(), think_time=think_time) == _parses(parse_think_time, think_time)
+
+
+def test_the_samples_cover_both_verdicts() -> None:
+    for parser, samples in ((parse_stages, STAGE_SAMPLES), (parse_think_time, THINK_SAMPLES)):
+        verdicts = {_parses(parser, s) for s in samples}
+        assert verdicts == {True, False}
