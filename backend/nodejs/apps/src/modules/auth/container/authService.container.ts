@@ -157,6 +157,7 @@ export class AuthServiceContainer {
             configurationService,
             logger,
             jitProvisioningService,
+            entityEventsService,
           );
         })
         .inSingletonScope();

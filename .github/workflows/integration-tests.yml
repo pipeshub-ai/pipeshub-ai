@@ -400,6 +400,13 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      # The examples suite runs the Go SDK starter; the runner image only caches Go.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
       - name: Set up Python and install dependencies
         working-directory: integration-tests
         run: |

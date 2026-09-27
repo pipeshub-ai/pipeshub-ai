@@ -66,6 +66,12 @@ import {
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
 import { Users } from '../../user_management/schema/users.schema';
+import {
+  EntitiesEventProducer,
+  Event,
+  EventType,
+  UserUpdatedEvent,
+} from '../../user_management/services/entity_events.service';
 import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
 import {
@@ -136,6 +142,7 @@ export class UserAccountController {
     protected configurationManagerService: ConfigurationManagerService,
     @inject('Logger') protected logger: Logger,
     @inject('JitProvisioningService') protected jitProvisioningService: JitProvisioningService,
+    @inject('EntitiesEventProducer') protected eventService: EntitiesEventProducer,
   ) { }
 
   /**
@@ -2001,13 +2008,21 @@ export class UserAccountController {
       const newEmail = req?.tokenPayload?.newEmail;
       const orgId = req?.tokenPayload?.orgId;
 
-      const exists = await Users.findOne({ email: newEmail });
+      const email = String(newEmail).toLowerCase().trim();
+      // This account excluded: opening the link again repeats the write and
+      // the event, which is how a failed event write is retried.
+      const exists = await Users.findOne({ email, _id: { $ne: userId } });
       if (exists) {
         throw new BadRequestError(`Email already in use: ${newEmail}`);
       }
-      await Users.findByIdAndUpdate(userId, {
-        email: newEmail.toLowerCase().trim(),
-      });
+      const user = await Users.findByIdAndUpdate(
+        userId,
+        { email },
+        { new: true },
+      );
+      if (user) {
+        await this.publishEmailChanged(user);
+      }
 
       await UserActivities.create({
         orgId: orgId,
@@ -2024,5 +2039,31 @@ export class UserAccountController {
       next(err);
     }
   }
+
+  /**
+   * The graph copies a user's email from this event; without it the old
+   * address stays there. A failed write throws, so the request fails and the
+   * link can be opened again.
+   */
+  private async publishEmailChanged(user: InstanceType<typeof Users>): Promise<void> {
+    const event: Event = {
+      eventType: EventType.UpdateUserEvent,
+      timestamp: Date.now(),
+      payload: {
+        orgId: user.orgId.toString(),
+        userId: user._id,
+        fullName: user.fullName,
+        ...(user.firstName && { firstName: user.firstName }),
+        ...(user.lastName && { lastName: user.lastName }),
+        ...(user.designation && { designation: user.designation }),
+        email: user.email,
+      } as UserUpdatedEvent,
+    };
+    await this.eventService.start();
+    await this.eventService.publishEvent(event);
+    await this.eventService.stop();
+  }
+
+
 
 }

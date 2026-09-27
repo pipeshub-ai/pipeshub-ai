@@ -2134,12 +2134,13 @@ class WebConnector(BaseConnector):
                     await self._handle_gone_page(url, keep_id=stored_there.id)
                     return None
                 # The 304 doesn't match our copy at the new URL, so fetch it in full; the redirect
-                # cleanup deals with the old record.
+                # cleanup deals with the old record. Validated as the URL that was asked for, so a
+                # gone landing is filed with it as the source and the old record goes too.
                 refetched = await fetch_url_with_fallback(
                     url=moved_to, session=self.session, logger=self.logger, referer=referer,
                     timeout=15, max_size_mb=self.max_size_mb, allow_hop=self._hop_allowed,
                 )
-                result = await self._validate_fetch_result(moved_to, depth, referer, refetched)
+                result = await self._validate_fetch_result(url, depth, referer, refetched)
                 if (
                     result is None
                     or result.status_code == HTTPStatus.NOT_MODIFIED
