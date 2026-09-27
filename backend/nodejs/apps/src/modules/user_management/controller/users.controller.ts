@@ -115,6 +115,11 @@ function assertEmailChangeIsSelf(
   }
 }
 
+// Addresses are stored lowercased; compare the way they're stored.
+function normalizedEmail(value: unknown): string {
+  return typeof value === 'string' ? value.toLowerCase().trim() : '';
+}
+
 export const MAX_BULK_INVITE = 1000;
 
 // Linear-time email check: each segment excludes its following separator
@@ -1085,12 +1090,6 @@ export class UserController {
       }
 
       const { id } = req.params;
-      // Refuse before looking the target up: whether the operation is allowed
-      // does not depend on whether the user exists, and answering 404 first
-      // reports the wrong reason to someone who was never permitted to try.
-      if (updateFields.email !== undefined) {
-        assertEmailChangeIsSelf(req.user.userId, id);
-      }
       const user = await Users.findOne({
         orgId: req.user.orgId,
         _id: id,
@@ -1099,6 +1098,15 @@ export class UserController {
 
       if (!user) {
         throw new NotFoundError('User not found');
+      }
+      // Only the owner may change the address. Sending it unchanged, as a client
+      // that writes back the whole record does, isn't a change. The route's
+      // admin-or-self check has already refused anyone else before the lookup.
+      if (
+        updateFields.email !== undefined &&
+        normalizedEmail(updateFields.email) !== normalizedEmail(user.email)
+      ) {
+        assertEmailChangeIsSelf(req.user.userId, id);
       }
 
       const orgId = req.user.orgId;
@@ -1443,11 +1451,9 @@ export class UserController {
       }
 
       const { id } = req.params;
-      // Same rules as the email branch of updateUser: owner only, checked
-      // before the lookup so a non-owner is refused rather than told whether
-      // the id exists. The address is applied by /validateEmailChange once
-      // the link sent to the new address is opened — never written here.
-      assertEmailChangeIsSelf(req.user.userId, id);
+      // Same rules as the email branch of updateUser: only the owner may change
+      // the address. It is applied by /validateEmailChange once the link sent
+      // to the new address is opened — never written here.
       const user = await Users.findOne({
         orgId: req.user.orgId,
         _id: id,
@@ -1463,10 +1469,11 @@ export class UserController {
       if (newEmail === '') {
         throw new BadRequestError('email is required');
       }
-      if (newEmail === user.email.toLowerCase().trim()) {
+      if (newEmail === normalizedEmail(user.email)) {
         res.json({ email: user.email, emailChangeMailStatus: 'notNeeded' });
         return;
       }
+      assertEmailChangeIsSelf(req.user.userId, id);
       const existingUser = await Users.findOne({
         email: newEmail,
         _id: { $ne: id },

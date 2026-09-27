@@ -1428,19 +1428,19 @@ describe('UserController', () => {
       expect(res.json.firstCall.args[0]).to.deep.equal({ email: 'old@test.com', emailChangeMailStatus: 'sent' });
     });
 
-    it('refuses a non-owner before looking the target up, even for an unknown id', async () => {
-      // Whether the change is allowed does not depend on whether the user
-      // exists. Answering 404 first would tell the wrong reason to someone
-      // who was never permitted to try.
+    it('lets an admin send another user\'s address unchanged, as nothing changes', async () => {
+      // A client writing back the whole record carries the email it read.
       req.params.id = '507f1f77bcf86cd799439099';
-      req.body = { email: 'attacker@evil.example' };
-      const findOneStub = sinon.stub(Users, 'findOne').resolves(null);
+      req.body = { email: '  Alice@Company.example ' };
+      const mockUser = { _id: '507f1f77bcf86cd799439099', orgId: req.user.orgId, email: 'alice@company.example', save: sinon.stub().resolves() };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
 
       await controller.updateEmail(req, res, next);
 
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Only the account owner');
-      expect(findOneStub.called).to.be.false;
+      expect(next.called).to.be.false;
+      expect(emailChangeStub.called).to.be.false;
+      expect(res.json.firstCall.args[0]).to.deep.equal({ email: 'alice@company.example', emailChangeMailStatus: 'notNeeded' });
     });
 
     it('checks for a duplicate with the normalised address, not the raw request', async () => {
@@ -2326,6 +2326,32 @@ describe('UserController', () => {
           },
         });
       }
+    });
+
+    it('lets an admin edit another user when the request carries their address unchanged', async () => {
+      // The role edit goes through; the unchanged address is neither refused nor re-verified.
+      req.params.id = '507f1f77bcf86cd799439099'; // not req.user.userId
+      req.body = { email: 'ALICE@company.example ', fullName: 'Alice Smith' };
+
+      const mockUser = {
+        _id: '507f1f77bcf86cd799439099',
+        orgId: req.user.orgId,
+        email: 'alice@company.example',
+        fullName: 'Alice',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({}),
+      };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.called, next.firstCall?.args[0]?.message).to.be.false;
+      expect(emailChangeStub.called).to.be.false;
+      expect(mockUser.email).to.equal('alice@company.example');
+      expect(mockUser.fullName).to.equal('Alice Smith');
+      expect(mockUser.save.calledOnce).to.be.true;
+      expect(res.json.firstCall.args[0].meta.emailChangeMailStatus).to.equal('notNeeded');
     });
 
     it('refuses an admin changing another user\'s email through updateUser', async () => {
