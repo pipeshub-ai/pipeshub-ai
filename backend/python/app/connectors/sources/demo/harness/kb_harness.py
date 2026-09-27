@@ -481,6 +481,11 @@ def _without_cancels(before: str) -> bool:
     return not _REQUIRES_BEFORE.search(clause)
 
 
+_NEW_BAND = re.compile(
+    r"\b(?:from|between|up to|to|under|below|less than|within|until|through)\s+(?:\$\s?\d|\d)"
+)
+
+
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
     """Whether these parts say someone approves the $250 purchase: a part that names
     that amount (outside a higher-band phrase such as "above $250") and approves, or
@@ -492,16 +497,16 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
         if _approves(part, second):
             return True
         # Read on past blank parts and lead-ins ("However,", "Please note:") until a
-        # part approves, names an amount, or moves to a higher band.
+        # part approves, opens a new range, or moves to a higher band.
         for after in parts[i + 1:]:
             if _RAISES.search(after):
                 break
-            # An approval before another amount is still about $250; one after it
-            # belongs to that amount's band ("Up to $2,500, your manager approves").
-            amount = _AMOUNT.search(after)
-            if _approves(after[:amount.start()] if amount else after, second):
+            # An approval after a new range belongs to it ("From $251 to $2,500, …");
+            # a passing amount ("compared with $2,500, …") doesn't end the walk.
+            band = _NEW_BAND.search(after)
+            if _approves(after[:band.start()] if band else after, second):
                 return True
-            if amount:
+            if band:
                 break
     return False
 
