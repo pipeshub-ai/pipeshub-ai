@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.modules.agents.context.source_catalog import DEMO_APP, ORG_HAS_REAL_DATA_KEY
-from app.modules.demo_data.access import excluded_demo_connector_ids, org_has_real_data
+from app.modules.demo_data.access import (
+    excluded_demo_connector_ids,
+    org_real_data_state,
+)
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 
 if TYPE_CHECKING:
@@ -85,9 +88,12 @@ async def note_org_real_data(
     if not any(isinstance(c, dict) and str(c.get("type") or "").lower() == DEMO_APP for c in connectors):
         return
     try:
-        chat_state[ORG_HAS_REAL_DATA_KEY] = await org_has_real_data(graph_provider, org_id)
+        found = await org_real_data_state(graph_provider, org_id)
     except Exception as exc:
         log.warning("could not tell whether the organization has data besides the demo: %s", exc)
+        return
+    if found is not None:
+        chat_state[ORG_HAS_REAL_DATA_KEY] = found
 
 
 def excluded_app_ids(state: dict[str, Any] | None) -> frozenset[str]:

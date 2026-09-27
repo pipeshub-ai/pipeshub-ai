@@ -54,7 +54,7 @@ def test_the_run_remembers_the_exclusion_and_the_catalog_drops_the_demo() -> Non
 
 async def test_the_catalog_learns_whether_real_data_sits_beside_the_demo() -> None:
     state = {"available_connectors": [{"id": "demo-1", "type": "Demo"}]}
-    with patch("app.modules.demo_data.chat.org_has_real_data", AsyncMock(return_value=False)):
+    with patch("app.modules.demo_data.chat.org_real_data_state", AsyncMock(return_value=False)):
         await note_org_real_data(state, MagicMock(), "org-1", MagicMock())
     assert state[ORG_HAS_REAL_DATA_KEY] is False
 
@@ -62,7 +62,7 @@ async def test_the_catalog_learns_whether_real_data_sits_beside_the_demo() -> No
 async def test_no_lookup_without_the_demo() -> None:
     state = {"available_connectors": [{"id": "jira-1", "type": "JIRA"}]}
     probe = AsyncMock(return_value=False)
-    with patch("app.modules.demo_data.chat.org_has_real_data", probe):
+    with patch("app.modules.demo_data.chat.org_real_data_state", probe):
         await note_org_real_data(state, MagicMock(), "org-1", MagicMock())
     probe.assert_not_awaited()
     assert ORG_HAS_REAL_DATA_KEY not in state
@@ -70,6 +70,15 @@ async def test_no_lookup_without_the_demo() -> None:
 
 async def test_a_failed_lookup_leaves_the_catalog_assuming_real_data() -> None:
     state = {"available_connectors": [{"id": "demo-1", "type": "Demo"}]}
-    with patch("app.modules.demo_data.chat.org_has_real_data", AsyncMock(side_effect=RuntimeError("down"))):
+    with patch("app.modules.demo_data.chat.org_real_data_state", AsyncMock(side_effect=RuntimeError("down"))):
         await note_org_real_data(state, MagicMock(), "org-1", MagicMock())
+    assert ORG_HAS_REAL_DATA_KEY not in state
+
+
+async def test_a_failed_app_listing_is_not_no_real_data() -> None:
+    # get_org_apps answers [] on failure; that must not become "demo only".
+    graph = MagicMock()
+    graph.get_org_apps = AsyncMock(return_value=[])
+    state = {"available_connectors": [{"id": "demo-1", "type": "Demo"}]}
+    await note_org_real_data(state, graph, "org-failed-listing", MagicMock())
     assert ORG_HAS_REAL_DATA_KEY not in state

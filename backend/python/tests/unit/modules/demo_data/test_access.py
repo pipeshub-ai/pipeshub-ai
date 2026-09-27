@@ -12,6 +12,7 @@ from app.modules.demo_data.access import (
     demo_data_status,
     excluded_demo_connector_ids,
     org_has_real_data,
+    org_real_data_state,
     preference_key,
     write_preference,
 )
@@ -235,3 +236,10 @@ async def test_off_for_everyone_is_reported_even_when_the_demo_apps_cannot_be_li
     # A failed listing answers [] like an org without the demo.
     status = await demo_data_status(_graph([]), config, "org", "u1")
     assert status.to_dict()["offForEveryone"] is True and status.include is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_listing_is_unknown_not_no_real_data() -> None:
+    graph = _graph([])
+    assert await org_real_data_state(graph, "org") is None
+    assert await org_has_real_data(graph, "org") is False
