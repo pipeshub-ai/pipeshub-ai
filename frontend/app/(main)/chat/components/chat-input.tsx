@@ -899,18 +899,13 @@ export function ChatInput({
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
-        const errorMessage = attachmentErrorMessage(file.name, err);
+        const errorMessage = attachmentErrorMessage(file.name, err, t);
         setUploadedFiles((prev) =>
           prev.map((f) =>
             f.id === file.id ? { ...f, status: 'error', errorMessage, ref: undefined } : f,
           ),
         );
-        toast.error(
-          t('chat.attachments.uploadFailedNamed', {
-            name: file.name,
-            error: errorMessage,
-          }),
-        );
+        toast.error(errorMessage);
       })
       .finally(() => {
         if (uploadControllersRef.current.get(file.id) === controller) {

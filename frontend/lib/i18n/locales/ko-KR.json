@@ -539,6 +539,7 @@
     "goToCollections": "컬렉션으로 이동",
     "namedEmpty": "{{name}}이(가) 비어 있습니다",
     "noRecords": "레코드를 찾을 수 없습니다",
+    "collectionsLoadFailed": "컬렉션을 불러오지 못했습니다. 연결을 확인한 다음 \"{{action}}\"을(를) 선택하세요.",
     "searchEmptyHint": "찾으시는 항목이 없습니다. 다른 검색어로 시도해 보세요.",
     "adjustFiltersHint": "다른 소스를 선택하거나 필터를 조정하세요",
     "addFromCollectionsHint": "컬렉션에서 회사 파일이나 폴더를 추가할 수 있습니다",
@@ -1046,7 +1047,8 @@
     },
     "attachments": {
       "uploadFailed": "업로드 실패",
-      "uploadFailedNamed": "{{name}} 업로드에 실패했습니다: {{error}}",
+      "uploadFailedNamed": "{{name}}을(를) 첨부하지 못했습니다. {{error}}",
+      "uploadFailedNamedRetry": "{{name}}을(를) 첨부하지 못했습니다. 다시 시도해 주세요.",
       "unsupportedType": "지원하지 않는 파일 형식: {{names}}. 지원 형식: {{types}}.",
       "fileTooLarge": "파일이 너무 큽니다: {{names}}. 파일당 최대 크기는 {{maxMb}} MB입니다.",
       "tooManyFiles": "메시지당 첨부 파일은 최대 {{max}}개입니다.",
@@ -2443,6 +2445,8 @@
       },
       "filters": {
         "selectField": "{{field}} 선택",
+        "selectFieldPlaceholder": "{{field}} 선택",
+        "searchOptions": "검색…",
         "addFieldValue": "{{field}} 추가…",
         "authenticateForOptions": "이 필터의 옵션을 불러오려면 인증을 완료하고 커넥터를 저장하세요.",
         "manualIndexingInfo": "수동 인덱싱 정보",

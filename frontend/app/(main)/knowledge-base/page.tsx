@@ -936,13 +936,13 @@ function KnowledgeBasePageContent() {
       setTableDataError(
         getUserFacingErrorMessage(
           error,
-          "We couldn't load your collections. Check your connection, then select Retry.",
+          t('kb.collectionsLoadFailed', { action: t('action.tryAgain') }),
         ),
       );
     } finally {
       if (stillSignedIn()) setIsLoadingTableData(false);
     }
-  }, [setIsLoadingTableData, setTableDataError, setTableData, setSelectedNode, setCollectionsPagination]);
+  }, [setIsLoadingTableData, setTableDataError, setTableData, setSelectedNode, setCollectionsPagination, t]);
 
   useEffect(() => {
     if (isAllRecordsMode) return;
