@@ -373,12 +373,12 @@ _RAISES = re.compile(r"\b(?:above|over|more than|beyond|exceeding|greater than)\
 def states_together(answer: str, first: list[str], second: list[str]) -> bool:
     """Whether a second-list phrase is about a first-list amount: in the same part
     of a sentence, or in the part right after it when that part names no other
-    amount, and not followed in its part by "above", "over" or "more than". So
+    amount, and not in a part that says "above", "over" or "more than". So
     "up to $250 without approval" and "up to $250: no approval needed" count, and
-    "up to $250, no approval above $2,500" or "... no approval above that" don't."""
+    "up to $250, no approval above $2,500" or "... above that, no approval" don't."""
 
     def states_it(part: str) -> bool:
-        return any(not _RAISES.search(part[end:]) for m in second for _, end in mention_spans(part, m))
+        return not _RAISES.search(part) and any(mention_spans(part, m) for m in second)
 
     for sentence in _SENTENCE_END.split(_normalized(answer)):
         parts = _PART.split(sentence)

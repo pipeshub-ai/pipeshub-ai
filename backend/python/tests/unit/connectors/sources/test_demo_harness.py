@@ -305,6 +305,13 @@ def test_negation_reaches_three_words_back_and_includes_no(
         "Up to $250, no approval above $2,500.",
         "For purchases up to $250, no approval above $2,500.",
         "Up to $250, approval isn't needed above $2,500.",
+        # The higher band named before the phrase.
+        "Up to $250, above that there is no approval.",
+        "Up to $250, and above that no approval is needed.",
+        "For purchases up to $250, amounts above that need no approval.",
+        "Purchases of up to $250 require your manager's approval and above that there is no approval.",
+        "Up to $250, more than that needs no approval.",
+        "For purchases up to $250; above that no approval is needed.",
     ],
 )
 def test_f2_needs_the_no_approval_amount_not_just_the_words(fx: dict, answer: str) -> None:
