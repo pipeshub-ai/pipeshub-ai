@@ -24,16 +24,27 @@ describe('only a service account may use the reserved email domain', () => {
   const orgId = new mongoose.Types.ObjectId();
   const reserved = `someone@${SERVICE_ACCOUNT_EMAIL_DOMAIN}`;
 
-  // The two cases below let an update through the guard, which then reaches
-  // the database. With no connection, mongoose queues the call and the test
-  // would sit waiting for it, so queueing is turned off and the call fails at
-  // once. What is asserted is which error comes back, not that one does.
-  let bufferCommands: boolean | undefined;
-  before(() => {
-    bufferCommands = mongoose.get('bufferCommands') as boolean | undefined;
+  /**
+   * Runs `work` with mongoose's command queueing turned off.
+   *
+   * A case that lets an update *through* the guard goes on to the database,
+   * and with no connection mongoose would queue the call and the test would
+   * sit waiting. Turning queueing off makes it fail at once instead.
+   *
+   * Scoped to the one call rather than set for the file, because
+   * `mongoose.set` is global to the process: left on, it changes how every
+   * other case here — and every other file sharing the worker — fails, which
+   * is how this suite passed locally and failed in CI.
+   */
+  async function withoutCommandBuffering(work: () => Promise<void>): Promise<void> {
+    const previous = mongoose.get('bufferCommands') as boolean | undefined;
     mongoose.set('bufferCommands', false);
-  });
-  after(() => mongoose.set('bufferCommands', bufferCommands ?? true));
+    try {
+      await work();
+    } finally {
+      mongoose.set('bufferCommands', previous ?? true);
+    }
+  }
 
   afterEach(() => sinon.restore());
 
@@ -166,27 +177,31 @@ describe('only a service account may use the reserved email domain', () => {
     it('allows a service account to be given its own reserved address', async () => {
       // The update names `kind: 'service'`, so the guard is satisfied and the
       // query goes on to the database. Reaching that far is the assertion.
-      try {
-        await Users.updateOne(
-          { _id: new mongoose.Types.ObjectId() },
-          { $set: { email: reserved, kind: 'service' } },
-        ).exec();
-      } catch (error) {
-        expect((error as Error).message).to.not.contain(
-          SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
-        );
-      }
+      await withoutCommandBuffering(async () => {
+        try {
+          await Users.updateOne(
+            { _id: new mongoose.Types.ObjectId() },
+            { $set: { email: reserved, kind: 'service' } },
+          ).exec();
+        } catch (error) {
+          expect((error as Error).message).to.not.contain(
+            SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
+          );
+        }
+      });
     });
 
     it('does not consult the database for an update that touches neither field', async () => {
       const findOne = sinon.stub(Users, 'findOne');
 
-      try {
-        await Users.updateOne({ orgId }, { $set: { fullName: 'A Person' } }).exec();
-      } catch {
-        // A missing connection is fine; what matters is the guard stayed out
-        // of the way rather than paying for a lookup on every update.
-      }
+      await withoutCommandBuffering(async () => {
+        try {
+          await Users.updateOne({ orgId }, { $set: { fullName: 'A Person' } }).exec();
+        } catch {
+          // A missing connection is fine; what matters is the guard stayed out
+          // of the way rather than paying for a lookup on every update.
+        }
+      });
 
       expect(findOne.called).to.equal(false);
     });

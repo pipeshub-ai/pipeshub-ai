@@ -144,9 +144,21 @@ export function assertReservedEmailDomainBelongsToServiceAccount(
   }
 }
 
-/** Matches any address in the reserved domain, for querying stored records. */
+/**
+ * Matches any address in the reserved domain, for querying stored records.
+ *
+ * Written out as a literal rather than built from
+ * {@link SERVICE_ACCOUNT_EMAIL_DOMAIN}. Assembling a pattern from a string
+ * means escaping whatever that string might contain, and escaping only the
+ * dots — which is all this domain needs — is the kind of half-measure that is
+ * correct until the constant changes. A literal cannot be mis-escaped at all.
+ *
+ * The two are kept in step by a test that builds an address from the constant
+ * and requires this to match it, so changing the domain without changing this
+ * fails rather than silently stopping the guard from finding anything.
+ */
+const RESERVED_EMAIL_DOMAIN_PATTERN = /@service\.pipeshub\.internal$/i;
+
 export function reservedEmailDomainPattern(): RegExp {
-  // The domain is a literal with a dot, which has to be escaped to match one.
-  const domain = SERVICE_ACCOUNT_EMAIL_DOMAIN.replace(/\./g, '\\.');
-  return new RegExp(`@${domain}$`, 'i');
+  return RESERVED_EMAIL_DOMAIN_PATTERN;
 }
