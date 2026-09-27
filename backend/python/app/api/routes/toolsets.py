@@ -2315,12 +2315,15 @@ async def handle_toolset_oauth_callback(
                 # fetch, which would follow a redirect to the caller's base_url.
                 # 404 is what the check answers for "no access" as well as a
                 # missing agent, so it gets the permission message too.
-                if auth_exc.status_code in (401, 403, 404):
+                if auth_exc.status_code in (403, 404):
                     err_param = "agent_permission_denied"
                     err_message = (
                         "You don't have permission to connect tools for this agent. "
                         "Ask the agent's owner to give you edit access, then try again."
                     )
+                elif auth_exc.status_code == 401:
+                    err_param = "agent_auth_error"
+                    err_message = "We couldn't verify your account. Sign out and back in, then try again."
                 elif auth_exc.status_code == 400:
                     err_param = "agent_auth_error"
                     err_message = str(auth_exc.detail)

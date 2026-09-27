@@ -1306,7 +1306,7 @@ class TestHandleToolsetOAuthCallbackFlows:
         ("status_code", "expected_error"),
         [
             (403, "agent_permission_denied"),
-            (401, "agent_permission_denied"),
+            (401, "agent_auth_error"),
             (404, "agent_permission_denied"),
             (400, "agent_auth_error"),
             (500, "agent_auth_error"),
@@ -1332,6 +1332,8 @@ class TestHandleToolsetOAuthCallbackFlows:
         assert result["error_message"]
         if status_code == 400:
             assert result["error_message"] == "no access"
+        elif status_code == 401:
+            assert "verify your account" in result["error_message"]
         elif status_code == 500:
             assert "try again" in result["error_message"]
         else:
