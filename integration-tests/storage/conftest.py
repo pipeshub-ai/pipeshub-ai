@@ -221,7 +221,7 @@ def s3_cleanup_tracker(
     object_keys: set[str] = set()
     for doc_id in document_ids:
         try:
-            token = mint_storage_token(pipeshub_client.org_id, pipeshub_client.user_id)
+            token = mint_storage_token(pipeshub_client.org_id, pipeshub_client.acting_user_id)
             resp = requests.get(
                 pipeshub_client._url(f"/api/v1/document/internal/{doc_id}"),
                 headers={"Authorization": f"Bearer {token}"},
