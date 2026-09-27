@@ -211,6 +211,9 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
         "on a purchase without your manager\u2019s approval [source](ref7).",
         "I\u2019ll look for the spending-approval policy.You can spend up to **$250 per purchase** without "
         "manager approval. Purchases **more than $250 and up to $2,500** need your manager\u2019s approval.",
+        "I\u2019ll check the **approval threshold.** You can spend up to $250 without your manager's approval.",
+        "I\u2019ll check the approval threshold.**You can spend up to $250 without your manager's approval.**",
+        "You can spend up to **$250 without approval.** Your manager approves purchases above the $250 limit.",
     ],
 )
 def test_f2_passes_the_amount_with_no_approval_however_the_chat_formats_it(fx: dict, answer: str) -> None:
