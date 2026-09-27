@@ -11,7 +11,6 @@
  * because the callback page that builds the deep link is not running in Electron.
  */
 
-import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { getFrontendOrigin, type DesktopOAuthProvider } from '@/lib/auth/desktop-oauth';
 import { isElectron } from './is-electron';
 
@@ -69,7 +68,7 @@ export class DesktopOAuthError extends Error {
  * backend redeems GitHub's code against its own configured value.
  */
 export function buildDesktopRedirectUri(provider: DesktopOAuthProvider): string {
-  const base = getFrontendOrigin() ?? getApiBaseUrl().trim().replace(/\/+$/, '');
+  const base = getFrontendOrigin();
   if (!base) {
     throw new DesktopOAuthError('no-server-url', 'No PipesHub server URL is configured.');
   }
