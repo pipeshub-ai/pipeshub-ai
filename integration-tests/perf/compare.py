@@ -1,13 +1,14 @@
 """Compare a benchmark result with a committed baseline.
 
 Handles the benchmarks in ``perf/``: ``indexing`` (bench_indexing.py),
-``query`` (bench_query.py) and ``scale`` (bench_scale.py). The result's own
-``benchmark`` field picks the checks, and two results of different benchmarks
-are never compared.
+``query`` (bench_query.py), ``scale`` (bench_scale.py) and ``load``
+(bench_load.py). The result's own ``benchmark`` field picks the checks, and two
+results of different benchmarks are never compared.
 
 Reports only: it exits 0 whatever it finds unless ``--fail-on-regression`` is
 passed, so a noisy week cannot block anyone while the thresholds are still
-being learned. See README.md for why each threshold is where it is.
+being learned. Even then, only the rows marked as gating fail it: for the load
+test, the p95 latencies. See README.md for why each threshold is where it is.
 """
 
 from __future__ import annotations
@@ -28,6 +29,11 @@ class Check:
     direction: int
     threshold: float
     unit: str
+    # False: shown, and flagged, but never what fails --fail-on-regression.
+    gates: bool = True
+    # A move smaller than this, in the measure's own unit, is never flagged
+    # however large it is as a share: on a 50 ms search, 30% is jitter.
+    min_change: float = 0.0
 
 
 INDEXING_CHECKS: tuple[Check, ...] = (
@@ -59,6 +65,24 @@ QUERY_CHECKS: tuple[Check, ...] = (
     Check("Throughput (operations/min)", lambda m: m.get("operations_per_minute"), -1, 0.20, ""),
 )
 
+# Judged over the load test's steady window. The p95s are what fail the run:
+# the median hides a tail that only shows under load, and p99 over a
+# fifteen-minute window is a handful of requests, too few to hold steady.
+LOAD_CHECKS: tuple[Check, ...] = (
+    Check("Search p95", lambda m: _op(m, "search", "latency_seconds", "p95"), +1, 0.30, " s",
+          min_change=0.25),
+    Check("Filtered search p95", lambda m: _op(m, "search_filtered", "latency_seconds", "p95"), +1, 0.30, " s",
+          min_change=0.25),
+    Check("Streaming chat turn p95", lambda m: _op(m, "chat", "latency_seconds", "p95"), +1, 0.30, " s",
+          min_change=1.0),
+    Check("Streaming chat first answer frame p95", lambda m: _op(m, "chat", "first_answer_seconds", "p95"),
+          +1, 0.30, " s", min_change=0.5),
+    Check("Non-streaming chat turn p95", lambda m: _op(m, "chat_sync", "latency_seconds", "p95"), +1, 0.30, " s",
+          min_change=1.0),
+    Check("Search p50", lambda m: _op(m, "search", "latency_seconds", "p50"), +1, 0.30, " s", gates=False),
+    Check("Successful operations/min", lambda m: m.get("succeeded_per_minute"), -1, 0.20, "", gates=False),
+)
+
 # Fields that must match for the numbers to be comparable at all.
 _SHARED_COMPARABLE = (
     ("label", lambda r: r["environment"]["label"]),
@@ -79,9 +103,17 @@ QUERY_COMPARABLE = _SHARED_COMPARABLE + (
     ("operation mix", lambda r: r["profile"]["mix"]),
 )
 
+LOAD_COMPARABLE = _SHARED_COMPARABLE + (
+    ("stages", lambda r: r["profile"]["stages"]),
+    ("think time", lambda r: r["profile"]["think_time_seconds"]),
+    ("question set", lambda r: r["profile"]["question_set"]),
+    ("operation mix", lambda r: r["profile"]["mix"]),
+)
+
 BENCHMARKS: dict[str, tuple[tuple[Check, ...], tuple[Any, ...]]] = {
     "indexing": (INDEXING_CHECKS, INDEXING_COMPARABLE),
     "query": (QUERY_CHECKS, QUERY_COMPARABLE),
+    "load": (LOAD_CHECKS, LOAD_COMPARABLE),
     # A scale run measures the same things as an indexing run, on a much larger
     # corpus, so it is judged by the same checks. Corpus size is one of the
     # fields that must match, so a 2,000-file run is never put beside a
@@ -100,6 +132,7 @@ class Row:
     regressed: bool
     note: str
     unit: str
+    gates: bool = True
 
 
 def _read(reader: Callable[[dict[str, Any]], Any], result: dict[str, Any]) -> Any:
@@ -128,13 +161,17 @@ def compare(baseline: dict[str, Any], current: dict[str, Any]) -> tuple[list[Row
         for label, read in comparable_fields
         if _read(read, baseline) != _read(read, current)
     ]
-    if benchmark == "query":
+    if benchmark in ("query", "load"):
         mismatches += _seeding_mismatches(baseline, "baseline") + _seeding_mismatches(current, "this run")
+    if benchmark == "load":
+        mismatches += _aborted_mismatches(baseline, "baseline") + _aborted_mismatches(current, "this run")
     if benchmark in ("indexing", "scale"):
         mismatches += _partial_run_mismatches(baseline, "baseline") + _partial_run_mismatches(current, "this run")
     rows = [_check_row(check, baseline["metrics"], current["metrics"]) for check in checks]
-    if benchmark == "query":
-        rows += _rate_rows(baseline["metrics"], current["metrics"])
+    if benchmark in ("query", "load"):
+        # Under the load test's --fail-on-regression these stay reports: how
+        # often an answer cites a document moves with the model week to week.
+        rows += _rate_rows(baseline["metrics"], current["metrics"], gates=benchmark != "load")
     rows.append(_failure_row(benchmark, baseline["metrics"], current["metrics"]))
     return rows, mismatches
 
@@ -142,14 +179,16 @@ def compare(baseline: dict[str, Any], current: dict[str, Any]) -> tuple[list[Row
 def _check_row(check: Check, base_m: dict[str, Any], cur_m: dict[str, Any]) -> Row:
     base, cur = check.read(base_m), check.read(cur_m)
     if base is None or cur is None or base == 0:
-        return Row(check.name, base, cur, None, False, "not measured on one side", check.unit)
+        return Row(check.name, base, cur, None, False, "not measured on one side", check.unit, check.gates)
     change = (cur - base) / base
-    regressed = change * check.direction > check.threshold
+    regressed = change * check.direction > check.threshold and abs(cur - base) > check.min_change
     limit = f"{'+' if check.direction > 0 else '-'}{check.threshold:.0%}"
-    return Row(check.name, base, cur, change, regressed, f"flags beyond {limit}", check.unit)
+    if check.min_change:
+        limit += f" and {check.min_change:g}{check.unit}"
+    return Row(check.name, base, cur, change, regressed, f"flags beyond {limit}", check.unit, check.gates)
 
 
-def _rate_rows(base_m: dict[str, Any], cur_m: dict[str, Any]) -> list[Row]:
+def _rate_rows(base_m: dict[str, Any], cur_m: dict[str, Any], gates: bool = True) -> list[Row]:
     """Searches that found a hit, and answers that cited a document.
 
     An empty result is fast and counts as a success, so a run that stopped
@@ -164,15 +203,26 @@ def _rate_rows(base_m: dict[str, Any], cur_m: dict[str, Any]) -> list[Row]:
         # searches above keep finding plenty and hide it.
         ("search_filtered", "Filtered searches that found a hit"),
         ("chat", "Answers that cited a document"),
+        ("chat_sync", "Non-streaming answers that cited a document"),
     ):
+        # Only the load test has non-streaming turns; a query result has no row
+        # to show for them.
+        if operation not in (base_m.get("operations") or {}) and operation not in (cur_m.get("operations") or {}):
+            continue
         base = _op(base_m, operation, "with_sources_rate")
         cur = _op(cur_m, operation, "with_sources_rate")
         if base is None or cur is None:
-            rows.append(Row(name, base, cur, None, False, "not measured on one side", ""))
+            rows.append(Row(name, base, cur, None, False, "not measured on one side", "", gates))
             continue
         change = (cur - base) / base if base else None
-        rows.append(Row(name, base, cur, change, cur < base, "flags any fall", ""))
+        rows.append(Row(name, base, cur, change, cur < base, "flags any fall", "", gates))
     return rows
+
+
+def _aborted_mismatches(result: dict[str, Any], side: str) -> list[str]:
+    """A load run that stopped early measured a shorter, broken run; its own check already failed it."""
+    aborted = (result.get("metrics") or {}).get("aborted")
+    return [f"{side}: the load stopped early ({aborted})"] if aborted else []
 
 
 def _seeding_mismatches(result: dict[str, Any], side: str) -> list[str]:
@@ -215,6 +265,14 @@ def _partial_run_mismatches(result: dict[str, Any], side: str) -> list[str]:
 
 
 def _failure_row(benchmark: str, base_m: dict[str, Any], cur_m: dict[str, Any]) -> Row:
+    if benchmark == "load":
+        # Under load a stray failure is expected now and then, and the run's own
+        # --max-error-rate check is what fails on errors. This only says the
+        # rate moved by more than a percentage point.
+        base, cur = base_m.get("error_rate"), cur_m.get("error_rate")
+        if base is None or cur is None:
+            return Row("Error rate", base, cur, None, False, "not measured on one side", "", False)
+        return Row("Error rate", base, cur, None, cur - base > 0.01, "flags a rise of over 1 point", "", False)
     if benchmark == "query":
         base = sum(op.get("errors", 0) for op in (base_m.get("operations") or {}).values())
         cur = sum(op.get("errors", 0) for op in (cur_m.get("operations") or {}).values())
@@ -240,7 +298,12 @@ def render(rows: list[Row], mismatches: list[str], baseline_path: str) -> str:
     lines += ["| Measure | Baseline | This run | Change | Verdict |", "| --- | --- | --- | --- | --- |"]
     for r in rows:
         change = "" if r.change is None else f"{r.change:+.0%}"
-        verdict = "not judged" if mismatches else ("⚠️ regression" if r.regressed else "ok")
+        if mismatches:
+            verdict = "not judged"
+        elif r.regressed:
+            verdict = "⚠️ regression" if r.gates else "⚠️ worse (reported only)"
+        else:
+            verdict = "ok"
         lines.append(
             f"| {r.name} | {_fmt(r.baseline, r.unit)} | {_fmt(r.current, r.unit)} | {change} | {verdict} ({r.note}) |"
         )
@@ -284,7 +347,7 @@ def main() -> int:
     else:
         rows, mismatches = compare(baseline, current)
         report = render(rows, mismatches, str(args.baseline))
-        regressed = any(r.regressed for r in rows) and not mismatches
+        regressed = any(r.regressed and r.gates for r in rows) and not mismatches
 
     print(report)
     if args.summary:
