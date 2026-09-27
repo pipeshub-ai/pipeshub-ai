@@ -20706,22 +20706,30 @@ paths:
         `semantic:write` remains, despite its name. It is what running a search
         requires, so removing scopes by the word in their name would take
         reading away and leave writing alone.
+
+        Each scope is returned with the description and category held in the
+        shared scope catalogue, the same shape
+        `GET /personal-access-tokens/scopes` returns. The picker can then say
+        what a permission allows instead of showing a bare identifier, and the
+        wording for a scope stays the same on every screen that offers it.
       operationId: listServiceTokenScopes
       security:
         - bearerAuth: []
         - oauth2: [user:read]
       responses:
         '200':
-          description: Available scopes
+          description: Available scopes, each with its description and category
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - scopes
                 properties:
                   scopes:
                     type: array
                     items:
-                      type: string
+                      $ref: '#/components/schemas/OAuthScopeInfo'
         '400':
           description: Admin access required
         '401':
