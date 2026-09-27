@@ -163,13 +163,18 @@ jobs:
         # scripts/shard_durations.json) plus a "core" shard for everything else.
         # Each shard's marker is derived in the test step from CONN_SHARD_1 /
         # CONN_SHARD_2 / CONN_SHARD_3 (one source of truth); "core" is everything
-        # those three do not own, so the four partition -m "integration" exactly.
+        # those three and "demo" do not own, so the five partition -m "integration"
+        # exactly.
         # scripts/shard_balance.py checks that partition and the balance; run it
         # after adding or growing a connector suite.
+        # "demo" runs only the Acme Corp demo questions, on a stack where no
+        # other suite has indexed anything: the demo's prompt differs once the
+        # workspace has real data, and core would index plenty. Core leaves the
+        # demo marker out, so it runs once.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || '["connectors-1","connectors-2","connectors-3","core"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || '["connectors-1","connectors-2","connectors-3","core","demo"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -341,7 +346,8 @@ jobs:
       SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
       SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
       # Connector shards, one source of truth. The `core` shard is everything
-      # these three do not own, built in the test step from the same values.
+      # these three and the `demo` shard do not own, built in the test step
+      # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
       # one job, so a shard's wall clock is the sum of the two):
       # shard 1 ~136 min, shard 2 ~135 min, shard 3 ~132 min. Shard 1 keeps
@@ -518,15 +524,16 @@ jobs:
         run: |
           source .venv/bin/activate
           # Each shard runs its slice; `core` is everything the three connector
-          # lists do not own, built here so the lists live in one place. The
-          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
-          # the selected marker.
+          # lists and the demo shard do not own, built here so the lists live in
+          # one place. The single "dispatch" job (a one-marker workflow_dispatch)
+          # runs exactly the selected marker.
           case "$SHARD" in
             dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo" ;;
+            demo)         MARKERS="demo" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
@@ -701,15 +708,16 @@ jobs:
         run: |
           source .venv/bin/activate
           # Each shard runs its slice; `core` is everything the three connector
-          # lists do not own, built here so the lists live in one place. The
-          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
-          # the selected marker.
+          # lists and the demo shard do not own, built here so the lists live in
+          # one place. The single "dispatch" job (a one-marker workflow_dispatch)
+          # runs exactly the selected marker.
           case "$SHARD" in
             dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo" ;;
+            demo)         MARKERS="demo" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
