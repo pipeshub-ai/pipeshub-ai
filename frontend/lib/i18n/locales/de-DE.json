@@ -3103,6 +3103,13 @@
       "statusUnknown": "Unbekannt",
       "statusPending": "Ausstehend",
       "statusStarting": "Wird gestartet",
+      "stateMessage": {
+        "healthy": "{{name}} ist bereit",
+        "unhealthy": "{{name}} antwortet, ist aber nicht funktionsfähig",
+        "starting": "Warten auf {{name}}",
+        "pending": "Warten auf die Konfiguration des Backends",
+        "unknown": "{{name}} konnte nicht geprüft werden"
+      },
       "infra": {
         "redis": {
           "label": "Redis",

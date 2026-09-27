@@ -26,6 +26,7 @@ import {
   type AppServices,
 } from '@/lib/store/services-health-store';
 import { apiClient } from '@/lib/api';
+import { serviceStateMessage } from './service-state-message';
 
 // ========================================
 // Service metadata
@@ -157,7 +158,10 @@ function ServiceRow({
   detail?: ServiceHealthDetail;
   displayName?: string;
 }) {
+  const { t } = useTranslation();
   const displayStatus = detail?.state ?? status;
+  const name = displayName || meta.label;
+  const stateMessage = serviceStateMessage(detail, name, t);
   const detailColor =
     displayStatus === 'healthy'
       ? 'var(--green-11)'
@@ -209,7 +213,7 @@ function ServiceRow({
       {/* Label + description */}
       <Box style={{ flex: 1, minWidth: 0 }}>
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-          {displayName || meta.label}
+          {name}
         </Text>
         <Text
           size="1"
@@ -225,7 +229,7 @@ function ServiceRow({
         >
           {meta.description}
         </Text>
-        {detail?.message ? (
+        {stateMessage ? (
           <Text
             size="1"
             style={{
@@ -235,7 +239,7 @@ function ServiceRow({
               fontWeight: 300,
             }}
           >
-            {detail.message}
+            {stateMessage}
           </Text>
         ) : null}
       </Box>

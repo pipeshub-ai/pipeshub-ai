@@ -3098,6 +3098,13 @@
       "statusUnknown": "अज्ञात",
       "statusPending": "लंबित",
       "statusStarting": "शुरू हो रहा है",
+      "stateMessage": {
+        "healthy": "{{name}} तैयार है",
+        "unhealthy": "{{name}} ने जवाब दिया, लेकिन वह स्वस्थ नहीं है",
+        "starting": "{{name}} की प्रतीक्षा की जा रही है",
+        "pending": "बैकएंड के कॉन्फ़िगरेशन की प्रतीक्षा की जा रही है",
+        "unknown": "{{name}} की जाँच नहीं हो सकी"
+      },
       "infra": {
         "redis": {
           "label": "Redis",

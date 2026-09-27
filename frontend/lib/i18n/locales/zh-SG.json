@@ -3319,6 +3319,13 @@
       "statusUnknown": "未知",
       "statusPending": "待处理",
       "statusStarting": "正在启动",
+      "stateMessage": {
+        "healthy": "{{name}} 已就绪",
+        "unhealthy": "{{name}} 已响应，但状态异常",
+        "starting": "正在等待 {{name}}",
+        "pending": "正在等待后端配置",
+        "unknown": "无法检查 {{name}}"
+      },
       "infra": {
         "redis": {
           "label": "Redis",

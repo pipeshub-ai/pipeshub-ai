@@ -13,6 +13,7 @@ export type ServiceStatus = 'healthy' | 'unhealthy' | 'unknown' | 'pending' | 's
 
 export interface ServiceHealthDetail {
   state: ServiceStatus;
+  /** English, for API readers; the Services page words its own line from `state`. */
   message?: string;
   endpoint?: string;
   latencyMs?: number;

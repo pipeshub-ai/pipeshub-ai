@@ -3319,6 +3319,13 @@
       "statusUnknown": "알 수 없음",
       "statusPending": "대기 중",
       "statusStarting": "시작 중",
+      "stateMessage": {
+        "healthy": "{{name}}이(가) 준비되었습니다",
+        "unhealthy": "{{name}}이(가) 응답했지만 정상이 아닙니다",
+        "starting": "{{name}}을(를) 기다리는 중",
+        "pending": "백엔드 구성을 기다리는 중",
+        "unknown": "{{name}}을(를) 확인할 수 없습니다"
+      },
       "infra": {
         "redis": {
           "label": "Redis",

@@ -3124,6 +3124,13 @@
       "statusUnknown": "Desconocido",
       "statusPending": "Pendiente",
       "statusStarting": "Iniciando",
+      "stateMessage": {
+        "healthy": "{{name}} está listo",
+        "unhealthy": "{{name}} responde, pero no funciona correctamente",
+        "starting": "Esperando a {{name}}",
+        "pending": "Esperando la configuración del backend",
+        "unknown": "No se ha podido comprobar {{name}}"
+      },
       "infra": {
         "redis": {
           "label": "Redis",

@@ -3333,6 +3333,13 @@
       "statusUnknown": "Unknown",
       "statusPending": "Pending",
       "statusStarting": "Starting",
+      "stateMessage": {
+        "healthy": "{{name}} is ready",
+        "unhealthy": "{{name}} responded but isn't healthy",
+        "starting": "Waiting for {{name}}",
+        "pending": "Waiting for the backend to share its configuration",
+        "unknown": "Couldn't check {{name}}"
+      },
       "infra": {
         "redis": {
           "label": "Redis",
