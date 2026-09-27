@@ -2,7 +2,7 @@ import React from 'react';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent, screen } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import { AnswerContent } from '../answer-content';
 
@@ -45,6 +45,18 @@ describe('AnswerContent — wide tables scroll inside the message', () => {
     const area = table!.parentElement as HTMLElement;
     expect(area.hasAttribute('data-table-scroll-area')).toBe(true);
     expect(area.style.overflowX).toBe('auto');
+  });
+
+  it('puts the fullscreen view\'s scroll box in the scroll area too', async () => {
+    const { container } = renderAnswer(GFM_TABLE);
+    fireEvent.click(container.querySelector('button[title]')!);
+    const dialog = await screen.findByRole('dialog');
+    // In fullscreen the outer box owns the overflow; the table's own box grows to fit.
+    const scroller = Array.from(dialog.querySelectorAll<HTMLElement>('div')).find(
+      (el) => el.style.overflow === 'auto',
+    );
+    expect(scroller).toBeDefined();
+    expect(scroller!.hasAttribute('data-table-scroll-area')).toBe(true);
   });
 
   it('keeps the scrollbar styled visible for that area', () => {
