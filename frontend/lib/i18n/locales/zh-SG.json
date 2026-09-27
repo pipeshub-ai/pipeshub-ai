@@ -523,6 +523,31 @@
     "confirm": "确定"
   },
   "kb": {
+    "indexingProgress": {
+      "steps": {
+        "queued": "排队中",
+        "extract": "提取",
+        "index": "索引",
+        "done": "完成"
+      },
+      "stage": {
+        "queued": "排队中",
+        "extracting": "正在提取内容",
+        "indexing": "正在索引",
+        "completed": "已完成",
+        "failed": "失败",
+        "processing": "处理中"
+      },
+      "embeddingChunk": "正在嵌入第 {{current}}/{{total}} 个分块",
+      "extractingPage": "正在提取第 {{current}}/{{total}} 页",
+      "rollupProgress": "已索引 {{completed}}/{{total}}",
+      "rollupIndexed": "已索引 {{total}} 个",
+      "rollupRecords_other": "{{count}} 条记录：已索引 {{completed}} 条",
+      "rollupFailed": "{{count}} 个失败",
+      "rollupSkipped": "{{count}} 个已跳过",
+      "indexedTooltip": "已索引",
+      "indexingPercent": "正在索引 {{percent}}%"
+    },
     "viewToggle": "视图切换",
     "collectionsView": "集合视图",
     "allRecordsView": "所有记录视图",
@@ -2416,6 +2441,106 @@
       "personal": {
         "desktopRequiredTitle": "需要桌面应用",
         "desktopRequiredDescription": "本地文件系统连接器仅在 PipesHub 桌面应用中可用。请使用桌面应用设置此连接器。"
+      },
+      "syncProgress": {
+        "status": "状态",
+        "removing": "正在移除…",
+        "indexingCount": "正在索引 {{processed}}/{{total}}",
+        "fullSyncDiscovering": "完整同步 - 正在同步来源…",
+        "fullSyncCheckingChanges": "正在检查来源的变更 - 仅重新索引新增或更新的页面。",
+        "discovering": "正在同步来源…",
+        "queuedCount": "{{count}} 个排队中",
+        "stillProcessing_other": "{{count}} 条记录仍在处理中",
+        "indexed": "已索引",
+        "syncFailed": "同步失败",
+        "failedCount": "{{count}} 个失败",
+        "calculating": "正在计算进度",
+        "currentSync": "当前同步",
+        "breakdownScanned": "已扫描",
+        "breakdownUnchanged": "未更改",
+        "breakdownQueued": "新增/更改的已排队",
+        "breakdownFailed": "失败",
+        "breakdownSkipped": "已跳过",
+        "badgeFullSync": "完整同步…",
+        "badgeSyncing": "同步中…",
+        "conflict": {
+          "fullOverFull": {
+            "title": "完整同步已在运行",
+            "message": "完整同步已在进行中。重新开始会取消当前同步，并从头重新索引所有内容。",
+            "confirm": "重新开始完整同步",
+            "cancel": "保留当前同步"
+          },
+          "fullOverQuick": {
+            "title": "同步正在运行",
+            "message": "当前有同步正在进行。开始完整同步会取消它，并从头重新索引所有内容。",
+            "confirm": "取消并完整同步",
+            "cancel": "保留当前同步"
+          },
+          "quickOverFull": {
+            "title": "完整同步进行中",
+            "message": "完整同步正在运行，比普通同步更彻底。现在运行普通同步会取消它，建议等待完整同步完成。",
+            "confirm": "取消并同步",
+            "cancel": "保留完整同步"
+          },
+          "quickOverQuick": {
+            "title": "同步已在运行",
+            "message": "同步已在进行中。重新开始会取消当前同步并从头开始。",
+            "confirm": "重新开始同步",
+            "cancel": "保留当前同步"
+          },
+          "restartError": "无法重新开始同步。请重试。",
+          "lockedTitle": "同步准备中",
+          "lockedMessage": "完整同步正在准备，暂时无法中断。请稍后重试。"
+        },
+        "lastSync": "上次同步",
+        "failure": {
+          "auth": {
+            "title": "身份验证失败",
+            "summary": "此连接器无法登录到来源。",
+            "remediation": "请在“管理 → 授权”中重新连接。如果仍然失败，可能需要管理员批准该应用或其权限范围。"
+          },
+          "rateLimit": {
+            "title": "已达到速率限制",
+            "summary": "来源暂时限制了同步速度。",
+            "remediation": "请等待几分钟后重试。如果此问题反复出现，请降低同步频率。"
+          },
+          "permission": {
+            "title": "缺少访问权限",
+            "summary": "此账号无法读取部分已选择同步的内容。",
+            "remediation": "请授予此连接器需要同步的文件或共享云端硬盘的访问权限，然后重试。"
+          },
+          "network": {
+            "title": "连接问题",
+            "summary": "无法稳定地连接到来源。",
+            "remediation": "请检查与来源的网络连接，然后重试同步。"
+          },
+          "cancelled": {
+            "title": "同步已取消",
+            "summary": "同步在完成前已停止。",
+            "remediation": "准备好后请重新开始同步。"
+          },
+          "unknown": {
+            "title": "同步失败",
+            "summary": "同步时出现问题。",
+            "remediation": "请重试同步。如果再次失败，请检查连接器设置或联系管理员。"
+          },
+          "reasons": {
+            "unauthorized_client": "Google 阻止了此应用获取所请求权限范围的访问令牌。",
+            "invalid_grant": "已保存的 Google 登录已过期或已被撤销。",
+            "invalid_client": "Google 应用凭据似乎无效或已被撤销。",
+            "access_denied": "授权此连接器时访问被拒绝。"
+          }
+        },
+        "queue": {
+          "waitingCompact": "正在队列中等待",
+          "waitingDetail": "正在共享索引队列中等待 · 前面约有 {{count}} 个任务",
+          "etaAlmostDone": "即将完成",
+          "etaAboutAMinute": "约 1 分钟",
+          "etaMinutes": "约 {{minutes}} 分钟",
+          "etaMinutesRange": "约 {{low}}–{{high}} 分钟",
+          "etaAboutAnHour": "约 1 小时",
+          "etaMayTakeAWhile": "可能需要一段时间"
+        }
       },
       "syncStatus": {
         "paused": "同步已暂停",
