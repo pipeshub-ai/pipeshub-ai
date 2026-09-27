@@ -370,8 +370,19 @@ class FakeRecordsDb:
         self.records[record.external_record_id] = record.model_copy(deep=True)
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+        """Like the graph stores: the plain record, without the file fields (ETag, Last-Modified)."""
+        from app.models.entities import Record
+
         stored = self.records.get(external_record_id)
-        return stored.model_copy(deep=True) if stored is not None else None
+        if stored is None:
+            return None
+        return Record.model_validate(stored.model_dump(include=set(Record.model_fields)))
+
+    async def get_file_record_by_id(self, record_id: str) -> Record | None:
+        from app.models.entities import FileRecord
+
+        stored = next((record for record in self.records.values() if record.id == record_id), None)
+        return stored.model_copy(deep=True) if isinstance(stored, FileRecord) else None
 
     async def on_new_records(self, pairs: list[tuple[Record, list[Any]]]) -> None:
         if self.fail_writes:
