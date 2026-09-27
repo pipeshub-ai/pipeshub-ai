@@ -418,7 +418,7 @@ _BARE_REST = re.compile(
 # Any mention of approving, outside the no-approval phrases themselves: "must be
 # approved", "your manager's sign-off", "require your manager to approve them".
 # "sign it off", "sign the purchase off" and "sign-offs" are sign-offs too.
-_APPROVAL_WORD = re.compile(r"\bapprov\w*|\bauthori[sz]\w*|\bsign(?:s|ed|ing)?(?:\s+\w+){0,3}?[- ]?offs?\b")
+_APPROVAL_WORD = re.compile(r"\bapprov\w*|\bauthori[sz]\w*|\bsign(?:s|ed|ing)?(?:\s+[\w$.,]+){0,3}?[- ]?offs?\b")
 # "authorization is not needed", "without signing off": the word is there, but nobody approves.
 _NOT_AFTER = re.compile(r"^\s+(?:is|are|was)\s+not\b|^\s+(?:isn't|aren't|wasn't)\b|^\s+not\s+(?:needed|required)\b")
 _WITHOUT_BEFORE = re.compile(
@@ -444,10 +444,24 @@ def _approves(text: str, no_approval: list[str]) -> bool:
             text = text[:start] + " " * (end - start) + text[end:]
     return any(
         not _negated(text[:m.start()])
-        and not _WITHOUT_BEFORE.search(text[:m.start()])
+        and not _without_cancels(text[:m.start()])
         and not _NOT_AFTER.match(text[m.end():])
         for m in _APPROVAL_WORD.finditer(text)
     )
+
+
+# "can't submit it without your manager's sign-off" still needs the sign-off.
+_REQUIRES_BEFORE = re.compile(r"\b(?:can't|cannot|can not|not|never|nothing|nobody|no one|won't)\b|n't\b")
+
+
+def _without_cancels(before: str) -> bool:
+    """Whether a "without" just before an approval word means nobody approves,
+    rather than that nothing happens without the approval."""
+    m = _WITHOUT_BEFORE.search(before)
+    if not m:
+        return False
+    clause = _CLAUSE_BREAK.split(before[:m.start()])[-1]
+    return not _REQUIRES_BEFORE.search(clause)
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
@@ -460,9 +474,13 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
             continue
         if _approves(part, second):
             return True
-        after = parts[i + 1] if i + 1 < len(parts) else ""
-        if not _AMOUNT.search(after) and not _RAISES.search(after) and _approves(after, second):
-            return True
+        # Read on past blank parts and lead-ins ("However,", "Please note:") until a
+        # part approves, names an amount, or moves to a higher band.
+        for after in parts[i + 1:]:
+            if _AMOUNT.search(after) or _RAISES.search(after):
+                break
+            if _approves(after, second):
+                return True
     return False
 
 
