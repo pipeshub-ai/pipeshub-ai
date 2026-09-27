@@ -109,14 +109,101 @@ describe('only a service account may use the reserved email domain', () => {
         slug: 'user-1',
       });
 
-      try {
-        await person.save();
-        expect.fail('expected a person on the reserved domain to be refused');
-      } catch (error) {
-        expect((error as Error).message).to.contain(
-          SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
-        );
-      }
+      // Queueing off so that if the guard ever stops firing, this fails on
+      // the assertion instead of waiting on a database call that will not
+      // come. A hook that does throw never reaches the database at all.
+      await withoutCommandBuffering(async () => {
+        try {
+          await person.save();
+          expect.fail('expected a person on the reserved domain to be refused');
+        } catch (error) {
+          expect((error as Error).message).to.contain(
+            SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
+          );
+        }
+      });
+    });
+  });
+
+  describe('a record that already holds a reserved address', () => {
+    /**
+     * A person could be given one before this rule existed, so such rows are
+     * out there. Refusing every later write to them would be worse than the
+     * hole it closes: `deleteUser` pulls group memberships, revokes OAuth apps
+     * and knowledge-base permissions, removes project access and unsets the
+     * password *before* saving `isDeleted`, so a throw at that save leaves the
+     * account stripped of everything and still active. Deleting is also the
+     * documented repair for a bad invite, and an administrator cannot change
+     * the address first because that is owner-only.
+     */
+    function legacyPersonOnReservedDomain() {
+      const person = new Users({
+        orgId,
+        email: reserved,
+        fullName: 'Invited Before The Rule',
+        slug: 'user-legacy',
+      });
+      // Presented as a row that came back from the database rather than a new
+      // one, which is the state every later save sees.
+      person.isNew = false;
+      person.$locals = {};
+      person.unmarkModified('email');
+      person.unmarkModified('kind');
+      return person;
+    }
+
+    it('can still be soft-deleted', async () => {
+      const person = legacyPersonOnReservedDomain();
+      person.isDeleted = true;
+
+      await withoutCommandBuffering(async () => {
+        try {
+          await person.save();
+        } catch (error) {
+          expect((error as Error).message).to.not.contain(
+            SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
+          );
+        }
+      });
+    });
+
+    it('can still have an unrelated field edited', async () => {
+      const person = legacyPersonOnReservedDomain();
+      person.fullName = 'A New Display Name';
+
+      await withoutCommandBuffering(async () => {
+        try {
+          await person.save();
+        } catch (error) {
+          expect((error as Error).message).to.not.contain(
+            SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
+          );
+        }
+      });
+    });
+
+    it('is still refused when the save is what moves it onto the domain', async () => {
+      const person = new Users({
+        orgId,
+        email: 'a.person@example.com',
+        fullName: 'A Person',
+        slug: 'user-moving',
+      });
+      person.isNew = false;
+      person.unmarkModified('email');
+      // This write is the one that puts the address there.
+      person.email = reserved;
+
+      await withoutCommandBuffering(async () => {
+        try {
+          await person.save();
+          expect.fail('expected the move onto the reserved domain to be refused');
+        } catch (error) {
+          expect((error as Error).message).to.contain(
+            SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
+          );
+        }
+      });
     });
   });
 

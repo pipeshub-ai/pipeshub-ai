@@ -112,7 +112,18 @@ userSchema.pre<User>('save', async function (next) {
       this.slug = await generateUniqueSlug('User');
     }
     assertServiceAccountRole(this.kind, this.role);
-    assertReservedEmailDomainBelongsToServiceAccount(this.kind, this.email);
+    // Only when this save is what puts the address there. Judging the
+    // document's current state instead would refuse every later write to a
+    // person who already holds a reserved address — and one can, because
+    // nothing stopped it before this rule existed. `deleteUser` pulls group
+    // memberships, revokes OAuth apps and knowledge-base permissions, removes
+    // project access and unsets the password before it saves `isDeleted`, so a
+    // throw at that save would leave the account stripped of everything and
+    // still active, with no way back: changing an address is owner-only, and
+    // deleting is the documented repair for a bad invite.
+    if (this.isNew || this.isModified('email') || this.isModified('kind')) {
+      assertReservedEmailDomainBelongsToServiceAccount(this.kind, this.email);
+    }
     next();
   } catch (error) {
     next(error as Error);

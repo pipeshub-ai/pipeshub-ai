@@ -217,12 +217,42 @@ describe('service account routes are gated for machine credentials too', () => {
  * which is where the limiter sits. `runChain` above walks a matched route's
  * stack and so never reaches it.
  */
+/** The request members the limiter reads: who is calling, and from where. */
+interface LimiterRequest {
+  user?: { userId: string; orgId: string };
+  ip: string;
+  headers: Record<string, string>;
+  method: string;
+  url: string;
+}
+
+/** The response members it writes when it refuses one. */
+interface LimiterResponse {
+  status: (code: number) => LimiterResponse;
+  json: () => LimiterResponse;
+  send: () => LimiterResponse;
+  end: () => LimiterResponse;
+  setHeader: () => LimiterResponse;
+  getHeader: () => undefined;
+  removeHeader: () => LimiterResponse;
+  headersSent: boolean;
+}
+
+type MiddlewareLayer = {
+  route?: unknown;
+  handle: (
+    req: LimiterRequest,
+    res: LimiterResponse,
+    next: () => void,
+  ) => unknown;
+};
+
 async function runRouterMiddleware(
   router: ReturnType<typeof createServiceAccountsRouter>,
-  req: any,
+  req: LimiterRequest,
 ): Promise<{ status?: number }> {
   const recorded: { status?: number } = {};
-  const res: any = {
+  const res: LimiterResponse = {
     status: (code: number) => {
       recorded.status = code;
       return res;
@@ -237,7 +267,7 @@ async function runRouterMiddleware(
   };
 
   const layers = (
-    router as unknown as { stack: { route?: unknown; handle: Function }[] }
+    router as unknown as { stack: MiddlewareLayer[] }
   ).stack.filter((layer) => layer.route === undefined);
 
   for (const layer of layers) {
