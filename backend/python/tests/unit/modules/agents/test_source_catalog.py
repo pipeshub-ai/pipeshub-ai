@@ -387,8 +387,15 @@ class TestDemoSourceNote:
         # search everything else first and run out of turns before answering.
         assert "sample data provided for this workspace" in DEMO_SOURCE_NOTE
         assert "as you would from the workspace's own data" in DEMO_SOURCE_NOTE
-        assert "never add the organization's name to a search" in DEMO_SOURCE_NOTE
+        assert "keep that name out of searches of the Demo source" in DEMO_SOURCE_NOTE
+        assert "never judge whether a record is demo data by that name" in DEMO_SOURCE_NOTE
         assert "rather than as a later fallback" in DEMO_SOURCE_NOTE
+
+    def test_org_name_still_allowed_when_searching_real_sources(self) -> None:
+        # Only Demo searches drop the org name; real-data searches in a demo
+        # workspace must not lose it.
+        assert "it still belongs in searches of the other sources" in DEMO_SOURCE_NOTE
+        assert "never add the organization's name to a search" not in DEMO_SOURCE_NOTE
         assert "never present an Acme Corp fact" not in DEMO_SOURCE_NOTE
 
     def test_answers_still_say_they_are_demo_data(self) -> None:
