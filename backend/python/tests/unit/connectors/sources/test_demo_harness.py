@@ -159,6 +159,8 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
         "You can spend up to $250 without approval and your manager must approve amounts exceeding $250.",
         "You can spend up to $250 without approval and your manager approves purchases over $250.",
         "You can spend up to $250 with no approval, and above that your manager approves.",
+        "You can spend up to $250 without approval. Your manager approves purchases above the $250 limit.",
+        "You can spend up to $250 without approval and your manager must approve amounts that exceed the $250 limit.",
         "For purchases up to $250, no approval is needed.",
         "You can spend up to $250 without approval, and there is no approval above $2,500.",
         "You can spend up to $250 without approval, and above $2,500 finance approves.",
@@ -419,6 +421,15 @@ def test_negation_reaches_three_words_back_and_includes_no(
         "You can spend up to $250 with no approval above $2,500.",
         "Purchases of up to $250 need no approval above $2,500.",
         "You can spend up to $250 without approval above that.",
+        # The band with a determiner, and $250 again later in the sentence, by value.
+        "You can spend up to $250 with no approval above the $250 limit.",
+        "You can spend up to $250 without approval for amounts that exceed the $250 limit.",
+        "You can spend up to $250 with no approval on amounts over the $250 limit.",
+        "You can spend up to $250 without approval. Above that your manager must approve it, including the $250 purchase.",
+        "You can spend up to $250 with no approval and above that your manager must approve it, including every $250 purchase.",
+        "You can spend up to $250 without approval. Above that your manager must approve the 250 dollar purchase.",
+        "You can spend up to 250 dollars without approval. Above that your manager must approve the $250 purchase.",
+        "You can spend up to $250 without approval. Above that your manager must approve the $250.00 purchase.",
     ],
 )
 def test_f2_needs_the_no_approval_amount_not_just_the_words(fx: dict, answer: str) -> None:
@@ -631,6 +642,9 @@ def test_s1_recovery_phrases_are_whole_words(fx: dict, answer: str, ok: bool) ->
         ("You can carry over five-hundred days.", False),
         ("It's five hundred days, not five.", False),
         ("Up to 5 days carry over.", True),
+        ("Carry over starts on the 5th.", False),
+        ("Policy v5 says three days.", False),
+        ("The handbook says three. See section 5.", False),
     ],
 )
 def test_h1_five_is_not_the_end_of_twenty_five(fx: dict, answer: str, ok: bool) -> None:

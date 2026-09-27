@@ -351,13 +351,15 @@ def _normalized(answer: str) -> str:
 _TENS = ("twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
 _UNITS = {"one", "two", "three", "four", "five", "six", "seven", "eight", "nine"}
 _MULTIPLIER = r"(?![\s-]*(?:hundred|thousand|million)\b)"
+_NUMBERED = ("section", "version", "page", "chapter", "step", "article", "rule", "clause", "item", "no.")
 
 
 def mention_spans(text: str, phrase: str) -> list[tuple[int, int]]:
     """Where `mentions` finds `phrase` in already-normalized text, as (start, end)."""
     p = phrase.lower().replace("\u2019", "'")
     if p[:1].isdigit():
-        before = r"(?<![\d#.,])"
+        # "5th", "v5" and "section 5" aren't five of anything.
+        before = r"(?<![\w#.,])" + "".join(rf"(?<!{w} )" for w in _NUMBERED)
     elif p[:1].isalpha():
         # A word starts a word; "five" in "twenty-five" or "twenty five" is another number.
         before = r"(?<![\w-])" + ("".join(rf"(?<!{t} )" for t in _TENS) if p in _UNITS else "")
@@ -365,7 +367,7 @@ def mention_spans(text: str, phrase: str) -> list[tuple[int, int]]:
         before = ""
     if p[-1:].isdigit() or p.split()[-1:] and p.split()[-1] in _UNITS:
         # "5" or "five" before "hundred" is another number; "250" isn't read in "2500".
-        after = (r"(?!\d|[.,]\d)" if p[-1:].isdigit() else r"(?![\w-])") + _MULTIPLIER
+        after = (r"(?!\w|[.,]\d)" if p[-1:].isdigit() else r"(?![\w-])") + _MULTIPLIER
     elif " " in p and p[-1:].isalpha():
         # "on time" isn't "on timeout"; a single word still reads inside a longer one ("reissued").
         after = r"(?:e?s)?(?![\w-])"
@@ -379,13 +381,13 @@ def mention_spans(text: str, phrase: str) -> list[tuple[int, int]]:
 # Sentence ends, not clause breaks: "Up to $250 per purchase: no approval needed" is one statement.
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
 # "$2,500" is one amount; the comma in "$250, no approval" is punctuation.
-_AMOUNT = re.compile(r"\$\s?\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s?dollars\b")
+_AMOUNT = re.compile(r"\$\s?\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s?dollars?\b")
 
 
 # Parts of a sentence: "; : but" and a comma before a space ("$2,500" stays one number).
 _PART = re.compile(r";|:|,(?=\s)|\bbut\b")
 # Words that move a part of the sentence to a higher band: "above that", "larger amounts".
-_BAND_OBJECT = r"(?:that|this|it|those|these|the limit|\$|\d)"
+_BAND_OBJECT = r"(?:that|this|it|those|these|the limit|(?:(?:the|a|an|your|our)\s+)?(?:\$|\d))"
 _BIGGER = r"(?:higher|larger|greater|bigger)"
 _RAISES = re.compile(
     rf"\b(?:above|over|past|beyond|more than|exceed(?:s|ed|ing)?|in excess of)\s+{_BAND_OBJECT}"
@@ -420,6 +422,11 @@ _OTHER_APPROVER = re.compile(
 _OTHER_APPROVER_PIECE = re.compile(rf"^\s*(?:from|by)\s+{_APPROVER}")
 
 
+def _amount_values(text: str) -> set[float]:
+    """The amounts named in `text` by value: "$250", "$250.00" and "250 dollars" are one."""
+    return {float(re.sub(r"[^\d.]", "", a)) for a in _AMOUNT.findall(text)}
+
+
 def _approves(text: str, no_approval: list[str]) -> bool:
     """Whether `text` says someone approves, once its no-approval phrases are blanked out."""
     for m in no_approval:
@@ -447,18 +454,23 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
         # approves") covers the rest of its sentence, until the $250 amount returns.
         for sentence_rest in rest:
             raised = False
+            skipped = False  # an approval set aside because a band was in force
             for piece in (p for text in sentence_rest for p in _PIECE.split(text)):
                 if _OTHER_APPROVER_PIECE.match(piece):
                     return True
                 # The band phrase's own amount ("over $250") is its object; $250
-                # anywhere else in the piece is the $250 purchase again.
-                outside = _RAISES.sub(" ", piece)
+                # anywhere else is the $250 purchase again, and so was what the
+                # sentence approved while the band was in force.
                 if _RAISES.search(piece):
                     raised = True
-                if band_amounts & {a.replace(" ", "") for a in _AMOUNT.findall(outside)}:
+                approves = _approves(piece, second)
+                if band_amounts & _amount_values(_RAISES.sub(" ", piece)):
+                    if raised and skipped:
+                        return True
                     raised = False
-                if not raised and _approves(piece, second):
+                if approves and not raised:
                     return True
+                skipped = skipped or approves
         return False
 
     sentences = _SENTENCE_END.split(_normalized(answer))
@@ -470,7 +482,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             if not bands:
                 continue
             band_end = max(end for _, end in bands)
-            band_amounts = {a.replace(" ", "") for b0, b1 in bands for a in _AMOUNT.findall(part[b0:b1])}
+            band_amounts = {v for b0, b1 in bands for v in _amount_values(part[b0:b1])}
             for _, end in phrase_spans(part):
                 upto = part[:max(end, band_end)]
                 # "with no approval above $2,500": the phrase is about the higher band.
