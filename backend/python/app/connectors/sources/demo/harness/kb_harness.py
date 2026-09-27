@@ -455,13 +455,20 @@ _REQUIRES_BEFORE = re.compile(r"\b(?:can't|cannot|can not|not|never|nothing|nobo
 
 
 # "It is rejected", "filing fails"; "a validation failure" is a noun, not a block.
-_BLOCKED = r"\b(?:reject(?:s|ed)?|block(?:s|ed)?|fail(?:s|ed)?|den(?:y|ies|ied)|refuse[sd]?|decline[sd]?|bounce[sd]?|stop(?:s|ped)?|halt(?:s|ed)?)\b"
+# Bare "block", "stop", "halt" and "decline" are left out: they are nouns as often as verbs.
+_BLOCKED = (
+    r"\b(?:reject(?:s|ed)?|blocks|blocked|fail(?:s|ed)?|den(?:y|ies|ied)|refuse[sd]?|declines|declined"
+    r"|bounce[sd]|stops|stopped|halts|halted)\b"
+)
 # "nothing goes through", "no purchase goes through", "it is rejected".
 _REQUIRES_ANYWHERE = re.compile(
     r"\b(?:can't|cannot|can not|not|never|nothing|nobody|no one|won't)\b|n't\b|\bno\s+(?!need|problem|worries)\w+"
     rf"|{_BLOCKED}"
 )
-_NOT_BLOCKED = re.compile(rf"(?:\b(?:not|never)\b|n't\b)\s*(?:\w+\s+){{0,2}}?{_BLOCKED}")
+# "not rejected", "does not come to a halt": the negation cancels the block.
+_NOT_BLOCKED = re.compile(
+    rf"(?:\b(?:not|never)\b|n't\b)\s*(?:\w+\s+){{0,3}}?(?:{_BLOCKED}|\b(?:halt|stop|standstill|block)\b)"
+)
 
 
 def _required_without(sentence: str, no_approval: list[str]) -> bool:
@@ -472,9 +479,18 @@ def _required_without(sentence: str, no_approval: list[str]) -> bool:
             sentence = sentence[:start] + " " * (end - start) + sentence[end:]
     # "It is not rejected without …" says the opposite.
     sentence = _NOT_BLOCKED.sub(lambda m: " " * len(m.group(0)), sentence)
-    if _RAISES.search(sentence) or not _REQUIRES_ANYWHERE.search(sentence):
-        return False
-    return any(_WITHOUT_BEFORE.search(sentence[:m.start()]) for m in _APPROVAL_WORD.finditer(sentence))
+
+    def clause_end(at: int) -> int:
+        brk = _CLAUSE_BREAK.search(sentence, at)
+        return brk.start() if brk else len(sentence)
+
+    # A higher band before the sign-off, or in its clause or the requirement's
+    # clause, is about that band ("Above that, it is rejected without …").
+    return any(
+        not _RAISES.search(sentence[:max(clause_end(a.end()), clause_end(r.end()))])
+        for a in _APPROVAL_WORD.finditer(sentence) if _WITHOUT_BEFORE.search(sentence[:a.start()])
+        for r in _REQUIRES_ANYWHERE.finditer(sentence)
+    )
 
 
 def _without_cancels(before: str) -> bool:
@@ -495,18 +511,22 @@ _RANGE = re.compile(
 )
 
 
-def _without_new_ranges(text: str, band_amounts: set[float]) -> str:
-    """`text` with every range that starts above the $250 band blanked out; what a
-    sentence says about approval there belongs to that range, not to $250."""
-    def blank(m: re.Match[str]) -> str:
+_RANGE_MARK = "\0"
+
+
+def _mark_new_ranges(text: str, band_amounts: set[float]) -> str:
+    """`text` with every range above the $250 band replaced by a mark that no
+    splitter breaks ("between $251 and $2,500"); what a sentence says about
+    approval there belongs to that range, not to $250."""
+    def mark(m: re.Match[str]) -> str:
         low, high = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
         bounds = [float(re.sub(r"[^\d.]", "", b)) for b in (low, high)]
-        return " " * len(m.group(0)) if min(bounds) > max(band_amounts) else m.group(0)
-    return _RANGE.sub(blank, text)
+        return _RANGE_MARK * len(m.group(0)) if min(bounds) > max(band_amounts) else m.group(0)
+    return _RANGE.sub(mark, text)
 
 
 def _new_range(text: str, band_amounts: set[float]) -> bool:
-    return _without_new_ranges(text, band_amounts) != text
+    return _RANGE_MARK in _mark_new_ranges(text, band_amounts)
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
@@ -515,7 +535,8 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
     is followed by a part that only says someone approves ("Up to $250: your
     manager's approval is required")."""
     for i, part in enumerate(parts):
-        if not band_amounts & _amount_values(_RAISES.sub(" ", part)) or _new_range(part, band_amounts):
+        # "approve the $250 purchase from $251 to $2,500" still names $250.
+        if not band_amounts & _amount_values(_RAISES.sub(" ", _mark_new_ranges(part, band_amounts))):
             continue
         if _approves(part, second):
             return True
@@ -552,17 +573,17 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 return True
             raised = False
             skipped = False  # an approval set aside because a band was in force
-            for piece in (p for text in sentence_rest for p in _PIECE.split(text)):
+            marked = (_mark_new_ranges(text, band_amounts) for text in sentence_rest)
+            for piece in (p for text in marked for p in _PIECE.split(text)):
                 if _OTHER_APPROVER_PIECE.match(piece):
                     return True
                 # The band phrase's own amount ("over $250") is its object; $250
                 # anywhere else is the $250 purchase again, and so was what the
                 # sentence approved while the band was in force.
-                outside = _without_new_ranges(piece, band_amounts)
-                if _RAISES.search(piece) or outside != piece:
+                if _RAISES.search(piece) or _RANGE_MARK in piece:
                     raised = True
                 approves = _approves(piece, second)
-                if band_amounts & _amount_values(_RAISES.sub(" ", outside)):
+                if band_amounts & _amount_values(_RAISES.sub(" ", piece)):
                     if raised and skipped:
                         return True
                     raised = False
