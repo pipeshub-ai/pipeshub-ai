@@ -413,7 +413,7 @@ _APPROVER = (
 # What may follow the second-list phrase when it stands alone after the amount: "no approval is needed".
 _BARE_REST = re.compile(
     r"^(?:\s*\b(?:is|are|at all|needed|required|necessary)\b)*"
-    rf"(?:\s+(?:from|by)\s+{_MANAGER}|\s+by\s+{_FILING}[^;:]*)?[\s.!]*$"
+    rf"(?:\s+(?:from|by)\s+{_MANAGER})?(?:\s+by\s+{_FILING}[^;:]*)?[\s.!]*$"
 )
 # Any mention of approving, outside the no-approval phrases themselves: "must be
 # approved", "your manager's sign-off", "require your manager to approve them".
