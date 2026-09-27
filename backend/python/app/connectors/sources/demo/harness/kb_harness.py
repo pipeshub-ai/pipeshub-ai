@@ -366,29 +366,35 @@ _AMOUNT = re.compile(r"\$\s?\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\
 
 # Parts of a sentence: "; : but" and a comma before a space ("$2,500" stays one number).
 _PART = re.compile(r";|:|,(?=\s)|\bbut\b")
-# "no approval above that" is about a higher band, not the one it follows.
-_RAISES = re.compile(r"\b(?:above|over|more than|beyond|exceeding|greater than)\b")
+# Words that move a part of the sentence to a higher band: "above that", "larger amounts".
+_RAISES = re.compile(
+    r"\b(?:above|over|more than|beyond|exceed\w*|greater|higher|larger|bigger|past)\b"
+)
+# What may follow the second-list phrase when it stands alone after the amount: "no approval is needed".
+_BARE_REST = re.compile(r"^(?:\s*\b(?:is|are|at all|needed|required|necessary)\b)*[\s.!]*$")
 
 
 def states_together(answer: str, first: list[str], second: list[str]) -> bool:
-    """Whether a second-list phrase is about a first-list amount: in the same part
-    of a sentence, or in the part right after it when that part names no other
-    amount, and not in a part that says "above", "over" or "more than". So
-    "up to $250 without approval" and "up to $250: no approval needed" count, and
-    "up to $250, no approval above $2,500" or "... above that, no approval" don't."""
+    """Whether a second-list phrase is about a first-list amount. Either one part
+    of a sentence holds both ("up to $250 without approval"), or the part after
+    the amount is only that phrase ("up to $250: no approval needed"). A part that
+    moves to a higher band ("above that", "larger amounts") never counts."""
 
-    def states_it(part: str) -> bool:
-        return not _RAISES.search(part) and any(mention_spans(part, m) for m in second)
+    def phrase_spans(part: str) -> list[tuple[int, int]]:
+        return [span for m in second for span in mention_spans(part, m)]
 
     for sentence in _SENTENCE_END.split(_normalized(answer)):
         parts = _PART.split(sentence)
         for i, part in enumerate(parts):
-            if not any(mention_spans(part, m) for m in first):
+            if _RAISES.search(part) or not any(mention_spans(part, m) for m in first):
                 continue
-            if states_it(part):
+            if phrase_spans(part):
                 return True
             after = parts[i + 1] if i + 1 < len(parts) else ""
-            if not _AMOUNT.search(after) and states_it(after):
+            if _RAISES.search(after) or _AMOUNT.search(after):
+                continue
+            stripped = after.strip()
+            if any(start == 0 and _BARE_REST.match(stripped[end:]) for start, end in phrase_spans(stripped)):
                 return True
     return False
 
