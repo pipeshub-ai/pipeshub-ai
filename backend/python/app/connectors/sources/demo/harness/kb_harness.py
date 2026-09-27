@@ -497,18 +497,22 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
                 break
         return lo, hi
 
-    def someone_approves(text: str) -> bool:
-        # A finished approval; "without your manager's sign-off" is the condition itself.
+    def someone_approves(lo: int, hi: int) -> bool:
+        # A finished approval in sentence[lo:hi]; "without your manager's sign-off"
+        # is the condition itself.
         return any(
-            not _negated(text[:m.start()]) and not _WITHOUT_BEFORE.search(text[:m.start()])
-            for m in _APPROVAL_WORD.finditer(text)
+            lo <= m.start() < hi
+            and not _negated(sentence[:m.start()]) and not _WITHOUT_BEFORE.search(sentence[:m.start()])
+            for m in _APPROVAL_WORD.finditer(sentence)
         )
 
     def covers(x: int, at: int) -> bool:
-        # In the same piece, or before it with no approval from the band's piece up
-        # to it ("Above $2,500, finance approves, …" is a finished claim).
+        # With no approval between them ("Above $2,500, finance approves expenses
+        # rejected …" is a finished claim); from before, the band's whole piece counts.
         lo, hi = segment(_PIECE, x)
-        return lo <= at < hi or (x < at and not someone_approves(sentence[lo:segment(_PIECE, at)[0]]))
+        if x < at:
+            return not someone_approves(x if at < hi else lo, at)
+        return lo <= at < hi and not someone_approves(at, x)
 
     def covered(a: int, r: int) -> bool:
         # A higher band covers the sign-off when it shares their claim ("but" and ";"
@@ -541,8 +545,8 @@ def _without_cancels(before: str) -> bool:
 # Both bounds of a range: "from $251 to $2,500", "between $251 and $2,500", "$251–2,500".
 _BOUND = rf"(?:{_AMOUNT.pattern}|\b\d{{1,3}}(?:,\d{{3}})+\b|\b\d{{3,}}\b)"
 _RANGE = re.compile(
-    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:to|and|through|-|–|—)\s*({_BOUND})"
-    rf"|({_AMOUNT.pattern})\s*(?:to|-|–|—)\s*({_BOUND})"
+    rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:up\s+to|to|and|through|-|–|—)\s*({_BOUND})"
+    rf"|({_AMOUNT.pattern})\s*(?:up\s+to|to|-|–|—)\s*({_BOUND})"
 )
 
 
@@ -568,13 +572,19 @@ def _new_range(text: str, band_amounts: set[float]) -> bool:
     return _RANGE_MARK in _mark_new_ranges(text, band_amounts)
 
 
+# Words that leave a piece's claim as the range: "only", "for purchases", "applicable".
+_RANGE_LEAD = re.compile(
+    r"\b(?:but|and|only|just|for|purchases?|amounts?|expenses?|spend\w*|the|a|range|applicable|applies|valid|in|of|is|are)\b"
+)
+
+
 def _range_only_next(texts: list[str], band_amounts: set[float]) -> bool:
     """Whether the first non-blank piece of `texts` is only a range reaching above
     the $250 band (", from $251 to $2,500"): what came before is about that range."""
     for text in texts:
         for piece in _PIECE.split(_mark_new_ranges(text, band_amounts, reaching_above=True)):
             if piece.strip():
-                return _RANGE_MARK in piece and not re.search(r"[^\s\0.!?]", piece)
+                return _RANGE_MARK in piece and not _RANGE_LEAD.sub(" ", piece).strip(" \0.!?")
     return False
 
 
