@@ -153,6 +153,9 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
         "You can spend up to $250 without approval, and there is no approval above $2,500.",
         "You can spend up to $250 without approval, and above $2,500 finance approves.",
         "You can spend up to $250 without approval and above that your manager approves.",
+        "You can spend up to $250 with no approval from my manager.",
+        "You can spend up to $250 without approval from your manager.",
+        "You can spend up to $250 without your manager's approval.",
         "Up to $250: no approval needed; your manager approves above that, up to $2,500.",
         "You can spend up to $250 without approval; above that, your manager approves.",
         "You can spend up to $250 without your manager\u2019s approval, and finance approves above $2,500.",
@@ -328,6 +331,17 @@ def test_negation_reaches_three_words_back_and_includes_no(
         "Purchases of up to $250 require your manager's approval; no approval is needed.",
         "Purchases of up to $250 require your manager's approval: no approval is needed.",
         "Up to $250 with no approval from finance.",
+        # Other ways of saying the $250 purchase is approved, or another approver.
+        "Purchases of up to $250 must be approved, no approval is needed.",
+        "Purchases of up to $250 need to be approved, no approval is needed.",
+        "Purchases of up to $250 have to be approved, no approval is needed.",
+        "Purchases of up to $250 require your manager to approve them, no approval is needed.",
+        "Purchases of up to $250 are approved only by your manager, no approval is needed.",
+        "Purchases of up to $250 require your manager's sign-off, no approval is needed.",
+        "Up to $250 and your manager's approval is required and no approval is needed.",
+        "You can spend up to $250 and no approval is needed from finance.",
+        "Up to $250 with no approval needed from finance.",
+        "No approval is needed from finance for purchases up to $250.",
     ],
 )
 def test_f2_needs_the_no_approval_amount_not_just_the_words(fx: dict, answer: str) -> None:

@@ -372,18 +372,21 @@ _RAISES = re.compile(
 )
 # What may follow the second-list phrase when it stands alone after the amount: "no approval is needed".
 _BARE_REST = re.compile(r"^(?:\s*\b(?:is|are|at all|needed|required|necessary)\b)*[\s.!]*$")
-# Someone approves the purchase: "require your manager's approval", "must be approved by".
-_APPROVES = re.compile(
-    r"\b(?:requires?|required|needs?|must (?:have|get)|subject to)\s+"
-    r"(?:(?:your|a|the|an|prior|written|manager'?s?)\s+){0,3}approval\b"
-    r"|\b(?:approved|signed off) by\b|\bmanager (?:must |has to |needs to |will )?(?:approves?|signs? off)\b"
+# Any mention of approving, outside the no-approval phrases themselves: "must be
+# approved", "your manager's sign-off", "require your manager to approve them".
+_APPROVAL_WORD = re.compile(r"\bapprov\w*|\bsign(?:s|ed)?[- ]?off\b")
+# "no approval (is needed) from finance" is about another approver, unless it's the manager.
+_OTHER_APPROVER = re.compile(
+    r"^(?:\s+(?:is|are|needed|required|necessary))*\s+from\s+(?!(?:your |a |the |my )?manager)"
 )
-# "no approval from finance" is about another approver, unless it's the manager.
-_OTHER_APPROVER = re.compile(r"^\s+from\s+(?!(?:your |a |the )?manager)")
 
 
-def _approves(text: str) -> bool:
-    return any(not _negated(text[:m.start()]) for m in _APPROVES.finditer(text))
+def _approves(text: str, no_approval: list[str]) -> bool:
+    """Whether `text` says someone approves, once its no-approval phrases are blanked out."""
+    for m in no_approval:
+        for start, end in mention_spans(text, m):
+            text = text[:start] + " " * (end - start) + text[end:]
+    return any(not _negated(text[:m.start()]) for m in _APPROVAL_WORD.finditer(text))
 
 
 def states_together(answer: str, first: list[str], second: list[str]) -> bool:
@@ -408,9 +411,9 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             band_end = max(end for _, end in bands)
             for _, end in phrase_spans(part):
                 upto = part[:max(end, band_end)]
-                if not _RAISES.search(upto) and not _approves(upto):
+                if not _RAISES.search(upto) and not _approves(upto, second):
                     return True
-            if _RAISES.search(part) or _approves(part):
+            if _RAISES.search(part) or _approves(part, second):
                 continue
             after = parts[i + 1] if i + 1 < len(parts) else ""
             if _RAISES.search(after) or _AMOUNT.search(after):
