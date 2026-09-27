@@ -161,6 +161,10 @@ def test_m1_needs_the_launch_date_not_a_number_inside_a_pr_id(fx: dict, answer: 
         "You can spend up to $250 with no approval, and above that your manager approves.",
         "You can spend up to $250 without approval. Your manager approves purchases above the $250 limit.",
         "You can spend up to $250 without approval and your manager must approve amounts that exceed the $250 limit.",
+        "You can spend up to $250 without approval. Your manager approves purchases above that $250 limit.",
+        "You can spend up to $250 without approval. Your manager approves purchases above this $250 limit.",
+        "Up to $250 per purchase: no approval needed. Above that $250 limit your manager approves.",
+        "You can spend up to $250 without approval. Your manager approves purchases above their $250 limit.",
         "For purchases up to $250, no approval is needed.",
         "You can spend up to $250 without approval, and there is no approval above $2,500.",
         "You can spend up to $250 without approval, and above $2,500 finance approves.",
@@ -430,6 +434,14 @@ def test_negation_reaches_three_words_back_and_includes_no(
         "You can spend up to $250 without approval. Above that your manager must approve the 250 dollar purchase.",
         "You can spend up to 250 dollars without approval. Above that your manager must approve the $250 purchase.",
         "You can spend up to $250 without approval. Above that your manager must approve the $250.00 purchase.",
+        # A filing phrase that still has the manager approving; $250 again after an earlier approval.
+        "For purchases up to $250, no approval is needed by submitting it for your manager to approve.",
+        "Up to $250: no approval needed by submitting the receipt for your manager to approve.",
+        "Up to $250 per purchase: no approval needed by getting your manager to approve it.",
+        "You can spend up to $250 with no approval by submitting it for your manager to approve.",
+        "You can spend up to $250 with no approval, above that your manager must approve it, and also the $250 purchase.",
+        "You can spend up to $250 with no approval and your manager must approve it above that, including the $250 purchase.",
+        "You can spend up to $250 without approval. Above that your manager must approve every one, including the $250 purchase.",
     ],
 )
 def test_f2_needs_the_no_approval_amount_not_just_the_words(fx: dict, answer: str) -> None:

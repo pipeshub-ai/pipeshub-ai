@@ -387,7 +387,11 @@ _AMOUNT = re.compile(r"\$\s?\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\
 # Parts of a sentence: "; : but" and a comma before a space ("$2,500" stays one number).
 _PART = re.compile(r";|:|,(?=\s)|\bbut\b")
 # Words that move a part of the sentence to a higher band: "above that", "larger amounts".
-_BAND_OBJECT = r"(?:that|this|it|those|these|the limit|(?:(?:the|a|an|your|our)\s+)?(?:\$|\d))"
+# An amount (with any determiner: "the/that/their $250 limit") before a bare "that".
+_BAND_OBJECT = (
+    r"(?:(?:(?:the|a|an|your|our|their|his|her|that|this|these|those)\s+)?(?:\$|\d)"
+    r"|that|this|it|those|these|the limit)"
+)
 _BIGGER = r"(?:higher|larger|greater|bigger)"
 _RAISES = re.compile(
     rf"\b(?:above|over|past|beyond|more than|exceed(?:s|ed|ing)?|in excess of)\s+{_BAND_OBJECT}"
@@ -500,7 +504,11 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             if _RAISES.search(first_piece) or _AMOUNT.search(first_piece):
                 continue
             stripped = first_piece.strip()
-            bare = any(start == 0 and _BARE_REST.match(stripped[end:]) for start, end in phrase_spans(stripped))
+            # "by submitting it for your manager to approve" still has the manager approving.
+            bare = any(
+                start == 0 and _BARE_REST.match(stripped[end:]) and not _approves(stripped[end:], second)
+                for start, end in phrase_spans(stripped)
+            )
             if bare and not approved_later([[*more, *parts[i + 2:]], *later], band_amounts):
                 return True
     return False
