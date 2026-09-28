@@ -684,7 +684,14 @@ def _only_range(text: str, band_amounts: set[float], *, reaching_above: bool = F
 _BREAK_OUTSIDE_AMOUNTS = re.compile(r"[;:!?]|[.,](?!\d)|\bbut\b")
 
 
-def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[str]) -> bool:
+_BAND_LEAD_IN = re.compile(
+    r"^[\s,;:.!?]*(?:(?:and|but|so|then)\b\s*)?"
+    r"(?:(?:(?:in|for|within|at|on)\s+(?:that|this|those|these|them|which|such)"
+    r"(?:\s+(?:band|range|tier|case|cases|amount|amounts|purchase|purchases))?|where|there)\b\s*,?\s*)?"
+)
+
+
+def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[str], after: str = "") -> bool:
     """Whether `text` names an amount above the $250 band or a higher band ("above
     that"), before any exception ("except between $251 and $2,500")."""
     def excepted(at: int) -> bool:
@@ -701,7 +708,9 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
         # opening the next one ("except above $2,500, no approval is needed"), not one
         # about something else ("…, and up to $100 needs no approval").
         own = text[exceptions[-1].end():hi]
-        following = re.sub(r"^[\s,;:.!?]*(?:(?:and|but|so|then)\b\s*)?", "", text[hi:])
+        # The next clause, or the next sentence (`after`) when this text ends; a lead-in
+        # back to the band ("in that band", "for those", "where") keeps it on that band.
+        following = _BAND_LEAD_IN.sub("", text[hi:] if text[hi:].strip(" .!?") else after)
         opening = _APPROVAL_WORD.match(following)
         return not any(mention_spans(own, p) for p in no_approval) and not any(
             _NOT_AFTER.match(own[m.end():]) or _NEGATED_AFTER.match(own[m.end():])
@@ -763,29 +772,35 @@ def _negates_approval(before: str) -> bool:
     return bool(re.search(r"\byet\s+to\b", " ".join(words[window_start:])))
 
 
+# Any negation right after an approval word, waiver or not.
+_NEGATION_AFTER = re.compile(
+    r"(?:\s+(?:will|would|shall|should|can|could|may|might|must|does|do|did|is|are|was|were|has|have|had))?"
+    r"\s+(?:not|never|cannot|no|\w+n't)\b"
+)
 _LATER_COPULA_NOT = re.compile(rf"\b(?:(?:is|are|was|were)\s+not|isn't|aren't|wasn't|weren't)\b{_NOT_WAIVED}")
 
 
 def _someone_approves(text: str, no_approval: list[str]) -> bool:
-    """Whether `text` has someone approving: an approval word, and no no-approval
-    phrase or negated approval word ("up to $2,500: no approval needed")."""
-    # A no-approval phrase in it ("so approval is not required") is nobody approving.
-    if any(mention_spans(text, p) for p in no_approval):
-        return False
+    """Whether `text` has someone approving ("your manager's approval is required").
+    An approval word kept only by a negated waiver ("approval is not waived") counts
+    only while nothing else in `text` says nobody approves."""
+    has_phrase = any(mention_spans(text, p) for p in no_approval)
     words = list(_APPROVAL_WORD.finditer(text))
-
-    def negated(i: int) -> bool:
-        m = words[i]
+    affirmed, waived, negated = False, False, has_phrase
+    for i, m in enumerate(words):
         # A waiver keeps only its own negation: "approval is not waived and is not
         # required" still says nobody approves.
         stretch = text[m.end():words[i + 1].start() if i + 1 < len(words) else len(text)]
-        return bool(
+        if (
             _NOT_AFTER.match(text[m.end():]) or _NEGATED_AFTER.match(text[m.end():])
             or _negates_approval(text[:m.start()]) or _LATER_COPULA_NOT.search(stretch)
-        )
-
-    # Any approval word that is negated means nobody approves.
-    return bool(words) and not any(negated(i) for i in range(len(words)))
+        ):
+            negated = True
+        elif _NEGATION_AFTER.match(text[m.end():]):
+            waived = True
+        else:
+            affirmed = True
+    return affirmed or (waived and not negated)
 
 
 def _moves_to_higher_band(
@@ -796,8 +811,9 @@ def _moves_to_higher_band(
     higher amount or band and nobody approves in it ("…, not above $2,500.", ". The
     limit is $2,500."). "Above that, your manager approves" is the next band's own claim."""
     rest = " ".join(texts)
-    follow = rest if re.search(r"\w", _RANGE_LEAD.sub(" ", rest)) else next_sentence
-    return _names_higher_band(follow, band_amounts, no_approval) and not _someone_approves(follow, no_approval)
+    rest_says = bool(re.search(r"\w", _RANGE_LEAD.sub(" ", rest)))
+    follow, after = (rest, next_sentence) if rest_says else (next_sentence, "")
+    return _names_higher_band(follow, band_amounts, no_approval, after) and not _someone_approves(follow, no_approval)
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
