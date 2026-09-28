@@ -173,6 +173,70 @@ describe('UserController', () => {
       expect(response).to.have.property('pagination');
     });
 
+    it('leaves service accounts out of the list of people by default', async () => {
+      // They can never sign in, so listing them here would park them in the
+      // pending-invite set for good and sweep them into bulk invites meant for
+      // colleagues who have not signed in yet.
+      const find = sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+    });
+
+    it('includes them when the caller asks, for the group and team pickers', async () => {
+      // Membership is how a service account is given anything to read, and the
+      // create panel tells an administrator to grant access that way, so the
+      // screens that choose membership have to be able to offer them.
+      req.query = { includeServiceAccounts: 'true' };
+
+      const find = sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.kind).to.equal(undefined);
+    });
+
+    it('only opens up for an explicit true, not any other value', async () => {
+      req.query = { includeServiceAccounts: 'false' };
+
+      const find = sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+    });
+
     it('should return blocked users when isBlocked=true query param', async () => {
       req.query = { isBlocked: 'true' };
 

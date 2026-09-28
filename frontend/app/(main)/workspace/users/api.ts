@@ -58,6 +58,8 @@ export const UsersApi = {
     hasLoggedIn?: string;
     isBlocked?: string;
     groupIds?: string;
+    /** `'true'` also returns service accounts, which are left out by default. */
+    includeServiceAccounts?: string;
   }, options?: { suppressErrorToast?: boolean }): Promise<{ users: User[]; totalCount: number }> {
     const { data } = await apiClient.get<UsersListResponse>(
       BASE_URL,
@@ -108,6 +110,8 @@ export const UsersApi = {
     hasLoggedIn?: string;
     isBlocked?: string;
     groupIds?: string;
+    /** `'true'` also returns service accounts, which are left out by default. */
+    includeServiceAccounts?: string;
   }): Promise<{ users: User[]; totalCount: number }> {
     return UsersApi.listUsers(params);
   },

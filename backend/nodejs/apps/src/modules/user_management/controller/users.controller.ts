@@ -180,6 +180,7 @@ export class UserController {
       hasLoggedIn,
       isBlocked,
       groupIds,
+      includeServiceAccounts,
     } = req.query;
 
     const orgId = req.user?.orgId;
@@ -196,14 +197,25 @@ export class UserController {
     const filter: Record<string, any> = {
       orgId: orgIdObj,
       isDeleted: { $ne: true },
-      // This is the list of people. Service accounts are users in every way
-      // the permission graph cares about, but they are managed in their own
-      // admin screen, and listing them here has consequences beyond the
-      // cosmetic: they can never log in, so they would sit in the
-      // pending-invite set forever and be swept into bulk invite actions
-      // aimed at colleagues who have not signed in yet.
-      kind: { $ne: 'service' },
     };
+
+    // This is the list of people. Service accounts are users in every way the
+    // permission graph cares about, but they are managed in their own admin
+    // screen, and listing them here by default has consequences beyond the
+    // cosmetic: they can never log in, so they would sit in the pending-invite
+    // set forever and be swept into bulk invite actions aimed at colleagues
+    // who have not signed in yet.
+    //
+    // The screens that choose who belongs to a group or a team are the
+    // exception, because membership is how a service account is given anything
+    // to read, and the create panel tells an administrator to grant access
+    // that way. They ask for them explicitly, so no other caller changes
+    // behaviour. Each returned record carries its `kind`, which is what lets
+    // those screens mark a machine identity rather than let it pass for a
+    // colleague.
+    if (String(includeServiceAccounts) !== 'true') {
+      filter.kind = { $ne: 'service' };
+    }
 
     if (search) {
       const searchRegex = { $regex: String(search), $options: 'i' };

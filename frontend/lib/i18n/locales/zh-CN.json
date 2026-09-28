@@ -3503,7 +3503,8 @@
       },
       "disableTitle": "停用此服务账号？",
       "disableDescription": "{{name}} 会立即停止工作——包括它已持有的所有令牌，而不只是等到下次登录。在您重新启用之前，使用这些令牌的一切都会持续失败。",
-      "disableConfirm": "停用"
+      "disableConfirm": "停用",
+      "memberBadge": "服务账户"
     }
   },
   "filePreview": {

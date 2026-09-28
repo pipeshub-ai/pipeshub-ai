@@ -3496,7 +3496,8 @@
       },
       "disableTitle": "Dieses Dienstkonto deaktivieren?",
       "disableDescription": "{{name}} funktioniert sofort nicht mehr – einschließlich aller bereits vorhandenen Tokens, nicht erst bei der nächsten Anmeldung. Alles, was eines dieser Tokens verwendet, schlägt fehl, bis Sie das Konto wieder aktivieren.",
-      "disableConfirm": "Deaktivieren"
+      "disableConfirm": "Deaktivieren",
+      "memberBadge": "Dienstkonto"
     }
   },
   "filePreview": {
