@@ -601,7 +601,7 @@ _NEGATOR = r"(?:\w+n't|\w+\s+not|cannot|not|never|nothing|nobody|no\s+one|no)"
 # above", "never goes above", "not much more than", "no expense is above".
 _CEILING_FILLER = (
     r"(?:any|ever|much|is|are|was|were|be|been|have|has|had|to|will|would|should|shall|can|could|must|may|might"
-    r"|go|goes|gone|went|going|get|gets|got|come|comes|came|rise|rises|rose|run|runs|single"
+    r"|go|goes|gone|went|going|get|gets|got|come|comes|came|rise|rises|rose|run|runs|single|a|an|one|other|another"
     r"|expense|expenses|purchase|purchases|amount|amounts|total|totals|cost|costs|item|items)"
 )
 _AUXILIARY = r"(?:is|are|was|were|has|have|had|will|would|should|shall|can|could|must|may|might)"
@@ -611,13 +611,15 @@ _CEILING = re.compile(
     # "hasn't exceeded", "not in excess of".
     rf"|{_NEGATOR}(?:\s+{_CEILING_FILLER})*\s+"
     r"(?:exceed\w*|to\s+exceed|(?:more|greater|higher|larger|bigger)\s+than|above|over|beyond|past|in\s+excess\s+of)"
-    r"|(?:at\s+)?(?:an?\s+|the\s+)?(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+of)?)"
+    rf"|(?:at\s+)?(?:{_DETERMINER}\s+)?(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+(?:of|is|are|was|were))?)"
     rf"\s+{_DET}({_AMOUNT.pattern})"
 )
 _RANGE_MARK = "\0"
 _NEGATED_MARK = "\1"  # a negated ceiling, whose subject can be stripped
 # A subject word: "manager's", "average"; never an exception or approval word.
-_SUBJECT_WORD = r"(?!(?:except|exception|unless|save|besides|excluding|barring|apart|aside|other|outside)\b|approv|sign|authori)[\w']+"
+# A lead-in before a subject: "However, the total …", "But the total …".
+_LEAD_IN = r"\s*(?:(?:however|but|and|yet|still|also|so)\b\s*,?\s*)?"
+_SUBJECT_WORD = rf"(?!{_EXCEPTION}\b|approv|sign|authori)[\w']+"
 # An approval with no object of its own: "your manager approves", "approval is required".
 _BARE_APPROVAL_END = re.compile(r"(?:\s*\b(?:is|are|needed|required|necessary)\b)*[\s.!]*")
 
@@ -669,12 +671,12 @@ def _only_range(
         # The subject of a negated ceiling is part of it: "The running total has never
         # been above $2,500." A plain one ("your manager approves up to …") is not.
         marked = re.sub(
-            rf"^\s*(?:{_DETERMINER}\s+)?(?:{_SUBJECT_WORD}\s+){{1,3}}?(?:{_AUXILIARY}\s+)?(?={_NEGATED_MARK})",
+            rf"^{_LEAD_IN}(?:{_DETERMINER}\s+)?(?:{_SUBJECT_WORD}\s+){{1,3}}?(?:{_AUXILIARY}\s+)?(?={_NEGATED_MARK})",
             " ", marked,
         ).replace(_NEGATED_MARK, _RANGE_MARK)
         # A plain ceiling keeps a one-word subject with a copula: "The total is up to $2,500."
         marked = re.sub(
-            rf"^\s*(?:{_DETERMINER}\s+)?{_SUBJECT_WORD}\s+(?:is|are|was|were)\s+(?={_RANGE_MARK})", " ", marked
+            rf"^{_LEAD_IN}(?:{_DETERMINER}\s+)?{_SUBJECT_WORD}\s+(?:is|are|was|were)\s+(?={_RANGE_MARK})", " ", marked
         )
     if raises and _RAISES.search(marked):
         # The raise pattern ends at the amount's first character ("above $"); drop the rest.
