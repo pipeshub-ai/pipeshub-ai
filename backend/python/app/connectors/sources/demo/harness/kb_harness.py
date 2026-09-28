@@ -604,7 +604,6 @@ _CEILING_FILLER = (
     r"|go|goes|gone|went|going|get|gets|got|come|comes|came|rise|rises|rose|run|runs|single|a|an|one|other|another"
     r"|expense|expenses|purchase|purchases|amount|amounts|total|totals|cost|costs|item|items)"
 )
-_AUXILIARY = r"(?:is|are|was|were|has|have|had|will|would|should|shall|can|could|must|may|might)"
 _CEILING = re.compile(
     r"\b(?:up\s+(?:to|through|until)|to|under|below|less\s+than|through|until|within|at\s+most|capped\s+at"
     # A negated comparison: "not above", "isn't greater than", "mustn't be more than",
@@ -615,11 +614,6 @@ _CEILING = re.compile(
     rf"\s+{_DET}({_AMOUNT.pattern})"
 )
 _RANGE_MARK = "\0"
-_NEGATED_MARK = "\1"  # a negated ceiling, whose subject can be stripped
-# A subject word: "manager's", "average"; never an exception or approval word.
-# A lead-in before a subject: "However, the total …", "But the total …".
-_LEAD_IN = r"\s*(?:(?:however|but|and|yet|still|also|so)\b\s*,?\s*)?"
-_SUBJECT_WORD = rf"(?!{_EXCEPTION}\b|approv|sign|authori)[\w']+"
 # An approval with no object of its own: "your manager approves", "approval is required".
 _BARE_APPROVAL_END = re.compile(r"(?:\s*\b(?:is|are|needed|required|necessary)\b)*[\s.!]*")
 
@@ -649,52 +643,40 @@ _RANGE_LEAD = re.compile(
 )
 
 
-def _ceiling_above(text: str, band_amounts: set[float]) -> bool:
-    """Whether `text` sets a ceiling above the $250 band ("under $2,500", "up to $2,500")."""
-    return any(max(_amount_values(m.group(1))) > max(band_amounts) for m in _CEILING.finditer(text))
-
-
-def _only_range(
-    text: str, band_amounts: set[float], *, reaching_above: bool = False, raises: bool = False, ceilings: bool = False
-) -> bool:
+def _only_range(text: str, band_amounts: set[float], *, reaching_above: bool = False, raises: bool = False) -> bool:
     """Whether `text` says nothing but a range above the $250 band ("only from $251
-    to $2,500", "up to the $2,500 limit"), or with `raises` a higher band (", above
-    $2,500"), or with `ceilings` a ceiling above it (", up to $2,500")."""
+    to $2,500"), or with `raises` a higher band (", above $2,500")."""
     marked = _mark_new_ranges(text, band_amounts, reaching_above=reaching_above)
-    if ceilings:
-        def mark(m: re.Match[str]) -> str:
-            if max(_amount_values(m.group(1))) <= max(band_amounts):
-                return m.group(0)
-            return _NEGATED_MARK if re.match(rf"{_NEGATOR}\b", m.group(0)) else _RANGE_MARK
-
-        marked = _CEILING.sub(mark, marked)
-        # The subject of a negated ceiling is part of it: "The running total has never
-        # been above $2,500." A plain one ("your manager approves up to …") is not.
-        marked = re.sub(
-            rf"^{_LEAD_IN}(?:{_DETERMINER}\s+)?(?:{_SUBJECT_WORD}\s+){{1,3}}?(?:{_AUXILIARY}\s+)?(?={_NEGATED_MARK})",
-            " ", marked,
-        ).replace(_NEGATED_MARK, _RANGE_MARK)
-        # A plain ceiling keeps a one-word subject with a copula: "The total is up to $2,500."
-        marked = re.sub(
-            rf"^{_LEAD_IN}(?:{_DETERMINER}\s+)?{_SUBJECT_WORD}\s+(?:is|are|was|were)\s+(?={_RANGE_MARK})", " ", marked
-        )
     if raises and _RAISES.search(marked):
         # The raise pattern ends at the amount's first character ("above $"); drop the rest.
         marked = re.sub(r"\d[\d,.]*", " ", _RAISES.sub(_RANGE_MARK, marked))
     return _RANGE_MARK in marked and not re.sub(r"[\s\0.!?,;:]", "", _RANGE_LEAD.sub(" ", marked))
 
 
-def _range_only_next(texts: list[str], band_amounts: set[float], next_sentence: str = "") -> bool:
-    """Whether the rest of the sentence (`texts`) says nothing but a range or band
-    above $250 (", however, from $251 to $2,500"), or, when nothing is left, the next
-    sentence says only that: the no-approval phrase before it is about that band."""
-    pieces = [p for text in texts for p in _PIECE.split(_mark_new_ranges(text, band_amounts, reaching_above=True))]
-    said = [p for p in pieces if re.sub(r"[\s.!?]", "", _RANGE_LEAD.sub(" ", p))]
-    if said:
-        # Only when the band ends the sentence: "; above that, your manager approves"
-        # opens a new claim.
-        return len(said) == 1 and _only_range(said[0], band_amounts, reaching_above=True, raises=True, ceilings=True)
-    return _only_range(next_sentence, band_amounts, reaching_above=True, raises=True, ceilings=True)
+def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
+    """Whether `text` names an amount above the $250 band or a higher band ("above
+    that"), before any exception ("except between $251 and $2,500")."""
+    cut = re.search(rf"\b{_EXCEPTION}\b", text)
+    text = text[:cut.start()] if cut else text
+    if any(v > max(band_amounts) for v in _amount_values(text)):
+        return True
+    for m in _RAISES.finditer(text):
+        amount = _AMOUNT.search(text, m.start())
+        # A raise over an amount was judged by that amount; "not above that" stays at $250.
+        negated = re.search(rf"\b{_NEGATOR}\b(?:\s+\w+){{0,3}}\s*$", text[:m.start()])
+        if not (amount and amount.start() < m.end()) and not negated:
+            return True
+    return False
+
+
+def _moves_to_higher_band(texts: list[str], band_amounts: set[float], next_sentence: str = "") -> bool:
+    """Whether what follows a no-approval phrase moves its claim off the $250 band:
+    the rest of the sentence, or the next sentence when nothing is left, names a
+    higher amount or band and nobody approves in it ("…, not above $2,500.", ". The
+    limit is $2,500."). "Above that, your manager approves" is the next band's own claim."""
+    rest = " ".join(texts)
+    follow = rest if re.search(r"\w", _RANGE_LEAD.sub(" ", rest)) else next_sentence
+    return _names_higher_band(follow, band_amounts) and not _APPROVAL_WORD.search(follow)
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
@@ -804,15 +786,12 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 upto = part[:max(end, band_end)]
                 # "with no approval above $2,500" or "… from $251 to $2,500": the phrase
                 # is about the higher band.
-                own_piece_rest = _PIECE.split(
-                    _mark_new_ranges(part[max(end, band_end):], band_amounts, reaching_above=True)
-                )[0]
+                own_piece_rest = _PIECE.split(part[max(end, band_end):])[0]
                 if (
                     not _RAISES.search(upto) and not _approves(upto, second)
-                    and not _RAISES.search(own_piece_rest) and _RANGE_MARK not in own_piece_rest
-                    and not _ceiling_above(own_piece_rest, band_amounts)
+                    and not _RAISES.search(own_piece_rest) and not _names_higher_band(own_piece_rest, band_amounts)
                     and _RANGE_MARK not in _mark_new_ranges(upto, band_amounts, reaching_above=True)
-                    and not _range_only_next([sentence[starts[i] + max(end, band_end):]], band_amounts, next_sentence)
+                    and not _moves_to_higher_band([sentence[starts[i] + max(end, band_end):]], band_amounts, next_sentence)
                     and not approved_later([[sentence[starts[i] + max(end, band_end):]], *later], band_amounts)
                 ):
                     return True
@@ -831,7 +810,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             # The rest of the sentence after that phrase, with its real separators.
             rest = sentence[starts[i + 1] + len(first_piece):] if i + 1 < len(parts) else ""
             if (
-                bare and not _range_only_next([rest], band_amounts, next_sentence)
+                bare and not _moves_to_higher_band([rest], band_amounts, next_sentence)
                 and not approved_later([[rest], *later], band_amounts)
             ):
                 return True
