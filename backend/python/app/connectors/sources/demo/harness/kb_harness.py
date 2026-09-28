@@ -482,7 +482,10 @@ def _alternative(text: str) -> bool:
         for m in re.finditer(r"\b(?:or|either)\b", text)
     )
 # Words that carve an exception out of a claim: "except above $2,500", "barring …".
-_EXCEPTION = r"(?:except\w*|exception|unless|save|besides|excluding|barring)"
+_EXCEPTION = (
+    r"(?:except(?:ed|ing)?|exceptions?|unless|save|besides|excluding|barring"
+    r"|apart\s+from|aside\s+from|other\s+than|outside\s+of)"
+)
 _CLAIM_BREAK = re.compile(r"\b(?:but|however|whereas)\b|;")
 
 
@@ -593,16 +596,20 @@ _RANGE = re.compile(
 
 
 # A ceiling: "up to $2,500", "under $2,500", "less than the $2,500 limit".
+_NEGATOR = r"(?:\w+n't|\w+\s+not|cannot|not|never|no|nothing)"
+_AUXILIARY = r"(?:is|are|was|were|has|have|had|will|would|should|shall|can|could|must|may|might)"
 _CEILING = re.compile(
     r"\b(?:up\s+(?:to|through|until)|to|under|below|less\s+than|through|until|within|at\s+most|capped\s+at"
     # A negated comparison: "not above", "isn't greater than", "mustn't be more than",
     # "hasn't exceeded", "not in excess of".
-    r"|(?:\w+n't|\w+\s+not|cannot|not|never|no|nothing)(?:\s+any)?(?:\s+(?:(?:have|has)(?:\s+been)?|be|been))?(?:\s+any)?\s+"
+    rf"|{_NEGATOR}(?:\s+(?:any|ever|is|are|was|were|be|been|have|has|had|to))*\s+"
     r"(?:exceed\w*|to\s+exceed|(?:more|greater|higher|larger|bigger)\s+than|above|over|beyond|past|in\s+excess\s+of)"
     r"|(?:at\s+)?(?:an?\s+|the\s+)?(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+of)?)"
     rf"\s+{_DET}({_AMOUNT.pattern})"
 )
 _RANGE_MARK = "\0"
+_NEGATED_MARK = "\1"  # a negated ceiling, whose subject can be stripped
+_WORD = r"\w+"
 # An approval with no object of its own: "your manager approves", "approval is required".
 _BARE_APPROVAL_END = re.compile(r"(?:\s*\b(?:is|are|needed|required|necessary)\b)*[\s.!]*")
 
@@ -645,14 +652,18 @@ def _only_range(
     $2,500"), or with `ceilings` a ceiling above it (", up to $2,500")."""
     marked = _mark_new_ranges(text, band_amounts, reaching_above=reaching_above)
     if ceilings:
-        marked = _CEILING.sub(
-            lambda m: _RANGE_MARK if max(_amount_values(m.group(1))) > max(band_amounts) else m.group(0), marked
-        )
-        # A subject in front of the ceiling is part of it: "The total isn't above $2,500."
+        def mark(m: re.Match[str]) -> str:
+            if max(_amount_values(m.group(1))) <= max(band_amounts):
+                return m.group(0)
+            return _NEGATED_MARK if re.match(rf"{_NEGATOR}\b", m.group(0)) else _RANGE_MARK
+
+        marked = _CEILING.sub(mark, marked)
+        # The subject of a negated ceiling is part of it: "The running total has never
+        # been above $2,500." A plain one ("your manager approves up to …") is not.
         marked = re.sub(
-            rf"^\s*(?:{_DETERMINER}\s+)?(?!{_EXCEPTION}\b)\w+\s+(?:(?:is|are|was|were)\s+)?(?={_RANGE_MARK})",
+            rf"^\s*(?:{_DETERMINER}\s+)?(?:(?!{_EXCEPTION}\b){_WORD}\s+){{1,2}}?(?:{_AUXILIARY}\s+)?(?={_NEGATED_MARK})",
             " ", marked,
-        )
+        ).replace(_NEGATED_MARK, _RANGE_MARK)
     if raises and _RAISES.search(marked):
         # The raise pattern ends at the amount's first character ("above $"); drop the rest.
         marked = re.sub(r"\d[\d,.]*", " ", _RAISES.sub(_RANGE_MARK, marked))
