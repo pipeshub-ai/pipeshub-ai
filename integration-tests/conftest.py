@@ -124,7 +124,7 @@ from ai_models_setup import (  # noqa: E402
 from xdist_shared import shared_session_resource  # noqa: E402
 from integration_report import TestReportEntry, write_html_report  # noqa: E402
 from local_auth import obtain_local_oauth_credentials  # noqa: E402
-from pipeshub_client import PipeshubClient  # noqa: E402
+from pipeshub_client import PipeshubClient, SessionPipeshubClient  # noqa: E402
 from helper.clients.agents_client import AgentsClient  # noqa: E402
 from helper.clients.ai_models_client import AIModelsClient  # noqa: E402
 from helper.clients.auth_client import AuthClient, UserAccountClient  # noqa: E402
@@ -406,8 +406,14 @@ def oauth_provider_client(pipeshub_client: PipeshubClient) -> OAuthProviderClien
 
 
 @pytest.fixture(scope="session")
-def oauth_apps_client(pipeshub_client: PipeshubClient) -> OAuthAppsClient:
-    return OAuthAppsClient(pipeshub_client)
+def session_pipeshub_client() -> SessionPipeshubClient:
+    """Client signed in as the test user with a password, for session-only routes."""
+    return SessionPipeshubClient()
+
+
+@pytest.fixture(scope="session")
+def oauth_apps_client(session_pipeshub_client: SessionPipeshubClient) -> OAuthAppsClient:
+    return OAuthAppsClient(session_pipeshub_client)
 
 
 @pytest.fixture(scope="session")

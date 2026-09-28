@@ -1,16 +1,15 @@
 """
 Helpers for creating a second PipeshubClient as a different (non-admin) user.
 
-Creates a test user, seeds a password in MongoDB, authenticates, creates an
-OAuth app as that user, then yields a PipeshubClient configured with those
-second credentials.  All resources are cleaned up on teardown.
+Creates a test user, seeds a password in MongoDB, logs in as that user, then
+yields a client that uses the login session.  All resources are cleaned up on
+teardown.
 """
 
 from __future__ import annotations
 
 import datetime
 import logging
-import os
 import uuid
 from typing import Iterator
 
@@ -20,7 +19,7 @@ import requests
 from pymongo import MongoClient
 
 from config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD
-from pipeshub_client import PipeshubClient
+from pipeshub_client import PipeshubClient, SessionPipeshubClient
 
 logger = logging.getLogger("second-user-auth")
 
@@ -113,33 +112,6 @@ def _login(base_url: str, email: str, timeout: int) -> str:
     return str(auth_resp.json()["accessToken"])
 
 
-def _create_oauth_app(base_url: str, access_token: str, timeout: int) -> tuple[str, str, str]:
-    resp = requests.post(
-        f"{base_url}/api/v1/oauth-clients",
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "name": f"integration-2nd-user-{uuid.uuid4().hex[:8]}",
-            "allowedGrantTypes": ["client_credentials"],
-            "allowedScopes": [
-                "openid", "profile", "email", "org:read", "user:read",
-                "kb:read", "conversation:read", "agent:read",
-            ],
-        },
-        timeout=timeout,
-    )
-    if resp.status_code >= 400:
-        raise RuntimeError(
-            f"create OAuth app for 2nd user failed: "
-            f"HTTP {resp.status_code}: {resp.text}"
-        )
-    data = resp.json()
-    app = data.get("app", {})
-    return str(app["id"]), str(app["clientId"]), str(app["clientSecret"])
-
-
 def _delete_user(pipeshub_client: PipeshubClient, user_id: str, timeout: int) -> None:
     try:
         requests.delete(
@@ -157,14 +129,14 @@ def second_pipeshub_client(
 ) -> Iterator[PipeshubClient]:
     """Create a second PipeshubClient authenticated as a different (non-admin) user.
 
+    The client uses a password-login session, not an OAuth token: the OAuth app
+    routes this user is tested against reject OAuth and personal access tokens.
+
     The fixture:
       1. Creates a test user via the admin's client_credentials token
       2. Seeds a password in MongoDB for that user
-      3. Logs in and creates an OAuth app as that user
-      4. Sets CLIENT_ID/CLIENT_SECRET env vars to the second user's app
-      5. Yields a new PipeshubClient that uses those credentials
-      6. On teardown: deletes the OAuth app, user, and credentials,
-         and restores original env vars
+      3. Logs in as that user and yields a client using the session token
+      4. On teardown: deletes the user and credentials
     """
     timeout = pipeshub_client.timeout_seconds
     org_id = pipeshub_client.org_id
@@ -175,43 +147,9 @@ def second_pipeshub_client(
 
     _seed_password(org_id, user_id)
     try:
-        access_token = _login(pipeshub_client.base_url, email, timeout)
-        app_id, client_id, client_secret = _create_oauth_app(
-            pipeshub_client.base_url, access_token, timeout,
+        yield SessionPipeshubClient(
+            session_token=_login(pipeshub_client.base_url, email, timeout)
         )
-
-        # Save and override env vars for the second client
-        saved_client_id = os.environ.get("CLIENT_ID")
-        saved_client_secret = os.environ.get("CLIENT_SECRET")
-        os.environ["CLIENT_ID"] = client_id
-        os.environ["CLIENT_SECRET"] = client_secret
-
-        try:
-            second_client = PipeshubClient()
-            second_client._invalidate_access_token()
-            second_client._fetch_access_token()
-
-            yield second_client
-        finally:
-            # Restore original env vars
-            if saved_client_id is not None:
-                os.environ["CLIENT_ID"] = saved_client_id
-            else:
-                os.environ.pop("CLIENT_ID", None)
-            if saved_client_secret is not None:
-                os.environ["CLIENT_SECRET"] = saved_client_secret
-            else:
-                os.environ.pop("CLIENT_SECRET", None)
-
-            # Clean up the second user's OAuth app
-            try:
-                requests.delete(
-                    f"{pipeshub_client.base_url}/api/v1/oauth-clients/{app_id}",
-                    headers=pipeshub_client._headers(),
-                    timeout=timeout,
-                )
-            except Exception:  # noqa: BLE001
-                pass
     finally:
         _cleanup_credentials(org_id, user_id)
         _delete_user(pipeshub_client, user_id, timeout)

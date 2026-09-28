@@ -25,7 +25,7 @@ from messaging.test_e2e_record_pipeline import (
     _get_record_status,
     poll_until,
 )
-from pipeshub_client import PipeshubClient
+from pipeshub_client import PipeshubClient, SessionPipeshubClient
 
 logger = logging.getLogger("connector-conftest")
 
@@ -46,7 +46,10 @@ signed off by the on-call lead before the runbook is marked current.
 
 
 @pytest.fixture(scope="module")
-def token_without_connector_read(pipeshub_client: PipeshubClient) -> Iterator[str]:
+def token_without_connector_read(
+    pipeshub_client: PipeshubClient,
+    session_pipeshub_client: SessionPipeshubClient,
+) -> Iterator[str]:
     """Access token from an OAuth app that deliberately omits `connector:read`.
 
     Minting a scope-restricted token for the *same* user isolates the scope check
@@ -54,7 +57,7 @@ def token_without_connector_read(pipeshub_client: PipeshubClient) -> Iterator[st
     straight into MongoDB and needs TEST_MONGO_URI/TEST_MONGO_DB_NAME to match the
     running stack, which the config defaults do not.
     """
-    apps = OAuthAppsClient(pipeshub_client)
+    apps = OAuthAppsClient(session_pipeshub_client)
     resp = apps.create_app(
         name=f"connector-content-it-noscope-{uuid4().hex[:8]}",
         allowedGrantTypes=["client_credentials"],

@@ -26,7 +26,8 @@ Routes covered:
 
 Auth:
   Uses the session ``oauth_apps_client`` fixture from the root ``conftest.py``,
-  backed by ``PipeshubClient`` OAuth credentials (``POST /api/v1/oauth2/token``).
+  backed by ``session_pipeshub_client`` (password login). These routes reject
+  OAuth and personal access tokens with 403.
 
 Notes:
   - ``TestGetOAuthApp``, ``TestUpdateOAuthApp``, ``TestListOAuthAppTokens`` share
@@ -35,8 +36,7 @@ Notes:
 
 Requires (handled by the root conftest):
   - ``PIPESHUB_BASE_URL``
-  - either ``CLIENT_ID`` + ``CLIENT_SECRET``, **or`` ``PIPESHUB_TEST_USER_EMAIL``
-    + ``PIPESHUB_TEST_USER_PASSWORD`` (bootstrap via ``local_auth``).
+  - ``PIPESHUB_TEST_USER_EMAIL`` + ``PIPESHUB_TEST_USER_PASSWORD``
 """
 
 from __future__ import annotations

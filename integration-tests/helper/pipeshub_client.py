@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from local_auth import obtain_user_session_token
+
 logger = logging.getLogger("pipeshub-client")
 
 # Refresh this many seconds before the token expires (client_credentials + typical 1h JWT).
@@ -775,3 +777,22 @@ class PipeshubClient:
             resp.raise_for_status()
             return resp
         raise PipeshubAuthError("stream_record failed after token retry")
+
+
+class SessionPipeshubClient(PipeshubClient):
+    """Authenticates with a password-login session JWT, not an OAuth token.
+
+    OAuth app management and consent routes answer OAuth and personal access
+    tokens with 403, so tests of those routes need a user session.
+    """
+
+    def __init__(self, session_token: Optional[str] = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._fixed_session_token = session_token
+
+    def _fetch_access_token(self) -> None:
+        self._access_token = self._fixed_session_token or obtain_user_session_token(
+            self.base_url, self.timeout_seconds
+        )
+        self._token_claims = None
+        self._set_token_expiry_from_token_response({})

@@ -359,6 +359,7 @@ Tests clone the [pipeshub-ai/integration-test](https://github.com/pipeshub-ai/in
 | `.env.prod.example`  | Template for `.env.prod` (all vars for prod). |
 | `conftest.py`        | Loads `.env` then `.env.local` or `.env.prod`, exports Neo4j env, local OAuth fixture. |
 | `helper/local_auth.py` | Gets OAuth client creds from local backend (initAuth → authenticate → create app). `obtain_user_session_token` also handles the enterprise `auth/token/switch` step. |
+| `helper/pipeshub_client.py` | `PipeshubClient` signs in with an OAuth client_credentials token. `SessionPipeshubClient` signs in with a password session instead: OAuth app management and consent routes return 403 for OAuth and personal access tokens, so tests of those routes use the `session_pipeshub_client` fixture. |
 | `helper/mcp_oauth.py` | Registers a full-access OAuth app and mints tokens (authorization_code + PKCE, client_credentials) with API calls only. |
 | `helper/mcp_client.py` | Reads the `/mcp` surface (initialize, tools, prompts) with `fastmcp` as plain JSON. |
 | `helper/mcp_pin.py` | Reads the `@pipeshub-ai/mcp` pin from `backend/nodejs/apps/package.json`. |

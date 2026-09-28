@@ -26,6 +26,8 @@ Routes covered:
 Auth:
   Uses the session ``oauth_provider_client`` fixture from the root ``conftest.py``,
   backed by ``PipeshubClient`` OAuth credentials (``POST /api/v1/oauth2/token``).
+  The consent route rejects OAuth and personal access tokens, so
+  ``TestOAuthAuthorizeConsent`` uses ``session_pipeshub_client`` (password login).
 """
 
 from __future__ import annotations
@@ -148,8 +150,11 @@ class TestOAuthAuthorizeConsent(OAuthProviderTestBase):
     """POST /api/v1/oauth2/authorize — submit consent (requires auth)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_credentials(self, oauth_credentials: dict) -> None:
+    def _setup_credentials(
+        self, oauth_credentials: dict, session_pipeshub_client: PipeshubClient
+    ) -> None:
         self.client_id = oauth_credentials["client_id"]
+        self.oauth = OAuthProviderClient(session_pipeshub_client)
 
     def test_response_and_errors(self) -> None:
         """401 missing auth, 400 invalid consent body."""
