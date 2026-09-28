@@ -656,11 +656,17 @@ def _only_range(text: str, band_amounts: set[float], *, reaching_above: bool = F
 def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
     """Whether `text` names an amount above the $250 band or a higher band ("above
     that"), before any exception ("except between $251 and $2,500")."""
-    cut = re.search(rf"\b{_EXCEPTION}\b", text)
-    text = text[:cut.start()] if cut else text
-    if any(v > max(band_amounts) for v in _amount_values(text)):
+    def excepted(at: int) -> bool:
+        # An exception governs what follows it in its own clause only.
+        return re.search(rf"\b{_EXCEPTION}\b[^,;.]*$", text[:at]) is not None
+
+    if any(
+        v > max(band_amounts) for m in _AMOUNT.finditer(text) if not excepted(m.start()) for v in _amount_values(m.group())
+    ):
         return True
     for m in _RAISES.finditer(text):
+        if excepted(m.start()):
+            continue
         amount = _AMOUNT.search(text, m.start())
         # A raise over an amount was judged by that amount; "not above that" stays at $250.
         negated = re.search(rf"\b{_NEGATOR}\b(?:\s+\w+){{0,3}}\s*$", text[:m.start()])
@@ -669,14 +675,25 @@ def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
     return False
 
 
-def _moves_to_higher_band(texts: list[str], band_amounts: set[float], next_sentence: str = "") -> bool:
+def _someone_approves(text: str, no_approval: list[str]) -> bool:
+    """Whether an approval word in `text` has someone approving, once the no-approval
+    phrases are blanked ("up to $2,500: no approval needed", "approval isn't required")."""
+    for m in no_approval:
+        for start, end in mention_spans(text, m):
+            text = text[:start] + " " * (end - start) + text[end:]
+    return any(not _NOT_AFTER.match(text[m.end():]) for m in _APPROVAL_WORD.finditer(text))
+
+
+def _moves_to_higher_band(
+    texts: list[str], band_amounts: set[float], next_sentence: str, no_approval: list[str]
+) -> bool:
     """Whether what follows a no-approval phrase moves its claim off the $250 band:
     the rest of the sentence, or the next sentence when nothing is left, names a
     higher amount or band and nobody approves in it ("…, not above $2,500.", ". The
     limit is $2,500."). "Above that, your manager approves" is the next band's own claim."""
     rest = " ".join(texts)
     follow = rest if re.search(r"\w", _RANGE_LEAD.sub(" ", rest)) else next_sentence
-    return _names_higher_band(follow, band_amounts) and not _APPROVAL_WORD.search(follow)
+    return _names_higher_band(follow, band_amounts) and not _someone_approves(follow, no_approval)
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
@@ -791,7 +808,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                     not _RAISES.search(upto) and not _approves(upto, second)
                     and not _RAISES.search(own_piece_rest) and not _names_higher_band(own_piece_rest, band_amounts)
                     and _RANGE_MARK not in _mark_new_ranges(upto, band_amounts, reaching_above=True)
-                    and not _moves_to_higher_band([sentence[starts[i] + max(end, band_end):]], band_amounts, next_sentence)
+                    and not _moves_to_higher_band([sentence[starts[i] + max(end, band_end):]], band_amounts, next_sentence, second)
                     and not approved_later([[sentence[starts[i] + max(end, band_end):]], *later], band_amounts)
                 ):
                     return True
@@ -810,7 +827,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             # The rest of the sentence after that phrase, with its real separators.
             rest = sentence[starts[i + 1] + len(first_piece):] if i + 1 < len(parts) else ""
             if (
-                bare and not _moves_to_higher_band([rest], band_amounts, next_sentence)
+                bare and not _moves_to_higher_band([rest], band_amounts, next_sentence, second)
                 and not approved_later([[rest], *later], band_amounts)
             ):
                 return True
