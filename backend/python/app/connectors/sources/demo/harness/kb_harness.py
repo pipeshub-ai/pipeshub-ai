@@ -420,7 +420,15 @@ _BARE_REST = re.compile(
 # "sign it off", "sign the purchase off" and "sign-offs" are sign-offs too.
 _APPROVAL_WORD = re.compile(r"\bapprov\w*|\bauthori[sz]\w*|\bsign(?:s|ed|ing)?(?:\s+[\w$.,]+){0,3}?[- ]?offs?\b")
 # "authorization is not needed", "without signing off": the word is there, but nobody approves.
-_NOT_AFTER = re.compile(r"^\s+(?:is|are|was)\s+not\b|^\s+(?:isn't|aren't|wasn't)\b|^\s+not\s+(?:needed|required)\b")
+# A negated waiver ("is not waived", "can't be skipped", "is no longer waived") still
+# requires the approval.
+_NOT_WAIVED = (
+    r"(?!(?:\s+(?:longer|be|been|being|get|gets|got)){0,2}"
+    r"\s+(?:waived|skipped|bypassed|avoided|dropped|lifted|removed|overridden|circumvented)\b)"
+)
+_NOT_AFTER = re.compile(
+    rf"^\s+(?:is|are|was)\s+not\b{_NOT_WAIVED}|^\s+(?:isn't|aren't|wasn't)\b{_NOT_WAIVED}|^\s+not\s+(?:needed|required)\b"
+)
 _WITHOUT_BEFORE = re.compile(
     r"\bwithout\s+(?:(?:any|a|an|the|your|my|our|their|his|her)\s+)?(?:\w+'s\s+)?$"
 )
@@ -486,6 +494,9 @@ _EXCEPTION = (
     r"(?:except(?:ed|ing)?|exceptions?|unless|save|besides|excluding|barring"
     r"|apart\s+from|aside\s+from|other\s+than|outside\s+of)"
 )
+# A carve-out: an exception word that isn't itself negated ("no exceptions", "without
+# exception" say there are none).
+_CARVE_OUT = re.compile(rf"(?<!\bno )(?<!\bwithout )(?<!\bwithout any )(?<!\bnot any )\b{_EXCEPTION}\b")
 _CLAIM_BREAK = re.compile(r"\b(?:but|however|whereas)\b|;")
 
 
@@ -507,7 +518,7 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
     ceilings = [(m.start(), m.end()) for m in _CEILING.finditer(sentence)]
     bands: list[tuple[int, int | None]] = []
     def excepted(at: int) -> bool:
-        return re.search(rf"\b{_EXCEPTION}\b[^,;.]*$", sentence[:at]) is not None
+        return re.search(rf"{_CARVE_OUT.pattern}[^,;.]*$", sentence[:at]) is not None
 
     for m in _RAISES.finditer(sentence):
         if excepted(m.start()):
@@ -666,13 +677,12 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
         # needs no approval").
         breaks = list(_BREAK_OUTSIDE_AMOUNTS.finditer(text))
         lo = max((b.end() for b in breaks if b.end() <= at), default=0)
-        hi = min((b.start() for b in breaks if b.start() >= at), default=len(text))
-        exceptions = list(re.finditer(rf"\b{_EXCEPTION}\b", text[lo:at]))
+        exceptions = list(_CARVE_OUT.finditer(text, lo, at))
         if not exceptions:
             return False
-        exception = exceptions[-1]
-        # Only a claim after the exception word counts, including a negated approval word.
-        tail = text[lo + exception.end():hi]
+        # Only a claim after the exception word counts, across a comma too ("except
+        # above $2,500, no approval is needed"), a negated approval word included.
+        tail = text[exceptions[-1].end():]
         return not any(mention_spans(tail, p) for p in no_approval) and not any(
             _NOT_AFTER.match(tail[m.end():]) or _NEGATED_AFTER.match(tail[m.end():])
             or _negates_approval(tail[:m.start()])
@@ -706,8 +716,7 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
 # joiner ("sign-off and you can't"), and not a negated waiver ("will not be waived").
 _NEGATED_AFTER = re.compile(
     r"(?:\s+(?:will|would|shall|should|can|could|may|might|must|does|do|did|is|are|was|were|has|have|had))?"
-    r"\s+(?:not|never|cannot|no|\w+n't)\b"
-    r"(?!(?:\s+\w+){0,2}?\s+(?:waived|skipped|bypassed|avoided|dropped|lifted|removed|overridden|circumvented)\b)"
+    rf"\s+(?:not|never|cannot|no|\w+n't)\b{_NOT_WAIVED}"
 )
 
 
@@ -867,7 +876,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                     not _RAISES.search(upto) and not _approves(upto, second)
                     # "except above $2,500" carves an exception out rather than raising the band.
                     and not any(
-                        not re.search(rf"\b{_EXCEPTION}\b", own_piece_rest[:r.start()])
+                        not _CARVE_OUT.search(own_piece_rest[:r.start()])
                         for r in _RAISES.finditer(own_piece_rest)
                     )
                     and not _names_higher_band(own_piece_rest, band_amounts, second)
