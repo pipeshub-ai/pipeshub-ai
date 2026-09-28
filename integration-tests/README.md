@@ -280,8 +280,12 @@ everything those three do not name, plus the browser tests. A fifth `demo` shard
 runs only the Acme Corp demo questions (`-m demo`) on a stack nothing else has
 indexed into, because the demo's answers are prompted differently once a
 workspace has data of its own; `core` leaves the `demo` marker out. Each shard
-brings up its own stack and runs both graph databases, so a shard's wall clock is
-roughly the sum of its two legs.
+brings up its own stack. On the nightly (and a manual run, whose `graph_db` input
+defaults to `both`) each shard runs both graph databases one after the other, so
+its wall clock is roughly the sum of its two legs. A pull request runs Neo4j only,
+unless a label widens it: `it-arango` alone runs ArangoDB instead, `it-both` runs
+both in one job, and `it-parallel` (or `it-neo4j` with `it-arango`) runs them as
+two parallel jobs.
 
 Adding a connector means adding its marker to one of those shard lines. Connector
 tests are also marked `integration`, so a marker in none of them is not skipped —
