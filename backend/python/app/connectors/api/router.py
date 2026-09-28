@@ -6961,24 +6961,39 @@ async def _evict_cached_connector(
 
 async def _revert_toggle(
     connector_registry: ConnectorRegistry,
+    graph_provider: IGraphDBProvider,
     connector_id: str,
     instance: dict[str, Any],
     status_field: str,
     owner_updates: dict[str, Any],
     *,
     previous: bool,
+    written_at: int | None,
     user_id: str,
     org_id: str,
     is_admin: bool,
     logger: logging.Logger,
-) -> None:
-    """Restore the pre-toggle state. Never raises, so the caller's error propagates."""
+) -> bool:
+    """Restore the pre-toggle state unless a newer write has landed since.
+
+    Returns whether the revert was applied. Never raises, so the caller's error
+    propagates.
+    """
     reverted: dict[str, Any] = {
         status_field: previous,
         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         **{key: instance.get(key) for key in owner_updates},
     }
     try:
+        # Toggles flip, so a stale revert can undo a newer successful one; only
+        # revert while the document is still the version this request wrote.
+        current = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not current or written_at is None or current.get("updatedAtTimestamp") != written_at:
+            logger.warning(
+                f"Not reverting {status_field} for connector {connector_id}: "
+                "it changed after this toggle was written"
+            )
+            return False
         ok = await connector_registry.update_connector_instance(
             connector_id=connector_id,
             updates=reverted,
@@ -6988,8 +7003,11 @@ async def _revert_toggle(
         )
         if not ok:
             logger.error(f"Could not revert {status_field} for connector {connector_id}")
+            return False
+        return True
     except Exception:
         logger.exception(f"Could not revert {status_field} for connector {connector_id}")
+        return False
 
 
 async def _ensure_connector_initialized(
@@ -7458,19 +7476,21 @@ async def toggle_connector_instance(
             except Exception:
                 # The flip is already committed; without this the connector reads as
                 # enabled with no appEnabled event and no schedule behind it.
-                await _revert_toggle(
+                reverted = await _revert_toggle(
                     connector_registry,
+                    graph_provider,
                     connector_id,
                     instance,
                     status_field,
                     owner_updates,
                     previous=not target_status,
+                    written_at=success.get("updatedAtTimestamp") if isinstance(success, dict) else None,
                     user_id=user_id,
                     org_id=org_id,
                     is_admin=is_admin,
                     logger=logger,
                 )
-                if target_status:
+                if reverted and target_status:
                     await _evict_cached_connector(container, connector_id, logger)
                 raise
 

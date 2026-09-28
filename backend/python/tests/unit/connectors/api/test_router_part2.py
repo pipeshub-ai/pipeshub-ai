@@ -2556,13 +2556,20 @@ class TestToggleRollsBackOnPublishFailure:
         publish_error: Exception | None = RuntimeError("broker down"),
         cached: dict | None = None,
         update_results: list | None = None,
+        current_version: int = 5000,
     ):
         from app.connectors.api.router import toggle_connector_instance
+        from app.config.constants.arangodb import CollectionNames
 
         req = _make_request(user_id="u1", is_admin=True, body={"type": "sync", **(body or {})})
+        org = {"_key": "o1", "accountType": "individual"}
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(
-            return_value={"_key": "o1", "accountType": "individual"}
+            side_effect=lambda key, collection: (
+                {"_key": "c1", "updatedAtTimestamp": current_version}
+                if collection == CollectionNames.APPS.value
+                else org
+            )
         )
         instance = _make_instance(
             connector_type=connector_type,
@@ -2574,7 +2581,7 @@ class TestToggleRollsBackOnPublishFailure:
         registry = req.app.state.connector_registry
         registry.get_connector_instance = AsyncMock(return_value=instance)
         registry.update_connector_instance = AsyncMock(
-            side_effect=update_results or [True, True]
+            side_effect=update_results or [{"updatedAtTimestamp": 5000}, True]
         )
         req.app.container.connectors_map = dict(cached or {})
         req.app.container.messaging_producer.send_message = AsyncMock(side_effect=publish_error)
@@ -2631,11 +2638,23 @@ class TestToggleRollsBackOnPublishFailure:
 
     async def test_revert_failure_still_returns_original_error(self):
         _, error, updates, _ = await self._toggle(
-            is_active=False, update_results=[True, RuntimeError("db down")]
+            is_active=False,
+            update_results=[{"updatedAtTimestamp": 5000}, RuntimeError("db down")],
         )
 
         assert error is not None and error.status_code == 500
         assert len(updates) == 2
+
+    async def test_newer_write_is_not_overwritten_by_stale_revert(self):
+        conn = AsyncMock()
+        _, error, updates, connectors_map = await self._toggle(
+            is_active=False, cached={"c1": conn}, current_version=6000
+        )
+
+        assert error is not None and error.status_code == 500
+        assert len(updates) == 1
+        assert connectors_map == {"c1": conn}
+        conn.cleanup.assert_not_awaited()
 
     async def test_enable_publish_success_updates_once(self):
         conn = AsyncMock()
