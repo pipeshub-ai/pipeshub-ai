@@ -657,12 +657,19 @@ def _only_range(text: str, band_amounts: set[float], *, reaching_above: bool = F
 _BREAK_OUTSIDE_AMOUNTS = re.compile(r"[;:!?]|[.,](?!\d)|\bbut\b")
 
 
-def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
+def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[str]) -> bool:
     """Whether `text` names an amount above the $250 band or a higher band ("above
     that"), before any exception ("except between $251 and $2,500")."""
     def excepted(at: int) -> bool:
-        # An exception governs what follows it in its own clause only.
-        return re.search(rf"\b{_EXCEPTION}\b", _BREAK_OUTSIDE_AMOUNTS.split(text[:at])[-1]) is not None
+        # An exception governs what follows it in its own clause only, and only while
+        # that clause makes no no-approval claim of its own ("except above $2,500
+        # needs no approval").
+        breaks = list(_BREAK_OUTSIDE_AMOUNTS.finditer(text))
+        lo = max((b.end() for b in breaks if b.end() <= at), default=0)
+        hi = min((b.start() for b in breaks if b.start() >= at), default=len(text))
+        return re.search(rf"\b{_EXCEPTION}\b", text[lo:at]) is not None and not any(
+            mention_spans(text[lo:hi], p) for p in no_approval
+        )
 
     # An exception hides only a range or a raise ("except between $251 and $2,500",
     # "excluding amounts above $2,500"); "unless the limit is $2,500" still names it.
@@ -686,13 +693,24 @@ def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
     return False
 
 
+# A negation right after the approval word, or after one auxiliary: "approval will not
+# happen", "approval never happens". Not across a joiner ("sign-off and you can't").
+_NEGATED_AFTER = re.compile(
+    r"(?:\s+(?:will|would|shall|should|can|could|may|might|must|does|do|did|is|are|was|were|has|have|had))?"
+    r"\s+(?:not|never)\b|\s+\w+n't\b"
+)
+
+
 def _negates_approval(before: str) -> bool:
     """Whether a negation governs the approval word after `before` ("no sign-off",
     "need not be approved"), in `_negated`'s window. A negation that is "don't (ever)
     forget" still asks for the approval."""
+    words = _CLAUSE_BREAK.split(before)[-1].split()
+    # "Nobody approves", "nothing is approved": the subject says no one does.
+    if re.search(r"\b(?:nobody|nothing|no\s+one)\b(?:\s+\w+){0,2}\s*$", " ".join(words)):
+        return True
     if not _negated(before):
         return False
-    words = _CLAUSE_BREAK.split(before)[-1].split()
     window_start = max(len(words) - _NEGATION_WINDOW, 0)
     for i in range(window_start, len(words)):
         if _NEGATION.search(words[i]):
@@ -709,7 +727,7 @@ def _someone_approves(text: str, no_approval: list[str]) -> bool:
         for start, end in mention_spans(text, m):
             text = text[:start] + " " * (end - start) + text[end:]
     return any(
-        not _NOT_AFTER.match(text[m.end():])
+        not _NOT_AFTER.match(text[m.end():]) and not _NEGATED_AFTER.match(text[m.end():])
         and not _negates_approval(text[:m.start()])
         for m in _APPROVAL_WORD.finditer(text)
     )
@@ -724,7 +742,7 @@ def _moves_to_higher_band(
     limit is $2,500."). "Above that, your manager approves" is the next band's own claim."""
     rest = " ".join(texts)
     follow = rest if re.search(r"\w", _RANGE_LEAD.sub(" ", rest)) else next_sentence
-    return _names_higher_band(follow, band_amounts) and not _someone_approves(follow, no_approval)
+    return _names_higher_band(follow, band_amounts, no_approval) and not _someone_approves(follow, no_approval)
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
@@ -837,7 +855,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 own_piece_rest = _PIECE.split(part[max(end, band_end):])[0]
                 if (
                     not _RAISES.search(upto) and not _approves(upto, second)
-                    and not _RAISES.search(own_piece_rest) and not _names_higher_band(own_piece_rest, band_amounts)
+                    and not _RAISES.search(own_piece_rest) and not _names_higher_band(own_piece_rest, band_amounts, second)
                     and _RANGE_MARK not in _mark_new_ranges(upto, band_amounts, reaching_above=True)
                     and not _moves_to_higher_band([sentence[starts[i] + max(end, band_end):]], band_amounts, next_sentence, second)
                     and not approved_later([[sentence[starts[i] + max(end, band_end):]], *later], band_amounts)
