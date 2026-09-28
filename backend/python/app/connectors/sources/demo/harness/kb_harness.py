@@ -1214,7 +1214,7 @@ def _other_subject(piece: str, previous: str = "") -> bool:
         # purchase" are not.
         return any(w not in _GENERIC and w not in _GENERIC_HEADS and not w.endswith("'s") for w in words)
 
-    def noun_phrase_at_end(text: str, infinitive: bool = False) -> list[str]:
+    def noun_phrase_at_end(text: str, *, infinitive: bool = False) -> list[str]:
         words = re.findall(r"[a-z][a-z'-]*", text)
         # "require finance to approve", "is for finance to approve": skip the infinitive
         # right before the approval word.
