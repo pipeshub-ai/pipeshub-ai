@@ -49,6 +49,8 @@ _MARKER_LINE = re.compile(r"^\s{4}(\w+):\s*(.+)$")
 _MATRIX_LINE = re.compile(r"^\s*shard:\s.*$", re.MULTILINE)
 _MATRIX_SHARD = re.compile(r'"(connectors-\d+)"')
 _MATRIX_ANY_SHARD = re.compile(r'"([\w-]+)"')
+# The matrix line's single-quoted JSON lists; the last is the default (full-run) one.
+_MATRIX_LIST = re.compile(r"'(\[[^']*\])'")
 # One per test step (Neo4j, ArangoDB): the shell `case` that picks the markers.
 _SHARD_CASE_BLOCK = re.compile(r'case "\$SHARD" in\n(.*?)\n[ \t]*esac', re.DOTALL)
 _IDENT = re.compile(r"[A-Za-z_$][\w$]*")
@@ -175,9 +177,16 @@ def matrix_shards(workflow_text: str) -> set[str]:
 
 
 def matrix_solo_shards(workflow_text: str) -> set[str]:
-    """The solo shard jobs (see SOLO_SHARDS) the matrix actually runs."""
+    """The solo shard jobs (see SOLO_SHARDS) a full run's matrix runs.
+
+    Only the default list counts: a name in the one-marker dispatch list alone
+    would not run on the nightly.
+    """
     line = _MATRIX_LINE.search(workflow_text)
-    return set(_MATRIX_ANY_SHARD.findall(line.group(0))) & set(SOLO_SHARDS) if line else set()
+    lists = _MATRIX_LIST.findall(line.group(0)) if line else []
+    if not lists:
+        return set()
+    return set(_MATRIX_ANY_SHARD.findall(lists[-1])) & set(SOLO_SHARDS)
 
 
 def _solo_shard_problems(workflow_text: str, core_expressions: list[str]) -> list[str]:
@@ -194,7 +203,8 @@ def _solo_shard_problems(workflow_text: str, core_expressions: list[str]) -> lis
                     f"'{name}' marker, so those tests run twice, once on core's shared stack."
                 )
             steps = [block for block in _SHARD_CASE_BLOCK.findall(workflow_text) if _CORE_MARKER_LINE.search(block)]
-            case_line = re.compile(rf'^[ \t]*{name}\)[ \t]+MARKERS="{name}"', re.MULTILINE)
+            # Through `;;`: `MARKERS="demo"extra` is the marker "demoextra" to the shell.
+            case_line = re.compile(rf'^[ \t]*{name}\)[ \t]+MARKERS="{name}"[ \t]*;;', re.MULTILINE)
             if not steps or any(len(case_line.findall(block)) != 1 for block in steps):
                 problems.append(
                     f"The matrix runs a '{name}' job, but not every test step's `case \"$SHARD\"` "
