@@ -70,8 +70,10 @@ Options:
   --destroy                Remove the release and the cluster. Keeps S3, EBS volumes,
                            backups, KMS key and the saved secret-key
   --purge                  With --destroy, also delete this cluster's database disks,
-                           snapshots, S3 bucket, backup vault and saved secret-key.
-                           Implies --destroy. The KMS key is kept
+                           snapshots, backup vault, saved secret-key, and the
+                           default bucket pipeshub-<cluster>-<account>-<region>.
+                           A different --bucket is refused. Implies --destroy.
+                           The KMS key is kept
   -y, --yes                Do not ask for confirmation
   -h, --help               Show this help
 EOF
@@ -292,14 +294,28 @@ check_vcpu_quota() { # cluster config
   die "requested ${want} vCPUs (id ${pending}). AWS usually answers within minutes to a few hours. Re-run when this shows APPROVED: aws service-quotas get-requested-service-quota-change --request-id ${pending} --query RequestedQuota.Status"
 }
 
+# pipeshub-<cluster>-<account>-<region>, lowercased, at most 63 characters.
+# Create and purge must use this same string.
+default_bucket_name() {
+  echo "pipeshub-${CLUSTER}-${ACCOUNT_ID}-${REGION}" | tr '[:upper:]' '[:lower:]' | cut -c1-63
+}
+
+# --purge deletes only that default name. Every bucket this script creates
+# starts with "pipeshub-", so a substring check would match the other clusters.
+resolve_purge_bucket() {
+  local expected
+  expected="$(default_bucket_name)"
+  if [[ -n "$BUCKET" && "$BUCKET" != "$expected" ]]; then
+    die "refusing to delete s3://${BUCKET}: this cluster's bucket is s3://${expected}"
+  fi
+  BUCKET="$expected"
+}
+
 # Only resources this deploy created for this cluster. A volume must be detached
-# and carry both the cluster tag and pipeshub-backup=true. The S3 name must
-# contain the cluster name, so a shared bucket cannot be removed by accident.
+# and carry both the cluster tag and pipeshub-backup=true.
 purge_cluster_data() {
   cluster_exists && die "cluster ${CLUSTER} still exists, so its disks may still be attached. Re-run --purge after it is gone."
-  [[ -n "$BUCKET" ]] || BUCKET="$(echo "pipeshub-${CLUSTER}-${ACCOUNT_ID}-${REGION}" | tr '[:upper:]' '[:lower:]' | cut -c1-63)"
-  [[ "$BUCKET" == *"${CLUSTER}"* ]] \
-    || die "refusing to delete s3://${BUCKET}: the name does not contain the cluster name ${CLUSTER}"
+  resolve_purge_bucket
 
   step "Database disks for ${CLUSTER}"
   local rows id state skipped=false
@@ -398,22 +414,124 @@ purge_cluster_data() {
 }
 
 # Versioned buckets keep old copies after a plain recursive delete.
+# delete-objects accepts at most 1000 keys. The CLI otherwise follows every
+# page and returns one JSON document with no NextToken, so walk one page with
+# --no-paginate. An incomplete multipart upload also makes delete-bucket fail.
 empty_versioned_bucket() {
-  local bucket="$1" token="" batch
+  local bucket="$1" key_marker="" version_marker="" list_file delete_file upload_file
+  local batch meta count truncated next_key next_version result row key id
+  local -a list_args
   command -v python3 >/dev/null 2>&1 || die "python3 is required to empty the versioned bucket ${bucket}"
+  list_file="$(mktemp)"
+  delete_file="$(mktemp)"
+  upload_file="$(mktemp)"
+  trap 'rm -f "$list_file" "$delete_file" "$upload_file"; trap - RETURN' RETURN
   while :; do
-    if [[ -n "$token" ]]; then
-      batch="$(aws s3api list-object-versions --bucket "$bucket" --max-keys 1000 --starting-token "$token" --output json)"
-    else
-      batch="$(aws s3api list-object-versions --bucket "$bucket" --max-keys 1000 --output json)"
+    list_args=(aws --no-paginate s3api list-object-versions --bucket "$bucket" --max-keys 1000 --output json)
+    if [[ -n "$key_marker" ]]; then
+      list_args+=(--key-marker "$key_marker")
+      [[ -n "$version_marker" ]] && list_args+=(--version-id-marker "$version_marker")
     fi
-    token="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("NextToken") or "")' <<<"$batch")"
-    python3 -c 'import json,sys; d=json.load(sys.stdin); objs=[{"Key":o["Key"],"VersionId":o["VersionId"]} for o in (d.get("Versions") or [])+(d.get("DeleteMarkers") or [])]; print(json.dumps({"Objects":objs,"Quiet":True}) if objs else "")' <<<"$batch" \
-      | while read -r payload; do
-          [[ -n "$payload" ]] || continue
-          aws s3api delete-objects --bucket "$bucket" --delete "$payload" >/dev/null
-        done
-    [[ -n "$token" ]] || break
+    batch="$("${list_args[@]}")"
+    printf '%s' "$batch" >"$list_file"
+    meta="$(python3 - "$list_file" "$delete_file" <<'PY'
+import json, sys
+src, dest = sys.argv[1], sys.argv[2]
+with open(src, encoding="utf-8") as handle:
+    data = json.load(handle)
+objs = []
+for item in (data.get("Versions") or []) + (data.get("DeleteMarkers") or []):
+    obj = {"Key": item["Key"]}
+    version = item.get("VersionId")
+    if version:
+        obj["VersionId"] = version
+    objs.append(obj)
+with open(dest, "w", encoding="utf-8") as handle:
+    if objs:
+        json.dump({"Objects": objs, "Quiet": True}, handle)
+    else:
+        handle.write("")
+print(json.dumps({
+    "nextKey": data.get("NextKeyMarker") or "",
+    "nextVersion": data.get("NextVersionIdMarker") or "",
+    "truncated": bool(data.get("IsTruncated")),
+    "count": len(objs),
+}))
+PY
+)"
+    count="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["count"])' "$meta")"
+    truncated="$(python3 -c 'import json,sys; print("1" if json.loads(sys.argv[1])["truncated"] else "0")' "$meta")"
+    next_key="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["nextKey"])' "$meta")"
+    next_version="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["nextVersion"])' "$meta")"
+    if [[ "$count" -gt 1000 ]]; then
+      die "s3://${bucket} returned ${count} versions in one page; delete-objects accepts 1000"
+    fi
+    if [[ "$count" -gt 0 ]]; then
+      result="$(aws s3api delete-objects --bucket "$bucket" --delete "file://${delete_file}" --output json)"
+      if ! python3 -c 'import json,sys
+raw=(sys.stdin.read() or "").strip()
+data=json.loads(raw) if raw else {}
+errs=data.get("Errors") or []
+if errs:
+    first=errs[0]
+    sys.stderr.write("%s %s (%s)\n" % (len(errs), first.get("Code") or "Error", first.get("Message") or ""))
+    raise SystemExit(1)
+' <<<"$result"; then
+        die "failed to delete objects in s3://${bucket}"
+      fi
+    fi
+    [[ "$truncated" == 1 ]] || break
+    if [[ -z "$next_key" || ( "$next_key" == "$key_marker" && "$next_version" == "$version_marker" ) ]]; then
+      die "listing s3://${bucket} was truncated but did not advance"
+    fi
+    key_marker="$next_key"
+    version_marker="$next_version"
+  done
+
+  key_marker=""
+  version_marker=""
+  while :; do
+    list_args=(aws --no-paginate s3api list-multipart-uploads --bucket "$bucket" --max-uploads 1000 --output json)
+    if [[ -n "$key_marker" ]]; then
+      list_args+=(--key-marker "$key_marker")
+      [[ -n "$version_marker" ]] && list_args+=(--upload-id-marker "$version_marker")
+    fi
+    batch="$("${list_args[@]}")"
+    printf '%s' "$batch" >"$list_file"
+    meta="$(python3 - "$list_file" "$upload_file" <<'PY'
+import json, sys
+src, dest = sys.argv[1], sys.argv[2]
+with open(src, encoding="utf-8") as handle:
+    data = json.load(handle)
+uploads = data.get("Uploads") or []
+with open(dest, "w", encoding="utf-8") as handle:
+    for item in uploads:
+        handle.write(json.dumps({"Key": item["Key"], "UploadId": item["UploadId"]}) + "\n")
+print(json.dumps({
+    "nextKey": data.get("NextKeyMarker") or "",
+    "nextUpload": data.get("NextUploadIdMarker") or "",
+    "truncated": bool(data.get("IsTruncated")),
+    "count": len(uploads),
+}))
+PY
+)"
+    count="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["count"])' "$meta")"
+    truncated="$(python3 -c 'import json,sys; print("1" if json.loads(sys.argv[1])["truncated"] else "0")' "$meta")"
+    next_key="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["nextKey"])' "$meta")"
+    next_version="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["nextUpload"])' "$meta")"
+    while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+      key="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["Key"])' "$row")"
+      id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["UploadId"])' "$row")"
+      aws s3api abort-multipart-upload --bucket "$bucket" --key "$key" --upload-id "$id"
+    done <"$upload_file"
+    [[ "$truncated" == 1 ]] || break
+    if [[ -z "$next_key" || ( "$next_key" == "$key_marker" && "$next_version" == "$version_marker" ) ]]; then
+      die "listing uploads in s3://${bucket} was truncated but did not advance"
+    fi
+    key_marker="$next_key"
+    version_marker="$next_version"
+    [[ "$count" -gt 0 ]] || die "listing uploads in s3://${bucket} was truncated but returned none"
   done
 }
 
@@ -421,7 +539,8 @@ destroy() {
   step "Destroy ${CLUSTER} in ${REGION} (account ${ACCOUNT_ID})"
   note "Deletes the Helm release, the load balancer and the cluster."
   if $PURGE; then
-    note "Also deletes this cluster's database disks, snapshots, S3 bucket, backup vault and saved secret-key."
+    resolve_purge_bucket
+    note "Also deletes this cluster's database disks, snapshots, backup vault, saved secret-key, and s3://${BUCKET}."
     note "Keeps the KMS key alias/${CLUSTER}-eks."
   else
     note "Keeps EBS volumes, the S3 bucket, backups, the KMS key and the saved secret-key."
@@ -483,7 +602,7 @@ if [[ "$ACTION" == destroy ]]; then
 fi
 
 FRONTEND_PUBLIC_URL="https://${DOMAIN}"
-[[ -n "$BUCKET" ]] || BUCKET="$(echo "pipeshub-${CLUSTER}-${ACCOUNT_ID}-${REGION}" | tr '[:upper:]' '[:lower:]' | cut -c1-63)"
+[[ -n "$BUCKET" ]] || BUCKET="$(default_bucket_name)"
 [[ -n "$HOSTED_ZONE_ID" ]] || HOSTED_ZONE_ID="$(find_hosted_zone "$DOMAIN" || true)"
 
 step "Plan"

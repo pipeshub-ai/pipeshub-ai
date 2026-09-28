@@ -54,8 +54,11 @@ if [[ -n "${PIPESHUB_IMAGE_REPOSITORY:-}" || -n "${PIPESHUB_DOCKER_TOKEN:-}" ]];
     --set-string "image.tag=${PIPESHUB_IMAGE_TAG}"
   )
   if [[ -n "${PIPESHUB_DOCKER_TOKEN:-}" ]]; then
-    export DOCKER_SERVER="${PIPESHUB_DOCKER_SERVER:?}"
-    export DOCKER_USERNAME="${PIPESHUB_DOCKER_USERNAME:?}"
+    # deploy.sh exports PIPESHUB_DOCKER_*. install.sh run on its own only has
+    # the values parse_image_ref just set.
+    export DOCKER_SERVER="${PIPESHUB_DOCKER_SERVER:-${DOCKER_SERVER:-}}"
+    export DOCKER_USERNAME="${PIPESHUB_DOCKER_USERNAME:-${DOCKER_USERNAME:-}}"
+    [[ -n "$DOCKER_SERVER" && -n "$DOCKER_USERNAME" ]] || die "registry server and username are required for the pull secret"
     apply_registry_pull_secret "$NAMESPACE"
     helm_image_args+=(--set "imagePullSecrets[0].name=${PULL_SECRET_NAME}")
   fi
@@ -77,7 +80,7 @@ fi
 helm dependency build "${CHART}"
 
 echo "install-eks: waiting up to 30 minutes for pods to become Ready"
-progress_stop="$(mktemp)"
+progress_stop="$(mktemp -u)"
 (
   while [[ ! -f "${progress_stop}" ]]; do
     sleep 20

@@ -66,7 +66,7 @@ To also delete that cluster's database disks, snapshots, S3 bucket, backup vault
 ./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1 --cluster pipeshub --purge --yes
 ```
 
-`--purge` implies `--destroy`. It deletes a disk only when the disk is detached and tagged for this cluster (`kubernetes.io/cluster/<name>=owned` and `pipeshub-backup=true`). It deletes an S3 bucket only when the bucket name contains the cluster name. The KMS key is kept so the next deploy can reuse it.
+`--purge` implies `--destroy`. It deletes a disk only when the disk is detached and tagged for this cluster (`kubernetes.io/cluster/<name>=owned` and `pipeshub-backup=true`). It deletes only the default bucket `pipeshub-<cluster>-<account>-<region>`. A different `--bucket` is refused. The KMS key is kept so the next deploy can reuse it.
 
 The rest of this guide is the same install step by step, for when you want to run or review each part yourself.
 
@@ -377,7 +377,7 @@ kubectl exec -n "$NAMESPACE" deploy/pipeshub-ai -c pipeshub-ai -- env | grep AWS
 
 Expect a line that ends with `169.254.170.23/v1/credentials`.
 
-During onboarding, on the Storage step, choose S3. Enter the bucket name and region printed at the end of `deploy.sh`. Leave the access key and secret key empty, so the app uses the Pod Identity role. Save before uploading documents or connecting sources.
+During onboarding, on the Storage step, choose S3. Enter `$BUCKET` and `$AWS_REGION` from this section. Leave the access key and secret key empty, so the app uses the Pod Identity role. Save before uploading documents or connecting sources.
 
 ## 9. Connector OAuth
 

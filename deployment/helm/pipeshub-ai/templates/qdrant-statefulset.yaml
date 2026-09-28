@@ -202,9 +202,6 @@ metadata:
     app.kubernetes.io/component: qdrant
 spec:
   maxUnavailable: 1
-  # 2 of 3 ready leaves zero disruptions. AlwaysAllow still lets a not-ready
-  # pod be evicted, so a drain is not stuck on the pod that cannot start.
-  unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels:
       {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}

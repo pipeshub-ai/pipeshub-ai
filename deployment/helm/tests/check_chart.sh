@@ -141,7 +141,6 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   # Neo4j is one pod. Qdrant is three. Count the StatefulSet replica lines by name.
   expect eks 'replicas: 3' present 'name: ci-pipeshub-ai-qdrant'
   expect eks 'whenUnsatisfiable: ScheduleAnyway' present 'name: ci-pipeshub-ai-qdrant'
-  expect eks 'unhealthyPodEvictionPolicy: AlwaysAllow' present
   expect eks 'replicas: 1' present 'name: ci-pipeshub-ai-neo4j'
 fi
 
