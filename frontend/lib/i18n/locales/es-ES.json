@@ -243,6 +243,31 @@
     "inbox": "Bandeja de entrada",
     "notifications": "Notificaciones"
   },
+  "artifacts": {
+    "title": "Todos los artefactos",
+    "empty": "Aún no hay artefactos",
+    "emptyHint": "Los archivos que creen tus agentes en el chat aparecerán aquí.",
+    "loadFailed": "No se pudieron cargar los artefactos",
+    "previewFailed": "No se pudo previsualizar este archivo",
+    "downloadFailed": "No se pudo descargar este archivo",
+    "openInChat": "Abrir en el chat",
+    "searchPlaceholder": "Buscar artefactos",
+    "conversation": "Conversación",
+    "untitledChat": "—",
+    "name": "Nombre",
+    "size": "Tamaño",
+    "showing": "Mostrando {{start}}-{{end}} de {{total}}",
+    "types": {
+      "IMAGE": "Imagen",
+      "CHART": "Gráfico",
+      "DOCUMENT": "Documento",
+      "SPREADSHEET": "Hoja de cálculo",
+      "PRESENTATION": "Presentación",
+      "DATA_FILE": "Archivo de datos",
+      "CODE": "Código",
+      "CODE_OUTPUT": "Salida de código"
+    }
+  },
   "notifications": {
     "title": "Notificaciones",
     "loading": "Cargando…",

@@ -236,6 +236,31 @@
     "inbox": "Posteingang",
     "notifications": "Benachrichtigungen"
   },
+  "artifacts": {
+    "title": "Alle Artefakte",
+    "empty": "Noch keine Artefakte",
+    "emptyHint": "Dateien, die Ihre Agenten im Chat erstellen, erscheinen hier.",
+    "loadFailed": "Artefakte konnten nicht geladen werden",
+    "previewFailed": "Diese Datei konnte nicht in der Vorschau angezeigt werden",
+    "downloadFailed": "Diese Datei konnte nicht heruntergeladen werden",
+    "openInChat": "Im Chat öffnen",
+    "searchPlaceholder": "Artefakte suchen",
+    "conversation": "Chat",
+    "untitledChat": "—",
+    "name": "Name",
+    "size": "Größe",
+    "showing": "{{start}}–{{end}} von {{total}}",
+    "types": {
+      "IMAGE": "Bild",
+      "CHART": "Diagramm",
+      "DOCUMENT": "Dokument",
+      "SPREADSHEET": "Tabelle",
+      "PRESENTATION": "Präsentation",
+      "DATA_FILE": "Datendatei",
+      "CODE": "Code",
+      "CODE_OUTPUT": "Codeausgabe"
+    }
+  },
   "notifications": {
     "title": "Benachrichtigungen",
     "loading": "Wird geladen…",

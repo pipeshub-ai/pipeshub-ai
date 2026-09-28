@@ -236,6 +236,31 @@
     "inbox": "इनबॉक्स",
     "notifications": "सूचनाएँ"
   },
+  "artifacts": {
+    "title": "सभी आर्टिफैक्ट",
+    "empty": "अभी तक कोई आर्टिफैक्ट नहीं",
+    "emptyHint": "आपके एजेंट चैट में जो फ़ाइलें बनाते हैं, वे यहाँ दिखाई देंगी।",
+    "loadFailed": "आर्टिफैक्ट लोड नहीं हो सके",
+    "previewFailed": "इस फ़ाइल का पूर्वावलोकन नहीं हो सका",
+    "downloadFailed": "यह फ़ाइल डाउनलोड नहीं हो सकी",
+    "openInChat": "चैट में खोलें",
+    "searchPlaceholder": "आर्टिफैक्ट खोजें",
+    "conversation": "बातचीत",
+    "untitledChat": "—",
+    "name": "नाम",
+    "size": "आकार",
+    "showing": "{{total}} में से {{start}}-{{end}}",
+    "types": {
+      "IMAGE": "छवि",
+      "CHART": "चार्ट",
+      "DOCUMENT": "दस्तावेज़",
+      "SPREADSHEET": "स्प्रेडशीट",
+      "PRESENTATION": "प्रस्तुति",
+      "DATA_FILE": "डेटा फ़ाइल",
+      "CODE": "कोड",
+      "CODE_OUTPUT": "कोड आउटपुट"
+    }
+  },
   "notifications": {
     "title": "सूचनाएँ",
     "loading": "लोड हो रहा है…",

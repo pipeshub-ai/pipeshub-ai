@@ -249,6 +249,31 @@
     "inbox": "收件箱",
     "notifications": "通知"
   },
+  "artifacts": {
+    "title": "所有产物",
+    "empty": "暂无产物",
+    "emptyHint": "智能体在聊天中创建的文件会显示在这里。",
+    "loadFailed": "无法加载产物",
+    "previewFailed": "无法预览此文件",
+    "downloadFailed": "无法下载此文件",
+    "openInChat": "在聊天中打开",
+    "searchPlaceholder": "搜索产物",
+    "conversation": "对话",
+    "untitledChat": "—",
+    "name": "名称",
+    "size": "大小",
+    "showing": "显示第 {{start}}-{{end}} 项，共 {{total}} 项",
+    "types": {
+      "IMAGE": "图片",
+      "CHART": "图表",
+      "DOCUMENT": "文档",
+      "SPREADSHEET": "电子表格",
+      "PRESENTATION": "演示文稿",
+      "DATA_FILE": "数据文件",
+      "CODE": "代码",
+      "CODE_OUTPUT": "代码输出"
+    }
+  },
   "notifications": {
     "title": "通知",
     "loading": "正在加载…",

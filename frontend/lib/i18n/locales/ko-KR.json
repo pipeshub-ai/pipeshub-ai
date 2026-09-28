@@ -249,6 +249,31 @@
     "inbox": "받은 편지함",
     "notifications": "알림"
   },
+  "artifacts": {
+    "title": "모든 아티팩트",
+    "empty": "아직 아티팩트가 없습니다",
+    "emptyHint": "에이전트가 채팅에서 만든 파일이 여기에 표시됩니다.",
+    "loadFailed": "아티팩트를 불러오지 못했습니다",
+    "previewFailed": "이 파일을 미리 볼 수 없습니다",
+    "downloadFailed": "이 파일을 다운로드할 수 없습니다",
+    "openInChat": "채팅에서 열기",
+    "searchPlaceholder": "아티팩트 검색",
+    "conversation": "대화",
+    "untitledChat": "—",
+    "name": "이름",
+    "size": "크기",
+    "showing": "{{total}}개 중 {{start}}-{{end}}",
+    "types": {
+      "IMAGE": "이미지",
+      "CHART": "차트",
+      "DOCUMENT": "문서",
+      "SPREADSHEET": "스프레드시트",
+      "PRESENTATION": "프레젠테이션",
+      "DATA_FILE": "데이터 파일",
+      "CODE": "코드",
+      "CODE_OUTPUT": "코드 출력"
+    }
+  },
   "notifications": {
     "title": "알림",
     "loading": "로드 중…",

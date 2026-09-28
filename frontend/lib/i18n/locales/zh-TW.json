@@ -249,6 +249,31 @@
     "inbox": "收件匣",
     "notifications": "通知"
   },
+  "artifacts": {
+    "title": "所有產物",
+    "empty": "尚無產物",
+    "emptyHint": "代理程式在對話中建立的檔案會顯示在這裡。",
+    "loadFailed": "無法載入產物",
+    "previewFailed": "無法預覽此檔案",
+    "downloadFailed": "無法下載此檔案",
+    "openInChat": "在對話中開啟",
+    "searchPlaceholder": "搜尋產物",
+    "conversation": "對話",
+    "untitledChat": "—",
+    "name": "名稱",
+    "size": "大小",
+    "showing": "顯示第 {{start}}-{{end}} 項，共 {{total}} 項",
+    "types": {
+      "IMAGE": "圖片",
+      "CHART": "圖表",
+      "DOCUMENT": "文件",
+      "SPREADSHEET": "試算表",
+      "PRESENTATION": "簡報",
+      "DATA_FILE": "資料檔",
+      "CODE": "程式碼",
+      "CODE_OUTPUT": "程式碼輸出"
+    }
+  },
   "notifications": {
     "title": "通知",
     "loading": "載入中…",
