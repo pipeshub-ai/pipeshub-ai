@@ -1115,7 +1115,8 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
 _SPEND = r"(?:spend\w*|make|making|purchas\w*|buy\w*|expens(?:e|es|ed|ing))\b"
 # What a denial of this spend may take as its object: "it", "one", "the purchase", "anything".
 _SPEND_OBJECT = (
-    r"(?:(?:that|this|the|a|one|any)\s+(?:money|amount|expense|purchase|one)|it|them|one|anything|that|this|any)"
+    r"(?:(?:that|this|the|a|one|any|such(?:\s+a)?|any\s+such|this\s+very|the\s+same)\s+(?:money|amount|expense|purchase|one)"
+    r"|any\s+of\s+(?:it|them)|it|them|one|anything|that|this|any)(?:\s+(?:too|anyway|either|at\s+all))?"
 )
 _NEG_MODAL = (
     r"(?:(?:must|should|will|shall|may|can|could|would|might)\s+(?:not|never)|cannot|can't|mustn't|shouldn't"
@@ -1165,21 +1166,26 @@ _PROHIBIT_AFTER = re.compile(
 # A short denial in the part after it: "Spending up to $250 without approval, I am not allowed."
 # The part must be only that denial: not "…, I am not allowed to discuss the budget".
 _PROHIBIT_TAIL = re.compile(
-    r"^\s*(?:(?:and|so|but|however|then|also|yet|still|(?:please\s+)?note(?:\s+that)?)\b[\s,:]*)*"
-    r"(?:(?:i|you|we|they|it|this|that|which)(?:\s+|(?='))"
+    r"^\s*(?:(?:and|so|but|however|then|also|yet|still|please|note|that)\b[\s,:]*)*"
+    # The subject: a pronoun, or the purchase itself ("The purchase is not allowed.").
+    r"(?:(?:i|you|we|they|it|this|that|which"
+    r"|(?:(?:the|this|that|such|these|those|any)\s+)?(?:purchases?|expenses?|spending(?:\s+it)?))(?:\s+|(?='))"
     rf"(?:{_NEG_STATE}\s+(?:allowed|permitted)"
     r"|(?:is|are|am|was|were|'s|'re|'m|(?:has|have|had|'s|'ve)\s+been)\s+(?:prohibited|forbidden|banned))"
     rf"|{_NOBODY_ALLOWED})"
     # Optionally naming the spend: "…to spend it", "…from ever making the purchase", "…to
     # buy anything"; not "…to discuss the budget" or "…to make a decision".
-    rf"(?:\s+(?:to|from)\s+(?:(?:ever|\w+ly)\s+)?{_SPEND}(?:\s+{_SPEND_OBJECT})?)?"
+    rf"(?:\s+(?:to|from)\s+(?:(?:ever|even|\w+ly)\s+)?{_SPEND}(?:\s+{_SPEND_OBJECT})?)?"
     r"\s*[.!?]*\s*$"
 )
 
 
 # Words that leave an approval about the $250 purchase: generic heads, determiners,
 # pronouns. A specific noun ("software subscriptions") makes it another subject's rule.
-_GENERIC_HEADS = {"purchase", "purchases", "expense", "expenses", "spend", "spending", "item", "items", "amount", "amounts"}
+_GENERIC_HEADS = {
+    "purchase", "purchases", "expense", "expenses", "spend", "spending", "item", "items", "amount", "amounts",
+    "dollar", "dollars", "receipt", "receipts", "invoice", "invoices", "claim", "claims", "request", "requests",
+}
 _GENERIC = {
     "purchase", "purchases", "expense", "expenses", "spend", "spending", "item", "items", "thing", "things", "one",
     "ones", "amount", "amounts", "such", "it", "them", "that", "this", "those", "these", "anything", "everything",
@@ -1204,31 +1210,41 @@ def _other_subject(piece: str, previous: str = "") -> bool:
     software subscriptions", "for software subscriptions, finance approves"), not the
     $250 purchase ("your manager must approve every such purchase", "the same purchase")."""
     def specific(words: list[str]) -> bool:
-        # A generic head keeps its modifiers generic: "every single purchase".
-        if any(w in _GENERIC_HEADS for w in words):
-            return False
-        return any(w not in _GENERIC and not w.endswith("'s") for w in words)
+        # "every single purchase" is generic; "the travel expense" and "every software
+        # purchase" are not.
+        return any(w not in _GENERIC and w not in _GENERIC_HEADS and not w.endswith("'s") for w in words)
 
-    def noun_phrase_at_end(text: str) -> list[str]:
+    def noun_phrase_at_end(text: str, infinitive: bool = False) -> list[str]:
         words = re.findall(r"[a-z][a-z'-]*", text)
-        while words and (words[-1] in _SKIP_TO_SUBJECT or words[-1].endswith("'s")):
+        # "require finance to approve", "is for finance to approve": skip the infinitive
+        # right before the approval word.
+        skip = _SKIP_TO_SUBJECT | ({"to", "for"} if infinitive else set())
+        while words and (words[-1] in skip or words[-1].endswith("'s")):
             words.pop()
         phrase: list[str] = []
-        while words and words[-1] not in _NP_STOP and len(phrase) < 3:
+        # A verb form ("submitting it") is not part of the noun phrase.
+        while (words and words[-1] not in _NP_STOP and len(phrase) < 3
+               and not (words[-1].endswith("ing") and words[-1] not in _GENERIC_HEADS)):
             phrase.insert(0, words.pop())
         return phrase
 
     for m in _approval_words(piece):
-        subject = noun_phrase_at_end(piece[:m.start()])
+        subject = noun_phrase_at_end(piece[:m.start()], infinitive=True)
         # "Any software subscription: finance approves": the subject is the piece before.
         if not subject and not re.search(r"\w", re.sub(r"[a-z'-]+", lambda w: "" if w.group() in _SKIP_TO_SUBJECT else w.group(), piece[:m.start()])):
             subject = noun_phrase_at_end(previous)
         # The object: "approves software subscriptions", "approval (is required) for software".
         after = piece[m.end():]
-        noun = m.group().startswith(("approval", "authoriz", "authoris", "sign"))
+        # A noun ("approval", "sign-off") takes its object after "for"; the verb "sign
+        # (…) off" takes it after "off" or between "sign" and "off".
+        noun = m.group().startswith(("approval", "authoriz", "authoris")) or re.fullmatch(r"sign-offs?", m.group())
         if noun:
             found = re.search(r"\bfor\s+", after)
             after = " " + after[found.end():] if found else ""
+        else:
+            inside = re.fullmatch(r"sign(?:s|ed|ing)?\s+(.+?)[- ]?offs?", m.group())
+            if inside:
+                after = " " + inside.group(1) + after
         obj_text = after
         obj: list[str] = []
         for w in re.findall(r"[a-z][a-z'-]*|\$|\d", obj_text):
