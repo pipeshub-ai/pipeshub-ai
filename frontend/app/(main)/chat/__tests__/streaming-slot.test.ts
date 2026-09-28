@@ -710,6 +710,102 @@ describe('asking the user a question mid-run', () => {
       ['assistant', 'Live follow-up stays.'],
     ]);
   });
+
+  it('reopens the card when the resume ends on another question', async () => {
+    const first = {
+      name: 'ask_user_question',
+      questions: [{
+        uuid: 'q-proceed',
+        question: 'How would you like to proceed?',
+        multiSelect: false,
+        options: [{ id: 'kb', label: 'Search the knowledge base instead', isUserInput: false }],
+      }],
+    };
+    const second = {
+      name: 'ask_user_question',
+      questions: [{
+        uuid: 'q-topic',
+        question: 'What topic should I search for?',
+        multiSelect: false,
+        options: [{ id: 'keywords', label: 'Enter a topic or keywords', isUserInput: false }],
+      }],
+    };
+    const slotId = newSlot();
+    respondWith([
+      frame('CUSTOM', { name: 'ask_user_question', value: { toolData: first } }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation(''),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: first }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(slotId, Q, request());
+    useChatStore.getState().updateSlot(slotId, {
+      pendingAskUserQuestion: {
+        ...slot(slotId).pendingAskUserQuestion!,
+        answers: { 'q-proceed': { questionUuid: 'q-proceed', selectedOptionIds: ['kb'], userInputs: {} } },
+        status: 'submitted',
+      },
+    });
+
+    const resumeQuery = 'User selections:\n1. "How would you like to proceed?" → Search the knowledge base instead';
+    respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: "I'll use the knowledge base." }),
+      frame('CUSTOM', { name: 'ask_user_question', value: { toolData: second } }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation("I'll use the knowledge base."),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: first }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+              storedMessage({ _id: 'sel', messageType: 'user_query', content: resumeQuery }),
+              storedMessage({
+                _id: 'a2',
+                messageType: 'bot_response',
+                content: "I'll use the knowledge base.",
+              }),
+              storedMessage({
+                _id: 't2',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: second }],
+              }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(
+      slotId,
+      resumeQuery,
+      request({ query: resumeQuery }),
+      { resumeAskUserQuestion: true },
+    );
+
+    const pending = slot(slotId).pendingAskUserQuestion;
+    expect(pending?.status).toBe('pending');
+    expect(pending?.payload.questions.map((q) => q.uuid)).toEqual(['q-proceed', 'q-topic']);
+    expect(pending?.answers).toEqual({
+      'q-proceed': { questionUuid: 'q-proceed', selectedOptionIds: ['kb'], userInputs: {} },
+    });
+  });
 });
 
 describe('regenerating an answer', () => {

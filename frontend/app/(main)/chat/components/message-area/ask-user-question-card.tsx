@@ -287,6 +287,19 @@ function firstUnansweredStep(
   return idx >= 0 ? idx : Math.max(0, questions.length - 1);
 }
 
+/** True while any question still lacks a usable answer. A resume can end by
+ *  asking MORE questions (see `mergeAskUserQuestionPayloads`): the turn then has
+ *  an answer even though the new question does not, so callers use this to keep
+ *  such a card interactive instead of locking it as answered. */
+export function hasUnansweredQuestions(
+  payload: AskUserQuestionPayload,
+  answers: Record<string, AskUserQuestionAnswer>,
+): boolean {
+  return normalizeAskUserQuestionPayload(payload).questions.some(
+    (q) => !validateQuestion(q, answerForQuestion(q, answers), [SOMETHING_ELSE_OPTION]),
+  );
+}
+
 function hasVisibleSelections(
   questions: AskUserQuestionItem[],
   answers: Record<string, AskUserQuestionAnswer>,

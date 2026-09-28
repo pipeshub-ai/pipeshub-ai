@@ -444,6 +444,70 @@ describe('loadHistoricalMessages', () => {
     expect(unansweredAskUserQuestion).toBeNull();
   });
 
+  it('keeps the card interactive when the resume asked another question', () => {
+    const first = {
+      name: 'ask_user_question',
+      questions: [{
+        uuid: 'q-proceed',
+        question: 'How would you like to proceed?',
+        multiSelect: false,
+        options: [{ id: 'kb', label: 'Search the knowledge base instead', isUserInput: false }],
+      }],
+    };
+    const second = {
+      name: 'ask_user_question',
+      questions: [{
+        uuid: 'q-topic',
+        question: 'What topic should I search for?',
+        multiSelect: false,
+        options: [{ id: 'keywords', label: 'Enter a topic or keywords', isUserInput: false }],
+      }],
+    };
+    const { messages, unansweredAskUserQuestion } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'fetch a jira page' }),
+      message({
+        _id: 't1',
+        messageType: 'tool_call',
+        tools: [{ toolName: 'ask_user_question', toolResult: first }],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'a1', messageType: 'bot_response', content: '' }),
+      message({
+        _id: 'sel',
+        messageType: 'user_query',
+        content: 'User selections:\n1. "How would you like to proceed?" → Search the knowledge base instead',
+      }),
+      message({
+        _id: 'a2',
+        messageType: 'bot_response',
+        content: "I'll use the knowledge base. Please specify the topic.",
+      }),
+      message({
+        _id: 't2',
+        messageType: 'tool_call',
+        tools: [{ toolName: 'ask_user_question', toolResult: second }],
+      } as Partial<ConversationMessage>),
+    ]);
+
+    expect(messages.map((m) => [m.role, m.id])).toEqual([
+      ['user', 'q'],
+      ['assistant', 'a1'],
+    ]);
+    expect(unansweredAskUserQuestion).toMatchObject({
+      assistantMessageId: 'a1',
+      status: 'pending',
+      answers: {
+        'q-proceed': {
+          questionUuid: 'q-proceed',
+          selectedOptionIds: ['kb'],
+          userInputs: {},
+        },
+      },
+    });
+    expect(
+      unansweredAskUserQuestion?.payload.questions.map((q) => q.uuid),
+    ).toEqual(['q-proceed', 'q-topic']);
+  });
+
   it('still shows an error row that follows a real user message', () => {
     const { messages } = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'hello' }),

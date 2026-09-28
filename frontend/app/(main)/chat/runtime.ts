@@ -39,7 +39,11 @@ import {
 } from './components/message-area/response-tabs/citations';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { bareToolFullName } from './tool-groups';
-import { mergeAskUserQuestionPayloads, parseAnswerMessage } from './components/message-area/ask-user-question-card';
+import {
+  hasUnansweredQuestions,
+  mergeAskUserQuestionPayloads,
+  parseAnswerMessage,
+} from './components/message-area/ask-user-question-card';
 import { appendResumeParts } from './utils/tool-display';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
@@ -518,15 +522,24 @@ export function loadHistoricalMessages(
             (m) => String(m._id) === String(last.id),
           );
           stampPersistedQuestionCard(result, last.id, payload, true);
-          const stamped = (
-            (last.metadata?.custom ?? {}) as { persistedAskUserQuestion?: AskUserQuestionPayload }
-          ).persistedAskUserQuestion ?? payload;
+          const rowCustom = (last.metadata?.custom ?? {}) as {
+            persistedAskUserQuestion?: AskUserQuestionPayload;
+            persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
+          };
+          const stamped = rowCustom.persistedAskUserQuestion ?? payload;
+          const stampedAnswers = rowCustom.persistedAskUserQuestionAnswers ?? {};
           toolPayload = stamped;
+          // A resume that ended on another question leaves this turn answered
+          // while the newly merged question is not — keep the card interactive,
+          // carrying the earlier selections so it reopens on the new question.
           const answered =
-            botIndex >= 0 && isAskUserQuestionAnswered(messages, botIndex);
+            botIndex >= 0 &&
+            isAskUserQuestionAnswered(messages, botIndex) &&
+            !hasUnansweredQuestions(stamped, stampedAnswers);
           if (!answered) {
             lastUnansweredAssistantId = last.id;
             lastUnansweredPayload = stamped;
+            lastUnansweredAnswers = { ...lastUnansweredAnswers, ...stampedAnswers };
           }
         } else {
           toolPayload = toolPayload

@@ -21,7 +21,10 @@ import { buildChatArtifact } from './utils/build-chat-artifact';
 import { appendResumeParts } from './utils/tool-display';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages, getThreadMessagePlainText, isUsableFollowUpText } from './runtime';
-import { mergeAskUserQuestionPayloads } from './components/message-area/ask-user-question-card';
+import {
+  hasUnansweredQuestions,
+  mergeAskUserQuestionPayloads,
+} from './components/message-area/ask-user-question-card';
 import { i18n } from '@/lib/i18n';
 import { toast } from '@/lib/store/toast-store';
 import { showNoModelToast } from './utils/no-model-toast';
@@ -918,6 +921,13 @@ export async function streamMessageForSlot(
         const rowHasFollowUp = Boolean(
           cardRow && isUsableFollowUpText(getThreadMessagePlainText(cardRow)),
         );
+        // The resume can itself end on another ask_user_question, merged into
+        // this same card by `applyAskUserQuestionSse` — settling it as answered
+        // would leave that new question unanswerable.
+        const resumeAskedMore = Boolean(
+          pendingBefore &&
+          hasUnansweredQuestions(pendingBefore.payload, pendingBefore.answers),
+        );
         if (cardRow && pendingBefore?.status === 'submitted') {
           const prevCustom = (cardRow.metadata?.custom ?? {}) as Record<string, unknown>;
           Object.assign(cardRow, {
@@ -982,7 +992,7 @@ export async function streamMessageForSlot(
               resumeAskUserQuestion && rowHasFollowUp && pendingBefore
                 ? {
                     ...pendingBefore,
-                    status: 'submitted' as const,
+                    status: resumeAskedMore ? ('pending' as const) : ('submitted' as const),
                     assistantMessageId:
                       (cardRow && typeof cardRow.id === 'string' ? cardRow.id : pendingBefore.assistantMessageId),
                   }
