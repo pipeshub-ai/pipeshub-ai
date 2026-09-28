@@ -481,6 +481,8 @@ def _alternative(text: str) -> bool:
         not (_EXTENDER.match(text, m.end()) and re.search(r"(?:\d|\0|\bthat|\babove|\bover)\s*$", text[:m.start()]))
         for m in re.finditer(r"\b(?:or|either)\b", text)
     )
+# Words that carve an exception out of a claim: "except above $2,500", "barring …".
+_EXCEPTION = r"(?:except\w*|exception|unless|save|besides|excluding|barring)"
 _CLAIM_BREAK = re.compile(r"\b(?:but|however|whereas)\b|;")
 
 
@@ -502,7 +504,7 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
     ceilings = [(m.start(), m.end()) for m in _CEILING.finditer(sentence)]
     bands: list[tuple[int, int | None]] = []
     def excepted(at: int) -> bool:
-        return re.search(r"\b(?:except|exception|unless)\b[^,;.]*$", sentence[:at]) is not None
+        return re.search(rf"\b{_EXCEPTION}\b[^,;.]*$", sentence[:at]) is not None
 
     for m in _RAISES.finditer(sentence):
         if excepted(m.start()):
@@ -582,7 +584,8 @@ def _without_cancels(before: str) -> bool:
 
 # Both bounds of a range: "from $251 to $2,500", "between $251 and $2,500", "$251–2,500".
 _BOUND = rf"(?:{_AMOUNT.pattern}|\b\d{{1,3}}(?:,\d{{3}})+\b|\b\d{{3,}}\b)"
-_DET = r"(?:(?:the|a|an|your|our)\s+)?"
+_DETERMINER = r"(?:the|a|an|your|our|their|his|her|its|my|that|this|these|those)"
+_DET = rf"(?:{_DETERMINER}\s+)?"
 _RANGE = re.compile(
     rf"\b(?:from|between)\s+({_AMOUNT.pattern})\s*(?:up\s+(?:to|until|through)|to|and|through|until|-|–|—)\s*{_DET}({_BOUND})"
     rf"|({_AMOUNT.pattern})\s*(?:up\s+(?:to|until|through)|to|through|until|-|–|—)\s*{_DET}({_BOUND})"
@@ -594,7 +597,7 @@ _CEILING = re.compile(
     r"\b(?:up\s+(?:to|through|until)|to|under|below|less\s+than|through|until|within|at\s+most|capped\s+at"
     # A negated comparison: "not above", "isn't greater than", "mustn't be more than",
     # "hasn't exceeded", "not in excess of".
-    r"|(?:\w+n't|\w+\s+not|cannot|not|never|no|nothing)(?:\s+any)?(?:\s+(?:(?:have|has)(?:\s+been)?|be|been))?\s+"
+    r"|(?:\w+n't|\w+\s+not|cannot|not|never|no|nothing)(?:\s+any)?(?:\s+(?:(?:have|has)(?:\s+been)?|be|been))?(?:\s+any)?\s+"
     r"(?:exceed\w*|to\s+exceed|(?:more|greater|higher|larger|bigger)\s+than|above|over|beyond|past|in\s+excess\s+of)"
     r"|(?:at\s+)?(?:an?\s+|the\s+)?(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+of)?)"
     rf"\s+{_DET}({_AMOUNT.pattern})"
@@ -647,7 +650,7 @@ def _only_range(
         )
         # A subject in front of the ceiling is part of it: "The total isn't above $2,500."
         marked = re.sub(
-            rf"^\s*(?:(?:the|a|an|your|our)\s+)?(?!(?:except|unless|save|besides|excluding|barring)\b)\w+\s+(?={_RANGE_MARK})",
+            rf"^\s*(?:{_DETERMINER}\s+)?(?!{_EXCEPTION}\b)\w+\s+(?:(?:is|are|was|were)\s+)?(?={_RANGE_MARK})",
             " ", marked,
         )
     if raises and _RAISES.search(marked):
