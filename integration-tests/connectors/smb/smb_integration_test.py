@@ -68,16 +68,17 @@ class TestSmbConnector:
         parts = old_key.rsplit("/", 1)
         new_key = f"{parts[0]}/{new_name}" if len(parts) == 2 else new_name
 
-        before = await graph_provider.get_record_by_external_id(
-            connector_id, f"{share}/{old_key}"
-        )
+        old_ext_id = f"{share}/{old_key}"
+        new_ext_id = f"{share}/{new_key}"
+        before = await graph_provider.get_record_by_external_id(connector_id, old_ext_id)
+        assert before is not None, f"{old_ext_id} should be synced before it is renamed"
         smb_storage.rename_object(share, old_key, new_key)
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
         async def _renamed() -> bool:
-            return await graph_provider.record_paths_or_names_contain(connector_id, [new_name])
+            return await graph_provider.get_record_by_external_id(connector_id, new_ext_id) is not None
 
         await wait_until_graph_condition(
             connector_id,
@@ -86,15 +87,13 @@ class TestSmbConnector:
             poll_interval=10,
             description="SMB rename sync",
         )
-        await graph_provider.assert_record_paths_or_names_contain(connector_id, [new_name])
-        await graph_provider.assert_record_not_exists(connector_id, old_name)
-        after = await graph_provider.get_record_by_external_id(
-            connector_id, f"{share}/{new_key}"
+        # By external id, not name: the fixture tree holds several files with the
+        # same name in different folders.
+        assert await graph_provider.get_record_by_external_id(connector_id, old_ext_id) is None, (
+            f"{old_ext_id} should be gone after the rename"
         )
-        if before is not None and after is not None:
-            before_id = getattr(before, "id", None) or (before.get("id") if isinstance(before, dict) else None)
-            after_id = getattr(after, "id", None) or (after.get("id") if isinstance(after, dict) else None)
-            assert before_id == after_id, (
-                "Rename should reuse the graph vertex (on_records_moved), not delete+create"
-            )
+        after = await graph_provider.get_record_by_external_id(connector_id, new_ext_id)
+        assert after is not None and after.id == before.id, (
+            "Rename should reuse the graph vertex (on_records_moved), not delete+create"
+        )
         logger.info("SMB rename %s -> %s (connector %s)", old_name, new_name, connector_id)

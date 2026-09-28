@@ -28,7 +28,7 @@ from app.connectors.sources.network_share.errors import (
     ShareListingError,
 )
 from app.connectors.sources.network_share.record_mapper import revision_id
-from app.models.entities import FileRecord, RecordGroupType, RecordType, User
+from app.models.entities import FileRecord, Record, RecordGroupType, RecordType, User
 from app.models.permission import EntityType, PermissionType
 from app.sources.client.cifs.cifs import CLIENT_NETBIOS_NAME, REPARSE_POINT, CifsClient
 from app.sources.external.cifs.cifs import CifsDataSource
@@ -80,6 +80,22 @@ def _file_record(
         connector_id="cifs-1",
         indexing_status=ProgressStatus.COMPLETED.value,
         is_file=is_file,
+    )
+
+
+def _stored_record(*, ext_id: str, revision: str, record_id: str = "rec-1") -> Record:
+    """The graph stores answer both lookups with a plain Record, never a FileRecord."""
+    return Record(
+        id=record_id,
+        record_name=ext_id.rsplit("/", 1)[-1],
+        record_type=RecordType.FILE,
+        external_record_id=ext_id,
+        external_revision_id=revision,
+        version=1,
+        origin=OriginTypes.CONNECTOR.value,
+        connector_name=Connectors.CIFS,
+        connector_id="cifs-1",
+        indexing_status=ProgressStatus.COMPLETED.value,
     )
 
 
@@ -517,7 +533,7 @@ class TestCifsConnectorSync:
     async def test_same_revision_reuses_id(self, mock_filters, cifs_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         item = _entry("a.txt", file_id=9, size=10)
-        existing = _file_record(ext_id=f"{SHARE}/a.txt", revision=revision_id(SHARE, item, "a.txt"))
+        existing = _stored_record(ext_id=f"{SHARE}/a.txt", revision=revision_id(SHARE, item, "a.txt"))
         mock_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         cifs_connector.data_source = _ds(tree={(SHARE, ""): [item]})
         cifs_connector.configured_share = SHARE
@@ -531,7 +547,7 @@ class TestCifsConnectorSync:
     async def test_changed_revision_is_upsert(self, mock_filters, cifs_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         item = _entry("a.txt", file_id=9, size=80)
-        existing = _file_record(ext_id=f"{SHARE}/a.txt", revision="old")
+        existing = _stored_record(ext_id=f"{SHARE}/a.txt", revision="old")
         mock_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         cifs_connector.data_source = _ds(tree={(SHARE, ""): [item]})
         cifs_connector.configured_share = SHARE
@@ -544,7 +560,7 @@ class TestCifsConnectorSync:
     async def test_move_by_file_id(self, mock_filters, cifs_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         item = _entry("renamed.txt", file_id=44, size=10)
-        old = _file_record(
+        old = _stored_record(
             ext_id=f"{SHARE}/old.txt",
             revision=revision_id(SHARE, item, "renamed.txt"),
             record_id="keep-me",
@@ -610,7 +626,7 @@ class TestCifsConnectorSync:
         )
         cifs_connector.data_source = ds
         cifs_connector.configured_share = SHARE
-        moved = _file_record(
+        moved = _stored_record(
             ext_id=f"{SHARE}/old.txt",
             revision=revision_id(SHARE, renamed, "renamed.txt"),
             record_id="keep-me",

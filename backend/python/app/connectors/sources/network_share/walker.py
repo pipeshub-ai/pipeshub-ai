@@ -27,7 +27,7 @@ from app.connectors.sources.network_share.record_mapper import (
     revision_id,
     usable_file_id,
 )
-from app.models.entities import FileRecord
+from app.models.entities import FileRecord, Record
 from app.models.permission import Permission
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from app.config.constants.arangodb import Connectors
     from app.connectors.sources.network_share.protocol import INetworkShareDataSource
 
-ExistingLookup = Callable[[str], Awaitable[FileRecord | None]]
+ExistingLookup = Callable[[str], Awaitable[Record | None]]
 FlushUpserts = Callable[[list[tuple[FileRecord, list[Permission]]]], Awaitable[None]]
 FlushMoves = Callable[[list[tuple[str, FileRecord, list[Permission]]]], Awaitable[None]]
 PermissionsFor = Callable[[FileRecord], list[Permission]]

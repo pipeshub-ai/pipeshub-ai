@@ -161,13 +161,19 @@ def make_walker(
     created_by: str,
     creator_email: str | None,
 ) -> ShareWalker:
-    async def get_by_external_id(ext_id: str) -> FileRecord | None:
-        record = await processor.get_record_by_external_id(connector_id, ext_id)
-        return record if isinstance(record, FileRecord) else None
+    # Both stores hand back a plain Record here, never a FileRecord, so an
+    # isinstance(FileRecord) check drops every hit and turns a rename into a
+    # new record plus a prune of the old one.
+    def _file_only(record: Record | None) -> Record | None:
+        return record if record is not None and record.record_type == RecordType.FILE else None
 
-    async def get_by_revision(rev: str) -> FileRecord | None:
-        record = await processor.get_record_by_external_revision_id(connector_id, rev)
-        return record if isinstance(record, FileRecord) else None
+    async def get_by_external_id(ext_id: str) -> Record | None:
+        return _file_only(await processor.get_record_by_external_id(connector_id, ext_id))
+
+    async def get_by_revision(rev: str) -> Record | None:
+        return _file_only(
+            await processor.get_record_by_external_revision_id(connector_id, rev)
+        )
 
     async def flush_upserts(batch: list[tuple[FileRecord, list[Permission]]]) -> None:
         await processor.on_new_records(batch)
