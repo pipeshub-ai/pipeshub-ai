@@ -145,9 +145,9 @@ jobs:
   integration-tests:
     name: Integration Tests (${{ matrix.graph_db }} · ${{ matrix.shard }}${{ needs.setup.outputs.is_default == 'false' && format(' · {0}', needs.setup.outputs.message_broker) || '' }})
     needs: setup
-    # This job runs the PR's code with every integration secret, so only same-repo
-    # branches and trusted authors run it; for anyone else, dispatch with commit_hash after review.
-    if: ${{ github.event_name != 'pull_request_target' || (!contains(github.event.pull_request.labels.*.name, 'skip-it') && (github.event.pull_request.head.repo.full_name == github.repository || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association))) }}
+    # This job runs the PR's code with every integration secret, so only branches in this
+    # repository (their authors have write access) run it; for a fork PR, dispatch with commit_hash after review.
+    if: ${{ github.event_name != 'pull_request_target' || (!contains(github.event.pull_request.labels.*.name, 'skip-it') && github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 300
 
