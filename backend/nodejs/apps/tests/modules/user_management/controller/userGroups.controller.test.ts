@@ -143,6 +143,58 @@ describe('UserGroupController', () => {
     });
   });
 
+  describe('createUserGroup duplicate name check', () => {
+    const otherOrgId = new mongoose.Types.ObjectId().toString();
+    let stored: Array<{ name: string; orgId: mongoose.Types.ObjectId; isDeleted: boolean }>;
+
+    // Answers findOne the way Mongo would: a key missing from the filter matches every org.
+    const stubStore = () =>
+      sinon.stub(UserGroups, 'findOne').callsFake(((filter: Record<string, unknown>) => {
+        const cast = UserGroups.find().cast(UserGroups, { ...filter }) as Record<string, unknown>;
+        const match = stored.find(
+          (g) =>
+            g.name === cast.name &&
+            g.isDeleted === cast.isDeleted &&
+            (!('orgId' in cast) || g.orgId.equals(cast.orgId as mongoose.Types.ObjectId)),
+        );
+        return Promise.resolve(match ?? null);
+      }) as unknown as typeof UserGroups.findOne);
+
+    beforeEach(() => {
+      stored = [];
+      sinon.stub(UserGroups.prototype, 'save').callsFake(function (this: { name: string; orgId: mongoose.Types.ObjectId }) {
+        stored.push({ name: this.name, orgId: this.orgId, isDeleted: false });
+        return Promise.resolve(this);
+      } as unknown as typeof UserGroups.prototype.save);
+    });
+
+    it('lets two orgs each create a group with the same name', async () => {
+      stubStore();
+      stored.push({ name: 'Engineering', orgId: new mongoose.Types.ObjectId(otherOrgId), isDeleted: false });
+      req.body = { name: 'Engineering', type: 'custom' };
+
+      await controller.createUserGroup(req, res);
+
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(stored.filter((g) => g.name === 'Engineering')).to.have.length(2);
+    });
+
+    it('still refuses a second group with the same name in the same org, without naming other orgs', async () => {
+      stubStore();
+      stored.push({ name: 'Engineering', orgId: new mongoose.Types.ObjectId(otherOrgId), isDeleted: false });
+      req.body = { name: 'Engineering', type: 'custom' };
+      await controller.createUserGroup(req, res);
+
+      try {
+        await controller.createUserGroup(req, res);
+        expect.fail('Should have thrown an error');
+      } catch (error: any) {
+        expect(error.message).to.equal('Group already exists');
+        expect(error.message).to.not.include(otherOrgId);
+      }
+    });
+  });
+
   describe('getAllUserGroups', () => {
     it('should return paginated groups with userCount', async () => {
       const mockGroups = [

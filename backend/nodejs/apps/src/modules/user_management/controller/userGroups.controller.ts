@@ -52,6 +52,7 @@ export class UserGroupController {
 
     const groupWithSameName = await UserGroups.findOne({
       name,
+      orgId: req.user?.orgId,
       isDeleted: false,
     });
 
