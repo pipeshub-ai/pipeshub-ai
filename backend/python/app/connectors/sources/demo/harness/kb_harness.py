@@ -423,7 +423,7 @@ _APPROVAL_WORD = re.compile(r"\bapprov\w*|\bauthori[sz]\w*|\bsign(?:s|ed|ing)?(?
 # A negated waiver ("is not waived", "can't be skipped", "is no longer waived") still
 # requires the approval.
 _NOT_WAIVED = (
-    r"(?!(?:\s+(?:longer|be|been|being|get|gets|got)){0,2}"
+    r"(?!(?:\s+(?:longer|have|had|be|been|being|get|gets|got)){0,3}"
     r"\s+(?:waived|skipped|bypassed|avoided|dropped|lifted|removed|overridden|circumvented)\b)"
 )
 _NOT_AFTER = re.compile(
@@ -495,18 +495,23 @@ _EXCEPTION = (
     r"|apart\s+from|aside\s+from|other\s+than|outside\s+of)"
 )
 _EXCEPTION_WORD = re.compile(rf"\b{_EXCEPTION}\b")
-# A negation governing the exception word: "no exceptions", "not an exception",
-# "isn't an exception", "without exception".
-_EXCEPTION_NEGATED = re.compile(r"(?:\b(?:no|not|never|without)|n't)\s+(?:(?:any|a|an|the|one|single)\s+)?$")
 
 
-def _carve_outs(text: str, lo: int = 0, hi: int | None = None) -> list[re.Match[str]]:
-    """The exception words in text[lo:hi] that carve an exception out, not the ones
-    a negation says don't exist."""
+def _carve_outs(text: str, no_approval: list[str], lo: int = 0, hi: int | None = None) -> list[re.Match[str]]:
+    """The exception words in text[lo:hi] that carve an exception out, not the ones a
+    negation says don't exist ("no exceptions", "there cannot be an exception",
+    "without exception"). The no-approval phrases are blanked first, so the "no" in
+    "with no approval except above $2,500" doesn't negate the exception."""
+    blanked = text
+    for p in no_approval:
+        for start, end in mention_spans(blanked, p):
+            blanked = blanked[:start] + " " * (end - start) + blanked[end:]
     return [
         m for m in _EXCEPTION_WORD.finditer(text, lo, len(text) if hi is None else hi)
-        if not _EXCEPTION_NEGATED.search(text[:m.start()])
+        if not _negated(blanked[:m.start()]) and not re.search(r"\bwithout\s+(?:\w+\s+)?$", blanked[:m.start()])
     ]
+
+
 _CLAIM_BREAK = re.compile(r"\b(?:but|however|whereas)\b|;")
 
 
@@ -528,7 +533,7 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
     ceilings = [(m.start(), m.end()) for m in _CEILING.finditer(sentence)]
     bands: list[tuple[int, int | None]] = []
     def excepted(at: int) -> bool:
-        carve = _carve_outs(sentence, 0, at)
+        carve = _carve_outs(sentence, no_approval, 0, at)
         return bool(carve) and not re.search(r"[,;.]", sentence[carve[-1].end():at])
 
     for m in _RAISES.finditer(sentence):
@@ -688,16 +693,24 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
         # needs no approval").
         breaks = list(_BREAK_OUTSIDE_AMOUNTS.finditer(text))
         lo = max((b.end() for b in breaks if b.end() <= at), default=0)
-        exceptions = _carve_outs(text, lo, at)
+        hi = min((b.start() for b in breaks if b.start() >= at), default=len(text))
+        exceptions = _carve_outs(text, no_approval, lo, at)
         if not exceptions:
             return False
-        # Only a claim after the exception word counts, across a comma too ("except
-        # above $2,500, no approval is needed"), a negated approval word included.
-        tail = text[exceptions[-1].end():]
-        return not any(mention_spans(tail, p) for p in no_approval) and not any(
-            _NOT_AFTER.match(tail[m.end():]) or _NEGATED_AFTER.match(tail[m.end():])
-            or _negates_approval(tail[:m.start()])
-            for m in _APPROVAL_WORD.finditer(tail)
+        # A claim after the exception word keeps the amount: in its own clause, or
+        # opening the next one ("except above $2,500, no approval is needed"), not one
+        # about something else ("…, and up to $100 needs no approval").
+        own = text[exceptions[-1].end():hi]
+        following = re.sub(r"^[\s,;:.!?]*(?:(?:and|but|so|then)\b\s*)?", "", text[hi:])
+        opening = _APPROVAL_WORD.match(following)
+        return not any(mention_spans(own, p) for p in no_approval) and not any(
+            _NOT_AFTER.match(own[m.end():]) or _NEGATED_AFTER.match(own[m.end():])
+            or _negates_approval(own[:m.start()])
+            for m in _APPROVAL_WORD.finditer(own)
+        ) and not any(
+            start == 0 for p in no_approval for start, _ in mention_spans(following, p)
+        ) and not (
+            opening and (_NOT_AFTER.match(following[opening.end():]) or _NEGATED_AFTER.match(following[opening.end():]))
         )
 
     # An exception hides only a range or a raise ("except between $251 and $2,500",
@@ -750,17 +763,29 @@ def _negates_approval(before: str) -> bool:
     return bool(re.search(r"\byet\s+to\b", " ".join(words[window_start:])))
 
 
+_LATER_COPULA_NOT = re.compile(rf"\b(?:(?:is|are|was|were)\s+not|isn't|aren't|wasn't|weren't)\b{_NOT_WAIVED}")
+
+
 def _someone_approves(text: str, no_approval: list[str]) -> bool:
-    """Whether an approval word in `text` has someone approving, once the no-approval
-    phrases are blanked ("up to $2,500: no approval needed", "approval isn't required")."""
-    for m in no_approval:
-        for start, end in mention_spans(text, m):
-            text = text[:start] + " " * (end - start) + text[end:]
-    return any(
-        not _NOT_AFTER.match(text[m.end():]) and not _NEGATED_AFTER.match(text[m.end():])
-        and not _negates_approval(text[:m.start()])
-        for m in _APPROVAL_WORD.finditer(text)
-    )
+    """Whether `text` has someone approving: an approval word, and no no-approval
+    phrase or negated approval word ("up to $2,500: no approval needed")."""
+    # A no-approval phrase in it ("so approval is not required") is nobody approving.
+    if any(mention_spans(text, p) for p in no_approval):
+        return False
+    words = list(_APPROVAL_WORD.finditer(text))
+
+    def negated(i: int) -> bool:
+        m = words[i]
+        # A waiver keeps only its own negation: "approval is not waived and is not
+        # required" still says nobody approves.
+        stretch = text[m.end():words[i + 1].start() if i + 1 < len(words) else len(text)]
+        return bool(
+            _NOT_AFTER.match(text[m.end():]) or _NEGATED_AFTER.match(text[m.end():])
+            or _negates_approval(text[:m.start()]) or _LATER_COPULA_NOT.search(stretch)
+        )
+
+    # Any approval word that is negated means nobody approves.
+    return bool(words) and not any(negated(i) for i in range(len(words)))
 
 
 def _moves_to_higher_band(
@@ -887,7 +912,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                     not _RAISES.search(upto) and not _approves(upto, second)
                     # "except above $2,500" carves an exception out rather than raising the band.
                     and not any(
-                        not _carve_outs(own_piece_rest, 0, r.start())
+                        not _carve_outs(own_piece_rest, second, 0, r.start())
                         for r in _RAISES.finditer(own_piece_rest)
                     )
                     and not _names_higher_band(own_piece_rest, band_amounts, second)
