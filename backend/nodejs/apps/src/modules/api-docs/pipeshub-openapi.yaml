@@ -18530,6 +18530,26 @@ paths:
           description: Comma-separated group IDs to filter users by group membership.
           schema:
             type: string
+        - name: includeServiceAccounts
+          in: query
+          required: false
+          description: |
+            `true` also returns service accounts, which are otherwise left out
+            of this list. They are machine identities, and this is the list of
+            people: one can never sign in, so it would sit in the pending-invite
+            set for good and be swept into bulk invites meant for colleagues.
+
+            Honoured only for an organisation administrator. The route is
+            authenticated but not admin-only, and scope checks do nothing for a
+            session token, so for anyone else the flag is ignored rather than
+            refused — listing service accounts is an administrator's action on
+            `GET /service-accounts`, and this must not be a way around that.
+
+            Returned records carry `kind`, which is what lets a caller tell a
+            machine identity from a colleague.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Users retrieved successfully
@@ -18572,6 +18592,15 @@ paths:
                         email:
                           type: string
                           format: email
+                        kind:
+                          type: string
+                          enum: [human, service]
+                          description: |
+                            What sort of principal this is. Absent on records
+                            written before the field existed, which are people.
+                            Service accounts appear only when
+                            `includeServiceAccounts=true` and the caller
+                            administers the organisation.
                         isActive:
                           type: boolean
                           description: "`true` only when not blocked AND `hasLoggedIn: true`"

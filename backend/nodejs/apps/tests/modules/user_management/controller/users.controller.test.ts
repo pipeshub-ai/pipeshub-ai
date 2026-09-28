@@ -4,6 +4,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
 import { UserController } from '../../../../src/modules/user_management/controller/users.controller';
+import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
@@ -150,6 +151,47 @@ describe('UserController', () => {
   });
 
   describe('getAllUsers', () => {
+  /** A `Users.find` chain that resolves the given documents. */
+  function stubUsersFind(docs: Record<string, unknown>[]): sinon.SinonStub {
+    return sinon.stub(Users, 'find').returns({
+      sort: sinon.stub().returns({
+        skip: sinon.stub().returns({
+          limit: sinon.stub().returns({
+            lean: sinon.stub().returns({ exec: sinon.stub().resolves(docs) }),
+          }),
+        }),
+      }),
+    } as unknown as ReturnType<typeof Users.find>);
+  }
+
+  /**
+   * The three lookups the handler runs once it has users: pictures, groups and
+   * credentials. Stubbed together so a case that returns a document does not
+   * then wait on a database.
+   */
+  function stubUserEnrichment(): void {
+    sinon.stub(UserDisplayPicture, 'find').returns({
+      lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+    } as unknown as ReturnType<typeof UserDisplayPicture.find>);
+    sinon.stub(UserGroups, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      }),
+    } as unknown as ReturnType<typeof UserGroups.find>);
+    sinon.stub(UserCredentials, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      }),
+    } as unknown as ReturnType<typeof UserCredentials.find>);
+  }
+
+  function stubUsersCount(total: number): sinon.SinonStub {
+    return sinon
+      .stub(Users, 'countDocuments')
+      .resolves(total as unknown as never);
+  }
+
+
     it('should return all non-deleted users', async () => {
       sinon.stub(Users, 'find').returns({
         sort: sinon.stub().returns({
@@ -177,16 +219,8 @@ describe('UserController', () => {
       // They can never sign in, so listing them here would park them in the
       // pending-invite set for good and sweep them into bulk invites meant for
       // colleagues who have not signed in yet.
-      const find = sinon.stub(Users, 'find').returns({
-        sort: sinon.stub().returns({
-          skip: sinon.stub().returns({
-            limit: sinon.stub().returns({
-              lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
-            }),
-          }),
-        }),
-      } as any);
-      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
 
       await controller.getAllUsers(req, res);
 
@@ -194,22 +228,13 @@ describe('UserController', () => {
       expect(filter.kind).to.deep.equal({ $ne: 'service' });
     });
 
-    it('includes them when the caller asks, for the group and team pickers', async () => {
+    it('includes them for an administrator, for the group and team pickers', async () => {
       // Membership is how a service account is given anything to read, and the
-      // create panel tells an administrator to grant access that way, so the
-      // screens that choose membership have to be able to offer them.
+      // create panel tells an administrator to grant access that way.
       req.query = { includeServiceAccounts: 'true' };
-
-      const find = sinon.stub(Users, 'find').returns({
-        sort: sinon.stub().returns({
-          skip: sinon.stub().returns({
-            limit: sinon.stub().returns({
-              lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
-            }),
-          }),
-        }),
-      } as any);
-      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
 
       await controller.getAllUsers(req, res);
 
@@ -217,24 +242,59 @@ describe('UserController', () => {
       expect(filter.kind).to.equal(undefined);
     });
 
-    it('only opens up for an explicit true, not any other value', async () => {
-      req.query = { includeServiceAccounts: 'false' };
-
-      const find = sinon.stub(Users, 'find').returns({
-        sort: sinon.stub().returns({
-          skip: sinon.stub().returns({
-            limit: sinon.stub().returns({
-              lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
-            }),
-          }),
-        }),
-      } as any);
-      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+    it('ignores the flag for someone who does not administer the org', async () => {
+      // This route is authenticated but not admin-only, and scope checks do
+      // nothing for a session token. Listing service accounts is an
+      // administrator's action on its own screen, so this must not be a way
+      // around that.
+      req.query = { includeServiceAccounts: 'true' };
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
 
       await controller.getAllUsers(req, res);
 
       const filter = find.firstCall.args[0] as Record<string, unknown>;
       expect(filter.kind).to.deep.equal({ $ne: 'service' });
+    });
+
+    it('only opens up for an explicit true, not any other value', async () => {
+      req.query = { includeServiceAccounts: 'false' };
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+    });
+
+    it('sends each returned record its kind, so a picker can mark a machine', async () => {
+      // Filtering them in is only half of it. Without `kind` on the way out,
+      // the picker offers a service account with nothing to distinguish it,
+      // which is worse than not offering it at all.
+      req.query = { includeServiceAccounts: 'true' };
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+      stubUserEnrichment();
+      stubUsersFind([
+        {
+          _id: new mongoose.Types.ObjectId(),
+          orgId: new mongoose.Types.ObjectId(),
+          fullName: 'Nightly sync',
+          email: 'svc-nightly-org@service.pipeshub.internal',
+          kind: 'service',
+        },
+      ]);
+      stubUsersCount(1);
+
+      await controller.getAllUsers(req, res);
+
+      const body = res.json.firstCall.args[0] as {
+        users: { kind?: string; name?: string }[];
+      };
+      const [returned] = body.users;
+      expect(returned?.name).to.equal('Nightly sync');
+      expect(returned?.kind).to.equal('service');
     });
 
     it('should return blocked users when isBlocked=true query param', async () => {

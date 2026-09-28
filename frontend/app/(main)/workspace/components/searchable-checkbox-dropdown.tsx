@@ -290,6 +290,14 @@ export function SearchableCheckboxDropdown({
               >
                 {opt.label}
               </Text>
+              {opt.badge && (
+                // Kept on the chip as well as in the list. Once the list is
+                // closed the chips are all that is left, and a machine
+                // identity should not read as a colleague there either.
+                <Badge color="gray" size="1" style={{ flexShrink: 0 }}>
+                  {opt.badge}
+                </Badge>
+              )}
               <Box
                 onClick={(e) => {
                   e.stopPropagation();
