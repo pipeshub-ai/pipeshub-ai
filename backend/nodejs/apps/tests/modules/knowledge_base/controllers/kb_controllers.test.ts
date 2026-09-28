@@ -233,10 +233,13 @@ function stubUpdateRecordFileUploadConnectorCalls(options: {
         externalRecordId != null
           ? { externalRecordId }
           : { externalRecordId: null },
+      knowledgeBase: { id: 'kb-1' },
     },
   })
 
-  executeStub.onSecondCall().resolves({
+  executeStub.onSecondCall().resolves({ statusCode: 200, data: { userRole: 'WRITER' } })
+
+  executeStub.onThirdCall().resolves({
     statusCode: options.updateRecordStatus ?? 200,
     data: {
       updatedRecord: options.updatedRecord ?? {
@@ -2840,7 +2843,7 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.called).to.be.false
-      expect(connectorStub.callCount).to.equal(2)
+      expect(connectorStub.callCount).to.equal(3)
       expect(uploadStub.calledOnce).to.be.true
       expect(uploadStub.firstCall.args[2]).to.equal('ext-doc-123')
       expect(res.status.calledWith(200)).to.be.true
@@ -2900,7 +2903,7 @@ describe('Knowledge Base Controller', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
-      expect(connectorStub.callCount).to.equal(1)
+      expect(connectorStub.callCount).to.equal(2)
     })
 
     it('should call next when storage upload fails with non-404 error', async () => {
@@ -2923,7 +2926,7 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
       expect(next.firstCall.args[0].message).to.include('PipesHub tried to save this file')
-      expect(connectorStub.callCount).to.equal(1)
+      expect(connectorStub.callCount).to.equal(2)
     })
 
     it('should call next when existing record has no externalRecordId for file upload', async () => {
@@ -2947,7 +2950,7 @@ describe('Knowledge Base Controller', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
-      expect(connectorStub.callCount).to.equal(1)
+      expect(connectorStub.callCount).to.equal(2)
       expect(uploadStub.called).to.be.false
     })
 
@@ -2984,7 +2987,7 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.called).to.be.false
-      expect(connectorStub.callCount).to.equal(2)
+      expect(connectorStub.callCount).to.equal(3)
       expect(res.status.calledWith(200)).to.be.true
     })
 

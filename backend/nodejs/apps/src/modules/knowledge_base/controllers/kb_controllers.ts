@@ -1304,6 +1304,18 @@ export const updateRecord =
           throw handleBackendError(getRecordResponse, 'get record for update');
         }
 
+        // The new file is stored before the Python update checks the KB role, so the
+        // same check runs here or a KB reader's file replaces the stored one anyway.
+        const kbId = (getRecordResponse.data as any)?.knowledgeBase?.id;
+        if (!kbId) {
+          throw new ForbiddenError('You do not have permission to edit this record');
+        }
+        await assertKbWritePermission(
+          appConfig.connectorBackend,
+          kbId,
+          req.headers as Record<string, string>,
+        );
+
         const existingRecord = (getRecordResponse.data as any)?.record;
         storageDocumentId = existingRecord?.externalRecordId;
 

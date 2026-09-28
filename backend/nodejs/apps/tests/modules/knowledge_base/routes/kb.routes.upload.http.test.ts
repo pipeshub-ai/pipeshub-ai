@@ -385,6 +385,13 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
   })
 
   describe('replacing a record\'s file', () => {
+    const KB = { id: 'kb-1' }
+    const KB_ROLE = '/api/v1/kb/kb-1'
+
+    beforeEach(() => {
+      h.backend.on('GET', KB_ROLE, { status: 200, body: { userRole: 'WRITER' } })
+    })
+
     const replace = (name: string, bytes = 16) => {
       const f = new FormData()
       f.append('file', new Blob([Buffer.alloc(bytes, 'b')], { type: 'application/pdf' }), name)
@@ -392,7 +399,7 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
     }
 
     it('stores the new version against the existing document and renames the record after the file', async () => {
-      h.backend.on('GET', `/api/v1/records/${RECORD_ID}`, { status: 200, body: { record: { externalRecordId: 'doc-9' } } })
+      h.backend.on('GET', `/api/v1/records/${RECORD_ID}`, { status: 200, body: { record: { externalRecordId: 'doc-9' }, knowledgeBase: KB } })
       h.backend.on('POST', '/api/v1/document/internal/doc-9/uploadNextVersion', { status: 200, body: { _id: 'doc-9' } })
       h.backend.on('PUT', `/api/v1/kb/record/${RECORD_ID}`, { status: 200, body: { updatedRecord: { id: RECORD_ID, version: 2 } } })
 
@@ -402,6 +409,7 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
       expect(r.body).to.include({ message: 'Record updated with new file version', fileUploaded: true })
       expect(h.backend.calls.map((c) => `${c.method} ${c.path}`)).to.deep.equal([
         `GET /api/v1/records/${RECORD_ID}`,
+        `GET ${KB_ROLE}`,
         'POST /api/v1/document/internal/doc-9/uploadNextVersion',
         `PUT /api/v1/kb/record/${RECORD_ID}`,
       ])
@@ -416,7 +424,7 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
 
     it('falls back to the configured storage service for a new version too', async () => {
       h.kv.values.delete(ENDPOINTS_KEY)
-      h.backend.on('GET', `/api/v1/records/${RECORD_ID}`, { status: 200, body: { record: { externalRecordId: 'doc-9' } } })
+      h.backend.on('GET', `/api/v1/records/${RECORD_ID}`, { status: 200, body: { record: { externalRecordId: 'doc-9' }, knowledgeBase: KB } })
       h.backend.on('POST', '/api/v1/document/internal/doc-9/uploadNextVersion', { status: 200, body: { _id: 'doc-9' } })
       h.backend.on('PUT', `/api/v1/kb/record/${RECORD_ID}`, { status: 200, body: { updatedRecord: { id: RECORD_ID } } })
 
@@ -439,7 +447,7 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
     })
 
     it('leaves the record as it was when its stored file has gone', async () => {
-      h.backend.on('GET', `/api/v1/records/${RECORD_ID}`, { status: 200, body: { record: { externalRecordId: 'doc-gone' } } })
+      h.backend.on('GET', `/api/v1/records/${RECORD_ID}`, { status: 200, body: { record: { externalRecordId: 'doc-gone' }, knowledgeBase: KB } })
       h.backend.on('POST', '/api/v1/document/internal/doc-gone/uploadNextVersion', { status: 404, body: { error: { message: 'Document not found' } } })
 
       const r = await replace('Quarterly.pdf')
@@ -449,14 +457,37 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
       expect(h.backend.callsTo('PUT', `/api/v1/kb/record/${RECORD_ID}`)).to.deep.equal([])
     })
 
+    it('stores nothing when the user is only a reader of the knowledge base', async () => {
+      h.backend.on('GET', `/api/v1/records/${RECORD_ID}`, {
+        status: 200,
+        // WRITER through another access path must not count: Python checks the KB role.
+        body: { record: { externalRecordId: 'doc-9' }, knowledgeBase: { id: 'kb-read' }, permissions: [{ relationship: 'WRITER' }] },
+      })
+      h.backend.on('GET', '/api/v1/kb/kb-read', { status: 200, body: { userRole: 'READER' } })
+
+      const r = await replace('Quarterly.pdf')
+
+      expect(r.status).to.equal(403)
+      expect(h.backend.calls.map((c) => c.path)).to.deep.equal([`/api/v1/records/${RECORD_ID}`, '/api/v1/kb/kb-read'])
+    })
+
+    it('stores nothing for a record outside any knowledge base', async () => {
+      h.backend.on('GET', `/api/v1/records/${RECORD_ID}`, { status: 200, body: { record: { externalRecordId: 'drive-1' } } })
+
+      const r = await replace('Quarterly.pdf')
+
+      expect(r.status).to.equal(403)
+      expect(h.backend.calls.map((c) => c.path)).to.deep.equal([`/api/v1/records/${RECORD_ID}`])
+    })
+
     it('refuses a record that has no stored file to replace', async () => {
-      h.backend.on('GET', `/api/v1/records/${RECORD_ID}`, { status: 200, body: { record: { id: RECORD_ID } } })
+      h.backend.on('GET', `/api/v1/records/${RECORD_ID}`, { status: 200, body: { record: { id: RECORD_ID }, knowledgeBase: KB } })
 
       const r = await replace('Quarterly.pdf')
 
       expect(r.status).to.equal(400)
       expect(errorMessage(r)).to.equal('Cannot update file: No external record ID found for this record')
-      expect(h.backend.calls.map((c) => c.path)).to.deep.equal([`/api/v1/records/${RECORD_ID}`])
+      expect(h.backend.calls.map((c) => c.path)).to.deep.equal([`/api/v1/records/${RECORD_ID}`, KB_ROLE])
     })
   })
 })
