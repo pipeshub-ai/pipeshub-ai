@@ -1115,8 +1115,7 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
 _SPEND = r"(?:spend\w*|make|making|purchas\w*|buy\w*|expens(?:e|es|ed|ing))\b"
 # What a denial of this spend may take as its object: "it", "one", "the purchase", "anything".
 _SPEND_OBJECT = (
-    r"(?:it|them|one|anything|that(?:\s+(?:one|purchase))?|this(?:\s+(?:one|purchase))?|any(?:\s+(?:amount|money))?"
-    r"|(?:the|a)\s+(?:purchase|money|amount|expense))"
+    r"(?:(?:that|this|the|a|one|any)\s+(?:money|amount|expense|purchase|one)|it|them|one|anything|that|this|any)"
 )
 _NEG_MODAL = (
     r"(?:(?:must|should|will|shall|may|can|could|would|might)\s+(?:not|never)|cannot|can't|mustn't|shouldn't"
@@ -1166,7 +1165,7 @@ _PROHIBIT_AFTER = re.compile(
 # A short denial in the part after it: "Spending up to $250 without approval, I am not allowed."
 # The part must be only that denial: not "…, I am not allowed to discuss the budget".
 _PROHIBIT_TAIL = re.compile(
-    r"^\s*(?:(?:and|so|but|however|then|also|yet|still|(?:please\s+)?note)\b[\s,:]*)*"
+    r"^\s*(?:(?:and|so|but|however|then|also|yet|still|(?:please\s+)?note(?:\s+that)?)\b[\s,:]*)*"
     r"(?:(?:i|you|we|they|it|this|that|which)(?:\s+|(?='))"
     rf"(?:{_NEG_STATE}\s+(?:allowed|permitted)"
     r"|(?:is|are|am|was|were|'s|'re|'m|(?:has|have|had|'s|'ve)\s+been)\s+(?:prohibited|forbidden|banned))"
@@ -1178,17 +1177,14 @@ _PROHIBIT_TAIL = re.compile(
 )
 
 
-def _aside(sentence: str) -> bool:
-    """A sentence that says nothing about amounts or approval: "See the note."."""
-    return not (_AMOUNT.search(sentence) or _approval_words(sentence) or _PROHIBIT_TAIL.match(sentence))
-
-
 # Words that leave an approval about the $250 purchase: generic heads, determiners,
 # pronouns. A specific noun ("software subscriptions") makes it another subject's rule.
+_GENERIC_HEADS = {"purchase", "purchases", "expense", "expenses", "spend", "spending", "item", "items", "amount", "amounts"}
 _GENERIC = {
     "purchase", "purchases", "expense", "expenses", "spend", "spending", "item", "items", "thing", "things", "one",
     "ones", "amount", "amounts", "such", "it", "them", "that", "this", "those", "these", "anything", "everything",
-    "all", "every", "each", "any", "some", "the", "a", "an", "you", "we", "they", "i",
+    "all", "every", "each", "any", "some", "the", "a", "an", "you", "we", "they", "i", "too", "anyway", "same",
+    "like", "single", "individual", "particular", "very", "actual", "exact", "said",
 }
 # Skipped between a subject and its approval: auxiliaries, the approver, possessives.
 _SKIP_TO_SUBJECT = {
@@ -1203,23 +1199,37 @@ _NP_STOP = {"for", "of", "to", "by", "from", "in", "on", "at", "with", "as", "ov
             "and", "or", "but", "so", "than", "more", "less", "once", "that", "which", "who"}
 
 
-def _other_subject(piece: str) -> bool:
+def _other_subject(piece: str, previous: str = "") -> bool:
     """Whether an approval in `piece` is about a subject of its own ("finance approves
-    software subscriptions", "any software subscription must be approved by finance"),
-    not the $250 purchase ("your manager must approve every such purchase")."""
+    software subscriptions", "for software subscriptions, finance approves"), not the
+    $250 purchase ("your manager must approve every such purchase", "the same purchase")."""
     def specific(words: list[str]) -> bool:
+        # A generic head keeps its modifiers generic: "every single purchase".
+        if any(w in _GENERIC_HEADS for w in words):
+            return False
         return any(w not in _GENERIC and not w.endswith("'s") for w in words)
 
+    def noun_phrase_at_end(text: str) -> list[str]:
+        words = re.findall(r"[a-z][a-z'-]*", text)
+        while words and (words[-1] in _SKIP_TO_SUBJECT or words[-1].endswith("'s")):
+            words.pop()
+        phrase: list[str] = []
+        while words and words[-1] not in _NP_STOP and len(phrase) < 3:
+            phrase.insert(0, words.pop())
+        return phrase
+
     for m in _approval_words(piece):
-        before = re.findall(r"[a-z][a-z'-]*", piece[:m.start()])
-        while before and (before[-1] in _SKIP_TO_SUBJECT or before[-1].endswith("'s")):
-            before.pop()
-        subject: list[str] = []
-        while before and before[-1] not in _NP_STOP and len(subject) < 3:
-            subject.insert(0, before.pop())
-        # The object: "approves software subscriptions", "approval for software".
+        subject = noun_phrase_at_end(piece[:m.start()])
+        # "Any software subscription: finance approves": the subject is the piece before.
+        if not subject and not re.search(r"\w", re.sub(r"[a-z'-]+", lambda w: "" if w.group() in _SKIP_TO_SUBJECT else w.group(), piece[:m.start()])):
+            subject = noun_phrase_at_end(previous)
+        # The object: "approves software subscriptions", "approval (is required) for software".
         after = piece[m.end():]
-        obj_text = re.sub(r"^\s+for\s+", " ", after) if m.group().startswith("approval") else after
+        noun = m.group().startswith(("approval", "authoriz", "authoris", "sign"))
+        if noun:
+            found = re.search(r"\bfor\s+", after)
+            after = " " + after[found.end():] if found else ""
+        obj_text = after
         obj: list[str] = []
         for w in re.findall(r"[a-z][a-z'-]*|\$|\d", obj_text):
             if (w in _NP_STOP or w in _SKIP_TO_SUBJECT or w in _OBJECT_STOP or w.endswith("ly") or w == "$"
@@ -1228,8 +1238,7 @@ def _other_subject(piece: str) -> bool:
             obj.append(w)
             if w in {"it", "them", "this", "that", "these", "those"}:
                 break
-        verbal = not m.group().startswith(("approval", "authoriz", "authoris")) or re.match(r"\s+for\b", after)
-        if specific(subject) or (verbal and specific(obj)):
+        if specific(subject) or specific(obj):
             return True
     return False
 
@@ -1303,7 +1312,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                     and bool(last) and _BARE_APPROVAL_END.fullmatch(piece[last[-1].end():]) is not None
                 )
                 # "Finance approves software subscriptions" is another subject's rule.
-                if approves and not raised and not range_next and not _other_subject(piece):
+                if approves and not raised and not range_next and not _other_subject(piece, pieces[j - 1] if j else ""):
                     return True
                 skipped = skipped or approves
                 named = named or bool(
@@ -1325,15 +1334,12 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 continue
             band_end = max(end for _, end in bands)
             band_amounts = {v for b0, b1 in bands for v in _amount_values(part[b0:b1])}
-            # A bare denial in the next part that says something, or in the next sentence:
-            # "…, you are not allowed to spend it", "…without approval. I'm banned."
-            next_part = next(
-                (p for p in parts[i + 1:] if re.search(r"\w", re.sub(r"\b(?:and|so|but|however|then|also|yet|still)\b", "", p))),
-                "",
-            )
-            # Past sentences that are only an aside ("See the note.").
-            following = next((t for t in sentences[k + 1:] if not _aside(t)), "")
-            if _prohibits(part, min(b0 for b0, _ in bands), second, next_part, next_sentence, following):
+            # A bare denial anywhere after it, in a later part or a later sentence: "…, you
+            # are not allowed to spend it", "…Above $2,500, your manager must approve. I'm
+            # banned." A part that is only a lead-in ("please note") joins the next one.
+            later_parts = [p for s_ in [sentence[starts[i] + len(part):], *sentences[k + 1:]] for p in _PART.split(s_)]
+            tails = [a + " " + b for a, b in zip(later_parts, [*later_parts[1:], ""])] + later_parts + sentences[k + 1:]
+            if _prohibits(part, min(b0 for b0, _ in bands), second, *tails):
                 continue
             # An earlier sentence or part that has someone approve the $250 purchase
             # contradicts the no-approval answer that follows it.
