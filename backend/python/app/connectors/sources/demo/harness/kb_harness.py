@@ -379,7 +379,9 @@ def mention_spans(text: str, phrase: str) -> list[tuple[int, int]]:
 
 
 # Sentence ends, not clause breaks: "Up to $250 per purchase: no approval needed" is one statement.
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
+# Emphasis around the break is ignored, and the chat glues its tool-call preamble to the answer
+# ("...the approval threshold.You can spend").
+_SENTENCE_END = re.compile(r"(?<=[.!?])[*_]*(?:\s+|(?=[A-Z]))|\n+")
 # "$2,500" is one amount; the comma in "$250, no approval" is punctuation.
 _AMOUNT = re.compile(r"\$\s?\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s?dollars?\b")
 
@@ -970,7 +972,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 )
         return False
 
-    sentences = _SENTENCE_END.split(_normalized(answer))
+    sentences = [_normalized(s) for s in _SENTENCE_END.split(answer)]
     for k, sentence in enumerate(sentences):
         later = [[s] for s in sentences[k + 1:]]
         next_sentence = sentences[k + 1] if k + 1 < len(sentences) else ""
