@@ -653,18 +653,23 @@ def _only_range(text: str, band_amounts: set[float], *, reaching_above: bool = F
     return _RANGE_MARK in marked and not re.sub(r"[\s\0.!?,;:]", "", _RANGE_LEAD.sub(" ", marked))
 
 
+# A clause break, but not the comma or point inside an amount ("$2,500", "$2.50").
+_BREAK_OUTSIDE_AMOUNTS = re.compile(r"[;:!?]|[.,](?!\d)|\bbut\b")
+
+
 def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
     """Whether `text` names an amount above the $250 band or a higher band ("above
     that"), before any exception ("except between $251 and $2,500")."""
     def excepted(at: int) -> bool:
         # An exception governs what follows it in its own clause only.
-        return re.search(rf"\b{_EXCEPTION}\b", _CLAUSE_BREAK.split(text[:at])[-1]) is not None
+        return re.search(rf"\b{_EXCEPTION}\b", _BREAK_OUTSIDE_AMOUNTS.split(text[:at])[-1]) is not None
 
     # An exception hides only a range or a raise ("except between $251 and $2,500",
     # "excluding amounts above $2,500"); "unless the limit is $2,500" still names it.
     banded = [(m.start(), m.end()) for m in _RANGE.finditer(text)] + [
         (m.start(), a.end()) for m in _RAISES.finditer(text)
-        if (a := _AMOUNT.search(text, m.start())) and a.start() < m.end()
+        if (a := _AMOUNT.search(text, m.start()))
+        and (a.start() < m.end() or re.fullmatch(rf"\s*{_DET}", text[m.end():a.start()]))
     ]
     for m in _AMOUNT.finditer(text):
         hidden = excepted(m.start()) and any(lo <= m.start() < hi for lo, hi in banded)
@@ -681,14 +686,6 @@ def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
     return False
 
 
-# A negation that governs the approval word right after it: "no sign-off", "don't
-# require approval", "isn't any approval". "Don't forget approval" and "without your
-# manager's sign-off" are not.
-_GOVERNING_NEGATION = re.compile(
-    r"(?:\b(?:no|not|never)|n't)\s+(?:(?:require[sd]?|need(?:s|ed)?|have|has|get|any|a|an|the)\s+){0,2}$"
-)
-
-
 def _someone_approves(text: str, no_approval: list[str]) -> bool:
     """Whether an approval word in `text` has someone approving, once the no-approval
     phrases are blanked ("up to $2,500: no approval needed", "approval isn't required")."""
@@ -696,7 +693,9 @@ def _someone_approves(text: str, no_approval: list[str]) -> bool:
         for start, end in mention_spans(text, m):
             text = text[:start] + " " * (end - start) + text[end:]
     return any(
-        not _NOT_AFTER.match(text[m.end():]) and not _GOVERNING_NEGATION.search(text[:m.start()])
+        not _NOT_AFTER.match(text[m.end():])
+        # "no sign-off", "need not be approved"; "don't forget approval" still asks for it.
+        and not (_negated(text[:m.start()]) and not re.search(r"(?:\bnot|n't|\bnever)\s+forget\b", text[:m.start()]))
         for m in _APPROVAL_WORD.finditer(text)
     )
 
