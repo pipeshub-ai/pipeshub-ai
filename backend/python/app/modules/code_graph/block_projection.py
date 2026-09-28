@@ -26,14 +26,12 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 __all__ = [
     "BlockProjectionContext",
     "FILE_SUMMARY_QUALIFIED_NAME",
-    "PARSER_SOURCE",
     "RESIDENT_RELATIONS",
     "block_key_for",
     "serialize_block_for_graph",
     "write_code_file_blocks_to_graph",
 ]
 
-PARSER_SOURCE = "pipeshub_parser"
 _STRUCTURE_CONSTRAINT_PREFIX = "structure"
 FILE_SUMMARY_QUALIFIED_NAME = "file_summary:1"
 
@@ -373,7 +371,6 @@ def _structural_edge(from_key: str, to_block_id: str, relation: str,
         "constraintName": f"{_STRUCTURE_CONSTRAINT_PREFIX}:{relation.lower()}:{from_key}:{to_key}",
         "orgId": ctx.org_id,
         "recordGroupId": ctx.record_group_id,
-        "source": PARSER_SOURCE,
         "createdAtTimestamp": _now_ms(),
         "updatedAtTimestamp": _now_ms(),
     }

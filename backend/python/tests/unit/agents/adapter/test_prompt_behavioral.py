@@ -136,7 +136,7 @@ class TestCodeSetQuestionWalksFactory:
         assert "inbound neighbours" in section
         assert "never a directory crawl" in section
         assert "Do not glob" in section
-        assert "Never use it to finish a set" in section
+        assert "never use it to finish a set" in section
         assert "ConnectorFactory" not in section
         assert "BaseConnector" not in section
 
