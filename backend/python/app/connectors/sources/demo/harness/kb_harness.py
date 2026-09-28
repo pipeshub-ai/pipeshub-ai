@@ -658,12 +658,18 @@ def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
     that"), before any exception ("except between $251 and $2,500")."""
     def excepted(at: int) -> bool:
         # An exception governs what follows it in its own clause only.
-        return re.search(rf"\b{_EXCEPTION}\b[^,;.]*$", text[:at]) is not None
+        return re.search(rf"\b{_EXCEPTION}\b", _CLAUSE_BREAK.split(text[:at])[-1]) is not None
 
-    if any(
-        v > max(band_amounts) for m in _AMOUNT.finditer(text) if not excepted(m.start()) for v in _amount_values(m.group())
-    ):
-        return True
+    # An exception hides only a range or a raise ("except between $251 and $2,500",
+    # "excluding amounts above $2,500"); "unless the limit is $2,500" still names it.
+    banded = [(m.start(), m.end()) for m in _RANGE.finditer(text)] + [
+        (m.start(), a.end()) for m in _RAISES.finditer(text)
+        if (a := _AMOUNT.search(text, m.start())) and a.start() < m.end()
+    ]
+    for m in _AMOUNT.finditer(text):
+        hidden = excepted(m.start()) and any(lo <= m.start() < hi for lo, hi in banded)
+        if not hidden and any(v > max(band_amounts) for v in _amount_values(m.group())):
+            return True
     for m in _RAISES.finditer(text):
         if excepted(m.start()):
             continue
@@ -675,13 +681,24 @@ def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
     return False
 
 
+# A negation that governs the approval word right after it: "no sign-off", "don't
+# require approval", "isn't any approval". "Don't forget approval" and "without your
+# manager's sign-off" are not.
+_GOVERNING_NEGATION = re.compile(
+    r"(?:\b(?:no|not|never)|n't)\s+(?:(?:require[sd]?|need(?:s|ed)?|have|has|get|any|a|an|the)\s+){0,2}$"
+)
+
+
 def _someone_approves(text: str, no_approval: list[str]) -> bool:
     """Whether an approval word in `text` has someone approving, once the no-approval
     phrases are blanked ("up to $2,500: no approval needed", "approval isn't required")."""
     for m in no_approval:
         for start, end in mention_spans(text, m):
             text = text[:start] + " " * (end - start) + text[end:]
-    return any(not _NOT_AFTER.match(text[m.end():]) for m in _APPROVAL_WORD.finditer(text))
+    return any(
+        not _NOT_AFTER.match(text[m.end():]) and not _GOVERNING_NEGATION.search(text[:m.start()])
+        for m in _APPROVAL_WORD.finditer(text)
+    )
 
 
 def _moves_to_higher_band(
