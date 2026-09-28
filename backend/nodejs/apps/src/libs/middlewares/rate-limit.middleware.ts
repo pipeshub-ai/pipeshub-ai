@@ -185,9 +185,12 @@ export function createSkillsImportRateLimiter(
     message: 'Too many skill import requests. Please try again later.',
   });
 }
+
 /**
  * Login/OTP/password endpoints. The global limiter is sized for general API
  * traffic and is too loose to stop password spraying or OTP/email bombing.
+ * The limit is per replica (in-process store), so N pods admit up to
+ * N × maxRequestsPerMinute per client until a shared store is wired.
  */
 export function createAuthRateLimiter(
   logger: Logger,
