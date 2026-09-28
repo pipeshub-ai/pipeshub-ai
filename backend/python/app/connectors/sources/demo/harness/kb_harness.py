@@ -456,7 +456,7 @@ def _approves(text: str, no_approval: list[str]) -> bool:
         not _negated(text[:m.start()])
         and not _without_cancels(text[:m.start()])
         and not _NOT_AFTER.match(text[m.end():])
-        for m in _APPROVAL_WORD.finditer(text)
+        for m in _approval_words(text)
     )
 
 
@@ -561,7 +561,7 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
         return any(
             lo <= m.start() < hi
             and not _negated(sentence[:m.start()]) and not _WITHOUT_BEFORE.search(sentence[:m.start()])
-            for m in _APPROVAL_WORD.finditer(sentence)
+            for m in _approval_words(sentence)
         )
 
     def covers(x: int, at: int) -> bool:
@@ -582,7 +582,7 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
 
     # Where the band could first govern: a requirement word or a sign-off.
     anchors = [m.start() for m in _REQUIRES_ANYWHERE.finditer(sentence)] + [
-        m.start() for m in _APPROVAL_WORD.finditer(sentence)
+        m.start() for m in _approval_words(sentence)
     ]
 
     def covered(a: int, r: int) -> bool:
@@ -599,7 +599,7 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
 
     return any(
         not covered(a.start(), r.start())
-        for a in _APPROVAL_WORD.finditer(sentence) if _WITHOUT_BEFORE.search(sentence[:a.start()])
+        for a in _approval_words(sentence) if _WITHOUT_BEFORE.search(sentence[:a.start()])
         for r in _REQUIRES_ANYWHERE.finditer(sentence)
     )
 
@@ -794,6 +794,14 @@ _CONTINUES = re.compile(
 )
 
 
+_JOINER = re.compile(r"^\s*(?:and|or|nor|plus|also|as\s+well\s+as|along\s+with)\b")
+# Someone approves by being who it needs: "requires your manager", "goes to finance".
+_NEEDS_APPROVER = re.compile(
+    rf"\b(?:requires?|required|needs?|needed|goes|go|going|went|sent|sends?|routed|routes?|escalated|escalates?)"
+    rf"\s+(?:to\s+|by\s+|from\s+)?(?:{_MANAGER}|{_APPROVER})"
+)
+
+
 def _approval_words(text: str) -> list[re.Match[str]]:
     """The approval words in `text` that are about approving, not a document's name."""
     return [m for m in _APPROVAL_WORD.finditer(text) if not _APPROVAL_DOC.match(text, m.end())]
@@ -809,7 +817,9 @@ def _clauses(text: str) -> list[str]:
     for i in range(0, len(parts), 2):
         piece, sep = parts[i], parts[i - 1] if i else ""
         adds_amount = _AMOUNT.search(piece) or _RAISES.search(piece)
-        if clauses and not _approval_words(piece) and (not adds_amount or _CONTINUES.match(piece)):
+        # Across a sentence end only an explicit "And …" / "Or …" continues the claim.
+        continues = (_JOINER if re.fullmatch(r"[.!?]", sep) else _CONTINUES).match(piece)
+        if clauses and not _approval_words(piece) and (not adds_amount or continues):
             clauses[-1] += sep + piece
         else:
             clauses.append(piece)
@@ -867,7 +877,8 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
         for start, end in mention_spans(text, p):
             text = text[:start] + " " * (end - start) + text[end:]
     words = _approval_words(text)
-    affirmed, waived, negated = False, False, False
+    affirmed = any(not _negated(text[:m.start()]) for m in _NEEDS_APPROVER.finditer(text))
+    waived, negated = False, False
     for i, m in enumerate(words):
         # "Finance is not the approver" names who doesn't approve, not that nobody does.
         if re.fullmatch(r"approvers?", m.group()):
@@ -907,11 +918,18 @@ def _moves_to_higher_band(
         f"{follow} {later}", no_approval, band_amounts
     ):
         return True
-    return any(
-        _names_higher_band(s, band_amounts, no_approval) and _states_no_approval(s, no_approval)
-        and not _someone_approves(s, no_approval, band_amounts)
-        for s in _SENTENCE_END.split(later) if s.strip()
-    )
+    sentences = [s for s in _SENTENCE_END.split(later) if s.strip()]
+    for i, s in enumerate(sentences):
+        if not _names_higher_band(s, band_amounts, no_approval):
+            continue
+        # From that sentence on: "Above $2,500, your manager must approve. No approval
+        # is needed." is still a denial about the higher band.
+        chunk = " ".join(sentences[i:])
+        if not _someone_approves(chunk, no_approval, band_amounts) and any(
+            _states_no_approval(c, no_approval) and not _about_lower_amount(c, band_amounts) for c in _clauses(chunk)
+        ):
+            return True
+    return False
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
