@@ -803,8 +803,9 @@ _CONTINUES = re.compile(
 # purchases of $5,000", "at least $5,000", "or above that".
 _AMOUNT_FILLER = re.compile(
     r"\b(?:another|least|most|at|items?|anything|more|than|less|no|up|upwards|to|under|below|over|within|through"
-    r"|until|then|was|were|had|has|been|costs?|fewer|also|even|plus|likewise|one|as|much|high|limited|capped"
-    r"|invoices?|bills?|payments?|orders?|receipts?|charges?|fees?|totals?|sums?|figures?)\b"
+    r"|until|then|was|were|had|has|been|costs?|fewer|also|even|plus|likewise|similarly|one|as|much|high|low|little"
+    r"|limited|capped|restricted|invoices?|bills?|payments?|orders?|receipts?|charges?|fees?|totals?|sums?|figures?"
+    r"|prices?|numbers?|values?)\b"
 )
 
 
@@ -981,6 +982,9 @@ _QUANTIFIERS = {
     "all", "each", "every", "any", "both", "either", "neither", "those", "these", "such", "that", "this",
     "anything", "everything", "whatever", "whichever", "everyone", "anyone",
 }
+_FLOATING_QUANTIFIER = re.compile(
+    r"\b(?:all|each|both|every\s+one)\s+(?:need|needs|require|requires|are|is|do|does|will|can|get|gets)?\s*$"
+)
 _SAME_WORDS = {"same", "other", "above", "said", "aforementioned"}
 _LEAD_WORDS = {"and", "or", "but", "so", "then", "also", "however", "still", "please", "note", "remember", "reminder", "fyi"}
 _PREPOSITIONS = {"for", "on", "of", "in", "at", "with", "from", "to", "by", "per", "across", "during", "like"}
@@ -993,7 +997,10 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
     if _names_higher_band(clause, band_amounts, no_approval):
         return False
     # "…for the purchases, all of them": the appositive covers everything.
-    if re.search(r"\b(?:all|each|both|every\s+one)\s+of\s+(?:them|those|these)\b", clause):
+    if re.search(
+        r"\b(?:(?:all|each|both|any|either|every\s+(?:single\s+)?one)\s+of\s+(?:them|those|these)|every\s+(?:single\s+)?one)\b",
+        clause,
+    ):
         return False
 
     def subject_before(start: int) -> bool | None:
@@ -1008,13 +1015,11 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
         subject = [w for w in words[:cut] if w not in _LEAD_WORDS]
         # The determiner has to lead it: "that purchase", "all purchases", "anything",
         # "the same purchases"; not a later "that day".
-        # A floating quantifier ("the purchases all need …") or "the (very) same …"
-        # covers it too.
-        if subject and (
-            subject[0] in _QUANTIFIERS
-            or (subject[0] == "the" and any(w in _SAME_WORDS for w in subject[1:3]))
-            or any(w in {"all", "each", "both"} for w in subject[1:])
-        ):
+        # A floating quantifier right before the verb ("the purchases in question all
+        # need …"; not "a taxi each morning needs …") or "the (very) same …" covers it too.
+        if (subject and (
+            subject[0] in _QUANTIFIERS or (subject[0] == "the" and any(w in _SAME_WORDS for w in subject[1:3]))
+        )) or _FLOATING_QUANTIFIER.search(piece):
             return None  # quantified: about everything
         return any(
             w not in _NOT_SUBJECT and not w.endswith("'s") and not _APPROVAL_WORD.match(w) for w in subject
@@ -1102,13 +1107,19 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
 
 # Forbidding the $250 spend, not waiving approval for it: "You cannot make a purchase
 # of up to $250 without approval", "Spending up to $250 without approval is not allowed".
+# A prohibition governs the spend only when a spend verb follows it within two words:
+# "Nobody can spend", "Do not make a purchase"; not "Nobody disputes that you can
+# spend", "You cannot be stopped from spending" or "Do not forget: …".
 _PROHIBIT_BEFORE = re.compile(
-    r"\b(?:cannot|can't|can\s+not|may\s+not|must\s+not|mustn't|should\s+not|shouldn't"
-    r"|(?:is|are)\s+not\s+(?:permitted|allowed)|not\s+(?:permitted|allowed)\s+to|nobody|no\s+one|not\s+the\s+case)\b"
+    r"(?:\b(?:cannot|can\s+not|may\s+not|must\s+not|must\s+never|should\s+not|shall\s+not|do\s+not|never"
+    r"|will\s+not\s+be\s+(?:allowed|permitted)|(?:is|are|be)\s+not\s+(?:permitted|allowed)"
+    r"|(?:is|are|be)\s+(?:forbidden|prohibited|banned)|nobody|no\s+one|not\s+the\s+case)"
+    r"|\b\w+n't(?:\s+be)?(?:\s+(?:allowed|permitted))?)"
+    r"\s+(?:\w+\s+){0,2}?(?:spend\w*|make|making|purchas\w*|buy\w*|expens\w*)\b"
 )
 _PROHIBIT_AFTER = re.compile(
     r"\b(?:(?:is|are|was|were)\s+(?:not|never)\s+(?:allowed|permitted)|(?:isn't|aren't)\s+(?:allowed|permitted)"
-    r"|(?:is|are)\s+(?:prohibited|forbidden))\b"
+    r"|(?:is|are)\s+(?:prohibited|forbidden|banned))\b"
 )
 
 
