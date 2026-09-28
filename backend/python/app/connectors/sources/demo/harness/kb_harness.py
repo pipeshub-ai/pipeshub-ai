@@ -781,12 +781,12 @@ _LOWER_WORD = re.compile(r"\b(?:small|smaller|low|lower|minor|petty|cheap|cheape
 
 
 def _clauses(text: str) -> list[str]:
-    """`text` split at clause breaks outside amounts, with a piece that only adds an
-    amount or a band (", or above $250", ", and for $5,000") kept with the one before."""
+    """`text` split at clause breaks outside amounts, with a piece that adds an amount
+    or a band and says nothing about approval (", or above $250", ", including
+    $5,000") kept with the one before."""
     clauses: list[str] = []
     for piece in _BREAK_OUTSIDE_AMOUNTS.split(text):
-        bare = _RANGE_LEAD.sub(" ", re.sub(r"\$?\d[\d,.]*", " ", _RAISES.sub(" ", piece)))
-        if clauses and (_AMOUNT.search(piece) or _RAISES.search(piece)) and not re.search(r"\w", bare):
+        if clauses and (_AMOUNT.search(piece) or _RAISES.search(piece)) and not _APPROVAL_WORD.search(piece):
             clauses[-1] += " " + piece
         else:
             clauses.append(piece)
@@ -798,11 +798,17 @@ def _about_lower_amount(clause: str, band_amounts: set[float]) -> bool:
     "small purchases"), not the higher band."""
     amounts = _amount_values(clause)
     # "above $250" is the next band, and a clause that also names $5,000 isn't only lower.
-    # A raise capped within the band ("over $50 up to $100") stays lower.
+    def capped(m: re.Match[str]) -> bool:
+        # A raise from below the band capped within it ("over $50 up to $100") stays
+        # lower; "above $250" and "above that" are the next band whatever follows.
+        start = _AMOUNT.search(clause, m.start())
+        return bool(
+            start and start.start() < m.end() and max(_amount_values(start.group())) < max(band_amounts)
+            and any(max(_amount_values(c.group(1))) <= max(band_amounts) for c in _CEILING.finditer(clause, m.end()))
+        )
+
     higher = any(v > max(band_amounts) for v in amounts) or any(
-        not re.search(rf"\b{_NEGATOR}\s*$", clause[:m.start()])
-        and not any(max(_amount_values(c.group(1))) <= max(band_amounts) for c in _CEILING.finditer(clause, m.end()))
-        for m in _RAISES.finditer(clause)
+        not re.search(rf"\b{_NEGATOR}\s*$", clause[:m.start()]) and not capped(m) for m in _RAISES.finditer(clause)
     )
     lower = any(v <= max(band_amounts) for v in amounts) or bool(_LOWER_WORD.search(clause))
     return lower and not higher
@@ -854,7 +860,7 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
 
 
 def _moves_to_higher_band(
-    texts: list[str], band_amounts: set[float], next_sentence: str, no_approval: list[str]
+    texts: list[str], band_amounts: set[float], next_sentence: str, no_approval: list[str], beyond: str = ""
 ) -> bool:
     """Whether what follows a no-approval phrase moves its claim off the $250 band:
     the rest of the sentence, or the next sentence when nothing is left, names a
@@ -862,9 +868,10 @@ def _moves_to_higher_band(
     limit is $2,500."). "Above that, your manager approves" is the next band's own claim."""
     rest = " ".join(texts)
     rest_says = bool(re.search(r"\w", _RANGE_LEAD.sub(" ", rest)))
-    follow, after = (rest, next_sentence) if rest_says else (next_sentence, "")
-    # A denial in the next sentence still counts ("…, your manager must approve. After
-    # that, no approval is needed.").
+    # `beyond` is every sentence after the next one.
+    follow, after = (rest, f"{next_sentence} {beyond}") if rest_says else (next_sentence, beyond)
+    # A denial in a later sentence still counts ("…, your manager must approve. See the
+    # note. After that, no approval is needed.").
     return _names_higher_band(follow, band_amounts, no_approval, after) and not _someone_approves(
         f"{follow} {after}", no_approval, band_amounts
     )
@@ -960,6 +967,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
     for k, sentence in enumerate(sentences):
         later = [[s] for s in sentences[k + 1:]]
         next_sentence = sentences[k + 1] if k + 1 < len(sentences) else ""
+        beyond = " ".join(sentences[k + 2:])
         parts = _PART.split(sentence)
         starts = [0] + [m.end() for m in _PART.finditer(sentence)]
         for i, part in enumerate(parts):
@@ -988,7 +996,9 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                     )
                     and not _names_higher_band(own_piece_rest, band_amounts, second)
                     and _RANGE_MARK not in _mark_new_ranges(upto, band_amounts, reaching_above=True)
-                    and not _moves_to_higher_band([sentence[starts[i] + max(end, band_end):]], band_amounts, next_sentence, second)
+                    and not _moves_to_higher_band(
+                        [sentence[starts[i] + max(end, band_end):]], band_amounts, next_sentence, second, beyond
+                    )
                     and not approved_later([[sentence[starts[i] + max(end, band_end):]], *later], band_amounts)
                 ):
                     return True
@@ -1007,7 +1017,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
             # The rest of the sentence after that phrase, with its real separators.
             rest = sentence[starts[i + 1] + len(first_piece):] if i + 1 < len(parts) else ""
             if (
-                bare and not _moves_to_higher_band([rest], band_amounts, next_sentence, second)
+                bare and not _moves_to_higher_band([rest], band_amounts, next_sentence, second, beyond)
                 and not approved_later([[rest], *later], band_amounts)
             ):
                 return True
