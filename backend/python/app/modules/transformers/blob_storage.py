@@ -1683,7 +1683,7 @@ class BlobStorage(Transformer):
             tuple[str | None, int | None]: (document_id, file_size_bytes) if successful
         """
         try:
-            headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+            headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
 
             compressed_record, use_compression = self._maybe_compress_record(record)
 
@@ -1695,56 +1695,45 @@ class BlobStorage(Transformer):
             json_data = json.dumps(upload_data).encode('utf-8')
             file_size_bytes = len(json_data)
 
-            if storage_type == "local":
-                upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD_NEXT_VERSION.value.format(documentId=document_id)}"
+            # Same route for every storage vendor: uploadNextVersion writes the
+            # version object and appends to versionHistory through the storage
+            # adapter. A directUpload PUT would overwrite the current object only.
+            upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD_NEXT_VERSION.value.format(documentId=document_id)}"
 
-                async def _attempt() -> None:
-                    form_data = aiohttp.FormData()
-                    form_data.add_field('file',
-                                    json_data,
-                                    filename=f'record_{record_id}.json',
-                                    content_type='application/json')
-                    async with _borrowed_session() as session, session.post(
-                        upload_url, data=form_data, headers=headers
-                    ) as response:
-                        if response.status != HttpStatusCode.SUCCESS.value:
-                            error_response = None
-                            try:
-                                error_response = await response.json()
-                                self.logger.error("❌ Failed to upload next version. Status: %d, Error: %s",
-                                                response.status, error_response)
-                            except aiohttp.ContentTypeError:
-                                error_text = await response.text()
-                                self.logger.error("❌ Failed to upload next version. Status: %d, Response: %s",
-                                                response.status, error_text[:200])
-                            if (
-                                response.status == HttpStatusCode.BAD_REQUEST.value
-                                and isinstance(error_response, dict)
-                                and "cannot be versioned"
-                                in str(error_response.get("error", {}).get("message", "")).lower()
-                            ):
-                                raise Exception("This document cannot be versioned")
+            async def _attempt() -> None:
+                form_data = aiohttp.FormData()
+                form_data.add_field('file',
+                                json_data,
+                                filename=f'record_{record_id}.json',
+                                content_type='application/json')
+                async with _borrowed_session() as session, session.post(
+                    upload_url, data=form_data, headers=headers
+                ) as response:
+                    if response.status != HttpStatusCode.SUCCESS.value:
+                        error_response = None
+                        try:
+                            error_response = await response.json()
+                            self.logger.error("❌ Failed to upload next version. Status: %d, Error: %s",
+                                            response.status, error_response)
+                        except aiohttp.ContentTypeError:
+                            error_text = await response.text()
+                            self.logger.error("❌ Failed to upload next version. Status: %d, Response: %s",
+                                            response.status, error_text[:200])
+                        if (
+                            response.status == HttpStatusCode.BAD_REQUEST.value
+                            and isinstance(error_response, dict)
+                            and "cannot be versioned"
+                            in str(error_response.get("error", {}).get("message", "")).lower()
+                        ):
+                            raise Exception("This document cannot be versioned")
 
-                            raise Exception(
-                                f"Failed to upload next version (status: {response.status})"
-                            )
+                        raise Exception(
+                            f"Failed to upload next version (status: {response.status})"
+                        )
 
-                await self._with_storage_retry("next-version upload", _attempt, idempotent=False)
-                self.logger.debug("✅ Successfully uploaded next version for document: %s", document_id)
-                return document_id, file_size_bytes
-            else:
-                async with _borrowed_session() as session:
-                    upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
-                    upload_result = await self._get_signed_url(session, upload_url, {}, headers)
-
-                    signed_url = upload_result.get('signedUrl')
-                    if not signed_url:
-                        raise Exception("No signed URL in response for next version upload")
-
-                    await self._upload_to_signed_url(session, signed_url, upload_data)
-
-                    self.logger.debug("✅ Successfully uploaded next version for document: %s", document_id)
-                    return document_id, file_size_bytes
+            await self._with_storage_retry("next-version upload", _attempt, idempotent=False)
+            self.logger.debug("✅ Successfully uploaded next version for document: %s", document_id)
+            return document_id, file_size_bytes
 
         except Exception as e:
             self.logger.error("❌ Error uploading next version: %s", str(e))
@@ -2244,17 +2233,15 @@ class BlobStorage(Transformer):
     ) -> dict:
         """Append a new version of RAW bytes to an existing artifact document.
 
-        Distinct from :meth:`upload_next_version` (which JSON-wraps/compresses
-        a KB-record snapshot and, for cloud storage, PUTs straight to the
-        CURRENT object key via a `directUpload` signed URL — bypassing
-        ``versionHistory`` bookkeeping entirely). ``uploadNextVersionDocument``
+        Distinct from :meth:`upload_next_version`, which JSON-wraps/compresses
+        a KB-record snapshot before posting it. ``uploadNextVersionDocument``
         (`storage.controller.ts`) is storage-vendor-agnostic — it reads the
         uploaded buffer via `FileProcessorService` and writes it through the
         SAME adapter abstraction (`adapter.getBufferFromStorageService`/
-        `cloneDocument`) regardless of S3/Azure/local — so unlike
-        `upload_next_version`, this method always posts multipart bytes to
-        that one route for EVERY storage vendor, guaranteeing a real
-        ``versionHistory`` entry is appended everywhere.
+        `cloneDocument`) regardless of S3/Azure/local — so this method, like
+        `upload_next_version`, always posts multipart bytes to that one route
+        for EVERY storage vendor, guaranteeing a real ``versionHistory`` entry
+        is appended everywhere.
 
         Returns dict with ``documentId``, ``sizeBytes``, ``storageVersion``
         (the ``versionHistory`` index Node just wrote these bytes to — the

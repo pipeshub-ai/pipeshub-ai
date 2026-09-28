@@ -117,15 +117,20 @@ class TestUploadNextVersionLocal:
                 )
 
 
-class TestUploadNextVersionS3:
+class TestUploadNextVersionCloud:
+    """Cloud storage must version through the same route as local storage,
+    not PUT over the current object via directUpload (#3443)."""
+
     @pytest.mark.asyncio
-    async def test_s3_success(self):
+    @pytest.mark.parametrize("storage_type", ["s3", "azureBlob"])
+    async def test_cloud_posts_to_upload_next_version(self, storage_type):
         bs = _make_bs()
-        _configure_auth(bs, "s3")
+        _configure_auth(bs, storage_type)
         bs._get_signed_url = AsyncMock(return_value={"signedUrl": "https://x/y"})
         bs._upload_to_signed_url = AsyncMock(return_value=200)
 
         mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=_resp(200, {"_id": "doc-X"}))
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -139,36 +144,21 @@ class TestUploadNextVersionS3:
             )
         assert doc_id == "doc-X"
         assert size > 0
-        bs._upload_to_signed_url.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_s3_missing_signed_url_raises(self):
-        bs = _make_bs()
-        _configure_auth(bs, "s3")
-        bs._get_signed_url = AsyncMock(return_value={})  # no signedUrl
-
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        with patch(
-            "app.modules.transformers.blob_storage.aiohttp.ClientSession",
-            return_value=mock_session,
-        ):
-            with pytest.raises(Exception, match="No signed URL"):
-                await bs.upload_next_version(
-                    "org-1", "rec-1", "doc-X", {"r": 1}, "vr-1",
-                )
+        mock_session.post.assert_called_once()
+        assert mock_session.post.call_args.args[0] == (
+            "http://localhost:3001/api/v1/document/internal/doc-X/uploadNextVersion"
+        )
+        bs._get_signed_url.assert_not_awaited()
+        bs._upload_to_signed_url.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_compression_failure_falls_back_to_uncompressed(self):
         bs = _make_bs()
         _configure_auth(bs, "s3")
-        bs._get_signed_url = AsyncMock(return_value={"signedUrl": "https://x/y"})
-        bs._upload_to_signed_url = AsyncMock(return_value=200)
         bs._compress_record = MagicMock(side_effect=RuntimeError("compress boom"))
 
         mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=_resp(200, {"_id": "doc-Y"}))
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -183,16 +173,22 @@ class TestUploadNextVersionS3:
         assert size > 0
 
     @pytest.mark.asyncio
-    async def test_s3_non_versioned_error_includes_phrase(self):
+    async def test_s3_non_versioned_document_raises_specific_error(self):
         bs = _make_bs()
         _configure_auth(bs, "s3")
 
-        async def _raise_non_versioned(*args, **kwargs):
-            raise Exception("Failed with status 400: This document cannot be versioned")
-
-        bs._get_signed_url = AsyncMock(side_effect=_raise_non_versioned)
+        err_resp = _resp(
+            400,
+            {
+                "error": {
+                    "code": "HTTP_BAD_REQUEST",
+                    "message": "This document cannot be versioned",
+                }
+            },
+        )
 
         mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=err_resp)
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -200,7 +196,7 @@ class TestUploadNextVersionS3:
             "app.modules.transformers.blob_storage.aiohttp.ClientSession",
             return_value=mock_session,
         ):
-            with pytest.raises(Exception, match="cannot be versioned"):
+            with pytest.raises(Exception, match="This document cannot be versioned"):
                 await bs.upload_next_version(
                     "org-1", "rec-1", "doc-legacy", {"r": 1}, "vr-1",
                 )
