@@ -97,7 +97,6 @@ def obtain_user_session_token(base_url: str, timeout: int = 30) -> str:
     Raises:
         RuntimeError: If env vars are missing or any backend call fails.
     """
-    base_url = base_url.rstrip("/")
     email = os.getenv("PIPESHUB_TEST_USER_EMAIL", "").strip()
     password = os.getenv("PIPESHUB_TEST_USER_PASSWORD", "").strip()
     if not email or not password:
@@ -105,7 +104,12 @@ def obtain_user_session_token(base_url: str, timeout: int = 30) -> str:
             "PIPESHUB_TEST_USER_EMAIL and PIPESHUB_TEST_USER_PASSWORD must be set in .env.local "
             "to obtain OAuth credentials automatically (user must be an org admin)."
         )
+    return log_in(base_url, email, password, timeout)
 
+
+def log_in(base_url: str, email: str, password: str, timeout: int = 30) -> str:
+    """Log in as any user with a password and return an org-scoped session JWT."""
+    base_url = base_url.rstrip("/")
     session_token = _init_auth(base_url, email, timeout)
     access_token, org_id = _authenticate(base_url, session_token, email, password, timeout)
     if "userId" not in _jwt_claims(access_token):

@@ -66,7 +66,7 @@ from helper.http.session_client import (  # noqa: E402
     SessionClient,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from helper.second_user import SecondUser, second_user  # noqa: E402, F401
+from helper.second_user import SecondUser, log_in, second_user  # noqa: E402, F401
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
@@ -135,7 +135,7 @@ def other_oauth(second_user: SecondUser) -> OAuthAppsClient:
     return OAuthAppsClient(
         SessionClient(
             second_user.base_url,
-            login=lambda: second_user.token,
+            login=lambda: log_in(second_user.base_url, second_user.email, second_user.timeout),
             timeout_seconds=second_user.timeout,
         )
     )
