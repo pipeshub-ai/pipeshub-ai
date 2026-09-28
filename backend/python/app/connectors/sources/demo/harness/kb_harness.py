@@ -704,22 +704,15 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
         exceptions = _carve_outs(text, no_approval, lo, at)
         if not exceptions:
             return False
-        # A claim after the exception word keeps the amount: in its own clause, or
-        # opening the next one ("except above $2,500, no approval is needed"), not one
-        # about something else ("…, and up to $100 needs no approval").
+        # A no-approval claim after the exception word keeps the amount: in its own
+        # clause, or in the next clause (the next sentence, `after`, when this text
+        # ends) unless that one is about a lower amount ("…, and up to $100 needs no
+        # approval").
         own = text[exceptions[-1].end():hi]
-        # The next clause, or the next sentence (`after`) when this text ends; a lead-in
-        # back to the band ("in that band", "for those", "where") keeps it on that band.
-        following = _BAND_LEAD_IN.sub("", text[hi:] if text[hi:].strip(" .!?") else after)
-        opening = _APPROVAL_WORD.match(following)
-        return not any(mention_spans(own, p) for p in no_approval) and not any(
-            _NOT_AFTER.match(own[m.end():]) or _NEGATED_AFTER.match(own[m.end():])
-            or _negates_approval(own[:m.start()])
-            for m in _APPROVAL_WORD.finditer(own)
-        ) and not any(
-            start == 0 for p in no_approval for start, _ in mention_spans(following, p)
-        ) and not (
-            opening and (_NOT_AFTER.match(following[opening.end():]) or _NEGATED_AFTER.match(following[opening.end():]))
+        rest = _BAND_LEAD_IN.sub("", text[hi:] if text[hi:].strip(" .!?") else after)
+        following = _BREAK_OUTSIDE_AMOUNTS.split(rest)[0]
+        return not _states_no_approval(own, no_approval) and not (
+            _states_no_approval(following, no_approval) and not _about_lower_amount(following, band_amounts)
         )
 
     # An exception hides only a range or a raise ("except between $251 and $2,500",
@@ -777,17 +770,53 @@ _NEGATION_AFTER = re.compile(
     r"(?:\s+(?:will|would|shall|should|can|could|may|might|must|does|do|did|is|are|was|were|has|have|had))?"
     r"\s+(?:not|never|cannot|no|\w+n't)\b"
 )
-_LATER_COPULA_NOT = re.compile(rf"\b(?:(?:is|are|was|were)\s+not|isn't|aren't|wasn't|weren't)\b{_NOT_WAIVED}")
+# A later copula that still predicates the same approval: "… is not waived and is not
+# required", not a new subject ("… and the limit isn't $250").
+_LATER_COPULA_NOT = re.compile(
+    rf"(?:\band|\bbut|,)\s+(?:(?:is|are|was|were)\s+not|isn't|aren't|wasn't|weren't)\b{_NOT_WAIVED}"
+)
 
 
-def _someone_approves(text: str, no_approval: list[str]) -> bool:
-    """Whether `text` has someone approving ("your manager's approval is required").
-    An approval word kept only by a negated waiver ("approval is not waived") counts
+_NEGATED_AMOUNT = re.compile(rf"(?:\bnot|n't)\s+{_DET}(?:{_AMOUNT.pattern})")
+_LOWER_WORD = re.compile(r"\b(?:small|smaller|low|lower|minor|petty|cheap|cheaper)\b")
+
+
+def _about_lower_amount(clause: str, band_amounts: set[float]) -> bool:
+    """Whether a clause is about an amount at or below the $250 band ("up to $100",
+    "small purchases"), not the higher band."""
+    return any(v <= max(band_amounts) for v in _amount_values(clause)) or bool(_LOWER_WORD.search(clause))
+
+
+def _states_no_approval(clause: str, no_approval: list[str]) -> bool:
+    """Whether a clause says nobody approves: a no-approval phrase, or a negated
+    approval word ("your manager's sign-off is not required")."""
+    return any(mention_spans(clause, p) for p in no_approval) or any(
+        _NOT_AFTER.match(clause[m.end():]) or _NEGATED_AFTER.match(clause[m.end():])
+        or _negates_approval(clause[:m.start()])
+        for m in _APPROVAL_WORD.finditer(clause)
+    )
+
+
+def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float]) -> bool:
+    """Whether `text` has someone approving ("your manager's approval is required") and
+    no no-approval phrase about the higher band denies it ("…, but approval is not
+    required"); one about a lower amount ("up to $100 needs no approval") doesn't. An
+    approval word kept only by a negated waiver ("approval is not waived") counts
     only while nothing else in `text` says nobody approves."""
-    has_phrase = any(mention_spans(text, p) for p in no_approval)
+    if any(
+        any(mention_spans(clause, p) for p in no_approval) and not _about_lower_amount(clause, band_amounts)
+        for clause in _BREAK_OUTSIDE_AMOUNTS.split(text)
+    ):
+        return False
+    for p in no_approval:
+        for start, end in mention_spans(text, p):
+            text = text[:start] + " " * (end - start) + text[end:]
     words = list(_APPROVAL_WORD.finditer(text))
-    affirmed, waived, negated = False, False, has_phrase
+    affirmed, waived, negated = False, False, False
     for i, m in enumerate(words):
+        # "Finance is not the approver" names who doesn't approve, not that nobody does.
+        if re.fullmatch(r"approvers?", m.group()):
+            continue
         # A waiver keeps only its own negation: "approval is not waived and is not
         # required" still says nobody approves.
         stretch = text[m.end():words[i + 1].start() if i + 1 < len(words) else len(text)]
@@ -813,7 +842,7 @@ def _moves_to_higher_band(
     rest = " ".join(texts)
     rest_says = bool(re.search(r"\w", _RANGE_LEAD.sub(" ", rest)))
     follow, after = (rest, next_sentence) if rest_says else (next_sentence, "")
-    return _names_higher_band(follow, band_amounts, no_approval, after) and not _someone_approves(follow, no_approval)
+    return _names_higher_band(follow, band_amounts, no_approval, after) and not _someone_approves(follow, no_approval, band_amounts)
 
 
 def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]) -> bool:
@@ -876,7 +905,8 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 if _RAISES.search(piece) or _RANGE_MARK in piece:
                     raised = True
                 approves = _approves(piece, second)
-                if band_amounts & _amount_values(_RAISES.sub(" ", piece)):
+                # "the limit isn't $250" doesn't name the $250 purchase.
+                if band_amounts & _amount_values(_NEGATED_AMOUNT.sub(" ", _RAISES.sub(" ", piece))):
                     if raised and skipped:
                         return True
                     raised = False
