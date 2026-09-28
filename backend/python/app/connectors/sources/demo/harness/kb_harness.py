@@ -693,7 +693,7 @@ _BAND_LEAD_IN = re.compile(
 )
 
 
-def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[str]) -> bool:
+def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[str], later: str = "") -> bool:
     """Whether `text` names an amount above the $250 band or a higher band ("above
     that"), before any exception ("except between $251 and $2,500")."""
     def excepted(at: int) -> bool:
@@ -707,10 +707,10 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
         if not exceptions:
             return False
         # A no-approval claim after the exception word keeps the amount: in its own
-        # clause, or in any later clause of `text` (later sentences included) that
-        # isn't about a lower amount ("…, and up to $100 needs no approval").
+        # clause, or in any later clause of `text` or `later` (the sentences after it)
+        # that isn't about a lower amount ("…, and up to $100 needs no approval").
         own = text[exceptions[-1].end():hi]
-        rest = _BAND_LEAD_IN.sub("", text[hi:])
+        rest = _BAND_LEAD_IN.sub("", text[hi:]) + " " + _BAND_LEAD_IN.sub("", later)
         return not _states_no_approval(own, no_approval) and not any(
             _states_no_approval(clause, no_approval) and not _about_lower_amount(clause, band_amounts)
             for clause in _clauses(rest)
@@ -782,16 +782,35 @@ _NEGATED_AMOUNT = re.compile(rf"(?:\bnot|n't)\s+{_DET}(?:{_AMOUNT.pattern})")
 _LOWER_WORD = re.compile(r"\b(?:small|smaller|low|lower|minor|petty|cheap|cheaper)\b")
 
 
+# An approval word naming a document, not anyone approving: "the approval note".
+_APPROVAL_DOC = re.compile(
+    r"\s+(?:notes?|polic(?:y|ies)|guides?|forms?|process|workflow|pages?|docs?|documents?|sections?|rules?"
+    r"|matrix|chart|table|team)\b"
+)
+# A piece that continues the claim before it: "and for $5,000", "or above $250".
+_CONTINUES = re.compile(
+    r"^\s*(?:(?:and|or|nor|plus|also|including|even|too|for|of|to|up\s+to|under|below|between|from|at"
+    r"|over|above|beyond|past|more\s+than|as\s+well\s+as|along\s+with)\b|\$|\d)"
+)
+
+
+def _approval_words(text: str) -> list[re.Match[str]]:
+    """The approval words in `text` that are about approving, not a document's name."""
+    return [m for m in _APPROVAL_WORD.finditer(text) if not _APPROVAL_DOC.match(text, m.end())]
+
+
 def _clauses(text: str) -> list[str]:
-    """`text` split at clause breaks outside amounts into claims: a piece that says
-    nothing about approval (", or above $250", ", including $5,000", ", see the
-    note") stays with the one before."""
+    """`text` split at clause breaks outside amounts into claims, separators kept. A
+    piece with no approval word stays with the claim before it when it is an aside
+    (", see the note") or continues it (", or above $250", ". And for $5,000"); a new
+    sentence about some other amount ("The project cost $5,000.") is its own."""
+    parts = re.split(f"({_BREAK_OUTSIDE_AMOUNTS.pattern})", text)
     clauses: list[str] = []
-    for piece in _BREAK_OUTSIDE_AMOUNTS.split(text):
-        # Only a piece with its own approval word starts a new claim; an aside ("see the
-        # note", "per policy") or an added amount stays with the claim before it.
-        if clauses and not _APPROVAL_WORD.search(piece):
-            clauses[-1] += " " + piece
+    for i in range(0, len(parts), 2):
+        piece, sep = parts[i], parts[i - 1] if i else ""
+        adds_amount = _AMOUNT.search(piece) or _RAISES.search(piece)
+        if clauses and not _approval_words(piece) and (not adds_amount or _CONTINUES.match(piece)):
+            clauses[-1] += sep + piece
         else:
             clauses.append(piece)
     return clauses
@@ -829,7 +848,7 @@ def _states_no_approval(clause: str, no_approval: list[str]) -> bool:
     return any(mention_spans(clause, p) for p in no_approval) or any(
         _NOT_AFTER.match(clause[m.end():]) or _NEGATED_AFTER.match(clause[m.end():])
         or _negates_approval(clause[:m.start()])
-        for m in _APPROVAL_WORD.finditer(clause)
+        for m in _approval_words(clause)
     )
 
 
@@ -847,7 +866,7 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
     for p in no_approval:
         for start, end in mention_spans(text, p):
             text = text[:start] + " " * (end - start) + text[end:]
-    words = list(_APPROVAL_WORD.finditer(text))
+    words = _approval_words(text)
     affirmed, waived, negated = False, False, False
     for i, m in enumerate(words):
         # "Finance is not the approver" names who doesn't approve, not that nobody does.
@@ -877,12 +896,21 @@ def _moves_to_higher_band(
     limit is $2,500."). "Above that, your manager approves" is the next band's own claim."""
     rest = " ".join(texts)
     rest_says = bool(re.search(r"\w", _RANGE_LEAD.sub(" ", rest)))
-    # Everything after the phrase: the rest of its sentence, the next sentence and
-    # `beyond`, every sentence after that. A higher band or a denial in any of them
-    # counts ("…no approval. See the note. Above $2,500, no approval is needed.").
-    follow = " ".join(t for t in (rest if rest_says else "", next_sentence, beyond) if t)
-    return _names_higher_band(follow, band_amounts, no_approval) and not _someone_approves(
-        follow, no_approval, band_amounts
+    # What directly follows (the rest of the sentence, or the next sentence) moves the
+    # claim with any higher amount; a later sentence only with its own no-approval
+    # claim about the higher band ("See the note. Above $2,500, no approval is
+    # needed."), not a bare figure ("The annual budget is $5,000."). A denial anywhere
+    # later still overrules an approval.
+    follow = rest if rest_says else next_sentence
+    later = " ".join(t for t in (next_sentence if rest_says else "", beyond) if t)
+    if _names_higher_band(follow, band_amounts, no_approval, later) and not _someone_approves(
+        f"{follow} {later}", no_approval, band_amounts
+    ):
+        return True
+    return any(
+        _names_higher_band(s, band_amounts, no_approval) and _states_no_approval(s, no_approval)
+        and not _someone_approves(s, no_approval, band_amounts)
+        for s in _SENTENCE_END.split(later) if s.strip()
     )
 
 
