@@ -1000,7 +1000,7 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
     # "…for the purchases, all of them": the appositive covers everything.
     if re.search(
         r"\b(?:(?:all|each|both|any|either|neither|none|(?:each|every)\s+(?:single\s+|last\s+)?one)\s+of\s+(?:them|those|these)"
-        r"|every\s+(?:single\s+|last\s+)?one|not\s+(?:a\s+single\s+)?one\s+of\s+(?:them|those|these))\b",
+        r"|every\s+(?:single\s+|last\s+)?one|not\s+(?:a\s+(?:single\s+)?|any\s+)?one\s+of\s+(?:them|those|these))\b",
         clause,
     ):
         return False
@@ -1113,30 +1113,34 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
 # "Nobody can spend", "Do not make a purchase"; not "Nobody disputes that you can
 # spend", "You cannot be stopped from spending" or "Do not forget: …".
 _SPEND = r"(?:spend\w*|make|making|purchas\w*|buy\w*|expens\w*)\b"
+_NEG_MODAL = (
+    r"(?:(?:must|should|will|shall|may|can|could|would|might)\s+(?:not|never)|cannot|can't|mustn't|shouldn't"
+    r"|shan't|won't|couldn't|wouldn't|mightn't)"
+)
 _PROHIBIT_BEFORE = re.compile(
     r"(?:"
     # A modal or imperative negation: "you cannot make", "don't spend", "nobody can spend";
     # not "can't be stopped from spending" or "don't have to spend".
-    r"\b(?:cannot|can\s+not|can't|may\s+not|must\s+not|mustn't|must\s+never|should\s+not|shouldn't|shall\s+not"
-    r"|shan't|will\s+not|won't|do\s+not|don't|never|nobody|no\s+one|not\s+the\s+case)"
+    rf"\b(?:{_NEG_MODAL}|do\s+not|don't|never|nobody|no\s+one|not\s+the\s+case)(?:\s+ever)?"
     r"(?!\s+(?:have|need)\s+to\b)(?!\s+be\s+(?:stopped|prevented|blocked|kept|allowed|permitted)\b)"
     r"(?!\s+(?:forget|hesitate)\b)"
-    # Permission denied: "you're not allowed to", "you must not be allowed to", "nobody is
-    # permitted to".
-    r"|\b(?:(?:is|are|am|was|were|be|'re|'s)\s+not|isn't|aren't|wasn't|weren't|not)\s+(?:allowed|permitted)\s+to"
-    r"|\b(?:(?:must|should|will|shall|may|can)\s+(?:not|never)|never|cannot(?:\s+ever)?|do\s+not|don't|won't"
-    r"|mustn't|shouldn't|can't|shan't|(?:nobody|no\s+one)\s+(?:can|may|will|should|shall|must))"
-    r"\s+be\s+(?:allowed|permitted)\s+to"
+    # Permission denied: "you must not (ever) be allowed to", "nobody could be permitted to".
+    rf"|\b(?:{_NEG_MODAL}|do\s+not|don't|never|(?:nobody|no\s+one)\s+(?:must|should|will|shall|may|can|could|would|might))"
+    r"(?:\s+ever)?\s+be\s+(?:allowed|permitted)\s+to"
+    # "you're not allowed to", "it is no longer allowed to", "you haven't been permitted to".
+    r"|\b(?:(?:is|are|am|was|were|be|'re|'s)\s+(?:not|no\s+longer)|isn't|aren't|wasn't|weren't|not"
+    r"|(?:has|have|had)\s+(?:not|never)\s+been|(?:hasn't|haven't|hadn't)\s+been)\s+(?:allowed|permitted)\s+to"
     r"|\b(?:nobody|no\s+one)\s+(?:is|was|will\s+be)\s+(?:allowed|permitted)\s+to"
     r"|\b(?:(?:is|are|am|was|were|'re)\s+not|isn't|aren't|wasn't|weren't)\s+to"
     r"|\b(?:is|are|was|were|be|'s|'re|has\s+been|have\s+been|had\s+been)\s+(?:forbidden|prohibited|banned)"
     r"(?:\s+(?:to|from))?"
     rf")\s+(?:\w+\s+){{0,2}}?{_SPEND}"
 )
+# After the band: "…is no longer allowed", "…has never been permitted", "…was banned"; never
+# "has never been banned", which permits it.
 _PROHIBIT_AFTER = re.compile(
-    r"\b(?:(?:is|are|was|were)\s+(?:not|never)\s+(?:allowed|permitted)|(?:isn't|aren't)\s+(?:allowed|permitted)"
-    r"|(?:wasn't|weren't|(?:has|have|had)\s+not\s+been|(?:hasn't|haven't|hadn't)\s+been|(?:is|are)\s+no\s+longer)"
-    r"\s+(?:allowed|permitted)"
+    r"\b(?:(?:(?:is|are|was|were|'s|'re)\s+(?:not|never|no\s+longer)|isn't|aren't|wasn't|weren't"
+    r"|(?:has|have|had)\s+(?:not|never)\s+been|(?:hasn't|haven't|hadn't)\s+been)\s+(?:allowed|permitted)"
     r"|(?:is|are|was|were|has\s+been|have\s+been|had\s+been)\s+(?:prohibited|forbidden|banned))\b"
 )
 
