@@ -1074,7 +1074,19 @@ class TestIncrementalCursor:
         # First page consumed, second call detects the repeated cursor and stops.
         assert datasource.incremental_users.await_count == 2
         assert len(users) == 2
-        assert complete is True
+        # end_of_stream was never reached, so membership must not be rebuilt from it.
+        assert complete is False
+
+    async def test_fetch_users_missing_cursor_before_end_is_incomplete(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_users = AsyncMock(return_value=_make_response(data={
+            "users": [{"id": 1, "email": "a@acme.com", "name": "A"}],
+            "end_of_stream": False,
+        }))
+        users, _, complete = await zendesk_connector._fetch_users()
+        assert datasource.incremental_users.await_count == 1
+        assert len(users) == 1
+        assert complete is False
 
     async def test_fetch_users_reports_incomplete_on_failed_page(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -1127,6 +1139,19 @@ class TestIncrementalCursor:
             }),
             _make_response(success=False, error="500 Internal Server Error"),
         ])
+        zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
+        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+
+        await zendesk_connector._sync_tickets()
+
+        zendesk_connector.records_sync_point.update_sync_point.assert_not_awaited()
+
+    async def test_non_advancing_ticket_cursor_leaves_sync_point_alone(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_tickets = AsyncMock(return_value=_make_response(data={
+            "tickets": [{"id": 1, "subject": "a", "updated_at": "2026-01-01T00:00:00Z"}],
+            "end_of_stream": False,
+        }))
         zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
         zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
 
@@ -1550,9 +1575,25 @@ class TestFetchOrganizations:
             })
         )
 
-        await zendesk_connector._fetch_organizations()
+        _, complete = await zendesk_connector._fetch_organizations()
 
         assert datasource.incremental_organizations.await_count == 1
+        # A stalled window left organizations unread; partial membership revokes access.
+        assert complete is False
+
+    async def test_reaching_end_of_stream_is_complete(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_organizations = AsyncMock(
+            return_value=_make_response(data={
+                "organizations": [{"id": 21, "name": "Acme"}],
+                "end_time": DEFAULT_INCREMENTAL_START_TIME,
+                "end_of_stream": True,
+            })
+        )
+
+        _, complete = await zendesk_connector._fetch_organizations()
+
+        assert complete is True
 
     async def test_truncated_org_export_skips_membership_sync(
         self, zendesk_connector, mock_data_entities_processor
@@ -2621,6 +2662,19 @@ class TestArticleSyncPoint:
         assert count == 0
         zendesk_connector.records_sync_point.update_sync_point.assert_not_awaited()
 
+    async def test_non_advancing_article_window_leaves_checkpoint_alone(self, zendesk_connector):
+        datasource = self._one_article(zendesk_connector)
+        datasource.incremental_articles = AsyncMock(return_value=_make_response(data={
+            "articles": [{"id": 55, "title": "How to reset", "section_id": 9}],
+            "end_time": DEFAULT_INCREMENTAL_START_TIME,
+            "end_of_stream": False,
+        }))
+
+        count = await zendesk_connector._sync_help_center_articles()
+
+        assert count == 0
+        zendesk_connector.records_sync_point.update_sync_point.assert_not_awaited()
+
     async def test_ticket_checkpoint_does_not_gate_article_reemission(
         self, zendesk_connector
     ):
@@ -3223,3 +3277,53 @@ class TestFullSyncEdgeRebuildFlags:
         await zendesk_connector.run_sync()
 
         assert zendesk_connector._rebuild_ticket_edges is False
+
+
+# ===========================================================================
+# OAuth token rotation
+# ===========================================================================
+
+
+class TestFreshDatasource:
+    async def test_uninitialised_connector_raises(self, zendesk_connector):
+        with pytest.raises(RuntimeError, match="not initialized"):
+            await zendesk_connector._get_fresh_datasource()
+
+    async def test_unchanged_token_keeps_the_client(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        zendesk_connector.init = AsyncMock()
+
+        assert await zendesk_connector._get_fresh_datasource() is datasource
+        zendesk_connector.init.assert_not_awaited()
+
+    async def test_rotated_token_rebuilds_the_client(self, zendesk_connector, mock_config_service):
+        _ready(zendesk_connector)
+        mock_config_service.get_config.return_value = {"credentials": {"access_token": "new"}}
+        rebuilt = MagicMock()
+
+        async def _init():
+            zendesk_connector.data_source = rebuilt
+            return True
+
+        zendesk_connector.init = AsyncMock(side_effect=_init)
+
+        assert await zendesk_connector._get_fresh_datasource() is rebuilt
+        zendesk_connector.init.assert_awaited_once()
+
+    async def test_failed_rebuild_raises_instead_of_serving_stale_token(
+        self, zendesk_connector, mock_config_service
+    ):
+        _ready(zendesk_connector)
+        mock_config_service.get_config.return_value = {"credentials": {"access_token": "new"}}
+        zendesk_connector.init = AsyncMock(return_value=False)
+
+        with pytest.raises(RuntimeError, match="could not be rebuilt"):
+            await zendesk_connector._get_fresh_datasource()
+
+    async def test_unreadable_config_keeps_the_client(self, zendesk_connector, mock_config_service):
+        datasource = _ready(zendesk_connector)
+        mock_config_service.get_config.side_effect = Exception("etcd down")
+        zendesk_connector.init = AsyncMock()
+
+        assert await zendesk_connector._get_fresh_datasource() is datasource
+        zendesk_connector.init.assert_not_awaited()
