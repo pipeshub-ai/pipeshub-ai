@@ -1127,8 +1127,9 @@ _NEG_STATE = (
 )
 # "Nobody is (ever) allowed", "nobody has ever been allowed", "no one's been permitted".
 _NOBODY_ALLOWED = (
-    r"(?:nobody|no\s+one)(?:\s+(?:is|was|will\s+be)(?:\s+ever)?|(?:\s+(?:has|had)|'s)(?:\s+ever)?\s+been)"
-    r"\s+(?:allowed|permitted)"
+    r"(?:nobody|no\s+one)(?:\s+(?:is|was)(?:\s+ever)?"
+    r"|\s+(?:will|shall|can|could|may|must|should|would|might)(?:\s+ever)?\s+be"
+    r"|(?:\s+(?:has|had)|'s)(?:\s+ever)?\s+been)\s+(?:allowed|permitted)"
 )
 _PROHIBIT_BEFORE = re.compile(
     r"(?:"
@@ -1162,8 +1163,11 @@ _PROHIBIT_AFTER = re.compile(
 _PROHIBIT_TAIL = re.compile(
     r"^\s*(?:(?:i|you|we|they|it|this|that|which)(?:\s+|(?='))"
     rf"(?:{_NEG_STATE}\s+(?:allowed|permitted)"
-    r"|(?:is|are|was|were|'s|'re|(?:has|have|had|'s|'ve)\s+been)\s+(?:prohibited|forbidden|banned))"
-    rf"|{_NOBODY_ALLOWED})\s*[.!?]*\s*$"
+    r"|(?:is|are|am|was|were|'s|'re|'m|(?:has|have|had|'s|'ve)\s+been)\s+(?:prohibited|forbidden|banned))"
+    rf"|{_NOBODY_ALLOWED})"
+    # Optionally naming this same spend: "…, you are not allowed to spend it".
+    r"(?:\s+to\s+(?:spend|make|buy|purchase)(?:\s+(?:it|them|that|this|the|a)(?:\s+(?:purchase|expense|amount))?)?)?"
+    r"\s*[.!?]*\s*$"
 )
 
 
@@ -1257,7 +1261,8 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 continue
             band_end = max(end for _, end in bands)
             band_amounts = {v for b0, b1 in bands for v in _amount_values(part[b0:b1])}
-            if _prohibits(part, min(b0 for b0, _ in bands), second, parts[i + 1] if i + 1 < len(parts) else ""):
+            next_part = next((p for p in parts[i + 1:] if re.search(r"\w", p)), "")
+            if _prohibits(part, min(b0 for b0, _ in bands), second, next_part):
                 continue
             # An earlier sentence or part that has someone approve the $250 purchase
             # contradicts the no-approval answer that follows it.
