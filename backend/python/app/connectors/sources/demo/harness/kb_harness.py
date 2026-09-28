@@ -582,7 +582,7 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
 
     # Where the band could first govern: a requirement word or a sign-off.
     anchors = [m.start() for m in _REQUIRES_ANYWHERE.finditer(sentence)] + [
-        m.start() for m in _approval_words(sentence)
+        m.start() for m in _APPROVAL_WORD.finditer(sentence)
     ]
 
     def covered(a: int, r: int) -> bool:
@@ -599,7 +599,8 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
 
     return any(
         not covered(a.start(), r.start())
-        for a in _approval_words(sentence) if _WITHOUT_BEFORE.search(sentence[:a.start()])
+        # "Without the approval form, nothing goes through" is a condition too.
+        for a in _APPROVAL_WORD.finditer(sentence) if _WITHOUT_BEFORE.search(sentence[:a.start()])
         for r in _REQUIRES_ANYWHERE.finditer(sentence)
     )
 
@@ -798,8 +799,23 @@ _JOINER = re.compile(r"^\s*(?:and|or|nor|plus|also|as\s+well\s+as|along\s+with)\
 # Someone approves by being who it needs: "requires your manager", "goes to finance".
 _NEEDS_APPROVER = re.compile(
     rf"\b(?:requires?|required|needs?|needed|goes|go|going|went|sent|sends?|routed|routes?|escalated|escalates?)"
-    rf"\s+(?:to\s+|by\s+|from\s+)?(?:{_MANAGER}|{_APPROVER})"
+    rf"\s+(?:(?:nothing|anything)\s+)?(?:to\s+|by\s+|from\s+)?(?:{_MANAGER}|{_APPROVER})"
 )
+# A denial by nobody at all: "nobody approves", "nothing goes to your manager", "not a
+# single purchase goes to your manager". It outweighs any approval beside it.
+_UNIVERSAL_DENIAL = re.compile(
+    r"(?:\b(?:nobody|nothing|no\s+one)\b(?:\s+\w+){0,2}|\b(?:not|no)\s+(?:a\s+)?(?:single\s+)?\w+)\s*$"
+)
+
+
+def _need_denied(text: str, m: re.Match[str]) -> str | None:
+    """How an approver need is denied: "universal" ("nothing goes to your manager",
+    "needs nothing from your manager"), "plain" ("does not go to your manager"), or
+    None when someone is needed."""
+    before = text[:m.start()]
+    if re.search(r"\bnothing\b", m.group()) or _UNIVERSAL_DENIAL.search(before):
+        return "universal"
+    return "plain" if _negated(before) else None
 
 
 def _approval_words(text: str) -> list[re.Match[str]]:
@@ -818,7 +834,11 @@ def _clauses(text: str) -> list[str]:
         piece, sep = parts[i], parts[i - 1] if i else ""
         adds_amount = _AMOUNT.search(piece) or _RAISES.search(piece)
         # Across a sentence end only an explicit "And …" / "Or …" continues the claim.
-        continues = (_JOINER if re.fullmatch(r"[.!?]", sep) else _CONTINUES).match(piece)
+        if re.fullmatch(r"[.!?]", sep):
+            joiner = _JOINER.match(piece)
+            continues = joiner and _CONTINUES.match(piece[joiner.end():])
+        else:
+            continues = _CONTINUES.match(piece)
         if clauses and not _approval_words(piece) and (not adds_amount or continues):
             clauses[-1] += sep + piece
         else:
@@ -859,7 +879,7 @@ def _states_no_approval(clause: str, no_approval: list[str]) -> bool:
         _NOT_AFTER.match(clause[m.end():]) or _NEGATED_AFTER.match(clause[m.end():])
         or _negates_approval(clause[:m.start()])
         for m in _approval_words(clause)
-    )
+    ) or any(_need_denied(clause, m) for m in _NEEDS_APPROVER.finditer(clause))
 
 
 def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float]) -> bool:
@@ -877,8 +897,12 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
         for start, end in mention_spans(text, p):
             text = text[:start] + " " * (end - start) + text[end:]
     words = _approval_words(text)
-    affirmed = any(not _negated(text[:m.start()]) for m in _NEEDS_APPROVER.finditer(text))
-    waived, negated = False, False
+    affirmed, waived, negated, universal = False, False, False, False
+    for m in _NEEDS_APPROVER.finditer(text):
+        denied = _need_denied(text, m)
+        universal = universal or denied == "universal"
+        negated = negated or denied == "plain"
+        affirmed = affirmed or denied is None
     for i, m in enumerate(words):
         # "Finance is not the approver" names who doesn't approve, not that nobody does.
         if re.fullmatch(r"approvers?", m.group()):
@@ -886,7 +910,9 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
         # A waiver keeps only its own negation: "approval is not waived and is not
         # required" still says nobody approves.
         stretch = text[m.end():words[i + 1].start() if i + 1 < len(words) else len(text)]
-        if (
+        if _UNIVERSAL_DENIAL.search(text[:m.start()]) and _negates_approval(text[:m.start()]):
+            universal = True
+        elif (
             _NOT_AFTER.match(text[m.end():]) or _NEGATED_AFTER.match(text[m.end():])
             or _negates_approval(text[:m.start()]) or _LATER_COPULA_NOT.search(stretch)
         ):
@@ -895,7 +921,10 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
             waived = True
         else:
             affirmed = True
-    return affirmed or (waived and not negated)
+    return not universal and (affirmed or (waived and not negated))
+
+
+_OWN_SUBJECT = re.compile(r"\bfor\s+(?!(?:that|those|these|this|them|it|such)\b)(?:an?\s+|the\s+)?[a-z]")
 
 
 def _moves_to_higher_band(
@@ -926,7 +955,10 @@ def _moves_to_higher_band(
         # is needed." is still a denial about the higher band.
         chunk = " ".join(sentences[i:])
         if not _someone_approves(chunk, no_approval, band_amounts) and any(
-            _states_no_approval(c, no_approval) and not _about_lower_amount(c, band_amounts) for c in _clauses(chunk)
+            _states_no_approval(c, no_approval) and not _about_lower_amount(c, band_amounts)
+            # "…for day-to-day purchases" has its own subject; "for those" doesn't.
+            and not _OWN_SUBJECT.search(c)
+            for c in _clauses(chunk)
         ):
             return True
     return False
