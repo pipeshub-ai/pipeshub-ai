@@ -669,7 +669,7 @@ def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
     banded = [(m.start(), m.end()) for m in _RANGE.finditer(text)] + [
         (m.start(), a.end()) for m in _RAISES.finditer(text)
         if (a := _AMOUNT.search(text, m.start()))
-        and (a.start() < m.end() or re.fullmatch(rf"\s*{_DET}", text[m.end():a.start()]))
+        and (a.start() < m.end() or re.fullmatch(rf"\s*(?:than\s+)?{_DET}", text[m.end():a.start()]))
     ]
     for m in _AMOUNT.finditer(text):
         hidden = excepted(m.start()) and any(lo <= m.start() < hi for lo, hi in banded)
@@ -686,6 +686,22 @@ def _names_higher_band(text: str, band_amounts: set[float]) -> bool:
     return False
 
 
+def _negates_approval(before: str) -> bool:
+    """Whether a negation governs the approval word after `before` ("no sign-off",
+    "need not be approved"), in `_negated`'s window. A negation that is "don't (ever)
+    forget" still asks for the approval."""
+    if not _negated(before):
+        return False
+    words = _CLAUSE_BREAK.split(before)[-1].split()
+    window_start = max(len(words) - _NEGATION_WINDOW, 0)
+    for i in range(window_start, len(words)):
+        if _NEGATION.search(words[i]):
+            following = [w for w in words[i + 1:] if w != "ever"]
+            if following[:1] != ["forget"]:
+                return True
+    return bool(re.search(r"\byet\s+to\b", " ".join(words[window_start:])))
+
+
 def _someone_approves(text: str, no_approval: list[str]) -> bool:
     """Whether an approval word in `text` has someone approving, once the no-approval
     phrases are blanked ("up to $2,500: no approval needed", "approval isn't required")."""
@@ -694,8 +710,7 @@ def _someone_approves(text: str, no_approval: list[str]) -> bool:
             text = text[:start] + " " * (end - start) + text[end:]
     return any(
         not _NOT_AFTER.match(text[m.end():])
-        # "no sign-off", "need not be approved"; "don't forget approval" still asks for it.
-        and not (_negated(text[:m.start()]) and not re.search(r"(?:\bnot|n't|\bnever)\s+forget\b", text[:m.start()]))
+        and not _negates_approval(text[:m.start()])
         for m in _APPROVAL_WORD.finditer(text)
     )
 
