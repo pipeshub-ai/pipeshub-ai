@@ -138,7 +138,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** Drains a link that arrived before this renderer had a listener. */
     consumePending: () => ipcRenderer.invoke('oauth/pending'),
     /** Redeems a code where the Origin header has to be set (see main.ts). */
-    exchangeToken: (payload: { url: string; body: string; origin?: string }) =>
+    exchangeToken: (payload: { url: string; body: string; origin?: string; timeoutMs?: number }) =>
       ipcRenderer.invoke('oauth/token-exchange', payload),
     onCallback: (callback: (payload: unknown) => void): (() => void) => {
       const listener = (_event: IpcRendererEvent, payload: unknown) => callback(payload);

@@ -69,6 +69,9 @@ if (process.defaultApp && process.argv.length >= 2) {
 /** A link older than this is stale; a sign-in attempt has long since timed out. */
 const DEEP_LINK_TTL_MS = 5 * 60 * 1000;
 
+/** Upper bound on a token-exchange request, whatever deadline the renderer asks for. */
+const TOKEN_EXCHANGE_MAX_TIMEOUT_MS = 30 * 1000;
+
 function focusMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -533,9 +536,9 @@ app.whenReady().then(() => {
    */
   ipcMain.handle('oauth/token-exchange', async (
     _event: IpcMainInvokeEvent,
-    payload: { url?: string; body?: string; origin?: string },
+    payload: { url?: string; body?: string; origin?: string; timeoutMs?: number },
   ) => {
-    const { url, body, origin } = payload || {};
+    const { url, body, origin, timeoutMs } = payload || {};
     if (!url || !body) return { ok: false, error: 'url and body are required.' };
     try {
       if (new URL(url).protocol !== 'https:') {
@@ -551,24 +554,42 @@ app.whenReady().then(() => {
       return { ok: false, error: 'Malformed URL.' };
     }
 
+    const deadlineMs = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? Math.min(timeoutMs, TOKEN_EXCHANGE_MAX_TIMEOUT_MS)
+      : TOKEN_EXCHANGE_MAX_TIMEOUT_MS;
+
     return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result: { ok: boolean; status?: number; body?: string; error?: string }): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+
       const request = net.request({ method: 'POST', url });
       request.setHeader('Content-Type', 'application/x-www-form-urlencoded');
       if (origin) request.setHeader('Origin', origin);
+
+      const timer = setTimeout(() => {
+        finish({ ok: false, error: 'Token exchange timed out.' });
+        request.abort();
+      }, deadlineMs);
 
       request.on('response', (response) => {
         const chunks: Buffer[] = [];
         response.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
         response.on('end', () => {
-          resolve({
+          finish({
             ok: true,
             status: response.statusCode,
             body: Buffer.concat(chunks).toString('utf8'),
           });
         });
+        response.on('aborted', () => finish({ ok: false, error: 'Token exchange was interrupted.' }));
       });
       // Never include the body in an error: it carries the code and the tokens.
-      request.on('error', (error: Error) => resolve({ ok: false, error: error.message }));
+      request.on('error', (error: Error) => finish({ ok: false, error: error.message }));
       request.write(body);
       request.end();
     });

@@ -35,7 +35,12 @@ interface OAuthBridge {
   openExternal(url: string): Promise<{ ok: boolean; error?: string }>;
   consumePending(): Promise<OAuthDeepLinkPayload | null>;
   onCallback(callback: (payload: unknown) => void): () => void;
-  exchangeToken(payload: { url: string; body: string; origin?: string }): Promise<TokenExchangeResult>;
+  exchangeToken(payload: {
+    url: string;
+    body: string;
+    origin?: string;
+    timeoutMs?: number;
+  }): Promise<TokenExchangeResult>;
 }
 
 function getOAuthBridge(): OAuthBridge | null {
@@ -164,6 +169,9 @@ export function runDesktopOAuth(options: {
   return { promise, cancel: () => cancel() };
 }
 
+const TOKEN_EXCHANGE_TIMEOUT_MS = 30 * 1000;
+const TOKEN_EXCHANGE_IPC_GRACE_MS = 5 * 1000;
+
 /**
  * Redeem an authorization code through the main process, returning an ordinary
  * Response so callers read it exactly as they read a fetch.
@@ -182,7 +190,23 @@ export async function exchangeOAuthTokenViaMain(payload: {
   if (!bridge) {
     throw new DesktopOAuthError('unavailable', 'Desktop token exchange is unavailable in this session.');
   }
-  const result = await bridge.exchangeToken(payload);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  // Main aborts its request at TOKEN_EXCHANGE_TIMEOUT_MS; this later deadline
+  // only covers an IPC reply that never arrives.
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new DesktopOAuthError('timeout', 'Timed out exchanging the sign-in code.'));
+    }, TOKEN_EXCHANGE_TIMEOUT_MS + TOKEN_EXCHANGE_IPC_GRACE_MS);
+  });
+  let result: TokenExchangeResult;
+  try {
+    result = await Promise.race([
+      bridge.exchangeToken({ ...payload, timeoutMs: TOKEN_EXCHANGE_TIMEOUT_MS }),
+      deadline,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   if (!result || !result.ok) {
     throw new Error(result?.error || 'Token exchange failed.');
   }
