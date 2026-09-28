@@ -1117,6 +1117,14 @@ _NEG_MODAL = (
     r"(?:(?:must|should|will|shall|may|can|could|would|might)\s+(?:not|never)|cannot|can't|mustn't|shouldn't"
     r"|shan't|won't|couldn't|wouldn't|mightn't)"
 )
+# A negated state before "allowed/permitted": "is not (ever)", "is never", "is no longer",
+# "hasn't (ever) been", "has no longer been", "will not be", "won't be", "I'm not".
+_NEG_STATE = (
+    r"(?:(?:(?:is|are|am|was|were|be|'re|'s|'m)\s+(?:not|never|no\s+longer)|isn't|aren't|wasn't|weren't|not)"
+    r"(?:\s+ever)?"
+    r"|(?:(?:has|have|had|'s|'ve)\s+(?:not|never|no\s+longer)|hasn't|haven't|hadn't)(?:\s+ever)?\s+been"
+    rf"|{_NEG_MODAL}(?:\s+ever)?\s+be)"
+)
 _PROHIBIT_BEFORE = re.compile(
     r"(?:"
     # A modal or imperative negation: "you cannot make", "don't spend", "nobody can spend";
@@ -1127,32 +1135,38 @@ _PROHIBIT_BEFORE = re.compile(
     # Permission denied: "you must not (ever) be allowed to", "nobody could be permitted to".
     rf"|\b(?:{_NEG_MODAL}|do\s+not|don't|never|(?:nobody|no\s+one)\s+(?:must|should|will|shall|may|can|could|would|might))"
     r"(?:\s+ever)?\s+be\s+(?:allowed|permitted)\s+to"
-    # "you're not allowed to", "it is no longer allowed to", "you haven't been permitted to".
-    r"|\b(?:(?:is|are|am|was|were|be|'re|'s)\s+(?:not|no\s+longer)|isn't|aren't|wasn't|weren't|not"
-    r"|(?:has|have|had)\s+(?:not|never)\s+been|(?:hasn't|haven't|hadn't)\s+been)\s+(?:allowed|permitted)\s+to"
-    r"|\b(?:nobody|no\s+one)\s+(?:is|was|will\s+be)\s+(?:allowed|permitted)\s+to"
-    r"|\b(?:(?:is|are|am|was|were|'re)\s+not|isn't|aren't|wasn't|weren't)\s+to"
-    r"|\b(?:is|are|was|were|be|'s|'re|has\s+been|have\s+been|had\s+been)\s+(?:forbidden|prohibited|banned)"
+    # "you're not (ever) allowed to", "it is no longer allowed to", "you haven't ever been
+    # permitted to", "nobody is ever allowed to".
+    rf"|\b{_NEG_STATE}\s+(?:allowed|permitted)\s+to"
+    r"|\b(?:nobody|no\s+one)\s+(?:is|was|will\s+be|has\s+been|had\s+been)(?:\s+ever)?\s+(?:allowed|permitted)\s+to"
+    r"|\b(?:(?:is|are|am|was|were|'re|'m)\s+(?:not|no\s+longer)|isn't|aren't|wasn't|weren't)(?:\s+ever)?\s+to"
+    r"|\b(?:is|are|was|were|be|'s|'re|(?:has|have|had|'s|'ve)\s+been)\s+(?:forbidden|prohibited|banned)"
     r"(?:\s+(?:to|from))?"
     rf")\s+(?:\w+\s+){{0,2}}?{_SPEND}"
 )
 # After the band: "…is no longer allowed", "…has never been permitted", "…was banned"; never
 # "has never been banned", which permits it.
 _PROHIBIT_AFTER = re.compile(
-    r"\b(?:(?:(?:is|are|was|were|'s|'re)\s+(?:not|never|no\s+longer)|isn't|aren't|wasn't|weren't"
-    r"|(?:has|have|had)\s+(?:not|never)\s+been|(?:hasn't|haven't|hadn't)\s+been)\s+(?:allowed|permitted)"
-    r"|(?:is|are|was|were|has\s+been|have\s+been|had\s+been)\s+(?:prohibited|forbidden|banned))\b"
+    rf"\b(?:{_NEG_STATE}\s+(?:allowed|permitted)"
+    r"|(?:is|are|was|were|(?:has|have|had)\s+been)\s+(?:prohibited|forbidden|banned))\b"
 )
 
 
-def _prohibits(part: str, band_start: int, no_approval: list[str]) -> bool:
+# A short denial in the part after it: "Spending up to $250 without approval, I am not allowed."
+_PROHIBIT_TAIL = re.compile(rf"^\s*(?:i|you|we|they|it|this|that|which)\s+{_NEG_STATE}\s+(?:allowed|permitted)\b")
+
+
+def _prohibits(part: str, band_start: int, no_approval: list[str], next_part: str = "") -> bool:
     """Whether the part forbids the $250 spend: a prohibition before the $250 band or
     after it, once the no-approval phrases are blanked ("you need no approval for
     purchases up to $250" forbids nothing)."""
     for p in no_approval:
         for start, end in mention_spans(part, p):
             part = part[:start] + " " * (end - start) + part[end:]
-    return bool(_PROHIBIT_BEFORE.search(part[:band_start]) or _PROHIBIT_AFTER.search(part[band_start:]))
+    return bool(
+        _PROHIBIT_BEFORE.search(part[:band_start]) or _PROHIBIT_AFTER.search(part[band_start:])
+        or _PROHIBIT_TAIL.match(next_part)
+    )
 
 
 def states_together(answer: str, first: list[str], second: list[str]) -> bool:
@@ -1232,7 +1246,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 continue
             band_end = max(end for _, end in bands)
             band_amounts = {v for b0, b1 in bands for v in _amount_values(part[b0:b1])}
-            if _prohibits(part, min(b0 for b0, _ in bands), second):
+            if _prohibits(part, min(b0 for b0, _ in bands), second, parts[i + 1] if i + 1 < len(parts) else ""):
                 continue
             # An earlier sentence or part that has someone approve the $250 purchase
             # contradicts the no-approval answer that follows it.
