@@ -803,7 +803,8 @@ _CONTINUES = re.compile(
 # purchases of $5,000", "at least $5,000", "or above that".
 _AMOUNT_FILLER = re.compile(
     r"\b(?:another|least|most|at|items?|anything|more|than|less|no|up|upwards|to|under|below|over|within|through"
-    r"|until|then|was|were|invoices?|bills?|payments?|orders?|receipts?|charges?|fees?)\b"
+    r"|until|then|was|were|had|has|been|costs?|fewer|also|even|plus|invoices?|bills?|payments?|orders?|receipts?"
+    r"|charges?|fees?|totals?)\b"
 )
 
 
@@ -813,8 +814,9 @@ def _amount_next(rest: str) -> bool:
     catering the company spent $5,000")."""
     if not (_AMOUNT.search(rest) or _RAISES.search(rest)):
         return False
-    # The band word first, while its "$" is still there: "above $2,500".
-    bare = _AMOUNT.sub(" ", _RAISES.sub(" ", rest))
+    # Ceilings and band words first, while their "$" is still there: "capped at
+    # $5,000", "not more than $5,000", "above $2,500".
+    bare = _AMOUNT.sub(" ", _RAISES.sub(" ", _CEILING.sub(" ", rest)))
     return not re.search(r"\w", _RANGE_LEAD.sub(" ", _AMOUNT_FILLER.sub(" ", re.sub(r"\d[\d,.]*", " ", bare))))
 _JOINER = re.compile(r"^\s*(?:and|or|nor|plus|also|as\s+well\s+as|along\s+with)\b")
 # Someone approves by being who it needs: "requires your manager", "goes to finance".
@@ -960,7 +962,8 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
 
 
 _OWN_SUBJECT = re.compile(
-    r"\bfor\s+(?!(?:all|each|any|every|both|that|those|these|this|them|it|such)\b)(?:an?\s+|the\s+)?[a-z]"
+    r"\bfor\s+(?!(?:all|each|any|every|both|either|neither|that|those|these|this|them|it|such)\b)"
+    r"(?:an?\s+|the\s+)?[a-z]"
 )
 # Words that aren't a subject of their own before a no-approval phrase.
 _NOT_SUBJECT = {
@@ -974,8 +977,13 @@ _NOT_SUBJECT = {
 }
 
 
-_QUANTIFIERS = {"all", "each", "every", "any", "both", "either", "neither", "those", "these", "such", "that", "this"}
-_PREPOSITIONS = {"for", "on", "of", "in", "at", "with", "from", "to", "by", "per", "across", "during"}
+_QUANTIFIERS = {
+    "all", "each", "every", "any", "both", "either", "neither", "those", "these", "such", "that", "this",
+    "anything", "everything", "whatever", "whichever", "everyone", "anyone",
+}
+_SAME_WORDS = {"same", "other", "above", "said", "aforementioned"}
+_LEAD_WORDS = {"and", "or", "but", "so", "then", "also", "however", "still", "please", "note", "remember", "reminder", "fyi"}
+_PREPOSITIONS = {"for", "on", "of", "in", "at", "with", "from", "to", "by", "per", "across", "during", "like"}
 
 
 def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) -> bool:
@@ -984,9 +992,8 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
     above $2,500") or everything ("for all purchases")."""
     if _names_higher_band(clause, band_amounts, no_approval):
         return False
-    if _OWN_SUBJECT.search(clause):
-        return True
-    def subject_before(start: int) -> bool:
+
+    def subject_before(start: int) -> bool | None:
         # Only the phrase's own piece: "your manager must approve and approval is not
         # required" has no subject of its own; possessives modify the approval.
         piece = _PIECE.split(clause[:start])[-1]
@@ -995,14 +1002,22 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
         # "that purchase"; a hyphenated word ("all-hands") is not one.
         words = re.findall(r"[a-z][a-z'-]*", piece)
         cut = next((i for i, w in enumerate(words) if w in _PREPOSITIONS), len(words))
-        subject = words[:cut]
-        if any(w in _QUANTIFIERS for w in subject):
-            return False
+        subject = [w for w in words[:cut] if w not in _LEAD_WORDS]
+        # The determiner has to lead it: "that purchase", "all purchases", "anything",
+        # "the same purchases"; not a later "that day".
+        if subject and (
+            subject[0] in _QUANTIFIERS or (subject[0] == "the" and subject[1:2] and subject[1] in _SAME_WORDS)
+        ):
+            return None  # quantified: about everything
         return any(
             w not in _NOT_SUBJECT and not w.endswith("'s") and not _APPROVAL_WORD.match(w) for w in subject
         )
 
-    return any(subject_before(start) for p in no_approval for start, _ in mention_spans(clause, p))
+    verdicts = [subject_before(start) for p in no_approval for start, _ in mention_spans(clause, p)]
+    if None in verdicts:
+        return False
+    # Its own subject leads the clause, or a "for …" object that isn't everything.
+    return any(verdicts) or bool(_OWN_SUBJECT.search(clause))
 
 
 def _moves_to_higher_band(
