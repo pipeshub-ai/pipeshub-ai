@@ -801,7 +801,10 @@ _CONTINUES = re.compile(
 # ("And for $5,000", "Or above $250"), not "for catering" or "also the company".
 # Words a continuation may carry besides its amount or band: "another $5,000", "for
 # purchases of $5,000", "at least $5,000", "or above that".
-_AMOUNT_FILLER = re.compile(r"\b(?:another|least|most|at|items?|anything|more|than|up|under|below|over)\b")
+_AMOUNT_FILLER = re.compile(
+    r"\b(?:another|least|most|at|items?|anything|more|than|up|to|under|below|over|then|invoices?|bills?|payments?"
+    r"|orders?)\b"
+)
 
 
 def _amount_next(rest: str) -> bool:
@@ -810,7 +813,8 @@ def _amount_next(rest: str) -> bool:
     catering the company spent $5,000")."""
     if not (_AMOUNT.search(rest) or _RAISES.search(rest)):
         return False
-    bare = _RAISES.sub(" ", _AMOUNT.sub(" ", rest))
+    # The band word first, while its "$" is still there: "above $2,500".
+    bare = _AMOUNT.sub(" ", _RAISES.sub(" ", rest))
     return not re.search(r"\w", _RANGE_LEAD.sub(" ", _AMOUNT_FILLER.sub(" ", re.sub(r"\d[\d,.]*", " ", bare))))
 _JOINER = re.compile(r"^\s*(?:and|or|nor|plus|also|as\s+well\s+as|along\s+with)\b")
 # Someone approves by being who it needs: "requires your manager", "goes to finance".
@@ -965,6 +969,7 @@ _NOT_SUBJECT = {
     "need", "needs", "needed", "require", "requires", "required", "is", "are", "was", "were", "do", "does", "did",
     "don't", "doesn't", "didn't", "will", "won't", "can", "can't", "be", "no", "not", "with", "without",
     "your", "my", "our", "their", "his", "her", "after", "before", "above", "below", "over", "under", "beyond",
+    "please", "note", "remember", "reminder", "fyi",
     "for", "of", "at", "in", "on", "by", "manager", "finance", "cfo", "controller", "director", "vp", "team",
 }
 
@@ -981,6 +986,9 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
         # Only the phrase's own piece: "your manager must approve and approval is not
         # required" has no subject of its own; possessives modify the approval.
         piece = _PIECE.split(clause[:start])[-1]
+        # "All purchases", "those purchases": the quantifier covers the noun.
+        if re.search(r"\b(?:all|each|every|any|both|those|these|such)\b", piece):
+            return False
         return any(
             w not in _NOT_SUBJECT and not w.endswith("'s") and not _APPROVAL_WORD.match(w)
             for w in re.findall(r"[a-z][a-z'-]*", piece)
