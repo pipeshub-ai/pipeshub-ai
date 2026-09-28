@@ -448,7 +448,9 @@ def _amount_values(text: str) -> set[float]:
 
 
 def _approves(text: str, no_approval: list[str]) -> bool:
-    """Whether `text` says someone approves, once its no-approval phrases are blanked out."""
+    """Whether `text` says someone approves, once its no-approval phrases are blanked out,
+    or needs an approver ("requires your manager")."""
+    original = text
     for m in no_approval:
         for start, end in mention_spans(text, m):
             text = text[:start] + " " * (end - start) + text[end:]
@@ -457,7 +459,7 @@ def _approves(text: str, no_approval: list[str]) -> bool:
         and not _without_cancels(text[:m.start()])
         and not _NOT_AFTER.match(text[m.end():])
         for m in _approval_words(text)
-    )
+    ) or any(_need_denied(original, m) is None for m in _NEEDS_APPROVER.finditer(original))
 
 
 # "can't submit it without your manager's sign-off" still needs the sign-off.
@@ -795,16 +797,25 @@ _CONTINUES = re.compile(
 )
 
 
+# What may follow "And" across a sentence end to continue a claim: an amount or a band
+# ("And for $5,000", "Or above $250"), not "for catering" or "also the company".
+_AMOUNT_NEXT = re.compile(
+    r"^\s*(?:(?:for|of|at|to|up\s+to|under|below|over|above|beyond|past|more\s+than)\s+)?"
+    r"(?:(?:the|a|an)\s+)?(?:\$|\d)"
+)
 _JOINER = re.compile(r"^\s*(?:and|or|nor|plus|also|as\s+well\s+as|along\s+with)\b")
 # Someone approves by being who it needs: "requires your manager", "goes to finance".
+# Active forms only: "is needed from your manager" is the approval's own predicate
+# ("no approval is needed from your manager"), not someone requiring the manager.
 _NEEDS_APPROVER = re.compile(
-    rf"\b(?:requires?|required|needs?|needed|goes|go|going|went|sent|sends?|routed|routes?|escalated|escalates?)"
-    rf"\s+(?:(?:nothing|anything)\s+)?(?:to\s+|by\s+|from\s+)?(?:{_MANAGER}|{_APPROVER})"
+    r"\b(?:(?:requires?|needs?)\s+(?:(?:nothing|anything)\s+from\s+)?"
+    r"|(?:goes|go|going|went|sent|sends?|routed|routes?|escalated|escalates?)\s+(?:(?:nothing|anything)\s+)?(?:to|by)\s+)"
+    rf"(?:{_MANAGER}|{_APPROVER})"
 )
 # A denial by nobody at all: "nobody approves", "nothing goes to your manager", "not a
 # single purchase goes to your manager". It outweighs any approval beside it.
 _UNIVERSAL_DENIAL = re.compile(
-    r"(?:\b(?:nobody|nothing|no\s+one)\b(?:\s+\w+){0,2}|\b(?:not|no)\s+(?:a\s+)?(?:single\s+)?\w+)\s*$"
+    r"(?:\b(?:nobody|nothing|no\s+one)\b(?:\s+\w+){0,3}|\b(?:not|no)\s+(?:a\s+)?(?:single\s+)?\w+)\s*$"
 )
 
 
@@ -836,7 +847,7 @@ def _clauses(text: str) -> list[str]:
         # Across a sentence end only an explicit "And …" / "Or …" continues the claim.
         if re.fullmatch(r"[.!?]", sep):
             joiner = _JOINER.match(piece)
-            continues = joiner and _CONTINUES.match(piece[joiner.end():])
+            continues = joiner and _AMOUNT_NEXT.match(piece[joiner.end():])
         else:
             continues = _CONTINUES.match(piece)
         if clauses and not _approval_words(piece) and (not adds_amount or continues):
@@ -890,6 +901,7 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
     only while nothing else in `text` says nobody approves."""
     if any(
         any(mention_spans(clause, p) for p in no_approval) and not _about_lower_amount(clause, band_amounts)
+        and not _own_subject(clause, band_amounts, no_approval)
         for clause in _clauses(text)
     ):
         return False
@@ -899,9 +911,10 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
     words = _approval_words(text)
     affirmed, waived, negated, universal = False, False, False, False
     for m in _NEEDS_APPROVER.finditer(text):
+        # "Nothing goes to your manager" rules out that route only; "…, but finance
+        # approves" still has someone approving.
         denied = _need_denied(text, m)
-        universal = universal or denied == "universal"
-        negated = negated or denied == "plain"
+        negated = negated or denied is not None
         affirmed = affirmed or denied is None
     for i, m in enumerate(words):
         # "Finance is not the approver" names who doesn't approve, not that nobody does.
@@ -924,7 +937,16 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
     return not universal and (affirmed or (waived and not negated))
 
 
-_OWN_SUBJECT = re.compile(r"\bfor\s+(?!(?:that|those|these|this|them|it|such)\b)(?:an?\s+|the\s+)?[a-z]")
+_OWN_SUBJECT = re.compile(
+    r"\bfor\s+(?!(?:(?:all|each|any|both|every\s+one)\s+(?:of\s+)?)?(?:that|those|these|this|them|it|such)\b)"
+    r"(?:an?\s+|the\s+)?[a-z]"
+)
+
+
+def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) -> bool:
+    """Whether a no-approval clause is about its own subject ("for day-to-day
+    purchases", "for a taxi"), not the higher band ("for purchases above $2,500")."""
+    return bool(_OWN_SUBJECT.search(clause)) and not _names_higher_band(clause, band_amounts, no_approval)
 
 
 def _moves_to_higher_band(
@@ -942,7 +964,21 @@ def _moves_to_higher_band(
     # needed."), not a bare figure ("The annual budget is $5,000."). A denial anywhere
     # later still overrules an approval.
     follow = rest if rest_says else next_sentence
-    later = " ".join(t for t in (next_sentence if rest_says else "", beyond) if t)
+    later_sentences = [t for t in _SENTENCE_END.split(" ".join((next_sentence if rest_says else "", beyond))) if t.strip()]
+    # "…for purchases of $200. See the note. And for $5,000." continues the claim.
+    kept: list[str] = []
+    while rest_says and later_sentences:
+        head = later_sentences[0]
+        joiner = _JOINER.match(head)
+        if joiner and _AMOUNT_NEXT.match(head[joiner.end():]):
+            follow = " ".join([follow, *kept, head])
+            kept = []
+        elif not (_AMOUNT.search(head) or _approval_words(head)):
+            kept.append(head)
+        else:
+            break
+        later_sentences.pop(0)
+    later = " ".join([*kept, *later_sentences])
     if _names_higher_band(follow, band_amounts, no_approval, later) and not _someone_approves(
         f"{follow} {later}", no_approval, band_amounts
     ):
@@ -957,7 +993,7 @@ def _moves_to_higher_band(
         if not _someone_approves(chunk, no_approval, band_amounts) and any(
             _states_no_approval(c, no_approval) and not _about_lower_amount(c, band_amounts)
             # "…for day-to-day purchases" has its own subject; "for those" doesn't.
-            and not _OWN_SUBJECT.search(c)
+            and not _own_subject(c, band_amounts, no_approval)
             for c in _clauses(chunk)
         ):
             return True
