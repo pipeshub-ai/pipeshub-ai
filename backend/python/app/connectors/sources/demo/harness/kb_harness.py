@@ -1125,6 +1125,11 @@ _NEG_STATE = (
     r"|(?:(?:has|have|had|'s|'ve)\s+(?:not|never|no\s+longer)|hasn't|haven't|hadn't)(?:\s+ever)?\s+been"
     rf"|{_NEG_MODAL}(?:\s+ever)?\s+be)"
 )
+# "Nobody is (ever) allowed", "nobody has ever been allowed", "no one's been permitted".
+_NOBODY_ALLOWED = (
+    r"(?:nobody|no\s+one)(?:\s+(?:is|was|will\s+be)(?:\s+ever)?|(?:\s+(?:has|had)|'s)(?:\s+ever)?\s+been)"
+    r"\s+(?:allowed|permitted)"
+)
 _PROHIBIT_BEFORE = re.compile(
     r"(?:"
     # A modal or imperative negation: "you cannot make", "don't spend", "nobody can spend";
@@ -1138,7 +1143,7 @@ _PROHIBIT_BEFORE = re.compile(
     # "you're not (ever) allowed to", "it is no longer allowed to", "you haven't ever been
     # permitted to", "nobody is ever allowed to".
     rf"|\b{_NEG_STATE}\s+(?:allowed|permitted)\s+to"
-    r"|\b(?:nobody|no\s+one)\s+(?:is|was|will\s+be|has\s+been|had\s+been)(?:\s+ever)?\s+(?:allowed|permitted)\s+to"
+    rf"|\b{_NOBODY_ALLOWED}\s+to"
     r"|\b(?:(?:is|are|am|was|were|'re|'m)\s+(?:not|no\s+longer)|isn't|aren't|wasn't|weren't)(?:\s+ever)?\s+to"
     r"|\b(?:is|are|was|were|be|'s|'re|(?:has|have|had|'s|'ve)\s+been)\s+(?:forbidden|prohibited|banned)"
     r"(?:\s+(?:to|from))?"
@@ -1153,7 +1158,13 @@ _PROHIBIT_AFTER = re.compile(
 
 
 # A short denial in the part after it: "Spending up to $250 without approval, I am not allowed."
-_PROHIBIT_TAIL = re.compile(rf"^\s*(?:i|you|we|they|it|this|that|which)\s+{_NEG_STATE}\s+(?:allowed|permitted)\b")
+# The part must be only that denial: not "…, I am not allowed to discuss the budget".
+_PROHIBIT_TAIL = re.compile(
+    r"^\s*(?:(?:i|you|we|they|it|this|that|which)(?:\s+|(?='))"
+    rf"(?:{_NEG_STATE}\s+(?:allowed|permitted)"
+    r"|(?:is|are|was|were|'s|'re|(?:has|have|had|'s|'ve)\s+been)\s+(?:prohibited|forbidden|banned))"
+    rf"|{_NOBODY_ALLOWED})\s*[.!?]*\s*$"
+)
 
 
 def _prohibits(part: str, band_start: int, no_approval: list[str], next_part: str = "") -> bool:
