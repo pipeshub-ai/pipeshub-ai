@@ -799,10 +799,19 @@ _CONTINUES = re.compile(
 
 # What may follow "And" across a sentence end to continue a claim: an amount or a band
 # ("And for $5,000", "Or above $250"), not "for catering" or "also the company".
-_AMOUNT_NEXT = re.compile(
-    r"^\s*(?:(?:for|of|at|to|up\s+to|under|below|over|above|beyond|past|more\s+than)\s+)?"
-    r"(?:(?:the|a|an)\s+)?(?:\$|\d)"
-)
+# Words a continuation may carry besides its amount or band: "another $5,000", "for
+# purchases of $5,000", "at least $5,000", "or above that".
+_AMOUNT_FILLER = re.compile(r"\b(?:another|least|most|at|items?|anything|more|than|up|under|below|over)\b")
+
+
+def _amount_next(rest: str) -> bool:
+    """Whether the rest after a sentence-end "And"/"Or" is only an amount or a band
+    ("for $5,000", "another $5,000", "or above that"), not a new claim ("for
+    catering the company spent $5,000")."""
+    if not (_AMOUNT.search(rest) or _RAISES.search(rest)):
+        return False
+    bare = _RAISES.sub(" ", _AMOUNT.sub(" ", rest))
+    return not re.search(r"\w", _RANGE_LEAD.sub(" ", _AMOUNT_FILLER.sub(" ", re.sub(r"\d[\d,.]*", " ", bare))))
 _JOINER = re.compile(r"^\s*(?:and|or|nor|plus|also|as\s+well\s+as|along\s+with)\b")
 # Someone approves by being who it needs: "requires your manager", "goes to finance".
 # Active forms only: "is needed from your manager" is the approval's own predicate
@@ -819,11 +828,22 @@ _UNIVERSAL_DENIAL = re.compile(
 )
 
 
+_AMOUNT_PHRASE = re.compile(
+    rf"(?:\b(?:of|for)\s+)?(?:(?:up\s+to|under|below|over|above|at\s+most)\s+)?(?:{_AMOUNT.pattern})"
+)
+# "Nothing is required from your manager", "nobody is needed by finance".
+_NOTHING_NEEDED = re.compile(
+    rf"\b(?:nothing|nobody|no\s+one)\b(?:\s+\w+){{0,3}}?\s+(?:required|needed)\s+(?:from|by)\s+(?:{_MANAGER}|{_APPROVER})"
+)
+
+
 def _need_denied(text: str, m: re.Match[str]) -> str | None:
     """How an approver need is denied: "universal" ("nothing goes to your manager",
     "needs nothing from your manager"), "plain" ("does not go to your manager"), or
     None when someone is needed."""
-    before = text[:m.start()]
+    # "No purchase of up to $250 requires your manager": the amount between the
+    # negation and the verb doesn't break it.
+    before = _AMOUNT_PHRASE.sub(" ", text[:m.start()])
     if re.search(r"\bnothing\b", m.group()) or _UNIVERSAL_DENIAL.search(before):
         return "universal"
     return "plain" if _negated(before) else None
@@ -847,7 +867,7 @@ def _clauses(text: str) -> list[str]:
         # Across a sentence end only an explicit "And …" / "Or …" continues the claim.
         if re.fullmatch(r"[.!?]", sep):
             joiner = _JOINER.match(piece)
-            continues = joiner and _AMOUNT_NEXT.match(piece[joiner.end():])
+            continues = joiner and _amount_next(piece[joiner.end():])
         else:
             continues = _CONTINUES.match(piece)
         if clauses and not _approval_words(piece) and (not adds_amount or continues):
@@ -890,7 +910,7 @@ def _states_no_approval(clause: str, no_approval: list[str]) -> bool:
         _NOT_AFTER.match(clause[m.end():]) or _NEGATED_AFTER.match(clause[m.end():])
         or _negates_approval(clause[:m.start()])
         for m in _approval_words(clause)
-    ) or any(_need_denied(clause, m) for m in _NEEDS_APPROVER.finditer(clause))
+    ) or any(_need_denied(clause, m) for m in _NEEDS_APPROVER.finditer(clause)) or bool(_NOTHING_NEEDED.search(clause))
 
 
 def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float]) -> bool:
@@ -913,9 +933,7 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
     for m in _NEEDS_APPROVER.finditer(text):
         # "Nothing goes to your manager" rules out that route only; "…, but finance
         # approves" still has someone approving.
-        denied = _need_denied(text, m)
-        negated = negated or denied is not None
-        affirmed = affirmed or denied is None
+        affirmed = affirmed or _need_denied(text, m) is None
     for i, m in enumerate(words):
         # "Finance is not the approver" names who doesn't approve, not that nobody does.
         if re.fullmatch(r"approvers?", m.group()):
@@ -938,15 +956,37 @@ def _someone_approves(text: str, no_approval: list[str], band_amounts: set[float
 
 
 _OWN_SUBJECT = re.compile(
-    r"\bfor\s+(?!(?:(?:all|each|any|both|every\s+one)\s+(?:of\s+)?)?(?:that|those|these|this|them|it|such)\b)"
-    r"(?:an?\s+|the\s+)?[a-z]"
+    r"\bfor\s+(?!(?:all|each|any|every|both|that|those|these|this|them|it|such)\b)(?:an?\s+|the\s+)?[a-z]"
 )
+# Words that aren't a subject of their own before a no-approval phrase.
+_NOT_SUBJECT = {
+    "you", "it", "this", "that", "they", "these", "those", "we", "i", "them", "such", "all", "each", "every",
+    "any", "both", "one", "there", "the", "a", "an", "and", "or", "but", "so", "then", "also", "however", "still",
+    "need", "needs", "needed", "require", "requires", "required", "is", "are", "was", "were", "do", "does", "did",
+    "don't", "doesn't", "didn't", "will", "won't", "can", "can't", "be", "no", "not", "with", "without",
+    "your", "my", "our", "their", "his", "her", "after", "before", "above", "below", "over", "under", "beyond",
+    "for", "of", "at", "in", "on", "by", "manager", "finance", "cfo", "controller", "director", "vp", "team",
+}
 
 
 def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) -> bool:
     """Whether a no-approval clause is about its own subject ("for day-to-day
-    purchases", "for a taxi"), not the higher band ("for purchases above $2,500")."""
-    return bool(_OWN_SUBJECT.search(clause)) and not _names_higher_band(clause, band_amounts, no_approval)
+    purchases", "a taxi needs no approval"), not the higher band ("for purchases
+    above $2,500") or everything ("for all purchases")."""
+    if _names_higher_band(clause, band_amounts, no_approval):
+        return False
+    if _OWN_SUBJECT.search(clause):
+        return True
+    def subject_before(start: int) -> bool:
+        # Only the phrase's own piece: "your manager must approve and approval is not
+        # required" has no subject of its own; possessives modify the approval.
+        piece = _PIECE.split(clause[:start])[-1]
+        return any(
+            w not in _NOT_SUBJECT and not w.endswith("'s") and not _APPROVAL_WORD.match(w)
+            for w in re.findall(r"[a-z][a-z'-]*", piece)
+        )
+
+    return any(subject_before(start) for p in no_approval for start, _ in mention_spans(clause, p))
 
 
 def _moves_to_higher_band(
@@ -970,7 +1010,7 @@ def _moves_to_higher_band(
     while rest_says and later_sentences:
         head = later_sentences[0]
         joiner = _JOINER.match(head)
-        if joiner and _AMOUNT_NEXT.match(head[joiner.end():]):
+        if joiner and _amount_next(head[joiner.end():]):
             follow = " ".join([follow, *kept, head])
             kept = []
         elif not (_AMOUNT.search(head) or _approval_words(head)):
