@@ -9,10 +9,10 @@ Deliberately *not* built on ``PIPESHUB_TEST_NON_ADMIN_EMAIL`` /
 template, so the one suite that reads them skips on every run. A fixture that
 silently does nothing is worse than no fixture.
 
-Deliberately *not* built on ``second_user_auth.second_pipeshub_client`` either:
-that routes through an OAuth app whose scope list is fixed at creation, and
-search is not in it. Logging in returns the same token the UI uses, which
-carries the user's real permissions -- which is precisely what is under test.
+Deliberately *not* built on an OAuth app either: an app's scope list is fixed
+at creation. Logging in returns the same token the UI uses, which carries the
+user's real permissions -- which is precisely what is under test. It is also
+the only token session-only routes accept, such as ``/oauth-clients`` (#3626).
 """
 
 from __future__ import annotations

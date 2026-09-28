@@ -25,8 +25,11 @@ Routes covered:
   POST   /api/v1/oauth-clients/{appId}/revoke-all-tokens       — revokeAllOAuthAppTokens
 
 Auth:
-  Uses the session ``oauth_apps_client`` fixture from the root ``conftest.py``,
-  backed by ``PipeshubClient`` OAuth credentials (``POST /api/v1/oauth2/token``).
+  Every ``/oauth-clients`` route accepts only an interactive user session and
+  refuses OAuth access tokens and personal access tokens with 403 (#3626). So
+  ``oauth_apps_client`` (root ``conftest.py``) logs in as the test user with a
+  password, and cross-user checks log in as ``second_user``.
+  ``TestOAuthAppsRequireSession`` guards the refusal itself.
 
 Notes:
   - ``TestGetOAuthApp``, ``TestUpdateOAuthApp``, ``TestListOAuthAppTokens`` share
@@ -35,8 +38,8 @@ Notes:
 
 Requires (handled by the root conftest):
   - ``PIPESHUB_BASE_URL``
-  - either ``CLIENT_ID`` + ``CLIENT_SECRET``, **or`` ``PIPESHUB_TEST_USER_EMAIL``
-    + ``PIPESHUB_TEST_USER_PASSWORD`` (bootstrap via ``local_auth``).
+  - ``PIPESHUB_TEST_USER_EMAIL`` + ``PIPESHUB_TEST_USER_PASSWORD``; the suite
+    skips without them.
 """
 
 from __future__ import annotations
@@ -58,8 +61,12 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from helper.clients.oauth_client import OAuthAppsClient  # noqa: E402
+from helper.http.session_client import (  # noqa: E402
+    SESSION_REQUIRED_MESSAGE,
+    SessionClient,
+)
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from helper.second_user_auth import second_pipeshub_client  # noqa: E402, F401
+from helper.second_user import SecondUser, second_user  # noqa: E402, F401
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
@@ -122,9 +129,16 @@ def _delete_app(oauth: OAuthAppsClient, app_id: str) -> None:
         _logger.warning("Failed to delete OAuth app %s", app_id, exc_info=True)
 
 
-def _other_oauth(second_pipeshub_client: PipeshubClient) -> OAuthAppsClient:
-    """OAuth apps client authenticated as a different user."""
-    return OAuthAppsClient(second_pipeshub_client)
+@pytest.fixture(scope="module")
+def other_oauth(second_user: SecondUser) -> OAuthAppsClient:
+    """OAuth apps client logged in as a different, non-admin user."""
+    return OAuthAppsClient(
+        SessionClient(
+            second_user.base_url,
+            login=lambda: second_user.token,
+            timeout_seconds=second_user.timeout,
+        )
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -352,7 +366,7 @@ class TestGetOAuthApp(OAuthAppsSeededTestBase):
         assert body.get("id") == self.app_data["app"]["id"]
         assert "clientSecret" not in body, "GET must never echo back clientSecret"
 
-    def test_error_responses(self, second_pipeshub_client: PipeshubClient) -> None:
+    def test_error_responses(self, other_oauth: OAuthAppsClient) -> None:
         """401 missing auth, 404 nonexistent, 404 cross-user."""
         resp = self.oauth.get_app(self.app_id, auth=False)
         assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
@@ -372,7 +386,7 @@ class TestGetOAuthApp(OAuthAppsSeededTestBase):
             assert_response_matches_openapi_operation(body, "getOAuthApp")
         assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
 
-        resp = _other_oauth(second_pipeshub_client).get_app(self.app_id)
+        resp = other_oauth.get_app(self.app_id)
         assert resp.status_code == 404, f"Expected 404 cross-user, got {resp.status_code}: {resp.text}"
         assert_response_matches_openapi_ref(resp.json(), "#/components/schemas/ErrorResponse")
 
@@ -399,7 +413,7 @@ class TestUpdateOAuthApp(OAuthAppsSeededTestBase):
             "Update must never include clientSecret"
         )
 
-    def test_error_responses(self, second_pipeshub_client: PipeshubClient) -> None:
+    def test_error_responses(self, other_oauth: OAuthAppsClient) -> None:
         """401 missing auth, 400 auth_code without redirectUris, 404 cross-user."""
         resp = self.oauth.update_app(self.app_id, name="anything", auth=False)
         assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
@@ -423,7 +437,7 @@ class TestUpdateOAuthApp(OAuthAppsSeededTestBase):
             assert_response_matches_openapi_operation(body, "updateOAuthApp")
         assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
 
-        resp = _other_oauth(second_pipeshub_client).update_app(
+        resp = other_oauth.update_app(
             self.app_id, name="hacked-name"
         )
         assert resp.status_code == 404, f"Expected 404 cross-user, got {resp.status_code}: {resp.text}"
@@ -459,7 +473,7 @@ class TestRegenerateOAuthAppSecret(OAuthAppsTestBase):
         finally:
             _delete_app(self.oauth, app_id)
 
-    def test_error_responses(self, second_pipeshub_client: PipeshubClient) -> None:
+    def test_error_responses(self, other_oauth: OAuthAppsClient) -> None:
         """404 nonexistent app, 404 cross-user."""
         resp = self.oauth.regenerate_secret(NONEXISTENT_APP_ID)
         assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
@@ -473,7 +487,7 @@ class TestRegenerateOAuthAppSecret(OAuthAppsTestBase):
         app_data = _create_app(self.oauth)
         app_id = app_data["app"]["id"]
         try:
-            resp = _other_oauth(second_pipeshub_client).regenerate_secret(app_id)
+            resp = other_oauth.regenerate_secret(app_id)
             assert resp.status_code == 404, f"Expected 404 cross-user, got {resp.status_code}: {resp.text}"
             assert_response_matches_openapi_ref(resp.json(), "#/components/schemas/ErrorResponse")
         finally:
@@ -541,14 +555,12 @@ class TestSuspendActivateOAuthApp(OAuthAppsTestBase):
         assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
         assert_response_matches_openapi_ref(resp.json(), "#/components/schemas/ErrorResponse")
 
-    def test_cross_user_errors(self, second_pipeshub_client: PipeshubClient) -> None:
+    def test_cross_user_errors(self, other_oauth: OAuthAppsClient) -> None:
         """Another user cannot suspend or activate this app (creator-only)."""
-        other = _other_oauth(second_pipeshub_client)
-
         app_data = _create_app(self.oauth)
         app_id = app_data["app"]["id"]
         try:
-            resp = other.suspend_app(app_id)
+            resp = other_oauth.suspend_app(app_id)
             assert resp.status_code == 404, f"Expected 404 cross-user suspend, got {resp.status_code}: {resp.text}"
             assert_response_matches_openapi_ref(resp.json(), "#/components/schemas/ErrorResponse")
         finally:
@@ -558,7 +570,7 @@ class TestSuspendActivateOAuthApp(OAuthAppsTestBase):
         app_id = app_data["app"]["id"]
         try:
             self.oauth.suspend_app(app_id)
-            resp = other.activate_app(app_id)
+            resp = other_oauth.activate_app(app_id)
             assert resp.status_code == 404, f"Expected 404 cross-user activate, got {resp.status_code}: {resp.text}"
             assert_response_matches_openapi_ref(resp.json(), "#/components/schemas/ErrorResponse")
         finally:
@@ -610,7 +622,7 @@ class TestListOAuthAppTokens(OAuthAppsSeededTestBase):
         )
         assert_response_matches_openapi_operation(resp.json(), "listOAuthAppTokens")
 
-    def test_error_responses(self, second_pipeshub_client: PipeshubClient) -> None:
+    def test_error_responses(self, other_oauth: OAuthAppsClient) -> None:
         """401 missing auth, 404 nonexistent, 404 cross-user."""
         resp = self.oauth.list_tokens(self.app_id, auth=False)
         assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
@@ -620,7 +632,7 @@ class TestListOAuthAppTokens(OAuthAppsSeededTestBase):
         assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
         assert_response_matches_openapi_ref(resp.json(), "#/components/schemas/ErrorResponse")
 
-        resp = _other_oauth(second_pipeshub_client).list_tokens(self.app_id)
+        resp = other_oauth.list_tokens(self.app_id)
         assert resp.status_code == 404, f"Expected 404 cross-user, got {resp.status_code}: {resp.text}"
         assert_response_matches_openapi_ref(resp.json(), "#/components/schemas/ErrorResponse")
 
@@ -648,7 +660,7 @@ class TestRevokeAllOAuthAppTokens(OAuthAppsTestBase):
         finally:
             _delete_app(self.oauth, app_id)
 
-    def test_error_responses(self, second_pipeshub_client: PipeshubClient) -> None:
+    def test_error_responses(self, other_oauth: OAuthAppsClient) -> None:
         """404 nonexistent app, 404 cross-user."""
         resp = self.oauth.revoke_all_tokens(NONEXISTENT_APP_ID)
         assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
@@ -657,7 +669,7 @@ class TestRevokeAllOAuthAppTokens(OAuthAppsTestBase):
         app_data = _create_app(self.oauth)
         app_id = app_data["app"]["id"]
         try:
-            resp = _other_oauth(second_pipeshub_client).revoke_all_tokens(app_id)
+            resp = other_oauth.revoke_all_tokens(app_id)
             assert resp.status_code == 404, f"Expected 404 cross-user, got {resp.status_code}: {resp.text}"
             assert_response_matches_openapi_ref(resp.json(), "#/components/schemas/ErrorResponse")
         finally:
@@ -682,7 +694,7 @@ class TestDeleteOAuthApp(OAuthAppsTestBase):
         )
         assert_response_matches_openapi_operation(resp.json(), "deleteOAuthApp")
 
-    def test_error_responses(self, second_pipeshub_client: PipeshubClient) -> None:
+    def test_error_responses(self, other_oauth: OAuthAppsClient) -> None:
         """401 missing auth, 404 nonexistent, 404 cross-user."""
         resp = self.oauth.delete_app(NONEXISTENT_APP_ID, auth=False)
         assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
@@ -695,7 +707,7 @@ class TestDeleteOAuthApp(OAuthAppsTestBase):
         app_data = _create_app(self.oauth)
         app_id = app_data["app"]["id"]
         try:
-            resp = _other_oauth(second_pipeshub_client).delete_app(app_id)
+            resp = other_oauth.delete_app(app_id)
             assert resp.status_code == 404, f"Expected 404 cross-user, got {resp.status_code}: {resp.text}"
             assert_response_matches_openapi_ref(resp.json(), "#/components/schemas/ErrorResponse")
         finally:
@@ -729,6 +741,54 @@ class TestDeleteOAuthApp(OAuthAppsTestBase):
         assert len(body["data"]) == 0, (
             f"Expected empty list after delete, got {len(body['data'])} items"
         )
+
+
+# ==================================================================== #
+# Session only (#3626)
+# ==================================================================== #
+@pytest.mark.integration
+@pytest.mark.oauth_clients
+class TestOAuthAppsRequireSession(OAuthAppsTestBase):
+    """A token already issued to a client cannot register OAuth clients.
+
+    Otherwise a client holding a narrowly scoped token could register itself
+    for wider scopes and consent on the user's behalf.
+    """
+
+    def _assert_create_refused(self, headers: dict[str, str]) -> None:
+        resp = self.oauth.post(
+            "/",
+            json=_make_app_body(grant_types=["client_credentials"]),
+            auth=False,
+            headers=headers,
+        )
+        if resp.status_code == 201:
+            _delete_app(self.oauth, resp.json()["app"]["id"])
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createOAuthApp", status_code="403")
+        assert SESSION_REQUIRED_MESSAGE in body["error"]["message"], body
+
+    def test_oauth_access_token_is_refused(self, pipeshub_client: PipeshubClient) -> None:
+        """The client-credentials token the rest of the suite uses gets 403."""
+        self._assert_create_refused(pipeshub_client.auth_headers)
+
+    def test_personal_access_token_is_refused(self, user_session_client: SessionClient) -> None:
+        """A personal access token minted by the same user gets 403."""
+        resp = user_session_client.request(
+            "POST",
+            "/api/v1/personal-access-tokens",
+            json={"name": f"integration-oauth-apps-pat-{uuid.uuid4().hex[:12]}", "expiryDays": 30},
+        )
+        assert resp.status_code == 201, f"Minting a PAT failed: {resp.status_code} {resp.text[:300]}"
+        token = resp.json()["token"]
+        try:
+            self._assert_create_refused({
+                "Authorization": f"Bearer {token['accessToken']}",
+                "Content-Type": "application/json",
+            })
+        finally:
+            user_session_client.request("DELETE", f"/api/v1/personal-access-tokens/{token['id']}")
 
 
 # ==================================================================== #

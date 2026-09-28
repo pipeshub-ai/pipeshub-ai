@@ -16528,7 +16528,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to create OAuth apps
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
           content:
             application/json:
               schema:
