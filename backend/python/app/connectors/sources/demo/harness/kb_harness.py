@@ -803,8 +803,8 @@ _CONTINUES = re.compile(
 # purchases of $5,000", "at least $5,000", "or above that".
 _AMOUNT_FILLER = re.compile(
     r"\b(?:another|least|most|at|items?|anything|more|than|less|no|up|upwards|to|under|below|over|within|through"
-    r"|until|then|was|were|had|has|been|costs?|fewer|also|even|plus|invoices?|bills?|payments?|orders?|receipts?"
-    r"|charges?|fees?|totals?)\b"
+    r"|until|then|was|were|had|has|been|costs?|fewer|also|even|plus|likewise|one|as|much|high|limited|capped"
+    r"|invoices?|bills?|payments?|orders?|receipts?|charges?|fees?|totals?|sums?|figures?)\b"
 )
 
 
@@ -992,6 +992,9 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
     above $2,500") or everything ("for all purchases")."""
     if _names_higher_band(clause, band_amounts, no_approval):
         return False
+    # "…for the purchases, all of them": the appositive covers everything.
+    if re.search(r"\b(?:all|each|both|every\s+one)\s+of\s+(?:them|those|these)\b", clause):
+        return False
 
     def subject_before(start: int) -> bool | None:
         # Only the phrase's own piece: "your manager must approve and approval is not
@@ -1005,8 +1008,12 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
         subject = [w for w in words[:cut] if w not in _LEAD_WORDS]
         # The determiner has to lead it: "that purchase", "all purchases", "anything",
         # "the same purchases"; not a later "that day".
+        # A floating quantifier ("the purchases all need …") or "the (very) same …"
+        # covers it too.
         if subject and (
-            subject[0] in _QUANTIFIERS or (subject[0] == "the" and subject[1:2] and subject[1] in _SAME_WORDS)
+            subject[0] in _QUANTIFIERS
+            or (subject[0] == "the" and any(w in _SAME_WORDS for w in subject[1:3]))
+            or any(w in {"all", "each", "both"} for w in subject[1:])
         ):
             return None  # quantified: about everything
         return any(
@@ -1093,6 +1100,28 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
     return False
 
 
+# Forbidding the $250 spend, not waiving approval for it: "You cannot make a purchase
+# of up to $250 without approval", "Spending up to $250 without approval is not allowed".
+_PROHIBIT_BEFORE = re.compile(
+    r"\b(?:cannot|can't|can\s+not|may\s+not|must\s+not|mustn't|should\s+not|shouldn't"
+    r"|(?:is|are)\s+not\s+(?:permitted|allowed)|not\s+(?:permitted|allowed)\s+to|nobody|no\s+one|not\s+the\s+case)\b"
+)
+_PROHIBIT_AFTER = re.compile(
+    r"\b(?:(?:is|are|was|were)\s+(?:not|never)\s+(?:allowed|permitted)|(?:isn't|aren't)\s+(?:allowed|permitted)"
+    r"|(?:is|are)\s+(?:prohibited|forbidden))\b"
+)
+
+
+def _prohibits(part: str, band_start: int, no_approval: list[str]) -> bool:
+    """Whether the part forbids the $250 spend: a prohibition before the $250 band or
+    after it, once the no-approval phrases are blanked ("you need no approval for
+    purchases up to $250" forbids nothing)."""
+    for p in no_approval:
+        for start, end in mention_spans(part, p):
+            part = part[:start] + " " * (end - start) + part[end:]
+    return bool(_PROHIBIT_BEFORE.search(part[:band_start]) or _PROHIBIT_AFTER.search(part[band_start:]))
+
+
 def states_together(answer: str, first: list[str], second: list[str]) -> bool:
     """Whether a second-list phrase is about a first-list amount. Either one part
     of a sentence holds both, with nothing before the later of the two that moves
@@ -1170,6 +1199,8 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 continue
             band_end = max(end for _, end in bands)
             band_amounts = {v for b0, b1 in bands for v in _amount_values(part[b0:b1])}
+            if _prohibits(part, min(b0 for b0, _ in bands), second):
+                continue
             # An earlier sentence or part that has someone approve the $250 purchase
             # contradicts the no-approval answer that follows it.
             # Read as one run, so "Up to $250. Your manager's approval is required." counts.
