@@ -1112,7 +1112,12 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
 # A prohibition governs the spend only when a spend verb follows it within two words:
 # "Nobody can spend", "Do not make a purchase"; not "Nobody disputes that you can
 # spend", "You cannot be stopped from spending" or "Do not forget: …".
-_SPEND = r"(?:spend\w*|make|making|purchas\w*|buy\w*|expens\w*)\b"
+_SPEND = r"(?:spend\w*|make|making|purchas\w*|buy\w*|expens(?:e|es|ed|ing))\b"
+# What a denial of this spend may take as its object: "it", "one", "the purchase", "anything".
+_SPEND_OBJECT = (
+    r"(?:it|them|one|anything|that(?:\s+(?:one|purchase))?|this(?:\s+(?:one|purchase))?|any(?:\s+(?:amount|money))?"
+    r"|(?:the|a)\s+(?:purchase|money|amount|expense))"
+)
 _NEG_MODAL = (
     r"(?:(?:must|should|will|shall|may|can|could|would|might)\s+(?:not|never)|cannot|can't|mustn't|shouldn't"
     r"|shan't|won't|couldn't|wouldn't|mightn't)"
@@ -1161,16 +1166,72 @@ _PROHIBIT_AFTER = re.compile(
 # A short denial in the part after it: "Spending up to $250 without approval, I am not allowed."
 # The part must be only that denial: not "…, I am not allowed to discuss the budget".
 _PROHIBIT_TAIL = re.compile(
-    r"^\s*(?:(?:and|so|but|however|then|also|yet|still)\b[\s,]*)*"
+    r"^\s*(?:(?:and|so|but|however|then|also|yet|still|(?:please\s+)?note)\b[\s,:]*)*"
     r"(?:(?:i|you|we|they|it|this|that|which)(?:\s+|(?='))"
     rf"(?:{_NEG_STATE}\s+(?:allowed|permitted)"
     r"|(?:is|are|am|was|were|'s|'re|'m|(?:has|have|had|'s|'ve)\s+been)\s+(?:prohibited|forbidden|banned))"
     rf"|{_NOBODY_ALLOWED})"
-    # Optionally naming the spend: "…to spend it", "…from making the purchase", "…to buy
-    # anything"; not "…to discuss the budget".
-    rf"(?:\s+(?:to|from)\s+{_SPEND}(?:\s+[\w']+){{0,3}})?"
+    # Optionally naming the spend: "…to spend it", "…from ever making the purchase", "…to
+    # buy anything"; not "…to discuss the budget" or "…to make a decision".
+    rf"(?:\s+(?:to|from)\s+(?:(?:ever|\w+ly)\s+)?{_SPEND}(?:\s+{_SPEND_OBJECT})?)?"
     r"\s*[.!?]*\s*$"
 )
+
+
+def _aside(sentence: str) -> bool:
+    """A sentence that says nothing about amounts or approval: "See the note."."""
+    return not (_AMOUNT.search(sentence) or _approval_words(sentence) or _PROHIBIT_TAIL.match(sentence))
+
+
+# Words that leave an approval about the $250 purchase: generic heads, determiners,
+# pronouns. A specific noun ("software subscriptions") makes it another subject's rule.
+_GENERIC = {
+    "purchase", "purchases", "expense", "expenses", "spend", "spending", "item", "items", "thing", "things", "one",
+    "ones", "amount", "amounts", "such", "it", "them", "that", "this", "those", "these", "anything", "everything",
+    "all", "every", "each", "any", "some", "the", "a", "an", "you", "we", "they", "i",
+}
+# Skipped between a subject and its approval: auxiliaries, the approver, possessives.
+_SKIP_TO_SUBJECT = {
+    "must", "should", "will", "would", "can", "could", "may", "might", "shall", "be", "been", "is", "are", "was",
+    "were", "do", "does", "need", "needs", "require", "requires", "required", "get", "gets", "always", "also",
+    "still", "your", "my", "our", "their", "his", "her", "manager", "finance", "cfo", "controller", "director",
+    "vp", "team", "legal", "procurement", "accounting",
+}
+_OBJECT_STOP = {"up", "down", "beyond", "past", "without", "within", "after", "before", "through", "until", "during",
+                "into", "upon", "again", "twice", "now", "then", "here", "there"}
+_NP_STOP = {"for", "of", "to", "by", "from", "in", "on", "at", "with", "as", "over", "above", "below", "under",
+            "and", "or", "but", "so", "than", "more", "less", "once", "that", "which", "who"}
+
+
+def _other_subject(piece: str) -> bool:
+    """Whether an approval in `piece` is about a subject of its own ("finance approves
+    software subscriptions", "any software subscription must be approved by finance"),
+    not the $250 purchase ("your manager must approve every such purchase")."""
+    def specific(words: list[str]) -> bool:
+        return any(w not in _GENERIC and not w.endswith("'s") for w in words)
+
+    for m in _approval_words(piece):
+        before = re.findall(r"[a-z][a-z'-]*", piece[:m.start()])
+        while before and (before[-1] in _SKIP_TO_SUBJECT or before[-1].endswith("'s")):
+            before.pop()
+        subject: list[str] = []
+        while before and before[-1] not in _NP_STOP and len(subject) < 3:
+            subject.insert(0, before.pop())
+        # The object: "approves software subscriptions", "approval for software".
+        after = piece[m.end():]
+        obj_text = re.sub(r"^\s+for\s+", " ", after) if m.group().startswith("approval") else after
+        obj: list[str] = []
+        for w in re.findall(r"[a-z][a-z'-]*|\$|\d", obj_text):
+            if (w in _NP_STOP or w in _SKIP_TO_SUBJECT or w in _OBJECT_STOP or w.endswith("ly") or w == "$"
+                    or w.isdigit() or len(obj) == 3):
+                break
+            obj.append(w)
+            if w in {"it", "them", "this", "that", "these", "those"}:
+                break
+        verbal = not m.group().startswith(("approval", "authoriz", "authoris")) or re.match(r"\s+for\b", after)
+        if specific(subject) or (verbal and specific(obj)):
+            return True
+    return False
 
 
 def _prohibits(part: str, band_start: int, no_approval: list[str], *tails: str) -> bool:
@@ -1241,7 +1302,8 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                     and not named and not band_amounts & _amount_values(piece)
                     and bool(last) and _BARE_APPROVAL_END.fullmatch(piece[last[-1].end():]) is not None
                 )
-                if approves and not raised and not range_next:
+                # "Finance approves software subscriptions" is another subject's rule.
+                if approves and not raised and not range_next and not _other_subject(piece):
                     return True
                 skipped = skipped or approves
                 named = named or bool(
@@ -1269,7 +1331,9 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 (p for p in parts[i + 1:] if re.search(r"\w", re.sub(r"\b(?:and|so|but|however|then|also|yet|still)\b", "", p))),
                 "",
             )
-            if _prohibits(part, min(b0 for b0, _ in bands), second, next_part, next_sentence):
+            # Past sentences that are only an aside ("See the note.").
+            following = next((t for t in sentences[k + 1:] if not _aside(t)), "")
+            if _prohibits(part, min(b0 for b0, _ in bands), second, next_part, next_sentence, following):
                 continue
             # An earlier sentence or part that has someone approve the $250 purchase
             # contradicts the no-approval answer that follows it.
