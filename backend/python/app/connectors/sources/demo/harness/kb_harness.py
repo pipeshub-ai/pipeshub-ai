@@ -691,7 +691,7 @@ _BAND_LEAD_IN = re.compile(
 )
 
 
-def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[str], after: str = "") -> bool:
+def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[str]) -> bool:
     """Whether `text` names an amount above the $250 band or a higher band ("above
     that"), before any exception ("except between $251 and $2,500")."""
     def excepted(at: int) -> bool:
@@ -705,10 +705,10 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
         if not exceptions:
             return False
         # A no-approval claim after the exception word keeps the amount: in its own
-        # clause, or in any later clause (the next sentence, `after`, when this text
-        # ends) that isn't about a lower amount ("…, and up to $100 needs no approval").
+        # clause, or in any later clause of `text` (later sentences included) that
+        # isn't about a lower amount ("…, and up to $100 needs no approval").
         own = text[exceptions[-1].end():hi]
-        rest = _BAND_LEAD_IN.sub("", text[hi:]) + " " + _BAND_LEAD_IN.sub("", after)
+        rest = _BAND_LEAD_IN.sub("", text[hi:])
         return not _states_no_approval(own, no_approval) and not any(
             _states_no_approval(clause, no_approval) and not _about_lower_amount(clause, band_amounts)
             for clause in _clauses(rest)
@@ -781,12 +781,14 @@ _LOWER_WORD = re.compile(r"\b(?:small|smaller|low|lower|minor|petty|cheap|cheape
 
 
 def _clauses(text: str) -> list[str]:
-    """`text` split at clause breaks outside amounts, with a piece that adds an amount
-    or a band and says nothing about approval (", or above $250", ", including
-    $5,000") kept with the one before."""
+    """`text` split at clause breaks outside amounts into claims: a piece that says
+    nothing about approval (", or above $250", ", including $5,000", ", see the
+    note") stays with the one before."""
     clauses: list[str] = []
     for piece in _BREAK_OUTSIDE_AMOUNTS.split(text):
-        if clauses and (_AMOUNT.search(piece) or _RAISES.search(piece)) and not _APPROVAL_WORD.search(piece):
+        # Only a piece with its own approval word starts a new claim; an aside ("see the
+        # note", "per policy") or an added amount stays with the claim before it.
+        if clauses and not _APPROVAL_WORD.search(piece):
             clauses[-1] += " " + piece
         else:
             clauses.append(piece)
@@ -802,9 +804,14 @@ def _about_lower_amount(clause: str, band_amounts: set[float]) -> bool:
         # A raise from below the band capped within it ("over $50 up to $100") stays
         # lower; "above $250" and "above that" are the next band whatever follows.
         start = _AMOUNT.search(clause, m.start())
+        if not (start and start.start() < m.end() and max(_amount_values(start.group())) < max(band_amounts)):
+            return False
+        # The cap has to continue the raise: "over $50 up to $100", "over $50, and up to
+        # $100"; not "…, and the handbook allows up to $100".
+        cap = _CEILING.search(clause, start.end())
         return bool(
-            start and start.start() < m.end() and max(_amount_values(start.group())) < max(band_amounts)
-            and any(max(_amount_values(c.group(1))) <= max(band_amounts) for c in _CEILING.finditer(clause, m.end()))
+            cap and re.fullmatch(r"[\s,]*(?:(?:and|or)\s+)?", clause[start.end():cap.start()])
+            and max(_amount_values(cap.group(1))) <= max(band_amounts)
         )
 
     higher = any(v > max(band_amounts) for v in amounts) or any(
@@ -868,12 +875,12 @@ def _moves_to_higher_band(
     limit is $2,500."). "Above that, your manager approves" is the next band's own claim."""
     rest = " ".join(texts)
     rest_says = bool(re.search(r"\w", _RANGE_LEAD.sub(" ", rest)))
-    # `beyond` is every sentence after the next one.
-    follow, after = (rest, f"{next_sentence} {beyond}") if rest_says else (next_sentence, beyond)
-    # A denial in a later sentence still counts ("…, your manager must approve. See the
-    # note. After that, no approval is needed.").
-    return _names_higher_band(follow, band_amounts, no_approval, after) and not _someone_approves(
-        f"{follow} {after}", no_approval, band_amounts
+    # Everything after the phrase: the rest of its sentence, the next sentence and
+    # `beyond`, every sentence after that. A higher band or a denial in any of them
+    # counts ("…no approval. See the note. Above $2,500, no approval is needed.").
+    follow = " ".join(t for t in (rest if rest_says else "", next_sentence, beyond) if t)
+    return _names_higher_band(follow, band_amounts, no_approval) and not _someone_approves(
+        follow, no_approval, band_amounts
     )
 
 
