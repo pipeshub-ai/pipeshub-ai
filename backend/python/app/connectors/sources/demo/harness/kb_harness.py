@@ -501,12 +501,15 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
     # is (position, the requirement it alone serves, or None for any).
     ceilings = [(m.start(), m.end()) for m in _CEILING.finditer(sentence)]
     bands: list[tuple[int, int | None]] = []
+    def excepted(at: int) -> bool:
+        return re.search(r"\b(?:except|exception|unless)\b[^,;.]*$", sentence[:at]) is not None
+
     for m in _RAISES.finditer(sentence):
-        if re.search(r"\b(?:except|unless)\b[^,;.]*$", sentence[:m.start()]):
+        if excepted(m.start()):
             continue
         owner = next((c0 for c0, c1 in ceilings if c0 <= m.start() < c1), None)
         bands.append((m.start() + len(re.match(r"(?:or\s+)?", m.group()).group()), owner))
-    bands += [(m.start(), None) for m in re.finditer(rf"{_RANGE_MARK}+", sentence)]
+    bands += [(m.start(), None) for m in re.finditer(rf"{_RANGE_MARK}+", sentence) if not excepted(m.start())]
 
     def segment(breaks: re.Pattern[str], at: int) -> tuple[int, int]:
         lo, hi = 0, len(sentence)
@@ -591,7 +594,7 @@ _CEILING = re.compile(
     r"\b(?:up\s+(?:to|through|until)|to|under|below|less\s+than|through|until|within|at\s+most|capped\s+at"
     # A negated comparison: "not above", "isn't greater than", "mustn't be more than",
     # "hasn't exceeded", "not in excess of".
-    r"|(?:\w+n't|\w+\s+not|cannot|not|no|nothing)(?:\s+(?:be|been|have\s+been|has\s+been))?\s+"
+    r"|(?:\w+n't|\w+\s+not|cannot|not|never|no|nothing)(?:\s+any)?(?:\s+(?:(?:have|has)(?:\s+been)?|be|been))?\s+"
     r"(?:exceed\w*|to\s+exceed|(?:more|greater|higher|larger|bigger)\s+than|above|over|beyond|past|in\s+excess\s+of)"
     r"|(?:at\s+)?(?:an?\s+|the\s+)?(?:maximum|max|cap|ceiling|threshold|limit)(?:\s+of)?)"
     rf"\s+{_DET}({_AMOUNT.pattern})"
@@ -641,6 +644,11 @@ def _only_range(
     if ceilings:
         marked = _CEILING.sub(
             lambda m: _RANGE_MARK if max(_amount_values(m.group(1))) > max(band_amounts) else m.group(0), marked
+        )
+        # A subject in front of the ceiling is part of it: "The total isn't above $2,500."
+        marked = re.sub(
+            rf"^\s*(?:(?:the|a|an|your|our)\s+)?(?!(?:except|unless|save|besides|excluding|barring)\b)\w+\s+(?={_RANGE_MARK})",
+            " ", marked,
         )
     if raises and _RAISES.search(marked):
         # The raise pattern ends at the amount's first character ("above $"); drop the rest.
