@@ -804,7 +804,7 @@ _CONTINUES = re.compile(
 _AMOUNT_FILLER = re.compile(
     r"\b(?:another|least|most|at|items?|anything|more|than|less|no|up|upwards|to|under|below|over|within|through"
     r"|until|then|was|were|had|has|been|costs?|fewer|also|even|plus|likewise|similarly|one|as|much|high|low|little"
-    r"|small|equally|limited|capped|restricted|confined|invoices?|bills?|payments?|orders?|receipts?|charges?|fees?|totals?|sums?|figures?"
+    r"|small|cheap|cheaper|petty|minor|equally|limited|capped|restricted|confined|invoices?|bills?|payments?|orders?|receipts?|charges?|fees?|totals?|sums?|figures?"
     r"|prices?|numbers?|values?|quantit(?:y|ies))\b"
 )
 
@@ -983,7 +983,7 @@ _QUANTIFIERS = {
     "anything", "everything", "whatever", "whichever", "everyone", "anyone",
 }
 _FLOATING_QUANTIFIER = re.compile(
-    r"\b(?:all|each|both|(?:each|every)\s+one)(?:\s+(?:will|would|can|could|must|should|may|might|do|does|did))?"
+    r"\b(?:all|each|both|(?:each|every)\s+one)(?:\s+(?:will|would|shall|can|could|must|should|may|might|do|does|did))?"
     r"\s+(?:need|needs|require|requires|are|is|get|gets)?\s*$"
 )
 _SAME_WORDS = {"same", "other", "above", "said", "aforementioned"}
@@ -999,7 +999,7 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
         return False
     # "…for the purchases, all of them": the appositive covers everything.
     if re.search(
-        r"\b(?:(?:all|each|both|any|either|neither|every\s+(?:single\s+|last\s+)?one)\s+of\s+(?:them|those|these)"
+        r"\b(?:(?:all|each|both|any|either|neither|none|(?:each|every)\s+(?:single\s+|last\s+)?one)\s+of\s+(?:them|those|these)"
         r"|every\s+(?:single\s+|last\s+)?one)\b",
         clause,
     ):
@@ -1119,19 +1119,22 @@ _PROHIBIT_BEFORE = re.compile(
     # not "can't be stopped from spending" or "don't have to spend".
     r"\b(?:cannot|can\s+not|can't|may\s+not|must\s+not|mustn't|must\s+never|should\s+not|shouldn't|shall\s+not"
     r"|shan't|will\s+not|won't|do\s+not|don't|never|nobody|no\s+one|not\s+the\s+case)"
-    r"(?!\s+(?:have|need)\s+to\b)(?!\s+be\s+(?:stopped|prevented|blocked|kept)\b)"
+    r"(?!\s+(?:have|need)\s+to\b)(?!\s+be\s+(?:stopped|prevented|blocked|kept|allowed|permitted)\b)"
+    r"(?!\s+(?:forget|hesitate)\b)"
     # Permission denied: "you're not allowed to", "you must not be allowed to", "nobody is
     # permitted to".
     r"|\b(?:(?:is|are|am|was|were|be|'re|'s)\s+not|isn't|aren't|wasn't|weren't|not)\s+(?:allowed|permitted)\s+to"
-    r"|\b(?:must|should|will|shall|may|can)\s+not\s+be\s+(?:allowed|permitted)\s+to"
-    r"|\b(?:won't|mustn't|shouldn't|can't|shan't)\s+be\s+(?:allowed|permitted)\s+to"
+    r"|\b(?:(?:must|should|will|shall|may|can)\s+not|cannot|won't|mustn't|shouldn't|can't|shan't"
+    r"|(?:nobody|no\s+one)\s+(?:can|may|will|should|shall))\s+be\s+(?:allowed|permitted)\s+to"
     r"|\b(?:nobody|no\s+one)\s+(?:is|was|will\s+be)\s+(?:allowed|permitted)\s+to"
+    r"|\b(?:is|are|am|'re)\s+not\s+to"
     r"|\b(?:is|are|was|were|be|'s|'re)\s+(?:forbidden|prohibited|banned)(?:\s+(?:to|from))?"
     rf")\s+(?:\w+\s+){{0,2}}?{_SPEND}"
 )
 _PROHIBIT_AFTER = re.compile(
     r"\b(?:(?:is|are|was|were)\s+(?:not|never)\s+(?:allowed|permitted)|(?:isn't|aren't)\s+(?:allowed|permitted)"
-    r"|(?:is|are|was|were)\s+(?:prohibited|forbidden|banned))\b"
+    r"|(?:wasn't|weren't)\s+(?:allowed|permitted)"
+    r"|(?:is|are|was|were|has\s+been|have\s+been|had\s+been)\s+(?:prohibited|forbidden|banned))\b"
 )
 
 
