@@ -11,10 +11,10 @@
 
 image:
   repository: pipeshubai/pipeshub-ai
-  tag: "0.9.0-slim"
+  tag: "0.9.1-slim"
   pullPolicy: IfNotPresent
 
-# 0.9.0-slim presigns us-east-1 with Signature V2. The bucket from deploy.sh is
+# 0.9.1-slim presigns us-east-1 with Signature V2. The bucket from deploy.sh is
 # SSE-KMS, which rejects those URLs during the onboarding storage check.
 s3SignatureV4Preload: true
 

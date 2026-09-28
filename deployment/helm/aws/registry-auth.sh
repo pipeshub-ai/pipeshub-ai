@@ -5,7 +5,7 @@
 
 PULL_SECRET_NAME="pipeshub-registry"
 export DEFAULT_APP_REPOSITORY="pipeshubai/pipeshub-ai"
-export DEFAULT_APP_TAG="0.9.0-slim"
+export DEFAULT_APP_TAG="0.9.1-slim"
 
 # Sets IMAGE_REPOSITORY, IMAGE_TAG, DOCKER_SERVER, and DOCKER_USERNAME.
 # A missing tag uses the public image tag from values-eks.yaml.

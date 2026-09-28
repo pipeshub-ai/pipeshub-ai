@@ -24,7 +24,7 @@ You need AWS credentials (`aws sts get-caller-identity` works) and a hostname. I
 ./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1
 ```
 
-The app image is `pipeshubai/pipeshub-ai:0.9.0-slim`. Pass `--image` to use another public tag, such as `pipeshubai/pipeshub-ai:nightly`. A private image also needs a registry token. The token is stored only as a Kubernetes pull secret. It is not written into the chart and it is not printed.
+The app image is `pipeshubai/pipeshub-ai:0.9.1-slim`. Pass `--image` to use another public tag, such as `pipeshubai/pipeshub-ai:nightly`. A private image also needs a registry token. The token is stored only as a Kubernetes pull secret. It is not written into the chart and it is not printed.
 
 ```bash
 PIPESHUB_DOCKER_TOKEN='...' ./deployment/helm/aws/deploy.sh \
@@ -33,7 +33,7 @@ PIPESHUB_DOCKER_TOKEN='...' ./deployment/helm/aws/deploy.sh \
   --image myorg/pipeshub-ee:1.2.0
 ```
 
-`--image` is `account/image` or `account/image:tag`. With no tag, the tag is `0.9.0-slim`. The Docker username defaults to that account. Pass `--docker-username` when the token belongs to a different user, such as a robot account for an organization image. Omit the token and `--image` to deploy the public image. Pass both again on later runs: a run without them switches back to the public image. Prefer `PIPESHUB_DOCKER_TOKEN` over `--docker-token` so the token is not saved in shell history.
+`--image` is `account/image` or `account/image:tag`. With no tag, the tag is `0.9.1-slim`. The Docker username defaults to that account. Pass `--docker-username` when the token belongs to a different user, such as a robot account for an organization image. Omit the token and `--image` to deploy the public image. Pass both again on later runs: a run without them switches back to the public image. Prefer `PIPESHUB_DOCKER_TOKEN` over `--docker-token` so the token is not saved in shell history.
 
 It shows a plan and asks once before creating anything; `--yes` skips the prompt. It then:
 
@@ -488,7 +488,7 @@ Set the new app and sandbox versions, then upgrade:
 helm upgrade pipeshub-ai ./deployment/helm/pipeshub-ai \
   -n "$NAMESPACE" -f ./deployment/helm/pipeshub-ai/values-eks.yaml \
   --reuse-values \
-  --set image.tag=0.9.0-slim \
+  --set image.tag=0.9.1-slim \
   --set config.sandboxDockerImage=pipeshubai/pipeshub-sandbox:0.8.0 \
   --wait --timeout 30m
 ```

@@ -57,9 +57,9 @@ Options:
   --zones a,b,c            Three availability zones (default: first three that offer m7i)
   --bucket NAME            S3 bucket for files (default: pipeshub-<cluster>-<account>-<region>)
   --image ACCOUNT/IMAGE[:TAG]
-                           pipeshub-ai image. With no tag, uses 0.9.0-slim.
+                           pipeshub-ai image. With no tag, uses 0.9.1-slim.
                            A private image also needs a Docker token. Omit this
-                           to use the public image pipeshubai/pipeshub-ai:0.9.0-slim
+                           to use the public image pipeshubai/pipeshub-ai:0.9.1-slim
   --docker-username USER   Owner of the Docker token (default: the account in --image)
   --docker-token TOKEN     Registry token. Prefer PIPESHUB_DOCKER_TOKEN so the
                            token is not saved in shell history. With no token,
