@@ -22161,7 +22161,7 @@ paths:
             - Missing or empty `name` or `type`
             - `type` is not one of: standard, everyone, custom
             - Group name or type `admin` is not allowed
-            - A group with the same name already exists
+            - A group with the same name already exists in the same organization
             - Requester does not have admin privileges
           content:
             application/json:
@@ -22424,6 +22424,8 @@ paths:
 
             - Missing or empty `name`
             - Invalid `groupId` format (must be a 24-character hex ObjectId)
+            - New name `admin`, `everyone` or `standard` is not allowed
+            - Another group with the same name already exists in the same organization
             - Requester does not have admin privileges
           content:
             application/json:

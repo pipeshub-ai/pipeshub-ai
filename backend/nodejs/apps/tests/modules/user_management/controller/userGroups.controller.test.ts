@@ -310,7 +310,12 @@ describe('UserGroupController', () => {
     // Answers findOne the way Mongo would for the filters updateGroup sends.
     beforeEach(() => {
       stored = [];
-      sinon.stub(UserGroups, 'findOne').callsFake(((filter: Record<string, any>) => {
+      sinon.stub(UserGroups, 'findOne').callsFake(((filter: {
+        _id: string | { $ne: string };
+        name?: string;
+        orgId: string;
+        isDeleted: boolean;
+      }) => {
         const orgFilter = new mongoose.Types.ObjectId(String(filter.orgId));
         const match = stored.find(
           (g) =>
