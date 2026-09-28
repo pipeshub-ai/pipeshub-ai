@@ -494,9 +494,19 @@ _EXCEPTION = (
     r"(?:except(?:ed|ing)?|exceptions?|unless|save|besides|excluding|barring"
     r"|apart\s+from|aside\s+from|other\s+than|outside\s+of)"
 )
-# A carve-out: an exception word that isn't itself negated ("no exceptions", "without
-# exception" say there are none).
-_CARVE_OUT = re.compile(rf"(?<!\bno )(?<!\bwithout )(?<!\bwithout any )(?<!\bnot any )\b{_EXCEPTION}\b")
+_EXCEPTION_WORD = re.compile(rf"\b{_EXCEPTION}\b")
+# A negation governing the exception word: "no exceptions", "not an exception",
+# "isn't an exception", "without exception".
+_EXCEPTION_NEGATED = re.compile(r"(?:\b(?:no|not|never|without)|n't)\s+(?:(?:any|a|an|the|one|single)\s+)?$")
+
+
+def _carve_outs(text: str, lo: int = 0, hi: int | None = None) -> list[re.Match[str]]:
+    """The exception words in text[lo:hi] that carve an exception out, not the ones
+    a negation says don't exist."""
+    return [
+        m for m in _EXCEPTION_WORD.finditer(text, lo, len(text) if hi is None else hi)
+        if not _EXCEPTION_NEGATED.search(text[:m.start()])
+    ]
 _CLAIM_BREAK = re.compile(r"\b(?:but|however|whereas)\b|;")
 
 
@@ -518,7 +528,8 @@ def _required_without(sentence: str, no_approval: list[str], band_amounts: set[f
     ceilings = [(m.start(), m.end()) for m in _CEILING.finditer(sentence)]
     bands: list[tuple[int, int | None]] = []
     def excepted(at: int) -> bool:
-        return re.search(rf"{_CARVE_OUT.pattern}[^,;.]*$", sentence[:at]) is not None
+        carve = _carve_outs(sentence, 0, at)
+        return bool(carve) and not re.search(r"[,;.]", sentence[carve[-1].end():at])
 
     for m in _RAISES.finditer(sentence):
         if excepted(m.start()):
@@ -677,7 +688,7 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
         # needs no approval").
         breaks = list(_BREAK_OUTSIDE_AMOUNTS.finditer(text))
         lo = max((b.end() for b in breaks if b.end() <= at), default=0)
-        exceptions = list(_CARVE_OUT.finditer(text, lo, at))
+        exceptions = _carve_outs(text, lo, at)
         if not exceptions:
             return False
         # Only a claim after the exception word counts, across a comma too ("except
@@ -876,7 +887,7 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                     not _RAISES.search(upto) and not _approves(upto, second)
                     # "except above $2,500" carves an exception out rather than raising the band.
                     and not any(
-                        not _CARVE_OUT.search(own_piece_rest[:r.start()])
+                        not _carve_outs(own_piece_rest, 0, r.start())
                         for r in _RAISES.finditer(own_piece_rest)
                     )
                     and not _names_higher_band(own_piece_rest, band_amounts, second)
