@@ -131,7 +131,7 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'value: "redis"' present 'name: MESSAGE_BROKER'
   expect eks 'value: "redis"' present 'name: KV_STORE_TYPE'
   expect eks 'pipeshubai/pipeshub-sandbox:0.8.0' present
-  expect eks '--require /etc/pipeshub/s3-sigv4/force-sigv4.js' present
+  expect eks 'force-sigv4.js' absent
   expect local-neo4j-kafka 'force-sigv4.js' absent
   expect eks 'name: ci-mongodb-initiate-1' present
   expect eks 'helm.sh/hook' absent

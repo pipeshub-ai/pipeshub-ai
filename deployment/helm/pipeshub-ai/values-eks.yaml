@@ -14,9 +14,7 @@ image:
   tag: "0.9.1-slim"
   pullPolicy: IfNotPresent
 
-# 0.9.1-slim presigns us-east-1 with Signature V2. The bucket from deploy.sh is
-# SSE-KMS, which rejects those URLs during the onboarding storage check.
-s3SignatureV4Preload: true
+s3SignatureV4Preload: false
 
 replicaCount: 2
 # Two app nodes hold four pods. A surge pod needs a free 3 CPU and stays Pending.
