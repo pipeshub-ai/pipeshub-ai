@@ -1117,9 +1117,9 @@ _SPEND = r"(?:spend\w*|make|making|purchas\w*|buy\w*|expens(?:e|es|ed|ing))\b"
 # This purchase, however it is determined: "such a purchase", "the same one", "every
 # single purchase", "purchases like this".
 _THIS_PURCHASE = (
-    r"(?:(?:the|this|that|such|these|those|any|every|each|a|one)\s+)?"
-    r"(?:(?:same|very|single|actual|individual|particular|such|a)\s+)*"
-    r"(?:purchases?|expenses?|one|money|amount)(?:\s+like\s+(?:this|that))?"
+    r"(?:(?:the|this|that|such|these|those|any|every|each|all|a|an|one)\s+)?"
+    r"(?:(?:same|very|single|actual|individual|particular|such|a|an)\s+)*"
+    r"(?:purchases?|expenses?|spending|one|money|amount)(?:\s+like\s+(?:this|that))?"
 )
 _SPEND_OBJECT = (
     rf"(?:{_THIS_PURCHASE}|any\s+of\s+(?:it|them)|it|them|anything|that|this|any)"
@@ -1257,13 +1257,17 @@ def _other_subject(piece: str, previous: str = "") -> bool:
             inside = re.fullmatch(r"sign(?:s|ed|ing)?\s+(.+?)[- ]?offs?", m.group())
             if inside:
                 after = " " + inside.group(1) + after
-            # "sign off on the software contract"
-            after = re.sub(r"^\s+on\s+", " ", after)
+            # "sign off on the software contract"; not "approve on Monday" or "on behalf of".
+            if m.group().startswith("sign"):
+                after = re.sub(r"^\s+on\s+(?!behalf\b)", " ", after)
         obj_text = after
         obj: list[str] = []
-        for w in re.findall(r"[a-z][a-z'-]*|\$|\d", obj_text):
-            if (w in _NP_STOP or w in _SKIP_TO_SUBJECT or w in _OBJECT_STOP or w.endswith("ly") or w == "$"
-                    or w.isdigit() or len(obj) == 3):
+        tokens = re.findall(r"[a-z][a-z'-]*|\$|\d", obj_text)
+        for n, w in enumerate(tokens):
+            # "that software subscription": "that" determines the noun after it.
+            determiner = w == "that" and n + 1 < len(tokens) and tokens[n + 1] not in _NP_STOP | _OBJECT_STOP
+            if (not determiner and (w in _NP_STOP or w in _SKIP_TO_SUBJECT or w in _OBJECT_STOP)
+                    or w.endswith("ly") or w == "$" or w.isdigit() or len(obj) == 3):
                 break
             obj.append(w)
             # "this" / "that" may be a determiner ("this software subscription").
