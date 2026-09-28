@@ -1117,8 +1117,8 @@ _SPEND = r"(?:spend\w*|make|making|purchas\w*|buy\w*|expens(?:e|es|ed|ing))\b"
 # This purchase, however it is determined: "such a purchase", "the same one", "every
 # single purchase", "purchases like this".
 _THIS_PURCHASE = (
-    r"(?:(?:the|this|that|such|these|those|any|every|each|all|a|an|one)\s+)?"
-    r"(?:(?:same|very|single|actual|individual|particular|such|a|an)\s+)*"
+    r"(?:(?:the|this|that|such|these|those|any|every|each|all|a|an|one)\s+){0,2}"
+    r"(?:(?:same|very|single|actual|individual|particular|exact|said|such|a|an|one)\s+)*"
     r"(?:purchases?|expenses?|spending|one|money|amount)(?:\s+like\s+(?:this|that))?"
 )
 _SPEND_OBJECT = (
@@ -1176,7 +1176,7 @@ _PROHIBIT_TAIL = re.compile(
     r"^\s*(?:(?:and|so|but|however|then|also|yet|still|please|note|that)\b[\s,:]*)*"
     # The subject: a pronoun, or the purchase itself ("The purchase is not allowed.").
     r"(?:(?:i|you|we|they|it|this|that|which"
-    rf"|{_THIS_PURCHASE}|spending(?:\s+it)?)(?:\s+|(?='))"
+    rf"|{_THIS_PURCHASE}|(?:spending|making|buying|purchasing|expensing)(?:\s+(?:{_THIS_PURCHASE}|it|them))?)(?:\s+|(?='))"
     rf"(?:{_NEG_STATE}\s+(?:allowed|permitted)"
     r"|(?:is|are|am|was|were|'s|'re|'m|(?:has|have|had|'s|'ve)\s+been)\s+(?:prohibited|forbidden|banned))"
     rf"|{_NOBODY_ALLOWED})"
@@ -1206,6 +1206,11 @@ _SKIP_TO_SUBJECT = {
     "still", "your", "my", "our", "their", "his", "her", "manager", "finance", "cfo", "controller", "director",
     "vp", "team", "legal", "procurement", "accounting",
 }
+# Time or manner after "sign off on": "on Monday", "on time", "on arrival".
+_WHEN = (
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekends?|weekdays?|time|schedule|arrival"
+    r"|delivery|request|demand|completion|the\s+(?:day|spot|same\s+day)|day"
+)
 _OBJECT_STOP = {"up", "down", "beyond", "past", "without", "within", "after", "before", "through", "until", "during",
                 "into", "upon", "again", "twice", "now", "then", "here", "there"}
 _NP_STOP = {"for", "of", "to", "by", "from", "in", "on", "at", "with", "as", "over", "above", "below", "under",
@@ -1259,7 +1264,7 @@ def _other_subject(piece: str, previous: str = "") -> bool:
                 after = " " + inside.group(1) + after
             # "sign off on the software contract"; not "approve on Monday" or "on behalf of".
             if m.group().startswith("sign"):
-                after = re.sub(r"^\s+on\s+(?!behalf\b)", " ", after)
+                after = re.sub(rf"^\s+on\s+(?!(?:behalf|{_WHEN})\b)", " ", after)
         obj_text = after
         obj: list[str] = []
         tokens = re.findall(r"[a-z][a-z'-]*|\$|\d", obj_text)
