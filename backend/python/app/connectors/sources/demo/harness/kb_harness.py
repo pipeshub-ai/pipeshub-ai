@@ -667,8 +667,16 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
         breaks = list(_BREAK_OUTSIDE_AMOUNTS.finditer(text))
         lo = max((b.end() for b in breaks if b.end() <= at), default=0)
         hi = min((b.start() for b in breaks if b.start() >= at), default=len(text))
-        return re.search(rf"\b{_EXCEPTION}\b", text[lo:at]) is not None and not any(
-            mention_spans(text[lo:hi], p) for p in no_approval
+        exceptions = list(re.finditer(rf"\b{_EXCEPTION}\b", text[lo:at]))
+        if not exceptions:
+            return False
+        exception = exceptions[-1]
+        # Only a claim after the exception word counts, including a negated approval word.
+        tail = text[lo + exception.end():hi]
+        return not any(mention_spans(tail, p) for p in no_approval) and not any(
+            _NOT_AFTER.match(tail[m.end():]) or _NEGATED_AFTER.match(tail[m.end():])
+            or _negates_approval(tail[:m.start()])
+            for m in _APPROVAL_WORD.finditer(tail)
         )
 
     # An exception hides only a range or a raise ("except between $251 and $2,500",
@@ -694,10 +702,12 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
 
 
 # A negation right after the approval word, or after one auxiliary: "approval will not
-# happen", "approval never happens". Not across a joiner ("sign-off and you can't").
+# happen", "approval cannot happen", "approval is no longer required". Not across a
+# joiner ("sign-off and you can't"), and not a negated waiver ("will not be waived").
 _NEGATED_AFTER = re.compile(
     r"(?:\s+(?:will|would|shall|should|can|could|may|might|must|does|do|did|is|are|was|were|has|have|had))?"
-    r"\s+(?:not|never)\b|\s+\w+n't\b"
+    r"\s+(?:not|never|cannot|no|\w+n't)\b"
+    r"(?!(?:\s+\w+){0,2}?\s+(?:waived|skipped|bypassed|avoided|dropped|lifted|removed|overridden|circumvented)\b)"
 )
 
 
@@ -855,7 +865,12 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 own_piece_rest = _PIECE.split(part[max(end, band_end):])[0]
                 if (
                     not _RAISES.search(upto) and not _approves(upto, second)
-                    and not _RAISES.search(own_piece_rest) and not _names_higher_band(own_piece_rest, band_amounts, second)
+                    # "except above $2,500" carves an exception out rather than raising the band.
+                    and not any(
+                        not re.search(rf"\b{_EXCEPTION}\b", own_piece_rest[:r.start()])
+                        for r in _RAISES.finditer(own_piece_rest)
+                    )
+                    and not _names_higher_band(own_piece_rest, band_amounts, second)
                     and _RANGE_MARK not in _mark_new_ranges(upto, band_amounts, reaching_above=True)
                     and not _moves_to_higher_band([sentence[starts[i] + max(end, band_end):]], band_amounts, next_sentence, second)
                     and not approved_later([[sentence[starts[i] + max(end, band_end):]], *later], band_amounts)
