@@ -804,8 +804,8 @@ _CONTINUES = re.compile(
 _AMOUNT_FILLER = re.compile(
     r"\b(?:another|least|most|at|items?|anything|more|than|less|no|up|upwards|to|under|below|over|within|through"
     r"|until|then|was|were|had|has|been|costs?|fewer|also|even|plus|likewise|similarly|one|as|much|high|low|little"
-    r"|limited|capped|restricted|invoices?|bills?|payments?|orders?|receipts?|charges?|fees?|totals?|sums?|figures?"
-    r"|prices?|numbers?|values?)\b"
+    r"|small|equally|limited|capped|restricted|confined|invoices?|bills?|payments?|orders?|receipts?|charges?|fees?|totals?|sums?|figures?"
+    r"|prices?|numbers?|values?|quantit(?:y|ies))\b"
 )
 
 
@@ -983,7 +983,8 @@ _QUANTIFIERS = {
     "anything", "everything", "whatever", "whichever", "everyone", "anyone",
 }
 _FLOATING_QUANTIFIER = re.compile(
-    r"\b(?:all|each|both|every\s+one)\s+(?:need|needs|require|requires|are|is|do|does|will|can|get|gets)?\s*$"
+    r"\b(?:all|each|both|(?:each|every)\s+one)(?:\s+(?:will|would|can|could|must|should|may|might|do|does|did))?"
+    r"\s+(?:need|needs|require|requires|are|is|get|gets)?\s*$"
 )
 _SAME_WORDS = {"same", "other", "above", "said", "aforementioned"}
 _LEAD_WORDS = {"and", "or", "but", "so", "then", "also", "however", "still", "please", "note", "remember", "reminder", "fyi"}
@@ -998,7 +999,8 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
         return False
     # "…for the purchases, all of them": the appositive covers everything.
     if re.search(
-        r"\b(?:(?:all|each|both|any|either|every\s+(?:single\s+)?one)\s+of\s+(?:them|those|these)|every\s+(?:single\s+)?one)\b",
+        r"\b(?:(?:all|each|both|any|either|neither|every\s+(?:single\s+|last\s+)?one)\s+of\s+(?:them|those|these)"
+        r"|every\s+(?:single\s+|last\s+)?one)\b",
         clause,
     ):
         return False
@@ -1110,16 +1112,26 @@ def _band_approved(parts: list[str], band_amounts: set[float], second: list[str]
 # A prohibition governs the spend only when a spend verb follows it within two words:
 # "Nobody can spend", "Do not make a purchase"; not "Nobody disputes that you can
 # spend", "You cannot be stopped from spending" or "Do not forget: …".
+_SPEND = r"(?:spend\w*|make|making|purchas\w*|buy\w*|expens\w*)\b"
 _PROHIBIT_BEFORE = re.compile(
-    r"(?:\b(?:cannot|can\s+not|may\s+not|must\s+not|must\s+never|should\s+not|shall\s+not|do\s+not|never"
-    r"|will\s+not\s+be\s+(?:allowed|permitted)|(?:is|are|be)\s+not\s+(?:permitted|allowed)"
-    r"|(?:is|are|be)\s+(?:forbidden|prohibited|banned)|nobody|no\s+one|not\s+the\s+case)"
-    r"|\b\w+n't(?:\s+be)?(?:\s+(?:allowed|permitted))?)"
-    r"\s+(?:\w+\s+){0,2}?(?:spend\w*|make|making|purchas\w*|buy\w*|expens\w*)\b"
+    r"(?:"
+    # A modal or imperative negation: "you cannot make", "don't spend", "nobody can spend";
+    # not "can't be stopped from spending" or "don't have to spend".
+    r"\b(?:cannot|can\s+not|can't|may\s+not|must\s+not|mustn't|must\s+never|should\s+not|shouldn't|shall\s+not"
+    r"|shan't|will\s+not|won't|do\s+not|don't|never|nobody|no\s+one|not\s+the\s+case)"
+    r"(?!\s+(?:have|need)\s+to\b)(?!\s+be\s+(?:stopped|prevented|blocked|kept)\b)"
+    # Permission denied: "you're not allowed to", "you must not be allowed to", "nobody is
+    # permitted to".
+    r"|\b(?:(?:is|are|am|was|were|be|'re|'s)\s+not|isn't|aren't|wasn't|weren't|not)\s+(?:allowed|permitted)\s+to"
+    r"|\b(?:must|should|will|shall|may|can)\s+not\s+be\s+(?:allowed|permitted)\s+to"
+    r"|\b(?:won't|mustn't|shouldn't|can't|shan't)\s+be\s+(?:allowed|permitted)\s+to"
+    r"|\b(?:nobody|no\s+one)\s+(?:is|was|will\s+be)\s+(?:allowed|permitted)\s+to"
+    r"|\b(?:is|are|was|were|be|'s|'re)\s+(?:forbidden|prohibited|banned)(?:\s+(?:to|from))?"
+    rf")\s+(?:\w+\s+){{0,2}}?{_SPEND}"
 )
 _PROHIBIT_AFTER = re.compile(
     r"\b(?:(?:is|are|was|were)\s+(?:not|never)\s+(?:allowed|permitted)|(?:isn't|aren't)\s+(?:allowed|permitted)"
-    r"|(?:is|are)\s+(?:prohibited|forbidden|banned))\b"
+    r"|(?:is|are|was|were)\s+(?:prohibited|forbidden|banned))\b"
 )
 
 
