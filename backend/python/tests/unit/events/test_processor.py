@@ -3199,7 +3199,7 @@ class TestProcessPdfDocumentWithOcr:
 # Merged from test_processor_coverage.py
 # =============================================================================
 
-log = logging.getLogger("test")
+log = logging.getLogger(__name__)
 log.setLevel(logging.CRITICAL)
 
 

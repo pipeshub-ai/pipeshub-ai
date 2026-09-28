@@ -290,6 +290,34 @@ describe('AmazonS3Adapter', () => {
       )
       expect(key).to.equal('a/b/c/d/file.pdf')
     })
+
+    it('should match a dotted bucket name literally, not as a pattern', () => {
+      const adapter = new AmazonS3Adapter({
+        accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+        secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+        region: 'us-east-1',
+        bucket: 'my.bucket',
+      })
+      expect(
+        (adapter as unknown as { extractKeyFromUrl(url: string): string }).extractKeyFromUrl(
+          'https://my.bucket.s3.us-east-1.amazonaws.com/file.pdf',
+        ),
+      ).to.equal('file.pdf')
+      expect(() =>
+        (adapter as unknown as { extractKeyFromUrl(url: string): string }).extractKeyFromUrl(
+          'https://myxbucket.s3.us-east-1.amazonaws.com/file.pdf',
+        ),
+      ).to.throw(StorageValidationError)
+    })
+
+    it('should reject a URL that only contains the bucket URL after another host', () => {
+      const adapter = createAdapter()
+      expect(() =>
+        (adapter as unknown as { extractKeyFromUrl(url: string): string }).extractKeyFromUrl(
+          'https://elsewhere.example/?https://my-bucket.s3.us-east-1.amazonaws.com/file.pdf',
+        ),
+      ).to.throw(StorageValidationError)
+    })
   })
 
   // -------------------------------------------------------------------------

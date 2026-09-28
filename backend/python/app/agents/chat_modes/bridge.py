@@ -66,6 +66,7 @@ from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
     exclude_from_state,
+    note_org_real_data,
 )
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
@@ -428,6 +429,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         if available_connectors is not None:
             chat_state["available_connectors"] = available_connectors
         exclude_from_state(chat_state, demo_excluded)
+        await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
     except Exception as exc:
         log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_exception(exc)

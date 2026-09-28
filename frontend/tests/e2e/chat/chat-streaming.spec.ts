@@ -29,6 +29,7 @@ import {
   buildAguiStoppedSseBody,
   buildAguiToolCallStartSseBody,
 } from './agui-sse-builder';
+import { serveOpenSseStream } from './open-sse-stream';
 
 // ---------------------------------------------------------------------------
 // Mock data builders
@@ -391,13 +392,13 @@ test.describe('Chat — multi-turn conversation (mocked backend)', () => {
 // `cancelStreamForSlot` (chat/streaming.ts) is cooperative: it POSTs
 // `/cancel` carrying `runId` and only hard-aborts the connection after a
 // `STOP_GRACE_MS` (5s) grace timer if the backend hasn't already ended the
-// run via `RUN_FINISHED`. None of these mocks can hold a real SSE
-// connection open indefinitely (`route.fulfill` delivers one fixed body),
-// so — matching `buildAguiPartialSseBody`/`buildAguiAskUserQuestionSseBody`
-// elsewhere in this suite — a body with no `RUN_FINISHED` still leaves the
-// slot `isStreaming: true` after the mocked request "completes", which is
-// exactly the state the grace-timeout fallback is built to clean up. Tests
-// below that want the partial-answer path wait out that real 5s timer;
+// run via `RUN_FINISHED`. `route.fulfill` always ends the response, and a
+// stream that ends without `RUN_FINISHED` or `RUN_ERROR` is a dropped
+// connection, which the chat reports as interrupted. So the open runs below
+// come from `serveOpenSseStream`, which sends the frames and keeps the
+// response open until Stop's grace timeout aborts it — the state the
+// fallback is built to clean up. Tests below that want the partial-answer
+// path wait out that real 5s timer;
 // tests that want the "backend confirmed the stop" path instead send
 // `buildAguiStoppedSseBody` outright, so the grace timer never needs to
 // fire.
@@ -422,15 +423,12 @@ test.describe('Chat — stop streaming (assistant)', () => {
         modelInfo: MOCK_MODEL_INFO,
       }),
     );
-    await page.route('**/api/v1/conversations/stream', (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      // conversation_created + one delta, no RUN_FINISHED — see suite comment above.
-      return route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiPartialSseBody('conv-stop-001', 'Partial answer before stop…'),
-      });
-    });
+    // conversation_created + one delta, and the run stays open — see suite comment above.
+    await serveOpenSseStream(
+      page,
+      '/api/v1/conversations/stream',
+      buildAguiPartialSseBody('conv-stop-001', 'Partial answer before stop…'),
+    );
 
     await page.route('**/api/v1/conversations/conv-stop-001/cancel', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -599,16 +597,13 @@ test.describe('Chat — stop streaming (assistant)', () => {
         modelInfo: MOCK_MODEL_INFO,
       }),
     );
-    // TOOL_CALL_START with no RUN_FINISHED: the tool is still running when the
+    // TOOL_CALL_START and the run stays open: the tool is still running when the
     // test stops it, the same way the partial-answer tests leave a run open.
-    await page.route('**/api/v1/conversations/stream', (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      return route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiToolCallStartSseBody(convId, 'tool-call-e2e-001', 'search_knowledge_base'),
-      });
-    });
+    await serveOpenSseStream(
+      page,
+      '/api/v1/conversations/stream',
+      buildAguiToolCallStartSseBody(convId, 'tool-call-e2e-001', 'search_knowledge_base'),
+    );
     await page.route(`**/api/v1/conversations/${convId}/cancel`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({
@@ -652,14 +647,11 @@ test.describe('Chat — stop streaming (assistant)', () => {
       }),
     );
 
-    await page.route('**/api/v1/conversations/stream', (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      return route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiPartialSseBody(convId, 'First run, stopped before finishing…'),
-      });
-    });
+    await serveOpenSseStream(
+      page,
+      '/api/v1/conversations/stream',
+      buildAguiPartialSseBody(convId, 'First run, stopped before finishing…'),
+    );
     await page.route(`**/api/v1/conversations/${convId}/cancel`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       const body = route.request().postDataJSON();
@@ -739,18 +731,14 @@ test.describe('Chat — stop streaming (assistant)', () => {
     await expect(page.locator('text=Original answer before regenerate.').first())
       .toBeVisible({ timeout: 20_000 });
 
-    // Hold the regenerate stream with a partial body (no RUN_FINISHED) so
-    // Stop's grace-timeout fallback — not a server confirmation — replaces
-    // the original message. Fulfill immediately: `route.fulfill` cannot
-    // keep SSE open, and delaying it only races the 10s text assertion.
-    await page.route(`**/api/v1/conversations/${convId}/message/*/regenerate`, (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      return route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiPartialSseBody(convId, 'Regenerated partial answer…'),
-      });
-    });
+    // Hold the regenerate stream open after a partial answer so Stop's
+    // grace-timeout fallback — not a server confirmation — replaces the
+    // original message.
+    await serveOpenSseStream(
+      page,
+      new RegExp(`^/api/v1/conversations/${convId}/message/[^/]+/regenerate$`),
+      buildAguiPartialSseBody(convId, 'Regenerated partial answer…'),
+    );
     await page.route(`**/api/v1/conversations/${convId}/cancel`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       cancelFired = true;
@@ -893,14 +881,11 @@ test.describe('Chat — stop streaming (agent chat)', () => {
       }),
       AGENT_CONVERSATIONS_API,
     );
-    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      return route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiPartialSseBody(convId, 'Agent partial answer before stop…'),
-      });
-    });
+    await serveOpenSseStream(
+      page,
+      `/api/v1/agents/${AGENT_ID}/conversations/stream`,
+      buildAguiPartialSseBody(convId, 'Agent partial answer before stop…'),
+    );
     await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/${convId}/cancel`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       cancelBody = route.request().postDataJSON();

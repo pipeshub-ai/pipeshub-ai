@@ -815,7 +815,7 @@ function ConnectorFilterSelect({
               color: selectedLabel ? 'var(--gray-12)' : 'var(--gray-10)',
             }}
           >
-            {selectedLabel ?? t('workspace.connectors.filters.selectField', { field: field.displayName })}
+            {selectedLabel ?? t('workspace.connectors.filters.selectFieldPlaceholder', { field: field.displayName })}
           </Text>
           <MaterialIcon name="expand_more" size={16} color="var(--gray-9)" style={{ flexShrink: 0 }} />
         </Button>
@@ -830,7 +830,7 @@ function ConnectorFilterSelect({
         <Box style={{ padding: 8 }}>
           <TextField.Root
             size="2"
-            placeholder={t('form.search')}
+            placeholder={t('workspace.connectors.filters.searchOptions')}
             value={query}
             onChange={(e) => handleQueryChange(e.target.value)}
             autoFocus

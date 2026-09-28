@@ -539,6 +539,7 @@
     "goToCollections": "Go to Collections",
     "namedEmpty": "{{name}} is empty",
     "noRecords": "No records found",
+    "collectionsLoadFailed": "We couldn't load your collections. Check your connection, then select {{action}}.",
     "searchEmptyHint": "Couldn't find what you are searching for. Try searching for something else.",
     "adjustFiltersHint": "Select a different source or adjust your filters",
     "addFromCollectionsHint": "You can add your company files or folders from the Collections",
@@ -1042,7 +1043,8 @@
     },
     "attachments": {
       "uploadFailed": "Upload failed",
-      "uploadFailedNamed": "Failed to upload {{name}}: {{error}}",
+      "uploadFailedNamed": "Couldn't attach {{name}}. {{error}}",
+      "uploadFailedNamedRetry": "Couldn't attach {{name}}. Please try again.",
       "unsupportedType": "Unsupported file type: {{names}}. Supported types: {{types}}.",
       "fileTooLarge": "File too large: {{names}}. Maximum size is {{maxMb}} MB per file.",
       "tooManyFiles": "Maximum {{max}} attachments per message.",
@@ -2452,6 +2454,8 @@
       },
       "filters": {
         "selectField": "Select {{field}}",
+        "selectFieldPlaceholder": "Select {{field, lowercase}}",
+        "searchOptions": "Search…",
         "addFieldValue": "Add {{field}}…",
         "authenticateForOptions": "Complete authentication and save the connector to load options for this filter.",
         "manualIndexingInfo": "About manual indexing",

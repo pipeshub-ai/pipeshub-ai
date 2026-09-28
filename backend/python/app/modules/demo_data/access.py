@@ -92,6 +92,11 @@ async def demo_connector_ids(graph_provider: IGraphDBProvider, org_id: str) -> t
 
 async def org_has_real_data(graph_provider: IGraphDBProvider, org_id: str) -> bool:
     """Whether any source other than the demo has an indexed record: a connector or a Collection."""
+    return bool(await org_real_data_state(graph_provider, org_id))
+
+
+async def org_real_data_state(graph_provider: IGraphDBProvider, org_id: str) -> bool | None:
+    """``org_has_real_data``, but None when the app listing failed and nothing is known."""
     cached = _cached_real_data(org_id)
     if cached is not None:
         return cached
@@ -103,7 +108,7 @@ async def org_has_real_data(graph_provider: IGraphDBProvider, org_id: str) -> bo
         apps = await graph_provider.get_org_apps(org_id, active_only=False)
         if not apps:
             # A failed listing also answers []; "no real data" would be cached.
-            return False
+            return None
         others = [a for a in apps if a.get("type") != DEMO_CONNECTOR_TYPE and _app_id(a)]
         # Connectors first: an org usually has few, while every user owns a Collection.
         others.sort(key=lambda a: a.get("type") == Connectors.KNOWLEDGE_BASE.value)

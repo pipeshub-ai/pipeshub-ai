@@ -89,7 +89,7 @@ class StorageClient:
 
     def _auth_headers(self) -> dict[str, str]:
         # Minted per request: service tokens are short-lived.
-        token = mint_storage_token(self._c.org_id, self._c.user_id)
+        token = mint_storage_token(self._c.org_id, self._c.acting_user_id)
         return {"Authorization": f"Bearer {token}"}
 
     def _json_headers(self) -> dict[str, str]:

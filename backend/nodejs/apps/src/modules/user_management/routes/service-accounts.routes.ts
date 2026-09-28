@@ -3,6 +3,9 @@ import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
+import { Logger } from '../../../libs/services/logger.service';
+import { AppConfig } from '../../tokens_manager/config/config';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { ServiceAccountsController } from '../controller/service-accounts.controller';
 import { userAdminCheck } from '../middlewares/userAdminCheck';
@@ -18,8 +21,23 @@ export function createServiceAccountsRouter(container: Container): Router {
     'ServiceAccountsController',
   );
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  const logger = container.get<Logger>('Logger');
+  const appConfig = container.get<AppConfig>('AppConfig');
+
+  // Rate limited on the same budget as the token, personal access token and
+  // OAuth application endpoints. Every route here is admin-only, so this is
+  // not about untrusted callers: it bounds what a stolen or over-shared admin
+  // credential can do in one burst, since each created account is a principal
+  // with its own view of the organisation and an address that is taken for
+  // good. Left off, these were the only credential-adjacent endpoints in the
+  // product with no ceiling at all.
+  const rateLimiter = createOAuthClientRateLimiter(
+    logger,
+    appConfig.maxOAuthClientRequestsPerMinute,
+  );
 
   router.use(authMiddleware.authenticate.bind(authMiddleware));
+  router.use(rateLimiter);
 
   // Two gates, because they answer different questions and neither covers
   // the other.

@@ -1,6 +1,7 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import en from '@/lib/i18n/locales/en-US.json';
+import { addFormatters } from '@/lib/i18n/formatters';
 
 // Importing this module makes `useTranslation()` return the real English
 // strings, so tests assert on the words a user actually reads. The app's own
@@ -13,6 +14,7 @@ void testI18n.use(initReactI18next).init({
   interpolation: { escapeValue: false },
   initAsync: false,
 });
+addFormatters(testI18n);
 
 export { en };
 export default testI18n;

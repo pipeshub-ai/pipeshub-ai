@@ -539,6 +539,7 @@
     "goToCollections": "前往集合",
     "namedEmpty": "{{name}} 是空的",
     "noRecords": "找不到記錄",
+    "collectionsLoadFailed": "無法載入您的集合。請檢查網路連線，然後選取「{{action}}」。",
     "searchEmptyHint": "找不到您要尋找的內容。請嘗試搜尋其他項目。",
     "adjustFiltersHint": "請選擇其他來源或調整篩選條件",
     "addFromCollectionsHint": "您可以從集合中新增公司的檔案或資料夾",
@@ -1046,7 +1047,8 @@
     },
     "attachments": {
       "uploadFailed": "上傳失敗",
-      "uploadFailedNamed": "上傳 {{name}} 失敗：{{error}}",
+      "uploadFailedNamed": "無法附加 {{name}}。{{error}}",
+      "uploadFailedNamedRetry": "無法附加 {{name}}。請重試。",
       "unsupportedType": "不支援的檔案類型：{{names}}。支援的類型：{{types}}。",
       "fileTooLarge": "檔案過大：{{names}}。每個檔案上限為 {{maxMb}} MB。",
       "tooManyFiles": "每則訊息最多 {{max}} 個附件。",
@@ -2443,6 +2445,8 @@
       },
       "filters": {
         "selectField": "選取{{field}}",
+        "selectFieldPlaceholder": "選取{{field}}",
+        "searchOptions": "搜尋…",
         "addFieldValue": "新增{{field}}…",
         "authenticateForOptions": "請完成驗證並儲存連接器，以載入此篩選條件的選項。",
         "manualIndexingInfo": "關於手動索引",
