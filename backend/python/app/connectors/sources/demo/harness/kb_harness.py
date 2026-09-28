@@ -1127,8 +1127,8 @@ _NEG_STATE = (
 )
 # "Nobody is (ever) allowed", "nobody has ever been allowed", "no one's been permitted".
 _NOBODY_ALLOWED = (
-    r"(?:nobody|no\s+one)(?:\s+(?:is|was)(?:\s+ever)?"
-    r"|\s+(?:will|shall|can|could|may|must|should|would|might)(?:\s+ever)?\s+be"
+    r"(?:nobody|no\s+one)(?:(?:\s+(?:is|was)|'s)(?:\s+ever)?"
+    r"|(?:\s+(?:will|shall|can|could|may|must|should|would|might)|'ll)(?:\s+ever)?\s+be"
     r"|(?:\s+(?:has|had)|'s)(?:\s+ever)?\s+been)\s+(?:allowed|permitted)"
 )
 _PROHIBIT_BEFORE = re.compile(
@@ -1146,7 +1146,7 @@ _PROHIBIT_BEFORE = re.compile(
     rf"|\b{_NEG_STATE}\s+(?:allowed|permitted)\s+to"
     rf"|\b{_NOBODY_ALLOWED}\s+to"
     r"|\b(?:(?:is|are|am|was|were|'re|'m)\s+(?:not|no\s+longer)|isn't|aren't|wasn't|weren't)(?:\s+ever)?\s+to"
-    r"|\b(?:is|are|was|were|be|'s|'re|(?:has|have|had|'s|'ve)\s+been)\s+(?:forbidden|prohibited|banned)"
+    r"|\b(?:is|are|am|was|were|be|'s|'re|'m|(?:has|have|had|'s|'ve)\s+been)\s+(?:forbidden|prohibited|banned)"
     r"(?:\s+(?:to|from))?"
     rf")\s+(?:\w+\s+){{0,2}}?{_SPEND}"
 )
@@ -1154,24 +1154,26 @@ _PROHIBIT_BEFORE = re.compile(
 # "has never been banned", which permits it.
 _PROHIBIT_AFTER = re.compile(
     rf"\b(?:{_NEG_STATE}\s+(?:allowed|permitted)"
-    r"|(?:is|are|was|were|(?:has|have|had)\s+been)\s+(?:prohibited|forbidden|banned))\b"
+    r"|(?:is|are|am|was|were|'s|'re|'m|(?:has|have|had)\s+been)\s+(?:prohibited|forbidden|banned))\b"
 )
 
 
 # A short denial in the part after it: "Spending up to $250 without approval, I am not allowed."
 # The part must be only that denial: not "…, I am not allowed to discuss the budget".
 _PROHIBIT_TAIL = re.compile(
-    r"^\s*(?:(?:i|you|we|they|it|this|that|which)(?:\s+|(?='))"
+    r"^\s*(?:(?:and|so|but|however|then|also|yet|still)\b[\s,]*)*"
+    r"(?:(?:i|you|we|they|it|this|that|which)(?:\s+|(?='))"
     rf"(?:{_NEG_STATE}\s+(?:allowed|permitted)"
     r"|(?:is|are|am|was|were|'s|'re|'m|(?:has|have|had|'s|'ve)\s+been)\s+(?:prohibited|forbidden|banned))"
     rf"|{_NOBODY_ALLOWED})"
-    # Optionally naming this same spend: "…, you are not allowed to spend it".
-    r"(?:\s+to\s+(?:spend|make|buy|purchase)(?:\s+(?:it|them|that|this|the|a)(?:\s+(?:purchase|expense|amount))?)?)?"
+    # Optionally naming the spend: "…to spend it", "…from making the purchase", "…to buy
+    # anything"; not "…to discuss the budget".
+    rf"(?:\s+(?:to|from)\s+{_SPEND}(?:\s+[\w']+){{0,3}})?"
     r"\s*[.!?]*\s*$"
 )
 
 
-def _prohibits(part: str, band_start: int, no_approval: list[str], next_part: str = "") -> bool:
+def _prohibits(part: str, band_start: int, no_approval: list[str], *tails: str) -> bool:
     """Whether the part forbids the $250 spend: a prohibition before the $250 band or
     after it, once the no-approval phrases are blanked ("you need no approval for
     purchases up to $250" forbids nothing)."""
@@ -1180,7 +1182,7 @@ def _prohibits(part: str, band_start: int, no_approval: list[str], next_part: st
             part = part[:start] + " " * (end - start) + part[end:]
     return bool(
         _PROHIBIT_BEFORE.search(part[:band_start]) or _PROHIBIT_AFTER.search(part[band_start:])
-        or _PROHIBIT_TAIL.match(next_part)
+        or any(_PROHIBIT_TAIL.match(t) for t in tails)
     )
 
 
@@ -1261,8 +1263,13 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
                 continue
             band_end = max(end for _, end in bands)
             band_amounts = {v for b0, b1 in bands for v in _amount_values(part[b0:b1])}
-            next_part = next((p for p in parts[i + 1:] if re.search(r"\w", p)), "")
-            if _prohibits(part, min(b0 for b0, _ in bands), second, next_part):
+            # A bare denial in the next part that says something, or in the next sentence:
+            # "…, you are not allowed to spend it", "…without approval. I'm banned."
+            next_part = next(
+                (p for p in parts[i + 1:] if re.search(r"\w", re.sub(r"\b(?:and|so|but|however|then|also|yet|still)\b", "", p))),
+                "",
+            )
+            if _prohibits(part, min(b0 for b0, _ in bands), second, next_part, next_sentence):
                 continue
             # An earlier sentence or part that has someone approve the $250 purchase
             # contradicts the no-approval answer that follows it.
