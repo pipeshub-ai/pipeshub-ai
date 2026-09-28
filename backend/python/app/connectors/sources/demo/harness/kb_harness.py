@@ -802,8 +802,8 @@ _CONTINUES = re.compile(
 # Words a continuation may carry besides its amount or band: "another $5,000", "for
 # purchases of $5,000", "at least $5,000", "or above that".
 _AMOUNT_FILLER = re.compile(
-    r"\b(?:another|least|most|at|items?|anything|more|than|up|to|under|below|over|then|invoices?|bills?|payments?"
-    r"|orders?)\b"
+    r"\b(?:another|least|most|at|items?|anything|more|than|less|no|up|upwards|to|under|below|over|within|through"
+    r"|until|then|was|were|invoices?|bills?|payments?|orders?|receipts?|charges?|fees?)\b"
 )
 
 
@@ -974,6 +974,10 @@ _NOT_SUBJECT = {
 }
 
 
+_QUANTIFIERS = {"all", "each", "every", "any", "both", "either", "neither", "those", "these", "such", "that", "this"}
+_PREPOSITIONS = {"for", "on", "of", "in", "at", "with", "from", "to", "by", "per", "across", "during"}
+
+
 def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) -> bool:
     """Whether a no-approval clause is about its own subject ("for day-to-day
     purchases", "a taxi needs no approval"), not the higher band ("for purchases
@@ -986,12 +990,16 @@ def _own_subject(clause: str, band_amounts: set[float], no_approval: list[str]) 
         # Only the phrase's own piece: "your manager must approve and approval is not
         # required" has no subject of its own; possessives modify the approval.
         piece = _PIECE.split(clause[:start])[-1]
-        # "All purchases", "those purchases": the quantifier covers the noun.
-        if re.search(r"\b(?:all|each|every|any|both|those|these|such)\b", piece):
+        # The subject is the words before the first preposition ("a taxi for each
+        # trip" is about a taxi). A quantifier there covers it: "all purchases",
+        # "that purchase"; a hyphenated word ("all-hands") is not one.
+        words = re.findall(r"[a-z][a-z'-]*", piece)
+        cut = next((i for i, w in enumerate(words) if w in _PREPOSITIONS), len(words))
+        subject = words[:cut]
+        if any(w in _QUANTIFIERS for w in subject):
             return False
         return any(
-            w not in _NOT_SUBJECT and not w.endswith("'s") and not _APPROVAL_WORD.match(w)
-            for w in re.findall(r"[a-z][a-z'-]*", piece)
+            w not in _NOT_SUBJECT and not w.endswith("'s") and not _APPROVAL_WORD.match(w) for w in subject
         )
 
     return any(subject_before(start) for p in no_approval for start, _ in mention_spans(clause, p))
