@@ -422,8 +422,14 @@ class ZendeskConnector(BaseConnector):
             payload = response.data
             users_data.extend(self._extract_list(payload, "users"))
             next_cursor = payload.get("after_cursor") or payload.get("cursor")
-            # A repeated cursor means the export is not advancing.
-            if payload.get("end_of_stream", True) or not next_cursor or next_cursor == cursor:
+            if payload.get("end_of_stream", True):
+                break
+            # More pages remain but the cursor cannot reach them, so the list is short.
+            if not next_cursor or next_cursor == cursor:
+                self.logger.error(
+                    "Zendesk incremental_users stopped advancing before end_of_stream"
+                )
+                complete = False
                 break
             cursor = next_cursor
 
@@ -560,8 +566,14 @@ class ZendeskConnector(BaseConnector):
             payload = response.data
             orgs_data.extend(self._extract_list(payload, "organizations"))
             end_time = payload.get("end_time")
-            # An end_time that does not advance would page over the same window forever.
-            if payload.get("end_of_stream", True) or not end_time or end_time <= start_time:
+            if payload.get("end_of_stream", True):
+                break
+            # More pages remain but a stalled end_time cannot reach them, so the list is short.
+            if not end_time or end_time <= start_time:
+                self.logger.error(
+                    "Zendesk incremental_organizations stopped advancing before end_of_stream"
+                )
+                complete = False
                 break
             start_time = end_time
 
@@ -655,7 +667,13 @@ class ZendeskConnector(BaseConnector):
                     max_end_time = max(max_end_time, updated_ms // 1000)
 
             next_cursor = payload.get("after_cursor") or payload.get("cursor")
-            if payload.get("end_of_stream", True) or not next_cursor or next_cursor == cursor:
+            if payload.get("end_of_stream", True):
+                break
+            if not next_cursor or next_cursor == cursor:
+                self.logger.error(
+                    "Zendesk incremental_tickets stopped advancing before end_of_stream"
+                )
+                complete = False
                 break
             cursor = next_cursor
 
@@ -912,8 +930,13 @@ class ZendeskConnector(BaseConnector):
             end_time = payload.get("end_time")
             if end_time:
                 max_end_time = max(max_end_time, int(end_time))
-            # An end_time that does not advance would page over the same window forever.
-            if payload.get("end_of_stream", True) or not end_time or end_time <= start_time:
+            if payload.get("end_of_stream", True):
+                break
+            if not end_time or end_time <= start_time:
+                self.logger.error(
+                    "Zendesk incremental_articles stopped advancing before end_of_stream"
+                )
+                complete = False
                 break
             start_time = end_time
         return articles, complete, max_end_time
