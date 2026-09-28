@@ -11,7 +11,7 @@ import {
   IOAuthApp,
   OAuthAppStatus,
 } from '../schema/oauth.app.schema'
-import { NotFoundError } from '../../../libs/errors/http.errors'
+import { ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors'
 import {
   AdminPatListItem,
   CreatePatRequest,
@@ -128,17 +128,31 @@ export class PatService {
    * Mint a new personal access token for *userId*. Returns the raw token
    * once — callers must not attempt to retrieve it again (only the hash
    * is stored, matching every other OAuth access token).
+   *
+   * `callerScopes` are the scopes of the OAuth/PAT token making the request
+   * (undefined for a session). When present, the new token may not exceed
+   * them, and omitting `scopes` inherits them rather than the instance set.
    */
   async createToken(
     orgId: string,
     userId: string,
     fullName: string | undefined,
     request: CreatePatRequest,
+    callerScopes?: readonly string[],
   ): Promise<PatWithSecret> {
     const mcpScopes = await this.configService.getMcpScopes()
+    const defaultScopes = callerScopes
+      ? mcpScopes.filter((scope) => callerScopes.includes(scope))
+      : mcpScopes
     const scopes =
-      request.scopes && request.scopes.length > 0 ? request.scopes : mcpScopes
+      request.scopes && request.scopes.length > 0 ? request.scopes : defaultScopes
+    if (callerScopes && scopes.length === 0) {
+      throw new ForbiddenError(
+        'The calling token holds no scopes a personal access token can carry',
+      )
+    }
     this.scopeValidatorService.validateScopesForApp(scopes, mcpScopes)
+    this.scopeValidatorService.assertWithinCallerScopes(scopes, callerScopes)
 
     const app = await this.getOrCreatePatApp(orgId, userId)
     const lifetimeSeconds = this.resolveLifetimeSeconds(

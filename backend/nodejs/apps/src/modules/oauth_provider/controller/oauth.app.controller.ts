@@ -10,6 +10,7 @@ import {
   ListAppsQuery,
 } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
+import { getCallerTokenScopes } from '../../../libs/middlewares/require-scopes.middleware'
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service'
 
 @injectable()
@@ -64,7 +65,13 @@ export class OAuthAppController {
       const isAdmin = await isUserOrgAdmin(userId, orgId)
       const data: CreateOAuthAppRequest = req.body
 
-      const app = await this.oauthAppService.createApp(orgId, userId, isAdmin, data)
+      const app = await this.oauthAppService.createApp(
+        orgId,
+        userId,
+        isAdmin,
+        data,
+        getCallerTokenScopes(req.user),
+      )
 
       this.logger.info('OAuth app created', {
         appId: app.id,
@@ -160,7 +167,14 @@ export class OAuthAppController {
       const appId = req.params.appId!
       const data: UpdateOAuthAppRequest = req.body
 
-      const app = await this.oauthAppService.updateApp(appId, orgId, userId, isAdmin, data)
+      const app = await this.oauthAppService.updateApp(
+        appId,
+        orgId,
+        userId,
+        isAdmin,
+        data,
+        getCallerTokenScopes(req.user),
+      )
 
       this.logger.info('OAuth app updated via API', {
         appId,
@@ -223,7 +237,12 @@ export class OAuthAppController {
       const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const app = await this.oauthAppService.regenerateSecret(appId, orgId, userId)
+      const app = await this.oauthAppService.regenerateSecret(
+        appId,
+        orgId,
+        userId,
+        getCallerTokenScopes(req.user),
+      )
 
       this.logger.info('OAuth app secret regenerated via API', {
         appId,
@@ -282,7 +301,12 @@ export class OAuthAppController {
       const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const app = await this.oauthAppService.activateApp(appId, orgId, userId)
+      const app = await this.oauthAppService.activateApp(
+        appId,
+        orgId,
+        userId,
+        getCallerTokenScopes(req.user),
+      )
 
       this.logger.info('OAuth app activated via API', {
         appId,

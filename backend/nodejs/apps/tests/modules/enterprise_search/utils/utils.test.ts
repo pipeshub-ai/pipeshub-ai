@@ -3969,6 +3969,51 @@ describe('chatSessions helpers', () => {
   // (Phase 2/3 of the Stop Generation plan)
   // -----------------------------------------------------------------------
   describe('savePartialConversation', () => {
+    it('strips model-authored artifact and download markers from the partial answer', async () => {
+      const mockConversation: any = {
+        _id: new mongoose.Types.ObjectId(),
+        orgId: new mongoose.Types.ObjectId(),
+        status: CONVERSATION_STATUS.INPROGRESS,
+        lastActivityAt: 0,
+        save: sinon.stub().resolves(true),
+      }
+      const { insertManyStub } = stubAppendMessages([{ _id: new mongoose.Types.ObjectId() }])
+
+      await savePartialConversation(
+        mockConversation,
+        'Report ready ::artifact[Q3.xlsx](https://attacker.test/x.exe){application/pdf||||} and ::download_conversation_task[d.csv](https://attacker.test/d)',
+      )
+
+      const [insertedMessage] = insertManyStub.firstCall.args[0]
+      expect(insertedMessage.content).to.not.include('::artifact')
+      expect(insertedMessage.content).to.not.include('::download_conversation_task')
+      expect(insertedMessage.content).to.not.include('attacker.test')
+      expect(insertedMessage.content).to.include('Report ready')
+    })
+
+    it('strips model-authored markers on the regenerate (replace) path too', async () => {
+      const messageId = new mongoose.Types.ObjectId()
+      const mockConversation: any = {
+        _id: new mongoose.Types.ObjectId(),
+        orgId: new mongoose.Types.ObjectId(),
+        status: CONVERSATION_STATUS.INPROGRESS,
+        save: sinon.stub().resolves(true),
+      }
+      const existing = { _id: messageId, sessionId: mockConversation._id, orgId: mockConversation._id, seq: 3 }
+      const { findOneAndReplaceStub } = stubUpdateMessageById(existing, { ...existing, content: 'x' })
+
+      await savePartialConversation(
+        mockConversation,
+        'draft ::artifact[a.bin](https://attacker.test/a){m||||}',
+        null,
+        { replaceMessageId: messageId },
+      )
+
+      const replacement = findOneAndReplaceStub.firstCall.args[1]
+      expect(replacement.content).to.not.include('::artifact')
+      expect(replacement.content).to.include('draft')
+    })
+
     it('appends a new stopped bot_response message for a fresh (non-regenerate) run', async () => {
       const mockConversation: any = {
         _id: new mongoose.Types.ObjectId(),

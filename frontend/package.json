@@ -103,6 +103,7 @@
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.2",
     "jsdom": "^26.1.0",
+    "jszip": "^3.10.1",
     "monocart-reporter": "^2.12.4",
     "sharp": "^0.35.4",
     "typescript": "^5.9.2",

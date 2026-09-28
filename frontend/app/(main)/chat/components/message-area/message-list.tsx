@@ -16,8 +16,8 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 import { InlineCitationPopoverHost } from './response-tabs/citations/inline-citation-popover-host';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { loadOlderMessagesForSlot } from '../../streaming';
-import { parseArtifactMarkers } from '../../utils/parse-download-markers';
-import { buildMessagePairs, extractTextContent } from './message-pairs';
+import { extractAnswerMarkers } from '../../utils/parse-download-markers';
+import { buildMessagePairs } from './message-pairs';
 import type { MessagePair } from './message-pairs';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
@@ -218,10 +218,9 @@ export function MessageList() {
   // given artifact `recordId`. Every version bump re-registers the SAME
   // recordId, so an older message's card can compare its own `version`
   // against this map to know a later turn has since produced a newer copy —
-  // derived entirely from markers already persisted on each message
-  // (`parseArtifactMarkers`), no extra API call. The currently-streaming
-  // turn's markers aren't persisted yet, so its live SSE `artifacts` are
-  // folded in too.
+  // derived entirely from markers already persisted on each message, no extra
+  // API call. The row still streaming has no saved answer yet (its text is
+  // model output, see `MarkerSource`), so only its live SSE `artifacts` count.
   const latestArtifactVersions = useMemo(() => {
     const versions = new Map<string, number>();
     const record = (recordId: string | undefined, version: number | undefined) => {
@@ -229,18 +228,16 @@ export function MessageList() {
       const current = versions.get(recordId);
       if (current === undefined || version > current) versions.set(recordId, version);
     };
-    for (const msg of thread.messages) {
-      if (msg.role !== 'assistant') continue;
-      const content = extractTextContent(msg.content as { type: string; text?: string }[]);
-      if (!content.includes('::artifact[')) continue;
-      const { artifacts } = parseArtifactMarkers(content);
+    for (const pair of messagePairs) {
+      if (pair.isStreaming || !pair.answer.includes('::artifact[')) continue;
+      const { artifacts } = extractAnswerMarkers(pair.answer, 'persisted');
       for (const artifact of artifacts) record(artifact.recordId, artifact.version);
     }
     if (isStreaming) {
       for (const artifact of streamingArtifacts) record(artifact.recordId, artifact.version);
     }
     return versions;
-  }, [thread.messages, isStreaming, streamingArtifacts]);
+  }, [messagePairs, isStreaming, streamingArtifacts]);
 
   const lastPairKey = messagePairs[messagePairs.length - 1]?.key ?? null;
 

@@ -4346,6 +4346,70 @@ describe('ConfigurationManager Controller', () => {
     })
   })
 
+  describe('slack bot org binding', () => {
+    function storedConfigs(kvs: any): any[] {
+      const encrypted = kvs.compareAndSet.firstCall.args[2]
+      return JSON.parse(mockEncService.decrypt(encrypted)).configs
+    }
+
+    it('records the creating admin\'s org on a new bot', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(null),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+      const req = createMockRequest({
+        body: { name: 'Bot', botToken: 'xoxb', signingSecret: 's' },
+        user: { userId: 'user-1', orgId: 'org-A' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await createSlackBotConfig(kvs)(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(storedConfigs(kvs)[0].orgId).to.equal('org-A')
+      expect(res.json.firstCall.args[0].config.orgId).to.equal('org-A')
+    })
+
+    it('backfills the org on a bot saved before it was recorded, and never re-homes one that has it', async () => {
+      const existing = {
+        configs: [
+          { id: 'legacy', name: 'L', botToken: 'x', signingSecret: 's', createdAt: 't', updatedAt: 't' },
+          { id: 'bound', name: 'B', botToken: 'x', signingSecret: 's', orgId: 'org-A', createdAt: 't', updatedAt: 't' },
+        ],
+      }
+      const kvsLegacy = createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify(existing))),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+      await updateSlackBotConfig(kvsLegacy)(
+        createMockRequest({
+          params: { configId: 'legacy' },
+          body: { name: 'L2', botToken: 'x', signingSecret: 's' },
+          user: { userId: 'user-1', orgId: 'org-B' },
+        }),
+        createMockResponse(),
+        createMockNext(),
+      )
+      expect(storedConfigs(kvsLegacy).find((c) => c.id === 'legacy').orgId).to.equal('org-B')
+
+      const kvsBound = createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify(existing))),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+      await updateSlackBotConfig(kvsBound)(
+        createMockRequest({
+          params: { configId: 'bound' },
+          body: { name: 'B2', botToken: 'x', signingSecret: 's' },
+          user: { userId: 'user-1', orgId: 'org-B' },
+        }),
+        createMockResponse(),
+        createMockNext(),
+      )
+      expect(storedConfigs(kvsBound).find((c) => c.id === 'bound').orgId).to.equal('org-A')
+    })
+  })
+
   // -----------------------------------------------------------------------
   // updateSlackBotConfig - happy path
   // -----------------------------------------------------------------------

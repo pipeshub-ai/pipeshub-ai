@@ -157,7 +157,14 @@ class TestValidateInstanceConfig:
 
     def test_custom_stdio_with_command_passes(self) -> None:
         registry = MagicMock()
-        payload = MCPServerInstanceConfig(name="x", transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.NONE, command="npx")
+        payload = MCPServerInstanceConfig(
+            name="x",
+            transport=MCPTransport.STDIO,
+            auth_mode=MCPAuthMode.NONE,
+            command="npx",
+            args=["-y", "pkg@1.2.3"],
+            acknowledge_unsandboxed_execution=True,
+        )
         _validate_instance_config(payload, registry)  # should not raise
 
 

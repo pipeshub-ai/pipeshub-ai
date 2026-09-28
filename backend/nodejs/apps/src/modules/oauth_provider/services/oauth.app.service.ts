@@ -72,19 +72,27 @@ export class OAuthAppService {
   }
 
   /**
-   * Create a new OAuth app
+   * Create a new OAuth app.
+   *
+   * `callerScopes` (see getCallerTokenScopes) bounds the app when the caller
+   * is an OAuth/PAT token: the app's client_credentials tokens act as its
+   * creator, so an app broader than the calling token is a broader credential.
    */
   async createApp(
     orgId: string,
     createdBy: string,
     isAdmin: boolean,
     data: CreateOAuthAppRequest,
+    callerScopes?: readonly string[],
   ): Promise<OAuthAppWithSecret> {
     // Validate scopes
     this.scopeValidatorService.validateRequestedScopes(
       data.allowedScopes,
       this.scopeValidatorService.getAllowedScopeNamesForRole(isAdmin),
     )
+    if (callerScopes) {
+      this.scopeValidatorService.assertWithinCallerScopes(data.allowedScopes, callerScopes)
+    }
 
     // Validate grant types
     const allowedGrantTypes = data.allowedGrantTypes || [
@@ -397,6 +405,7 @@ export class OAuthAppService {
     userId: string,
     isAdmin: boolean,
     data: UpdateOAuthAppRequest,
+    callerScopes?: readonly string[],
   ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
@@ -405,6 +414,15 @@ export class OAuthAppService {
 
     if (!app) {
       throw new NotFoundError('OAuth app not found')
+    }
+
+    // Checked against the app as it will be after the update, so a narrow
+    // token can neither widen an app nor re-point (grants, redirects) a broad one.
+    if (callerScopes) {
+      this.scopeValidatorService.assertWithinCallerScopes(
+        data.allowedScopes ?? app.allowedScopes,
+        callerScopes,
+      )
     }
 
     // Validate scopes if provided
@@ -495,6 +513,7 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
+    callerScopes?: readonly string[],
   ): Promise<OAuthAppWithSecret> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
@@ -503,6 +522,10 @@ export class OAuthAppService {
 
     if (!app) {
       throw new NotFoundError('OAuth app not found')
+    }
+
+    if (callerScopes) {
+      this.scopeValidatorService.assertWithinCallerScopes(app.allowedScopes, callerScopes)
     }
 
     const clientSecret = this.generateClientSecret()
@@ -559,6 +582,7 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
+    callerScopes?: readonly string[],
   ): Promise<OAuthAppResponse> {
     const app = await OAuthApp.findOne({
       _id: new Types.ObjectId(appId),
@@ -567,6 +591,10 @@ export class OAuthAppService {
 
     if (!app) {
       throw new NotFoundError('OAuth app not found')
+    }
+
+    if (callerScopes) {
+      this.scopeValidatorService.assertWithinCallerScopes(app.allowedScopes, callerScopes)
     }
 
     if (app.status === OAuthAppStatus.REVOKED) {

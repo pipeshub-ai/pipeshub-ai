@@ -5,12 +5,7 @@ import { Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { apiClient } from '@/lib/api';
-import { isTrustedApiUrl, isSignedUrl } from '../../utils/parse-download-markers';
-
-interface DownloadTask {
-  fileName: string;
-  url: string;
-}
+import { isTrustedApiUrl, isSignedUrl, type DownloadTask } from '../../utils/parse-download-markers';
 
 interface DownloadTasksProps {
   tasks: DownloadTask[];

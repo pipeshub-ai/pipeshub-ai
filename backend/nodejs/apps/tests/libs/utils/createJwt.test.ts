@@ -228,6 +228,19 @@ describe('createJwt', () => {
       const decoded = jwt.verify(token, secret) as any
       expect(decoded.exp - decoded.iat).to.equal(3600)
     })
+
+    it('carries the bot\'s org when given one', () => {
+      const token = slackJwtGenerator('slack@example.com', secret, undefined, 'org-A')
+      const decoded = jwt.verify(token, secret) as any
+      expect(decoded.orgId).to.equal('org-A')
+      expect(decoded.scopes).to.deep.equal([TokenScopes.CONVERSATION_CREATE])
+    })
+
+    it('omits orgId when the bot has none', () => {
+      const token = slackJwtGenerator('slack@example.com', secret)
+      const decoded = jwt.verify(token, secret) as any
+      expect(decoded).to.not.have.property('orgId')
+    })
   })
 
   describe('iamUserLookupJwtGenerator', () => {

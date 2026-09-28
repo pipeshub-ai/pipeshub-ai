@@ -24,6 +24,8 @@ from app.api.routes.mcp_resolvers import (
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
 )
+from app.agents.mcp.stdio_policy import allow_existing_stdio_launch as stdio_mcp_launch_policy
+from app.agents.mcp.stdio_policy import self_hosted_stdio_policy as stdio_mcp_policy
 from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.api.middlewares.auth import (
     authMiddleware,

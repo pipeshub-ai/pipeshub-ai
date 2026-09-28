@@ -41,6 +41,7 @@ import {
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
 import { CHAT_ERROR_MESSAGES, userFacingChatError } from './chat-error-messages';
+import { stripModelAuthoredMarkers } from './answer-markers';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -1542,7 +1543,7 @@ export const savePartialConversation = async (
   try {
     const partialMessage: IMessage = {
       messageType: 'bot_response',
-      content: partialText,
+      content: stripModelAuthoredMarkers(partialText),
       contentFormat: 'MARKDOWN',
       status: 'stopped',
       createdAt: new Date(),

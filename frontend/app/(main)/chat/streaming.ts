@@ -18,6 +18,7 @@ import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
+import { stripAnswerMarkers } from './utils/parse-download-markers';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages, getThreadMessagePlainText } from './runtime';
 import { i18n } from '@/lib/i18n';
@@ -92,12 +93,17 @@ const STOP_GRACE_MS = 5000;
  * - New message: replaces the trailing placeholder assistant row, or drops
  *   it entirely if the stream was stopped before any tokens arrived (e.g.
  *   during "Thinking") — an empty "stopped" bubble is just noise.
+ *
+ * The committed text is model output, not a backend-saved answer, so its
+ * markers are stripped: once committed it renders as `persisted` and any
+ * marker left in it would become a card.
  */
 function buildStoppedMessages(
   messages: ThreadMessageLike[],
   regenerateMessageId: string | null,
-  streamingContent: string
+  rawStreamingContent: string
 ): ThreadMessageLike[] {
+  const streamingContent = stripAnswerMarkers(rawStreamingContent);
   if (regenerateMessageId) {
     if (!streamingContent) return messages;
     return messages.map((m) =>

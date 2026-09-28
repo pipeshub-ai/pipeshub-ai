@@ -7,7 +7,7 @@ import { OAuthApp, OAuthAppStatus } from '../../../../src/modules/oauth_provider
 import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
 import { DefaultMcpScopes } from '../../../../src/modules/oauth_provider/config/scopes.config'
 import { InvalidScopeError } from '../../../../src/libs/errors/oauth.errors'
-import { NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { ForbiddenError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
@@ -191,6 +191,139 @@ describe('PatService', () => {
 
       expect(result.accessToken).to.equal('phpat_raw-token')
       expect(result.accessToken.startsWith('phpat_')).to.be.true
+    })
+  })
+
+  describe('createToken called by an OAuth/PAT bearer', () => {
+    const existingApp = {
+      clientId: patClientId,
+      accessTokenLifetime: 3600,
+      createdBy: new Types.ObjectId(),
+    } as any
+
+    it('T19 refuses to mint scopes the calling token does not hold', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      try {
+        await service.createToken(
+          orgId,
+          userId,
+          'Test User',
+          { name: 'escalate', scopes: ['kb:read', 'agent:execute'] },
+          ['kb:read'],
+        )
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        expect(error).to.be.instanceOf(ForbiddenError)
+        expect(error.statusCode).to.equal(403)
+        expect(error.message).to.match(/: agent:execute$/)
+      }
+      expect(mockOAuthTokenService.generateTokens.called).to.be.false
+    })
+
+    it('T20 mints a subset of the calling token\'s scopes', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      await service.createToken(
+        orgId,
+        userId,
+        'Test User',
+        { name: 'narrower', scopes: ['kb:read'] },
+        ['kb:read', 'conversation:chat'],
+      )
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal(['kb:read'])
+    })
+
+    it('mints exactly the calling token\'s scopes when they are requested back', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      await service.createToken(
+        orgId,
+        userId,
+        'Test User',
+        { name: 'same', scopes: ['kb:read', 'conversation:chat'] },
+        ['conversation:chat', 'kb:read'],
+      )
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal([
+        'kb:read',
+        'conversation:chat',
+      ])
+    })
+
+    it('defaults to the calling token\'s scopes, not the full instance set, when none are requested', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      await service.createToken(orgId, userId, 'Test User', { name: 'default' }, [
+        'kb:read',
+        'conversation:chat',
+      ])
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal([
+        'conversation:chat',
+        'kb:read',
+      ])
+    })
+
+    it('drops caller scopes the instance does not allow from the default', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      await service.createToken(orgId, userId, 'Test User', { name: 'default' }, [
+        'kb:read',
+        'org:admin',
+      ])
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal(['kb:read'])
+    })
+
+    it('refuses when the calling token holds nothing a personal access token may carry', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      try {
+        await service.createToken(orgId, userId, 'Test User', { name: 'empty' }, ['org:admin'])
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        expect(error).to.be.instanceOf(ForbiddenError)
+      }
+      expect(mockOAuthTokenService.generateTokens.called).to.be.false
+    })
+
+    it('refuses when the calling token has an empty scope list', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      try {
+        await service.createToken(orgId, userId, 'Test User', { name: 'x', scopes: ['kb:read'] }, [])
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        expect(error).to.be.instanceOf(ForbiddenError)
+      }
+      expect(mockOAuthTokenService.generateTokens.called).to.be.false
+    })
+
+    it('still rejects scopes outside the instance set even if the caller holds them', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      try {
+        await service.createToken(
+          orgId,
+          userId,
+          'Test User',
+          { name: 'x', scopes: ['org:admin'] },
+          ['org:admin'],
+        )
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(InvalidScopeError)
+      }
+    })
+
+    it('a session caller (no caller scopes) keeps the full instance default', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      await service.createToken(orgId, userId, 'Test User', { name: 'session' }, undefined)
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal(DefaultMcpScopes)
     })
   })
 

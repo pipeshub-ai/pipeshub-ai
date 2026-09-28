@@ -40,6 +40,7 @@ from app.agents.mcp.client import MCPConnectionError
 from app.agents.mcp.discovery import discover_tools
 from app.agents.mcp.models import DiscoveredOAuthMetadata, MCPAuthMode, MCPServerInstanceConfig, MCPTransport
 from app.agents.mcp.registry import MCPRegistry
+from app.agents.mcp.stdio_policy import StdioPolicyDenial, template_override_denial
 from app.api.middlewares.auth import require_scopes
 from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.configuration_service import ConfigurationService
@@ -53,6 +54,7 @@ from app.edition_config import (
     mask_mcp_instance_for_response,
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
+    stdio_mcp_policy,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -209,6 +211,11 @@ _load_org_instances = load_mcp_instances
 _get_org_instance = get_mcp_instance_resolved
 
 
+def _raise_stdio_denial(denial: Optional[StdioPolicyDenial]) -> None:
+    if denial:
+        raise HTTPException(status_code=denial.status_code, detail=denial.detail)
+
+
 def _validate_instance_config(payload: MCPServerInstanceConfig, registry: MCPRegistry) -> None:
     """Cross-field validation the Pydantic model alone can't express."""
     if payload.type_id:
@@ -218,6 +225,7 @@ def _validate_instance_config(payload: MCPServerInstanceConfig, registry: MCPReg
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Unknown catalog type_id: {payload.type_id}",
             )
+        _raise_stdio_denial(template_override_denial(payload, template))
         return
 
     # Custom server — validate transport-specific required fields.
@@ -227,6 +235,7 @@ def _validate_instance_config(payload: MCPServerInstanceConfig, registry: MCPReg
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="A custom STDIO MCP server requires a command.",
             )
+        _raise_stdio_denial(stdio_mcp_policy(payload))
     else:
         if not payload.url:
             raise HTTPException(
@@ -257,8 +266,8 @@ def _build_instance_record(
         "authMode": payload.auth_mode.value,
         "useAdminAuth": payload.use_admin_auth,
         "description": payload.description,
-        "command": payload.command or (template.command if template else None),
-        "args": payload.args or (template.args if template else []),
+        "command": template.command if template else payload.command,
+        "args": list(template.args) if template else list(payload.args),
         "requiredEnv": template.required_env if template else list(payload.required_env or []),
         "optionalEnv": template.optional_env if template else [],
         "url": payload.url or (template.default_url if template else None),

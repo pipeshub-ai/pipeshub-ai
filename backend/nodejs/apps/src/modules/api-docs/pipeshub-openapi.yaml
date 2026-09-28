@@ -446,6 +446,9 @@ components:
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
+            toolset:read: Read toolsets and their authentication status
+            toolset:write: Add, configure and authenticate toolsets
+            toolset:delete: Remove toolsets and their credentials
             connector:read: Read connector configurations
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
@@ -489,6 +492,9 @@ components:
             agent:read: Read AI agents
             agent:write: Create and manage AI agents
             agent:execute: Execute AI agents
+            toolset:read: Read toolsets and their authentication status
+            toolset:write: Add, configure and authenticate toolsets
+            toolset:delete: Remove toolsets and their credentials
             connector:read: Read connector configurations
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
@@ -16475,6 +16481,8 @@ paths:
         `allowedScopes` is validated against the caller's role-aware scope set (see `GET /oauth-clients/scopes`). Org admins may include admin-only scopes; non-admins requesting a restricted scope receive `400`.
 
         All `/oauth-clients/*` routes share a per-user rate limiter (default 1000 req/min, configurable via the `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE` env var).
+
+        When the caller authenticates with an OAuth access token or personal access token (not a browser session), `allowedScopes` must also be a subset of that token's own scopes; otherwise the request is rejected with `403`. An app's `client_credentials` tokens act as its creator, so an app broader than the calling token would be a broader credential.
       operationId: createOAuthApp
       x-pipeshub-sdk: true
       security:
@@ -16506,7 +16514,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to create OAuth apps
+          description: Forbidden — insufficient workspace permission to create OAuth apps, or `allowedScopes` exceeds the calling OAuth/PAT token's scopes
           content:
             application/json:
               schema:
@@ -16641,6 +16649,8 @@ paths:
         When modifying `allowedScopes`, the new set must remain a subset of the caller's role-aware scope list (same rule as `GET /oauth-clients/scopes`). When adding `authorization_code` to `allowedGrantTypes`, `redirectUris` becomes required and must contain at least one URI; otherwise the request is rejected with `400` by the Zod refine on `updateAppSchema`.
 
         This endpoint never rotates the client secret — use `POST /oauth-clients/{appId}/regenerate-secret` for that.
+
+        When the caller authenticates with an OAuth access token or personal access token, the app's resulting `allowedScopes` (the new set, or the current one if unchanged) must be a subset of that token's scopes, whatever fields are being changed; otherwise `403`.
       operationId: updateOAuthApp
       x-pipeshub-sdk: true
       security:
@@ -16680,7 +16690,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag), or the app's scopes exceed the calling OAuth/PAT token's scopes.
           content:
             application/json:
               schema:
@@ -16765,6 +16775,8 @@ paths:
         The new secret is returned in this response **only** and cannot be retrieved later. Pair this call with credential propagation to every integration that uses the app. If the rotation was triggered by a suspected leak, also call `POST /oauth-clients/{appId}/revoke-all-tokens` to invalidate already-issued access and refresh tokens instead of waiting for their natural expiry.
 
         Creator-only: even org admins cannot rotate secrets for other users' apps.
+
+        When the caller authenticates with an OAuth access token or personal access token, the app's `allowedScopes` must be a subset of that token's scopes; otherwise `403`.
       operationId: regenerateOAuthAppSecret
       x-pipeshub-sdk: true
       security:
@@ -16791,7 +16803,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag), or the app's scopes exceed the calling OAuth/PAT token's scopes.
           content:
             application/json:
               schema:
@@ -16881,6 +16893,8 @@ paths:
         A revoked app cannot be reactivated (returns `400`); the only path back is to register a new app. Activating an app that is already active also returns `400`.
 
         Creator-only.
+
+        When the caller authenticates with an OAuth access token or personal access token, the app's `allowedScopes` must be a subset of that token's scopes; otherwise `403`.
       operationId: activateOAuthApp
       x-pipeshub-sdk: true
       security:
@@ -16913,7 +16927,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag), or the app's scopes exceed the calling OAuth/PAT token's scopes.
           content:
             application/json:
               schema:
@@ -17107,6 +17121,8 @@ paths:
         The response's `accessToken` is shown **once**; only its SHA-256
         hash is stored. It's prefixed `phpat_` (see the `bearerAuth`
         security scheme).
+
+        When the caller authenticates with an OAuth access token or personal access token (not a browser session), the requested `scopes` must also be a subset of that token's own scopes, and omitting `scopes` grants the calling token's scopes (within `MCP_SCOPES`) rather than the full set. Exceeding them returns `403`.
       operationId: createPersonalAccessToken
       x-pipeshub-sdk: true
       security:
@@ -17137,6 +17153,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Forbidden — the caller is a service account, or a requested scope exceeds the calling OAuth/PAT token's scopes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
           content:
@@ -17155,6 +17177,8 @@ paths:
         `GET /oauth-clients/scopes`, this is **not** grouped by category and
         **not** role-aware — every org member sees the same set, since PAT
         scope selection isn't gated by admin status.
+
+        For a caller authenticated with an OAuth access token or personal access token, the list is narrowed to the scopes that token holds.
       operationId: listPersonalAccessTokenScopes
       x-pipeshub-sdk: true
       security:
@@ -35205,6 +35229,7 @@ paths:
       operationId: listToolsetRegistry
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: page
           in: query
@@ -35257,6 +35282,7 @@ paths:
       operationId: getToolsetSchema
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetType
           in: path
@@ -35282,6 +35308,7 @@ paths:
       operationId: createToolset
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       requestBody:
         required: true
         description: Toolset instance payload including name, type, authentication configuration, and optional base URL.
@@ -35338,6 +35365,7 @@ paths:
       operationId: listConfiguredToolsets
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       responses:
         '200':
           description: Configured toolsets retrieved successfully
@@ -35362,6 +35390,7 @@ paths:
       operationId: checkToolsetStatus
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetId
           in: path
@@ -35386,6 +35415,7 @@ paths:
       operationId: getToolsetConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetId
           in: path
@@ -35409,6 +35439,7 @@ paths:
       deprecated: true
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetId
           in: path
@@ -35445,6 +35476,7 @@ paths:
       operationId: updateToolsetConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetId
           in: path
@@ -35483,6 +35515,7 @@ paths:
       operationId: deleteToolsetConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: toolsetId
           in: path
@@ -35508,6 +35541,7 @@ paths:
       operationId: reauthenticateToolset
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetId
           in: path
@@ -35541,6 +35575,7 @@ paths:
       operationId: getToolsetOAuthUrl
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetId
           in: path
@@ -35577,6 +35612,7 @@ paths:
       operationId: handleToolsetOAuthCallback
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: code
           in: query
@@ -35618,6 +35654,7 @@ paths:
       operationId: getMyToolsets
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: page
           in: query
@@ -35897,6 +35934,7 @@ paths:
       operationId: getAgentToolsets
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       parameters:
         - name: agentKey
           in: path
@@ -36042,6 +36080,7 @@ paths:
       operationId: authenticateAgentToolset
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -36082,6 +36121,7 @@ paths:
       operationId: updateAgentToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -36131,6 +36171,7 @@ paths:
       operationId: removeAgentToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -36161,6 +36202,7 @@ paths:
       operationId: reauthenticateAgentToolset
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -36191,6 +36233,7 @@ paths:
       operationId: getAgentToolsetOAuthUrl
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -36232,6 +36275,7 @@ paths:
       operationId: getToolsetInstances
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       responses:
         '200':
           description: Instances retrieved successfully
@@ -36250,6 +36294,7 @@ paths:
       operationId: createToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       requestBody:
         required: true
         description: Toolset instance payload including name, type, auth type, auth configuration, and optional base URL.
@@ -36296,6 +36341,7 @@ paths:
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -36317,6 +36363,7 @@ paths:
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -36348,6 +36395,7 @@ paths:
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: instanceId
           in: path
@@ -36373,6 +36421,7 @@ paths:
       operationId: authenticateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -36406,6 +36455,7 @@ paths:
       operationId: updateToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -36448,6 +36498,7 @@ paths:
       operationId: removeToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: instanceId
           in: path
@@ -36471,6 +36522,7 @@ paths:
       operationId: reauthenticateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: instanceId
           in: path
@@ -36494,6 +36546,7 @@ paths:
       operationId: getInstanceOAuthAuthorizationUrl
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -36524,6 +36577,7 @@ paths:
       operationId: getToolsetInstanceStatus
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: instanceId
           in: path
@@ -36547,6 +36601,7 @@ paths:
       operationId: listToolsetOAuthConfigs
       security:
         - bearerAuth: []
+        - oauth2: [toolset:read]
       parameters:
         - name: toolsetType
           in: path
@@ -36570,6 +36625,7 @@ paths:
       operationId: updateToolsetOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:write]
       parameters:
         - name: toolsetType
           in: path
@@ -36606,6 +36662,7 @@ paths:
       operationId: deleteToolsetOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [toolset:delete]
       parameters:
         - name: toolsetType
           in: path

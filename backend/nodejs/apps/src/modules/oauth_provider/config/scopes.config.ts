@@ -200,6 +200,26 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     requiresUserConsent: true,
   },
 
+  // Toolsets
+  'toolset:read': {
+    name: 'toolset:read',
+    description: 'Read toolsets and their authentication status',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+  'toolset:write': {
+    name: 'toolset:write',
+    description: 'Add, configure and authenticate toolsets',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+  'toolset:delete': {
+    name: 'toolset:delete',
+    description: 'Remove toolsets and their credentials',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+
   // Projects
   'project:read': {
     name: 'project:read',
@@ -369,6 +389,7 @@ export const ScopeCategories = [
   'Conversations',
   'Agents',
   'MCP Servers',
+  'Toolsets',
   'Projects',
   'Connectors',
   'Configuration',

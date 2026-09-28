@@ -310,6 +310,52 @@ class TestRunChatStream:
         assert captured_kwargs["has_sql_connector"] is True
         assert captured_kwargs["has_slack_connector"] is True
 
+    async def test_foreign_attachments_are_dropped_before_any_resolution(self) -> None:
+        """Current-turn and history attachments naming another user's upload
+        never reach the blob resolvers or the chat state (P0.1b T10/T13)."""
+        from types import SimpleNamespace
+
+        from app.agents.chat_modes.attachments import ResolvedAttachments
+
+        own = {"recordId": "r-own", "virtualRecordId": "vr-own", "mimeType": "application/pdf"}
+        foreign = {"recordId": "r-bob", "virtualRecordId": "vr-bob", "mimeType": "application/pdf"}
+        records = {
+            "r-own": SimpleNamespace(id="r-own", org_id="org-1", virtual_record_id="vr-own"),
+            "r-bob": SimpleNamespace(id="r-bob", org_id="org-1", virtual_record_id="vr-bob"),
+        }
+        kwargs = self._base_kwargs(policy=AGENT_POLICY)
+        kwargs["query_info"] = {
+            **kwargs["query_info"],
+            "attachments": [foreign, own],
+            "previous_conversations": [{"role": "user_query", "content": "x", "attachments": [foreign]}],
+        }
+        graph = kwargs["graph_provider"]
+        graph.get_record_by_id = AsyncMock(side_effect=lambda rid, *a, **k: records.get(rid))
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey-1"})
+        graph.get_edge = AsyncMock(
+            side_effect=lambda *, from_id, to_id, **_: {"_key": "e"} if to_id == "r-own" else None,
+        )
+        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        resolver = AsyncMock(return_value=ResolvedAttachments(context_text=""))
+        captured: dict[str, Any] = {}
+
+        def _capture_state(query_info: dict[str, Any], *args: object, **kw: object) -> None:
+            captured.update(query_info)
+            raise RuntimeError("stop after state build")
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.resolve_attachments", new=resolver),
+            patch("app.modules.agents.qna.chat_state.build_initial_state", new=_capture_state),
+        ):
+            [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        assert resolver.await_args.args[0] == [own]
+        assert captured["attachments"] == [own]
+        assert captured["previous_conversations"][0]["attachments"] == []
+
     async def test_available_connectors_reuses_user_key_from_route(self) -> None:
         """`user_info["userKey"]` (resolved by `chatbot.py`) skips the repeat
         `get_user_by_user_id` lookup the prefetch used to make."""

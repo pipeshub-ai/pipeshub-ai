@@ -14,6 +14,7 @@ export interface SlackBotConfig {
   botId?: string;
   botUserId?: string;
   agentId?: string | null;
+  orgId?: string;
 }
 
 interface SlackBotIdentity {
@@ -63,12 +64,14 @@ function normalizeBotEntry(entry: unknown): SlackBotConfig | null {
   const agentId =
     getStringField(record.agentId) ||
     null;
+  const orgId = getStringField(record.orgId);
 
   return {
     botToken,
     signingSecret,
     botId,
     agentId,
+    ...(orgId ? { orgId } : {}),
   };
 }
 

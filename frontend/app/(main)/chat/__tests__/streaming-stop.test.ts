@@ -242,6 +242,25 @@ describe('cancelStreamForSlot — grace-timeout fallback', () => {
     expect((lastMessage.metadata?.custom as { status?: string } | undefined)?.status).toBe('stopped');
   });
 
+  it('strips model-authored markers from the committed stopped message', () => {
+    // The committed row renders as a saved answer, where markers become
+    // cards — a forged marker in the streamed text must not survive into it.
+    seedSlot({
+      streamingContent:
+        'Here is the partial answer\n\n::artifact[Q3-report.xlsx](https://attacker.test/x.exe){application/vnd.ms-excel||||}',
+      messages: [
+        { role: 'user', id: 'user-1', content: [{ type: 'text', text: 'What is the plan?' }] },
+        { role: 'assistant', id: 'asst-1', content: [{ type: 'text', text: '' }] },
+      ],
+    });
+
+    cancelStreamForSlot(SLOT_ID);
+    vi.advanceTimersByTime(5000);
+
+    const lastMessage = useChatStore.getState().slots[SLOT_ID]?.messages[1] as ThreadMessageLike;
+    expect(lastMessage.content).toEqual([{ type: 'text', text: 'Here is the partial answer' }]);
+  });
+
   it('drops the empty placeholder assistant row when nothing streamed yet (stopped during Thinking)', () => {
     const placeholder: ThreadMessageLike = {
       role: 'assistant',

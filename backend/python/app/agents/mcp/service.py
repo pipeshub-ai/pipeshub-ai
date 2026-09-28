@@ -19,7 +19,9 @@ from app.agents.constants.mcp_server_constants import (
     get_mcp_instance_path,
     get_mcp_instances_prefix,
 )
-from app.agents.mcp.models import MCPAuthMode, MCPServerConfig
+from app.agents.mcp.client import MCPLaunchDeniedError
+from app.agents.mcp.models import MCPAuthMode, MCPServerConfig, MCPTransport
+from app.agents.mcp.registry import get_mcp_registry
 from app.config.configuration_service import ConfigurationService
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import read_platform_feature_flag
@@ -112,13 +114,33 @@ def is_effective_auth_authenticated(effective_auth: Optional[dict[str, Any]]) ->
     return effective_auth is not None and (effective_auth == {} or bool(effective_auth.get("isAuthenticated")))
 
 
+def _stdio_launch(instance: dict[str, Any]) -> tuple[Optional[str], list[str]]:
+    if instance.get("transport") != MCPTransport.STDIO.value:
+        return instance.get("command"), instance.get("args") or []
+    # Catalog STDIO instances run the template's pinned command, not what an older record stored.
+    if not instance.get("isCustom"):
+        template = get_mcp_registry().get_template(instance.get("typeId") or "")
+        if template and template.transport == MCPTransport.STDIO:
+            return template.command, list(template.args)
+    # Deferred: edition_config imports the MCP resolvers, which import this module.
+    from app.edition_config import stdio_mcp_launch_policy
+
+    denial = stdio_mcp_launch_policy(instance)
+    if denial:
+        raise MCPLaunchDeniedError(denial.detail)
+    return instance.get("command"), instance.get("args") or []
+
+
 def instance_config_from_dict(instance: dict[str, Any]) -> MCPServerConfig:
     """Build the typed `MCPServerConfig` the discovery/client layer expects, from the stored dict.
+
+    Raises `MCPLaunchDeniedError` when the edition's STDIO launch policy refuses the instance.
 
     Uses `.get()` rather than direct indexing for required fields so a malformed/stale etcd
     record surfaces as a normal Pydantic `ValidationError` (missing field) instead of an
     unhandled `KeyError` from this function.
     """
+    command, args = _stdio_launch(instance)
     return MCPServerConfig(
         _id=instance.get("_id"),
         org_id=instance.get("orgId"),
@@ -129,8 +151,8 @@ def instance_config_from_dict(instance: dict[str, Any]) -> MCPServerConfig:
         auth_mode=instance.get("authMode"),
         use_admin_auth=bool(instance.get("useAdminAuth")),
         description=instance.get("description"),
-        command=instance.get("command"),
-        args=instance.get("args") or [],
+        command=command,
+        args=args,
         required_env=instance.get("requiredEnv") or [],
         optional_env=instance.get("optionalEnv") or [],
         url=instance.get("url"),

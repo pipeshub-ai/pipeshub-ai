@@ -21,6 +21,10 @@ from app.agents.mcp.models import (
     MCPTransport,
     OAuthTokens,
 )
+from app.agents.mcp.stdio_policy import (
+    deny_custom_stdio_policy,
+    self_hosted_stdio_policy,
+)
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
 from app.api.routes.mcp_servers import (
     AuthenticateRequest,
@@ -828,3 +832,155 @@ class TestAgentMcpRoutes:
         assert build.await_args.args[3] == "agent-1"  # owner_id is agent key
         assert build.await_args.kwargs["owner_type"] == "agent"
         assert build.await_args.kwargs["initiated_by"] == "admin-1"
+
+
+# ---------------------------------------------------------------------------
+# STDIO lockdown (P0.12): acknowledgement, pinned packages, fixed templates, edition seam
+# ---------------------------------------------------------------------------
+
+
+def _custom_stdio_payload(args: list[str], acknowledged: bool = True) -> MCPServerInstanceConfig:
+    return MCPServerInstanceConfig(
+        name="Custom",
+        transport=MCPTransport.STDIO,
+        auth_mode=MCPAuthMode.NONE,
+        command="npx",
+        args=args,
+        required_env=["API_KEY"],
+        acknowledge_unsandboxed_execution=acknowledged,
+    )
+
+
+def _exa_template() -> MagicMock:
+    return MagicMock(
+        type_id="exa",
+        command="npx",
+        args=["-y", "exa-mcp-server@3.4.1"],
+        required_env=["EXA_API_KEY"],
+        optional_env=[],
+        default_url=None,
+        authorization_url=None,
+        token_url=None,
+        default_scopes=[],
+    )
+
+
+def _stdio_request(template=None) -> tuple[MagicMock, MagicMock]:
+    config_service = MagicMock()
+    config_service.set_config = AsyncMock(return_value=True)
+    registry = MagicMock()
+    registry.get_template.return_value = template
+    return _admin_request(config_service=config_service, registry=registry), config_service
+
+
+class TestStdioLockdown:
+    @pytest.mark.asyncio
+    async def test_custom_stdio_without_acknowledgement_is_400(self) -> None:
+        request, config_service = _stdio_request()
+        with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
+            with pytest.raises(HTTPException) as exc:
+                await create_instance(request, _custom_stdio_payload(["-y", "pkg@1.2.3"], acknowledged=False))
+        assert exc.value.status_code == 400
+        assert "acknowledgeUnsandboxedExecution" in exc.value.detail
+        config_service.set_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spec", ["pkg", "pkg@latest", "pkg@^1"])
+    async def test_custom_stdio_unpinned_package_is_400(self, spec: str) -> None:
+        request, config_service = _stdio_request()
+        with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
+            with pytest.raises(HTTPException) as exc:
+                await create_instance(request, _custom_stdio_payload(["-y", spec]))
+        assert exc.value.status_code == 400
+        assert spec in exc.value.detail
+        config_service.set_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_custom_stdio_acknowledged_and_pinned_is_created(self) -> None:
+        request, config_service = _stdio_request()
+        with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
+            record = await create_instance(request, _custom_stdio_payload(["-y", "pkg@1.2.3"]))
+        assert record["command"] == "npx"
+        assert record["args"] == ["-y", "pkg@1.2.3"]
+        assert "acknowledgeUnsandboxedExecution" not in record
+        config_service.set_config.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_template_args_override_is_400(self) -> None:
+        request, config_service = _stdio_request(template=_exa_template())
+        payload = MCPServerInstanceConfig(
+            name="Exa",
+            type_id="exa",
+            transport=MCPTransport.STDIO,
+            auth_mode=MCPAuthMode.API_TOKEN,
+            args=["-y", "evil-pkg"],
+        )
+        with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
+            with pytest.raises(HTTPException) as exc:
+                await create_instance(request, payload)
+        assert exc.value.status_code == 400
+        assert "args" in exc.value.detail
+        config_service.set_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_template_instance_stores_the_template_launch_spec(self) -> None:
+        request, _ = _stdio_request(template=_exa_template())
+        payload = MCPServerInstanceConfig(
+            name="Exa", type_id="exa", transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.API_TOKEN
+        )
+        with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
+            record = await create_instance(request, payload)
+        assert record["args"] == ["-y", "exa-mcp-server@3.4.1"]
+
+    @pytest.mark.asyncio
+    async def test_edition_seam_denying_custom_stdio_is_403(self) -> None:
+        request, config_service = _stdio_request()
+        with (
+            patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)),
+            patch("app.api.routes.mcp_servers.stdio_mcp_policy", new=deny_custom_stdio_policy),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await create_instance(request, _custom_stdio_payload(["-y", "pkg@1.2.3"]))
+        assert exc.value.status_code == 403
+        config_service.set_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("payload", "deny_all", "status"),
+        [
+            (_custom_stdio_payload(["-y", "pkg@1.2.3"], acknowledged=False), False, 400),
+            (_custom_stdio_payload(["-y", "pkg@latest"]), False, 400),
+            (_custom_stdio_payload(["-y", "pkg@1.2.3"]), True, 403),
+        ],
+    )
+    async def test_update_enforces_the_same_rules_as_create(self, payload, deny_all, status) -> None:
+        request, config_service = _stdio_request()
+        existing = _api_token_instance(isCustom=True, typeId=None, command="npx", args=["-y", "pkg@1.0.0"])
+        with (
+            patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)),
+            patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value=existing)),
+            patch(
+                "app.api.routes.mcp_servers.stdio_mcp_policy",
+                new=deny_custom_stdio_policy if deny_all else self_hosted_stdio_policy,
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await update_instance(request, "inst-1", payload)
+        assert exc.value.status_code == status
+        config_service.set_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_template_args_override_is_400(self) -> None:
+        request, config_service = _stdio_request(template=_exa_template())
+        existing = _api_token_instance(typeId="exa", command="npx", args=["-y", "exa-mcp-server@3.4.1"])
+        payload = MCPServerInstanceConfig(
+            name="Exa", type_id="exa", transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.API_TOKEN, command="bash"
+        )
+        with (
+            patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)),
+            patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value=existing)),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await update_instance(request, "inst-1", payload)
+        assert exc.value.status_code == 400
+        config_service.set_config.assert_not_called()

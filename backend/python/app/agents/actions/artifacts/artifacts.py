@@ -32,6 +32,8 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import infer_artifact_type
 from app.services.artifact_registry import Actor, ArtifactMetadata, ArtifactVisibility, VersionConflictError
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
+from app.services.record_content.authorizer import TieredRecordAuthorizer
+from app.services.record_content.models import RecordAccessDeniedError
 from app.utils.conversation_tasks import register_task
 
 logger = logging.getLogger(__name__)
@@ -494,24 +496,24 @@ class ArtifactManager:
         except Exception:
             logger.exception("[get_record_download_url] lookup failed for %s", record_id)
             return _result(False, {"success": False, "error": "Failed to look up record"})
+        # Missing, denied and unverifiable all read the same so the tool is not
+        # an existence oracle for record ids the caller cannot see.
+        unavailable = _result(False, {
+            "success": False,
+            "error": f"No record found with id {record_id!r}, or you do not have permission to access it",
+        })
         if record is None:
-            return _result(False, {"success": False, "error": f"No record found with id {record_id!r}"})
+            return unavailable
 
-        from app.config.constants.arangodb import OriginTypes
-        from app.services.record_content import (
-            RecordAccessDeniedError,
-            TieredRecordAuthorizer,
-        )
-
-        # A signed URL needs no bearer token, so this is the only permission
-        # check between the caller and the bytes.
         try:
             await TieredRecordAuthorizer(graph_provider).authorize(self._actor(), record)
         except RecordAccessDeniedError:
-            return _result(False, {"success": False, "error": "You do not have permission to access this record"})
+            return unavailable
         except Exception:
-            logger.exception("[get_record_download_url] access check failed for %s", record_id)
-            return _result(False, {"success": False, "error": "Failed to check access to this record"})
+            logger.exception("[get_record_download_url] authorization failed for %s", record_id)
+            return unavailable
+
+        from app.config.constants.arangodb import OriginTypes
 
         if record.origin == OriginTypes.UPLOAD:
             if not record.external_record_id:

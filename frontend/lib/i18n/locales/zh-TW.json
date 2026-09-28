@@ -1109,7 +1109,12 @@
       "webSearch": "網路搜尋"
     },
     "resizePanels": "調整對話與預覽面板大小",
-    "mobileProfileComingSoon": "行動版個人資料頁面即將推出。"
+    "mobileProfileComingSoon": "行動版個人資料頁面即將推出。",
+    "remoteImage": {
+      "notLoaded": "未載入來自 {{host}} 的圖片",
+      "load": "載入圖片",
+      "loadFromHost": "載入來自 {{host}} 的圖片"
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -2615,6 +2620,12 @@
         "command": "命令",
         "args": "引數",
         "argsPlaceholder": "新增引數",
+        "stdioWarningTitle": "此命令在 PipesHub 伺服器上執行",
+        "stdioWarning": "自訂 STDIO MCP 伺服器會以處理程序的形式在 PipesHub 伺服器上執行，並擁有伺服器的存取權限：網路、檔案以及您提供的所有憑證。它不在沙箱中執行。請只新增您信任的命令和套件。",
+        "stdioAcknowledge": "我了解此命令在 PipesHub 伺服器上無沙箱執行，而且我信任它。",
+        "stdioPackageNotPinned": "請將「{{spec}}」固定為確切版本（例如 {{example}}）。不允許使用 latest 等標籤、版本範圍、git 或 URL 規格。",
+        "stdioShellOptionNotAllowed": "啟動器選項 {{option}} 會執行任意 shell 命令，不允許使用。",
+        "stdioPackageMissing": "請新增要執行的套件，並固定為確切版本（例如 name@1.2.3）。",
         "requiredEnv": "必要環境變數",
         "requiredEnvPlaceholder": "新增環境變數名稱（例如 API_KEY）",
         "url": "URL",

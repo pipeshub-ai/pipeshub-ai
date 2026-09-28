@@ -9,6 +9,7 @@ import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { CONVERSATION_ID_HEADER } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import {
   FakeAIBackend,
   FakeSSEResponse,
@@ -500,7 +501,12 @@ describe('es_controller non-streaming chat routes', () => {
   })
 
   describe('internal (scoped-token) callers', () => {
+    // A token without an org is only unambiguous on a single-org instance.
+    const singleOrgInstance = () =>
+      sinon.stub(Org, 'find').resolves([{ _id: ORG }] as never)
+
     it('are resolved to their user and re-signed before the AI call', async () => {
+      singleOrgInstance()
       const userId = oid()
       sinon.stub(Users, 'findOne').resolves({
         _id: userId,
@@ -522,7 +528,44 @@ describe('es_controller non-streaming chat routes', () => {
       expect((jwt.decode(token) as { userId: string }).userId).to.equal(String(userId))
     })
 
+    it('look the user up only inside the org named on the token', async () => {
+      sinon.stub(Org, 'findOne').resolves({ _id: ORG } as never)
+      const findUser = sinon.stub(Users, 'findOne').resolves({
+        _id: oid(),
+        orgId: ORG,
+        email: 'bot-user@example.com',
+        fullName: 'Bot User',
+        slug: 'bot-user',
+      } as never)
+      const create = flows[0]!
+
+      await run(create, (ai) => ai.reply(exactPath('/api/v1/chat'), 200, answer('hi')), {
+        req: {
+          user: undefined,
+          tokenPayload: { email: 'bot-user@example.com', orgId: String(ORG) },
+          headers: { authorization: 'Bearer scoped' },
+        },
+      })
+
+      expect(String(findUser.firstCall.args[0].orgId)).to.equal(String(ORG))
+    })
+
+    it('without an org on a multi-org instance are refused and nothing is written', async () => {
+      sinon.stub(Org, 'find').resolves([{ _id: ORG }, { _id: oid() }] as never)
+      const findUser = sinon.stub(Users, 'findOne')
+      const create = flows[0]!
+
+      const r = await run(create, () => undefined, {
+        req: { user: undefined, tokenPayload: { email: 'bot-user@example.com' } },
+      })
+
+      expect(r.error()?.statusCode).to.equal(401)
+      expect(findUser.called).to.be.false
+      expect(r.store.writes).to.deep.equal([])
+    })
+
     it('with no matching user are a 404 and nothing is written', async () => {
+      singleOrgInstance()
       sinon.stub(Users, 'findOne').resolves(null)
       const create = flows[0]!
 

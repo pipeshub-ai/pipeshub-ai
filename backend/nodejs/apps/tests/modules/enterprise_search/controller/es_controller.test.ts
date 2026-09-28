@@ -66,6 +66,7 @@ import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.se
 import { BadRequestError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
@@ -389,6 +390,11 @@ describe('Enterprise Search Controller', () => {
     // Individual tests can `.resolves(...)` a different value after this.
     if (!(ProjectService.getAccessibleProjectIds as any).restore) {
       sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    }
+    // Slack scoped-token hydration resolves the bot's org first; a single-org
+    // instance by default.
+    if (!(Org.find as any).restore) {
+      sinon.stub(Org, 'find').resolves([{ _id: new mongoose.Types.ObjectId(VALID_OID2) }] as any)
     }
   })
 
