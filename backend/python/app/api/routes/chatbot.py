@@ -1338,12 +1338,14 @@ async def _generate_chat_stream_via_agent_loop(
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
         "runId": query_info.runId,
+        "is_service_account": bool(user.get("isServiceAccount")),
     }
     user_info = {
         "userId": user_id,
         "orgId": org_id,
         "userEmail": user.get("email") or "",
         "sendUserInfo": request.query_params.get("sendUserInfo", True),
+        "isServiceAccount": bool(user.get("isServiceAccount")),
     }
 
     org_info: dict[str, Any] | None = None
