@@ -705,14 +705,13 @@ def _names_higher_band(text: str, band_amounts: set[float], no_approval: list[st
         if not exceptions:
             return False
         # A no-approval claim after the exception word keeps the amount: in its own
-        # clause, or in the next clause (the next sentence, `after`, when this text
-        # ends) unless that one is about a lower amount ("…, and up to $100 needs no
-        # approval").
+        # clause, or in any later clause (the next sentence, `after`, when this text
+        # ends) that isn't about a lower amount ("…, and up to $100 needs no approval").
         own = text[exceptions[-1].end():hi]
         rest = _BAND_LEAD_IN.sub("", text[hi:] if text[hi:].strip(" .!?") else after)
-        following = _BREAK_OUTSIDE_AMOUNTS.split(rest)[0]
-        return not _states_no_approval(own, no_approval) and not (
-            _states_no_approval(following, no_approval) and not _about_lower_amount(following, band_amounts)
+        return not _states_no_approval(own, no_approval) and not any(
+            _states_no_approval(clause, no_approval) and not _about_lower_amount(clause, band_amounts)
+            for clause in _BREAK_OUTSIDE_AMOUNTS.split(rest)
         )
 
     # An exception hides only a range or a raise ("except between $251 and $2,500",
@@ -784,7 +783,13 @@ _LOWER_WORD = re.compile(r"\b(?:small|smaller|low|lower|minor|petty|cheap|cheape
 def _about_lower_amount(clause: str, band_amounts: set[float]) -> bool:
     """Whether a clause is about an amount at or below the $250 band ("up to $100",
     "small purchases"), not the higher band."""
-    return any(v <= max(band_amounts) for v in _amount_values(clause)) or bool(_LOWER_WORD.search(clause))
+    amounts = _amount_values(clause)
+    # "above $250" is the next band, and a clause that also names $5,000 isn't only lower.
+    higher = any(v > max(band_amounts) for v in amounts) or any(
+        not re.search(rf"\b{_NEGATOR}\s*$", clause[:m.start()]) for m in _RAISES.finditer(clause)
+    )
+    lower = any(v <= max(band_amounts) for v in amounts) or bool(_LOWER_WORD.search(clause))
+    return lower and not higher
 
 
 def _states_no_approval(clause: str, no_approval: list[str]) -> bool:
