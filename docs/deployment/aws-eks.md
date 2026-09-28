@@ -24,6 +24,17 @@ You need AWS credentials (`aws sts get-caller-identity` works) and a hostname. I
 ./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1
 ```
 
+The app image is `pipeshubai/pipeshub-ai:0.9.0-slim`. Pass `--image` to use another public tag, such as `pipeshubai/pipeshub-ai:nightly`. A private image also needs a registry token. The token is stored only as a Kubernetes pull secret. It is not written into the chart and it is not printed.
+
+```bash
+PIPESHUB_DOCKER_TOKEN='...' ./deployment/helm/aws/deploy.sh \
+  --domain pipeshub.example.com \
+  --region us-east-1 \
+  --image myorg/pipeshub-ee:1.2.0
+```
+
+`--image` is `account/image` or `account/image:tag`. With no tag, the tag is `0.9.0-slim`. The Docker username defaults to that account. Pass `--docker-username` when the token belongs to a different user, such as a robot account for an organization image. Omit the token and `--image` to deploy the public image. Pass both again on later runs: a run without them switches back to the public image. Prefer `PIPESHUB_DOCKER_TOKEN` over `--docker-token` so the token is not saved in shell history.
+
 It shows a plan and asks once before creating anything; `--yes` skips the prompt. It then:
 
 1. Creates a KMS key (`alias/<cluster>-eks`) for Kubernetes Secrets
@@ -37,19 +48,25 @@ It shows a plan and asks once before creating anything; `--yes` skips the prompt
 9. Sets up daily EBS backups, kept 30 days (`--no-backups` to skip)
 10. Checks `https://<domain>/api/v1/health`
 
-When it finishes, open the URL, create the admin account, and choose S3 in storage settings with the bucket and region it prints. Leave the access keys empty.
+When it finishes, it prints the S3 bucket name and region. Open the URL, create the admin account, and during onboarding, on the Storage step, choose S3 and enter that bucket and region. Leave the access keys empty. Do this before anyone uploads a file.
 
 If a step fails, the script prints the command that failed. Fix the cause and run the same command again. Every step skips what already exists. Run it again later to update the chart.
 
-`./deployment/helm/aws/deploy.sh --help` prints what the command does and the full option list, including `--namespace`, `--release`, `--no-backups`, and `--destroy`.
+`./deployment/helm/aws/deploy.sh --help` prints what the command does and the full option list, including `--image`, `--namespace`, `--release`, `--no-backups`, `--destroy`, and `--purge`.
 
-To remove the release and the cluster:
+To remove the release and the cluster, and keep the database disks:
 
 ```bash
 ./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1 --destroy
 ```
 
-This keeps the EBS volumes, the S3 bucket, backups, the KMS key, and the saved `secret-key`, and lists what is left.
+To also delete that cluster's database disks, snapshots, S3 bucket, backup vault, and saved `secret-key`:
+
+```bash
+./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1 --cluster pipeshub --purge --yes
+```
+
+`--purge` implies `--destroy`. It deletes a disk only when the disk is detached and tagged for this cluster (`kubernetes.io/cluster/<name>=owned` and `pipeshub-backup=true`). It deletes an S3 bucket only when the bucket name contains the cluster name. The KMS key is kept so the next deploy can reuse it.
 
 The rest of this guide is the same install step by step, for when you want to run or review each part yourself.
 
@@ -360,7 +377,7 @@ kubectl exec -n "$NAMESPACE" deploy/pipeshub-ai -c pipeshub-ai -- env | grep AWS
 
 Expect a line that ends with `169.254.170.23/v1/credentials`.
 
-In the UI, as the admin, open storage settings and choose S3. Enter the bucket name and region. Leave the access key and secret key empty, so the app uses the Pod Identity role. Save before uploading documents or connecting sources.
+During onboarding, on the Storage step, choose S3. Enter the bucket name and region printed at the end of `deploy.sh`. Leave the access key and secret key empty, so the app uses the Pod Identity role. Save before uploading documents or connecting sources.
 
 ## 9. Connector OAuth
 
@@ -471,7 +488,7 @@ Set the new app and sandbox versions, then upgrade:
 helm upgrade pipeshub-ai ./deployment/helm/pipeshub-ai \
   -n "$NAMESPACE" -f ./deployment/helm/pipeshub-ai/values-eks.yaml \
   --reuse-values \
-  --set image.tag=0.8.0 \
+  --set image.tag=0.9.0-slim \
   --set config.sandboxDockerImage=pipeshubai/pipeshub-sandbox:0.8.0 \
   --wait --timeout 30m
 ```
@@ -490,7 +507,7 @@ The app scales from two to four pods. More pods do not fit on two app nodes. To 
 
 **PVC stays Pending.** The pod is in a zone where the volume cannot attach, or `gp3` is missing. Run `kubectl describe pvc -n "$NAMESPACE"`. Confirm the storage class exists and that `ebs-csi-controller` pods are Running in `kube-system`.
 
-**Pod is Pending with a taint or `Insufficient cpu`.** Data pods land only on `pipeshub/role=data`, app pods only on `pipeshub/role=app`. Qdrant and Neo4j each reserve 4 CPUs and 8 GiB. Check that four `data` nodes exist across three zones.
+**Pod is Pending with a taint or `Insufficient cpu`.** Data pods land only on `pipeshub/role=data`, app pods only on `pipeshub/role=app`. Qdrant and Neo4j each reserve 4 CPUs and 8 GiB, so they cannot share one `m7i.2xlarge`. Qdrant prefers one pod per zone and uses the extra data node when a zone is already full. Check that four `data` nodes exist across three zones.
 
 **Ingress has no address.** Check `kubectl logs -n kube-system deploy/aws-load-balancer-controller`. Common causes: the certificate is not `ISSUED`, the public subnets are missing the `kubernetes.io/role/elb` tag (eksctl adds it), or the controller is missing `region` or `vpcId`.
 
@@ -504,21 +521,19 @@ The app scales from two to four pods. More pods do not fit on two app nodes. To 
 
 ## Remove everything
 
-```bash
-helm uninstall pipeshub-ai -n "$NAMESPACE"
-kubectl delete pvc -n "$NAMESPACE" --all
-eksctl delete cluster -f deployment/helm/aws/cluster.yaml --disable-nodegroup-eviction
-```
-
-The `Retain` class leaves the EBS volumes in your account after this. List and delete them when you no longer need them:
+Keep the database disks:
 
 ```bash
-aws ec2 describe-volumes --region "$AWS_REGION" --filters Name=tag:pipeshub-backup,Values=true \
-  --query 'Volumes[].[VolumeId,State,Size]' --output table
-aws ec2 delete-volume --region "$AWS_REGION" --volume-id <vol-id>
+./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1 --cluster pipeshub --destroy
 ```
 
-The S3 bucket, backup vault, KMS key, IAM policies, and Secrets Manager secret are also kept.
+Delete the cluster and this cluster's database disks, snapshots, S3 bucket, backup vault, and saved `secret-key`:
+
+```bash
+./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1 --cluster pipeshub --purge --yes
+```
+
+The KMS key `alias/<cluster>-eks` is kept. Disks that are still attached are left in place, and the command tells you to re-run it.
 
 ## Security checklist
 

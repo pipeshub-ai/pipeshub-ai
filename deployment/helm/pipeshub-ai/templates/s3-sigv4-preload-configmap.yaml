@@ -1,0 +1,15 @@
+{{- if .Values.s3SignatureV4Preload }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-s3-sigv4
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+data:
+  force-sigv4.js: |
+    try {
+      require("/app/backend/dist/node_modules/aws-sdk").config.update({ signatureVersion: "v4" });
+    } catch (err) {
+      console.error("s3 sigv4 preload skipped:", err && err.message);
+    }
+{{- end }}

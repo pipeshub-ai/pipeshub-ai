@@ -21,8 +21,15 @@ KMS_KEY_ARN="${KMS_KEY_ARN:-}"
 K8S_VERSION="${K8S_VERSION:-}"
 ZONES="${ZONES:-}"
 BUCKET="${BUCKET:-}"
+IMAGE_REF="${PIPESHUB_IMAGE:-}"
+DOCKER_TOKEN="${PIPESHUB_DOCKER_TOKEN:-}"
+DOCKER_USERNAME_ARG="${PIPESHUB_DOCKER_USERNAME:-}"
+TOKEN_FROM_FLAG=false
+USE_CUSTOM_IMAGE=false
+USE_PRIVATE_IMAGE=false
 BACKUPS=true
 ASSUME_YES=false
+PURGE=false
 ACTION=deploy
 
 usage() {
@@ -49,11 +56,22 @@ Options:
   --k8s-version X.Y        Kubernetes version (default: EKS default version)
   --zones a,b,c            Three availability zones (default: first three that offer m7i)
   --bucket NAME            S3 bucket for files (default: pipeshub-<cluster>-<account>-<region>)
+  --image ACCOUNT/IMAGE[:TAG]
+                           pipeshub-ai image. With no tag, uses 0.9.0-slim.
+                           A private image also needs a Docker token. Omit this
+                           to use the public image pipeshubai/pipeshub-ai:0.9.0-slim
+  --docker-username USER   Owner of the Docker token (default: the account in --image)
+  --docker-token TOKEN     Registry token. Prefer PIPESHUB_DOCKER_TOKEN so the
+                           token is not saved in shell history. With no token,
+                           the public image is used
   --no-backups             Skip the AWS Backup plan
   --render-cluster-config  Print the eksctl config and exit. Needs --region,
                            --zones, --kms-key-arn and --k8s-version; makes no AWS calls
   --destroy                Remove the release and the cluster. Keeps S3, EBS volumes,
                            backups, KMS key and the saved secret-key
+  --purge                  With --destroy, also delete this cluster's database disks,
+                           snapshots, S3 bucket, backup vault and saved secret-key.
+                           Implies --destroy. The KMS key is kept
   -y, --yes                Do not ask for confirmation
   -h, --help               Show this help
 EOF
@@ -72,20 +90,31 @@ while [[ $# -gt 0 ]]; do
     --k8s-version) K8S_VERSION="$2"; shift 2 ;;
     --zones) ZONES="$2"; shift 2 ;;
     --bucket) BUCKET="$2"; shift 2 ;;
+    --image) IMAGE_REF="$2"; shift 2 ;;
+    --docker-username) DOCKER_USERNAME_ARG="$2"; shift 2 ;;
+    --docker-token) DOCKER_TOKEN="$2"; TOKEN_FROM_FLAG=true; shift 2 ;;
     --no-backups) BACKUPS=false; shift ;;
     --render-cluster-config) ACTION=render; shift ;;
     --destroy) ACTION=destroy; shift ;;
+    --purge) PURGE=true; shift ;;
     -y|--yes) ASSUME_YES=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; echo "deploy-eks: unknown option $1" >&2; exit 2 ;;
   esac
 done
 
+if $PURGE; then
+  [[ "$ACTION" == render ]] && { usage >&2; echo "deploy-eks: --purge cannot be combined with --render-cluster-config" >&2; exit 2; }
+  ACTION=destroy
+fi
+
 if [ -t 1 ]; then C_CYAN=$'\033[36m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_RESET=$'\033[0m'
 else C_CYAN=""; C_RED=""; C_GREEN=""; C_RESET=""; fi
 step() { printf '\n%s==>%s %s\n' "$C_CYAN" "$C_RESET" "$*"; }
 note() { printf '    %s\n' "$*"; }
 die() { printf '%sdeploy-eks:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
+# shellcheck source=registry-auth.sh
+source "${AWS_DIR}/registry-auth.sh"
 on_error() { # exit code, line, command
   printf '%sdeploy-eks:%s failed (exit %s) at line %s: %s\n' "$C_RED" "$C_RESET" "$1" "$2" "$3" >&2
   printf '    Fix the cause and re-run the same command; finished steps are skipped.\n' >&2
@@ -118,6 +147,13 @@ fi
 if [[ "$ACTION" == deploy ]]; then
   [[ -n "$DOMAIN" ]] || { usage >&2; die "--domain is required"; }
   [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || die "invalid domain: $DOMAIN"
+  if [[ -n "$IMAGE_REF" ]]; then
+    parse_image_ref "$IMAGE_REF" "$DOCKER_USERNAME_ARG"
+    USE_CUSTOM_IMAGE=true
+    [[ -n "$DOCKER_TOKEN" ]] && USE_PRIVATE_IMAGE=true
+  elif [[ -n "$DOCKER_TOKEN" ]]; then
+    die "a Docker token was set but no image. Pass --image account/image[:tag]"
+  fi
 fi
 
 export PATH="${PIPESHUB_BIN_DIR:-${PIPESHUB_HOME:-${HOME}/.pipeshub}/bin}:${PATH}"
@@ -256,10 +292,141 @@ check_vcpu_quota() { # cluster config
   die "requested ${want} vCPUs (id ${pending}). AWS usually answers within minutes to a few hours. Re-run when this shows APPROVED: aws service-quotas get-requested-service-quota-change --request-id ${pending} --query RequestedQuota.Status"
 }
 
+# Only resources this deploy created for this cluster. A volume must be detached
+# and carry both the cluster tag and pipeshub-backup=true. The S3 name must
+# contain the cluster name, so a shared bucket cannot be removed by accident.
+purge_cluster_data() {
+  cluster_exists && die "cluster ${CLUSTER} still exists, so its disks may still be attached. Re-run --purge after it is gone."
+  [[ -n "$BUCKET" ]] || BUCKET="$(echo "pipeshub-${CLUSTER}-${ACCOUNT_ID}-${REGION}" | tr '[:upper:]' '[:lower:]' | cut -c1-63)"
+  [[ "$BUCKET" == *"${CLUSTER}"* ]] \
+    || die "refusing to delete s3://${BUCKET}: the name does not contain the cluster name ${CLUSTER}"
+
+  step "Database disks for ${CLUSTER}"
+  local rows id state skipped=false
+  rows="$(aws ec2 describe-volumes \
+    --filters "Name=tag:kubernetes.io/cluster/${CLUSTER},Values=owned" "Name=tag:pipeshub-backup,Values=true" \
+    --query 'Volumes[].[VolumeId,State]' --output text)"
+  if [[ -z "$rows" || "$rows" == None ]]; then
+    note "none"
+  else
+    while read -r id state; do
+      [[ -n "$id" && "$id" != None ]] || continue
+      if [[ "$state" != available ]]; then
+        note "left ${id} attached (state ${state})"
+        skipped=true
+        continue
+      fi
+      aws ec2 delete-volume --volume-id "$id"
+      note "deleted volume ${id}"
+    done <<<"$rows"
+  fi
+  # Snapshots and the bucket are the copies of these disks. Do not delete them
+  # while a disk is still attached; the next run removes them once the disk is free.
+  $skipped && die "some database disks are still attached. Re-run the same command when they are available."
+
+  step "Snapshots for ${CLUSTER}"
+  local snaps snap
+  snaps="$(aws ec2 describe-snapshots --owner-ids self \
+    --filters "Name=tag:kubernetes.io/cluster/${CLUSTER},Values=owned" "Name=tag:pipeshub-backup,Values=true" \
+    --query 'Snapshots[].SnapshotId' --output text)"
+  if [[ -z "$snaps" || "$snaps" == None ]]; then
+    note "none"
+  else
+    for snap in $snaps; do
+      # AWS Backup owns its snapshots. Those are removed with the recovery points below.
+      # trap - ERR: set -E would otherwise print a failure for this expected refusal.
+      if ! err="$(trap - ERR; aws ec2 delete-snapshot --snapshot-id "$snap" 2>&1)"; then
+        if grep -q "managed by the AWS Backup" <<<"$err"; then
+          note "left ${snap} for the backup vault"
+          continue
+        fi
+        printf '%s\n' "$err" >&2
+        return 1
+      fi
+      note "deleted snapshot ${snap}"
+    done
+  fi
+
+  step "Backups for ${CLUSTER}"
+  local plan selections selection arns arn attempt
+  plan="$(aws backup list-backup-plans --query "BackupPlansList[?BackupPlanName=='${CLUSTER}-daily'].BackupPlanId | [0]" --output text 2>/dev/null || true)"
+  if [[ -n "$plan" && "$plan" != None ]]; then
+    selections="$(aws backup list-backup-selections --backup-plan-id "$plan" --query 'BackupSelectionsList[].SelectionId' --output text)"
+    for selection in $selections; do
+      [[ "$selection" == None ]] && continue
+      aws backup delete-backup-selection --backup-plan-id "$plan" --selection-id "$selection"
+    done
+    aws backup delete-backup-plan --backup-plan-id "$plan"
+    note "deleted backup plan ${CLUSTER}-daily"
+  else
+    note "no backup plan"
+  fi
+  if aws backup describe-backup-vault --backup-vault-name "$CLUSTER" >/dev/null 2>&1; then
+    for attempt in $(seq 1 10); do
+      arns="$(aws backup list-recovery-points-by-backup-vault --backup-vault-name "$CLUSTER" \
+        --query 'RecoveryPoints[].RecoveryPointArn' --output text)"
+      [[ -z "$arns" || "$arns" == None ]] && break
+      for arn in $arns; do
+        aws backup delete-recovery-point --backup-vault-name "$CLUSTER" --recovery-point-arn "$arn" || true
+      done
+      sleep 5
+    done
+    aws backup delete-backup-vault --backup-vault-name "$CLUSTER"
+    note "deleted backup vault ${CLUSTER}"
+  else
+    note "no backup vault"
+  fi
+
+  step "S3 bucket ${BUCKET}"
+  if aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
+    empty_versioned_bucket "$BUCKET"
+    aws s3api delete-bucket --bucket "$BUCKET"
+    note "deleted s3://${BUCKET}"
+  else
+    note "no bucket"
+  fi
+
+  step "Saved secret-key"
+  if aws secretsmanager describe-secret --secret-id "${CLUSTER}/secret-key" >/dev/null 2>&1; then
+    aws secretsmanager delete-secret --secret-id "${CLUSTER}/secret-key" --force-delete-without-recovery >/dev/null
+    note "deleted ${CLUSTER}/secret-key"
+  else
+    note "none"
+  fi
+
+  note "KMS key alias/${CLUSTER}-eks was kept. The next deploy reuses it."
+}
+
+# Versioned buckets keep old copies after a plain recursive delete.
+empty_versioned_bucket() {
+  local bucket="$1" token="" batch
+  command -v python3 >/dev/null 2>&1 || die "python3 is required to empty the versioned bucket ${bucket}"
+  while :; do
+    if [[ -n "$token" ]]; then
+      batch="$(aws s3api list-object-versions --bucket "$bucket" --max-keys 1000 --starting-token "$token" --output json)"
+    else
+      batch="$(aws s3api list-object-versions --bucket "$bucket" --max-keys 1000 --output json)"
+    fi
+    token="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("NextToken") or "")' <<<"$batch")"
+    python3 -c 'import json,sys; d=json.load(sys.stdin); objs=[{"Key":o["Key"],"VersionId":o["VersionId"]} for o in (d.get("Versions") or [])+(d.get("DeleteMarkers") or [])]; print(json.dumps({"Objects":objs,"Quiet":True}) if objs else "")' <<<"$batch" \
+      | while read -r payload; do
+          [[ -n "$payload" ]] || continue
+          aws s3api delete-objects --bucket "$bucket" --delete "$payload" >/dev/null
+        done
+    [[ -n "$token" ]] || break
+  done
+}
+
 destroy() {
   step "Destroy ${CLUSTER} in ${REGION} (account ${ACCOUNT_ID})"
   note "Deletes the Helm release, the load balancer and the cluster."
-  note "Keeps EBS volumes, the S3 bucket, backups, the KMS key and the saved secret-key."
+  if $PURGE; then
+    note "Also deletes this cluster's database disks, snapshots, S3 bucket, backup vault and saved secret-key."
+    note "Keeps the KMS key alias/${CLUSTER}-eks."
+  else
+    note "Keeps EBS volumes, the S3 bucket, backups, the KMS key and the saved secret-key."
+    note "Add --purge to delete the database disks and the bucket as well."
+  fi
   confirm "Continue?"
 
   if cluster_exists; then
@@ -298,11 +465,16 @@ destroy() {
     fi
   fi
 
+  if $PURGE; then
+    purge_cluster_data
+    return 0
+  fi
+
   step "Left in the account"
   aws ec2 describe-volumes --filters Name=tag:pipeshub-backup,Values=true \
     --query 'Volumes[].[VolumeId,State,Size,Tags[?Key==`kubernetes.io/created-for/pvc/name`]|[0].Value]' --output table || true
-  note "Delete volumes with: aws ec2 delete-volume --volume-id <id>"
-  note "Also kept: S3 bucket, backup vault ${CLUSTER}, KMS key alias/${CLUSTER}-eks, secret ${CLUSTER}/secret-key, IAM policies PipesHub-${CLUSTER}-*"
+  note "Delete this cluster's disks and bucket with the same command plus --purge."
+  note "Also kept: S3 bucket, backup vault ${CLUSTER}, KMS key alias/${CLUSTER}-eks, secret ${CLUSTER}/secret-key"
 }
 
 if [[ "$ACTION" == destroy ]]; then
@@ -323,6 +495,17 @@ note "release      ${RELEASE}"
 note "url          ${FRONTEND_PUBLIC_URL}"
 note "dns          ${HOSTED_ZONE_ID:-manual (no Route 53 zone found for ${DOMAIN})}"
 note "s3 bucket    ${BUCKET}"
+if $USE_CUSTOM_IMAGE; then
+  if $USE_PRIVATE_IMAGE; then
+    note "image        ${IMAGE_REPOSITORY}:${IMAGE_TAG} (private)"
+    note "pull secret  ${PULL_SECRET_NAME} for ${DOCKER_USERNAME}"
+    $TOKEN_FROM_FLAG && note "Docker token was passed as a flag. Next time set PIPESHUB_DOCKER_TOKEN so it is not saved in shell history."
+  else
+    note "image        ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+  fi
+else
+  note "image        ${DEFAULT_APP_REPOSITORY}:${DEFAULT_APP_TAG}"
+fi
 note "backups      ${BACKUPS}"
 if cluster_exists; then
   note "Cluster ${CLUSTER} already exists. Finished steps are skipped, and the Helm release is upgraded."
@@ -520,8 +703,18 @@ fi
 
 step "PipesHub (Helm release ${RELEASE})"
 export FRONTEND_PUBLIC_URL NAMESPACE RELEASE
+if $USE_CUSTOM_IMAGE; then
+  export PIPESHUB_IMAGE_REPOSITORY="$IMAGE_REPOSITORY"
+  export PIPESHUB_IMAGE_TAG="$IMAGE_TAG"
+  if $USE_PRIVATE_IMAGE; then
+    export PIPESHUB_DOCKER_TOKEN="$DOCKER_TOKEN"
+    export PIPESHUB_DOCKER_SERVER="$DOCKER_SERVER"
+    export PIPESHUB_DOCKER_USERNAME="$DOCKER_USERNAME"
+  fi
+fi
 ALLOWED_ORIGINS="$FRONTEND_PUBLIC_URL" PIPESHUB_HOST="$DOMAIN" ALB_CERT_ARN="$CERT_ARN" \
   "${AWS_DIR}/install.sh"
+unset PIPESHUB_DOCKER_TOKEN DOCKER_TOKEN
 
 step "Save secret-key to Secrets Manager"
 if aws secretsmanager describe-secret --secret-id "${CLUSTER}/secret-key" >/dev/null 2>&1; then
@@ -613,13 +806,17 @@ fi
 printf '\n%sPipesHub is deployed.%s\n' "$C_GREEN" "$C_RESET"
 cat <<EOF
 
+  S3 bucket  ${BUCKET}
+  Region     ${REGION}
+  Image      $(if $USE_PRIVATE_IMAGE; then printf '%s:%s (private)' "$IMAGE_REPOSITORY" "$IMAGE_TAG"; elif $USE_CUSTOM_IMAGE; then printf '%s:%s' "$IMAGE_REPOSITORY" "$IMAGE_TAG"; else printf '%s:%s' "$DEFAULT_APP_REPOSITORY" "$DEFAULT_APP_TAG"; fi)
+
+  During onboarding, on the Storage step, choose S3 and enter this bucket and region.
+  Leave the access key and secret key empty. The app uses its Pod Identity role.
+  Do this before anyone uploads a file. App pods do not share a local disk.
+
   1. Open ${FRONTEND_PUBLIC_URL} now and create the admin account.
      Until an admin exists, anyone who reaches the URL can create it.
-  2. In the UI, open storage settings and choose S3:
-       bucket  ${BUCKET}
-       region  ${REGION}
-     Leave the access key and secret key empty.
-  3. secret-key is saved in Secrets Manager as ${CLUSTER}/secret-key.
+  2. secret-key is saved in Secrets Manager as ${CLUSTER}/secret-key.
 
   Re-run this command to update. Remove with:
     $0 --domain ${DOMAIN} --region ${REGION} --cluster ${CLUSTER} --destroy

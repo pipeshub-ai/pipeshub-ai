@@ -10,6 +10,8 @@ RELEASE="${RELEASE:-pipeshub-ai}"
 SECRET_NAME="${SECRET_NAME:-pipeshub-ai-secrets}"
 
 die() { echo "install-eks: $*" >&2; exit 1; }
+# shellcheck source=registry-auth.sh
+source "${ROOT}/deployment/helm/aws/registry-auth.sh"
 
 export PATH="${PIPESHUB_BIN_DIR:-${PIPESHUB_HOME:-${HOME}/.pipeshub}/bin}:${PATH}"
 for tool in aws kubectl helm openssl; do
@@ -27,7 +29,7 @@ kubectl get deployment -n kube-system aws-load-balancer-controller >/dev/null 2>
 
 data_nodes="$(kubectl get nodes -l pipeshub/role=data --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 app_nodes="$(kubectl get nodes -l pipeshub/role=app --no-headers 2>/dev/null | wc -l | tr -d ' ')"
-[[ "${data_nodes}" -ge 3 ]] || die "need at least 3 nodes labeled pipeshub/role=data (found ${data_nodes})"
+[[ "${data_nodes}" -ge 4 ]] || die "need at least 4 nodes labeled pipeshub/role=data (found ${data_nodes}). Qdrant and Neo4j each reserve 4 CPU and cannot share a node."
 [[ "${app_nodes}" -ge 2 ]] || die "need at least 2 nodes labeled pipeshub/role=app (found ${app_nodes})"
 
 kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${NAMESPACE}"
@@ -36,6 +38,28 @@ kubectl label namespace "${NAMESPACE}" \
   pod-security.kubernetes.io/warn=restricted \
   pod-security.kubernetes.io/audit=restricted \
   --overwrite
+
+helm_image_args=()
+if [[ -n "${PIPESHUB_IMAGE_REPOSITORY:-}" || -n "${PIPESHUB_DOCKER_TOKEN:-}" ]]; then
+  if [[ -z "${PIPESHUB_IMAGE_REPOSITORY:-}" ]]; then
+    [[ -n "${PIPESHUB_IMAGE:-}" ]] || die "a Docker token was set but no image. Pass --image account/image[:tag] to deploy.sh"
+    parse_image_ref "${PIPESHUB_IMAGE}" "${PIPESHUB_DOCKER_USERNAME:-}"
+    PIPESHUB_IMAGE_REPOSITORY="$IMAGE_REPOSITORY"
+    PIPESHUB_IMAGE_TAG="$IMAGE_TAG"
+  fi
+  [[ -n "${PIPESHUB_IMAGE_REPOSITORY:-}" && -n "${PIPESHUB_IMAGE_TAG:-}" ]] || die "image repository and tag are required"
+  echo "install-eks: image ${PIPESHUB_IMAGE_REPOSITORY}:${PIPESHUB_IMAGE_TAG}"
+  helm_image_args=(
+    --set-string "image.repository=${PIPESHUB_IMAGE_REPOSITORY}"
+    --set-string "image.tag=${PIPESHUB_IMAGE_TAG}"
+  )
+  if [[ -n "${PIPESHUB_DOCKER_TOKEN:-}" ]]; then
+    export DOCKER_SERVER="${PIPESHUB_DOCKER_SERVER:?}"
+    export DOCKER_USERNAME="${PIPESHUB_DOCKER_USERNAME:?}"
+    apply_registry_pull_secret "$NAMESPACE"
+    helm_image_args+=(--set "imagePullSecrets[0].name=${PULL_SECRET_NAME}")
+  fi
+fi
 
 if kubectl get secret -n "${NAMESPACE}" "${SECRET_NAME}" >/dev/null 2>&1; then
   echo "install-eks: reusing secret ${SECRET_NAME}"
@@ -52,6 +76,20 @@ fi
 
 helm dependency build "${CHART}"
 
+echo "install-eks: waiting up to 30 minutes for pods to become Ready"
+progress_stop="$(mktemp)"
+(
+  while [[ ! -f "${progress_stop}" ]]; do
+    sleep 20
+    [[ -f "${progress_stop}" ]] && break
+    echo "install-eks: $(date +%H:%M:%S) pod status"
+    kubectl get pods -n "${NAMESPACE}" --no-headers 2>/dev/null \
+      | awk '{printf "install-eks:   %-42s %s %s\n", $1, $2, $3}'
+  done
+) &
+progress_pid=$!
+
+set +e
 helm upgrade --install "${RELEASE}" "${CHART}" \
   --namespace "${NAMESPACE}" \
   -f "${CHART}/values-eks.yaml" \
@@ -63,7 +101,24 @@ helm upgrade --install "${RELEASE}" "${CHART}" \
   --set "ingress.hosts[0].paths[0].path=/" \
   --set "ingress.hosts[0].paths[0].pathType=Prefix" \
   ${ALB_CERT_ARN:+--set "ingress.annotations.alb\.ingress\.kubernetes\.io/certificate-arn=${ALB_CERT_ARN}"} \
+  ${helm_image_args[@]+"${helm_image_args[@]}"} \
   --wait --timeout 30m
+helm_status=$?
+set -e
+touch "${progress_stop}"
+kill "${progress_pid}" 2>/dev/null || true
+wait "${progress_pid}" 2>/dev/null || true
+rm -f "${progress_stop}"
+if [[ "${helm_status}" -ne 0 ]]; then
+  echo "install-eks: pods not ready:" >&2
+  kubectl get pods -n "${NAMESPACE}" -o wide >&2 || true
+  notready="$(kubectl get pods -n "${NAMESPACE}" --no-headers 2>/dev/null | awk '$3 != "Completed" && $3 != "Succeeded" && $2 ~ /^0\// {print "pod/"$1}')"
+  for pod in ${notready}; do
+    echo "install-eks: ${pod}" >&2
+    kubectl describe -n "${NAMESPACE}" "${pod}" | awk '/Events:/,0' >&2 || true
+  done
+  exit "${helm_status}"
+fi
 
 echo "install-eks: pods"
 kubectl get pods -n "${NAMESPACE}"

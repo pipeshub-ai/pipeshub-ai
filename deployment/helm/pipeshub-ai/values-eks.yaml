@@ -11,8 +11,12 @@
 
 image:
   repository: pipeshubai/pipeshub-ai
-  tag: "0.8.0"
+  tag: "0.9.0-slim"
   pullPolicy: IfNotPresent
+
+# 0.9.0-slim presigns us-east-1 with Signature V2. The bucket from deploy.sh is
+# SSE-KMS, which rejects those URLs during the onboarding storage check.
+s3SignatureV4Preload: true
 
 replicaCount: 2
 # Two app nodes hold four pods. A surge pod needs a free 3 CPU and stays Pending.
@@ -229,7 +233,9 @@ qdrant:
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: DoNotSchedule
+      # One m7i.2xlarge cannot run Qdrant and Neo4j together, and an EBS volume
+      # cannot move zones. A hard spread leaves the third Qdrant pod Pending.
+      whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchLabels:
           app.kubernetes.io/name: pipeshub-ai
