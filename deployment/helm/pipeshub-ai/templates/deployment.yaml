@@ -358,6 +358,14 @@ spec:
             # look for a browser that is not there.
             - name: PLAYWRIGHT_BROWSERS_PATH
               value: /root/.cache/ms-playwright
+
+            {{- $trustProxy := .Values.trustProxy | default (ternary "1" "" .Values.ingress.enabled) }}
+            {{- if $trustProxy }}
+            - name: TRUST_PROXY
+              value: {{ $trustProxy | quote }}
+            {{- end }}
+            - name: MAX_AUTH_REQUESTS_PER_MINUTE
+              value: {{ .Values.maxAuthRequestsPerMinute | default 10 | quote }}
             
             {{- if .Values.telemetry.enabled }}
             # OpenTelemetry configuration

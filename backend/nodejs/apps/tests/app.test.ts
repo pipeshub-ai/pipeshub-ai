@@ -107,6 +107,8 @@ function createMockAppConfig(): appConfigModule.AppConfig {
     mcpScopes: ['read', 'write'],
     skipDomainCheck: false,
     maxRequestsPerMinute: 1000,
+    maxAuthRequestsPerMinute: 10,
+    trustProxy: { value: false },
     maxOAuthClientRequestsPerMinute: 1000,
     deployment: {
       dataStoreType: 'arangodb',

@@ -398,6 +398,12 @@ export class Application {
   }
 
   private configureMiddleware(appConfig: AppConfig): void {
+    // Unset means trust no proxy: req.ip is the socket address.
+    if (appConfig.trustProxy.warning) {
+      this.logger.warn(appConfig.trustProxy.warning);
+    }
+    this.app.set('trust proxy', appConfig.trustProxy.value);
+
     const isStrictMode = process.env.STRICT_MODE === 'true';
     if (isStrictMode) {
       // Security middleware - configure helmet once with all options
