@@ -24,9 +24,8 @@ from app.models.permission import EntityType, Permission, PermissionType
 
 from helper import kb_sharing
 from helper.access_probe import (
-    ask_once,
     ask_until_cited,
-    chat_refused_or_uncited,
+    assert_no_chat_leak,
     open_status,
     search,
 )
@@ -111,11 +110,7 @@ def assert_chat_cites(user: SecondUser, note: Note, why: str) -> None:
 
 
 def assert_chat_does_not_cite(user: SecondUser, note: Note, why: str) -> None:
-    answer = ask_once(user, note.question)
-    assert chat_refused_or_uncited(answer, note.record_id, note.virtual_id), (
-        f"{why}: asked about the note, the answer cited it or failed without proving "
-        f"otherwise: {answer.describe()}"
-    )
+    assert_no_chat_leak(user, note.question, note.record_id, note.virtual_id, why)
 
 
 class TestSharedWithAPerson:

@@ -90,7 +90,7 @@ def assert_reaches(user: SecondUser, note: Note, why: str) -> None:
     )
     status = open_status(user, note.record_id)
     assert status == 200, f"{why}: opening the note returned HTTP {status}."
-    listed = listed_kb_ids(user, KB_PREFIX)
+    listed = listed_kb_ids(user, note.kb_name)
     assert listed is not None and note.kb_id in listed, (
         f"{why}: the knowledge base is missing from their list."
     )
@@ -105,7 +105,7 @@ def assert_cannot_reach(user: SecondUser, note: Note, why: str) -> None:
         )
     status = open_status(user, note.record_id)
     assert status in NO_ACCESS_STATUSES, f"{why}: opening the note returned HTTP {status}."
-    listed = listed_kb_ids(user, KB_PREFIX)
+    listed = listed_kb_ids(user, note.kb_name)
     assert listed is not None and note.kb_id not in listed, (
         f"{why}: the knowledge base is still in their list."
     )

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 import requests
@@ -71,15 +72,17 @@ def open_status(user: SecondUser, record_id: str) -> int:
     return user.get(f"/api/v1/knowledgeBase/record/{record_id}").status_code
 
 
-def listed_kb_ids(user: SecondUser, name_prefix: str) -> set[str] | None:
-    """Knowledge bases this person sees in their list, among those named ``name_prefix*``.
+def listed_kb_ids(user: SecondUser, kb_name: str) -> set[str] | None:
+    """Ids of the knowledge bases in this person's list that match ``kb_name``.
 
+    Searched by the knowledge base's full, unique name, so neither paging nor
+    another test's similarly named knowledge base can hide or stand in for it.
     ``None`` when the list itself could not be read.
     """
     resp = requests.get(
         f"{user.base_url}/api/v1/knowledgeBase",
         headers=user.headers,
-        params={"page": "1", "limit": "50", "search": name_prefix},
+        params={"page": "1", "limit": "50", "search": kb_name},
         timeout=user.timeout,
     )
     if resp.status_code != 200:
@@ -173,17 +176,66 @@ def ask_until_cited(
     return answer
 
 
-def chat_refused_or_uncited(answer: ChatAnswer, record_id: str, virtual_id: str) -> bool:
-    """The answer proves the record stayed out of reach.
+class ChatVerdict(str, Enum):
+    """What one chat answer says about a record the person should not reach."""
 
-    A refusal before the stream starts, or a stream that ended (finished or
-    with the product's own error) without citing it. A server failure proves
-    nothing and does not count.
+    # Refused before the stream started (403 or 404).
+    REFUSED = "refused"
+    # Finished, and did not cite the record.
+    NOT_CITED = "not cited"
+    # Cited the record: a leak.
+    CITED = "cited"
+    # A server error, a generic RUN_ERROR, an error answer, or a stream with no
+    # end. Says nothing either way.
+    INCONCLUSIVE = "inconclusive"
+
+
+def chat_verdict(answer: ChatAnswer, record_id: str, virtual_id: str) -> ChatVerdict:
+    """Classify a chat answer for a "cannot reach it" check.
+
+    Only a refusal proves the record was out of reach. The stream reports the
+    citations but not what retrieval returned, so ``NOT_CITED`` shows only that
+    this answer did not leak it: the model sometimes leaves a citation out even
+    when retrieval found the record. Search and opening the record are what
+    prove the denial.
     """
     if answer.status in NO_ACCESS_STATUSES:
-        return True
-    if answer.status != 200:
-        return False
-    if not (answer.finished or answer.error):
-        return False
-    return not answer.cites(record_id, virtual_id)
+        return ChatVerdict.REFUSED
+    if answer.status != 200 or answer.error or not answer.finished:
+        return ChatVerdict.INCONCLUSIVE
+    if answer.cites(record_id, virtual_id):
+        return ChatVerdict.CITED
+    return ChatVerdict.NOT_CITED
+
+
+def ask_expecting_no_leak(
+    user: SecondUser, question: str, record_id: str, virtual_id: str, kb_ids: list[str] | None = None,
+) -> tuple[ChatVerdict, ChatAnswer]:
+    """Ask until the answer is conclusive (refused, cited, or finished without citing it).
+
+    An inconclusive answer is asked again, up to ``CHAT_ATTEMPTS`` times; the
+    caller fails on a verdict that is still ``INCONCLUSIVE``.
+    """
+    answer = ChatAnswer(status=0)
+    verdict = ChatVerdict.INCONCLUSIVE
+    for _ in range(CHAT_ATTEMPTS):
+        answer = ask_once(user, question, kb_ids)
+        verdict = chat_verdict(answer, record_id, virtual_id)
+        if verdict is not ChatVerdict.INCONCLUSIVE:
+            break
+    return verdict, answer
+
+
+def assert_no_chat_leak(
+    user: SecondUser, question: str, record_id: str, virtual_id: str, why: str,
+    kb_ids: list[str] | None = None,
+) -> None:
+    """Fail when a chat answer cites the record, or never answers conclusively."""
+    verdict, answer = ask_expecting_no_leak(user, question, record_id, virtual_id, kb_ids)
+    assert verdict is not ChatVerdict.CITED, (
+        f"{why}: asked about the note, the answer cited it: {answer.describe()}"
+    )
+    assert verdict is not ChatVerdict.INCONCLUSIVE, (
+        f"{why}: chat gave no conclusive answer in {CHAT_ATTEMPTS} tries ({answer.describe()}), "
+        "so it neither shows nor rules out a leak."
+    )
