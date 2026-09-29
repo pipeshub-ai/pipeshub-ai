@@ -6,8 +6,13 @@ to Mailpit, so these tests request the email, read it from Mailpit's API, and
 use what it carries exactly as a person clicking the link or typing the code
 would.
 
-Each class uses a throwaway account. The sign-in code class also turns on the
-code method for the org alongside passwords, and puts the org's sign-in policy
+The lockout tests live here too: the password and code counters are shared, so
+checking that needs a sign-in code, and a lock sends a warning email. Five wrong
+attempts lock an account; that is the product decision (the test list's ten is
+being corrected).
+
+Each class uses a throwaway account. Classes that need sign-in codes turn the
+code method on for the org alongside passwords, and put the org's sign-in policy
 back afterwards.
 
 Not covered here: a reset link used after it expires. The link's 20-minute life
@@ -18,6 +23,8 @@ test hook to shorten it.
 from __future__ import annotations
 
 import copy
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterator
 
 import pytest
@@ -36,6 +43,8 @@ NEW_PASSWORD = "EmailedReset789!"
 SECOND_PASSWORD = "SecondReset789!"
 RESET_SUBJECT = "Reset your password"
 SIGN_IN_CODE_SUBJECT = "OTP for Login"
+LOCK_WARNING_SUBJECT = "Suspicious Login Attempt"
+LOCKOUT_THRESHOLD = 5
 ANY_USER_ROUTE = "/api/v1/knowledgeBase"
 
 
@@ -68,6 +77,16 @@ def _sign_in_status(account: UserAccountClient, email: str, password: str) -> tu
     return response.status_code, "accessToken" in response.text
 
 
+def _emailed_reset_token(account: UserAccountClient, email: str) -> str:
+    seen = mailpit.message_ids(email)
+    requested = account.forgot_password(email)
+    assert requested.status_code == 200, (
+        f"Requesting a reset link failed: HTTP {requested.status_code}"
+    )
+    message = mailpit.wait_for_new_message(email, RESET_SUBJECT, seen)
+    return mailpit.reset_link_token(message)
+
+
 class TestForgotPasswordLink:
     """Test list: password change by emailed link — works once, refused on reuse."""
 
@@ -75,13 +94,7 @@ class TestForgotPasswordLink:
     def used_link(
         self, mail_user: SecondUser, user_account_client: UserAccountClient
     ) -> dict[str, Any]:
-        seen = mailpit.message_ids(mail_user.email)
-        requested = user_account_client.forgot_password(mail_user.email)
-        assert requested.status_code == 200, (
-            f"Requesting a reset link failed: HTTP {requested.status_code}"
-        )
-        message = mailpit.wait_for_new_message(mail_user.email, RESET_SUBJECT, seen)
-        token = mailpit.reset_link_token(message)
+        token = _emailed_reset_token(user_account_client, mail_user.email)
         first_use = user_account_client.reset_password_with_link(token, NEW_PASSWORD)
         return {"token": token, "first_status": first_use.status_code}
 
@@ -141,6 +154,45 @@ class TestForgotPasswordLink:
         )
 
 
+RESET_LINK_RACE = (
+    "A reset link is single-use only through a comparison of its issue time with "
+    "the account's latest PASSWORD_CHANGED record (scopedTokenValidator in "
+    "auth.middleware.ts). That record is written at the end of updatePassword, "
+    "after a user lookup and two bcrypt operations, and nothing claims the link "
+    "atomically, so two requests arriving before it is written both succeed. "
+    "Remove this mark once a link is claimed atomically."
+)
+
+
+class TestResetLinkUsedTwiceAtOnce:
+    """The sequential reuse check above cannot see the window before the first
+    use is recorded; two simultaneous uses of one unused link can."""
+
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=RESET_LINK_RACE)
+    def test_only_one_of_two_simultaneous_uses_succeeds(
+        self, mail_user: SecondUser, user_account_client: UserAccountClient
+    ) -> None:
+        token = _emailed_reset_token(user_account_client, mail_user.email)
+        start_together = threading.Barrier(2)
+
+        def use(password: str) -> int:
+            start_together.wait(timeout=30)
+            return user_account_client.reset_password_with_link(token, password).status_code
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(use, [NEW_PASSWORD, SECOND_PASSWORD]))
+
+        if 200 not in statuses:
+            pytest.fail(
+                f"Neither simultaneous use worked (HTTP {statuses}), so this says "
+                "nothing about single use."
+            )
+        assert statuses.count(200) == 1, (
+            f"Two simultaneous uses of one reset link both succeeded (HTTP "
+            f"{statuses}). A link meant to work once worked twice."
+        )
+
+
 def _has_otp(steps: list[dict[str, Any]]) -> bool:
     return any(
         method.get("type") == "otp"
@@ -164,6 +216,13 @@ def otp_allowed(user_session_client: SessionClient, mailbox: None) -> Iterator[N
         f"Reading the org's sign-in policy failed: HTTP {current.status_code}"
     )
     original = current.json()["authMethods"]
+    # A code opens a session only when it is the last step; with more steps,
+    # authenticate answers with the next step instead of a session.
+    if len(original) != 1:
+        pytest.skip(
+            f"The org's sign-in policy has {len(original)} steps; these tests "
+            "need a single-step policy to finish a sign-in with a code."
+        )
     if _has_otp(original):
         yield
         return
@@ -244,4 +303,70 @@ class TestSignInCode:
         ).status_code
         assert status == 200, (
             f"The session opened with a sign-in code does not work (HTTP {status})."
+        )
+
+
+def _wrong_password(account: UserAccountClient, email: str, attempt: int) -> None:
+    status, token_returned = _sign_in_status(account, email, f"DefinitelyWrong{attempt}!")
+    assert status >= 400 and not token_returned, (
+        f"Wrong password {attempt} was accepted (HTTP {status})."
+    )
+
+
+def _wrong_code(account: UserAccountClient, email: str, real_code: str, attempt: int) -> None:
+    wrong = f"{(int(real_code) + attempt) % 1_000_000:06d}"
+    session_token = _code_session(account, email)
+    response = account.authenticate_with_otp(session_token, email, wrong)
+    assert response.status_code == 401 and "accessToken" not in response.text, (
+        f"Wrong code {attempt} got HTTP {response.status_code}."
+    )
+
+
+class TestLockoutThreshold:
+    """Test list: wrong passwords lock the account; the threshold is five."""
+
+    def test_the_fifth_wrong_password_locks_and_the_fourth_does_not(
+        self, mail_user: SecondUser, user_account_client: UserAccountClient
+    ) -> None:
+        email = mail_user.email
+        for attempt in range(1, LOCKOUT_THRESHOLD):
+            _wrong_password(user_account_client, email, attempt)
+        # A successful sign-in also resets the count, so the next loop starts at zero.
+        status, token_returned = _sign_in_status(user_account_client, email, TEST_USER_PASSWORD)
+        assert status == 200 and token_returned, (
+            f"{LOCKOUT_THRESHOLD - 1} wrong passwords locked the account: the right "
+            f"one then got HTTP {status}."
+        )
+
+        seen = mailpit.message_ids(email)
+        for attempt in range(1, LOCKOUT_THRESHOLD + 1):
+            _wrong_password(user_account_client, email, attempt)
+        status, token_returned = _sign_in_status(user_account_client, email, TEST_USER_PASSWORD)
+        assert status >= 400 and not token_returned, (
+            f"{LOCKOUT_THRESHOLD} wrong passwords did not lock the account: the "
+            f"right one then got HTTP {status}."
+        )
+        mailpit.wait_for_new_message(email, LOCK_WARNING_SUBJECT, seen)
+
+
+@pytest.mark.usefixtures("otp_allowed")
+class TestLockoutCountersShared:
+    """Wrong codes and wrong passwords add up to the same lock."""
+
+    def test_wrong_codes_and_wrong_passwords_count_together(
+        self, mail_user: SecondUser, user_account_client: UserAccountClient
+    ) -> None:
+        email = mail_user.email
+        wrong_codes = 3
+        real_code = _request_code(user_account_client, email)
+        for attempt in range(1, wrong_codes + 1):
+            _wrong_code(user_account_client, email, real_code, attempt)
+        for attempt in range(1, LOCKOUT_THRESHOLD - wrong_codes + 1):
+            _wrong_password(user_account_client, email, attempt)
+
+        status, token_returned = _sign_in_status(user_account_client, email, TEST_USER_PASSWORD)
+        assert status >= 400 and not token_returned, (
+            f"{wrong_codes} wrong codes and {LOCKOUT_THRESHOLD - wrong_codes} wrong "
+            f"passwords did not lock the account (the right password got HTTP "
+            f"{status}), so the two are counted separately."
         )

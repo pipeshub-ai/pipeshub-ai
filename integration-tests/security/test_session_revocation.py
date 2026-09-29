@@ -15,8 +15,9 @@ pass, strict mode turns that into a failure, and the mark comes off.
 
 Lockout is the only way an account becomes blocked: there is no admin action
 that blocks a user, only one that unblocks. The tests lock an account through
-wrong passwords but never assume how many it takes, because that number is
-still being decided.
+wrong passwords and read the lock from the account's record, so they hold
+whatever the threshold; the threshold itself is checked in
+``response-validation/auth/integration_test_emailed_sign_in.py``.
 """
 
 from __future__ import annotations
