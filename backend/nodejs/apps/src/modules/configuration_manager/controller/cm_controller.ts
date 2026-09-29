@@ -3131,7 +3131,7 @@ const activeEmbeddingModel = (
 };
 
 const EMBEDDING_MODEL_IN_USE_MESSAGE =
-  'This model is embedding your indexed content. Set another default model and re-embed, or delete the embeddings in Labs first.';
+  'This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed.';
 
 // Asks the AI service whether `nextActive` (null: the built-in model) may take
 // over embedding. It answers 400 while the vector store holds vectors from

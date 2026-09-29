@@ -39115,8 +39115,8 @@ paths:
             Model type mismatch — the `modelKey` exists under a different `modelType`
             than the path parameter; or the model is the embedding model in use while
             the vector store holds its vectors (standard error envelope, message
-            "This model is embedding your indexed content. Set another default model
-            and re-embed, or delete the embeddings in Labs first.").
+            "This model is embedding your indexed content. Delete the embeddings in
+            Labs first, then change or delete the model and re-embed.").
           content:
             application/json:
               schema:
@@ -39134,7 +39134,7 @@ paths:
                   value:
                     error:
                       code: HTTP_BAD_REQUEST
-                      message: "This model is embedding your indexed content. Set another default model and re-embed, or delete the embeddings in Labs first."
+                      message: "This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed."
         '401':
           description: Unauthorized
         '403':

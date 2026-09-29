@@ -3178,7 +3178,7 @@ describe('ConfigurationManager Controller', () => {
   describe('embedding models: the vector store follows the model that embeds', () => {
     const appConfig = { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any
     const IN_USE =
-      'This model is embedding your indexed content. Set another default model and re-embed, or delete the embeddings in Labs first.'
+      'This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed.'
 
     // Records what reaches the AI service and answers the embedding takeover
     // check with `takeoverStatus` (400 is its answer while vectors are stored).
