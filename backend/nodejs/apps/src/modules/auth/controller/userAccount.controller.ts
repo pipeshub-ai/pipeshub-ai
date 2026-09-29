@@ -597,6 +597,7 @@ export class UserAccountController {
     orgId: string,
     newPassword: string,
     ipAddress: string,
+    onPasswordSaved?: () => void,
   ) {
     try {
       const isPasswordValid = passwordValidator(newPassword);
@@ -642,6 +643,7 @@ export class UserAccountController {
         userCredentialData.ipAddress = ipAddress;
       }
       await userCredentialData.save();
+      onPasswordSaved?.();
 
       await UserActivities.create({
         orgId: orgId,
@@ -887,6 +889,7 @@ export class UserAccountController {
       const orgId = req.tokenPayload?.orgId;
       const userId = req.tokenPayload?.userId;
       const linkHash = await this.claimResetLink(req);
+      let passwordSaved = false;
       try {
         const userFindResult = await this.iamService.getUserById(
           userId,
@@ -896,12 +899,15 @@ export class UserAccountController {
         if (userFindResult.statusCode !== 200) {
           throw new NotFoundError(SESSION_NO_LONGER_VALID);
         }
-        await this.updatePassword(userId, orgId, password, req.ip!);
+        await this.updatePassword(userId, orgId, password, req.ip!, () => {
+          passwordSaved = true;
+        });
       } catch (error) {
-        // updatePassword refuses a weak, reused or blocked password before it
-        // writes anything, so the link is handed back for another attempt.
-        if (error instanceof BadRequestError) {
-          await UsedPasswordResetLink.deleteOne({ linkHash });
+        // Until the new password is saved nothing has changed, so the link is
+        // handed back for another attempt. Once it is saved the link is spent,
+        // even if recording the change fails afterwards.
+        if (!passwordSaved) {
+          await this.releaseResetLink(linkHash);
         }
         throw error;
       }
@@ -921,7 +927,9 @@ export class UserAccountController {
   private async claimResetLink(
     req: AuthenticatedServiceRequest,
   ): Promise<string> {
-    const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+    // The token the middleware verified, not a re-parse of the header: two
+    // spellings of one header must be one link.
+    const token = req.verifiedToken ?? '';
     if (token === '') {
       throw new UnauthorizedError('No token provided');
     }
@@ -957,6 +965,18 @@ export class UserAccountController {
       throw error;
     }
     return linkHash;
+  }
+
+  private async releaseResetLink(linkHash: string): Promise<void> {
+    try {
+      await UsedPasswordResetLink.deleteOne({ linkHash });
+    } catch (error) {
+      // The reset's own error is the one to report; this only costs the person
+      // a fresh link.
+      this.logger.error('Could not hand back an unused reset link', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   async resetPassword(

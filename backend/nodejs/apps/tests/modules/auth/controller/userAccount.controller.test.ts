@@ -18,6 +18,10 @@ import {
   RESET_LINK_ALREADY_USED,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedPasswordResetLink.schema';
+import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
+import { AuthTokenService } from '../../../../src/libs/services/authtoken.service';
+import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum';
+import { jwtGeneratorForForgotPasswordLink } from '../../../../src/libs/utils/createJwt';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 
@@ -59,6 +63,7 @@ function resetLinkRequest(password: string, token = 'reset-link-token'): any {
   return {
     body: { password },
     headers: { authorization: `Bearer ${token}` },
+    verifiedToken: token,
     tokenPayload: { orgId: 'o1', userId: 'u1', exp: Math.floor(Date.now() / 1000) + 1200 },
     ip: '127.0.0.1',
   };
@@ -2409,6 +2414,77 @@ describe('UserAccountController', () => {
       await controller.resetPasswordViaEmailLink(resetLinkRequest('StrongEnough1!'), retry.res as any, retry.next);
       expect(retry.next.called).to.be.false;
       expect(retry.res.status.calledWith(200)).to.be.true;
+    });
+
+    it('counts two header spellings of the same link as one link', async () => {
+      fakeUsedResetLinks();
+      const scopedSecret = 'test-scoped-secret';
+      const { passwordResetToken } = jwtGeneratorForForgotPasswordLink(
+        'user@example.com', 'u1', 'o1', scopedSecret,
+      );
+      sinon.stub(UserActivities, 'findOne').returns({
+        sort: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
+      } as any);
+      const middleware = new AuthMiddleware(
+        mockLogger,
+        new AuthTokenService('test-jwt-secret', scopedSecret),
+      ).scopedTokenValidator(TokenScopes.PASSWORD_RESET);
+
+      // The middleware reads only the second space-separated part, so all of
+      // these carry the same verified link.
+      const spellings = [
+        `Bearer ${passwordResetToken}`,
+        `Bearer ${passwordResetToken} `,
+        `Bearer ${passwordResetToken} trailing`,
+      ];
+      const outcomes = [];
+      for (const authorization of spellings) {
+        const req: any = { headers: { authorization }, body: { password: 'FirstValid1!' }, ip: '127.0.0.1' };
+        const passed = sinon.stub();
+        await middleware(req, {} as any, passed);
+        expect(passed.firstCall.args, authorization).to.deep.equal([]);
+        const outcome = { res: newResponse(), next: sinon.stub() };
+        await controller.resetPasswordViaEmailLink(req, outcome.res as any, outcome.next);
+        outcomes.push(outcome);
+      }
+
+      expect(outcomes[0]!.res.status.calledWith(200)).to.be.true;
+      for (const later of outcomes.slice(1)) {
+        expect(later.next.firstCall.args[0].message).to.equal(RESET_LINK_ALREADY_USED);
+      }
+    });
+
+    for (const [failure, arrange] of [
+      ['the account lookup throws', () => mockIamService.getUserById.rejects(new Error('socket hang up'))],
+      ['the account lookup finds nobody', () => mockIamService.getUserById.resolves({ statusCode: 404 })],
+      ['reading the credentials throws', () => (UserCredentials.findOne as sinon.SinonStub).rejects(new Error('mongo down'))],
+      ['saving the password throws', () => (UserCredentials.prototype.save as sinon.SinonStub).rejects(new Error('write failed'))],
+    ] as const) {
+      it(`hands the link back when ${failure} before the password is saved`, async () => {
+        const used = fakeUsedResetLinks();
+        arrange();
+
+        await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+        expect(next.calledOnce).to.be.true;
+        expect(used.size, 'the link is usable again').to.equal(0);
+      });
+    }
+
+    it('keeps the link spent once the password is saved, even if recording the change fails', async () => {
+      const used = fakeUsedResetLinks();
+      (UserActivities.create as sinon.SinonStub).rejects(new Error('insert failed'));
+
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+      expect(next.calledOnce).to.be.true;
+      expect((UserCredentials.prototype.save as sinon.SinonStub).calledOnce).to.be.true;
+      expect(used.size, 'the link stays used').to.equal(1);
+
+      const again = sinon.stub();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!'), newResponse() as any, again);
+      expect(again.firstCall.args[0].message).to.equal(RESET_LINK_ALREADY_USED);
     });
 
     it('lets two different links for the same account each work', async () => {
