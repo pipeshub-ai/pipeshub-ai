@@ -163,10 +163,13 @@ _MAGNITUDES = {
     "b": 10**9, "bn": 10**9, "billion": 10**9,
 }
 _TOKEN = re.compile(
+    # A minus only when it starts the number: "$200-$250" and "10-15" are ranges.
+    r"(?:(?<![\w.])(?P<sign>-))?"
     r"(?P<cur>[$\u20ac\u00a3\u20b9\u00a5])? ?"
     r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
-    r"(?: ?(?P<mag>" + "|".join(sorted(_MAGNITUDES, key=len, reverse=True)) + r")\b)?"
-    r"(?P<pct>%)?"
+    # The next word, even past a hyphen, bracket or comma: "$250-million", "$250 (million)".
+    r"(?:[\s(\[,-]{0,3}(?P<mag>" + "|".join(sorted(_MAGNITUDES, key=len, reverse=True)) + r")\b)?"
+    r"(?: ?(?P<pct>%))?"
     r"|(?P<word>[^\W\d_]+(?:['_][^\W\d_]+)*)"
 )
 
@@ -175,13 +178,16 @@ Token = tuple[str, ...] | tuple[str, Decimal, str]
 
 def tokens(text: str) -> list[Token]:
     """Words, and numbers as (value, unit): "$250.00" and "$250" are one amount,
-    "$250 k" and "$2,500" are others, and "250%" is not "$250"."""
+    "$250 k", "$250-million", "-$250" and "$2,500" are others, and "250 %" is
+    not "$250"."""
     out: list[Token] = []
     for m in _TOKEN.finditer(normalise(text)):
         if m.group("word"):
             out.append(("w", m.group("word")))
             continue
         value = Decimal(m.group("num").replace(",", "")) * _MAGNITUDES.get(m.group("mag") or "", 1)
+        if m.group("sign"):
+            value = -value
         out.append(("n", value.normalize(), (m.group("cur") or "") + (m.group("pct") or "")))
     return out
 

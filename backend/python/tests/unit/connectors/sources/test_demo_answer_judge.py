@@ -169,6 +169,21 @@ def test_quote_matching_ignores_formatting_but_not_words(quote: str, found: bool
     ("2.2%", "We pay 2.2% per card transaction.", True),
     ("2.2%", "We pay 2.25% per card transaction.", False),
     ("PR #21", "PR #211 fixed it.", False),
+    ("up to $250", "Deals up to $250-million need a VP.", False),
+    ("up to $250", "Deals up to $250 (million) need a VP.", False),
+    ("up to $250", "Deals up to $250(million) need a VP.", False),
+    ("up to $250", "Deals up to $250, million need a VP.", False),
+    ("250", "Growth was 250 % this year.", False),
+    ("250 %", "Growth was 250 this year.", False),
+    ("250 %", "Growth was 250% this year.", True),
+    ("-$250", "The limit is $250.", False),
+    ("$250", "The balance is -$250.", False),
+    ("-$250", "The balance is \u2212$250.", True),
+    # A hyphen between numbers is a range, not a minus.
+    ("$250", "Budget $200-$250 for it.", True),
+    ("15 days", "It takes 10-15 days.", True),
+    ("SEV-2", "Every SEV-2 gets a postmortem.", True),
+    ("up to $250, but", "Up to $250, but not more.", True),
 ])
 def test_a_quoted_number_must_not_be_part_of_a_longer_one(quote: str, answer: str, found: bool) -> None:
     assert quote_in_answer(quote, answer) is found

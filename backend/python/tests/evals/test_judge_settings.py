@@ -6,6 +6,8 @@ asks for and never reach a provider.
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import pytest
 
 from app.connectors.sources.demo.harness.answer_judge import AnswerJudge
@@ -190,4 +192,4 @@ def test_the_foundry_deployment_can_come_from_judge_azure_deployment(
 
 def test_the_real_foundry_builder_points_the_sdk_at_the_resource() -> None:
     client = chat_models.build_foundry_judge_client("acme-ai", "not-a-real-key", "claude-sonnet-5.5")
-    assert "acme-ai.services.ai.azure.com" in str(client._sdk.base_url)
+    assert urlparse(str(client._sdk.base_url)).hostname == "acme-ai.services.ai.azure.com"
