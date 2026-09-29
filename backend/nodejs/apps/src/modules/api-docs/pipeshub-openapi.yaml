@@ -16586,6 +16586,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded for OAuth client management routes
           content:
@@ -16633,7 +16639,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16702,7 +16708,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16758,7 +16764,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16813,7 +16819,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16874,7 +16880,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16935,7 +16941,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16990,7 +16996,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -17052,7 +17058,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -20534,7 +20540,7 @@ paths:
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
         '404':
           description: No such application, or no such service account in this organisation
 
