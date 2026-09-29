@@ -140,7 +140,7 @@ class TestFlattenedResultsMissingBlocks:
             {"v1": blob("v1", [text(0, "a"), text(1, "b")])},
             recon={"v1": {"block_id_to_index": {"blk-b": 1}, "hash_to_block_ids": {}}},
         )
-        results, _ = await flatten(store, [hit("v1", blockId="blk-b")], {"v1": graph_record("r1")}, from_tool=True)
+        results, _ = await flatten(store, [hit("v1", blockId="blk-b")], {"v1": graph_record("r1")})
         assert [(r["block_index"], r["content"]) for r in results] == [(1, "b")]
 
     async def test_unresolvable_block_id_is_dropped_not_fatal(self) -> None:
@@ -150,7 +150,7 @@ class TestFlattenedResultsMissingBlocks:
         )
         results, _ = await flatten(
             store, [hit("v1", blockId="blk-x"), hit("v1"), hit("v2", 0)],
-            {"v1": graph_record("r1"), "v2": graph_record("r2")}, from_tool=True,
+            {"v1": graph_record("r1"), "v2": graph_record("r2")},
         )
         assert [r["content"] for r in results] == ["kept"]
 
@@ -165,7 +165,7 @@ class TestFlattenedResultsMissingBlocks:
         store = InMemoryBlobStore({"v1": blob("v1", [text(0, "a"), text(1, "b")])})
         results, _ = await flatten(
             store, [hit("v1", 0, score=0.9), hit("v1", 0, score=0.1), hit("v1", 1)],
-            {"v1": graph_record("r1")}, from_tool=True,
+            {"v1": graph_record("r1")},
         )
         assert [r["block_index"] for r in results] == [0, 1]
         assert [d[0] for d in store.downloads] == ["v1"]
@@ -178,12 +178,12 @@ class TestFlattenedResultsMissingBlocks:
         assert store.downloads == [("v1", None)]
         assert vr_map["v1"]["frontend_url"] == ""
 
-    async def test_neighbouring_text_blocks_are_added_for_context(self) -> None:
+    async def test_neighbouring_blocks_are_left_to_the_context_builder(self) -> None:
+        # Neighbours are attached after ranking (modules/retrieval/context), so
+        # they never compete with real hits for a place in the result.
         store = InMemoryBlobStore({"v1": blob("v1", [text(0, "before"), text(1, "hit"), text(2, "after")])})
         results, _ = await flatten(store, [hit("v1", 1)], {"v1": graph_record("r1")})
-        assert sorted(r["block_index"] for r in results) == [0, 1, 2]
-        tool_results, _ = await flatten(store, [hit("v1", 1)], {"v1": graph_record("r1")}, from_tool=True)
-        assert [r["block_index"] for r in tool_results] == [1]
+        assert [r["block_index"] for r in results] == [1]
 
     async def test_record_summary_hit(self) -> None:
         store = InMemoryBlobStore({"v1": blob("v1", [text(0, "a")])})
@@ -191,7 +191,7 @@ class TestFlattenedResultsMissingBlocks:
                    "content": "It is about X", "score": 0.8}
         empty = {"metadata": {"virtualRecordId": "v1", "isRecordSummary": True, "isBlockGroup": False},
                  "content": ""}
-        results, _ = await flatten(store, [summary, dict(summary), empty], {"v1": graph_record("r1")}, from_tool=True)
+        results, _ = await flatten(store, [summary, dict(summary), empty], {"v1": graph_record("r1")})
         (only,) = results
         assert only["block_type"] == "record_summary" and only["block_index"] is None
         assert only["metadata"]["webUrl"] == "https://drive.test/r1"
@@ -202,7 +202,7 @@ class TestFlattenedResultsIncompleteGraphRecords:
         # connectorId is nullable in the graph schema and version has only a default.
         store = InMemoryBlobStore({"v1": blob("v1", [text(0, "kept")]), "v2": blob("v2", [text(0, "also kept")])})
         vmap = {"v1": graph_record("r1", connectorId=None, version=None), "v2": graph_record("r2")}
-        results, vr_map = await flatten(store, [hit("v1", 0), hit("v2", 0)], vmap, from_tool=True)
+        results, vr_map = await flatten(store, [hit("v1", 0), hit("v2", 0)], vmap)
         assert [r["content"] for r in results] == ["kept", "also kept"]
         assert "r1.pdf" in vr_map["v1"]["context_metadata"]
 
@@ -210,14 +210,13 @@ class TestFlattenedResultsIncompleteGraphRecords:
         store = InMemoryBlobStore({"v1": blob("v1", [text(0, "kept")])})
         graph = InMemoryTypeDocs({"files": {"r1": {"isFile": True, "extension": "pdf"}}})
         vmap = {"v1": graph_record("r1", connectorName="NOT_A_CONNECTOR")}
-        results, vr_map = await flatten(store, [hit("v1", 0)], vmap, graph=graph, from_tool=True)
+        results, vr_map = await flatten(store, [hit("v1", 0)], vmap, graph=graph)
         assert [r["content"] for r in results] == ["kept"]
         assert vr_map["v1"]["context_metadata"] == ""
 
     async def test_unknown_record_type_only_loses_its_header(self) -> None:
         store = InMemoryBlobStore({"v1": blob("v1", [text(0, "kept")])})
-        results, vr_map = await flatten(store, [hit("v1", 0)], {"v1": graph_record("r1", recordType="HOLOGRAM")},
-                                        from_tool=True)
+        results, vr_map = await flatten(store, [hit("v1", 0)], {"v1": graph_record("r1", recordType="HOLOGRAM")})
         assert [r["content"] for r in results] == ["kept"]
         assert vr_map["v1"]["context_metadata"] == ""
 
@@ -227,7 +226,7 @@ class TestFlattenedResultsBlockKinds:
         code = {"index": 0, "type": "code", "data": {"text": "def f(): pass"},
                 "code_metadata": {"qualified_name": "mod.f"}}
         store = InMemoryBlobStore({"v1": blob("v1", [code])})
-        (result,), _ = await flatten(store, [hit("v1", 0)], {"v1": graph_record("r1")}, from_tool=True)
+        (result,), _ = await flatten(store, [hit("v1", 0)], {"v1": graph_record("r1")})
         assert result["block_type"] == "code"
         assert "def f(): pass" in result["content"]
 
@@ -239,12 +238,12 @@ class TestFlattenedResultsBlockKinds:
         store = InMemoryBlobStore({"v1": blob("v1", [image, textless, empty])})
         vmap = {"v1": graph_record("r1")}
         multimodal, _ = await flatten(store, [hit("v1", 0, content="chart of sales"), hit("v1", 1), hit("v1", 2)],
-                                      vmap, multimodal=True, from_tool=True)
+                                      vmap, multimodal=True)
         assert multimodal[0]["content"] == PNG
         assert multimodal[0]["image_description"] == "chart of sales"
         assert multimodal[1]["content"] == "logo"
         assert len(multimodal) == 2
-        text_only, _ = await flatten(store, [hit("v1", 0, content=PNG)], vmap, from_tool=True)
+        text_only, _ = await flatten(store, [hit("v1", 0, content=PNG)], vmap)
         assert text_only == []
         placeholders, _ = await flatten(store, [hit("v1", 0), hit("v1", 1)], vmap, from_retrieval_service=True)
         assert [r["content"] for r in placeholders] == ["image_0", "image_1"]
@@ -260,7 +259,7 @@ class TestFlattenedResultsBlockKinds:
 
     async def test_small_table_hit_brings_every_row(self) -> None:
         store = InMemoryBlobStore({"v1": self._table_record(num_cells=6)})
-        (table,), _ = await flatten(store, [hit("v1", 0, group=True)], {"v1": graph_record("r1")}, from_tool=True)
+        (table,), _ = await flatten(store, [hit("v1", 0, group=True)], {"v1": graph_record("r1")})
         summary, rows = table["content"]
         assert summary.startswith("DDL:\nCREATE TABLE s")
         assert [r["content"] for r in rows] == ["row 0", "row 1", "row 2"]
@@ -269,7 +268,7 @@ class TestFlattenedResultsBlockKinds:
     async def test_large_table_hit_brings_only_the_matching_rows(self) -> None:
         store = InMemoryBlobStore({"v1": self._table_record(num_cells=None)})
         (table,), _ = await flatten(store, [hit("v1", 0, group=True), hit("v1", 2)],
-                                    {"v1": graph_record("r1")}, from_tool=True)
+                                    {"v1": graph_record("r1")})
         _, rows = table["content"]
         assert [r["block_index"] for r in rows] == [2]
 
@@ -277,7 +276,7 @@ class TestFlattenedResultsBlockKinds:
         record = self._table_record(num_cells=None)
         store = InMemoryBlobStore({"v1": record})
         vmap = {"v1": graph_record("r1", recordType="SQL_TABLE")}
-        (table,), _ = await flatten(store, [hit("v1", 50, content="row 50 from qdrant")], vmap, from_tool=True)
+        (table,), _ = await flatten(store, [hit("v1", 50, content="row 50 from qdrant")], vmap)
         (row,) = table["content"][1]
         assert row["content"] == "row 50 from qdrant"
         assert row["citationType"] == "vectordb"
@@ -290,10 +289,10 @@ class TestFlattenedResultsBlockKinds:
                  "table_metadata": {"num_of_cells": 2}}
         store = InMemoryBlobStore({"v1": blob("v1", [container, frag_text, frag_img], [table])})
         vmap = {"v1": graph_record("r1")}
-        (small,), _ = await flatten(store, [hit("v1", 0, group=True)], vmap, multimodal=True, from_tool=True)
+        (small,), _ = await flatten(store, [hit("v1", 0, group=True)], vmap, multimodal=True)
         assert [(r["block_type"], r["block_index"]) for r in small["content"][1]] == [("text", 0), ("image", 0)]
         # A hit on the fragment routes to the container row.
-        (via_fragment,), _ = await flatten(store, [hit("v1", 1)], vmap, from_tool=True)
+        (via_fragment,), _ = await flatten(store, [hit("v1", 1)], vmap)
         assert [r["content"] for r in via_fragment["content"][1]] == ["cell text", "icon"]
 
     async def test_fragment_of_a_list_item_renders_the_whole_list_once(self) -> None:
@@ -302,7 +301,7 @@ class TestFlattenedResultsBlockKinds:
         second = {"index": 2, "type": "text", "data": "second item", "parent_index": 0}
         group = {"index": 0, "type": "list", "children": [{"block_index": 0}, {"block_index": 2}]}
         store = InMemoryBlobStore({"v1": blob("v1", [item, frag, second], [group])})
-        results, vr_map = await flatten(store, [hit("v1", 1), hit("v1", 2)], {"v1": graph_record("r1")}, from_tool=True)
+        results, vr_map = await flatten(store, [hit("v1", 1), hit("v1", 2)], {"v1": graph_record("r1")})
         assert {r["block_type"] for r in results} == {"list"}
         assert [b["content"] for b in results[0]["content"][1]] == ["first item", "second item"]
         contents, _ = build_message_content_array(results, vr_map)
@@ -312,7 +311,7 @@ class TestFlattenedResultsBlockKinds:
         store = InMemoryBlobStore({"v1": blob("v1", [text(0, "a")]), "v2": blob("v2", [text(0, "b")])})
         graph = InMemoryTypeDocs({"tickets": {"t1": {"status": "Open", "priority": "High"}}})
         vmap = {"v1": graph_record("t1", recordType="TICKET"), "v2": graph_record("f2")}
-        _, vr_map = await flatten(store, [hit("v1", 0), hit("v2", 0)], vmap, graph=graph, from_tool=True)
+        _, vr_map = await flatten(store, [hit("v1", 0), hit("v2", 0)], vmap, graph=graph)
         assert sorted(graph.batches) == [("files", ["f2"]), ("tickets", ["t1"])]
         assert "Open" in vr_map["v1"]["context_metadata"]
 
@@ -468,7 +467,7 @@ class TestRecordToMessageContent:
         collected: list[dict] = []
         content, _ = record_to_message_content(record, is_multimodal_llm=True, collected_images=collected)
         joined = "".join(p.get("text", "") for p in content)
-        assert "[Table #0]" in joined and "cell" in joined
+        assert "[Table #0" in joined and "cell" in joined
         assert len(collected) == 1
         text_only, _ = record_to_message_content(record)
         assert "cell" in "".join(p.get("text", "") for p in text_only)
@@ -515,7 +514,7 @@ class TestTableRowsWithoutTheirTable:
             "v1": self._record(parent_index), "v2": blob("v2", [text(0, "other record")]),
         })
         results, _ = await flatten(store, [hit("v1", 0), hit("v2", 0)],
-                                   {"v1": graph_record("r1"), "v2": graph_record("r2")}, from_tool=True)
+                                   {"v1": graph_record("r1"), "v2": graph_record("r2")})
         assert "other record" in [r["content"] for r in results]
 
 

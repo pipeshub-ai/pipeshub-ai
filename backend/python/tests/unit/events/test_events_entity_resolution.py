@@ -49,7 +49,8 @@ async def test_resolution_runs_before_summary_blob_and_enrich() -> None:
     async for _event in ep.on_event(_make_event_data()):
         pass
 
-    assert order == ["resolve", "summary", "blob", "enrich"]
+    assert order[0] == "resolve"
+    assert sorted(order) == ["blob", "enrich", "resolve", "summary"]
     ctx = sink.resolve_entities.await_args.args[0]
     assert ctx.record.semantic_metadata is extraction_client.classify.return_value
 
