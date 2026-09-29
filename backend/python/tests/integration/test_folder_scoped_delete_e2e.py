@@ -46,8 +46,13 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.entities import FileRecord, RecordType
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from tests.integration.real_graph import connect_arango, connect_neo4j
+from tests.integration.real_graph import (
+    backend_unavailable,
+    connect_arango,
+    connect_neo4j,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -69,6 +74,12 @@ class _Tree:
     graph: IGraphDBProvider
     connector_id: str
     ids: dict[str, str]
+    processor: DataSourceEntitiesProcessor
+
+    async def add(self, names: list[str], *, folders: bool) -> None:
+        records = [_record(self.connector_id, name, is_file=not folders) for name in names]
+        await self.processor.on_new_records([(record, []) for record in records])
+        self.ids.update({record.record_name: record.id for record in records})
 
     async def exists(self, name: str) -> bool:
         return await self.graph.get_document(self.ids[name], CollectionNames.RECORDS.value) is not None
@@ -90,7 +101,7 @@ class _Tree:
         )
 
 
-def _record(connector_id: str, name: str) -> FileRecord:
+def _record(connector_id: str, name: str, *, is_file: bool | None = None) -> FileRecord:
     now = get_epoch_timestamp_in_ms()
     return FileRecord(
         org_id=ORG_ID,
@@ -102,7 +113,7 @@ def _record(connector_id: str, name: str) -> FileRecord:
         connector_name=Connectors.GOOGLE_DRIVE,
         connector_id=connector_id,
         mime_type="text/plain",
-        is_file=name not in FOLDERS,
+        is_file=(name not in FOLDERS) if is_file is None else is_file,
         created_at=now,
         updated_at=now,
         source_created_at=now,
@@ -125,7 +136,7 @@ async def tree(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) 
                 else connect_arango(logger, ARANGO_DB)
             )
         except Exception as exc:
-            pytest.skip(f"{request.param} not available: {exc}")
+            backend_unavailable(request.param, exc)
         disconnect = getattr(graph, "disconnect", None)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
@@ -138,7 +149,7 @@ async def tree(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) 
 
         records = {name: _record(connector_id, name) for name in NAMES}
         await processor.on_new_records([(record, []) for record in records.values()])
-        t = _Tree(graph, connector_id, {name: record.id for name, record in records.items()})
+        t = _Tree(graph, connector_id, {name: record.id for name, record in records.items()}, processor)
         cleanup.push_async_callback(_remove_everything, graph, t)
 
         for parent, child in (
@@ -187,3 +198,48 @@ async def test_a_folder_cascade_follows_only_containment_edges(tree: _Tree) -> N
         assert await tree.exists(name), (
             f"{name} was deleted by folder_a's cascade through a RELATED or DERIVED_FROM edge"
         )
+
+
+async def test_a_move_between_the_check_and_the_delete_keeps_the_record(tree: _Tree) -> None:
+    """The move commits right after the delete has read the tree and before it deletes."""
+    owner = tree.graph.client if isinstance(tree.graph, Neo4jProvider) else tree.graph
+    original = owner.execute_query
+    moved = False
+
+    async def move_after_the_inventory(query, *args, **kwargs):
+        nonlocal moved
+        result = await original(query, *args, **kwargs)
+        if not moved and "valid_root" in query:
+            moved = True
+            assert await tree.graph.delete_parent_child_edge_to_record(tree.ids["s1"])
+            await tree.link("folder_b", "s1", "PARENT_CHILD")
+        return result
+
+    owner.execute_query = move_after_the_inventory
+    try:
+        result = await tree.delete(["s1"], within_folder_id=tree.ids["folder_a"])
+    finally:
+        owner.execute_query = original
+
+    assert moved, "the test never reached the delete's own check"
+    assert await tree.exists("s1"), f"a record moved out mid-delete was still deleted: {result}"
+    assert result.get("successfully_deleted", 0) == 0
+
+
+async def test_containment_deeper_than_twenty_levels_is_followed(tree: _Tree) -> None:
+    levels = [f"level_{i}" for i in range(25)]
+    await tree.add(levels, folders=True)
+    await tree.add(["deep_file"], folders=False)
+    chain = ["folder_a", *levels, "deep_file"]
+    for parent, child in zip(chain, chain[1:]):
+        await tree.link(parent, child, "PARENT_CHILD")
+
+    scoped = await tree.delete(["deep_file"], within_folder_id=tree.ids["folder_a"])
+    assert scoped["successfully_deleted"] == 1, f"a file 26 levels down was not seen as inside: {scoped}"
+    assert not await tree.exists("deep_file")
+
+    await tree.add(["deep_file_2"], folders=False)
+    await tree.link(levels[-1], "deep_file_2", "PARENT_CHILD")
+    await tree.delete(["folder_a"])
+    for name in (*levels, "deep_file_2"):
+        assert not await tree.exists(name), f"{name} survived its folder's delete"

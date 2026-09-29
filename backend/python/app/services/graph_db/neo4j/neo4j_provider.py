@@ -85,6 +85,7 @@ from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_f
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
+    CONTAINMENT_MAX_DEPTH,
     MAX_DIRECT_GRANT_RECORDS,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
@@ -10798,7 +10799,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH collect(DISTINCT CASE
                         WHEN rec IS NOT NULL AND (rec.isDeleted IS NULL OR rec.isDeleted <> true) AND rec.connectorId = $connector_id
                              AND ($folder_id IS NULL OR EXISTS {
-                                 MATCH inside = (:Record {id: $folder_id})-[:RECORD_RELATION*1..20]->(rec)
+                                 MATCH inside = (:Record {id: $folder_id})-[:RECORD_RELATION*1..""" + str(CONTAINMENT_MAX_DEPTH) + """]->(rec)
                                  WHERE all(rel IN relationships(inside) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
                              })
                         THEN rec ELSE null END) AS roots_raw
@@ -10806,7 +10807,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH valid_roots, [r IN valid_roots | r.id] AS valid_root_keys
                 // 2. Containment subtree, depth-0 inclusive
                 UNWIND (CASE WHEN size(valid_roots) = 0 THEN [null] ELSE valid_roots END) AS root
-                OPTIONAL MATCH path = (root)-[:RECORD_RELATION*0..20]->(v:Record)
+                OPTIONAL MATCH path = (root)-[:RECORD_RELATION*0..""" + str(CONTAINMENT_MAX_DEPTH) + """]->(v:Record)
                 WHERE root IS NOT NULL AND all(rel IN relationships(path) WHERE rel.relationshipType IN """ + traversal_types + """)
                 WITH valid_root_keys, collect(DISTINCT v) AS all_vertices
                 // 3. Attach each record's isOfType type doc (any label)
@@ -10868,7 +10869,49 @@ class Neo4jProvider(IGraphDBProvider):
                             txn_id=txn_id,
                         )
 
-                if record_keys:
+                if within_folder_id and record_keys:
+                    # The client auto-commits each query unless explicit transactions
+                    # are on, so a check made by the inventory above would not hold
+                    # until a separate delete ran. One statement re-checks containment
+                    # and deletes, and reports what it actually removed.
+                    rows = await self.client.execute_query(
+                        """
+                        UNWIND $root_ids AS rid
+                        MATCH (root:Record {id: rid, connectorId: $connector_id})
+                        WHERE coalesce(root.isDeleted, false) = false
+                          AND EXISTS {
+                              MATCH inside = (:Record {id: $folder_id})-[:RECORD_RELATION*1..""" + str(CONTAINMENT_MAX_DEPTH) + """]->(root)
+                              WHERE all(rel IN relationships(inside) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+                          }
+                        MATCH sub = (root)-[:RECORD_RELATION*0..""" + str(CONTAINMENT_MAX_DEPTH) + """]->(v:Record)
+                        WHERE all(rel IN relationships(sub) WHERE rel.relationshipType IN """ + traversal_types + """)
+                        WITH collect(DISTINCT root.id) AS root_ids, collect(DISTINCT v) AS vertices
+                        UNWIND vertices AS v
+                        OPTIONAL MATCH (v)-[:IS_OF_TYPE]->(t)
+                        WITH root_ids, v, v.id AS vid, collect(t) AS types
+                        FOREACH (t IN types | DETACH DELETE t)
+                        DETACH DELETE v
+                        RETURN root_ids, collect(vid) AS deleted_ids
+                        """,
+                        parameters={
+                            "root_ids": valid_root_keys,
+                            "connector_id": connector_id,
+                            "folder_id": within_folder_id,
+                        },
+                        txn_id=txn_id,
+                    )
+                    row = rows[0] if rows else {}
+                    deleted_ids = set(row.get("deleted_ids") or [])
+                    kept_roots = [r for r in valid_root_keys if r not in set(row.get("root_ids") or [])]
+                    records_with_type = [
+                        rt for rt in records_with_type
+                        if (rt.get("record") or {}).get("id") in deleted_ids
+                    ]
+                    failed_records += [
+                        {"record_id": rid, "reason": "No longer in this folder"} for rid in kept_roots
+                    ]
+                    valid_root_keys = [r for r in valid_root_keys if r not in kept_roots]
+                elif record_keys:
                     # Delete the isOfType type docs (any label) via the record, then the
                     # records themselves; DETACH DELETE removes every relationship on each
                     # node (the dynamic edge sweep — inheritPermissions/permissions/etc.).

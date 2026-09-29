@@ -133,6 +133,7 @@ from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
+    CONTAINMENT_MAX_DEPTH,
     MAX_DIRECT_GRANT_RECORDS,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
@@ -12441,26 +12442,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
             try:
                 traversal_types = "['PARENT_CHILD', 'ATTACHMENT']" if cascade_children else "['ATTACHMENT']"
                 inventory_query = """
-                LET valid_roots = (
+                LET checked = (
                     FOR rid IN @record_ids
                         LET rec = DOCUMENT('records', rid)
                         FILTER rec != null AND rec.isDeleted != true
                         FILTER rec.connectorId == @connector_id
-                        FILTER @folder_id == null OR LENGTH(
-                            FOR anc, edge, path IN 1..20 INBOUND rec._id @@record_relations
+                        // The containment path's edge keys, so they can be locked before the delete.
+                        LET inside = @folder_id == null ? [] : FIRST(
+                            FOR anc, edge, path IN 1..""" + str(CONTAINMENT_MAX_DEPTH) + """ INBOUND rec._id @@record_relations
                                 PRUNE edge != null AND edge.relationshipType NOT IN ['PARENT_CHILD', 'ATTACHMENT']
                                 FILTER path.edges[*].relationshipType ALL IN ['PARENT_CHILD', 'ATTACHMENT']
                                 FILTER anc._key == @folder_id
                                 LIMIT 1
-                                RETURN 1
-                        ) > 0
-                        RETURN rec
+                                RETURN path.edges[*]._key
+                        )
+                        FILTER inside != null
+                        RETURN { rec: rec, inside: inside }
                 )
+                LET valid_roots = checked[*].rec
                 // Every edge on the path must be a containment edge. FILTER alone does not
                 // stop the walk, so without PRUNE a RELATED edge leads on to its target's children.
                 LET all_records = (
                     FOR root IN valid_roots
-                        FOR v, e, p IN 0..20 OUTBOUND root._id @@record_relations
+                        FOR v, e, p IN 0..""" + str(CONTAINMENT_MAX_DEPTH) + """ OUTBOUND root._id @@record_relations
                             PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
                             FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
                             RETURN DISTINCT v
@@ -12476,9 +12480,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         )
                         RETURN { record: rec, type_target: tt }
                 )
+                LET tree_edges = @folder_id == null ? [] : UNIQUE(
+                    FOR root IN valid_roots
+                        FOR v, e, p IN 1..""" + str(CONTAINMENT_MAX_DEPTH) + """ OUTBOUND root._id @@record_relations
+                            PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
+                            FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
+                            RETURN e._key
+                )
                 RETURN {
                     valid_root_keys: valid_roots[*]._key,
-                    records_with_type: records_with_type
+                    records_with_type: records_with_type,
+                    guard_edges: UNIQUE(APPEND(FLATTEN(checked[*].inside), tree_edges))
                 }
                 """
                 inv_results = await self.execute_query(
@@ -12493,6 +12505,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     transaction=txn_id,
                 )
                 inventory = inv_results[0] if inv_results else {}
+                guard_edges = inventory.get("guard_edges") or []
+                if within_folder_id and guard_edges:
+                    # Reads here are not isolated from other writers, so the check above
+                    # holds only if its edges stay put. Writing to them takes their locks
+                    # until commit; an edge a concurrent move already removed is "not
+                    # found", which aborts the delete and keeps every record.
+                    for marker in ("true", "null"):
+                        await self.execute_query(
+                            "FOR k IN @keys UPDATE k WITH { deleteGuard: " + marker + " } "
+                            "IN @@record_relations OPTIONS { keepNull: false }",
+                            bind_vars={
+                                "keys": guard_edges,
+                                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                            },
+                            transaction=txn_id,
+                        )
                 valid_root_keys = inventory.get("valid_root_keys", [])
                 records_with_type = inventory.get("records_with_type", [])
                 record_keys = [rt["record"]["_key"] for rt in records_with_type]
