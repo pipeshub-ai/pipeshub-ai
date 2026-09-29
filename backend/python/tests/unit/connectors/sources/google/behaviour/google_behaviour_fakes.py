@@ -28,6 +28,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import httplib2
 
+from app.services.graph_db.common.record_visibility import is_live_record
+
 if TYPE_CHECKING:
     import pytest
 
@@ -318,6 +320,7 @@ class FakeEntitiesProcessor:
             r for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id
             and (record_type is None or str(getattr(r.record_type, "value", r.record_type)) == str(getattr(record_type, "value", record_type)))
+            and is_live_record(r)
         ]
 
     async def get_placeholder_records(self, connector_id: str, *_: object, **__: object) -> list[Any]:

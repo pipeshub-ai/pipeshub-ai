@@ -1,6 +1,7 @@
 from app.config.constants.arangodb import (
     Connectors,
     ConnectorScopes,
+    DeleteSource,
     OriginTypes,
     PermissionModel,
 )
@@ -242,6 +243,16 @@ record_schema = {
             "isArchived": {"type": "boolean", "default": False},
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
+            # Soft delete: when the record entered the trash, who put it there,
+            # the batch a restore brings back together, and the purge's retries.
+            "deletedAtTimestamp": {"type": ["number", "null"]},
+            "deleteSource": {
+                "type": ["string", "null"],
+                "enum": [source.value for source in DeleteSource] + [None],
+            },
+            "deleteBatchId": {"type": ["string", "null"]},
+            "purgeAttempts": {"type": ["number", "null"]},
+            "purgeLastError": {"type": ["string", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
             # Clocks the stranded-record sweep in indexing_main ages rows on.
             "queuedAtTimestamp": {"type": ["number", "null"]},

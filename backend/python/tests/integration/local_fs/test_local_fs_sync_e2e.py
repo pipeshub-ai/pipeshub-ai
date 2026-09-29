@@ -122,6 +122,10 @@ from app.connectors.sources.local_fs.connector import (
 )
 from app.connectors.sources.local_fs.models import LocalFsFileEvent, LocalFsPullBatch
 from app.models.entities import AppMetadata, FileRecord, Record, User
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.unit.connectors.sources.test_connector_workflow_integration import (
     MockArangoProvider,
@@ -231,6 +235,7 @@ class LocalFsTransactionStore(MockTransactionStore):
         is_placeholder=None,
         after_key=None,
         exclude_statuses=None,
+        visibility=RecordVisibility.LIVE,
     ) -> list:
         docs = [
             d
@@ -238,6 +243,7 @@ class LocalFsTransactionStore(MockTransactionStore):
             if d.get("orgId") == org_id
             and d.get("connectorId") == connector_id
             and d.get("indexingStatus") in status_filters
+            and matches_visibility(d, visibility)
         ]
         if exclude_statuses:
             docs = [d for d in docs if d.get("indexingStatus") not in exclude_statuses]

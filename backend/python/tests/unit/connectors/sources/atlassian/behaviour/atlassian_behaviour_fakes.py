@@ -19,6 +19,8 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from app.services.graph_db.common.record_visibility import is_live_record
+
 if TYPE_CHECKING:
     from app.connectors.core.base.connector.connector_service import BaseConnector
     from app.models.entities import Record
@@ -166,6 +168,7 @@ class FakeRecordsDb:
         return [
             r.model_copy() for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id and record_type in (None, r.record_type)
+            and is_live_record(r)
         ]
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:

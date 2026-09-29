@@ -42,6 +42,10 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     PaginationInfo as KHPaginationInfo,
 )
 from app.models.entities import ItemType, Record, RecordType, Status, TicketRecord
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 
 # Jira issue-type subTypes used by the seeded fixture below map to a real
 # `TicketRecord` (RecordType.TICKET + ItemType), same as production Jira
@@ -217,10 +221,12 @@ class SeededGraphProvider:
             return None
         return _node_to_record(node)
 
-    async def get_record_by_external_id(self, connector_id: str, external_id: str, transaction=None):
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, transaction=None, visibility=RecordVisibility.LIVE,
+    ):
         for node in self._nodes.values():
             if str(node.get("externalRecordId", "")) == str(external_id):
-                if node.get("orgId") != self._org_id:
+                if node.get("orgId") != self._org_id or not matches_visibility(node, visibility):
                     continue
                 if not node.get("_accessible", True):
                     return None

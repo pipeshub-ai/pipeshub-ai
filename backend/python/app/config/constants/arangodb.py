@@ -589,6 +589,14 @@ class ProgressStatus(Enum):
     QUEUED = "QUEUED"
 
 
+class DeleteSource(str, Enum):
+    """Who moved a record to the trash. Decides whether a sync may restore it."""
+
+    USER = "USER"
+    CONNECTOR = "CONNECTOR"
+    SYSTEM = "SYSTEM"
+
+
 class RecordTypes(Enum):
     FILE = "FILE"
     ATTACHMENT = "ATTACHMENT"

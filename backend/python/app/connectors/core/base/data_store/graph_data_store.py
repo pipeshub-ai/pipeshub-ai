@@ -35,6 +35,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -148,7 +149,11 @@ class GraphTransactionStore(TransactionStore):
         return AppMetadata.from_db_document(doc) if doc else None
 
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
-        return await self.graph_provider.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
+        # Sync decides create-or-update on this answer; hiding a trashed record
+        # would mint a second record for the same source item.
+        return await self.graph_provider.get_record_by_external_id(
+            connector_id, external_id, transaction=self.txn, visibility=RecordVisibility.ALL
+        )
 
     async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)

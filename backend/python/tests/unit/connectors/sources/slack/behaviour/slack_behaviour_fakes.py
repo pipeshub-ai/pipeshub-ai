@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from app.models.entities import MessageRecord, Record, RecordGroup
+from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -452,6 +453,7 @@ class FakeSlackStore:
             r for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id
             and (record_type is None or r.record_type.value == record_type)
+            and is_live_record(r)
         ]
 
     async def on_record_content_update(self, record: Record) -> None:

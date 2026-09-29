@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.models.entities import Person
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 @dataclass(frozen=True)
@@ -1291,15 +1292,21 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         external_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> Optional['Record']:
         """
         Get a record by its external ID from the source system.
+
+        Connector sync passes ``ALL``: it decides between creating and updating
+        on this answer, so hiding a trashed record would mint a duplicate.
 
         Args:
             connector_id (str): Connector ID
             external_id (str): External record ID
             transaction (Optional[Any]): Optional transaction context
+            visibility: ``LIVE`` (default) leaves out records in the trash,
+                ``DELETED`` returns only those, ``ALL`` returns both.
 
         Returns:
             Optional['Record']: Record data if found, None otherwise. None means
@@ -1389,6 +1396,7 @@ class IGraphDBProvider(ABC):
         is_placeholder: bool | None = None,
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list['Record']:
         """
         Get records by their indexing status.
@@ -1409,6 +1417,8 @@ class IGraphDBProvider(ABC):
                         paginating a result set that mutates while being iterated.
             exclude_statuses (Optional[List[str]]): Status values to exclude, applied
                         on top of status_filters.
+            visibility: ``LIVE`` (default) leaves out records in the trash,
+                ``DELETED`` returns only those, ``ALL`` returns both.
 
         Returns:
             list[Record]: Typed records matching the filters, sorted by key.
@@ -1718,17 +1728,23 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         parent_external_record_id: str,
         record_type: str | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list['Record']:
         """
         Get all child records for a parent record by parent_external_record_id.
         Optionally filter by record_type.
+
+        Live children only by default, so a folder whose children are all in
+        the trash reads as empty.
 
         Args:
             connector_id (str): Connector ID
             parent_external_record_id (str): Parent record's external ID
             record_type (Optional[str]): Optional filter by record type (e.g., "COMMENT", "FILE", "TICKET")
             transaction (Optional[Any]): Optional transaction context
+            visibility: ``LIVE`` (default) leaves out records in the trash,
+                ``DELETED`` returns only those, ``ALL`` returns both.
 
         Returns:
             List[Dict]: List of child records
@@ -2713,6 +2729,9 @@ class IGraphDBProvider(ABC):
         """
         Find duplicate records based on MD5 checksum, scoped to a single org.
 
+        Live records only: a trashed record's vectors are gone, so a new copy
+        that took its COMPLETED status would end up with no vectors.
+
         Deliberately does NOT filter by connector: dedup decisions need to see
         duplicates from *other* connectors too, so the caller can decide whether
         the duplicate resolves to the same vector collection (skip indexing) or
@@ -2750,6 +2769,7 @@ class IGraphDBProvider(ABC):
         """
         Find the next QUEUED duplicate record with the same md5 hash.
         Works with all record types by querying the RECORDS collection directly.
+        Only a live record is returned; the reference record may be in the trash.
 
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
@@ -3067,7 +3087,8 @@ class IGraphDBProvider(ABC):
     async def get_records_by_record_ids(
         self,
         record_ids: list[str],
-        org_id: str
+        org_id: str,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their record IDs (_key in Arango / id in Neo4j).
@@ -3079,6 +3100,8 @@ class IGraphDBProvider(ABC):
         Args:
             record_ids: List of record key/id values to fetch
             org_id: Organization ID for additional filtering
+            visibility: ``LIVE`` (default) leaves out records in the trash,
+                ``DELETED`` returns only those, ``ALL`` returns both.
 
         Returns:
             List[Dict[str, Any]]: List of full record dictionaries
@@ -3177,7 +3200,7 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with record, knowledgeBase, folder, metadata, permissions if accessible;
-            None if not.
+            None if not, and always None for a record in the trash.
         """
         pass
 
@@ -4145,6 +4168,7 @@ class IGraphDBProvider(ABC):
         Get failed records along with their active users who have permissions.
 
         Generic method for getting records with indexing status FAILED and their permitted active users.
+        Records in the trash are left out.
 
         Args:
             org_id (str): Organization ID
@@ -4165,6 +4189,7 @@ class IGraphDBProvider(ABC):
         Get all failed records for an organization and connector.
 
         Generic method for getting records with indexing status FAILED.
+        Records in the trash are left out.
 
         Args:
             org_id (str): Organization ID

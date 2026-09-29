@@ -23,6 +23,8 @@ from xml.sax.saxutils import escape
 
 import httpx
 
+from app.services.graph_db.common.record_visibility import is_live_record
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -507,7 +509,7 @@ class FakeRecordsDb:
     async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str,
                                     record_type: str | None = None) -> list[FileRecord]:
         return [r.model_copy(deep=True) for r in self.records.values()
-                if r.parent_external_record_id == parent_external_record_id]
+                if r.parent_external_record_id == parent_external_record_id and is_live_record(r)]
 
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         return 1 if self.edges.pop(record_id, None) else 0

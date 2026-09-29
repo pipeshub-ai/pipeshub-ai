@@ -14,6 +14,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     _is_deadlock_error,
     retry_on_deadlock,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 def create_deadlock_error() -> Exception:
@@ -142,7 +143,9 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_get_record_by_external_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_record_by_external_id("conn1", "ext1")
-        mock_graph_provider.get_record_by_external_id.assert_awaited_once_with("conn1", "ext1", transaction="txn-123")
+        mock_graph_provider.get_record_by_external_id.assert_awaited_once_with(
+            "conn1", "ext1", transaction="txn-123", visibility=RecordVisibility.ALL
+        )
 
     @pytest.mark.asyncio
     async def test_get_record_by_external_id_propagates_a_failed_lookup(self, tx_store, mock_graph_provider) -> None:
