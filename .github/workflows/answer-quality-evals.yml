@@ -134,7 +134,7 @@ jobs:
           # Claude on Azure AI Foundry, on the same resource, through the Anthropic Messages API.
           JUDGE_PROVIDER: ${{ secrets.AZURE_JUDGE_API_KEY && 'anthropic_foundry' || '' }}
           JUDGE_MODEL: ${{ secrets.AZURE_JUDGE_MODEL }}
-          JUDGE_AZURE_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+          JUDGE_AZURE_ENDPOINT: ${{ secrets.AZURE_JUDGE_ENDPOINT || secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
           JUDGE_AZURE_DEPLOYMENT: ${{ secrets.AZURE_JUDGE_MODEL }}
           JUDGE_API_KEY: ${{ secrets.AZURE_JUDGE_API_KEY }}
         run: |

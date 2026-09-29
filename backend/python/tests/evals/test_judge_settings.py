@@ -54,8 +54,10 @@ def built(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
     monkeypatch.setattr(chat_models, "build_chat_model", record)
 
-    def record_foundry(resource: str, api_key: str, model: str) -> object:
-        calls.append({"provider": "anthropic_foundry", "resource": resource, "api_key": api_key, "model": model})
+    def record_foundry(api_key: str, model: str, *, resource: str | None = None, base_url: str | None = None) -> object:
+        calls.append({
+            "provider": "anthropic_foundry", "resource": resource, "base_url": base_url, "api_key": api_key, "model": model,
+        })
         return object()
 
     monkeypatch.setattr(chat_models, "build_foundry_judge_client", record_foundry)
@@ -157,7 +159,8 @@ def test_a_foundry_judge_uses_the_resource_deployment_and_its_own_key(
     judge = judge_model_from_env()
     assert judge.dedicated and (judge.provider, judge.model) == ("anthropic_foundry", "claude-sonnet-5.5")
     assert built == [{
-        "provider": "anthropic_foundry", "resource": "acme-ai", "api_key": "judge-key", "model": "claude-sonnet-5.5",
+        "provider": "anthropic_foundry", "resource": "acme-ai", "base_url": None, "api_key": "judge-key",
+        "model": "claude-sonnet-5.5",
     }]
 
 
@@ -171,7 +174,7 @@ def test_an_explicit_foundry_resource_wins(monkeypatch: pytest.MonkeyPatch, buil
     ({"JUDGE_API_KEY": None}, "JUDGE_API_KEY"),
     ({"JUDGE_MODEL": None}, "JUDGE_MODEL or JUDGE_AZURE_DEPLOYMENT"),
     ({"JUDGE_AZURE_ENDPOINT": None}, "JUDGE_FOUNDRY_RESOURCE"),
-    ({"JUDGE_AZURE_ENDPOINT": "https://example.com"}, "the one set is not"),
+    ({"JUDGE_AZURE_ENDPOINT": "https://example.com"}, "the one set is neither"),
 ])
 def test_a_foundry_judge_missing_a_setting_names_it(
     monkeypatch: pytest.MonkeyPatch, built: list[dict], change: dict, named: str
@@ -191,5 +194,37 @@ def test_the_foundry_deployment_can_come_from_judge_azure_deployment(
 
 
 def test_the_real_foundry_builder_points_the_sdk_at_the_resource() -> None:
-    client = chat_models.build_foundry_judge_client("acme-ai", "not-a-real-key", "claude-sonnet-5.5")
+    client = chat_models.build_foundry_judge_client("not-a-real-key", "claude-sonnet-5.5", resource="acme-ai")
     assert urlparse(str(client._sdk.base_url)).hostname == "acme-ai.services.ai.azure.com"
+
+
+@pytest.mark.parametrize(("endpoint", "base_url"), [
+    ("https://claude-res.services.ai.azure.com/anthropic/v1/messages", "https://claude-res.services.ai.azure.com/anthropic"),
+    ("https://claude-res.services.ai.azure.com/anthropic/", "https://claude-res.services.ai.azure.com/anthropic"),
+    ("https://claude-res.services.ai.azure.com/anthropic", "https://claude-res.services.ai.azure.com/anthropic"),
+    ("https://claude-res.cognitiveservices.azure.com/", None),
+    ("http://claude-res.services.ai.azure.com/anthropic", None),
+])
+def test_a_foundry_target_uri_gives_the_base_url(endpoint: str, base_url: str | None) -> None:
+    assert chat_models.foundry_base_url(endpoint) == base_url
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://claude-res.services.ai.azure.com/anthropic/v1/messages",
+    "https://claude-res.services.ai.azure.com/anthropic/",
+])
+def test_a_target_uri_endpoint_is_passed_as_the_base_url_not_a_resource(
+    monkeypatch: pytest.MonkeyPatch, built: list[dict], endpoint: str
+) -> None:
+    _set(monkeypatch, FOUNDRY_JUDGE | {"JUDGE_AZURE_ENDPOINT": endpoint})
+    judge_model_from_env()
+    assert built[0]["base_url"] == "https://claude-res.services.ai.azure.com/anthropic"
+    assert built[0]["resource"] is None
+
+
+def test_the_real_foundry_builder_uses_a_target_uri_base_url() -> None:
+    client = chat_models.build_foundry_judge_client(
+        "not-a-real-key", "claude-sonnet-5.5", base_url="https://claude-res.services.ai.azure.com/anthropic"
+    )
+    url = urlparse(str(client._sdk.base_url))
+    assert (url.hostname, url.path.rstrip("/")) == ("claude-res.services.ai.azure.com", "/anthropic")

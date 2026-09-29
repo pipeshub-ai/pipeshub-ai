@@ -150,7 +150,21 @@ def foundry_resource(endpoint: str) -> str | None:
     return match.group("resource") if match else None
 
 
-def build_foundry_judge_client(resource: str, api_key: str, model: str) -> AnthropicJudgeClient:
+def foundry_base_url(endpoint: str) -> str | None:
+    """The Anthropic base URL in a Foundry "Target URI"
+    (``https://<resource>.services.ai.azure.com/anthropic/v1/messages``), up to
+    and including ``/anthropic``; None when the endpoint has no such path."""
+    parsed = urlparse(endpoint)
+    segments = parsed.path.split("/")
+    if parsed.scheme != "https" or not parsed.hostname or "anthropic" not in segments:
+        return None
+    path = "/".join(segments[: segments.index("anthropic") + 1])
+    return f"https://{parsed.netloc}{path}"
+
+
+def build_foundry_judge_client(
+    api_key: str, model: str, *, resource: str | None = None, base_url: str | None = None
+) -> AnthropicJudgeClient:
     """Claude on Azure AI Foundry, through the Anthropic Messages API."""
     try:
         from anthropic import AnthropicFoundry
@@ -159,22 +173,28 @@ def build_foundry_judge_client(resource: str, api_key: str, model: str) -> Anthr
             "the installed anthropic SDK has no AnthropicFoundry client; "
             "anthropic_foundry needs the version langchain-anthropic pins in backend/python/pyproject.toml."
         ) from exc
-    return AnthropicJudgeClient(AnthropicFoundry(resource=resource, api_key=api_key, timeout=120), model)
+    where = {"base_url": base_url} if base_url else {"resource": resource}
+    return AnthropicJudgeClient(AnthropicFoundry(api_key=api_key, timeout=120, **where), model)
 
 
 def _foundry_judge(key: str | None, model: str) -> JudgeModel:
     model = model or os.getenv("JUDGE_AZURE_DEPLOYMENT") or ""
     endpoint = os.getenv("JUDGE_AZURE_ENDPOINT") or ""
-    resource = os.getenv("JUDGE_FOUNDRY_RESOURCE") or (foundry_resource(endpoint) if endpoint else None)
+    resource = os.getenv("JUDGE_FOUNDRY_RESOURCE")
+    base_url = None if resource else foundry_base_url(endpoint)
+    if not resource and not base_url and endpoint:
+        resource = foundry_resource(endpoint)
     missing = [name for name, value in (("JUDGE_API_KEY", key), ("JUDGE_MODEL or JUDGE_AZURE_DEPLOYMENT", model)) if not value]
-    if not resource:
+    if not resource and not base_url:
         missing.append(
-            "JUDGE_FOUNDRY_RESOURCE, or a JUDGE_AZURE_ENDPOINT on *.cognitiveservices.azure.com, "
-            "*.openai.azure.com or *.services.ai.azure.com" + (" (the one set is not)" if endpoint else "")
+            "JUDGE_FOUNDRY_RESOURCE, or a JUDGE_AZURE_ENDPOINT that is a Foundry Target URI (…/anthropic) or on "
+            "*.cognitiveservices.azure.com, *.openai.azure.com or *.services.ai.azure.com"
+            + (" (the one set is neither)" if endpoint else "")
         )
     if missing:
         raise JudgeConfigError(f"JUDGE_PROVIDER=anthropic_foundry but not set: {'; '.join(missing)}.")
-    return JudgeModel(build_foundry_judge_client(resource, key or "", model), "anthropic_foundry", model, dedicated=True)
+    client = build_foundry_judge_client(key or "", model, resource=resource, base_url=base_url)
+    return JudgeModel(client, "anthropic_foundry", model, dedicated=True)
 
 
 def _dedicated_judge(provider: str) -> JudgeModel:
@@ -234,6 +254,7 @@ __all__ = [
     "MissingModelError",
     "build_chat_model",
     "build_foundry_judge_client",
+    "foundry_base_url",
     "foundry_resource",
     "judge_model_from_env",
     "resolve_model",
