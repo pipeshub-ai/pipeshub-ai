@@ -3292,6 +3292,7 @@ class TestSyncFiles:
             api_version="59.0", file_records_pages=_async_iter_pages([file_row]),
         )
 
+        connector.data_entities_processor.get_file_record_by_id.assert_awaited_once_with(stored.id)
         (update,), _ = connector._handle_record_updates.await_args
         assert update.metadata_changed is True
         assert update.content_changed is False
