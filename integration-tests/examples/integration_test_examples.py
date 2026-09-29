@@ -358,6 +358,8 @@ def _pull_request_is_open(number: str) -> bool:
         resp = requests.get(
             f"https://api.github.com/repos/pipeshub-ai/pipeshub-ai/pulls/{number}", timeout=30,
         )
+        if resp.status_code == 404:
+            return False  # a pack naming a pull request that does not exist is not pending
         resp.raise_for_status()
         return str(resp.json().get("state")) == "open"
     except (requests.RequestException, ValueError):

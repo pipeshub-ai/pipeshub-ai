@@ -54,6 +54,18 @@ def test_a_closed_pull_request_leaves_its_pack_to_this_checkout(packs, monkeypat
     assert len(this_checkouts(packs)) == 3
 
 
+def test_a_pull_request_that_does_not_exist_is_not_pending(monkeypatch) -> None:
+    class Gone:
+        status_code = 404
+
+    monkeypatch.setattr("integration_test_examples.requests.get", lambda *a, **k: Gone())
+    _pull_request_is_open.cache_clear()
+    try:
+        assert _pull_request_is_open("99999") is False
+    finally:
+        _pull_request_is_open.cache_clear()
+
+
 def test_unreachable_github_does_not_blame_this_checkout(monkeypatch) -> None:
     def refuse(*_args, **_kwargs) -> None:
         raise requests.RequestException("no network")
