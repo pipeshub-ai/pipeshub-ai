@@ -47,8 +47,13 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next
     from app.agents.agent_loop.context import AgentContext
 
-from app.agents.actions.knowledge_graph.ops.fetch import DEFAULT_FETCH_REASON as _DEFAULT_FETCH_REASON
-from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME as _FETCH_FULL_RECORD_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.fetch import (
+    DEFAULT_FETCH_REASON as _DEFAULT_FETCH_REASON,
+)
+from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_GRANTED_KEY
+from app.agents.actions.knowledge_graph.ops.fetch import (
+    FETCH_RECORD_TOOL_NAME as _FETCH_FULL_RECORD_TOOL_NAME,
+)
 
 # ---------------------------------------------------------------------------
 # Shared description — used by _FetchFullRecordTool (agent-loop) and kept in
@@ -369,6 +374,7 @@ def citation_tracking(
         # `_grant` calls below — `register_tool_if_absent` never raises
         # for "already registered", so both sides always reach `_grant`.
         registry.register_tool_if_absent(_FetchFullRecordTool(collector, context))
+        context.tool_state[FETCH_RECORD_GRANTED_KEY] = True
 
         # The immediate caller (typically the `internal_exploration_agent`
         # child under composition, or the top-level agent itself in flat
@@ -405,6 +411,7 @@ def ensure_fetch_full_record_available(
     collector = CitationCollector(context)
     if registry is not None:
         registry.register_tool_if_absent(_FetchFullRecordTool(collector, context))
+        context.tool_state[FETCH_RECORD_GRANTED_KEY] = True
     if run_scope is not None and hasattr(run_scope, "spec"):
         _grant(run_scope.spec, require_internal_search_reference=False)
     _grant(context.root_agent_spec, require_internal_search_reference=False)

@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_FULL_RECORD_MAX_BLOCKS = 200
 
 FETCH_RECORD_TOOL_NAME = "knowledgegraph__fetch_record"
+# Set in tool_state once the fetch tool is registered and granted for the request.
+FETCH_RECORD_GRANTED_KEY = "fetch_record_granted"
 
 DEFAULT_FETCH_REASON = "Fetching full record content for comprehensive answer"
 
@@ -319,6 +321,8 @@ async def execute_fetch_record(
             record_id_shortener,
         )
 
+        from app.agents.actions.knowledge_graph.ops.repeat_hits import mark_read
+
         for record in result["records"]:
             rid = record.get("id")
             if not rid:
@@ -331,6 +335,8 @@ async def execute_fetch_record(
                 RecordRenderOutcome(record_id=record_key, stopped_at_block=start_block)
                 if record_key in unread else budget.outcome(record_key)
             )
+            if record_key not in unread:
+                mark_read(context.tool_state, [rid])
             if outcome.complete:
                 context.full_records_fetched.add(rid)
                 context.tool_state.setdefault("full_records_fetched", set()).add(rid)

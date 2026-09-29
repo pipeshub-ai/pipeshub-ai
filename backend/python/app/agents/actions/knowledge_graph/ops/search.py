@@ -19,6 +19,10 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
+from app.agents.actions.knowledge_graph.ops.repeat_hits import (
+    observe_search,
+    repeat_hit_note,
+)
 from app.agents.actions.knowledge_graph.ops.results import (
     compose_result_tail,
     dedupe_append_final_results,
@@ -561,6 +565,7 @@ async def execute_search(
         )
         state["citation_ref_mapper"] = ref_mapper
         final_results = rendered.units
+        surfaced_record_ids = observe_search(state, final_results, virtual_record_id_to_result)
 
         # Accumulate into state for citation pipeline
         state["final_results"] = dedupe_append_final_results(
@@ -636,6 +641,7 @@ async def execute_search(
             summary = (
                 f"{_ranked_header(len(final_results), len(rendered.records), rendered.omitted_hits)}\n\n"
                 f"{entity_filter_note}"
+                f"{repeat_hit_note(state, surfaced_record_ids, record_id_shortener=record_id_shortener)}"
                 f"{coverage_note}"
             )
         else:
