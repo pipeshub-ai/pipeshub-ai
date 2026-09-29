@@ -77,10 +77,12 @@ class StandardIndexIngestor:
     def _checkpoint(self, collection: str) -> Path:
         return self._cache_dir / f"{collection}.done.json"
 
-    def _ensure_collection(self, collection: str) -> None:
+    def _ensure_collection(self, collection: str) -> bool:
+        """Create the collection if missing; returns whether it was created."""
         from qdrant_client import models
 
-        if not self._client.collection_exists(collection):
+        created = not self._client.collection_exists(collection)
+        if created:
             dim = len(self._llm.embed(self._embedding, ["dimension probe"]).vectors[0])
             self._client.create_collection(
                 collection_name=collection,
@@ -90,6 +92,7 @@ class StandardIndexIngestor:
             logger.info("created %s (dense dim %d, sparse bm25 + IDF)", collection, dim)
         # Idempotent; `url` is what the post-build coverage check facets on.
         self._client.create_payload_index(collection, field_name="url", field_schema=models.PayloadSchemaType.KEYWORD)
+        return created
 
     def _sparse_docs(self, texts: Sequence[str]) -> list[Any]:
         with self._sparse_lock:
@@ -119,8 +122,13 @@ class StandardIndexIngestor:
 
     def prepare(self, manifest: CorpusManifest) -> PreparedCorpus:
         collection = collection_name(self._config, manifest.corpus_version)
-        self._ensure_collection(collection)
+        created = self._ensure_collection(collection)
         path = self._checkpoint(collection)
+        if created and path.exists():
+            # The checkpoint outlived its collection (e.g. the vector store was
+            # wiped); trusting it would leave the new collection empty.
+            logger.warning("%s was recreated; discarding its stale checkpoint", collection)
+            path.unlink()
         done: set[str] = set(json.loads(path.read_text())) if path.exists() else set()
         todo = [d for d in manifest.documents if d.canonical_url not in done]
         logger.info("%s: %d articles indexed, %d to go", collection, len(done), len(todo))
