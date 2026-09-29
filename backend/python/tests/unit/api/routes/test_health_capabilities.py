@@ -343,6 +343,40 @@ class TestEmbeddingDimensionChecks:
         assert "asked for 256" in body
 
 
+
+class TestCollectionGuardFollowsTheActiveModel:
+    """The guard rebuilds an empty store at the checked model's size, so it may
+    run only for the model that embeds once saved. Adding a model that is not
+    the default used to rebuild the store at a size the default never writes."""
+
+    async def _check(self, mock_request, config: dict) -> tuple[JSONResponse, AsyncMock]:
+        with patch(f"{MODULE}.get_embedding_model", return_value=MagicMock()), \
+             patch(f"{MODULE}._embed_with_timeout", new_callable=AsyncMock,
+                   return_value=[[0.1] * 384]), \
+             patch(f"{MODULE}._check_collection_compatibility",
+                   new_callable=AsyncMock, return_value=None) as guard:
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, MagicMock())
+        return resp, guard
+
+    async def test_a_model_that_will_not_embed_leaves_the_store_alone(self, mock_request) -> None:
+        resp, guard = await self._check(mock_request, _embedding_config(becomesActive=False))
+
+        assert resp.status_code == 200
+        guard.assert_not_awaited()
+
+    async def test_the_model_that_will_embed_is_checked_against_the_store(self, mock_request) -> None:
+        resp, guard = await self._check(mock_request, _embedding_config(becomesActive=True))
+
+        assert resp.status_code == 200
+        guard.assert_awaited_once()
+
+    async def test_a_caller_that_does_not_say_is_still_checked(self, mock_request) -> None:
+        resp, guard = await self._check(mock_request, _embedding_config())
+
+        assert resp.status_code == 200
+        guard.assert_awaited_once()
+
 class TestConfigurationWarnings:
     """A setting that is wrong but no longer fatal still has to be reported —
     silently correcting it leaves the config wrong for the next reader."""

@@ -438,6 +438,19 @@ class TestGetCurrentEmbeddingModelName:
         assert result == "text-embedding-3-small"
 
     @pytest.mark.asyncio
+    async def test_returns_the_default_model_not_the_first(self, retrieval_service, mock_config_service) -> None:
+        """The embedding guard compares against this name, so it has to be the
+        model that embeds: the default one."""
+        mock_config_service.get_config.return_value = {
+            "embedding": [
+                {"configuration": {"model": "text-embedding-3-small"}},
+                {"configuration": {"model": "BAAI/bge-small-en-v1.5"}, "isDefault": True},
+            ]
+        }
+        result = await retrieval_service.get_current_embedding_model_name()
+        assert result == "BAAI/bge-small-en-v1.5"
+
+    @pytest.mark.asyncio
     async def test_returns_default_when_no_config(self, retrieval_service, mock_config_service):
         mock_config_service.get_config.return_value = {"embedding": []}
         from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL

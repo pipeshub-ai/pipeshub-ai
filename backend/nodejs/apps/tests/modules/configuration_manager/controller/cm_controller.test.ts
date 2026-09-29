@@ -3175,6 +3175,166 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // deleteAIModelProvider - additional tests
   // -----------------------------------------------------------------------
+  describe('embedding models: the vector store follows the model that embeds', () => {
+    const appConfig = { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any
+    const IN_USE =
+      'This model is embedding your indexed content. Set another default model and re-embed, or delete the embeddings in Labs first.'
+
+    // Records what reaches the AI service and answers the embedding takeover
+    // check with `takeoverStatus` (400 is its answer while vectors are stored).
+    function stubAiService(takeoverStatus = 200) {
+      const calls: { uri: string; body: any }[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: any) {
+        const body = typeof this.body === 'string' ? JSON.parse(this.body) : this.body
+        calls.push({ uri: this.uri, body })
+        if (this.uri.endsWith('/embedding-health-check')) {
+          return takeoverStatus === 200
+            ? { statusCode: 200, data: { status: 'healthy' } }
+            : { statusCode: takeoverStatus, data: { status: 'not healthy', message: 'refused' } }
+        }
+        if (this.uri.includes('/model-usage/')) {
+          return { statusCode: 200, data: { success: true, agents: [] } }
+        }
+        return { statusCode: 200, data: { status: 'healthy' } }
+      })
+      return calls
+    }
+
+    const takeoverCalls = (calls: { uri: string }[]) =>
+      calls.filter((c) => c.uri.endsWith('/embedding-health-check'))
+
+    function storedModels(embedding: any[]) {
+      mockEncService.decrypt.returns(JSON.stringify({ llm: [], embedding }))
+      return createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
+    }
+
+    const openai = { modelKey: 'k1', isDefault: true, provider: 'openai', configuration: { model: 'text-embedding-3-small' } }
+    const local = { modelKey: 'k2', isDefault: false, provider: 'sentenceTransformers', configuration: { model: 'BAAI/bge-small-en-v1.5' } }
+
+    async function add(kvs: any, isDefault: boolean) {
+      const req = createMockRequest({
+        body: { modelType: 'embedding', provider: local.provider, configuration: local.configuration, isDefault },
+      })
+      await addAIModelProvider(kvs, createMockEventService(), appConfig)(req, createMockResponse(), createMockNext())
+    }
+
+    it('adding a model that is not the default leaves the vector store alone', async () => {
+      const calls = stubAiService()
+
+      await add(storedModels([openai]), false)
+
+      const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
+      expect(check?.body.becomesActive).to.equal(false)
+    })
+
+    it('adding the default model lets it reshape the vector store', async () => {
+      const calls = stubAiService()
+
+      await add(storedModels([openai]), true)
+
+      const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
+      expect(check?.body.becomesActive).to.equal(true)
+    })
+
+    it('adding the first embedding model lets it reshape the store, since it embeds even when not marked default', async () => {
+      const calls = stubAiService()
+
+      await add(storedModels([]), false)
+
+      const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
+      expect(check?.body.becomesActive).to.equal(true)
+    })
+
+    it('refuses to delete the default embedding model while its vectors are stored', async () => {
+      const calls = stubAiService(400)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        res,
+        next,
+      )
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].statusCode).to.equal(400)
+      expect(next.firstCall.args[0].message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+      const [takeover] = takeoverCalls(calls)
+      expect(takeover?.body).to.have.length(1)
+      expect(takeover?.body[0].configuration.model).to.equal('BAAI/bge-small-en-v1.5')
+    })
+
+    it('deletes the default embedding model when nothing is stored, and the next model takes over', async () => {
+      const calls = stubAiService(200)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(kvs.set.calledOnce).to.be.true
+      expect(takeoverCalls(calls)).to.have.length(1)
+    })
+
+    it('checks the built-in model when the last embedding model is deleted', async () => {
+      const calls = stubAiService(400)
+      const kvs = storedModels([openai])
+      const next = createMockNext()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(takeoverCalls(calls)[0]?.body).to.deep.equal([])
+      expect(next.firstCall.args[0].message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('deletes an embedding model that is not in use without checking the store', async () => {
+      const calls = stubAiService(400)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k2' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(takeoverCalls(calls)).to.have.length(0)
+    })
+
+    it('checks the model that takes over when an edit takes the default off the model that embeds', async () => {
+      const calls = stubAiService(400)
+      const kvs = storedModels([{ ...local, isDefault: false }, openai])
+      const res = createMockResponse()
+
+      await updateAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({
+          params: { modelType: 'embedding', modelKey: 'k1' },
+          body: { provider: openai.provider, configuration: openai.configuration, isDefault: false },
+        }),
+        res,
+        createMockNext(),
+      )
+
+      const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
+      expect(check?.body.becomesActive).to.equal(false)
+      expect(takeoverCalls(calls)[0]?.body[0].configuration.model).to.equal('BAAI/bge-small-en-v1.5')
+      expect(res.status.calledWith(400)).to.be.true
+      expect(kvs.set.called).to.be.false
+    })
+  })
+
   describe('deleteAIModelProvider (additional)', () => {
     it('should call next on error', async () => {
       const kvs = createMockKeyValueStore({

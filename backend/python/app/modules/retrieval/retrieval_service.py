@@ -339,11 +339,17 @@ class RetrievalService:
                 config_node_constants.AI_MODELS.value,
                 use_cache=use_cache
             )
-            if ai_models and "embedding" in ai_models and ai_models["embedding"]:
-                for config in ai_models["embedding"]:
-                    # Only one embedding model is supported
-                    if "configuration" in config and "model" in config["configuration"]:
-                        return config["configuration"]["model"]
+            embedding_configs = (ai_models or {}).get("embedding") or []
+            if embedding_configs:
+                # The model that embeds: the default one, else the first, as
+                # get_embedding_model_instance picks it.
+                config = next(
+                    (c for c in embedding_configs if c.get("isDefault", False)),
+                    embedding_configs[0],
+                )
+                model = (config.get("configuration") or {}).get("model")
+                if model:
+                    return model
 
             # Return default model if no embedding config found
             return DEFAULT_EMBEDDING_MODEL

@@ -39070,6 +39070,12 @@ paths:
         Remove an AI model provider configuration. Fails with 409 when agents still
         reference the model. If the deleted entry was default, the first remaining
         entry for that type is promoted to default.
+
+        Deleting the embedding model that embeds (the default one, else the first)
+        hands embedding to the model that would take over, or to the built-in model
+        when none is left. That model goes through the same check as setting a new
+        default: refused with 400 while the vector store holds vectors from the
+        deleted model, and the store is rebuilt at its size when empty.
       operationId: deleteAIModelProvider
       security:
         - bearerAuth: []
@@ -39107,14 +39113,28 @@ paths:
         '400':
           description: |
             Model type mismatch — the `modelKey` exists under a different `modelType`
-            than the path parameter.
+            than the path parameter; or the model is the embedding model in use while
+            the vector store holds its vectors (standard error envelope, message
+            "This model is embedding your indexed content. Set another default model
+            and re-embed, or delete the embeddings in Labs first.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AIModelProviderSimpleError'
-              example:
-                status: error
-                message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
+                oneOf:
+                  - $ref: '#/components/schemas/AIModelProviderSimpleError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                typeMismatch:
+                  summary: Model type mismatch
+                  value:
+                    status: error
+                    message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
+                embeddingInUse:
+                  summary: The embedding model in use, with vectors stored
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "This model is embedding your indexed content. Set another default model and re-embed, or delete the embeddings in Labs first."
         '401':
           description: Unauthorized
         '403':
