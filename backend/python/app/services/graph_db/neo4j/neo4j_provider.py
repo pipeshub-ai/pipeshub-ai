@@ -4734,19 +4734,9 @@ class Neo4jProvider(IGraphDBProvider):
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records7
             }}
 
-            CALL {{
-                // Path 8: Anyone records (merged into per-connector query)
-                OPTIONAL MATCH (anyone:Anyone {{organization: $orgId}})
-                OPTIONAL MATCH (r:Record)
-                WHERE r.id = anyone.file_key
-                  AND r.connectorId = $connectorId
-                  AND r.indexingStatus = $completedStatus
-                  {metadata_filter_clause}{time_range_filter_clause}
-                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records8
-            }}
-
+            // Domain, "anyone" and link shares grant no access, so no path reads them.
             // Union all pairs and filter out nulls
-            WITH records1 + records2 + records3 + records4 + records5 + records6 + records7 + records8 AS allPairs
+            WITH records1 + records2 + records3 + records4 + records5 + records6 + records7 AS allPairs
             UNWIND allPairs AS pair
             WITH pair
             WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
@@ -4977,7 +4967,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         These connectors have no per-record ACLs — reaching the connector means
         reaching its records — so this supersets the per-user 8-path traversal
-        (including its "Anyone" branch) with a single scan. Only valid for
+        with a single scan. Only valid for
         connectors declaring `PermissionModel.APP_LEVEL`.
         """
         query = """
@@ -5443,7 +5433,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         Args:
             user_id (str): The userId field value in users collection
-            org_id (str): The org_id to filter anyone collection
+            org_id (str): The org the user belongs to
             filters (dict[str, list[str]]): Optional filters for departments, categories, languages, topics etc.
                 Format: {
                     'departments': [dept_ids],
@@ -8710,7 +8700,8 @@ class Neo4jProvider(IGraphDBProvider):
                 return None
 
             # Build comprehensive access query
-            # Check all access paths: direct, group, record group, nested record groups, org, KB, anyone
+            # Check all access paths: direct, group, record group, nested record groups, org, KB.
+            # Domain, "anyone" and link shares grant no access, so none is read here.
             access_query = """
             MATCH (caller:User {id: $user_key})
             MATCH (rec:Record {id: $record_id})
@@ -8800,13 +8791,8 @@ class Neo4jProvider(IGraphDBProvider):
                      folder: null
                  }) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbTeamAccess
 
-            // Anyone access
-            OPTIONAL MATCH (anyone:Anyone {organization: $org_id, file_key: $record_id})
-            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess,
-                 [x IN COLLECT({type: "ANYONE", source: null, role: anyone.role}) WHERE x.role IS NOT NULL] AS anyoneAccess
-
             // For KB records, collect KB RecordGroup source IDs to deduplicate generic RG access paths
-            WITH directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess, anyoneAccess,
+            WITH directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess,
                  [kb IN (kbDirectAccess + kbTeamAccess) WHERE kb.source IS NOT NULL | kb.source.id] AS kbSourceIds
 
             // Filter out generic RecordGroup entries that redundantly match the same KB RecordGroup
@@ -8816,13 +8802,13 @@ class Neo4jProvider(IGraphDBProvider):
                  [x IN directUserRgAccess WHERE NOT x.source.id IN kbSourceIds] AS directUserRgAccess,
                  [x IN inheritedRgAccess WHERE NOT x.source.id IN kbSourceIds] AS inheritedRgAccess,
                  [x IN groupInheritedRgAccess WHERE NOT x.source.id IN kbSourceIds] AS groupInheritedRgAccess,
-                 orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess, anyoneAccess
+                 orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess
 
             // Combine all access paths
-            WITH directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess, anyoneAccess,
-                 directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + inheritedRgAccess + groupInheritedRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess + anyoneAccess AS allAccess
-            WHERE size([a IN allAccess WHERE a.source IS NOT NULL OR a.type = "ANYONE"]) > 0
-            RETURN allAccess, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess, anyoneAccess
+            WITH directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess,
+                 directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + inheritedRgAccess + groupInheritedRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess AS allAccess
+            WHERE size([a IN allAccess WHERE a.source IS NOT NULL]) > 0
+            RETURN allAccess, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess
             """
 
             access_results = await self.client.execute_query(
@@ -8842,7 +8828,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             access_result = [access for row in access_results for access in (row.get("allAccess") or [])]
             # Filter out None entries
-            access_result = [a for a in access_result if a.get("source") is not None or a.get("type") == "ANYONE"]
+            access_result = [a for a in access_result if a.get("source") is not None]
 
             if not access_result:
                 return None
@@ -9559,7 +9545,8 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> dict:
         """
         Generic permission checker for any record type.
-        Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, and optionally Drive-level access
+        Checks: Direct permissions, Group permissions, organization permissions, and optionally Drive-level access.
+        Domain, "anyone" and link shares grant no access.
 
         Args:
             record_id: The record to check permissions for
@@ -9633,22 +9620,14 @@ class Neo4jProvider(IGraphDBProvider):
                  inherited_record_group_permission,
                  head(collect(g_to_inherited.role)) AS group_inherited_record_group_permission
 
-            // 3. Check domain/organization permissions
+            // 3. Check organization permissions
             OPTIONAL MATCH (user)-[belongs:BELONGS_TO {entityType: "ORGANIZATION"}]->(org:Organization)
-            OPTIONAL MATCH (org)-[domain_perm:PERMISSION]->(record)
-            WHERE domain_perm.type IN ["DOMAIN", "ORG"]
+            OPTIONAL MATCH (org)-[org_perm:PERMISSION]->(record)
+            WHERE org_perm.type = "ORG"
             WITH user, record, direct_permission, group_permission, record_group_permission,
                  nested_record_group_permission, direct_user_record_group_permission,
                  inherited_record_group_permission, group_inherited_record_group_permission,
-                 head(collect(domain_perm.role)) AS domain_permission,
-                 head(collect(org.id)) AS user_org_id
-
-            // 4. Check 'anyone' permissions (public sharing)
-            OPTIONAL MATCH (anyone:Anyone {file_key: $record_id, organization: user_org_id, active: true})
-            WITH user, record, direct_permission, group_permission, record_group_permission,
-                 nested_record_group_permission, direct_user_record_group_permission,
-                 inherited_record_group_permission, group_inherited_record_group_permission,
-                 domain_permission, anyone.role AS anyone_permission
+                 head(collect(org_perm.role)) AS org_permission
 
             // 4.5 Check org -> recordGroup -> record permissions (with nesting 0-2 levels)
             OPTIONAL MATCH (user)-[belongs2:BELONGS_TO {entityType: "ORGANIZATION"}]->(org2:Organization)
@@ -9657,7 +9636,7 @@ class Neo4jProvider(IGraphDBProvider):
             WITH direct_permission, group_permission, record_group_permission,
                  nested_record_group_permission, direct_user_record_group_permission,
                  inherited_record_group_permission, group_inherited_record_group_permission,
-                 domain_permission, anyone_permission, record,
+                 org_permission, record,
                  head(collect(org_to_rg.role)) AS org_record_group_permission,
                  $check_drive_inheritance AS check_drive_inheritance,
                  $user_key AS user_key
@@ -9670,7 +9649,7 @@ class Neo4jProvider(IGraphDBProvider):
             WITH direct_permission, group_permission, record_group_permission,
                  nested_record_group_permission, direct_user_record_group_permission,
                  inherited_record_group_permission, group_inherited_record_group_permission,
-                 domain_permission, anyone_permission, org_record_group_permission,
+                 org_permission, org_record_group_permission,
                  CASE drive_rel.access_level
                      WHEN "owner" THEN "OWNER"
                      WHEN "writer" THEN "WRITER"
@@ -9689,8 +9668,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHEN record_group_permission IS NOT NULL THEN record_group_permission
                 WHEN direct_user_record_group_permission IS NOT NULL THEN direct_user_record_group_permission
                 WHEN nested_record_group_permission IS NOT NULL THEN nested_record_group_permission
-                WHEN domain_permission IS NOT NULL THEN domain_permission
-                WHEN anyone_permission IS NOT NULL THEN anyone_permission
+                WHEN org_permission IS NOT NULL THEN org_permission
                 WHEN org_record_group_permission IS NOT NULL THEN org_record_group_permission
                 WHEN drive_access IS NOT NULL THEN drive_access
                 ELSE null
@@ -9703,8 +9681,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHEN record_group_permission IS NOT NULL THEN "RECORD_GROUP"
                 WHEN direct_user_record_group_permission IS NOT NULL THEN "DIRECT_USER_RECORD_GROUP"
                 WHEN nested_record_group_permission IS NOT NULL THEN "NESTED_RECORD_GROUP"
-                WHEN domain_permission IS NOT NULL THEN "DOMAIN"
-                WHEN anyone_permission IS NOT NULL THEN "ANYONE"
+                WHEN org_permission IS NOT NULL THEN "ORG"
                 WHEN org_record_group_permission IS NOT NULL THEN "ORG_RECORD_GROUP"
                 WHEN drive_access IS NOT NULL THEN "DRIVE_ACCESS"
                 ELSE "NONE"
@@ -11996,6 +11973,8 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             query = """
             MATCH (entity)-[r:PERMISSION]->(kb:App {id: $kb_id, type: "KB"})
+            // A deleted user is kept as an inactive node with their edges; they are not shown as having access.
+            WHERE NOT entity:User OR entity.isActive = true
             RETURN
                 properties(entity) as entity_props,
                 labels(entity) as entity_labels,

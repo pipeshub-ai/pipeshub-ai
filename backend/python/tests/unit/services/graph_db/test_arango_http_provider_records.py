@@ -3767,7 +3767,7 @@ class TestCheckDrivePermissions:
         assert bv["user_key"] == "user1"
         assert "@permission" in bv
         assert "@belongs_to" in bv
-        assert "@anyone" in bv
+        assert "@anyone" not in bv
 
 
 # ===================================================================

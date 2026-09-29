@@ -1775,7 +1775,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict:
         """
         Generic permission checker for any record type.
-        Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, and optionally Drive-level access
+        Checks: Direct permissions, Group permissions, organization permissions, and optionally Drive-level access.
+        Domain, "anyone" and link shares grant no access.
 
         Args:
             record_id: The record to check permissions for
@@ -1897,33 +1898,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN perm.role
             )
 
-            // 3. Check domain/organization permissions
-            LET domain_permission = FIRST(
+            // 3. Check organization permissions
+            LET org_permission = FIRST(
                 FOR belongs_edge IN @@belongs_to
                     FILTER belongs_edge._from == user_from AND belongs_edge.entityType == "ORGANIZATION"
                     LET org = DOCUMENT(belongs_edge._to)
                     FILTER org != null
                     FOR perm IN @@permission
-                        FILTER perm._from == org._id AND perm._to == record_from AND perm.type IN ["DOMAIN", "ORG"]
+                        FILTER perm._from == org._id AND perm._to == record_from AND perm.type == "ORG"
                         RETURN perm.role
             )
-
-            // 4. Check 'anyone' permissions (public sharing)
-            LET user_org_id = FIRST(
-                FOR belongs_edge IN @@belongs_to
-                    FILTER belongs_edge._from == user_from
-                    FILTER belongs_edge.entityType == "ORGANIZATION"
-                    LET org = DOCUMENT(belongs_edge._to)
-                    FILTER org != null
-                    RETURN org._key
-            )
-            LET anyone_permission = user_org_id ? FIRST(
-                FOR anyone_perm IN @@anyone
-                    FILTER anyone_perm.file_key == @record_id
-                    FILTER anyone_perm.organization == user_org_id
-                    FILTER anyone_perm.active == true
-                    RETURN anyone_perm.role
-            ) : null
 
             LET org_record_group_permission = FIRST(
                 // User -> Organization -> RecordGroup -> Record (with nested record groups support)
@@ -1982,8 +1966,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 record_group_permission ? record_group_permission :
                 direct_user_record_group_permission ? direct_user_record_group_permission :
                 nested_record_group_permission ? nested_record_group_permission :
-                domain_permission ? domain_permission :
-                anyone_permission ? anyone_permission :
+                org_permission ? org_permission :
                 org_record_group_permission ? org_record_group_permission :
                 drive_access ? drive_access :
                 null
@@ -2000,8 +1983,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     record_group_permission ? "RECORD_GROUP" :
                     direct_user_record_group_permission ? "DIRECT_USER_RECORD_GROUP" :
                     nested_record_group_permission ? "NESTED_RECORD_GROUP" :
-                    domain_permission ? "DOMAIN" :
-                    anyone_permission ? "ANYONE" :
+                    org_permission ? "ORG" :
                     org_record_group_permission ? "ORG_RECORD_GROUP" :
                     drive_access ? "DRIVE_ACCESS" :
                     "NONE"
@@ -2017,7 +1999,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@authenticated_as": CollectionNames.AUTHENTICATED_AS.value,
-                "@anyone": CollectionNames.ANYONE.value,
                 "@records": CollectionNames.RECORDS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 "@user_drive_relation": CollectionNames.USER_DRIVE_RELATION.value,
@@ -7897,8 +7878,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 key=record_id,
                 txn_id=transaction
             )
-            # The per-connector role checks below are not org-scoped (Drive domain/anyone
-            # grants, Gmail address match), so tenancy has to be enforced here.
+            # The per-connector role checks below are not org-scoped (Gmail address
+            # match), so tenancy has to be enforced here.
             if not org_id or not record or record.get("orgId") != org_id:
                 return {
                     "success": False,
@@ -10542,23 +10523,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN perm.role
             )
 
-            // 3. Check domain permissions
-            LET domain_permission = FIRST(
-                FOR perm IN @@permission
-                    FILTER perm._to == record_from
-                    FILTER perm.type == "DOMAIN"
-                    RETURN perm.role
-            )
-
-            // 4. Check anyone permissions
-            LET anyone_permission = FIRST(
-                FOR perm IN @@anyone
-                    FILTER perm._to == record_from
-                    RETURN perm.role
-            )
-
-            // Return the highest permission found
-            RETURN direct_permission || group_permission || domain_permission || anyone_permission
+            // Domain, "anyone" and link shares grant no access, so none is read here.
+            RETURN direct_permission || group_permission
             """
 
             result = await self.http_client.execute_aql(
@@ -10568,7 +10534,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "user_key": user_key,
                     "@permission": CollectionNames.PERMISSION.value,
                     "@belongs_to": CollectionNames.BELONGS_TO.value,
-                    "@anyone": CollectionNames.ANYONE.value,
                 },
                 txn_id=transaction
             )
@@ -13123,7 +13088,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET users = (
                 FOR user_id IN user_ids
                     LET user = DOCUMENT(user_id)
-                    FILTER user != null
+                    // A deleted user is kept as an inactive node with their edges; they are not shown as having access.
+                    FILTER user != null AND user.isActive == true
                     RETURN { _id: user._id, _key: user._key, fullName: user.fullName, name: user.name, userName: user.userName, userId: user.userId, email: user.email }
             )
             LET team_ids = UNIQUE(perms_with_ids[* FILTER STARTS_WITH(CURRENT.entity_id, "teams/")].entity_id)
@@ -16839,16 +16805,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }}
             ) : []
             LET kbAccess = UNION_DISTINCT(kbDirectAccess, kbTeamAccess)
-            LET anyoneAccess = (
-                FOR records IN @@anyone
-                FILTER records.organization == @orgId
-                    AND records.file_key == @recordId
-                RETURN {{
-                    type: 'ANYONE',
-                    source: null,
-                    role: records.role
-                }}
-            )
             LET allAccess = UNION_DISTINCT(
                 directAccessPermissionEdge,
                 recordGroupAccess,
@@ -16857,8 +16813,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 directUserToRecordGroupAccess,
                 orgAccessPermissionEdge,
                 orgRecordGroupAccess,
-                kbAccess,
-                anyoneAccess
+                kbAccess
             )
             RETURN allAccess
             )
@@ -16868,13 +16823,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             bind_vars = {
                 "userId": user_id,
-                "orgId": org_id,
                 "recordId": record_id,
                 "user_apps_ids": user_apps_ids,
                 "@users": CollectionNames.USERS.value,
                 "records": CollectionNames.RECORDS.value,
                 "files": CollectionNames.FILES.value,
-                "@anyone": CollectionNames.ANYONE.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
@@ -19415,12 +19368,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             bind_vars = {
                 "userId": user_id,
-                "orgId": org_id,
                 "connectorId": connector_id,
                 "completedStatus": ProgressStatus.COMPLETED.value,
                 "@users": CollectionNames.USERS.value,
-                "@records": CollectionNames.RECORDS.value,
-                "@anyone": CollectionNames.ANYONE.value,
             }
 
             if metadata_filters:
@@ -19539,21 +19489,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            LET anyoneRecords = (
-                FOR anyone IN @@anyone
-                    FILTER anyone.organization == @orgId
-                    FOR record IN @@records
-                        FILTER record._key == anyone.file_key
-                        FILTER record.connectorId == @connectorId
-                        FILTER record.indexingStatus == @completedStatus
-                        {metadata_filter_clause}
-                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
-            )
-
+            // Domain, "anyone" and link shares grant no access, so no path reads them.
             LET allPairs = UNION(
                 directRecords, groupRecords, groupRecordsPermissionEdge,
                 orgRecords, orgRecordGroupRecords, recordGroupRecords,
-                inheritedRecordGroupRecords, anyoneRecords
+                inheritedRecordGroupRecords
             )
             FOR pair IN allPairs
                 FILTER pair != null AND pair.virtualRecordId != null AND pair.recordId != null
@@ -20150,7 +20090,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Args:
             user_id (str): The userId field value in users collection
-            org_id (str): The org_id to filter anyone collection
+            org_id (str): The org the user belongs to
             filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
                 Format: {
                     'departments': [dept_ids],
