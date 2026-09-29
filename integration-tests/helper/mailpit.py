@@ -25,9 +25,12 @@ _POLL_INTERVAL_SECONDS = 2.0
 _REQUEST_TIMEOUT_SECONDS = 10
 
 _RESET_LINK_TOKEN = re.compile(r"/reset-password#token=([A-Za-z0-9._-]+)")
-# The code sits alone in the sign-in email. Colours such as #000000 in inline
-# styles are excluded by the leading-# check once tags are stripped.
-_SIX_DIGIT_CODE = re.compile(r"(?<![\d#])(\d{6})(?!\d)")
+# The sign-in email (login.hbs) puts the code alone in its own element. Only
+# text that is the whole of an element, or a whole line of a text part, counts:
+# the greeting and header also render the user's and org's names, and those can
+# contain six digits in a row.
+_CODE_ELEMENT = re.compile(r">\s*(\d{6})\s*<")
+_CODE_LINE = re.compile(r"^\s*(\d{6})\s*$", re.MULTILINE)
 
 
 def mailpit_url() -> str:
@@ -40,14 +43,6 @@ class Message:
     subject: str
     html: str
     text: str
-
-    @property
-    def visible_text(self) -> str:
-        """The body as a reader sees it: text part, or HTML with markup removed."""
-        if self.text.strip():
-            return self.text
-        body = re.sub(r"(?is)<(head|style|script)\b.*?</\1>", " ", self.html)
-        return html.unescape(re.sub(r"(?s)<[^>]+>", " ", body))
 
 
 class MailpitUnavailable(RuntimeError):
@@ -132,10 +127,12 @@ def reset_link_token(message: Message) -> str:
 
 def sign_in_code(message: Message) -> str:
     """The six-digit code in a sign-in (OTP) email."""
-    codes = set(_SIX_DIGIT_CODE.findall(message.visible_text))
+    body = re.sub(r"(?is)<(head|style|script)\b.*?</\1>", " ", message.html)
+    codes = set(_CODE_ELEMENT.findall(html.unescape(body)))
+    codes |= set(_CODE_LINE.findall(message.text))
     if len(codes) != 1:
         raise AssertionError(
-            f"Expected exactly one six-digit code in {message.subject!r}, "
-            f"found {len(codes)}."
+            f"Expected exactly one element holding only a six-digit code in "
+            f"{message.subject!r}, found {len(codes)}."
         )
     return codes.pop()
