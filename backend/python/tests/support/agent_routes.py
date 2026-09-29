@@ -404,6 +404,13 @@ class FakeConfigService:
         return [k for k in self.values if k.startswith(directory)]
 
 
+class FakeRerankerResolver:
+    """Reranking off, as in a deployment without the Labs flag."""
+
+    async def active(self) -> None:
+        return None
+
+
 class FakeContainer:
     """Mirrors the provider methods `get_services` resolves on the query container."""
 
@@ -421,8 +428,8 @@ class FakeContainer:
             raise self.graph_provider_error
         return self.graph
 
-    def reranker_service(self) -> object:
-        return object()
+    def reranker_resolver(self) -> "FakeRerankerResolver":
+        return FakeRerankerResolver()
 
     def config_service(self) -> FakeConfigService:
         return self.config
