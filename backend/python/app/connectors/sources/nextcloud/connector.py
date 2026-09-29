@@ -1201,12 +1201,13 @@ class NextcloudConnector(BaseConnector):
             self.logger.error(f"Error syncing files for {user_email}: {e}", exc_info=True)
             return False
 
-    async def _remove_records_not_listed(self, listed: set[str]) -> None:
+    async def _remove_records_not_listed(self, listed: set[str]) -> bool:
         """Delete the records of files and folders a complete listing no longer returns.
 
         After a full sync that read the whole drive, a record the listing did not
         return is a file deleted in Nextcloud or one the sync filters now leave
         out, so it leaves every store. Only called once the drive was read in full.
+        Returns False when the records could not be read or any delete failed.
         """
         stale: list[Record] = []
         after_key: str | None = None
@@ -1221,17 +1222,20 @@ class NextcloudConnector(BaseConnector):
                 after_key = page[-1].id
         except Exception as e:
             self.logger.error(f"❌ [Full Sync] Could not read the synced records, so none are removed: {e}")
-            return
+            return False
 
         if stale:
             self.logger.info(
                 f"[Full Sync] Removing {len(stale)} record(s) no longer in Nextcloud or in the sync filters"
             )
+        removed_all = True
         for record in stale:
             try:
                 await self.data_entities_processor.on_record_deleted(record_id=record.id)
             except Exception as e:
+                removed_all = False
                 self.logger.warning(f"Failed to remove record {record.external_record_id}: {e}")
+        return removed_all
 
     async def run_sync(self) -> None:
         """
@@ -1375,7 +1379,14 @@ class NextcloudConnector(BaseConnector):
                 )
                 return
 
-            await self._remove_records_not_listed(listed)
+            if not await self._remove_records_not_listed(listed):
+                # A filtered-out file is still in Nextcloud, so no later activity would
+                # bring it back; without a cursor the next sync is full and finishes this.
+                self.logger.error(
+                    "❌ [Full Sync] Some records Nextcloud no longer lists could not be removed. The "
+                    "activity cursor was not saved, so the next sync runs a full sync again."
+                )
+                return
 
             # Initialize cursor for incremental sync
             # Fetch the latest activity ID to use as baseline for next incremental sync

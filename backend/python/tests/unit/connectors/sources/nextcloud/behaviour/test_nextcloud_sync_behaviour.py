@@ -645,13 +645,17 @@ class TestFilters:
 
         assert db.deleted == []
 
-    async def test_records_that_cannot_be_read_are_left_alone(self, server, db, store) -> None:
+    async def test_records_that_cannot_be_read_are_left_alone_and_retried(self, server, db, store) -> None:
         connector = await self.narrow_to(server, db, store, {"file_extensions": {"type": "multiselect", "operator": "not_in", "value": ["pdf"]}})
         db.fail_record_scan = True
 
         await connector.run_sync()
-
         assert db.deleted == []
+        assert store.cursor() is None, "no cursor, so the next run is a full sync that tries again"
+
+        db.fail_record_scan = False
+        await connector.run_sync()
+        assert db.deleted == ["q1.pdf"]
         assert store.cursor() == str(server.latest_activity_id)
 
     async def test_one_failed_removal_does_not_stop_the_rest(self, server, db, store) -> None:
@@ -659,9 +663,14 @@ class TestFilters:
         db.fail_delete_for = {ids_of(server)["notes.txt"]}
 
         await connector.run_sync()
-
         assert set(db.deleted) == {"q1.pdf", "readme.txt"}
         assert "notes.txt" in db.names()
+        assert store.cursor() is None
+
+        db.fail_delete_for.clear()
+        await connector.run_sync()
+        assert "notes.txt" not in db.names()
+        assert store.cursor() == str(server.latest_activity_id)
 
     async def test_modified_date_window(self, server, db, store) -> None:
         seed_drive(server)
