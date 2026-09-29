@@ -62,11 +62,12 @@ import {
   hasMarkdownTableStartOutsideCodeFences,
   buildFinalSlackChunks,
   splitSlackBlocksByLimit,
-  classifySlackFiles,
   extractSupportedAttachments,
   uploadSlackAttachments,
   postSkippedAttachmentsNotice,
   buildSkippedAttachmentsNotice,
+  handleIncomingAttachments,
+  messageHasQuestionText,
   resolveMentionsInText,
   resolveSlackErrorMessage,
   resolveSlackErrorMessageAsync,
@@ -497,11 +498,15 @@ async function processSlackMessage(
             const skipped = { unreadable: upload.unreadable, oversized: upload.oversized };
             const skippedCount = upload.unreadable.length + upload.oversized.length;
             if (skippedCount > 0 && attachmentRefs.length === 0) {
-              // Nothing usable is left, matching the pre-download rule: explain and stop.
-              await sendOrUpdateNonStreamMessage(buildSkippedAttachmentsNotice(skipped, false));
-              return;
+              if (!messageHasQuestionText(typedMessage.text, typedContext.botUserId)) {
+                // Attachment-only and nothing usable is left: the notice is the reply.
+                await sendOrUpdateNonStreamMessage(buildSkippedAttachmentsNotice(skipped, "none"));
+                return;
+              }
+              await postSkippedAttachmentsNotice(typedClient, typedMessage, skipped, "messageOnly");
+            } else {
+              await postSkippedAttachmentsNotice(typedClient, typedMessage, skipped, "otherAttachments");
             }
-            await postSkippedAttachmentsNotice(typedClient, typedMessage, skipped, true);
           }
         } catch (uploadError) {
           const errData = (uploadError as any).response?.data;
@@ -1407,26 +1412,16 @@ app.message(async ({ message, client, context }) => {
   }
 
   const resolvedSlackBot = await resolveSlackBotForEvent();
-  const hasAgent = Boolean(resolvedSlackBot?.agentId);
-  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
-  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
-
-  if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
-    await postSkippedAttachmentsNotice(
-      typedClient,
-      typedMessage,
-      { unsupported, oversized },
-      supported.length > 0,
-    );
-    if (supported.length === 0) return;
-  }
-
-  // Preserve legacy silent-ignore on non-agent path (out of scope to fix here).
-  if (filesPresent && !hasAgent && supported.length === 0) return;
+  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
+    typedClient,
+    typedMessage,
+    typedContext.botUserId,
+  );
+  if (!shouldAnswer) return;
 
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    if (supported.length > 0) query = "See below attached file(s).";
+    if (hasSupported) query = "See below attached file(s).";
     else query = "Hi";
   }
 
@@ -1454,26 +1449,16 @@ app.event("app_mention", async ({ event, client, context }) => {
   }
 
   const resolvedSlackBot = await resolveSlackBotForEvent();
-  const hasAgent = Boolean(resolvedSlackBot?.agentId);
-  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
-  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
-
-  if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
-    await postSkippedAttachmentsNotice(
-      typedClient,
-      typedMessage,
-      { unsupported, oversized },
-      supported.length > 0,
-    );
-    if (supported.length === 0) return;
-  }
-
-  // Preserve legacy silent-ignore on non-agent path (out of scope to fix here).
-  if (filesPresent && !hasAgent && supported.length === 0) return;
+  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
+    typedClient,
+    typedMessage,
+    typedContext.botUserId,
+  );
+  if (!shouldAnswer) return;
 
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    if (supported.length > 0) query = "Attached file(s).";
+    if (hasSupported) query = "Attached file(s).";
     else query = "Hi";
   }
 

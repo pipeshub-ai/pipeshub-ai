@@ -21,6 +21,8 @@ import {
   uploadSlackAttachments,
   buildSkippedAttachmentsNotice,
   postSkippedAttachmentsNotice,
+  handleIncomingAttachments,
+  messageHasQuestionText,
   parseSSEEvents,
   readMessageFromObject,
   readMessageFromTextPayload,
@@ -276,7 +278,7 @@ describe('slack-bot/helpers', () => {
       it('names the unsupported file and lists every accepted type', () => {
         const notice = buildSkippedAttachmentsNotice(
           { unsupported: [{ id: '1', name: 'archive.zip', filetype: 'zip' }] },
-          false,
+          'none',
         );
         expect(notice).to.contain("I can't read this type of file: archive.zip (zip).");
         expect(notice).to.contain(SUPPORTED_ATTACHMENTS_HINT);
@@ -294,7 +296,7 @@ describe('slack-bot/helpers', () => {
             oversized: [{ id: '1', name: 'big.md' }],
             unreadable: [{ id: '2', name: 'a.txt' }, { id: '3', name: 'b.txt' }],
           },
-          true,
+          'otherAttachments',
         );
         expect(notice).to.contain(`This file is larger than the ${MAX_ATTACHMENT_MB} MB limit: big.md.`);
         expect(notice).to.contain("These files don't contain readable text: a.txt, b.txt.");
@@ -303,7 +305,13 @@ describe('slack-bot/helpers', () => {
       });
 
       it('returns an empty string when nothing was skipped', () => {
-        expect(buildSkippedAttachmentsNotice({}, false)).to.equal('');
+        expect(buildSkippedAttachmentsNotice({}, 'none')).to.equal('');
+      });
+
+      it('says the message is still answered when only the attachments were skipped', () => {
+        const notice = buildSkippedAttachmentsNotice({ unsupported: [{ id: '1', name: 'x.zip' }] }, 'messageOnly');
+        expect(notice).to.contain("I'll answer your message without them.");
+        expect(notice).not.to.contain('other attachments');
       });
     });
 
@@ -315,13 +323,93 @@ describe('slack-bot/helpers', () => {
           client,
           { ts: '1', channel: 'D1' },
           { unsupported: [{ id: '1', name: 'x.exe' }] },
-          false,
+          'none',
         );
         expect(postMessage.calledOnce).to.equal(true);
         const args = postMessage.firstCall.args[0];
         expect(args.channel).to.equal('D1');
         expect(args.thread_ts).to.equal('1');
         expect(args.text).to.contain("I can't read this type of file: x.exe.");
+      });
+    });
+
+    describe('messageHasQuestionText', () => {
+      it('ignores the bot mention and whitespace', () => {
+        expect(messageHasQuestionText('<@UBOT>', 'UBOT')).to.equal(false);
+        expect(messageHasQuestionText('  <@UBOT>  \n', 'UBOT')).to.equal(false);
+        expect(messageHasQuestionText(undefined, 'UBOT')).to.equal(false);
+        expect(messageHasQuestionText('<@UBOT> summarise this', 'UBOT')).to.equal(true);
+        expect(messageHasQuestionText('<@UOTHER>', 'UBOT')).to.equal(true);
+        expect(messageHasQuestionText('hello')).to.equal(true);
+      });
+    });
+
+    // The DM and app_mention handlers call handleIncomingAttachments the same
+    // way whether or not the bot config has an agent, so these cover the
+    // no-agent (default) setup that used to drop skipped files silently.
+    describe('handleIncomingAttachments (DM and app_mention, no agent)', () => {
+      const zip = { id: 'z', name: 'archive.zip', filetype: 'zip', mimetype: 'application/zip', size: 10, url_private: 'https://f/z' };
+      const bigMd = { id: 'b', name: 'big.md', mimetype: 'text/plain', size: MAX_ATTACHMENT_BYTES + 1, url_private: 'https://f/b' };
+      const notes = { id: 'n', name: 'notes.md', mimetype: 'text/plain', size: 10, url_private: 'https://f/n' };
+
+      function client(): { client: any; postMessage: sinon.SinonStub } {
+        const postMessage = sinon.stub().resolves({ ts: '9' });
+        return { client: { chat: { postMessage } }, postMessage };
+      }
+
+      it('DM with only an unsupported file: the notice is the whole reply', async () => {
+        const { client: c, postMessage } = client();
+        const outcome = await handleIncomingAttachments(c, { ts: '1', channel: 'D1', text: '', files: [zip] }, 'UBOT');
+        expect(outcome).to.deep.equal({ shouldAnswer: false, hasSupported: false });
+        expect(postMessage.calledOnce).to.equal(true);
+        const text: string = postMessage.firstCall.args[0].text;
+        expect(text).to.contain("I can't read this type of file: archive.zip (zip).");
+        expect(text).to.contain(SUPPORTED_ATTACHMENTS_HINT);
+        expect(text).not.to.contain("I'll answer");
+      });
+
+      it('DM with text and an oversized file: posts the notice and still answers the text', async () => {
+        const { client: c, postMessage } = client();
+        const outcome = await handleIncomingAttachments(
+          c,
+          { ts: '1', channel: 'D1', text: 'what is our leave policy?', files: [bigMd] },
+          'UBOT',
+        );
+        expect(outcome).to.deep.equal({ shouldAnswer: true, hasSupported: false });
+        const text: string = postMessage.firstCall.args[0].text;
+        expect(text).to.contain(`larger than the ${MAX_ATTACHMENT_MB} MB limit: big.md.`);
+        expect(text).to.contain("I'll answer your message without them.");
+      });
+
+      it('app_mention with only the bot mention and an unsupported file: the notice is the reply, in the thread', async () => {
+        const { client: c, postMessage } = client();
+        const outcome = await handleIncomingAttachments(
+          c,
+          { ts: '5', thread_ts: '4', channel: 'C1', text: '<@UBOT>', files: [zip] },
+          'UBOT',
+        );
+        expect(outcome.shouldAnswer).to.equal(false);
+        expect(postMessage.firstCall.args[0]).to.include({ channel: 'C1', thread_ts: '4' });
+      });
+
+      it('app_mention with a question and a mix of files: notice, then answers with the accepted file', async () => {
+        const { client: c, postMessage } = client();
+        const outcome = await handleIncomingAttachments(
+          c,
+          { ts: '5', channel: 'C1', text: '<@UBOT> summarise these', files: [zip, notes] },
+          'UBOT',
+        );
+        expect(outcome).to.deep.equal({ shouldAnswer: true, hasSupported: true });
+        expect(postMessage.firstCall.args[0].text).to.contain("I'll answer using your other attachments.");
+      });
+
+      it('posts nothing and answers when every file is accepted or there are no files', async () => {
+        const { client: c, postMessage } = client();
+        expect(await handleIncomingAttachments(c, { ts: '1', channel: 'D1', files: [notes] }, 'UBOT'))
+          .to.deep.equal({ shouldAnswer: true, hasSupported: true });
+        expect(await handleIncomingAttachments(c, { ts: '1', channel: 'D1', text: 'hi' }, 'UBOT'))
+          .to.deep.equal({ shouldAnswer: true, hasSupported: false });
+        expect(postMessage.called).to.equal(false);
       });
     });
 

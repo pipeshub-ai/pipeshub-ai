@@ -740,10 +740,13 @@ export interface SkippedAttachments {
   oversized?: SlackFile[];
 }
 
+/** What the bot still answers after skipping files: the other attachments, the message text, or nothing. */
+export type SkippedAttachmentsFollowUp = "otherAttachments" | "messageOnly" | "none";
+
 /** Plain-language reply for attachments the bot is skipping, or "" when nothing was skipped. */
 export function buildSkippedAttachmentsNotice(
   skipped: SkippedAttachments,
-  hasSupportedRemaining: boolean,
+  followUp: SkippedAttachmentsFollowUp,
 ): string {
   const unsupported = skipped.unsupported ?? [];
   const unreadable = skipped.unreadable ?? [];
@@ -768,8 +771,10 @@ export function buildSkippedAttachmentsNotice(
     const lead = oversized.length === 1 ? "This file is" : "These files are";
     parts.push(`${lead} larger than the ${MAX_ATTACHMENT_MB} MB limit: ${describe(oversized)}.`);
   }
-  if (hasSupportedRemaining) {
+  if (followUp === "otherAttachments") {
     parts.push("I'll answer using your other attachments.");
+  } else if (followUp === "messageOnly") {
+    parts.push("I'll answer your message without them.");
   }
   parts.push(SUPPORTED_ATTACHMENTS_HINT);
   return parts.join(" ");
@@ -779,9 +784,9 @@ export async function postSkippedAttachmentsNotice(
   typedClient: TypedSlackClient,
   typedMessage: SlackMessagePayload,
   skipped: SkippedAttachments,
-  hasSupportedRemaining: boolean,
+  followUp: SkippedAttachmentsFollowUp,
 ): Promise<void> {
-  const notice = buildSkippedAttachmentsNotice(skipped, hasSupportedRemaining);
+  const notice = buildSkippedAttachmentsNotice(skipped, followUp);
   if (!typedMessage.channel || notice === "") return;
   try {
     await typedClient.chat.postMessage({
@@ -793,6 +798,44 @@ export async function postSkippedAttachmentsNotice(
   } catch (error) {
     console.error("Failed to post unsupported-attachment notice:", error);
   }
+}
+
+/** Whether the message has words besides the bot's own @mention. */
+export function messageHasQuestionText(text: string | undefined, botUserId?: string): boolean {
+  let remaining = text ?? "";
+  if (botUserId !== undefined && botUserId !== "") {
+    remaining = remaining.split(`<@${botUserId}>`).join(" ");
+  }
+  return remaining.trim() !== "";
+}
+
+export interface IncomingAttachmentsOutcome {
+  /** False when the message was attachment-only and nothing was accepted: the notice is the whole reply. */
+  shouldAnswer: boolean;
+  hasSupported: boolean;
+}
+
+/**
+ * Tells the user about attachments skipped before download, for every bot
+ * setup (with or without an agent), and decides whether the message still
+ * gets an answer.
+ */
+export async function handleIncomingAttachments(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  botUserId?: string,
+): Promise<IncomingAttachmentsOutcome> {
+  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
+  const hasSupported = supported.length > 0;
+  const hasText = messageHasQuestionText(typedMessage.text, botUserId);
+  const followUp: SkippedAttachmentsFollowUp = hasSupported
+    ? "otherAttachments"
+    : hasText
+      ? "messageOnly"
+      : "none";
+  await postSkippedAttachmentsNotice(typedClient, typedMessage, { unsupported, oversized }, followUp);
+  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
+  return { shouldAnswer: hasSupported || hasText || !filesPresent, hasSupported };
 }
 
 export function truncateForSlackStreamMarkdown(text: string): string {
