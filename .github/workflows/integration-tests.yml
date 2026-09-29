@@ -350,7 +350,9 @@ jobs:
       # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
       # one job, so a shard's wall clock is the sum of the two):
-      # shard 1 ~136 min, shard 2 ~135 min, shard 3 ~132 min. Shard 1 keeps
+      # shard 1 ~194 min, shard 2 ~204 min, shard 3 ~209 min, of which ~60 min
+      # each is the scenario matrix (an estimate until a nightly measures it; it
+      # runs on the Neo4j leg only). Shard 1 keeps
       # nextcloud and bookstack, the only suites needing selfhosted-sources.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
