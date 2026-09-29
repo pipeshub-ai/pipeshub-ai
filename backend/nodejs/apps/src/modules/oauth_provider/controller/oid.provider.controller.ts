@@ -161,7 +161,7 @@ export class OIDCProviderController {
         'email_verified',
         'picture',
       ],
-      code_challenge_methods_supported: ['S256', 'plain'],
+      code_challenge_methods_supported: ['S256'],
     };
 
     res.json(config);

@@ -32,7 +32,7 @@ from atlassian_cloud_fakes import (
 )
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
@@ -803,7 +803,7 @@ class TestPlaceholderSweep:
         folder_stub = FileRecord(
             org_id="org-1", record_name="500", record_type=RecordType.FILE, external_record_id="500",
             connector_name=page_stub.connector_name, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR, version=0,
-            is_file=False, is_placeholder=True,
+            is_file=False, mime_type=MimeTypes.FOLDER.value, is_placeholder=True,
         )
         gone_stub = page_stub.model_copy(update={"id": "gone-id", "external_record_id": "404"})
         db.placeholders = [page_stub, gone_stub]
@@ -832,6 +832,39 @@ class TestPlaceholderSweep:
         assert [p.email for p in db.record_permissions["500"]] == ["ana@acme.com"]
         assert gone.is_placeholder is True and db.record_permissions["404"] == [], "an unreachable ancestor fails closed"
         assert api.calls("GET", f"{V2}/folders/500"), "the folder was fetched via the folder API"
+
+    async def test_a_chain_of_folder_ancestors_is_named_in_one_sweep(self, api, db, checkpoints) -> None:
+        page_stub = WebpageRecord(
+            org_id="org-1", record_name="10", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, is_placeholder=True,
+        )
+        db.placeholders = [page_stub]
+        for folder_id in ("500", "600"):
+            db.records[folder_id] = FileRecord(
+                org_id="org-1", record_name=folder_id, record_type=RecordType.FILE, external_record_id=folder_id,
+                connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+                version=0, is_file=False, mime_type=MimeTypes.FOLDER.value, is_placeholder=True,
+            )
+        api.on("GET", f"{V2}/pages/10", {
+            "id": "10", "title": "Design doc", "spaceId": "77", "parentId": "500", "parentType": "folder",
+            "version": {"number": 4, "createdAt": "2024-05-01T10:00:00.000Z"}, "_links": {"base": WIKI, "webui": "/x/10"},
+        })
+        api.on("GET", f"{V2}/folders/500", {
+            "id": "500", "title": "Specs", "spaceId": "77", "parentId": "600", "parentType": "folder",
+            "version": {"number": 1}, "_links": {"base": WIKI, "webui": "/x/500"},
+        })
+        api.on("GET", f"{V2}/folders/600", {
+            "id": "600", "title": "Engineering", "spaceId": "77", "version": {"number": 1},
+            "_links": {"base": WIKI, "webui": "/x/600"},
+        })
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sweep_placeholder_records("org-1")
+
+        assert db.records["500"].record_name == "Specs" and db.records["500"].is_placeholder is False
+        assert db.records["600"].record_name == "Engineering" and db.records["600"].is_placeholder is False
+        assert api.calls("GET", f"{V2}/folders/600"), "the second-level folder was fetched via the folder API"
 
 
 class TestStreamingLegacyHtmlPages:

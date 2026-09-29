@@ -32,7 +32,7 @@ from requests.structures import CaseInsensitiveDict
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from app.models.entities import Record
+    from app.models.entities import FileRecord, Record
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 TENANT = "tenant-1"
@@ -286,7 +286,17 @@ class FakeRecordsDb:
         return matches[0]
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
-        return self.records.get(external_record_id)
+        """A base ``Record`` rebuilt from the stored node, as both graph providers return it.
+
+        No file-only fields (``quick_xor_hash``, ``path``, ``is_file``); those come
+        from ``get_file_record_by_id``.
+        """
+        from app.models.entities import Record
+
+        stored = self.records.get(external_record_id)
+        if stored is None:
+            return None
+        return Record.from_arango_base_record(stored.to_arango_base_record())
 
     async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None) -> list[Record]:
         """Children as base ``Record`` objects, the way ``Record.from_arango_base_record`` builds them.
@@ -305,8 +315,14 @@ class FakeRecordsDb:
             children.append(Record.model_validate(stored.model_dump(include=set(Record.model_fields))))
         return children
 
-    async def get_file_record_by_id(self, record_id: str) -> Optional[Record]:
-        return next((r for r in self.records.values() if r.id == record_id), None)
+    async def get_file_record_by_id(self, record_id: str) -> Optional[FileRecord]:
+        """A ``FileRecord`` rebuilt from the file and record nodes; None when no file node exists."""
+        from app.models.entities import FileRecord
+
+        stored = next((r for r in self.records.values() if r.id == record_id), None)
+        if not isinstance(stored, FileRecord):
+            return None
+        return FileRecord.from_arango_record(stored.to_arango_record(), stored.to_arango_base_record())
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         self.record_batches.append([rec for rec, _ in records_with_permissions])

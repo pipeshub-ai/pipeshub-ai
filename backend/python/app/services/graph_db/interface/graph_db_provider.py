@@ -1274,12 +1274,15 @@ class IGraphDBProvider(ABC):
 
         Args:
             connector_id (str): Connector ID
-            path (list[str]): File/record path in array format
+            path (list[str]): Record names from a top-level record of the group down to this one
             external_record_group_id (str): External Record group ID
             transaction (str | None): Optional transaction context
 
         Returns:
-            dict | None: Record data if found, None otherwise
+            dict | None: The stored document (not a Record) if found, None otherwise
+
+        Raises:
+            GraphQueryError: The lookup could not be read, so None would be a guess.
         """
         pass
 
@@ -5146,6 +5149,37 @@ class IGraphDBProvider(ABC):
             ``{virtualRecordId: recordId}`` for the readable subset. VRIDs the
             user cannot read are absent, so an empty map means every one was
             denied.
+
+        Raises:
+            PermissionVerificationUnavailableError: the graph could not answer.
+        """
+        pass
+
+    @abstractmethod
+    async def filter_accessible_record_ids(
+        self,
+        record_ids: list[str],
+        user_id: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``record_ids`` the user may read.
+
+        For records reached by graph traversal rather than by search (a hit's
+        parent, attachment or child), so it keys on record ids and applies the gates of
+        ``filter_accessible_virtual_record_ids`` except ``indexingStatus``: a
+        record that synced but did not index still has its permissions and its
+        metadata. Placeholder and internal records are excluded — they are
+        stubs, not content.
+
+        Args:
+            record_ids: Record ids to adjudicate.
+            user_id: The ``userId`` field value, not the graph key.
+            org_id: Tenant boundary.
+
+        Returns:
+            The readable ids. Empty means every id was denied.
 
         Raises:
             PermissionVerificationUnavailableError: the graph could not answer.

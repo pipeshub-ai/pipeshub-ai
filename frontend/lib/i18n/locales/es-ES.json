@@ -3526,7 +3526,8 @@
       },
       "disableTitle": "¿Desactivar esta cuenta de servicio?",
       "disableDescription": "{{name}} deja de funcionar de inmediato, incluidos todos los tokens que ya tenga, no solo en el siguiente inicio de sesión. Todo lo que use uno de esos tokens empezará a fallar hasta que vuelva a activarla.",
-      "disableConfirm": "Desactivar"
+      "disableConfirm": "Desactivar",
+      "memberBadge": "Cuenta de servicio"
     }
   },
   "filePreview": {

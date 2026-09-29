@@ -388,6 +388,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 resolve_attachments(
                     query_info.get("attachments"), blob_store=blob_store,
                     org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,
+                    user_id=user_info.get("userId") or "",
+                    graph_provider=graph_provider,
+                    is_service_account=bool(user_info.get("isServiceAccount")),
                 ),
                 # Pre-fetch user-visible connectors so the catalog
                 # (ConnectorCatalog.build) and capability_summary can use them

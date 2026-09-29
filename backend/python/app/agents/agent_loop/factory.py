@@ -1084,6 +1084,9 @@ class PipesHubAgentFactory:
                         is_multimodal_llm=is_multimodal,
                         image_budget=image_budget,
                         image_admission=admission_from_state(state),
+                        user_id=context.user_id,
+                        graph_provider=context.graph_provider,
+                        is_service_account=context.is_service_account,
                     )
                     msg = messages[0]
                     if extra_text:

@@ -2,7 +2,10 @@
 
 import pytest
 
-from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.filename_utils import (
+    sanitize_filename_for_content_disposition,
+    upload_extension,
+)
 
 
 class TestSanitizeFilenameForContentDisposition:
@@ -107,3 +110,45 @@ class TestSanitizeFilenameForContentDisposition:
         # Path separators are normal latin-1 chars, not stripped
         result = sanitize_filename_for_content_disposition("path/to/file.txt")
         assert result == "path/to/file.txt"
+
+
+_OFFICE = frozenset({"ppt", "pptx", "docx"})
+
+
+class TestUploadExtension:
+    """upload_extension() decides how an upload is handled and must never let a
+    client name carry a path component through."""
+
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            ("deck.pptx", "pptx"),
+            ("DECK.PPTX", "pptx"),
+            ("my deck (final).docx", "docx"),
+            ("a.b.c.ppt", "ppt"),
+        ],
+    )
+    def test_accepts_plain_names_with_allowed_extension(self, filename, expected) -> None:
+        assert upload_extension(filename, _OFFICE) == expected
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "../../outside.pptx",
+            "/tmp/abs.pptx",
+            "..\\..\\win.pptx",
+            "%2e%2e/enc.pptx",
+            "sub/deck.pptx",
+            "deck\x00.pptx",
+        ],
+    )
+    def test_rejects_any_path_separator_or_nul(self, filename) -> None:
+        assert upload_extension(filename, _OFFICE) is None
+
+    @pytest.mark.parametrize("filename", ["", None, ".pptx", "..pptx", "deck", "deck.", " .pptx"])
+    def test_rejects_empty_or_stemless_names(self, filename) -> None:
+        assert upload_extension(filename, _OFFICE) is None
+
+    @pytest.mark.parametrize("filename", ["deck.exe", "deck.pdf", "deck.pptx.sh", "deck.PPTX.html"])
+    def test_rejects_extension_outside_allowlist(self, filename) -> None:
+        assert upload_extension(filename, _OFFICE) is None

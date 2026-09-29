@@ -3518,7 +3518,8 @@
       },
       "disableTitle": "Disable this service account?",
       "disableDescription": "{{name}} will stop working immediately, including every token it already holds. Any integration using one of those tokens will fail until you enable the account again.",
-      "disableConfirm": "Disable"
+      "disableConfirm": "Disable",
+      "memberBadge": "Service account"
     }
   },
   "filePreview": {

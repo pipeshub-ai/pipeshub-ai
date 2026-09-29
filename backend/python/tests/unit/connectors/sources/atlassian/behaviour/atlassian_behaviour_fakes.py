@@ -113,6 +113,17 @@ class AtlassianApiStub:
         )
 
 
+def as_base_record(record: Record) -> Record:
+    """What the graph stores return from an external-id lookup: a base Record.
+
+    Both providers rebuild it with ``Record.from_arango_base_record``, so subclass
+    fields such as ``is_file``, ``path`` and ``extension`` are gone.
+    """
+    from app.models.entities import Record
+
+    return Record.model_validate(record.model_dump(include=set(Record.model_fields)))
+
+
 class FakeRecordsDb:
     """In-memory stand-in for ``DataSourceEntitiesProcessor``.
 
@@ -145,7 +156,8 @@ class FakeRecordsDb:
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
         if external_record_id in self.fail_lookup_for:
             raise RuntimeError(f"database unavailable for {external_record_id}")
-        return self.records.get(external_record_id)
+        stored = self.records.get(external_record_id)
+        return None if stored is None else as_base_record(stored)
 
     async def get_records_by_parent(
         self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None

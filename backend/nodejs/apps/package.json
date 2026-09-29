@@ -61,7 +61,6 @@
     "@pipeshub-ai/mcp": "2.4.2",
     "@qdrant/js-client-rest": "^1.14.1",
     "@slack/bolt": "^4.6.0",
-    "@tryfabric/mack": "^1.2.1",
     "@types/bcrypt": "^5.0.2",
     "@types/express-session": "^1.18.1",
     "@types/mongodb": "^4.0.6",
@@ -96,9 +95,9 @@
     "kafkajs": "^2.2.4",
     "marked": "^16.4.2",
     "mongodb": "^6.14.2",
-    "mongoose": "^8.9.2",
+    "mongoose": "^8.24.1",
     "morgan": "^1.12.0",
-    "multer": "^2.3.0",
+    "multer": "^2.4.0",
     "nodemailer": "^9.1.1",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
@@ -115,7 +114,7 @@
   },
   "overrides": {
     "bn.js": "4.12.3",
-    "qs": "6.14.1",
-    "fast-xml-parser": "5.3.4"
+    "qs": "6.16.0",
+    "fast-xml-parser": "5.7.0"
   }
 }

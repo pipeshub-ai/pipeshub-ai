@@ -7,7 +7,6 @@ import { getFromDatabase, saveToDatabase } from "./utils/conversation";
 import axios from "axios";
 import { marked } from "marked";
 // Disable marked's email mangling to prevent HTML entity encoding of email addresses.
-// @tryfabric/mack uses the same marked instance internally.
 marked.setOptions({ mangle: false } as any);
 import app from "./slackApp";
 import receiver from "./receiver";

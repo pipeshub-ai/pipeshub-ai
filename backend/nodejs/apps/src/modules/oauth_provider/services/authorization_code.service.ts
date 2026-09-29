@@ -25,7 +25,7 @@ export class AuthorizationCodeService {
     redirectUri: string,
     scopes: string[],
     codeChallenge?: string,
-    codeChallengeMethod?: 'S256' | 'plain',
+    codeChallengeMethod?: 'S256',
   ): Promise<string> {
     const code = crypto.randomBytes(CODE_LENGTH).toString('hex')
     const expiresAt = new Date(Date.now() + CODE_EXPIRY_SECONDS * 1000)
@@ -61,6 +61,9 @@ export class AuthorizationCodeService {
     clientId: string,
     redirectUri: string,
     codeVerifier?: string,
+    // Defaults to the strict (public client) path so a caller that forgets to
+    // pass it fails closed rather than skipping PKCE.
+    isConfidentialClient: boolean = false,
   ): Promise<AuthCodeExchangeResult> {
     // First, look for the code regardless of isUsed status
     const authCode = await AuthorizationCode.findOne({
@@ -96,6 +99,12 @@ export class AuthorizationCodeService {
 
     if (authCode.redirectUri !== redirectUri) {
       throw new InvalidGrantError('Redirect URI mismatch')
+    }
+
+    // RFC 9700: public clients have no other proof of possession, so a code
+    // stored without a challenge must never be redeemable by one.
+    if (!authCode.codeChallenge && !isConfidentialClient) {
+      throw new InvalidGrantError('PKCE is required for public clients')
     }
 
     // PKCE verification

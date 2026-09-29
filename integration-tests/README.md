@@ -276,9 +276,12 @@ pytest -m "integration and not slow" -v             # exclude slow
 **How CI splits this suite.** The nightly run does not run the whole suite in one
 job: `.github/workflows/integration-tests.yml` divides the connector suites across
 three shards (`CONN_SHARD_1` … `CONN_SHARD_3`), and a fourth `core` shard runs
-everything those three do not name, plus the browser tests. Each shard brings up
-its own stack and runs both graph databases, so a shard's wall clock is roughly
-the sum of its two legs.
+everything those three do not name, plus the browser tests. A fifth `demo` shard
+runs only the Acme Corp demo questions (`-m demo`) on a stack nothing else has
+indexed into, because the demo's answers are prompted differently once a
+workspace has data of its own; `core` leaves the `demo` marker out. Each shard
+brings up its own stack and runs both graph databases, so a shard's wall clock is
+roughly the sum of its two legs.
 
 Adding a connector means adding its marker to one of those shard lines. Connector
 tests are also marked `integration`, so a marker in none of them is not skipped —
@@ -293,7 +296,8 @@ python3 scripts/shard_balance.py --check
 
 It lists each shard's measured minutes and fails when a connector is unassigned,
 is in two shards, when a shard names something that is not a single connector's
-marker, when a shard list and the job matrix disagree, or when one shard drifts
+marker, when a shard list and the job matrix disagree, when the `demo` job and
+`core` would both run the demo (or neither would), or when one shard drifts
 well past the others. The measurements
 live in `scripts/shard_durations.json`; refresh them from a recent nightly's
 `reports-both-<shard>` artifacts (`*-results.xml`) when they look stale. The same

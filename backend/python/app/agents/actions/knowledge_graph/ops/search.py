@@ -300,6 +300,7 @@ async def execute_search(
                 blob_store=blob_store,
                 org_id=org_id,
                 config_service=config_service,
+                user_id=user_id,
             )
 
         final_results = search_results if not flattened_results else flattened_results

@@ -113,6 +113,10 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- if .Values.s3SignatureV4Preload }}
+            - name: NODE_OPTIONS
+              value: "--require /etc/pipeshub/s3-sigv4/force-sigv4.js"
+            {{- end }}
             # Resource-governor tuning. Every one defaults to "" so the
             # governor derives it from the pod's CPU/memory limits; set one
             # only to pin it. Mirrors the same list in docker-compose.yml.
@@ -399,6 +403,11 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- if .Values.s3SignatureV4Preload }}
+            - name: s3-sigv4
+              mountPath: /etc/pipeshub/s3-sigv4
+              readOnly: true
+            {{- end }}
           {{- if .Values.healthCheck.startupProbe.enabled }}
           startupProbe:
             httpGet:
@@ -519,4 +528,9 @@ spec:
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.s3SignatureV4Preload }}
+        - name: s3-sigv4
+          configMap:
+            name: {{ include "pipeshub-ai.fullname" . }}-s3-sigv4
         {{- end }}
