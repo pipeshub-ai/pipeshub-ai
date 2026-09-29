@@ -1229,6 +1229,8 @@
         "send": "초대 보내기",
         "successTitle": "초대를 보냈습니다!",
         "successDescription": "{{email}}이(가) 초대되었습니다",
+        "queuedTitle": "초대가 대기열에 추가되었습니다",
+        "queuedDescription": "{{email}}에게 보내는 이메일이 백그라운드에서 전송 중입니다. 전달되지 않은 이메일이 있으면 알림을 받게 됩니다.",
         "invalidEmail": "잘못된 이메일 주소입니다",
         "errorGeneric": "초대를 보내지 못했습니다",
         "importNoEmails": "파일에서 이메일 주소를 찾을 수 없습니다",

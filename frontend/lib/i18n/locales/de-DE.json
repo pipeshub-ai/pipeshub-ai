@@ -1213,6 +1213,8 @@
         "send": "Einladung senden",
         "successTitle": "Einladungen gesendet",
         "successDescription": "{{email}} wurde eingeladen",
+        "queuedTitle": "Einladungen in der Warteschlange",
+        "queuedDescription": "E-Mails an {{email}} werden im Hintergrund gesendet. Sie werden benachrichtigt, falls eine nicht zugestellt werden kann.",
         "invalidEmail": "Ungültige E-Mail-Adresse",
         "errorGeneric": "Einladungen konnten nicht gesendet werden. Bitte versuchen Sie es erneut.",
         "importNoEmails": "Keine E-Mail-Adressen in der Datei gefunden",

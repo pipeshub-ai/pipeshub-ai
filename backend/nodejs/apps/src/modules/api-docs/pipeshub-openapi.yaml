@@ -19411,8 +19411,12 @@ paths:
         If all provided emails already have active accounts, returns `200` with
         `{ "errorMessage": "All provided emails already have active accounts" }`.
 
-        If mail sending fails for any email, the loop continues and the final response reflects
-        the mail service's HTTP status code.
+        Invitation emails are always queued on the message broker and delivered in the
+        background, so a `200` means "accepted for delivery", not "sent". Emails that
+        ultimately cannot be delivered raise an admin notification. Set-password links are
+        minted when the email is sent, so no reset token is stored in the broker. If queueing
+        fails for any email, the loop continues and the final response reflects that status
+        code.
 
         Optional `role` (`admin` | `member`, default `member`) is applied to new invites and
         to restored/pending users when promoting to admin. Inviting as `admin` is rejected
@@ -19463,7 +19467,11 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: "Invite sent successfully"
+                    example: "Invites queued. Emails are being sent in the background and may take a few minutes."
+                  queued:
+                    type: boolean
+                    description: True when invitation emails were accepted for background delivery
+                    example: true
                   errorMessage:
                     type: string
                     description: Present when all emails were already active

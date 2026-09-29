@@ -121,7 +121,6 @@ function normalizedEmail(value: unknown): string {
 }
 
 export const MAX_BULK_INVITE = 1000;
-export const ASYNC_INVITE_THRESHOLD = 20;
 
 // Linear-time email check: each segment excludes its following separator
 // (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS).
@@ -139,7 +138,6 @@ export interface InviteResult {
   mailFailed: string[];
   mailErrorCode?: number;
   limitExceededRestorations?: string[];
-  queued: boolean;
 }
 
 type MongoDuplicateKeyError = {
@@ -1965,15 +1963,11 @@ export class UserController {
         return;
       }
 
-      res.status(200).json(
-        result.queued
-          ? {
-            message:
-              'Invites queued. Emails are being sent in the background and may take a few minutes.',
-            queued: true,
-          }
-          : { message: 'Invite sent successfully', queued: false },
-      );
+      res.status(200).json({
+        message:
+          'Invites queued. Emails are being sent in the background and may take a few minutes.',
+        queued: true,
+      });
     } catch (error) {
       next(error);
     }
@@ -2306,11 +2300,6 @@ export class UserController {
       ...emailsForNewAccounts,
       ...emailsForPendingAccounts,
     ];
-    // Restored accounts are mailed in their own loop below, so they count
-    // toward the batch size too — otherwise a large restore-only invite would
-    // still send every message inline.
-    const deliverAsync =
-      emailsForInvites.length + restoredUsers.length > ASYNC_INVITE_THRESHOLD;
 
     for (let i = 0; i < emailsForInvites.length; ++i) {
       const email = emailsForInvites[i];
@@ -2358,7 +2347,6 @@ export class UserController {
         org,
         false,
         isPasswordAuthEnabled,
-        deliverAsync,
       );
       if (statusCode !== 200) {
         mailFailed.push(email);
@@ -2398,7 +2386,6 @@ export class UserController {
         org,
         true,
         isPasswordAuthEnabled,
-        deliverAsync,
       );
       if (statusCode !== 200) {
         mailFailed.push(email);
@@ -2412,7 +2399,6 @@ export class UserController {
       reinvited: pendingUsersToReinvite.length,
       alreadyActive: activeUsers.length - pendingUsersToReinvite.length,
       mailFailed,
-      queued: deliverAsync,
       mailErrorCode,
     };
   }
@@ -2425,7 +2411,6 @@ export class UserController {
     org: { registeredName?: string; shortName?: string } | null,
     rejoin: boolean,
     isPasswordAuthEnabled: boolean,
-    deliverAsync: boolean,
   ): Promise<number> {
     const subject = `You are invited to ${rejoin ? 're-join' : 'join'} ${org?.registeredName} `;
     const invitee = inviterName;
@@ -2434,44 +2419,24 @@ export class UserController {
     // A transport failure for one recipient must not abort the rest of the
     // batch: return a non-200 so the caller records it in mailFailed instead.
     try {
-      let result;
-      if (isPasswordAuthEnabled) {
-        const { passwordResetToken, mailAuthToken } =
-          jwtGeneratorForNewAccountPassword(
-            email,
-            userId,
-            orgId,
-            this.config.scopedJwtSecret,
-          );
-        result = await this.mailService.sendMail({
-          emailTemplateType: 'appuserInvite',
-          initiator: { jwtAuthToken: mailAuthToken, orgId: orgId?.toString() },
-          usersMails: [email],
-          subject,
-          templateData: {
-            invitee,
-            orgName,
-            link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
-          },
-          deliverAsync,
-        });
-      } else {
-        result = await this.mailService.sendMail({
-          emailTemplateType: 'appuserInvite',
-          initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-            orgId: orgId?.toString(),
-          },
-          usersMails: [email],
-          subject,
-          templateData: {
-            invitee,
-            orgName,
-            link: `${this.config.frontendUrl}/sign-in`,
-          },
-          deliverAsync,
-        });
-      }
+      // Always queued: even a handful of sequential inline sends can hold the
+      // request for minutes when SMTP is slow.
+      const result = await this.mailService.sendMail({
+        emailTemplateType: 'appuserInvite',
+        initiator: {
+          jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+          orgId: orgId?.toString(),
+        },
+        usersMails: [email],
+        subject,
+        templateData: isPasswordAuthEnabled
+          ? { invitee, orgName }
+          : { invitee, orgName, link: `${this.config.frontendUrl}/sign-in` },
+        ...(isPasswordAuthEnabled && {
+          passwordResetLinkFor: { userId, orgId: orgId.toString(), email },
+        }),
+        deliverAsync: true,
+      });
       return result.statusCode;
     } catch (error) {
       this.logger.error(`Failed to send invite mail to ${email}`, error);

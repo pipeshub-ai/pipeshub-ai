@@ -1229,6 +1229,8 @@
         "send": "傳送邀請",
         "successTitle": "邀請已傳送！",
         "successDescription": "已邀請 {{email}}",
+        "queuedTitle": "邀請已加入佇列",
+        "queuedDescription": "正在背景傳送電子郵件給 {{email}}。若有郵件無法送達，您將會收到通知。",
         "invalidEmail": "電子郵件地址無效",
         "errorGeneric": "傳送邀請失敗",
         "importNoEmails": "檔案中找不到任何電子郵件地址",

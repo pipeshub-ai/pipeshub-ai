@@ -9,12 +9,24 @@ import {
   EventType as NotificationEventType,
 } from '../../notification/service/notification.producer';
 import { INotification } from '../../notification/schema/notification.schema';
-import { MailSenderService } from './mail.sender.service';
-import { MailEventPayload, MailSendResult } from '../types/mail-event.types';
+import { AppConfig } from '../../tokens_manager/config/config';
+import { newAccountPasswordLink } from '../../../libs/utils/createJwt';
+import { MailBody } from '../middlewares/types';
+import {
+  MailSenderService,
+  SMTP_SEND_DEADLINE_MS,
+} from './mail.sender.service';
+import {
+  MAIL_MESSAGE_BUDGET_MS,
+  MailEventPayload,
+  MailSendResult,
+} from '../types/mail-event.types';
 
 const MAX_ATTEMPTS = 4;
 const BASE_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
+// Below this an attempt would mostly just hit its deadline and come back indeterminate.
+const MIN_ATTEMPT_MS = 15_000;
 // Without this, one bad SMTP server during a 1000-address import raises a
 // notification per recipient, per admin.
 const FAILURE_NOTIFY_WINDOW_MS = 5 * 60_000;
@@ -37,6 +49,8 @@ export class MailConsumer {
     @inject(MailSenderService) private readonly sender: MailSenderService,
     @inject(NotificationProducer)
     private readonly notificationProducer: NotificationProducer,
+    @inject('AppConfigProvider')
+    private readonly getAppConfig: () => AppConfig,
   ) {}
 
   async start(): Promise<void> {
@@ -98,14 +112,17 @@ export class MailConsumer {
       return;
     }
 
+    const mail = this.withPasswordResetLink(payload);
+    const giveUpAt = Date.now() + MAIL_MESSAGE_BUDGET_MS;
     let attempt = 0;
     let lastError = 'unknown error';
 
     while (attempt < MAX_ATTEMPTS) {
       attempt += 1;
       const result: MailSendResult = await this.sender.send(
-        payload.mail,
+        mail,
         smtpConfig,
+        Math.min(SMTP_SEND_DEADLINE_MS, giveUpAt - Date.now()),
       );
 
       if (result.status === 'sent') {
@@ -128,10 +145,13 @@ export class MailConsumer {
         return;
       }
 
-      // Original SMTP may still complete; retrying would risk a duplicate send.
-      if (result.status === 'indeterminate') {
-        this.logger.error('Mail send outcome indeterminate; not retrying', {
+      // indeterminate: the original send may still complete, so a retry could
+      // duplicate it. unavailable: the server is cooling down after repeated
+      // connection failures; the retry ladder would only stall the partition.
+      if (result.status === 'indeterminate' || result.status === 'unavailable') {
+        this.logger.error('Mail not delivered; not retrying', {
           emailTemplateType: payload.mail.emailTemplateType,
+          status: result.status,
           error: lastError,
           attempt,
         });
@@ -144,6 +164,13 @@ export class MailConsumer {
           BASE_BACKOFF_MS * 2 ** (attempt - 1),
           MAX_BACKOFF_MS,
         );
+        if (giveUpAt - Date.now() - delay < MIN_ATTEMPT_MS) {
+          this.logger.warn('Mail retry budget exhausted', {
+            emailTemplateType: payload.mail.emailTemplateType,
+            attempt,
+          });
+          break;
+        }
         this.logger.warn('Mail send failed; retrying', {
           emailTemplateType: payload.mail.emailTemplateType,
           error: lastError,
@@ -160,6 +187,27 @@ export class MailConsumer {
       attempts: attempt,
     });
     await this.notifyFailure(payload, lastError);
+  }
+
+  private withPasswordResetLink(payload: MailEventPayload): MailBody {
+    const target = payload.passwordResetLinkFor;
+    if (!target) {
+      return payload.mail;
+    }
+    const config = this.getAppConfig();
+    return {
+      ...payload.mail,
+      templateData: {
+        ...payload.mail.templateData,
+        link: newAccountPasswordLink(
+          config.frontendUrl,
+          target.email,
+          target.userId,
+          target.orgId,
+          config.scopedJwtSecret,
+        ),
+      },
+    };
   }
 
   /** Drops idle orgs so the throttle map cannot grow without bound. */

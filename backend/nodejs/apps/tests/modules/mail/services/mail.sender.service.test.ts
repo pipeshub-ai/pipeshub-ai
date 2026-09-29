@@ -144,4 +144,79 @@ describe('MailSenderService', () => {
       clock.restore();
     }
   });
+
+  it('records the org on the audit entry', async () => {
+    let savedOrgId: unknown;
+    (MailModel.prototype.save as sinon.SinonStub).callsFake(function (this: any) {
+      savedOrgId = this.orgId?.toString();
+      return Promise.resolve(this);
+    });
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+    await sender.send({ ...body, orgId: '507f1f77bcf86cd799439012' }, smtp);
+
+    expect(savedOrgId).to.equal('507f1f77bcf86cd799439012');
+  });
+
+  it('fails fast after repeated connection failures, then probes again after the cooldown', async () => {
+    const clock = sinon.useFakeTimers();
+    try {
+      sendMailStub.rejects(Object.assign(new Error('connect ECONNREFUSED'), {
+        code: 'ECONNECTION',
+      }));
+      const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+      for (let i = 0; i < 5; i++) {
+        expect((await sender.send(body, smtp)).status).to.equal('transient');
+      }
+      const tripped = await sender.send(body, smtp);
+      expect(tripped.status).to.equal('unavailable');
+      expect(sendMailStub.callCount).to.equal(5);
+
+      await clock.tickAsync(60_000 + 1);
+      sendMailStub.resolves({ messageId: 'm2' });
+      expect((await sender.send(body, smtp)).status).to.equal('sent');
+      expect(sendMailStub.callCount).to.equal(6);
+    } finally {
+      clock.restore();
+    }
+  });
+
+  it('does not trip the circuit on per-message rejections', async () => {
+    sendMailStub.rejects(Object.assign(new Error('550 rejected'), {
+      responseCode: 550,
+    }));
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+    for (let i = 0; i < 10; i++) {
+      await sender.send(body, smtp);
+    }
+
+    expect(sendMailStub.callCount).to.equal(10);
+  });
+
+  it('lets the old pool finish in-flight sends before closing it on an SMTP change', async () => {
+    let finishOldSend!: () => void;
+    const oldClose = sinon.stub();
+    const createTransport = nodemailer.createTransport as sinon.SinonStub;
+    createTransport.onFirstCall().returns({
+      sendMail: sinon.stub().returns(
+        new Promise((resolve) => {
+          finishOldSend = () => resolve({ messageId: 'old' });
+        }),
+      ),
+      close: oldClose,
+    } as any);
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+    const inFlight = sender.send(body, smtp);
+    await sender.send(body, { ...smtp, host: 'new-host' });
+
+    // Closing now would abort the old send mid-DATA and invite a duplicate retry.
+    expect(oldClose.called).to.be.false;
+
+    finishOldSend();
+    expect((await inFlight).status).to.equal('sent');
+    expect(oldClose.calledOnce).to.be.true;
+  });
 });

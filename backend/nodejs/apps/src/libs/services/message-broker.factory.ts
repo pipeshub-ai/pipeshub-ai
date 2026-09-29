@@ -20,6 +20,7 @@ import {
   RedisStreamsAdminService,
 } from './redis-streams.service';
 import { AppConfig } from '../../modules/tokens_manager/config/config';
+import { MAIL_CONSUMER_LIVENESS_MS } from '../../modules/mail/types/mail-event.types';
 import { loadMessagingEnv } from '../config/messaging.env';
 import { MESSAGING_ERRORS } from '../constants/messaging.constants';
 
@@ -239,6 +240,8 @@ export function createMailMessageConsumer(
       ...resolved.kafka,
       clientId: MAIL_CLIENT_ID,
       groupId: MAIL_CONSUMER_GROUP,
+      sessionTimeout: MAIL_CONSUMER_LIVENESS_MS,
+      rebalanceTimeout: MAIL_CONSUMER_LIVENESS_MS,
     };
     return createMessageConsumerByParts(
       MessageBrokerType.KAFKA,
@@ -247,10 +250,13 @@ export function createMailMessageConsumer(
       logger,
     );
   }
-  const redis = buildRedisBrokerConfig(appConfig.redis, {
-    clientId: MAIL_CLIENT_ID,
-    groupId: MAIL_CONSUMER_GROUP,
-  });
+  const redis: RedisBrokerConfig = {
+    ...buildRedisBrokerConfig(appConfig.redis, {
+      clientId: MAIL_CLIENT_ID,
+      groupId: MAIL_CONSUMER_GROUP,
+    }),
+    claimMinIdleMs: MAIL_CONSUMER_LIVENESS_MS,
+  };
   return createMessageConsumerByParts(
     MessageBrokerType.REDIS,
     undefined,

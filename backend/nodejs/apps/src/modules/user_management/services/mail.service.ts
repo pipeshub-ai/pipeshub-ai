@@ -4,8 +4,12 @@ import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { MailProducer } from '../../mail/services/mail.producer';
-import { MailEventType } from '../../mail/types/mail-event.types';
+import {
+  MailEventType,
+  PasswordResetLinkTarget,
+} from '../../mail/types/mail-event.types';
 import { MailBody } from '../../mail/middlewares/types';
+import { newAccountPasswordLink } from '../../../libs/utils/createJwt';
 interface SendMailParams {
   emailTemplateType: string;
   initiator: { orgId?: string; jwtAuthToken: string };
@@ -16,6 +20,8 @@ interface SendMailParams {
   attachedDocuments?: any[];
   ccEmails?: string[];
   deliverAsync?: boolean;
+  /** Fills `templateData.link` with a set-password link, minted at send time. */
+  passwordResetLinkFor?: PasswordResetLinkTarget;
 }
 
 const SEND_MAIL_TIMEOUT_MS = 30_000;
@@ -43,6 +49,7 @@ export class MailService {
     attachedDocuments,
     ccEmails,
     deliverAsync,
+    passwordResetLinkFor,
   }: SendMailParams): Promise<SendMailResponse> {
     try {
       this.logger.debug('sending mail ...');
@@ -79,11 +86,24 @@ export class MailService {
         await this.mailProducer.publishEvent({
           eventType: MailEventType.SendMailEvent,
           timestamp: Date.now(),
-          payload: { mail: data, orgId: initiator.orgId },
+          payload: { mail: data, orgId: initiator.orgId, passwordResetLinkFor },
         });
         return {
           statusCode: 200,
           data: { message: 'Email queued for delivery', queued: true },
+        };
+      }
+
+      if (passwordResetLinkFor) {
+        data.templateData = {
+          ...data.templateData,
+          link: newAccountPasswordLink(
+            this.userConfig.frontendUrl,
+            passwordResetLinkFor.email,
+            passwordResetLinkFor.userId,
+            passwordResetLinkFor.orgId,
+            this.userConfig.scopedJwtSecret,
+          ),
         };
       }
 

@@ -1229,6 +1229,8 @@
         "send": "发送邀请",
         "successTitle": "邀请已发送！",
         "successDescription": "已向 {{email}} 发出邀请",
+        "queuedTitle": "邀请已加入队列",
+        "queuedDescription": "正在后台向 {{email}} 发送邮件。如有邮件无法送达，您将收到通知。",
         "invalidEmail": "电子邮件地址无效",
         "errorGeneric": "发送邀请失败",
         "importNoEmails": "文件中未找到电子邮件地址",

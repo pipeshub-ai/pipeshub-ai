@@ -8,6 +8,7 @@ import { getEmailContent } from '../utils/email-content';
 import {
   classifyMailError,
   MailSendResult,
+  SMTP_CONNECTION_ERROR_CODES,
   SMTP_DEADLINE_ERROR_CODE,
 } from '../types/mail-event.types';
 
@@ -19,11 +20,37 @@ export const SMTP_SEND_DEADLINE_MS = 120_000;
 export const SMTP_SYNC_SEND_DEADLINE_MS = 25_000;
 const SMTP_POOL_MAX_CONNECTIONS = 5;
 const SMTP_POOL_MAX_MESSAGES = 100;
+export const SMTP_CIRCUIT_FAILURE_THRESHOLD = 5;
+export const SMTP_CIRCUIT_COOLDOWN_MS = 60_000;
+
+interface PooledTransport {
+  key: string;
+  transporter: nodemailer.Transporter;
+  inFlight: number;
+}
+
+function smtpConfigKey(smtpConfig: SmtpConfig): string {
+  return JSON.stringify([
+    smtpConfig.host,
+    smtpConfig.port,
+    smtpConfig.username,
+    smtpConfig.password,
+  ]);
+}
+
+function errorCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
 
 /** SMTP delivery, shared by the HTTP route and the broker consumer. */
 @injectable()
 export class MailSenderService {
-  private pooled?: { key: string; transporter: nodemailer.Transporter };
+  private pooled?: PooledTransport;
+  // Replaced pools keep running until their in-flight sends settle: closing
+  // one mid-DATA looks like a transient failure and the retry duplicates it.
+  private readonly draining = new Set<PooledTransport>();
+  private circuit = { key: '', failures: 0, openUntil: 0 };
 
   constructor(
     // Resolved per call: an SMTP update rebinds AppConfig, and this outlives it.
@@ -39,21 +66,22 @@ export class MailSenderService {
 
   /** Releases pooled SMTP connections so shutdown is not held open. */
   close(): void {
-    this.discardTransporter();
+    for (const pool of [this.pooled, ...this.draining]) {
+      if (pool) this.closeQuietly(pool.transporter);
+    }
+    this.draining.clear();
+    this.pooled = undefined;
   }
 
-  private getTransporter(smtpConfig: SmtpConfig): nodemailer.Transporter {
-    const key = JSON.stringify([
-      smtpConfig.host,
-      smtpConfig.port,
-      smtpConfig.username,
-      smtpConfig.password,
-    ]);
+  private getTransporter(smtpConfig: SmtpConfig): PooledTransport {
+    const key = smtpConfigKey(smtpConfig);
     if (this.pooled?.key === key) {
-      return this.pooled.transporter;
+      return this.pooled;
     }
 
-    this.discardTransporter();
+    if (this.pooled) {
+      this.retire(this.pooled);
+    }
     const transporter = nodemailer.createTransport({
       host: smtpConfig.host,
       port: smtpConfig.port || 587,
@@ -71,27 +99,72 @@ export class MailSenderService {
           ? { auth: { user: smtpConfig.username, pass: smtpConfig.password } }
           : { auth: { user: smtpConfig.username } }),
     });
-    this.pooled = { key, transporter };
-    return transporter;
+    this.pooled = { key, transporter, inFlight: 0 };
+    return this.pooled;
   }
 
-  private discardTransporter(): void {
+  private retire(pool: PooledTransport): void {
+    if (pool.inFlight === 0) {
+      this.closeQuietly(pool.transporter);
+    } else {
+      this.draining.add(pool);
+    }
+  }
+
+  private closeQuietly(transporter: nodemailer.Transporter): void {
     try {
-      this.pooled?.transporter.close();
+      transporter.close();
     } catch {
     }
-    this.pooled = undefined;
+  }
+
+  private onSendSettled(pool: PooledTransport): void {
+    pool.inFlight -= 1;
+    if (pool.inFlight === 0 && this.draining.delete(pool)) {
+      this.closeQuietly(pool.transporter);
+    }
+  }
+
+  private circuitOpenUntil(key: string): number | null {
+    if (this.circuit.key !== key) {
+      this.circuit = { key, failures: 0, openUntil: 0 };
+    }
+    return Date.now() < this.circuit.openUntil ? this.circuit.openUntil : null;
+  }
+
+  private recordConnectionFailure(key: string): void {
+    if (this.circuit.key !== key) return;
+    this.circuit.failures += 1;
+    // Past the threshold every failure re-opens, so a failed probe after the
+    // cooldown trips straight back instead of needing N more failures.
+    if (this.circuit.failures >= SMTP_CIRCUIT_FAILURE_THRESHOLD) {
+      this.circuit.openUntil = Date.now() + SMTP_CIRCUIT_COOLDOWN_MS;
+      this.logger.error('SMTP server unreachable; pausing sends', {
+        consecutiveFailures: this.circuit.failures,
+        cooldownMs: SMTP_CIRCUIT_COOLDOWN_MS,
+      });
+    }
+  }
+
+  private recordSuccess(key: string): void {
+    if (this.circuit.key === key) {
+      this.circuit.failures = 0;
+      this.circuit.openUntil = 0;
+    }
   }
 
   private async sendWithDeadline(
-    transporter: nodemailer.Transporter,
+    pool: PooledTransport,
     message: Parameters<nodemailer.Transporter['sendMail']>[0],
     deadlineMs: number,
   ): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     // Keep a handle: Promise.race does not cancel sendMail, and a consumer
     // retry while it is still running can deliver the same email twice.
-    const sendPromise = transporter.sendMail(message);
+    pool.inFlight += 1;
+    const sendPromise = pool.transporter
+      .sendMail(message)
+      .finally(() => this.onSendSettled(pool));
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         reject(
@@ -106,10 +179,7 @@ export class MailSenderService {
     try {
       await Promise.race([sendPromise, deadline]);
     } catch (error) {
-      const timedOut =
-        error instanceof Error &&
-        (error as { code?: string }).code === SMTP_DEADLINE_ERROR_CODE;
-      if (timedOut) {
+      if (errorCode(error) === SMTP_DEADLINE_ERROR_CODE) {
         void sendPromise.then(
           () =>
             this.logger.warn(
@@ -150,6 +220,15 @@ export class MailSenderService {
       return { status: 'permanent', error: message };
     }
 
+    const key = smtpConfigKey(smtpConfig);
+    const openUntil = this.circuitOpenUntil(key);
+    if (openUntil !== null) {
+      return {
+        status: 'unavailable',
+        error: `SMTP server unreachable; sending paused until ${new Date(openUntil).toISOString()}`,
+      };
+    }
+
     try {
       await this.sendWithDeadline(
         this.getTransporter(smtpConfig),
@@ -163,10 +242,12 @@ export class MailSenderService {
         },
         deadlineMs,
       );
+      this.recordSuccess(key);
 
       // Already delivered: a failed audit write must not trigger a duplicate send.
       try {
         const mailEntry = new MailModel({
+          orgId: bodyData.orgId,
           subject: bodyData.subject,
           from: smtpConfig.fromEmail,
           to: bodyData.sendEmailTo,
@@ -191,10 +272,11 @@ export class MailSenderService {
           : typeof error === 'string'
             ? error
             : 'Failed to send email';
-      if (
-        error instanceof Error &&
-        (error as { code?: string }).code === SMTP_DEADLINE_ERROR_CODE
-      ) {
+      const code = errorCode(error);
+      if (code && SMTP_CONNECTION_ERROR_CODES.has(code)) {
+        this.recordConnectionFailure(key);
+      }
+      if (code === SMTP_DEADLINE_ERROR_CODE) {
         this.logger.error('Mail send deadline exceeded; not retrying', {
           error: message,
         });

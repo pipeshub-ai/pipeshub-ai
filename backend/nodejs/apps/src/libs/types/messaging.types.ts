@@ -70,6 +70,9 @@ export interface RedisBrokerConfig extends MessageBrokerConfig {
   password?: string;
   db?: number;
   maxLen?: number;
+  // A pending entry idle this long is reclaimed by another consumer; it must
+  // exceed the longest handler run or in-progress messages get replayed.
+  claimMinIdleMs?: number;
 }
 
 export interface StreamMessage<T> {

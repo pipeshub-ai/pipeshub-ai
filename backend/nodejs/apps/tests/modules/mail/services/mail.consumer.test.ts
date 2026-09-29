@@ -61,6 +61,11 @@ describe('MailConsumer - asynchronous mail delivery', () => {
       mockLogger,
       mockSender,
       mockNotificationProducer,
+      () =>
+        ({
+          frontendUrl: 'http://app.test',
+          scopedJwtSecret: 'scoped-secret',
+        }) as any,
     );
   });
 
@@ -123,6 +128,54 @@ describe('MailConsumer - asynchronous mail delivery', () => {
 
     expect(mockSender.send.callCount).to.equal(4);
     expect(mockNotificationProducer.publishEvent.calledOnce).to.be.true;
+  });
+
+  it('does not run the retry ladder while the SMTP circuit is open', async () => {
+    mockSender.send.resolves({
+      status: 'unavailable',
+      error: 'SMTP server unreachable; sending paused',
+    });
+
+    await deliver(payload());
+
+    expect(mockSender.send.callCount).to.equal(1);
+    expect(mockNotificationProducer.publishEvent.calledOnce).to.be.true;
+  });
+
+  it('stops retrying once the per-message budget is spent, so the broker never sees a stuck handler', async () => {
+    // Each attempt burns a full 40s connection timeout.
+    mockSender.send.callsFake(async () => {
+      clock.tick(40_000);
+      return { status: 'transient', error: 'ETIMEDOUT' };
+    });
+
+    await runWithFakeTimers(deliver(payload()));
+
+    expect(mockSender.send.callCount).to.equal(2);
+    for (const call of mockSender.send.getCalls()) {
+      expect(call.args[2]).to.be.at.most(90_000);
+    }
+    expect(mockNotificationProducer.publishEvent.calledOnce).to.be.true;
+  });
+
+  it('mints the set-password link at send time instead of carrying it in the event', async () => {
+    const event = payload({
+      mail: { ...payload().mail, templateData: { orgName: 'Acme' } },
+      passwordResetLinkFor: {
+        userId: 'u1',
+        orgId: '507f1f77bcf86cd799439012',
+        email: 'user@example.com',
+      },
+    });
+
+    await deliver(event);
+
+    const sent = mockSender.send.firstCall.args[0];
+    expect(sent.templateData.orgName).to.equal('Acme');
+    expect(sent.templateData.link).to.match(
+      /^http:\/\/app\.test\/reset-password#token=.+/,
+    );
+    expect((event.mail as any).templateData).to.not.have.property('link');
   });
 
   it('does not attempt delivery when SMTP is unconfigured', async () => {

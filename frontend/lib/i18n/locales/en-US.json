@@ -1231,6 +1231,8 @@
         "send": "Send Invite",
         "successTitle": "Invite sent!",
         "successDescription": "{{email}} has been invited",
+        "queuedTitle": "Invites queued",
+        "queuedDescription": "Emails to {{email}} are being sent in the background. You'll get a notification if any can't be delivered.",
         "invalidEmail": "Invalid email address",
         "errorGeneric": "Failed to send invite",
         "importNoEmails": "No email addresses found in the file",
