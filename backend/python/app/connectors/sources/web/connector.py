@@ -72,12 +72,14 @@ from app.models.entities import (
     RecordType,
     User,
 )
+from app.connectors.sources.web.address_guard import create_guarded_session, is_unsafe_url
 from app.connectors.sources.web.fetch_strategy import (
     MAX_RATE_LIMIT_BACKOFF,
     FetchResponse,
     build_stealth_headers,
     fetch_url_with_fallback,
     too_many_redirects_response,
+    unsafe_address_response,
 )
 from app.connectors.sources.web.crawl4ai_fetcher import Crawl4AIFetcher, FetchResult, get_shared_fetcher, release_shared_fetcher, resolve_fetch_status_code
 from app.connectors.sources.web.robots import RobotsRules
@@ -177,6 +179,7 @@ TOO_MANY_REDIRECTS_REASON = (
     "This page redirects too many times, so it couldn't be fetched. "
     "Check the address in a browser, then sync again."
 )
+UNSAFE_ADDRESS_REASON = "This address is on a private or internal network, so it wasn't fetched."
 ROBOTS_MAX_BYTES = 512 * 1024
 
 DOCUMENT_MIME_TYPES = {
@@ -484,7 +487,7 @@ class WebConnector(BaseConnector):
 
             # Initialize aiohttp session with realistic browser headers
             timeout = aiohttp.ClientTimeout(total=30)
-            self.session = aiohttp.ClientSession(
+            self.session = create_guarded_session(
                 timeout=timeout,
                 headers={
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -1406,7 +1409,7 @@ class WebConnector(BaseConnector):
         # headless won't change the answer.
         if result.status_code in {404, 405, 410, 413}:
             return False
-        if result.headers.get("X-Fetch-Skip-Reason") == "too_many_redirects":
+        if result.headers.get("X-Fetch-Skip-Reason") in {"too_many_redirects", "unsafe_address"}:
             return False  # the browser would follow the same chain, without checking each hop
         return True  # Bot-block, rate-limit, or server error — try headless
 
@@ -1769,6 +1772,8 @@ class WebConnector(BaseConnector):
         if probed[1] == PROBE_UNENDING:
             return too_many_redirects_response(url)
         landing = probed[0]
+        if await is_unsafe_url(landing):
+            return unsafe_address_response(landing)
         return self._out_of_scope_response(landing) if self._outside_crawl(landing) else self._robots_skip_response(landing)
 
     @staticmethod
@@ -1913,6 +1918,8 @@ class WebConnector(BaseConnector):
         if self.session is None:
             return None
         for _ in range(MAX_PROBE_REDIRECTS + 1):
+            if await is_unsafe_url(url):
+                return url, 0, None  # never requested: not a public address
             try:
                 status, location, content_type = await self._probe_hop("HEAD", url)
             except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
@@ -2004,6 +2011,7 @@ class WebConnector(BaseConnector):
                 reason = (
                     self._too_large_reason() if skip == "max_size_exceeded"
                     else TOO_MANY_REDIRECTS_REASON if skip == "too_many_redirects"
+                    else UNSAFE_ADDRESS_REASON if skip == "unsafe_address"
                     else None
                 )
                 self._record_final_failure(
@@ -3111,8 +3119,8 @@ class WebConnector(BaseConnector):
                 token = await self._get_storage_token()
                 download_endpoint = f"{storage_url}/api/v1/document/internal/{record.storage_document_id}/download"
 
-                owned_session = self.session is None
-                session = self.session or aiohttp.ClientSession()
+                # Not self.session: the storage service is internal, which the crawl's session refuses.
+                session = aiohttp.ClientSession()
                 try:
                     async with session.get(
                         download_endpoint,
@@ -3126,8 +3134,7 @@ class WebConnector(BaseConnector):
                                 if signed_url:
                                     return signed_url
                 finally:
-                    if owned_session:
-                        await session.close()
+                    await session.close()
             except Exception as e:
                 self.logger.warning("Failed to get storage signed URL for record %s: %s", record.id, e)
 

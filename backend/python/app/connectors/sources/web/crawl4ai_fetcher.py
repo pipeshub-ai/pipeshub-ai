@@ -16,6 +16,26 @@ from crawl4ai.async_dispatcher import SemaphoreDispatcher
 from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
 from crawl4ai.browser_adapter import UndetectedAdapter
 
+from app.connectors.sources.web.address_guard import is_unsafe_url
+
+
+async def _continue_if_safe(route: Any) -> None:
+    url = route.request.url
+    if url.startswith(("http://", "https://")) and await is_unsafe_url(url):
+        await route.abort("blockedbyclient")
+    else:
+        await route.continue_()
+
+
+async def _refuse_unsafe_requests(page: Any, context: Any, **_: Any) -> Any:
+    """Chromium resolves and connects on its own, so every request it makes (subresources, script
+    navigations) is checked here and aborted if its host isn't a public address. Playwright doesn't
+    route a redirect's later hops; the connector walks a page's redirects before the browser loads it."""
+    if not getattr(context, "_pipeshub_address_guard", False):
+        context._pipeshub_address_guard = True
+        await context.route("**/*", _continue_if_safe)
+    return page
+
 
 class _SharedSemaphoreDispatcher(SemaphoreDispatcher):
     """SemaphoreDispatcher that uses an externally-owned semaphore.
@@ -332,6 +352,7 @@ for (const p of __panels) {
             browser_config=self._browser_config,
             browser_adapter=UndetectedAdapter(),
         )
+        strategy.set_hook("on_page_context_created", _refuse_unsafe_requests)
         crawler = AsyncWebCrawler(crawler_strategy=strategy)
         await crawler.start()
         return crawler

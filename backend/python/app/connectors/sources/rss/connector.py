@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.connectors.core.constants import IconPaths
+from app.connectors.sources.web.address_guard import create_guarded_session
 from app.connectors.sources.web.fetch_strategy import (
     FetchResponse,
     fetch_url_with_fallback,
@@ -209,7 +210,7 @@ class RSSConnector(BaseConnector):
 
             # Initialize aiohttp session with realistic browser headers
             timeout = aiohttp.ClientTimeout(total=30)
-            self.session = aiohttp.ClientSession(
+            self.session = create_guarded_session(
                 timeout=timeout,
                 headers={
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",

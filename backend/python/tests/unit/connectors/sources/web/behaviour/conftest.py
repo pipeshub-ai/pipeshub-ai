@@ -14,6 +14,9 @@ import pytest
 from aiohttp import web
 from web_behaviour_fakes import (
     CONNECTOR_ID,
+    INTRANET_ADDRESS,
+    INTRANET_HOST,
+    SITE_ADDRESS,
     START_URL,
     FakeCheckpointStore,
     FakeConfigService,
@@ -28,7 +31,7 @@ from web_behaviour_fakes import (
 )
 
 from app.connectors.sources.web import connector as connector_module
-from app.connectors.sources.web import crawl4ai_fetcher, fetch_strategy
+from app.connectors.sources.web import address_guard, crawl4ai_fetcher, fetch_strategy
 from app.connectors.sources.web.connector import WebConnector
 
 
@@ -52,6 +55,12 @@ def no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+
+    def resolve_to_fake_site(host: str, port: object, *args: object, **kwargs: object) -> list[tuple]:
+        address = INTRANET_ADDRESS if host == INTRANET_HOST else SITE_ADDRESS
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve_to_fake_site)
     # As if curl_cffi and cloudscraper were not installed: the aiohttp strategy serves every fetch.
     monkeypatch.setattr(fetch_strategy, "_CURL_PROFILES", [])
     monkeypatch.setitem(sys.modules, "cloudscraper", None)
@@ -78,7 +87,14 @@ async def site(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
 
     real_session = aiohttp.ClientSession
 
+    async def resolve_as_guarded(request: aiohttp.ClientRequest, handler: aiohttp.ClientHandlerType) -> aiohttp.ClientResponse:
+        await address_guard.resolve_target(str(request.url))
+        return await handler(request)
+
     def session_on_fake_web(*args: object, **kwargs: object) -> aiohttp.ClientSession:
+        if isinstance(kwargs.get("connector"), aiohttp.TCPConnector):
+            # The Unix socket skips the guarded session's resolver, so make its check here.
+            kwargs["middlewares"] = (*kwargs.get("middlewares", ()), resolve_as_guarded)
         kwargs["connector"] = aiohttp.UnixConnector(path=sock_path)
         return real_session(*args, **kwargs)  # type: ignore[arg-type]
 
@@ -94,7 +110,7 @@ async def site(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
 async def browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
     """crawl4ai's browser renders from the fake websites; the shared fetcher starts fresh."""
     monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", browser_crawler_class(site))
-    monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(**kw))
+    monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(set_hook=lambda *_: None, **kw))
     monkeypatch.setattr(crawl4ai_fetcher, "UndetectedAdapter", lambda: SimpleNamespace())
     monkeypatch.setattr(crawl4ai_fetcher, "_shared_instance", None)
     monkeypatch.setattr(crawl4ai_fetcher, "_ref_count", 0)
