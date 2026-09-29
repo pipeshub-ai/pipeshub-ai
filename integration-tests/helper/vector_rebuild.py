@@ -22,10 +22,12 @@ is empty.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import redis
 import requests
 
 from pipeshub_client import PipeshubClient
@@ -37,6 +39,16 @@ VECTOR_STORE_JOB_PATH = "/api/v1/connectors/vector-store/{operation}"
 EMBEDDING_MODELS_PATH = "/api/v1/configurationManager/ai-models/embedding"
 PROVIDERS_PATH = "/api/v1/configurationManager/ai-models/providers"
 DEFAULT_MODEL_PATH = "/api/v1/configurationManager/ai-models/default/embedding/{model_key}"
+MODEL_USAGE_PATH = "/api/v1/agents/model-usage/{model_key}"
+
+# rebuild_state.JOB_LOCK_KEY: held by a cleanup or reindex job until it has
+# published every record, then released.
+REBUILD_LOCK_KEY = "vector_store_rebuild:job"
+
+# vector_store_rebuild._is_folder_record: folders are never indexed, so the
+# product's own busy gate ignores them too.
+FOLDER_MIME_TYPES = frozenset({"text/directory", "application/vnd.google-apps.folder"})
+IN_FLIGHT_STATUSES = ("QUEUED", "IN_PROGRESS")
 
 # The model the product ships as "Default (System Provided)". It is baked into
 # the image (Dockerfile.base, BUNDLE_BGE_EMBEDDING), so the local embedding
@@ -45,6 +57,10 @@ DEFAULT_MODEL_PATH = "/api/v1/configurationManager/ai-models/default/embedding/{
 LOCAL_MODEL_PROVIDER = "default"
 LOCAL_MODEL_NAME = "BAAI/bge-large-en-v1.5"
 LOCAL_MODEL_DIMENSION = 1024
+
+# Removing the default model while the store holds its vectors is refused with
+# this, once the product guards that path.
+DELETE_REFUSED_PHRASE = "embedding your indexed content"
 
 # The first request to the local model loads it on CPU, and the health check
 # that runs on every model change embeds a sample with it.
@@ -226,3 +242,48 @@ def set_default_embedding_model(client: PipeshubClient, model_key: str) -> reque
 
 def delete_embedding_model(client: PipeshubClient, model_key: str) -> requests.Response:
     return client.request("DELETE", f"{PROVIDERS_PATH}/embedding/{model_key}")
+
+
+def agents_using_model(client: PipeshubClient, model_key: str) -> list[Any]:
+    resp = client.request("GET", MODEL_USAGE_PATH.format(model_key=model_key))
+    assert resp.status_code == 200, (
+        f"Could not read which agents use model {model_key}: "
+        f"HTTP {resp.status_code} {error_message(resp)}"
+    )
+    agents = (resp.json() or {}).get("agents")
+    assert isinstance(agents, list), f"Model usage answered without an agents list: {resp.text[:300]}"
+    return agents
+
+
+def rebuild_lock_held() -> bool:
+    """Whether a Labs cleanup or reindex job still holds its lock, read from Redis."""
+    client = redis.Redis(
+        host=os.getenv("REDIS_HOST", "localhost"),
+        port=int(os.getenv("REDIS_PORT", "6379")),
+        password=os.getenv("REDIS_PASSWORD") or None,
+        socket_timeout=10,
+    )
+    try:
+        return bool(client.exists(REBUILD_LOCK_KEY))
+    finally:
+        client.close()
+
+
+async def records_in_flight(graph_provider: Any, *, sample: int = 5, page_size: int = 100) -> list[dict[str, Any]]:
+    """Up to ``sample`` non-folder records, in any org, still queued or being indexed."""
+    found: list[dict[str, Any]] = []
+    for status in IN_FLIGHT_STATUSES:
+        skip = 0
+        while len(found) < sample:
+            page = await graph_provider.get_documents_paginated(
+                "records",
+                skip=skip,
+                limit=page_size,
+                filters={"indexingStatus": status},
+                raise_on_error=True,
+            )
+            found.extend(r for r in page if r.get("mimeType") not in FOLDER_MIME_TYPES)
+            if len(page) < page_size:
+                break
+            skip += page_size
+    return found[:sample]

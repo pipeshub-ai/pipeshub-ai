@@ -8,6 +8,7 @@ every upload when the product is still indexing.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from unittest.mock import MagicMock
@@ -100,3 +101,29 @@ def test_a_409_that_outlasts_the_wait_is_returned_for_the_caller_to_report(monke
 
     assert resp.status_code == 409
     assert error_message(resp) == "queued"
+
+
+class _Graph:
+    """Answers get_documents_paginated from a fixed list of records per status."""
+
+    def __init__(self, by_status: dict[str, list[dict[str, Any]]]) -> None:
+        self._by_status = by_status
+
+    async def get_documents_paginated(self, collection, skip=0, limit=50, filters=None, **_kw):
+        assert collection == "records"
+        rows = self._by_status.get((filters or {}).get("indexingStatus"), [])
+        return rows[skip : skip + limit]
+
+
+def test_in_flight_records_skip_folders_and_page_past_them() -> None:
+    folders = [{"_key": f"f{i}", "mimeType": "text/directory"} for i in range(3)]
+    graph = _Graph({"QUEUED": [*folders, {"_key": "r1", "mimeType": "text/markdown"}], "IN_PROGRESS": [{"_key": "r2"}]})
+
+    found = asyncio.run(vector_rebuild.records_in_flight(graph, page_size=2))
+
+    assert [r["_key"] for r in found] == ["r1", "r2"]
+
+
+def test_only_folders_in_flight_counts_as_idle() -> None:
+    graph = _Graph({"QUEUED": [{"_key": "f", "mimeType": "application/vnd.google-apps.folder"}]})
+    assert asyncio.run(vector_rebuild.records_in_flight(graph)) == []

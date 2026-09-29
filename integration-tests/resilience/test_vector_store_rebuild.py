@@ -46,6 +46,7 @@ import pytest_asyncio
 from helper.clients.kb_client import KBClient
 from helper.indexing_progress import record_fields, wait_until_finished
 from helper.vector_rebuild import (
+    DELETE_REFUSED_PHRASE,
     LOCAL_MODEL_DIMENSION,
     LOCAL_MODEL_NAME,
     MODEL_CHANGE_REFUSED,
@@ -53,6 +54,7 @@ from helper.vector_rebuild import (
     EmbeddingModel,
     PlatformSettings,
     add_local_embedding_model,
+    agents_using_model,
     default_model,
     delete_embedding_model,
     error_message,
@@ -60,6 +62,8 @@ from helper.vector_rebuild import (
     model_key_from_add,
     post_vector_store_job,
     read_platform_settings,
+    rebuild_lock_held,
+    records_in_flight,
     set_default_embedding_model,
     set_rebuild_flag,
     start_vector_store_job,
@@ -242,7 +246,33 @@ async def _recreate_all_embeddings(
     return final
 
 
-async def _restore(journey: Journey, pipeshub_client, kb_client, vector_store) -> None:
+async def _wait_until_deployment_idle(graph_provider) -> None:
+    """Block until no Labs job holds the lock and no record anywhere is queued or indexing.
+
+    The Labs reindex re-embeds every record in the org, not only this module's,
+    and the suites that run next on this stack (storage repoints blob storage)
+    must not start while it is still reading from blob storage.
+    """
+    deadline = asyncio.get_event_loop().time() + TIMEOUT
+    while True:
+        locked = rebuild_lock_held()
+        busy = await records_in_flight(graph_provider)
+        if not locked and not busy:
+            return
+        if asyncio.get_event_loop().time() >= deadline:
+            shown = [
+                {k: r.get(k) for k in ("_key", "recordName", "connectorId", "indexingStatus")}
+                for r in busy
+            ]
+            raise AssertionError(
+                f"The deployment was still busy {TIMEOUT}s after the Labs reindex began "
+                f"(rebuild lock held: {locked}; records still queued or indexing, first "
+                f"{len(shown)}: {shown}). The next suites on this stack cannot start safely."
+            )
+        await asyncio.sleep(POLL)
+
+
+async def _restore(journey: Journey, pipeshub_client, kb_client, vector_store, graph_provider) -> None:
     """Put back the default model, the collection size, the vectors and the flag.
 
     Every model change needs an empty store, so the store is emptied first; the
@@ -272,6 +302,7 @@ async def _restore(journey: Journey, pipeshub_client, kb_client, vector_store) -
         await _delete_all_embeddings(pipeshub_client, vector_store, journey.org_id)
 
     await _recreate_all_embeddings(pipeshub_client, kb_client, vector_store, journey.documents)
+    await _wait_until_deployment_idle(graph_provider)
     write_platform_settings(
         pipeshub_client,
         read_platform_settings(pipeshub_client).with_flag(
@@ -282,7 +313,7 @@ async def _restore(journey: Journey, pipeshub_client, kb_client, vector_store) -
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
-async def journey(pipeshub_client, kb_client: KBClient, vector_store, blob_store, mongo_store):
+async def journey(pipeshub_client, kb_client: KBClient, vector_store, blob_store, mongo_store, graph_provider):
     org_id = pipeshub_client.org_id
     settings_before = read_platform_settings(pipeshub_client)
     models_before = list_embedding_models(pipeshub_client)
@@ -319,7 +350,7 @@ async def journey(pipeshub_client, kb_client: KBClient, vector_store, blob_store
     finally:
         if not state.restored:
             try:
-                await _restore(state, pipeshub_client, kb_client, vector_store)
+                await _restore(state, pipeshub_client, kb_client, vector_store, graph_provider)
             except Exception as exc:  # noqa: BLE001 - teardown must not mask the result
                 logger.error("Could not put the org's embeddings and models back: %s", exc)
                 # Never leave the flag on for the rest of the stack's tests.
@@ -556,9 +587,25 @@ async def test_deleting_the_default_model_while_its_vectors_are_stored_is_refuse
     journey: Journey, pipeshub_client, vector_store
 ) -> None:
     journey.require("reindex_new_model")
-    resp = delete_embedding_model(pipeshub_client, journey.local_model_key or "")
+    model_key = journey.local_model_key or ""
+    # The delete is also refused (409) when an agent uses the model, which is
+    # not the refusal this test is about.
+    assert agents_using_model(pipeshub_client, model_key) == [], (
+        f"An agent uses {LOCAL_MODEL_NAME}, so its delete would be refused for that reason."
+    )
+    size_before = await vector_store.dense_size(COLLECTION)
+
+    resp = delete_embedding_model(pipeshub_client, model_key)
     if resp.status_code >= 400:
-        # Refusing is the fix; the model stays and the restore removes it.
+        message = error_message(resp)
+        still_there = any(m.model_key == model_key for m in list_embedding_models(pipeshub_client))
+        assert DELETE_REFUSED_PHRASE in message.lower(), (
+            f"Deleting the default embedding model was refused with HTTP {resp.status_code} "
+            f"({message}), but not because the vector store holds its vectors."
+        )
+        assert still_there and await vector_store.dense_size(COLLECTION) == size_before, (
+            "The delete was refused, yet the model or the collection changed anyway."
+        )
         return
     journey.local_model_key = None
     now_default = default_model(list_embedding_models(pipeshub_client))
@@ -577,9 +624,9 @@ async def test_deleting_the_default_model_while_its_vectors_are_stored_is_refuse
 
 @pytest.mark.order(10)
 async def test_the_org_is_left_with_its_original_model_and_embeddings(
-    journey: Journey, pipeshub_client, kb_client, vector_store, search_client
+    journey: Journey, pipeshub_client, kb_client, vector_store, search_client, graph_provider
 ) -> None:
-    await _restore(journey, pipeshub_client, kb_client, vector_store)
+    await _restore(journey, pipeshub_client, kb_client, vector_store, graph_provider)
 
     assert list_embedding_models(pipeshub_client) == journey.models_before
     assert await vector_store.dense_size(COLLECTION) == journey.size_before
