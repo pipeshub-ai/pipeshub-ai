@@ -416,6 +416,7 @@ export function Header({
                       disabled={createPermissionDenied}
                     >
                       <MaterialIcon name="add" size={18} color="white" />
+                      {createPermissionDenied && <PermissionLockIcon />}
                     </IconButton>
                   ) : (
                     <Button
