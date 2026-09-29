@@ -12408,6 +12408,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         transaction: str | None = None,
         cascade_children: bool = True,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
 
@@ -12445,12 +12446,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         LET rec = DOCUMENT('records', rid)
                         FILTER rec != null AND rec.isDeleted != true
                         FILTER rec.connectorId == @connector_id
+                        FILTER @folder_id == null OR LENGTH(
+                            FOR anc, edge, path IN 1..20 INBOUND rec._id @@record_relations
+                                PRUNE edge != null AND edge.relationshipType NOT IN ['PARENT_CHILD', 'ATTACHMENT']
+                                FILTER path.edges[*].relationshipType ALL IN ['PARENT_CHILD', 'ATTACHMENT']
+                                FILTER anc._key == @folder_id
+                                LIMIT 1
+                                RETURN 1
+                        ) > 0
                         RETURN rec
                 )
+                // Every edge on the path must be a containment edge. FILTER alone does not
+                // stop the walk, so without PRUNE a RELATED edge leads on to its target's children.
                 LET all_records = (
                     FOR root IN valid_roots
                         FOR v, e, p IN 0..20 OUTBOUND root._id @@record_relations
-                            FILTER LENGTH(p.edges) == 0 OR p.edges[-1].relationshipType IN """ + traversal_types + """
+                            PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
+                            FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
                             RETURN DISTINCT v
                 )
                 LET records_with_type = (
@@ -12474,6 +12486,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     bind_vars={
                         "record_ids": record_ids,
                         "connector_id": connector_id,
+                        "folder_id": within_folder_id,
                         "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                         "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                     },

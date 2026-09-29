@@ -1,6 +1,5 @@
-import asyncio
 import uuid
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
     AppGroups,
@@ -40,9 +39,6 @@ MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
 # KB folders use this mime type in the RECORDS doc (matches the legacy create_folder
 # path). Note this differs from MimeTypes.FOLDER ("text/directory").
 KB_FOLDER_MIME_TYPE = "application/vnd.folder"
-
-# Graph round trips in flight at once when checking which ids sit under a folder.
-FOLDER_MEMBERSHIP_CHECK_BATCH = 25
 
 def _mutation_succeeded(result: object) -> bool:
     """Did a graph-provider permission mutation actually succeed?
@@ -1342,16 +1338,14 @@ class KnowledgeBaseService:
                     "code": 404
                 }
 
-            # The cascade scopes only by KB, so without this filter an id from another
-            # folder (or the KB root) sent to this route would be deleted too.
-            in_folder, outside = await self._split_by_folder(folder_id, record_ids or [])
-            result = await self.processor.on_records_deleted_cascade(in_folder, kb_id)
+            # Containment is checked by the delete query itself: an id from another
+            # folder, the KB root, or moved out since the request began is kept and
+            # reported as failed.
+            result = await self.processor.on_records_deleted_cascade(
+                record_ids, kb_id, within_folder_id=folder_id
+            )
             if result and result.get("success"):
                 result.pop("eventData", None)
-                if outside:
-                    result["failed_records"] = list(result.get("failed_records") or []) + outside
-                    result["failed_count"] = result.get("failed_count", 0) + len(outside)
-                    result["total_requested"] = result.get("total_requested", 0) + len(outside)
                 # Bulk-delete best practice: none of the requested ids matched → 404.
                 # Partial success stays 200 with failed ids in failed_records.
                 if result.get("total_requested", 0) > 0 and result.get("successfully_deleted", 0) == 0:
@@ -1374,25 +1368,6 @@ class KnowledgeBaseService:
                 "reason": action_failed("delete these files"),
                 "code": 500
             }
-
-    async def _split_by_folder(
-        self, folder_id: str, record_ids: List[str]
-    ) -> Tuple[List[str], List[Dict[str, str]]]:
-        """Split ids into those under ``folder_id`` (any depth) and failure entries for the rest."""
-        unique_ids = list(dict.fromkeys(record_ids))
-        inside: List[str] = []
-        outside: List[Dict[str, str]] = []
-        for start in range(0, len(unique_ids), FOLDER_MEMBERSHIP_CHECK_BATCH):
-            batch = unique_ids[start:start + FOLDER_MEMBERSHIP_CHECK_BATCH]
-            answers = await asyncio.gather(*(
-                self.graph_provider.is_record_descendant_of(rid, folder_id) for rid in batch
-            ))
-            for rid, is_inside in zip(batch, answers):
-                if is_inside is True:
-                    inside.append(rid)
-                else:
-                    outside.append({"record_id": rid, "reason": "Not in this folder"})
-        return inside, outside
 
     async def create_kb_permissions(
         self,

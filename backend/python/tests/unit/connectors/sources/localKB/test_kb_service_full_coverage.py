@@ -876,7 +876,6 @@ class TestDeleteRecordsInFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
-        service.graph_provider.is_record_descendant_of = AsyncMock(return_value=True)
 
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
         assert result["success"] is True
@@ -912,7 +911,6 @@ class TestDeleteRecordsInFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
-        service.graph_provider.is_record_descendant_of = AsyncMock(return_value=True)
         service.processor.on_records_deleted_cascade = AsyncMock(return_value=None)
 
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
@@ -1981,7 +1979,6 @@ class TestMoveRecord:
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
         service.graph_provider.is_record_folder = AsyncMock(return_value=True)
-        service.graph_provider.is_record_descendant_of = AsyncMock(return_value=True)
 
         result = await service.move_record("kb1", "rec1", "child_folder", "user1")
         assert result["success"] is False

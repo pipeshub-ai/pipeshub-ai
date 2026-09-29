@@ -10754,6 +10754,7 @@ class Neo4jProvider(IGraphDBProvider):
         connector_id: str,
         transaction: str | None = None,
         cascade_children: bool = True,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
 
@@ -10796,6 +10797,10 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (rec:Record {id: rid})
                 WITH collect(DISTINCT CASE
                         WHEN rec IS NOT NULL AND (rec.isDeleted IS NULL OR rec.isDeleted <> true) AND rec.connectorId = $connector_id
+                             AND ($folder_id IS NULL OR EXISTS {
+                                 MATCH inside = (:Record {id: $folder_id})-[:RECORD_RELATION*1..20]->(rec)
+                                 WHERE all(rel IN relationships(inside) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+                             })
                         THEN rec ELSE null END) AS roots_raw
                 WITH [r IN roots_raw WHERE r IS NOT NULL] AS valid_roots
                 WITH valid_roots, [r IN valid_roots | r.id] AS valid_root_keys
@@ -10816,7 +10821,11 @@ class Neo4jProvider(IGraphDBProvider):
                 """
                 inv_results = await self.client.execute_query(
                     inventory_query,
-                    parameters={"record_ids": record_ids, "connector_id": connector_id},
+                    parameters={
+                        "record_ids": record_ids,
+                        "connector_id": connector_id,
+                        "folder_id": within_folder_id,
+                    },
                     txn_id=txn_id,
                 )
                 inventory = inv_results[0]["inventory"] if inv_results else {}
