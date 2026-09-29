@@ -166,7 +166,7 @@ class TestKnowledgeContextBuilder:
         flatten, graph, fk = self._patches(units, records)
         with flatten, graph, fk:
             knowledge = await KnowledgeContextBuilder(
-                blob_store=object(), graph_provider=None, org_id="o1",
+                blob_store=object(), graph_provider=None, org_id="o1", user_id="u1",
             ).build([], {}, query="q", is_multimodal_llm=False)
 
         ranks = {(u["virtual_record_id"], u["block_index"]): u[UNIT_RANK_KEY] for u in knowledge.units}
@@ -182,7 +182,7 @@ class TestKnowledgeContextBuilder:
         flatten, graph, fk = self._patches(units, records)
         with flatten, graph, fk:
             knowledge = await KnowledgeContextBuilder(
-                blob_store=object(), graph_provider=None, org_id="o1",
+                blob_store=object(), graph_provider=None, org_id="o1", user_id="u1",
             ).build([], {}, query="q", is_multimodal_llm=False)
         one_hit = len(render_knowledge(
             knowledge.units[:1], knowledge.virtual_record_id_to_result,
