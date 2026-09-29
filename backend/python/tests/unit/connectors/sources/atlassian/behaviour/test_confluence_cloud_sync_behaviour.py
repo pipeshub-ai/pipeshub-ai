@@ -36,11 +36,14 @@ from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
+    ContentListing,
 )
 from app.models.entities import (
     AppUser,
     CommentRecord,
     FileRecord,
+    RecordGroup,
+    RecordGroupType,
     RecordType,
     WebpageRecord,
 )
@@ -908,3 +911,253 @@ class TestStreamingLegacyHtmlPages:
         with pytest.raises(HTTPException):
             await connector.stream_record(stub)
         assert not api.calls("GET", f"{V2}/pages/10")
+
+
+def space_group(space_id: str, key: str) -> RecordGroup:
+    return RecordGroup(
+        name=key, short_name=key, external_group_id=space_id, group_type=RecordGroupType.CONFLUENCE_SPACES,
+        connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+    )
+
+
+def space_listing(*ids: str, cursor: str | None = None) -> dict[str, Any]:
+    links: dict[str, Any] = {"base": WIKI}
+    if cursor:
+        links["next"] = f"/wiki/api/v2/spaces/77/pages?cursor={cursor}&limit=250"
+    return {"results": [{"id": i, "status": "current", "title": f"Page {i}"} for i in ids], "_links": links}
+
+
+ENG = space_group("77", "ENG")
+
+
+class TestContentGoneFromSource:
+    """Deleted pages and pages a narrowed filter leaves out are removed; a failed read removes nothing."""
+
+    async def _two_pages_synced(self, db, checkpoints, search) -> ConfluenceConnector:
+        search.by_cursor = {None: search_page([v1_page("10"), v1_page("11", attachments=[SPEC])])}
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert {"10", "11", "att2"} <= set(db.records)
+        search.by_cursor = {None: search_page([])}
+        return connector
+
+    async def test_a_page_deleted_in_confluence_leaves_on_the_next_incremental_sync(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        page_id = db.records["11"].id
+        api.on("GET", f"{V2}/spaces/77/pages", space_listing("10"))
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert listing.full is False and listing.complete is True
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_PAGE, listing)])
+
+        assert "10" in db.records
+        assert "11" not in db.records and "att2" not in db.records, "the page and its attachment are gone"
+        assert db.cascade_deleted == [page_id]
+
+    async def test_every_page_of_the_space_listing_is_read_before_anything_is_removed(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+
+        def pages(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            return json_response(space_listing("11") if q.get("cursor") == "P2" else space_listing("10", cursor="P2"))
+
+        api.on("GET", f"{V2}/spaces/77/pages", pages)
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_PAGE, listing)])
+
+        assert {"10", "11", "att2"} <= set(db.records)
+        assert db.cascade_deleted == []
+
+    @pytest.mark.parametrize(
+        "second_page",
+        [json_response({"message": "busy"}, status=503), json_response(space_listing(cursor="P2"))],
+        ids=["later-page-fails", "cursor-comes-round-again"],
+    )
+    async def test_a_space_listing_that_stops_early_removes_nothing(
+        self, api, db, checkpoints, search, second_page
+    ) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        first = json_response(space_listing("10", cursor="P2"))
+        api.on("GET", f"{V2}/spaces/77/pages", [first, second_page])
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_PAGE, listing)])
+
+        assert {"10", "11"} <= set(db.records) and db.cascade_deleted == []
+
+    async def test_a_failed_space_listing_removes_nothing(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/pages", json_response({"message": "busy"}, status=503))
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_PAGE, listing)])
+
+        assert {"10", "11"} <= set(db.records) and db.cascade_deleted == []
+
+    async def test_a_failed_change_search_removes_nothing(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        search.by_cursor = {None: json_response({"message": "busy"}, status=503)}
+        api.on("GET", f"{V2}/spaces/77/pages", space_listing("10"))
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert listing.complete is False
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_PAGE, listing)])
+
+        assert "11" in db.records and not api.calls("GET", f"{V2}/spaces/77/pages")
+
+    async def test_a_page_moved_to_another_synced_space_is_kept(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/pages", space_listing("10"))
+        api.on("GET", f"{V2}/spaces/88/pages", space_listing("11"))
+
+        eng = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        ops = ContentListing(full=False, complete=True, seen=frozenset())
+        await connector._remove_content_gone_from_source([
+            (ENG, RecordType.CONFLUENCE_PAGE, eng), (space_group("88", "OPS"), RecordType.CONFLUENCE_PAGE, ops),
+        ])
+
+        assert "11" in db.records
+
+    async def test_a_page_a_narrowed_filter_leaves_out_is_removed_by_the_full_sync_that_follows(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        checkpoints.sync_points.clear()  # saving filters deletes the connector's sync points
+        connector.sync_filters = type(connector.sync_filters).from_dict(
+            {"page_ids": {"operator": "not_in", "type": "list", "value": ["11"]}}
+        )
+        search.queries.clear()
+        search.by_cursor = {None: search_page([v1_page("10")])}
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert listing.full is True and listing.seen == frozenset({"10"})
+        assert "NOT (id in (11)" in search.queries[0]["cql"]
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_PAGE, listing)])
+
+        assert "10" in db.records
+        assert "11" not in db.records and "att2" not in db.records
+        assert not api.calls("GET", f"{V2}/spaces/77/pages"), "a full listing needs no second read"
+
+    async def test_a_full_listing_that_fails_part_way_removes_nothing(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        checkpoints.sync_points.clear()
+        search.by_cursor = {
+            None: search_page([v1_page("10")], cursor="C2"),
+            "C2": json_response({"message": "Service Unavailable"}, status=503),
+        }
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_PAGE, listing)])
+
+        assert "11" in db.records and db.cascade_deleted == []
+
+    async def test_a_listed_page_that_fails_to_save_is_not_removed(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        checkpoints.sync_points.clear()
+        search.by_cursor = {None: search_page([v1_page("10"), v1_page("11")])}
+        db.fail_lookup_for = {"11"}
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        db.fail_lookup_for = set()
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_PAGE, listing)])
+
+        assert "11" in db.records
+
+    async def test_placeholder_ancestors_are_kept(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        db.records["5"] = WebpageRecord(
+            org_id="org-1", record_name="5", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="5",
+            external_record_group_id="77", connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, is_placeholder=True,
+        )
+        api.on("GET", f"{V2}/spaces/77/pages", space_listing("10", "11"))
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_PAGE, listing)])
+
+        assert "5" in db.records and db.cascade_deleted == []
+
+    async def test_an_unreadable_graph_removes_nothing(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/pages", space_listing("10"))
+        db.fail_record_scan = True
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_PAGE, listing)])
+
+        assert "11" in db.records and db.cascade_deleted == []
+
+    async def test_a_deleted_blog_post_is_removed_but_not_the_pages(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/blogposts", {"results": [], "_links": {"base": WIKI}})
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_BLOGPOST)
+        await connector._remove_content_gone_from_source([(ENG, RecordType.CONFLUENCE_BLOGPOST, listing)])
+
+        assert {"10", "11"} <= set(db.records), "an empty blog listing never touches pages"
+
+
+class TestSpacesOutOfScope:
+    async def _synced_in(self, db, checkpoints, search, *space_ids: str) -> ConfluenceConnector:
+        pages = [v1_page(f"{sid}0", space_id=int(sid)) for sid in space_ids]
+        search.by_cursor = {None: search_page(pages)}
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        return connector
+
+    async def test_records_of_a_space_the_filter_now_leaves_out_are_removed_once(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._synced_in(db, checkpoints, search, "77", "99")
+        connector._space_listing_complete = True
+
+        await connector._remove_spaces_out_of_scope([ENG])
+
+        assert "770" in db.records and "990" not in db.records
+        assert checkpoints.values_for("confluence_space_scope/all")["space_ids"] == ["77"]
+
+        db.cascade_deleted.clear()
+        await connector._remove_spaces_out_of_scope([ENG])
+        assert db.cascade_deleted == [], "an unchanged scope is not rescanned"
+
+    @pytest.mark.parametrize("complete", [False, True], ids=["incomplete-space-listing", "no-spaces-listed"])
+    async def test_an_incomplete_or_empty_space_listing_removes_nothing(
+        self, api, db, checkpoints, search, complete
+    ) -> None:
+        connector = await self._synced_in(db, checkpoints, search, "77", "99")
+        connector._space_listing_complete = complete
+
+        await connector._remove_spaces_out_of_scope([] if complete else [ENG])
+
+        assert {"770", "990"} <= set(db.records) and db.cascade_deleted == []
+        assert checkpoints.values_for("confluence_space_scope/all") is None
+
+    async def test_a_space_listing_that_fails_part_way_is_incomplete(self, api, db, checkpoints) -> None:
+        first = {"results": [{"id": "77", "key": "ENG", "name": "Engineering"}],
+                 "_links": {"base": WIKI, "next": f"{V2}/spaces?cursor=S2&limit=20"}}
+        api.on("GET", f"{V2}/spaces", [json_response(first), json_response({"message": "busy"}, status=503)])
+        api.on_suffix("GET", "/permissions", {"results": []})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_spaces()
+        assert connector._space_listing_complete is False
+
+        api.on("GET", f"{V2}/spaces", {"results": [{"id": "77", "key": "ENG", "name": "Engineering"}], "_links": {"base": WIKI}})
+        await connector._sync_spaces()
+        assert connector._space_listing_complete is True
+
+    async def test_a_failed_graph_read_removes_nothing(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced_in(db, checkpoints, search, "77", "99")
+        connector._space_listing_complete = True
+        db.fail_record_scan = True
+
+        await connector._remove_spaces_out_of_scope([ENG])
+
+        assert "990" in db.records
+        assert checkpoints.values_for("confluence_space_scope/all") is None
+

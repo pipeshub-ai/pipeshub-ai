@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from logging import Logger
 from typing import (
     Any,
+    NamedTuple,
     Optional,
 )
 from urllib.parse import parse_qs, urlparse
@@ -161,6 +162,25 @@ FOLDER_EXPAND_PARAMS = (
     "history.lastUpdated,"
     "space"
 )
+
+# Graph page size when looking for records the source no longer has
+RECORD_SCAN_PAGE_SIZE = 500
+
+# Largest page the v2 space content listings return
+V2_CONTENT_LIST_LIMIT = 250
+
+
+class ContentListing(NamedTuple):
+    """What one space's page or blog post listing read.
+
+    ``full`` means it ran without a checkpoint, so ``seen`` holds every item the
+    sync filters admit; otherwise ``seen`` holds only what changed since then.
+    """
+
+    full: bool
+    complete: bool
+    seen: frozenset[str]
+
 
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
@@ -466,6 +486,7 @@ class ConfluenceConnector(BaseConnector):
 
         # Lazy cache: lowercased Confluence group name -> external group id (UUID)
         self._group_name_to_external_id: dict[str, str] | None = None
+        self._space_listing_complete = False
 
     async def _build_confluence_client(self):
         """EE override point: swap to EE ConfluenceClient for org-scoped OAuth inheritance."""
@@ -648,6 +669,7 @@ class ConfluenceConnector(BaseConnector):
             spaces = await self._sync_spaces()
 
             # Step 4: Sync folders, pages and blogposts per space
+            listings: list[tuple[RecordGroup, RecordType, ContentListing]] = []
             for space in spaces:
                 space_key = space.short_name
 
@@ -657,11 +679,16 @@ class ConfluenceConnector(BaseConnector):
 
                 # Sync pages (with attachments, comments, permissions)
                 self.logger.info(f"Syncing pages for space: {space.name} ({space_key})")
-                await self._sync_content(space_key, RecordType.CONFLUENCE_PAGE)
+                listings.append((space, RecordType.CONFLUENCE_PAGE,
+                                 await self._sync_content(space_key, RecordType.CONFLUENCE_PAGE)))
 
                 # Sync blogposts (with attachments, comments, permissions)
                 self.logger.info(f"Syncing blogposts for space: {space.name} ({space_key})")
-                await self._sync_content(space_key, RecordType.CONFLUENCE_BLOGPOST)
+                listings.append((space, RecordType.CONFLUENCE_BLOGPOST,
+                                 await self._sync_content(space_key, RecordType.CONFLUENCE_BLOGPOST)))
+
+            await self._remove_content_gone_from_source(listings)
+            await self._remove_spaces_out_of_scope(spaces)
 
             # Step 5: Sync permission changes from audit log
             # This catches permission changes that don't update content's lastModified
@@ -1205,7 +1232,11 @@ class ConfluenceConnector(BaseConnector):
         2. Apply exclusion filters if NOT_IN operator is used
         3. For each space, fetch permissions
         4. Create RecordGroup with Permission objects
+
+        Sets ``_space_listing_complete`` to whether every space the filters admit
+        was read and returned.
         """
+        self._space_listing_complete = False
         try:
             self.logger.info("Starting space synchronization...")
 
@@ -1231,6 +1262,7 @@ class ConfluenceConnector(BaseConnector):
             total_permissions_synced = 0
             base_url = None  # Extract from first response
             record_groups = []
+            listing_complete = True
 
             # Paginate through all spaces using cursor
             while True:
@@ -1244,6 +1276,7 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch spaces: {response.status if response else 'No response'}")
+                    listing_complete = False
                     break
 
                 response_data = response.json()
@@ -1276,6 +1309,7 @@ class ConfluenceConnector(BaseConnector):
                         space_name = space_data.get("name")
 
                         if not space_id or not space_name:
+                            listing_complete = False
                             continue
 
                         self.logger.debug(f"Processing space: {space_name} ({space_id})")
@@ -1286,6 +1320,7 @@ class ConfluenceConnector(BaseConnector):
                         # Create RecordGroup for space
                         record_group = self._transform_to_space_record_group(space_data, base_url)
                         if not record_group:
+                            listing_complete = False
                             continue
 
                         record_groups.append(record_group)
@@ -1303,6 +1338,7 @@ class ConfluenceConnector(BaseConnector):
 
                     except Exception as space_error:
                         self.logger.error(f"❌ Failed to process space {space_data.get('name')}: {space_error}")
+                        listing_complete = False
                         continue
 
                 # Save batch to database
@@ -1317,10 +1353,12 @@ class ConfluenceConnector(BaseConnector):
 
                 cursor = self._extract_cursor_from_next_link(next_url)
                 if not cursor:
+                    listing_complete = False
                     break
 
             self.logger.info(f"✅ Space sync complete. Spaces: {total_spaces_synced}, Permissions: {total_permissions_synced}")
 
+            self._space_listing_complete = listing_complete
             return record_groups
 
         except Exception as e:
@@ -1499,7 +1537,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Folder sync failed: {e}", exc_info=True)
             raise
 
-    async def _sync_content(self, space_key: str, record_type: RecordType) -> None:
+    async def _sync_content(self, space_key: str, record_type: RecordType) -> ContentListing:
         """
         Unified sync for pages and blogposts from Confluence using v1 API.
 
@@ -1509,6 +1547,9 @@ class ConfluenceConnector(BaseConnector):
         Args:
             space_key: The space key to sync content from
             record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+
+        Returns:
+            What the listing read, for removing records the source no longer has.
         """
         # Derive content_type from record_type for logging and sync point
         content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
@@ -1592,6 +1633,7 @@ class ConfluenceConnector(BaseConnector):
             total_attachments_synced = 0
             total_permissions_synced = 0
             listing_complete = True
+            seen: set[str] = set()
 
             # Paginate through all content items
             while True:
@@ -1655,6 +1697,9 @@ class ConfluenceConnector(BaseConnector):
                     try:
                         item_id = item_data.get("id")
                         item_title = item_data.get("title")
+                        # Before anything can skip it: an item that fails to save still exists.
+                        if item_id:
+                            seen.add(str(item_id))
 
                         if not item_id or not item_title:
                             continue
@@ -1896,6 +1941,7 @@ class ConfluenceConnector(BaseConnector):
 
                 pagination_token = self._extract_cursor_from_next_link(next_url)
                 if not pagination_token:
+                    listing_complete = False
                     break
 
             # Update sync checkpoint with current time (only if we synced something)
@@ -1911,10 +1957,180 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
 
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Permissions: {total_permissions_synced}")
+            return ContentListing(full=not last_sync_time, complete=listing_complete, seen=frozenset(seen))
 
         except Exception as e:
             self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
             raise
+
+    async def _remove_content_gone_from_source(
+        self, listings: list[tuple[RecordGroup, RecordType, ContentListing]]
+    ) -> None:
+        """Delete page and blog post records the source no longer has, or the filters now leave out.
+
+        A listing that ran without a checkpoint already holds everything the filters
+        admit. After an incremental listing, the space's current content is listed
+        by id, since the lastModified search never returns trashed or purged items.
+        A listing that failed or stopped early removes nothing in its space.
+        Present ids are pooled across spaces, so a page moved to another synced
+        space is not deleted on the way.
+        """
+        present: set[str] = set()
+        checked: list[tuple[str, RecordType]] = []
+        for space, record_type, listing in listings:
+            if not listing.complete:
+                continue
+            if listing.full:
+                present |= listing.seen
+            else:
+                current = await self._list_space_content_ids(space.external_group_id, record_type)
+                if current is None:
+                    continue
+                present |= current
+            checked.append((space.external_group_id, record_type))
+
+        for space_id, record_type in checked:
+            try:
+                stale = await self._records_missing_from(space_id, record_type, present)
+            except Exception as e:
+                self.logger.warning(f"Could not read the stored records of space {space_id}; nothing removed: {e}")
+                continue
+            if stale:
+                self.logger.info(
+                    f"Removing {len(stale)} {record_type.value} records from space {space_id}: "
+                    "deleted in Confluence or left out by the sync filters"
+                )
+                await self._delete_records_with_attachments(stale)
+
+    async def _list_space_content_ids(self, space_id: str, record_type: RecordType) -> set[str] | None:
+        """Ids of a space's pages or blog posts that are not in the trash, or None if the list is incomplete.
+
+        Reads the v2 space listing rather than search, so a lagging or rebuilding
+        search index cannot make live content look deleted. Pages default to
+        current and archived.
+        """
+        datasource = await self._get_fresh_datasource()
+        list_content = (
+            datasource.get_pages_in_space if record_type == RecordType.CONFLUENCE_PAGE
+            else datasource.get_blog_posts_in_space
+        )
+        ids: set[str] = set()
+        cursor: str | None = None
+        visited: set[str] = set()
+        while True:
+            kwargs: dict[str, Any] = {"id": int(space_id), "limit": V2_CONTENT_LIST_LIMIT}
+            if cursor:
+                kwargs["cursor"] = cursor
+            try:
+                response = await list_content(**kwargs)
+            except Exception as e:
+                self.logger.warning(f"Could not list the content of space {space_id}; nothing removed: {e}")
+                return None
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                self.logger.warning(
+                    f"Could not list the content of space {space_id} "
+                    f"(HTTP {response.status if response else 'no response'}); nothing removed"
+                )
+                return None
+            data = response.json() or {}
+            ids.update(str(item["id"]) for item in data.get("results") or [] if item.get("id"))
+            next_url = (data.get("_links") or {}).get("next")
+            if not next_url:
+                return ids
+            next_cursor = self._extract_cursor_from_next_link(next_url)
+            if not next_cursor or next_cursor in visited:
+                self.logger.warning(f"Can't follow the content listing of space {space_id}; nothing removed")
+                return None
+            visited.add(next_cursor)
+            cursor = next_cursor
+
+    async def _records_missing_from(
+        self, space_id: str, record_type: RecordType, present: set[str]
+    ) -> list[Record]:
+        """Stored records of this type in the space whose ids are not in ``present``.
+
+        Placeholder ancestors are kept: they hold the breadcrumb of in-scope pages
+        and are never listed themselves.
+        """
+        stale: list[Record] = []
+        after_key: str | None = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key
+            )
+            stale.extend(
+                r for r in page
+                if r.record_type == record_type
+                and not r.is_placeholder
+                and r.external_record_id not in present
+            )
+            if len(page) < RECORD_SCAN_PAGE_SIZE:
+                return stale
+            after_key = page[-1].id
+
+    async def _delete_records_with_attachments(self, records: list[Record]) -> bool:
+        """Delete records and the attachments filed under them; True if every delete succeeded.
+
+        Child pages are left alone: each is listed on its own, and Confluence moves
+        them up when their parent is deleted.
+        """
+        ids = [r.id for r in records]
+        failed = 0
+        for start in range(0, len(ids), RECORD_SCAN_PAGE_SIZE):
+            batch = ids[start:start + RECORD_SCAN_PAGE_SIZE]
+            try:
+                result = await self.data_entities_processor.on_records_deleted_cascade(
+                    batch, self.connector_id, cascade_children=False,
+                )
+                failed += (result or {}).get("failed_count") or 0
+            except Exception as e:
+                self.logger.warning(f"Could not delete {len(batch)} records: {e}")
+                failed += len(batch)
+        if failed:
+            self.logger.warning(f"{failed} of {len(ids)} records could not be deleted; retrying next sync")
+        return not failed
+
+    async def _remove_spaces_out_of_scope(self, spaces: list[RecordGroup]) -> None:
+        """Delete the records of spaces this sync no longer covers.
+
+        Runs only after a complete space listing, and only when the set of synced
+        spaces differs from the one last cleaned up; editing the filters deletes
+        that sync point, so the next sync checks again. An empty listing removes
+        nothing: losing access to every space is far likelier than a filter that
+        matches none.
+        """
+        if not self._space_listing_complete or not spaces:
+            return
+        in_scope = sorted({str(s.external_group_id) for s in spaces})
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_space_scope", "all")
+        cleaned = await self.pages_sync_point.read_sync_point(key)
+        if cleaned and cleaned.get("space_ids") == in_scope:
+            return
+
+        wanted = set(in_scope)
+        stale: list[Record] = []
+        after_key: str | None = None
+        try:
+            while True:
+                page = await self.data_entities_processor.get_records_by_status(
+                    self.connector_id, None, limit=RECORD_SCAN_PAGE_SIZE, after_key=after_key,
+                )
+                stale.extend(
+                    r for r in page
+                    if r.external_record_group_id and r.external_record_group_id not in wanted
+                )
+                if len(page) < RECORD_SCAN_PAGE_SIZE:
+                    break
+                after_key = page[-1].id
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored records; no space removed: {e}")
+            return
+
+        if stale:
+            self.logger.info(f"Removing {len(stale)} records of spaces no longer synced")
+            if not await self._delete_records_with_attachments(stale):
+                return
+        await self.pages_sync_point.update_sync_point(key, {"space_ids": in_scope})
 
     async def _sync_permission_changes_from_audit_log(self) -> None:
         """
