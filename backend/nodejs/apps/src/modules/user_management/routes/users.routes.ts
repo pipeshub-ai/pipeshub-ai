@@ -50,8 +50,15 @@ const UserIdValidationSchema = z.object({
 });
 const MultipleUserBody = z.object({
   userIds: z
-    .array(z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid MongoDB ObjectId'))
-    .min(1, 'At least one userId is required'),
+    .array(
+      z
+        .string()
+        .regex(
+          /^[a-fA-F0-9]{24}$/,
+          'Each user ID must be a 24-character user ID. Remove any empty or incomplete IDs and try again.',
+        ),
+    )
+    .min(1, 'Send at least one user ID to look up.'),
 });
 const MultipleUserValidationSchema = z.object({
   body: MultipleUserBody,
