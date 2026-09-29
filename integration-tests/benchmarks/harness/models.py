@@ -298,6 +298,63 @@ class RetrievedChunk(_Model):
     score: float = 0.0
 
 
+# `reconstructed`: rebuilt after the fact from the store the system read,
+# rather than recorded from the prompt itself; judged the same way.
+EvidenceStatus = Literal["captured", "reconstructed", "empty", "unavailable"]
+
+
+class EvidencePassage(_Model):
+    """One piece of context as the answering model saw it: `header` is the
+    exact text that preceded `text` in the prompt (numbering, title)."""
+
+    header: str = ""
+    text: str
+
+
+class Evidence(_Model):
+    """What a system showed its answering model for one question.
+
+    `empty` means it was shown nothing (closed book, zero retrieval), so an
+    answer from it cannot be supported; `unavailable` means we could not tell.
+    `chars`/`sha256` describe the full text even when `passages` was capped.
+    """
+
+    status: EvidenceStatus
+    source: str
+    passages: list[EvidencePassage] = Field(default_factory=list)
+    chars: int = 0
+    sha256: str = ""
+    truncated: bool = False
+    reason: str | None = None
+    # Unavailable because a store was down, not because the data is absent:
+    # the evidence stage tries again on the next resume.
+    retryable: bool = False
+    # Blocks the trace named that the vector store no longer holds.
+    missing_blocks: int = 0
+
+    def text(self) -> str:
+        return render_passages(self.passages)
+
+
+def render_passages(passages: list[EvidencePassage]) -> str:
+    return "\n\n".join(p.header + p.text for p in passages)
+
+
+class EvidenceRecord(_Model):
+    """One line of `evidence.jsonl.gz`; kept out of `predictions.jsonl`
+    because the context of a RAG answer is hundreds of KB."""
+
+    system: str
+    question_id: str
+    repeat: int
+    answer_sha: str
+    evidence: Evidence
+
+    @property
+    def key(self) -> tuple[str, str, int]:
+        return (self.system, self.question_id, self.repeat)
+
+
 class Prediction(_Model):
     system: str
     question_id: str
@@ -320,6 +377,9 @@ class Prediction(_Model):
     queries: list[str] = Field(default_factory=list)
     error: SystemFailure | None = None
     policy_violations: list[str] = Field(default_factory=list)
+    # Handed from the adapter to the ask stage, which writes it to the
+    # evidence sidecar; never serialised into predictions.jsonl.
+    evidence: Evidence | None = Field(default=None, exclude=True, repr=False)
 
     @model_validator(mode="before")
     @classmethod
@@ -393,6 +453,52 @@ class ClaimSupport(_Model):
         return _renamed(values, {})
 
 
+class EvidenceSelection(_Model):
+    """How the evidence was cut down to the support judge's budget."""
+
+    selected: bool
+    budget_tokens: int
+    segments_total: int
+    segments_kept: int
+    chars_total: int
+    chars_kept: int
+
+
+SUPPORTED, PARTIAL, UNSUPPORTED, NO_EVIDENCE = "SUPPORTED", "PARTIAL", "UNSUPPORTED", "NO_EVIDENCE"
+
+
+class SupportJudgment(_Model):
+    """Whether a correct answer's decisive facts were in the evidence its
+    system showed the answering model — the check that it did not answer from
+    the model's training data. Labels: SUPPORTED, PARTIAL, UNSUPPORTED,
+    NO_EVIDENCE (nothing to check against), UNPARSEABLE."""
+
+    system: str
+    question_id: str
+    repeat: int
+    answer_sha: str
+    # "" when no evidence was recorded; a later capture re-judges the answer.
+    evidence_sha: str = ""
+    evidence_status: Literal["captured", "reconstructed", "empty", "unavailable", "missing"]
+    label: str
+    reason: str = ""
+    # Judge model and evidence budget: changing either re-verifies the run.
+    verifier: str = ""
+    judged: bool = False
+    judge_model: str = ""
+    prompt_version: str = ""
+    parse_ok: bool = True
+    reasked: bool = False
+    selection: EvidenceSelection | None = None
+    raw: str = ""
+    cache_hit: bool = False
+    cost_usd: float | None = None
+
+    @property
+    def key(self) -> tuple[str, str, int, str, str, str]:
+        return (self.system, self.question_id, self.repeat, self.answer_sha, self.evidence_sha, self.verifier)
+
+
 class RankedList(_Model):
     system: str
     question_id: str
@@ -429,6 +535,8 @@ class QuestionScore(_Model):
     alce_recall: float | None = None
     alce_precision: float | None = None
     grounded: bool | None = None
+    # Evidence-support verdict; set only on answers the primary judge marked correct.
+    support_label: str | None = None
     failure: str | None = None
     missing_gold: list[str] = Field(default_factory=list)
     latency_ms: int = 0

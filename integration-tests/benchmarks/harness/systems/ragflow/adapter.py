@@ -25,7 +25,8 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from benchmarks.harness.models import AskItem, Prediction, RetrievedChunk, SystemFailure
+from benchmarks.harness.evidence import captured, empty, unavailable
+from benchmarks.harness.models import AskItem, Evidence, EvidencePassage, Prediction, RetrievedChunk, SystemFailure
 from benchmarks.harness.systems.base import AdapterCapabilities, PreparedCorpus, no_context_failure
 
 if TYPE_CHECKING:
@@ -51,6 +52,29 @@ def retrieved_chunks(data: dict[str, Any], url_of_document: dict[str, str]) -> l
             score=float(score) if isinstance(score, (int, float)) else 0.0,
         ))
     return chunks
+
+
+EVIDENCE_SOURCE = "ragflow_reference_chunks"
+
+
+def evidence_of(data: dict[str, Any], *, reasoning: bool) -> Evidence:
+    """`reference.chunks[].content`: the chunks RAGFlow gave the model. The
+    research loop reports its pool only when the answer cites it, so an
+    empty reference there is unknown context, not no context."""
+    reference = data.get("reference") or {}
+    chunks = reference.get("chunks") or [] if isinstance(reference, dict) else []
+    passages = [
+        EvidencePassage(header=f"{chunk.get('document_name')}\n" if chunk.get("document_name") else "", text=chunk["content"])
+        for chunk in chunks
+        if isinstance(chunk, dict) and isinstance(chunk.get("content"), str) and chunk["content"]
+    ]
+    if passages:
+        return captured(passages, EVIDENCE_SOURCE)
+    if chunks:
+        return unavailable(EVIDENCE_SOURCE, "RAGFlow returned reference chunks without text")
+    if reasoning:
+        return unavailable(EVIDENCE_SOURCE, "RAGFlow's research loop reported no reference pool")
+    return empty(EVIDENCE_SOURCE)
 
 
 _RESEARCH_STATUS = "\n\n[Research status]"
@@ -152,6 +176,7 @@ class RagflowAdapter:
             "retrieved": chunks,
             "context_urls": list(dict.fromkeys(c.url for c in chunks)),
             "error": None if self._reasoning else no_context_failure(chunks),
+            "evidence": evidence_of(data, reasoning=bool(self._reasoning)),
         })
 
     def ingestor(self) -> CorpusIngestor | None:

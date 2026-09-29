@@ -35,6 +35,10 @@ _TOKENIZER = "cl100k_base"  # text-embedding-3-* tokenizer
 _POINT_NAMESPACE = uuid.UUID("3f1c6f5e-8a51-4c49-9d5e-1d7a2b0c9e11")
 
 
+def point_id(url: str, chunk_index: int) -> str:
+    return str(uuid.uuid5(_POINT_NAMESPACE, f"{url}#{chunk_index}"))
+
+
 def collection_name(config: StandardIndexConfig, corpus_version: str) -> str:
     return f"{config.collection_prefix}_{corpus_version[:12]}_c{config.chunk_tokens}o{config.chunk_overlap}"
 
@@ -103,7 +107,7 @@ class StandardIndexIngestor:
         sparse = self._sparse_docs(texts)
         self._client.upsert(collection_name=collection, wait=True, points=[
             models.PointStruct(
-                id=str(uuid.uuid5(_POINT_NAMESPACE, f"{url}#{i}")),
+                id=point_id(url, i),
                 vector={
                     "dense": dense[n],
                     "sparse": models.SparseVector(indices=sparse[n].indices.tolist(), values=sparse[n].values.tolist()),

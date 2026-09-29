@@ -8,12 +8,14 @@ which is what makes `--resume` idempotent.
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import os
 import tempfile
 import threading
-from collections.abc import Callable, Hashable
+import zlib
+from collections.abc import Callable, Hashable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
@@ -78,6 +80,23 @@ def read_jsonl(path: Path, model: type[M]) -> list[M]:
     return items
 
 
+def iter_gzip_jsonl(path: Path, model: type[M]) -> Iterator[M]:
+    """Records of a gzip JSONL sidecar, streamed. Each append is its own gzip
+    member, so a crash can only cut the last one short; that tail is skipped."""
+    if not path.exists():
+        return
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.endswith("\n"):
+                    logger.warning("ignoring truncated last record of %s", path)
+                    return
+                if line.strip():
+                    yield model.model_validate_json(line)
+    except (EOFError, gzip.BadGzipFile, zlib.error):
+        logger.warning("ignoring truncated last record of %s", path)
+
+
 def new_run_id(config: RunConfig, now: datetime | None = None) -> str:
     stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{config.run_name}-{config.config_hash()[:8]}"
@@ -127,6 +146,19 @@ class RunStore:
 
     def read(self, name: str, model: type[M]) -> list[M]:
         return read_jsonl(self.path(name), model)
+
+    def append_compressed(self, name: str, record: BaseModel) -> None:
+        data = gzip.compress((record.model_dump_json() + "\n").encode())
+        with self._lock:
+            path = self.path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("ab") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+
+    def iter_compressed(self, name: str, model: type[M]) -> Iterator[M]:
+        return iter_gzip_jsonl(self.path(name), model)
 
     def latest_by_key(
         self, name: str, model: type[M], key: Callable[[M], Hashable],

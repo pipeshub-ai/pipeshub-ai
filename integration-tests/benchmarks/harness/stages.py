@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -32,7 +32,14 @@ from benchmarks.harness.errors import (
     IndexTimeoutError,
     IngestError,
 )
+from benchmarks.harness.evidence import EVIDENCE_FILE
 from benchmarks.harness.grading.claims import ClaimSupportJudge
+from benchmarks.harness.grading.evidence_support import (
+    CHARS_PER_TOKEN,
+    EvidenceSupportJudge,
+    SupportSubject,
+    verifier_id,
+)
 from benchmarks.harness.grading.judges import AnswerJudge, GradingSubject
 from benchmarks.harness.grading.prompts import answer_prompt_texts, verify_prompt_pins
 from benchmarks.harness.metrics.mapping import ArticleResolver
@@ -40,7 +47,10 @@ from benchmarks.harness.metrics.scoring import Scorer, ScoringInputs
 from benchmarks.harness.models import (
     INDEXED,
     AskItem,
+    CallUsage,
     ClaimSupport,
+    Evidence,
+    EvidenceRecord,
     IngestManifest,
     Judgment,
     Prediction,
@@ -48,6 +58,7 @@ from benchmarks.harness.models import (
     QuestionScore,
     RankedList,
     RunMeta,
+    SupportJudgment,
     answer_fingerprint,
 )
 from benchmarks.harness.paths import INTEGRATION_TESTS_DIR
@@ -56,7 +67,8 @@ from benchmarks.harness.report.diagnostics import diagnose, diagnostics_jsonl, r
 from benchmarks.harness.report.markdown import failures_csv, render_report
 from benchmarks.harness.report.summary import summarize
 from benchmarks.harness.services import RunContext
-from benchmarks.harness.systems import AdapterDeps, adapter_spec
+from benchmarks.harness.pricing import calls_cost, price_for
+from benchmarks.harness.systems import AdapterDeps, EvidenceDeps, adapter_spec
 from benchmarks.harness.systems.base import PreparedCorpus
 
 logger = logging.getLogger(__name__)
@@ -66,12 +78,16 @@ PREDICTIONS_FILE = "predictions.jsonl"
 RANKINGS_FILE = "rankings.jsonl"
 JUDGMENTS_FILE = "judgments.jsonl"
 CLAIMS_FILE = "claims.jsonl"
+SUPPORT_FILE = "support.jsonl"
 SCORES_FILE = "scores.jsonl"
 SUMMARY_FILE = "summary.json"
 REPORT_FILE = "report.md"
 FAILURES_FILE = "failures.csv"
 META_FILE = "run_meta.json"
 RANK_K = 100
+# Reconstruction is a handful of Qdrant scrolls per answer; more workers
+# would only queue on the store.
+_EVIDENCE_WORKERS = 4
 
 
 def ingest_file(system_id: str) -> str:
@@ -218,6 +234,8 @@ class AskStage:
 
     def _record(self, ctx: RunContext, prediction: Prediction, report: StageReport) -> None:
         ctx.store.append(PREDICTIONS_FILE, prediction)
+        if prediction.evidence is not None:
+            _append_evidence(ctx, prediction, prediction.evidence)
         report.processed += 1
         report.failed += prediction.error is not None
         if prediction.policy_violations:
@@ -243,6 +261,18 @@ class AskStage:
             is_failure=lambda prediction: prediction.error is not None,
             breaker=breaker,
         )
+
+
+def _append_evidence(ctx: RunContext, prediction: Prediction, evidence: Evidence) -> None:
+    if evidence.truncated:
+        logger.warning(
+            "evidence for %s q%s r%d capped at %d of %d chars",
+            prediction.system, prediction.question_id, prediction.repeat, len(evidence.text()), evidence.chars,
+        )
+    ctx.store.append_compressed(EVIDENCE_FILE, EvidenceRecord(
+        system=prediction.system, question_id=prediction.question_id, repeat=prediction.repeat,
+        answer_sha=answer_fingerprint(prediction.answer), evidence=evidence,
+    ))
 
 
 def _check_trace_contract(prediction: Prediction) -> None:
@@ -370,6 +400,192 @@ class GradeStage:
         return len(todo)
 
 
+class EvidenceStage:
+    """Rebuilds evidence for answers that have none recorded: PipesHub's
+    (its trace names blocks, not text) and RAG answers asked before capture
+    existed. Offline-capable — needs the run directory and the vector store —
+    and never fails a run: a store that is down leaves the evidence
+    `unavailable`, and the next resume tries again."""
+
+    name = "evidence"
+
+    def run(self, ctx: RunContext) -> StageReport:
+        report = StageReport(self.name)
+        verified = ctx.config.evidence_verified_systems()
+        systems = [
+            (system, spec.rebuild_evidence) for system in ctx.config.systems
+            if system.id in verified
+            and (spec := adapter_spec(system.kind, ctx.services.adapter_registry)).rebuild_evidence is not None
+        ]
+        if not systems:
+            return report
+        questions = {q.id for q in ctx.questions}
+        recorded = {
+            record.key: (record.answer_sha, record.evidence.status == "unavailable" and record.evidence.retryable)
+            for record in ctx.store.iter_compressed(EVIDENCE_FILE, EvidenceRecord)
+        }
+        predictions = [p for p in _latest_predictions(ctx).values() if p.question_id in questions and p.error is None]
+        statuses: Counter[str] = Counter()
+
+        def _append(prediction: Prediction, evidence: Evidence) -> None:
+            _append_evidence(ctx, prediction, evidence)
+            statuses[evidence.status] += 1
+            report.processed += 1
+            report.failed += evidence.status == "unavailable"
+
+        for system, rebuild in systems:
+            todo = []
+            for p in predictions:
+                if p.system != system.id:
+                    continue
+                answer_sha, retry = recorded.get(p.key, (None, False))
+                if answer_sha == answer_fingerprint(p.answer) and not retry:
+                    report.skipped += 1
+                else:
+                    todo.append(p)
+            logger.info("evidence: %s: rebuilding %d answers", system.id, len(todo))
+            if todo:
+                builder = rebuild(system, EvidenceDeps(
+                    ctx.config, ctx.services, ctx.require_corpus(), ctx.prepared.get(system.id),
+                ))
+                run_parallel(todo, builder.evidence_for, workers=_EVIDENCE_WORKERS, on_result=_append)
+        if statuses:
+            logger.info("evidence: %s", dict(sorted(statuses.items())))
+        if statuses.get("unavailable"):
+            logger.warning("evidence: %d answers have no rebuildable evidence", statuses["unavailable"])
+        return report
+
+
+# One reply is two short lines; a reasoning judge spends more, so the
+# projection is a floor for those.
+_PROJECTED_OUTPUT_TOKENS = 120
+
+
+class SupportStage:
+    """Judges whether each correct answer's decisive facts were in its
+    evidence (`grading/evidence_support.py`). Wrong answers are skipped."""
+
+    name = "verify"
+
+    def run(self, ctx: RunContext) -> StageReport:
+        verify_prompt_pins()
+        settings = ctx.config.grading.evidence_support
+        selector = ctx.config.grading.evidence_judge()
+        verifier = verifier_id(selector.model, settings.max_evidence_tokens)
+        questions = {q.id: q for q in ctx.questions}
+        correct = self._correct(ctx, questions, ctx.config.evidence_verified_systems())
+        done = {j.key for j in ctx.store.read(SUPPORT_FILE, SupportJudgment)}
+        subjects = self._subjects(ctx, correct, questions, done, verifier, settings.max_evidence_tokens)
+        todo = [s for s in subjects.values() if s.key not in done]
+        report = StageReport(self.name, skipped=len(subjects) - len(todo))
+        calls = [s for s in todo if s.needs_call]
+        logger.info(
+            "verify: %d correct answers across %d systems (%s), %d to judge, %d need a %s call",
+            len(correct), len({key[0] for key in correct}), ", ".join(sorted({key[0] for key in correct})),
+            len(todo), len(calls), selector.model,
+        )
+        self._project(ctx, selector.model, calls)
+        selected = Counter(s.system for s in todo if s.selection is not None and s.selection.selected)
+        for system, count in sorted(selected.items()):
+            logger.warning("verify: %s: evidence of %d answers cut to %d tokens", system, count, settings.max_evidence_tokens)
+        judge = EvidenceSupportJudge(ctx.services.llm, ctx.services.judge_model(selector) if calls else None)
+        labels: Counter[str] = Counter()
+        spent = 0.0
+
+        def _append(_subject: SupportSubject, judgment: SupportJudgment) -> None:
+            nonlocal spent
+            ctx.store.append(SUPPORT_FILE, judgment)
+            spent += judgment.cost_usd or 0.0
+            labels[judgment.label] += 1
+            report.processed += 1
+            report.failed += not judgment.parse_ok
+            ctx.services.cost.add(judgment.cost_usd)
+
+        run_parallel(
+            todo, judge.judge, workers=ctx.config.grading.concurrency, on_result=_append,
+            is_failure=lambda judgment: not judgment.parse_ok,
+            breaker=CircuitBreaker(ctx.config.limits.max_error_rate, ctx.config.limits.min_items_for_breaker),
+        )
+        logger.info("verify: labels %s, judge spend $%.4f", dict(sorted(labels.items())), spent)
+        return report
+
+    @staticmethod
+    def _project(ctx: RunContext, model: str, calls: list[SupportSubject]) -> None:
+        if not calls:
+            return
+        input_tokens = [len(s.prompt()) // CHARS_PER_TOKEN for s in calls]
+        price = price_for(ctx.config.pricing, model)
+        if price is None:
+            logger.info(
+                "verify: %d calls, ~%d input tokens each; no `pricing` entry for %s, so no cost projection",
+                len(calls), sum(input_tokens) // len(calls), model,
+            )
+            return
+        projected = calls_cost(price, [
+            CallUsage(input_tokens=tokens, output_tokens=_PROJECTED_OUTPUT_TOKENS, purpose="verify")
+            for tokens in input_tokens
+        ]) or 0.0
+        logger.info(
+            "verify: projected cost $%.2f for %d calls (~%d input tokens each, %s, before cache hits)",
+            projected, len(calls), sum(input_tokens) // len(calls), model,
+        )
+        limit = ctx.config.limits.max_cost_usd
+        if limit is not None and ctx.services.cost.spent + projected > limit:
+            logger.warning(
+                "verify: projection exceeds the run budget ($%.2f spent of $%.2f); the stage will stop at the limit",
+                ctx.services.cost.spent, limit,
+            )
+
+    @staticmethod
+    def _correct(
+        ctx: RunContext, questions: dict[str, Question], systems: set[str],
+    ) -> dict[tuple[str, str, int], Prediction]:
+        """Predictions of the verified systems that the primary judge marked
+        correct, for their current answer."""
+        rubric = ctx.dataset.primary_rubric
+        primary = {
+            (j.system, j.question_id, j.repeat, j.answer_sha): j
+            for j in ctx.store.read(JUDGMENTS_FILE, Judgment) if j.rubric == rubric and j.role == "primary"
+        }
+        correct = {}
+        for p in _latest_predictions(ctx).values():
+            if p.system not in systems or p.question_id not in questions or p.error is not None:
+                continue
+            judgment = primary.get((p.system, p.question_id, p.repeat, answer_fingerprint(p.answer)))
+            if judgment is not None and judgment.correct:
+                correct[p.key] = p
+        return correct
+
+    @staticmethod
+    def _subjects(
+        ctx: RunContext, correct: dict[tuple[str, str, int], Prediction], questions: dict[str, Question],
+        done: set[tuple[str, str, int, str, str, str]], verifier: str, budget_tokens: int,
+    ) -> dict[tuple[str, str, int], SupportSubject]:
+        """Streams the sidecar and cuts each needed record to the judge's
+        budget as it is read, so the whole evidence file is never in memory."""
+
+        def subject(p: Prediction, evidence: Evidence | None) -> SupportSubject:
+            answer_sha = answer_fingerprint(p.answer)
+            fields = {
+                "system": p.system, "question_id": p.question_id, "repeat": p.repeat, "answer_sha": answer_sha,
+                "question": questions[p.question_id].prompt, "answer": p.answer, "evidence": evidence,
+                "verifier": verifier,
+            }
+            if (*p.key, answer_sha, evidence.sha256 if evidence else "", verifier) in done:
+                return SupportSubject(**fields)
+            return SupportSubject.of(**fields, budget_tokens=budget_tokens)
+
+        subjects: dict[tuple[str, str, int], SupportSubject] = {}
+        for record in ctx.store.iter_compressed(EVIDENCE_FILE, EvidenceRecord):
+            p = correct.get(record.key)
+            if p is not None and record.answer_sha == answer_fingerprint(p.answer):
+                subjects[record.key] = subject(p, record.evidence)
+        for key, p in correct.items():
+            if key not in subjects:
+                subjects[key] = subject(p, None)
+        return subjects
+
+
 class ScoreStage:
     name = "score"
 
@@ -382,6 +598,11 @@ class ScoreStage:
         claims: dict[tuple[str, int, int, str], list[ClaimSupport]] = defaultdict(list)
         for c in ctx.store.read(CLAIMS_FILE, ClaimSupport):
             claims[(c.system, c.question_id, c.repeat, c.answer_sha)].append(c)
+        # Last record wins: re-captured evidence supersedes a NO_EVIDENCE verdict.
+        support = {
+            (j.system, j.question_id, j.repeat, j.answer_sha): j
+            for j in ctx.store.read(SUPPORT_FILE, SupportJudgment)
+        }
         scorers = {
             s.id: Scorer(
                 ArticleResolver(corpus, ctx.prepared[s.id].ingest if s.id in ctx.prepared else None), corpus,
@@ -396,6 +617,7 @@ class ScoreStage:
             key = (p.system, p.question_id, p.repeat, answer_fingerprint(p.answer))
             scores.append(scorers[p.system].score(ScoringInputs(
                 question=questions[p.question_id], prediction=p, judgments=judgments.get(key, {}), claims=claims.get(key, []),
+                support=support.get(key),
             )))
         # Sorted, not in thread-completion order: the bootstrap resamples this
         # sequence by index, so append order would otherwise move the published
@@ -471,6 +693,7 @@ class ReportStage:
             ctx.store.run_id, scores, ctx.store.read(RANKINGS_FILE, RankedList),
             lambda qid: corpus.resolve_refs(questions[qid].gold_refs) if qid in questions else [],
             ctx.config.stats, ctx.config.seed, violations=violations, meta=meta,
+            verified_systems=ctx.config.evidence_verified_systems(),
         )
         ctx.store.write_model(META_FILE, meta)
         ctx.store.write_model(SUMMARY_FILE, summary)

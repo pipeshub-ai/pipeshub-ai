@@ -16,7 +16,15 @@ from pydantic import BaseModel
 from benchmarks.harness.config import StatsConfig
 from benchmarks.harness.metrics.retrieval import ndcg_at_k, recall_at_k, reciprocal_rank
 from benchmarks.harness.metrics.stats import bootstrap_mean, cohen_kappa, mcnemar_exact, percentile
-from benchmarks.harness.models import QuestionScore, RankedList, RunMeta
+from benchmarks.harness.models import (
+    NO_EVIDENCE,
+    PARTIAL,
+    SUPPORTED,
+    UNSUPPORTED,
+    QuestionScore,
+    RankedList,
+    RunMeta,
+)
 
 RECALL_KS = (5, 10, 20, 50, 100)
 GOLD_BUCKETS = ("2", "3", "4", "5+")
@@ -53,6 +61,23 @@ class SystemSummary(BaseModel):
     alce_recall: float | None = None
     alce_precision: float | None = None
     correct_and_grounded: float | None = None
+    # Evidence support of correct answers (`grading/evidence_support.py`).
+    # The rates are withheld until every correct answer has a verdict, so a
+    # run verified halfway never reads as mostly answered from memory.
+    grounded_accuracy: Rate | None = None
+    memory_suspect_rate: Rate | None = None
+    support_coverage: float | None = None
+    supported: int = 0
+    partial: int = 0
+    memory_suspect: int = 0
+    no_evidence: int = 0
+    support_unparseable: int = 0
+    memory_suspect_questions: list[str] = []
+    # Per split of the dataset's committed split file (dev / held-out for
+    # FRAMES): held-out is the subset nothing was tuned on.
+    accuracy_by_split: dict[str, Rate] = {}
+    grounded_accuracy_by_split: dict[str, Rate] = {}
+    memory_suspect_rate_by_split: dict[str, Rate] = {}
     failures: dict[str, int] = {}
     by_reasoning_type: dict[str, float] = {}
     by_gold_count: dict[str, float] = {}
@@ -85,6 +110,8 @@ class RunSummary(BaseModel):
     violations: list[str]
     systems: list[SystemSummary]
     pairwise: list[PairwiseTest]
+    # Paired tests on correct ∧ SUPPORTED, among fully verified systems.
+    pairwise_grounded: list[PairwiseTest] = []
     meta: RunMeta | None = None
 
 
@@ -165,9 +192,62 @@ def _cost(scores: Sequence[QuestionScore]) -> dict[str, float | None]:
     }
 
 
+def _grounded_value(score: QuestionScore) -> bool | None:
+    if score.correct is None:
+        return None
+    return bool(score.correct and score.support_label == SUPPORTED)
+
+
+def _qid_order(qid: str) -> tuple[int, int, str]:
+    return (0, int(qid), "") if qid.isdigit() else (1, 0, qid)
+
+
+def _memory_suspect_value(score: QuestionScore) -> bool | None:
+    if score.correct is None:
+        return None
+    return bool(score.correct and score.support_label == UNSUPPORTED)
+
+
+def _by_split(
+    scores: Sequence[QuestionScore], value: Callable[[QuestionScore], bool | None], stats: StatsConfig, seed: int,
+) -> dict[str, Rate]:
+    splits = sorted({s.split for s in scores if s.split is not None})
+    rates = {
+        split: _rate(_per_question([s for s in scores if s.split == split], value), stats, seed)
+        for split in splits
+    }
+    return {split: rate for split, rate in rates.items() if rate is not None}
+
+
+def _support(scores: Sequence[QuestionScore], stats: StatsConfig, seed: int) -> dict[str, object]:
+    correct = [s for s in scores if s.correct]
+    labels = Counter(s.support_label for s in correct)
+    coverage = _mean(0.0 if s.support_label is None else 1.0 for s in correct)
+    counts = {
+        "supported": labels[SUPPORTED], "partial": labels[PARTIAL], "memory_suspect": labels[UNSUPPORTED],
+        "no_evidence": labels[NO_EVIDENCE],
+        "support_unparseable": sum(n for label, n in labels.items() if label is not None and label not in {
+            SUPPORTED, PARTIAL, UNSUPPORTED, NO_EVIDENCE,
+        }),
+        "support_coverage": coverage,
+        "memory_suspect_questions": sorted(
+            {s.question_id for s in correct if s.support_label == UNSUPPORTED}, key=_qid_order,
+        ),
+    }
+    if coverage is not None and coverage < 1.0:
+        return counts
+    return {
+        **counts,
+        "grounded_accuracy": _rate(_per_question(scores, _grounded_value), stats, seed),
+        "memory_suspect_rate": _rate(_per_question(scores, _memory_suspect_value), stats, seed),
+        "grounded_accuracy_by_split": _by_split(scores, _grounded_value, stats, seed),
+        "memory_suspect_rate_by_split": _by_split(scores, _memory_suspect_value, stats, seed),
+    }
+
+
 def summarize_system(
     system: str, scores: Sequence[QuestionScore], rankings: Sequence[RankedList],
-    gold_for: Callable[[int], list[str]], stats: StatsConfig, seed: int,
+    gold_for: Callable[[int], list[str]], stats: StatsConfig, seed: int, *, verified: bool = True,
 ) -> SystemSummary:
     hedge, gap, kappa = _judge_quality(scores)
     recall_at, mrr, ndcg = _ranking_metrics(rankings, gold_for)
@@ -191,6 +271,8 @@ def summarize_system(
         alce_recall=_mean(s.alce_recall for s in scores),
         alce_precision=_mean(s.alce_precision for s in scores),
         correct_and_grounded=_mean(None if s.grounded is None else float(s.grounded) for s in scores),
+        **(_support(scores, stats, seed) if verified else {}),
+        accuracy_by_split=_by_split(scores, lambda s: s.correct, stats, seed),
         failures=dict(Counter(s.failure for s in scores if s.failure)),
         by_reasoning_type=_breakdown(scores, lambda s: s.labels),
         by_gold_count=_breakdown(scores, lambda s: [_gold_bucket(s.gold_count)]),
@@ -201,12 +283,17 @@ def summarize_system(
     )
 
 
-def _majority(scores: Sequence[QuestionScore]) -> dict[str, bool]:
-    return {qid: value > 0.5 for qid, value in _per_question(scores, lambda s: s.correct).items()}
+def _majority(
+    scores: Sequence[QuestionScore], value: Callable[[QuestionScore], bool | None] = lambda s: s.correct,
+) -> dict[str, bool]:
+    return {qid: v > 0.5 for qid, v in _per_question(scores, value).items()}
 
 
-def pairwise_tests(by_system: dict[str, list[QuestionScore]]) -> list[PairwiseTest]:
-    majorities = {system: _majority(scores) for system, scores in by_system.items()}
+def pairwise_tests(
+    by_system: dict[str, list[QuestionScore]],
+    value: Callable[[QuestionScore], bool | None] = lambda s: s.correct,
+) -> list[PairwiseTest]:
+    majorities = {system: _majority(scores, value) for system, scores in by_system.items()}
     tests = []
     for a, b in combinations(sorted(majorities), 2):
         common = sorted(set(majorities[a]) & set(majorities[b]))
@@ -219,7 +306,10 @@ def summarize(
     run_id: str, scores: Sequence[QuestionScore], rankings: Sequence[RankedList],
     gold_for: Callable[[int], list[str]], stats: StatsConfig, seed: int,
     violations: Sequence[str] = (), meta: RunMeta | None = None,
+    verified_systems: set[str] | None = None,
 ) -> RunSummary:
+    """`verified_systems`: those the evidence-support check covers (None:
+    all); the others get no grounding numbers rather than vacuous ones."""
     by_system: dict[str, list[QuestionScore]] = defaultdict(list)
     for score in scores:
         by_system[score.system].append(score)
@@ -227,10 +317,18 @@ def summarize(
     for ranking in rankings:
         rankings_by_system[ranking.system].append(ranking)
     systems = [
-        summarize_system(system, by_system[system], rankings_by_system.get(system, []), gold_for, stats, seed)
+        summarize_system(
+            system, by_system[system], rankings_by_system.get(system, []), gold_for, stats, seed,
+            verified=verified_systems is None or system in verified_systems,
+        )
         for system in sorted(by_system)
     ]
+    verified = {s.system for s in systems if s.grounded_accuracy is not None}
     return RunSummary(
         run_id=run_id, valid=not violations, violations=list(violations),
-        systems=systems, pairwise=pairwise_tests(by_system), meta=meta,
+        systems=systems, pairwise=pairwise_tests(by_system),
+        pairwise_grounded=pairwise_tests(
+            {system: scores for system, scores in by_system.items() if system in verified}, _grounded_value,
+        ),
+        meta=meta,
     )

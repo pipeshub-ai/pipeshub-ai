@@ -26,7 +26,19 @@ from benchmarks.harness.config import FRAMES_SNAPSHOT, ModelPrice
 from benchmarks.harness.corpus.view import CorpusView
 from benchmarks.harness.llm.client import ChatMessage, LLMClient, LLMRequest, ResolvedModel
 from benchmarks.harness.citation_markers import cited_indices
-from benchmarks.harness.models import AskItem, CallUsage, Citation, IngestManifest, Prediction, RankedList, RetrievedChunk, SystemFailure
+from benchmarks.harness.evidence import captured
+from benchmarks.harness.models import (
+    AskItem,
+    CallUsage,
+    Citation,
+    EvidencePassage,
+    IngestManifest,
+    Prediction,
+    RankedList,
+    RetrievedChunk,
+    SystemFailure,
+    render_passages,
+)
 from benchmarks.harness.systems.base import AdapterCapabilities, CorpusIngestor, PreparedCorpus, RankedRetriever
 from benchmarks.harness.systems.baselines.answering import (
     ANSWER_MAX_TOKENS,
@@ -41,6 +53,7 @@ from benchmarks.harness.systems.rag.transforms import decompose, expand
 logger = logging.getLogger(__name__)
 
 RAG_ANSWER_PROMPT_VERSION = "rag-answer-v2"
+EVIDENCE_SOURCE = "rag_prompt_sources"
 _CHARS_PER_TOKEN = 4
 _DEFAULT_CONTEXT_TOKENS = 128_000
 _RESERVED_TOKENS = 8_000
@@ -105,6 +118,32 @@ class RecordRef:
     title: str
 
 
+def assemble_sources(
+    chunks: Sequence[tuple[Chunk, RecordRef]], small_to_big: int, article_text: Callable[[str], str],
+) -> list[Source]:
+    """Numbered sources in context order. With small-to-big, the first chunk
+    of each of the N best articles becomes the whole article and its other
+    chunks are dropped. Shared with evidence reconstruction, which must
+    rebuild exactly this list."""
+    expanded: dict[str, Source] = {}
+    if small_to_big:
+        for chunk, ref in chunks:
+            if len(expanded) >= small_to_big:
+                break
+            if ref.url not in expanded:
+                expanded[ref.url] = Source(ref.url, ref.record_id, chunk.virtual_record_id, ref.title, article_text(ref.url), None)
+    sources: list[Source] = []
+    emitted: set[str] = set()
+    for chunk, ref in chunks:
+        if ref.url in expanded:
+            if ref.url not in emitted:
+                emitted.add(ref.url)
+                sources.append(expanded[ref.url])
+            continue
+        sources.append(Source(ref.url, ref.record_id, chunk.virtual_record_id, ref.title, chunk.text, chunk.block_index))
+    return sources
+
+
 def fit_sources(sources: Sequence[Source], max_tokens: int) -> tuple[list[Source], bool]:
     budget = max_tokens * _CHARS_PER_TOKEN
     kept: list[Source] = []
@@ -117,8 +156,14 @@ def fit_sources(sources: Sequence[Source], max_tokens: int) -> tuple[list[Source
     return kept, False
 
 
+def source_passages(sources: Sequence[Source]) -> list[EvidencePassage]:
+    return [EvidencePassage(header=f"[{i}] {s.title}\n", text=s.text) for i, s in enumerate(sources, start=1)]
+
+
 def render_sources(sources: Sequence[Source]) -> str:
-    return "\n\n".join(f"[{i}] {s.title}\n{s.text}" for i, s in enumerate(sources, start=1))
+    # The prompt is rendered from the same passages the evidence records, so
+    # the support judge reads exactly what the answering model read.
+    return render_passages(source_passages(sources))
 
 
 def cited_sources(answer: str, sources: Sequence[Source]) -> list[Citation]:
@@ -226,23 +271,7 @@ class RagAnswerer:
 
     def _sources(self, chunks: Sequence[Chunk], records: dict[str, RecordRef]) -> list[Source]:
         known = [(c, records[c.virtual_record_id]) for c in chunks if c.virtual_record_id in records]
-        expanded: dict[str, Source] = {}
-        if self._options.small_to_big:
-            for chunk, ref in known:
-                if len(expanded) >= self._options.small_to_big:
-                    break
-                if ref.url not in expanded:
-                    expanded[ref.url] = Source(ref.url, ref.record_id, chunk.virtual_record_id, ref.title, self._corpus.text(ref.url), None)
-        sources: list[Source] = []
-        emitted: set[str] = set()
-        for chunk, ref in known:
-            if ref.url in expanded:
-                if ref.url not in emitted:
-                    emitted.add(ref.url)
-                    sources.append(expanded[ref.url])
-                continue
-            sources.append(Source(ref.url, ref.record_id, chunk.virtual_record_id, ref.title, chunk.text, chunk.block_index))
-        return sources
+        return assemble_sources(known, self._options.small_to_big, self._corpus.text)
 
     def answer(self, item: AskItem, prepared: PreparedCorpus, repeat: int) -> Prediction:
         started = time.monotonic()
@@ -277,6 +306,7 @@ class RagAnswerer:
                 for c in chunks if c.virtual_record_id in records
             ],
             "context_urls": list(dict.fromkeys(s.url for s in sources)), "context_truncated": truncated,
+            "evidence": captured(source_passages(sources), EVIDENCE_SOURCE),
             "latency_ms": int((time.monotonic() - started) * 1000),
             **usage_fields(calls, self._price),
         })

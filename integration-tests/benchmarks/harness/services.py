@@ -32,6 +32,7 @@ from benchmarks.harness.report.summary import RunSummary
 from benchmarks.harness.store import RunStore
 from benchmarks.harness.systems import ADAPTER_REGISTRY, AdapterSpec
 from benchmarks.harness.systems.base import PreparedCorpus, SystemAdapter
+from benchmarks.harness.systems.pipeshub.evidence import QdrantPointSource, RecordPointsCache
 from benchmarks.harness.systems.pipeshub.kb_api import RecordStatus
 from benchmarks.harness.systems.pipeshub.records import resolve_virtual_record_ids
 from benchmarks.harness.systems.pipeshub.seed import verify_indexing_embedding
@@ -187,6 +188,12 @@ class Services:
         if "check_version" in inspect.signature(QdrantClient.__init__).parameters:
             kwargs["check_version"] = False
         return QdrantClient(**kwargs)
+
+    @cached_property
+    def pipeshub_points(self) -> RecordPointsCache:
+        # The client is built on first use, so a run whose Qdrant is down
+        # records evidence as unavailable instead of failing here.
+        return RecordPointsCache(QdrantPointSource(lambda: self.qdrant, self.config.qdrant.collection))
 
     def kb_records(self, kb_id: str) -> list[RecordStatus]:
         """The KB's records, listed once per run (paging 12k records is slow)."""

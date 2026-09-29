@@ -21,11 +21,13 @@ from benchmarks.datasets.frames.loader import FRAMES_REVISION
 import benchmarks.datasets.frames.plugin  # noqa: F401  (registers the dataset)
 from benchmarks.harness.dataset.split import write_split
 from benchmarks.harness.datasets import dataset_plugin
+from benchmarks.harness.evidence import captured
 from benchmarks.harness.llm.registry import ModelResolver
 from benchmarks.harness.models import (
     AskItem,
     Citation,
     CorpusManifest,
+    EvidencePassage,
     IndexReport,
     IngestedRecord,
     IngestManifest,
@@ -41,11 +43,13 @@ from benchmarks.harness.stages import (
     AskStage,
     CorpusStage,
     DatasetStage,
+    EvidenceStage,
     GradeStage,
     PrepareStage,
     ReportStage,
     ScoreStage,
     SearchStage,
+    SupportStage,
 )
 from benchmarks.harness.store import RunStore
 from benchmarks.harness.systems import ADAPTER_REGISTRY, AdapterDeps, AdapterSpec
@@ -81,12 +85,23 @@ def _field(text: str, label: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _responder(request) -> str:  # noqa: ANN001
+def _support(content: str) -> str:
+    answer = content.split("Answer given by the system:\n", 1)[1].split("\n\nEvidence the system was shown:", 1)[0]
+    evidence = content.split("Evidence the system was shown:\n", 1)[1].split("\n\nJudge only against", 1)[0]
+    value = answer.removeprefix("The answer is ").split(" ")[0].rstrip(".")
+    return f"Reason: checked {value}.\nEvidence support: {'SUPPORTED' if value in evidence else 'UNSUPPORTED'}"
+
+
+def _responder(request, *, from_memory: bool = False) -> str:  # noqa: ANN001
     content = request.messages[-1].content
     if request.prompt_version in (ANSWER_PROMPT_VERSION, GROUNDED_ANSWER_PROMPT_VERSION):
         question = _field(content, "Question")
         answer = EVIDENCE[question]
+        if from_memory:
+            return f"The answer is {answer}."
         return f"The answer is {answer}." if "Wikipedia articles" in content and answer in content else "I don't know."
+    if request.prompt_version == "evidence-support-v1":
+        return _support(content)
     if request.prompt_version == "frames-autorater-v1":
         predicted, gold = _field(content, "- Predicted Answer"), _field(content, "- Ground Truth Answer")
         return f"Explanation: compared.\nDecision: {'TRUE' if gold.lower() in predicted.lower() else 'FALSE'}"
@@ -141,6 +156,7 @@ class FakeTraceSystem:
         return Prediction(
             system=self.system_id, question_id=item.question_id, repeat=repeat,
             answer=f"The answer is {EVIDENCE[item.prompt]} [1].", citations=[citation],
+            evidence=captured([EvidencePassage(text=self._corpus.text(r.canonical_url)) for r in gold], "fake"),
             trace=StreamTrace(retrieval_events=[event], tool_calls=tools, tool_waves=1, finished=True),
             policy_violations=["dynamic__web_search"] if self._cheat else [],
         )
@@ -151,11 +167,41 @@ class FakeTraceSystem:
         return RankedList(system=self.system_id, question_id=item.question_id, ranked_refs=self._corpus.resolve_refs(item.gold_refs))
 
 
+class WrongContextSystem:
+    """Always shows its model the Sylvania article, and answers correctly anyway."""
+
+    capabilities = AdapterCapabilities()
+
+    def __init__(self, system_id: str, corpus) -> None:  # noqa: ANN001
+        self.system_id = system_id
+        self._corpus = corpus
+
+    def ingestor(self) -> None:
+        return None
+
+    def retriever(self) -> None:
+        return None
+
+    def answer(self, item: AskItem, prepared: PreparedCorpus, repeat: int) -> Prediction:
+        text = self._corpus.text("https://en.wikipedia.org/wiki/Sylvania")
+        return Prediction(
+            system=self.system_id, question_id=item.question_id, repeat=repeat,
+            answer=f"The answer is {EVIDENCE[item.prompt]}.",
+            evidence=captured([EvidencePassage(header="### Sylvania\n", text=text)], "fake"),
+        )
+
+
 def _registry(cheat: bool) -> dict[str, AdapterSpec]:
     def _factory(system, deps: AdapterDeps):  # noqa: ANN001, ANN202
         return FakeTraceSystem(system.id, deps.corpus, cheat)
 
-    return {**ADAPTER_REGISTRY, "fake_trace": AdapterSpec(_factory, FakeTraceSystem.capabilities)}
+    return {
+        **ADAPTER_REGISTRY,
+        "fake_trace": AdapterSpec(_factory, FakeTraceSystem.capabilities),
+        "wrong_context": AdapterSpec(
+            lambda system, deps: WrongContextSystem(system.id, deps.corpus), WrongContextSystem.capabilities,
+        ),
+    }
 
 
 CONFIG = {
@@ -167,16 +213,23 @@ CONFIG = {
     "grading": {"primary": {"model": "claude-sonnet-5"}, "secondary": {"model": "gemini-3.8-flash"}},
     "stats": {"bootstrap_samples": 200},
 }
-STAGES = [DatasetStage, CorpusStage, PrepareStage, AskStage, SearchStage, GradeStage, ScoreStage, ReportStage]
+STAGES = [
+    DatasetStage, CorpusStage, PrepareStage, AskStage, SearchStage, GradeStage, EvidenceStage, SupportStage,
+    ScoreStage, ReportStage,
+]
 
 
-def _context(tmp_path: Path, *, cheat: bool = False, store: RunStore | None = None) -> RunContext:
-    config = RunConfig.model_validate(CONFIG)
+def _context(
+    tmp_path: Path, *, cheat: bool = False, store: RunStore | None = None, from_memory: bool = False,
+    config: dict | None = None,
+) -> RunContext:
+    config = RunConfig.model_validate(config or CONFIG)
     tsv = write_frames_tsv(tmp_path / "test.tsv", QUESTIONS)
     split = tmp_path / "split.json"
     write_split(split, {"0": "dev", "1": "dev", "2": "heldout"}, seed=1, dataset_revision=FRAMES_REVISION)
     services = Services(
-        config, Credentials(), cache_dir=tmp_path / "cache", llm=FakeLLM(_responder),
+        config, Credentials(), cache_dir=tmp_path / "cache",
+        llm=FakeLLM(lambda request: _responder(request, from_memory=from_memory)),
         resolver=ModelResolver(lambda: REGISTRY), dataset_path=tsv, split_path=split, expected_question_count=3,
         article_source_factory=lambda _host: FakeArticleSource(PAGES), adapter_registry=_registry(cheat),
     )
@@ -207,6 +260,54 @@ def test_full_pipeline_produces_a_valid_board(tmp_path: Path) -> None:
     assert "FRAMES benchmark" in ctx.store.path("report.md").read_text()
     assert json.loads(ctx.store.path("run_meta.json").read_text())["dataset_revision"] == FRAMES_REVISION
     assert len(ctx.store.read("predictions.jsonl", Prediction)) == 12
+    assert board["oracle"].grounded_accuracy.value == 1.0
+    assert board["fake_trace"].grounded_accuracy.value == 1.0
+    # Closed book is not verified unless asked for: it is shown nothing.
+    assert board["closed_book"].grounded_accuracy is None and board["closed_book"].support_coverage is None
+    assert all(s.memory_suspect == 0 for s in board.values())
+    assert "evidence" not in ctx.store.path("predictions.jsonl").read_text()
+    report = ctx.store.path("report.md").read_text()
+    assert "Grounded acc %" in report
+
+    # split: all — the dataset's dev/held-out assignment breaks the headline down.
+    oracle = board["oracle"]
+    assert set(oracle.accuracy_by_split) == {"dev", "heldout"}
+    assert oracle.accuracy_by_split["dev"].n == 2 and oracle.accuracy_by_split["heldout"].n == 1
+    assert oracle.grounded_accuracy_by_split["heldout"].value == 1.0
+    assert oracle.memory_suspect_rate_by_split["dev"].value == 0.0
+    assert "### By split (95% CI)" in report and "| heldout | Grounded acc % |" in report
+    summary_json = json.loads(ctx.store.path("summary.json").read_text())
+    assert next(x for x in summary_json["systems"] if x["system"] == "oracle")["accuracy_by_split"]["dev"]["n"] == 2
+
+
+def test_answers_from_memory_are_caught_at_judging_time(tmp_path: Path) -> None:
+    """An answering model that ignores its sources: every answer is correct,
+    but only the ones whose context held the fact count as grounded."""
+    config = {
+        **CONFIG,
+        "systems": [{"kind": "closed_book"}, {"kind": "wrong_context"}, {"kind": "oracle"}],
+        # Closed book opted in as the control: shown nothing, so all its correct answers are memory.
+        "grading": {**CONFIG["grading"], "evidence_support": {"systems": ["closed_book", "wrong_context", "oracle"]}},
+    }
+    ctx = _context(tmp_path, from_memory=True, config=config)
+    run_pipeline([stage() for stage in STAGES], ctx)
+
+    board = {s.system: s for s in ctx.summary.systems}
+    assert all(s.accuracy.value == 1.0 for s in board.values())
+    assert board["closed_book"].memory_suspect == 3 and board["closed_book"].grounded_accuracy.value == 0.0
+    assert board["closed_book"].memory_suspect_questions == ["0", "1", "2"]
+    assert board["oracle"].grounded_accuracy.value == 1.0 and board["oracle"].memory_suspect == 0
+    # Only "Sylvania" is in the Sylvania article; the other two came from memory.
+    assert board["wrong_context"].supported == 1 and board["wrong_context"].memory_suspect == 2
+    assert board["wrong_context"].memory_suspect_questions == ["0", "1"]
+    assert board["wrong_context"].grounded_accuracy.value == pytest.approx(1 / 3)
+    grounded_pairs = {(t.a, t.b): t for t in ctx.summary.pairwise_grounded}
+    assert grounded_pairs[("closed_book", "oracle")].b_only == 3
+    report = ctx.store.path("report.md").read_text()
+    assert "Memory-suspect questions" in report and "**closed_book**: 0, 1, 2" in report
+    # Closed book is shown nothing, so its verdicts need no judge call.
+    support_calls = [r for r in ctx.services.llm.requests if r.prompt_version == "evidence-support-v1"]
+    assert len(support_calls) == 3 + 3
 
 
 def test_resume_does_not_repeat_paid_work(tmp_path: Path) -> None:

@@ -19,7 +19,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from benchmarks.harness.models import AskItem, CallUsage, Prediction, RetrievedChunk, SystemFailure
+from benchmarks.harness.evidence import captured, empty, unavailable
+from benchmarks.harness.models import AskItem, CallUsage, Evidence, EvidencePassage, Prediction, RetrievedChunk, SystemFailure
 from benchmarks.harness.systems.base import AdapterCapabilities, PreparedCorpus, no_context_failure
 from benchmarks.harness.systems.baselines.answering import usage_fields
 from benchmarks.harness.systems.openwebui.client import InstanceSettings
@@ -141,6 +142,33 @@ def retrieved_chunks(body: dict[str, Any], url_of_file: dict[str, str]) -> list[
     return chunks
 
 
+EVIDENCE_SOURCE = "openwebui_sources"
+
+
+def evidence_of(body: dict[str, Any]) -> Evidence:
+    """The chunk texts Open WebUI put in the prompt (`sources[].document`,
+    parallel to `metadata`). Every chunk counts, mapped to the corpus or not:
+    the model read it either way."""
+    passages: list[EvidencePassage] = []
+    sources = body.get("sources") or []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        documents = source.get("document") or []
+        metadata = source.get("metadata") or []
+        for i, text in enumerate(documents):
+            if not isinstance(text, str) or not text:
+                continue
+            meta = metadata[i] if i < len(metadata) and isinstance(metadata[i], dict) else {}
+            name = meta.get("name") or meta.get("source") or (source.get("source") or {}).get("name") or ""
+            passages.append(EvidencePassage(header=f"{name}\n" if name else "", text=text))
+    if passages:
+        return captured(passages, EVIDENCE_SOURCE)
+    if sources:
+        return unavailable(EVIDENCE_SOURCE, "Open WebUI returned sources without chunk text")
+    return empty(EVIDENCE_SOURCE)
+
+
 class OpenWebUIAdapter:
     capabilities = AdapterCapabilities(ingests_corpus=True, reads_index="openwebui")
 
@@ -215,6 +243,7 @@ class OpenWebUIAdapter:
             "context_urls": list(dict.fromkeys(c.url for c in chunks)),
             "queries": tool_calls(response),
             "error": error,
+            "evidence": evidence_of(response),
             **usage_fields(call_usage_of(response), self._price),
         })
 

@@ -1,0 +1,22 @@
+You are auditing a question-answering system that was told to answer only from the evidence it was shown. Decide whether its answer was derived from that evidence, or from outside knowledge such as a language model's training data.
+
+Question: {question}
+
+Answer given by the system:
+{answer}
+
+Evidence the system was shown:
+{evidence}
+
+Judge only against the evidence above, not your own knowledge, and do not judge whether the answer is correct. Identify the facts the answer's final conclusion depends on, and check whether each is stated in the evidence.
+
+- Combining facts that are each stated in the evidence counts as supported.
+- Arithmetic, counting, or date calculations over values stated in the evidence count as supported.
+- A fact the final answer needs that appears nowhere in the evidence is not supported, even if it is true or well known.
+- Ignore details that do not affect the final answer.
+
+Use SUPPORTED when every fact the final answer depends on is stated in, or calculable from, the evidence. Use PARTIAL when some of those facts are stated and others are not. Use UNSUPPORTED when the fact or facts that decide the final answer are absent from the evidence.
+
+Reply with exactly two lines:
+Reason: <one sentence naming the decisive fact and whether the evidence states it>
+Evidence support: SUPPORTED, PARTIAL or UNSUPPORTED

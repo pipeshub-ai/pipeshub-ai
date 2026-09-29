@@ -146,6 +146,20 @@ class SystemConfig(_Frozen):
         return self.label or self.kind
 
 
+class EvidenceSupportConfig(_Frozen):
+    """The judge-time check that correct answers rest on the context their
+    system was shown (`grading/evidence_support.py`)."""
+
+    # "primary"/"secondary" name a configured judge; a selector names another.
+    judge: Literal["primary", "secondary"] | ModelSelector = "primary"
+    # What one check may show the judge; larger evidence is cut to the
+    # passages (and their neighbours) that best match the question and answer.
+    max_evidence_tokens: int = Field(default=6_000, ge=500, le=200_000)
+    # System ids to verify; None = every system except closed book, which is
+    # shown nothing and so has nothing to check.
+    systems: tuple[str, ...] | None = None
+
+
 class GradingConfig(_Frozen):
     primary: ModelSelector
     secondary: ModelSelector | None = None
@@ -154,6 +168,17 @@ class GradingConfig(_Frozen):
     max_claims: int = Field(default=8, ge=1, le=32)
     fuzzy_threshold: int = Field(default=90, ge=50, le=100)
     concurrency: int = Field(default=8, ge=1, le=32)
+    evidence_support: EvidenceSupportConfig = EvidenceSupportConfig()
+
+    def evidence_judge(self) -> ModelSelector:
+        judge = self.evidence_support.judge
+        if judge == "primary":
+            return self.primary
+        if judge == "secondary":
+            if self.secondary is None:
+                raise ConfigError("grading.evidence_support.judge is `secondary`, but no secondary judge is configured")
+            return self.secondary
+        return judge
 
 
 class GuardConfig(_Frozen):
@@ -197,7 +222,16 @@ class RunConfig(_Frozen):
             raise ValueError("at least one system is required")
         if len(ids) != len(set(ids)):
             raise ValueError(f"system labels must be unique, got {ids}")
+        unknown = set(self.grading.evidence_support.systems or ()) - set(ids)
+        if unknown:
+            raise ValueError(f"grading.evidence_support.systems names unknown systems {sorted(unknown)}")
         return self
+
+    def evidence_verified_systems(self) -> set[str]:
+        chosen = self.grading.evidence_support.systems
+        if chosen is not None:
+            return set(chosen)
+        return {system.id for system in self.systems if system.kind != "closed_book"}
 
     def config_hash(self) -> str:
         """Identifies what the run measures — not how it is driven.
@@ -206,13 +240,16 @@ class RunConfig(_Frozen):
         from OpenAI or Azure is the same model. So are concurrency, budget
         caps and bootstrap sample count: raising a cost ceiling to let a
         stalled run finish changed nothing about what was measured, and
-        refusing to resume it would throw away everything already paid for."""
+        refusing to resume it would throw away everything already paid for.
+        The evidence-support settings are left out too: they only audit
+        answers already given, and runs started before the check existed
+        must still resume to be verified."""
         payload = self.model_dump_json(exclude={
             "pipeshub": _ENDPOINT_FIELDS,
             "qdrant": _QDRANT_ENDPOINT_FIELDS,
             "answerer": _ROUTING_FIELDS,
             "embedding": _ROUTING_FIELDS,
-            "grading": {"primary": _ROUTING_FIELDS, "secondary": _ROUTING_FIELDS},
+            "grading": {"primary": _ROUTING_FIELDS, "secondary": _ROUTING_FIELDS, "evidence_support": True},
             "limits": _LIMITS_FIELDS,
             "stats": _STATS_FIELDS,
             "systems": {"__all__": _OPERATIONAL_FIELDS},

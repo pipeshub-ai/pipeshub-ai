@@ -24,12 +24,14 @@ from benchmarks.harness.stages import (
     AskStage,
     CorpusStage,
     DatasetStage,
+    EvidenceStage,
     GradeStage,
     LoadPreparedStage,
     PrepareStage,
     ReportStage,
     ScoreStage,
     SearchStage,
+    SupportStage,
 )
 # Importing a dataset module registers it; add new datasets here.
 import benchmarks.datasets.frames.plugin  # noqa: F401
@@ -44,15 +46,22 @@ PIPELINES: dict[str, Callable[[], list[Stage]]] = {
     "corpus": lambda: [DatasetStage(), CorpusStage()],
     "run": lambda: [
         DatasetStage(), CorpusStage(reuse_existing=True), PrepareStage(), AskStage(), SearchStage(),
-        GradeStage(), ScoreStage(), ReportStage(),
+        GradeStage(), EvidenceStage(), SupportStage(), ScoreStage(), ReportStage(),
     ],
     "grade": lambda: [
-        DatasetStage(), CorpusStage(load_only=True), LoadPreparedStage(), GradeStage(), ScoreStage(), ReportStage(),
+        DatasetStage(), CorpusStage(load_only=True), LoadPreparedStage(), GradeStage(),
+        EvidenceStage(), SupportStage(), ScoreStage(), ReportStage(),
+    ],
+    # Evidence reconstruction and support judging alone, for a run graded
+    # before they existed or whose vector store was down at the time.
+    "verify": lambda: [
+        DatasetStage(), CorpusStage(load_only=True), LoadPreparedStage(),
+        EvidenceStage(), SupportStage(), ScoreStage(), ReportStage(),
     ],
     "score": lambda: [DatasetStage(), CorpusStage(load_only=True), LoadPreparedStage(), ScoreStage(), ReportStage()],
     "report": lambda: [DatasetStage(), CorpusStage(load_only=True), LoadPreparedStage(), ReportStage()],
 }
-_NEEDS_RESUME = {"grade", "score", "report"}
+_NEEDS_RESUME = {"grade", "verify", "score", "report"}
 
 
 def build_parser() -> argparse.ArgumentParser:

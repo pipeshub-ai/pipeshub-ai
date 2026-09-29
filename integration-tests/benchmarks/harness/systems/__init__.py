@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from benchmarks.harness.config import RunConfig, SystemConfig
 from benchmarks.harness.corpus.view import CorpusView
 from benchmarks.harness.errors import ConfigError
+from benchmarks.harness.evidence import EvidenceBuilder, UnavailableBuilder
 from benchmarks.harness.models import CorpusManifest, IndexReport, IngestManifest
 from benchmarks.harness.pricing import price_for
 from benchmarks.harness.systems.base import AdapterCapabilities, CorpusIngestor, PreparedCorpus, SystemAdapter
@@ -25,6 +26,13 @@ from benchmarks.harness.systems.openwebui.adapter import OpenWebUIAdapter
 from benchmarks.harness.systems.openwebui.client import InstanceSettings, OpenWebUIClient
 from benchmarks.harness.systems.openwebui.ingest import OpenWebUIIngestor
 from benchmarks.harness.systems.pipeshub.adapter import PipesHubAdapter
+from benchmarks.harness.systems.pipeshub.evidence import TraceEvidenceBuilder
+from benchmarks.harness.systems.rag.evidence import (
+    EVIDENCE_SOURCE as RAG_EVIDENCE_SOURCE,
+    PipesHubChunkTexts,
+    RagEvidenceBuilder,
+    StandardChunkTexts,
+)
 from benchmarks.harness.systems.pipeshub.indexing import IndexWaiter
 from benchmarks.harness.systems.pipeshub.ingest import PipesHubIngestor
 from benchmarks.harness.systems.pipeshub.kb_api import KnowledgeBaseApi
@@ -49,6 +57,16 @@ AdapterFactory = Callable[[SystemConfig, AdapterDeps], SystemAdapter]
 
 
 @dataclass(frozen=True)
+class EvidenceDeps:
+    """What rebuilding evidence needs: offline, so no adapter is built."""
+
+    config: RunConfig
+    services: Services
+    corpus: CorpusView
+    prepared: PreparedCorpus | None
+
+
+@dataclass(frozen=True)
 class AdapterSpec:
     factory: AdapterFactory
     capabilities: AdapterCapabilities
@@ -57,6 +75,10 @@ class AdapterSpec:
     # config option, not a property of the adapter kind. Declared here so
     # adding a system never means editing the reporting stage.
     index_of: Callable[[SystemConfig], str] | None = None
+    # Rebuilds what the system showed its model when no evidence was
+    # recorded at ask time (the `evidence` stage): always for PipesHub, whose
+    # trace names blocks not text; for RAG runs asked before capture existed.
+    rebuild_evidence: Callable[[SystemConfig, EvidenceDeps], EvidenceBuilder] | None = None
 
     def reads_index(self, system: SystemConfig) -> str:
         return self.index_of(system) if self.index_of else self.capabilities.reads_index
@@ -282,13 +304,30 @@ def _rag_index(system: SystemConfig) -> str:
     return str(system.options.get("index", "pipeshub"))
 
 
+def _pipeshub_evidence(_system: SystemConfig, deps: EvidenceDeps) -> EvidenceBuilder:
+    return TraceEvidenceBuilder(deps.services.pipeshub_points)
+
+
+def _rag_evidence(system: SystemConfig, deps: EvidenceDeps) -> EvidenceBuilder:
+    options = RagOptions(**system.options)
+    if options.index == "standard":
+        if deps.prepared is None or deps.prepared.ingest is None:
+            return UnavailableBuilder(RAG_EVIDENCE_SOURCE, "the run has no standard-index ingest manifest")
+        texts = StandardChunkTexts(lambda: deps.services.qdrant, deps.prepared.ingest.kb_id)
+    else:
+        texts = PipesHubChunkTexts(deps.services.pipeshub_points)
+    return RagEvidenceBuilder(texts, deps.corpus, options.small_to_big)
+
+
 ADAPTER_REGISTRY: dict[str, AdapterSpec] = {
     "closed_book": AdapterSpec(_closed_book, ClosedBookAnswerer.capabilities),
     "oracle": AdapterSpec(_oracle, OracleAnswerer.capabilities, lambda _s: "oracle"),
     "bm25": AdapterSpec(_bm25, Bm25Answerer.capabilities),
-    "pipeshub": AdapterSpec(_pipeshub, PipesHubAdapter.capabilities, lambda _s: "pipeshub"),
-    "naive_rag": AdapterSpec(_naive_rag, RagAnswerer.capabilities, _rag_index),
-    "advanced_rag": AdapterSpec(_advanced_rag, RagAnswerer.capabilities, _rag_index),
+    "pipeshub": AdapterSpec(
+        _pipeshub, PipesHubAdapter.capabilities, lambda _s: "pipeshub", rebuild_evidence=_pipeshub_evidence,
+    ),
+    "naive_rag": AdapterSpec(_naive_rag, RagAnswerer.capabilities, _rag_index, rebuild_evidence=_rag_evidence),
+    "advanced_rag": AdapterSpec(_advanced_rag, RagAnswerer.capabilities, _rag_index, rebuild_evidence=_rag_evidence),
     "openwebui": AdapterSpec(_openwebui, OpenWebUIAdapter.capabilities, lambda _s: "openwebui"),
     "ragflow": AdapterSpec(_ragflow, RagflowAdapter.capabilities, lambda _s: "ragflow"),
 }

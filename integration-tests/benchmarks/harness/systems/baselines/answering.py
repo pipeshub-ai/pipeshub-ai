@@ -15,7 +15,8 @@ from datetime import datetime
 
 from benchmarks.harness.config import FRAMES_SNAPSHOT, ModelPrice
 from benchmarks.harness.llm.client import ChatMessage, LLMClient, LLMRequest, LLMResponse, ResolvedModel
-from benchmarks.harness.models import AskItem, CallUsage, Prediction, SystemFailure
+from benchmarks.harness.evidence import captured
+from benchmarks.harness.models import AskItem, CallUsage, EvidencePassage, Prediction, SystemFailure, render_passages
 from benchmarks.harness.pricing import calls_cost
 from benchmarks.harness.systems.base import AdapterCapabilities, CorpusIngestor, PreparedCorpus, RankedRetriever
 
@@ -26,6 +27,7 @@ ANSWER_PROMPT_VERSION = "frames-answer-v3"
 #: a cached closed-book answer can never be served to a document-bearing run.
 GROUNDED_ANSWER_PROMPT_VERSION = "frames-answer-grounded-v1"
 ANSWER_MAX_TOKENS = 2048
+EVIDENCE_SOURCE = "baseline_prompt_articles"
 _DEFAULT_CONTEXT_TOKENS = 128_000
 _RESERVED_TOKENS = 8_000
 _CHARS_PER_TOKEN = 4
@@ -92,11 +94,15 @@ def fit_documents(docs: Sequence[ContextDocument], max_tokens: int) -> tuple[lis
     return kept, False
 
 
+def document_passages(docs: Sequence[ContextDocument]) -> list[EvidencePassage]:
+    return [EvidencePassage(header=f"### {d.title}\nURL: {d.url}\n\n", text=d.text) for d in docs]
+
+
 def build_messages(
     prompt: str, docs: Sequence[ContextDocument], current_time: datetime = FRAMES_SNAPSHOT,
 ) -> tuple[ChatMessage, ...]:
     if docs:
-        articles = "\n\n".join(f"### {d.title}\nURL: {d.url}\n\n{d.text}" for d in docs)
+        articles = render_passages(document_passages(docs))
         user = f"Wikipedia articles:\n\n{articles}\n\nQuestion: {prompt}"
     else:
         user = f"Question: {prompt}"
@@ -148,6 +154,8 @@ class BaselineAnswerer(ABC):
             })
         return base.model_copy(update={
             "answer": response.text, "latency_ms": int((time.monotonic() - started) * 1000),
+            # Closed book yields `empty`: its answers can only come from memory.
+            "evidence": captured(document_passages(docs), EVIDENCE_SOURCE),
             **usage_fields([call_usage(response, "answer")], self._price, response.cost_usd),
         })
 

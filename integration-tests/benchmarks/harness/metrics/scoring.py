@@ -11,7 +11,7 @@ from benchmarks.harness.metrics.citations import alce_scores, cited_vs_gold, cit
 from benchmarks.harness.metrics.failures import Failure, FailureEvidence, classify
 from benchmarks.harness.metrics.mapping import ArticleResolver
 from benchmarks.harness.metrics.retrieval import recall, tool_counts
-from benchmarks.harness.models import ClaimSupport, Judgment, Prediction, Question, QuestionScore
+from benchmarks.harness.models import ClaimSupport, Judgment, Prediction, Question, QuestionScore, SupportJudgment
 from benchmarks.harness.systems.base import AdapterCapabilities
 
 JudgmentSlot = tuple[str, str]  # (kind, role)
@@ -34,6 +34,7 @@ class ScoringInputs:
     prediction: Prediction
     judgments: Mapping[JudgmentSlot, Judgment]
     claims: Sequence[ClaimSupport]
+    support: SupportJudgment | None = None
 
 
 class Scorer:
@@ -62,6 +63,7 @@ class Scorer:
             correct=primary.correct if primary else None,
             secondary_correct=secondary.correct if secondary else None,
             strict_label=strict.label if strict else None,
+            support_label=inputs.support.label if inputs.support is not None and primary and primary.correct else None,
             n_tool_calls=n_calls, n_searches=n_searches, n_fetches=n_fetches,
             tool_waves=p.trace.tool_waves if p.trace else 0,
             latency_ms=p.latency_ms, cost_usd=p.cost_usd,

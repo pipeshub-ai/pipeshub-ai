@@ -7,7 +7,7 @@ import io
 from collections.abc import Sequence
 
 from benchmarks.harness.models import QuestionScore
-from benchmarks.harness.report.summary import Rate, RunSummary, SystemSummary
+from benchmarks.harness.report.summary import PairwiseTest, Rate, RunSummary, SystemSummary
 
 
 def _pct(value: float | None) -> str:
@@ -28,17 +28,25 @@ def _money(value: float | None) -> str:
     return "–" if value is None else f"${value:.4f}"
 
 
+def _memory_suspect(s: SystemSummary) -> str:
+    if s.memory_suspect_rate is None:
+        return "–"
+    return f"{s.memory_suspect} ({s.memory_suspect_rate.value * 100:.1f}%)"
+
+
 def _board(systems: Sequence[SystemSummary]) -> list[str]:
     rows = [
-        "| System | FRAMES acc % (95% CI) | Strict % | All gold in context % | Context recall % "
+        "| System | FRAMES acc % (95% CI) | Grounded acc % (95% CI) | Memory-suspect | Strict % "
+        "| All gold in context % | Context recall % "
         "| Citation integrity % | ALCE recall % | Correct ∧ grounded % | p95 latency s "
         "| LLM calls / q | Input tok / q | Output tok / q | Cost / q | Cost / correct |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in sorted(systems, key=lambda x: -(x.accuracy.value if x.accuracy else -1)):
         p95 = "–" if s.latency_p95_ms is None else f"{s.latency_p95_ms / 1000:.1f}"
         rows.append(
-            f"| {s.system} | {_rate(s.accuracy)} | {_rate(s.strict_accuracy)} | {_rate(s.all_gold_in_context)} "
+            f"| {s.system} | {_rate(s.accuracy)} | {_rate(s.grounded_accuracy)} | {_memory_suspect(s)} "
+            f"| {_rate(s.strict_accuracy)} | {_rate(s.all_gold_in_context)} "
             f"| {_rate(s.context_recall)} | {_pct(s.citation_integrity)} | {_pct(s.alce_recall)} "
             f"| {_pct(s.correct_and_grounded)} | {p95} | {_num(s.llm_calls_per_question, 1)} "
             f"| {_num(s.input_tokens_per_question)} | {_num(s.output_tokens_per_question)} "
@@ -58,6 +66,31 @@ def _breakdown_table(title: str, systems: Sequence[SystemSummary], attr: str) ->
     return [*lines, ""]
 
 
+_SPLIT_METRICS = (
+    ("FRAMES acc %", "accuracy_by_split"),
+    ("Grounded acc %", "grounded_accuracy_by_split"),
+    ("Memory-suspect %", "memory_suspect_rate_by_split"),
+)
+
+
+def _by_split(systems: Sequence[SystemSummary]) -> list[str]:
+    """Only when the run spans more than one split: a single-split run
+    already says it all on the board."""
+    splits = sorted({split for s in systems for split in s.accuracy_by_split})
+    if len(splits) < 2:
+        return []
+    lines = [
+        "### By split (95% CI)", "",
+        "| Split | Metric | " + " | ".join(s.system for s in systems) + " |",
+        "|---|---" + "|---" * len(systems) + "|",
+    ]
+    for split in splits:
+        for label, attr in _SPLIT_METRICS:
+            cells = [_rate(getattr(s, attr).get(split)) for s in systems]
+            lines.append(f"| {split} | {label} | " + " | ".join(cells) + " |")
+    return [*lines, ""]
+
+
 def _failures(systems: Sequence[SystemSummary]) -> list[str]:
     lines = []
     for s in systems:
@@ -67,6 +100,42 @@ def _failures(systems: Sequence[SystemSummary]) -> list[str]:
             lines += [f"- `{name}`: {count}" for name, count in sorted(s.failures.items(), key=lambda kv: -kv[1])]
             lines.append("")
     return ["### Failure signatures", "", *lines] if lines else []
+
+
+def _evidence_support(systems: Sequence[SystemSummary]) -> list[str]:
+    verified = [s for s in systems if s.support_coverage]
+    if not verified:
+        return []
+    lines = [
+        "### Evidence verification",
+        "",
+        "Every answer the primary judge marked correct is checked against the context its system "
+        "showed the answering model. *Memory-suspect*: judged correct, but the facts it depends on "
+        "are not in that context. A system shown no context (closed book) lands every correct answer there.",
+        "",
+        "| System | Supported | Partial | Memory-suspect | No evidence | Unparseable | Verified % |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for s in verified:
+        lines.append(
+            f"| {s.system} | {s.supported} | {s.partial} | {s.memory_suspect} | {s.no_evidence} "
+            f"| {s.support_unparseable} | {_pct(s.support_coverage)} |",
+        )
+    lines.append("")
+    suspects = [s for s in verified if s.memory_suspect_questions]
+    if suspects:
+        lines += ["Memory-suspect questions:", ""]
+        lines += [f"- **{s.system}**: {', '.join(s.memory_suspect_questions)}" for s in suspects]
+        lines.append("")
+    return lines
+
+
+def _pairwise(title: str, tests: Sequence[PairwiseTest]) -> list[str]:
+    if not tests:
+        return []
+    lines = [f"### {title}", "", "| A | B | A only | B only | p |", "|---|---|---|---|---|"]
+    lines += [f"| {t.a} | {t.b} | {t.a_only} | {t.b_only} | {t.p_value:.4f} |" for t in tests]
+    return [*lines, ""]
 
 
 def render_report(summary: RunSummary) -> str:
@@ -83,13 +152,13 @@ def render_report(summary: RunSummary) -> str:
     if summary.violations:
         lines += ["### Policy violations", "", *[f"- `{v}`" for v in summary.violations], ""]
     lines += ["### Board", "", *_board(summary.systems), ""]
+    lines += _by_split(summary.systems)
     lines += _breakdown_table("Accuracy by reasoning type", summary.systems, "by_reasoning_type")
     lines += _breakdown_table("Accuracy by gold-article count", summary.systems, "by_gold_count")
     lines += _failures(summary.systems)
-    if summary.pairwise:
-        lines += ["### Paired comparisons (exact McNemar)", "", "| A | B | A only | B only | p |", "|---|---|---|---|---|"]
-        lines += [f"| {t.a} | {t.b} | {t.a_only} | {t.b_only} | {t.p_value:.4f} |" for t in summary.pairwise]
-        lines.append("")
+    lines += _evidence_support(summary.systems)
+    lines += _pairwise("Paired comparisons (exact McNemar)", summary.pairwise)
+    lines += _pairwise("Paired comparisons on grounded correctness (exact McNemar)", summary.pairwise_grounded)
     kappas = [f"{s.system}: {s.judge_agreement_kappa:.3f}" for s in summary.systems if s.judge_agreement_kappa is not None]
     if kappas:
         lines += ["Judge agreement (Cohen's κ, primary vs secondary): " + ", ".join(kappas), ""]

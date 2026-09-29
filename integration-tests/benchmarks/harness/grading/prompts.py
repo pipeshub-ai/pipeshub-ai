@@ -52,7 +52,11 @@ CLAIM_SUPPORT = PromptTemplate(
     "claim-support-v1", "claim_support_v1.txt",
     "6554a2f58167bcaf327899c2c4c4ec3168f65ed9be31f28409a2d9d8baf786de",
 )
-ALL_PROMPTS = (FRAMES_AUTORATER, SIMPLEQA_GRADER, CLAIM_SUPPORT)
+EVIDENCE_SUPPORT = PromptTemplate(
+    "evidence-support-v1", "evidence_support_v1.txt",
+    "d2038fbe26c2aa3855bb13efd86b8a7449a3ad4fd406907e2191915ba9387bde",
+)
+ALL_PROMPTS = (FRAMES_AUTORATER, SIMPLEQA_GRADER, CLAIM_SUPPORT, EVIDENCE_SUPPORT)
 
 # The prompts the systems under test ANSWER with. Pinned for the same reason
 # the grader prompts are: editing one silently changes every number in the
@@ -128,3 +132,7 @@ def render_simpleqa_grader(question: str, target: str, predicted: str) -> str:
 
 def render_claim_support(evidence: str, statement: str) -> str:
     return CLAIM_SUPPORT.text().format(evidence=evidence, statement=statement)
+
+
+def render_evidence_support(question: str, answer: str, evidence: str) -> str:
+    return EVIDENCE_SUPPORT.text().format(question=question, answer=answer, evidence=evidence)

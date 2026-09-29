@@ -14,7 +14,7 @@ from benchmarks.datasets.frames.plugin import FramesDataset
 from benchmarks.harness.corpus.view import CorpusView
 from benchmarks.datasets.frames.urls import normalize_wiki_url
 from benchmarks.harness.llm.client import LLMRequest
-from benchmarks.harness.models import AskItem, CallUsage, IngestManifest, QuestionScore
+from benchmarks.harness.models import AskItem, CallUsage, IngestManifest, Prediction, QuestionScore
 from benchmarks.harness.pricing import call_cost, calls_cost
 from benchmarks.harness.report.summary import _cost
 from benchmarks.harness.systems.base import PreparedCorpus
@@ -116,6 +116,13 @@ def url(corpus: CorpusView) -> dict[str, str]:
     return {d.title: d.canonical_url for d in corpus.manifest.documents}
 
 
+CHUNK_TEXT = {"v-garfield": "Garfield's mother was Eliza Ballou.", "v-lane": "Her mother was Jane Buchanan."}
+
+
+def _chunk_text(vrid: str) -> str:
+    return CHUNK_TEXT.get(vrid, f"{vrid}-0")
+
+
 class FakeIndex:
     def __init__(self) -> None:
         self.searches: list[tuple[str, str, int]] = []
@@ -123,8 +130,8 @@ class FakeIndex:
     def search(self, query: str, mode: str, limit: int) -> list[Chunk]:
         self.searches.append((query, mode, limit))
         if "Garfield" in query:
-            return [_chunk("v-garfield", 0, "Garfield's mother was Eliza Ballou.")]
-        return [_chunk("v-lane", 0, "Her mother was Jane Buchanan."), _chunk("v-unknown", 0)]
+            return [_chunk("v-garfield", 0, _chunk_text("v-garfield"))]
+        return [_chunk("v-lane", 0, _chunk_text("v-lane")), _chunk("v-unknown", 0)]
 
 
 def _responder(request: LLMRequest) -> str:
@@ -183,6 +190,42 @@ class TestRag:
     def test_small_to_big_swaps_chunks_for_the_whole_article(self) -> None:
         self._answer(RagOptions(small_to_big=1))
         assert "niece of James Buchanan" in self.llm.requests[0].messages[1].content
+
+    def test_evidence_is_exactly_the_sources_in_the_prompt(self) -> None:
+        prediction = self._answer(RagOptions())
+        user = self.llm.requests[0].messages[1].content
+        sources = user.removeprefix("Sources:\n\n").split(f"\n\nQuestion: {ITEM.prompt}")[0]
+        assert prediction.evidence.status == "captured"
+        assert prediction.evidence.text() == sources == "[1] Harriet Lane\nHer mother was Jane Buchanan."
+        assert not prediction.evidence.truncated and prediction.evidence.chars == len(sources)
+
+    def test_small_to_big_evidence_carries_the_whole_article(self) -> None:
+        prediction = self._answer(RagOptions(small_to_big=1))
+        user = self.llm.requests[0].messages[1].content
+        assert "niece of James Buchanan" in prediction.evidence.text()
+        assert f"Sources:\n\n{prediction.evidence.text()}\n\nQuestion: " in user
+
+    @pytest.mark.parametrize("small_to_big", [0, 1])
+    def test_evidence_rebuilt_later_matches_what_was_captured(self, small_to_big: int) -> None:
+        """Runs asked before capture existed are verified from `retrieved`;
+        the rebuild must be the prompt the answerer actually sent."""
+        from benchmarks.harness.systems.rag.evidence import RagEvidenceBuilder
+
+        prediction = self._answer(RagOptions(small_to_big=small_to_big, transform="expansion"))
+
+        class _Texts:
+            def texts(self, chunks):  # noqa: ANN001, ANN202
+                return {(c.virtual_record_id, c.block_index): _chunk_text(c.virtual_record_id) for c in chunks}
+
+        stored = Prediction.model_validate_json(prediction.model_dump_json())
+        rebuilt = RagEvidenceBuilder(_Texts(), self.corpus, small_to_big).evidence_for(stored)
+        assert rebuilt.status == "reconstructed" and prediction.evidence.status == "captured"
+        assert rebuilt.text() == prediction.evidence.text()
+        assert rebuilt.sha256 == prediction.evidence.sha256 and rebuilt.reason is None
+
+    def test_evidence_is_not_serialised_into_predictions(self) -> None:
+        prediction = self._answer(RagOptions())
+        assert "evidence" not in prediction.model_dump_json()
 
     def test_rerank_depth_defaults_to_twice_top_k(self) -> None:
         assert RagOptions(top_k=20, rerank=True).depth == 40
