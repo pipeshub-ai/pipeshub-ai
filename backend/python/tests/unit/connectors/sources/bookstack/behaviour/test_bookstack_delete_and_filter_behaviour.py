@@ -34,6 +34,8 @@ class FakeBookStack:
         self.audit: list[dict[str, Any]] = []
         self.listing_error_at_offset: int | None = None
         self.lookup_error_for: set[int] = set()
+        self.missed_by_listing: set[int] = set()
+        self.delete_log_errors = 0
 
     def add_page(self, page_id: int, book_id: int = KEPT_BOOK, revision: int = 1) -> None:
         self.pages[page_id] = {
@@ -61,12 +63,15 @@ class FakeBookStack:
         offset = offset or 0
         if self.listing_error_at_offset is not None and offset >= self.listing_error_at_offset:
             return self._body({"error": {"code": 500, "message": "Server Error"}})
-        ordered = [self.pages[k] for k in sorted(self.pages)]
+        ordered = [self.pages[k] for k in sorted(self.pages) if k not in self.missed_by_listing]
         return self._body({"data": ordered[offset:offset + (count or 100)], "total": len(ordered)})
 
     async def list_audit_log(self, count: int | None = None, offset: int | None = None,
                              sort: str | None = None, filter: dict[str, str] | None = None) -> BookStackResponse:  # noqa: A002
         wanted = (filter or {}).get("type")
+        if wanted == "page_delete" and self.delete_log_errors:
+            self.delete_log_errors -= 1
+            return BookStackResponse(success=True, data={"error": {"code": 429, "message": "Too many requests"}})
         events = [e for e in self.audit if e["type"] == wanted]
         offset = offset or 0
         page = events[offset:offset + (count or 100)]
@@ -85,6 +90,7 @@ class FakeRecordStore:
         self.records: dict[str, Any] = {}
         self.deleted: list[str] = []
         self.fail_scan = False
+        self.fail_delete = False
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         found = self.records.get(external_record_id)
@@ -116,6 +122,8 @@ class FakeRecordStore:
         return None
 
     async def on_record_deleted(self, record_id: str) -> None:
+        if self.fail_delete:
+            raise RuntimeError("graph unavailable")
         match = next((k for k, r in self.records.items() if r.id == record_id), None)
         if match is not None:
             del self.records[match]
@@ -198,16 +206,46 @@ async def test_a_page_restored_before_the_sync_keeps_its_record(world) -> None:
     assert "page/2" in store.records
 
 
-async def test_a_delete_bookstack_cannot_confirm_removes_nothing(world) -> None:
+async def test_a_delete_bookstack_cannot_confirm_is_kept_and_retried(world) -> None:
     source, store, connector = world
     await connector._sync_records()
     source.delete_page(2)
     source.lookup_error_for.add(2)
 
     await connector._sync_records()
-
     assert store.deleted == []
     assert "page/2" in store.records
+
+    source.lookup_error_for.clear()
+    await connector._sync_records()
+    assert store.deleted == ["page/2"]
+
+
+async def test_a_throttled_audit_log_holds_the_cursor_until_the_delete_is_read(world) -> None:
+    source, store, connector = world
+    await connector._sync_records()
+    source.delete_page(2)
+    source.delete_log_errors = 1
+
+    await connector._sync_records()
+    assert store.deleted == []
+
+    await connector._sync_records()
+    assert store.deleted == ["page/2"]
+
+
+async def test_a_delete_that_fails_to_save_is_retried(world) -> None:
+    source, store, connector = world
+    await connector._sync_records()
+    source.delete_page(2)
+    store.fail_delete = True
+
+    await connector._sync_records()
+    assert "page/2" in store.records
+
+    store.fail_delete = False
+    await connector._sync_records()
+    assert store.deleted == ["page/2"]
 
 
 async def test_every_delete_in_a_long_audit_log_is_applied(world) -> None:
@@ -246,7 +284,7 @@ async def test_a_full_sync_removes_a_page_deleted_while_incremental_syncs_missed
     assert store.deleted == ["page/3"]
 
 
-async def test_a_listing_that_fails_part_way_removes_nothing(world) -> None:
+async def test_a_listing_that_fails_part_way_removes_nothing_until_a_full_listing(world) -> None:
     source, store, connector = world
     await connector._sync_records()
 
@@ -257,6 +295,37 @@ async def test_a_listing_that_fails_part_way_removes_nothing(world) -> None:
 
     assert store.deleted == []
     assert "page/4" in store.records
+
+    source.listing_error_at_offset = None
+    await connector._sync_records()
+    assert store.deleted == ["page/4"]
+
+
+async def test_a_page_the_listing_skipped_is_kept_when_bookstack_still_has_it(world) -> None:
+    source, store, connector = world
+    await connector._sync_records()
+    source.missed_by_listing.add(2)
+
+    _full_sync(connector)
+    await connector._sync_records()
+
+    assert store.deleted == []
+    assert "page/2" in store.records
+
+
+async def test_an_unlisted_page_whose_lookup_fails_is_kept_and_rechecked(world) -> None:
+    source, store, connector = world
+    await connector._sync_records()
+    source.pages.pop(3)
+    source.lookup_error_for.add(3)
+
+    _full_sync(connector)
+    await connector._sync_records()
+    assert store.deleted == []
+
+    source.lookup_error_for.clear()
+    await connector._sync_records()
+    assert store.deleted == ["page/3"]
 
 
 async def test_a_listing_bookstack_refuses_outright_removes_nothing(world) -> None:
