@@ -4127,6 +4127,11 @@
       "hidePassword": "Hide password",
       "accountDisabled": "Your account has been disabled.",
       "tooManyIncorrectCredentials": "You have entered incorrect credentials too many times"
+    },
+    "desktopHandoff": {
+      "title": "Sign-in sent to PipesHub",
+      "description": "You can close this tab and return to the PipesHub app.",
+      "openApp": "Open PipesHub"
     }
   },
   "healthGate": {

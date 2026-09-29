@@ -4125,6 +4125,11 @@
       "hidePassword": "Ocultar contraseña",
       "accountDisabled": "Su cuenta se ha deshabilitado.",
       "tooManyIncorrectCredentials": "Ha introducido credenciales incorrectas demasiadas veces"
+    },
+    "desktopHandoff": {
+      "title": "Inicio de sesión enviado a PipesHub",
+      "description": "Puedes cerrar esta pestaña y volver a la aplicación de PipesHub.",
+      "openApp": "Abrir PipesHub"
     }
   },
   "healthGate": {

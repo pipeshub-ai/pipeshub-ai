@@ -4102,6 +4102,11 @@
       "hidePassword": "隱藏密碼",
       "accountDisabled": "您的帳戶已停用。",
       "tooManyIncorrectCredentials": "您輸入錯誤憑證的次數過多"
+    },
+    "desktopHandoff": {
+      "title": "登入已傳送至 PipesHub",
+      "description": "您可以關閉此分頁並返回 PipesHub 應用程式。",
+      "openApp": "開啟 PipesHub"
     }
   },
   "healthGate": {

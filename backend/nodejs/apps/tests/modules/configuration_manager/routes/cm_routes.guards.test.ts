@@ -37,6 +37,10 @@ const MEMBER_ROUTES = new Set([
   'GET /web-search',
 ]);
 
+// Routes anyone may call, with no session. Each returns only a value the
+// caller could already learn without signing in.
+const PUBLIC_ROUTES = new Set(['GET /public/desktopFrontendUrl']);
+
 interface RouteLayer {
   route?: {
     path: string;
@@ -96,14 +100,23 @@ describe('Configuration manager routes: who may call them', () => {
   });
 
   const isInternal = (r: InspectedRoute) => r.path.startsWith('/internal/');
+  const isPublic = (r: InspectedRoute) => PUBLIC_ROUTES.has(r.id);
   const memberMayCall = (r: InspectedRoute) => MEMBER_ROUTES.has(r.id);
 
   it('finds the routes it is meant to check', () => {
     expect(routes.length).to.be.greaterThan(60);
     const ids = routes.map((r) => r.id);
-    for (const id of MEMBER_ROUTES) {
+    for (const id of [...MEMBER_ROUTES, ...PUBLIC_ROUTES]) {
       expect(ids, id).to.include(id);
     }
+  });
+
+  it('keeps every public route under /public/ and every /public/ route on the list', () => {
+    const misplaced = routes
+      .filter((r) => isPublic(r) !== r.path.startsWith('/public/'))
+      .map((r) => r.id);
+
+    expect(misplaced).to.deep.equal([]);
   });
 
   it('checks the service token first on every internal route, and never takes a user session', () => {
@@ -117,7 +130,7 @@ describe('Configuration manager routes: who may call them', () => {
 
   it('puts every other route behind a signed-in user', () => {
     const open = routes
-      .filter((r) => !isInternal(r))
+      .filter((r) => !isInternal(r) && !isPublic(r))
       .filter((r) => r.handlers[0] !== authenticate)
       .map((r) => r.id);
 
@@ -126,7 +139,7 @@ describe('Configuration manager routes: who may call them', () => {
 
   it('requires an admin on every user route except the listed member routes', () => {
     const missingAdmin = routes
-      .filter((r) => !isInternal(r) && !memberMayCall(r))
+      .filter((r) => !isInternal(r) && !isPublic(r) && !memberMayCall(r))
       .filter((r) => !r.handlers.includes(userAdminCheck))
       .map((r) => r.id);
 

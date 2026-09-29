@@ -48,7 +48,10 @@ export function ensureDesktopFrontendOrigin(): Promise<void> {
   if (!isElectron() || getFrontendOrigin()) return Promise.resolve();
   if (!frontendOriginRequest) {
     frontendOriginRequest = publicAuthClient
-      .get<{ frontendUrl?: string }>('/api/v1/userAccount/frontend-url', desktopClientConfig())
+      .get<{ frontendUrl?: string }>(
+        '/api/v1/configurationManager/public/desktopFrontendUrl',
+        desktopClientConfig(),
+      )
       .then((response) => {
         rememberFrontendOrigin(response.data?.frontendUrl);
       })

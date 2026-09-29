@@ -4097,6 +4097,11 @@
       "hidePassword": "Passwort verbergen",
       "accountDisabled": "Ihr Konto wurde deaktiviert.",
       "tooManyIncorrectCredentials": "Sie haben zu oft falsche Anmeldedaten eingegeben"
+    },
+    "desktopHandoff": {
+      "title": "Anmeldung an PipesHub gesendet",
+      "description": "Sie können diesen Tab schließen und zur PipesHub-App zurückkehren.",
+      "openApp": "PipesHub öffnen"
     }
   },
   "healthGate": {

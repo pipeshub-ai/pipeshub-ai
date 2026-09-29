@@ -4102,6 +4102,11 @@
       "hidePassword": "비밀번호 숨기기",
       "accountDisabled": "계정이 비활성화되었습니다.",
       "tooManyIncorrectCredentials": "잘못된 자격 증명을 너무 여러 번 입력했습니다"
+    },
+    "desktopHandoff": {
+      "title": "로그인이 PipesHub로 전송되었습니다",
+      "description": "이 탭을 닫고 PipesHub 앱으로 돌아가세요.",
+      "openApp": "PipesHub 열기"
     }
   },
   "healthGate": {

@@ -1,6 +1,7 @@
 'use client';
 
 import { Button, Flex, Heading, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 
 /**
  * Shown once an OAuth result has been handed to the PipesHub desktop app.
@@ -11,6 +12,8 @@ import { Button, Flex, Heading, Text } from '@radix-ui/themes';
  * here is the guaranteed path, so it is never hidden behind a delay.
  */
 export default function DesktopHandoffNotice({ deepLink }: { deepLink: string }) {
+  const { t } = useTranslation();
+
   return (
     <Flex
       align="center"
@@ -19,12 +22,12 @@ export default function DesktopHandoffNotice({ deepLink }: { deepLink: string })
       gap="3"
       style={{ height: '100vh', padding: 'var(--space-4)', textAlign: 'center' }}
     >
-      <Heading size="4">Sign-in sent to PipesHub</Heading>
+      <Heading size="4">{t('auth.desktopHandoff.title')}</Heading>
       <Text size="2" color="gray">
-        You can close this tab and return to the PipesHub app.
+        {t('auth.desktopHandoff.description')}
       </Text>
       <Button asChild size="2" variant="soft">
-        <a href={deepLink}>Open PipesHub</a>
+        <a href={deepLink}>{t('auth.desktopHandoff.openApp')}</a>
       </Button>
     </Flex>
   );

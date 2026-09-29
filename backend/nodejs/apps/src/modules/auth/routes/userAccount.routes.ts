@@ -1,4 +1,4 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -62,22 +62,6 @@ export function createUserAccountRouter(container: Container) {
     },
   );
 
-  // Desktop only, and unauthenticated because the app calls it from the
-  // sign-in screen before any session exists. See the controller for why the
-  // header check is a filter rather than a boundary.
-  router.get(
-    '/frontend-url',
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const userAccountController = container.get<UserAccountController>(
-          'UserAccountController',
-        );
-        await userAccountController.getDesktopFrontendUrl(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
   const authenticateBody = z.object({
     method: z.string().min(1, 'Authentication method is required'),
     credentials: z.union([
