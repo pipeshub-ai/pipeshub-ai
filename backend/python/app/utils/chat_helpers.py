@@ -2128,6 +2128,31 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_count,
         )
 
+def with_document_title(context_metadata: str, record: dict[str, Any]) -> str:
+    """Record header with the document's own title under its name.
+
+    An uploaded file is named after its stored file name; the title the
+    document gives itself is kept on its blocks container at parse time and
+    only shown when it says something the name does not.
+    """
+    containers = record.get("block_containers")
+    title = containers.get("document_title") if isinstance(containers, dict) else None
+    if not isinstance(title, str) or not " ".join(title.split()):
+        return context_metadata
+    title = " ".join(title.split())
+    name = str(record.get("record_name") or "")
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    if title.casefold() in (name.strip().casefold(), stem.strip().casefold()):
+        return context_metadata
+    line = f"Document Title: {title}"
+    if not context_metadata:
+        return line
+    lines = context_metadata.split("\n")
+    at = next((i + 1 for i, text in enumerate(lines) if text.startswith("Name: ")), len(lines))
+    lines.insert(at, line)
+    return "\n".join(lines)
+
+
 def _attach_section_paths(
     flattened_results: list[dict[str, Any]],
     virtual_record_id_to_result: dict[str, Any],
@@ -3053,6 +3078,9 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                         )
                 else:
                     record["context_metadata"] = ""
+                record["context_metadata"] = with_document_title(
+                    record["context_metadata"], record
+                )
 
                 # Code blocks are addressed by (file path, symbol id), and the
                 # path exists only on the codeFiles node -- not in the blob.

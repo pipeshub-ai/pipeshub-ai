@@ -199,6 +199,18 @@ async def test_section_repeating_the_title_is_not_embedded_twice():
 
 
 @pytest.mark.asyncio
+async def test_document_title_names_the_record_in_the_embedding():
+    vs, capture = _capturing_vectorstore()
+    container = BlocksContainer(
+        blocks=[_in_section(_text_block(0, "Body."), "Scope")], document_title="Release Notes",
+    )
+
+    await _index_record(vs, container, _record(name="upload_8f2c.html"))
+
+    assert capture.dense == ["Release Notes › Scope\nBody."]
+
+
+@pytest.mark.asyncio
 async def test_blocks_parsed_before_section_paths_embed_as_before():
     vs, capture = _capturing_vectorstore()
 

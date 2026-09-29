@@ -579,6 +579,12 @@ def _process_text_blocks(
     )
 
 
+def _document_title(block_containers: object) -> str:
+    """The title the parser found in the document itself, when it found one."""
+    title = getattr(block_containers, "document_title", None)
+    return title.strip() if isinstance(title, str) else ""
+
+
 def _record_title(record: Optional["Record"]) -> str:
     """The record's name as a title: a stored file name loses its extension."""
     name = (getattr(record, "record_name", None) or "").strip() if record is not None else ""
@@ -707,6 +713,7 @@ class VectorStore(Transformer):
                     bg for bg in block_containers.block_groups
                     if bg.id in blocks_to_index_ids
                 ],
+                document_title=_document_title(block_containers) or None,
             )
 
         return await self.index_documents(
@@ -1716,7 +1723,9 @@ class VectorStore(Transformer):
             )
 
             documents_to_embed: List = []
-            record_title = _record_title(record)
+            record_title = (
+                _document_title(block_containers) or _record_title(record)
+            )
 
             # ── Code blocks ──
             if code_blocks:

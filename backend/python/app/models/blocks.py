@@ -524,6 +524,11 @@ class BlockGroups(BaseModel):
 class BlocksContainer(BaseModel):
     block_groups: list[BlockGroup] = Field(default_factory=list)
     blocks: list[Block] = Field(default_factory=list)
+    document_title: Optional[str] = Field(
+        default=None,
+        description="Title the document gives itself (e.g. HTML <title>), when it differs from "
+        "how the record is named; the record name is left as the user sees it.",
+    )
 
     def extend(self, other: 'BlocksContainer') -> None:
         """Append *other*'s content, rebasing its indices onto this container.
@@ -536,6 +541,8 @@ class BlocksContainer(BaseModel):
         """
         block_offset = len(self.blocks)
         group_offset = len(self.block_groups)
+        if not self.document_title and other.document_title:
+            self.document_title = other.document_title
 
         for block in other.blocks:
             block.index += block_offset

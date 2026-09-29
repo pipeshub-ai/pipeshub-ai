@@ -1587,6 +1587,12 @@ class Processor:
                 caption_map=caption_map if caption_map else None,
                 name=recordName,
             )
+            self.logger.debug(
+                "HTML record %s parsed: %d blocks, document title %s",
+                recordId,
+                len(block_containers.blocks),
+                "found" if getattr(block_containers, "document_title", None) else "absent",
+            )
 
             # Signal parsing complete
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
