@@ -32,8 +32,9 @@ on:
       - 'backend/python/tests/integration/messaging/**'
       - 'backend/python/tests/integration/vector_db/**'
       - 'backend/python/tests/integration/kv/**'
-      # Top-level files: where real-graph tests live.
+      # Where real-graph tests live.
       - 'backend/python/tests/integration/*.py'
+      - 'backend/python/tests/integration/graph_db/**'
       - 'backend/python/pyproject.toml'
       - 'deployment/docker-compose/docker-compose.integration.messaging.yml'
       - 'deployment/docker-compose/docker-compose.integration.vector-db.yml'

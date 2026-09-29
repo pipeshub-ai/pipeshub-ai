@@ -1073,16 +1073,100 @@ class TestDeleteRecordsInKb:
 # ===========================================================================
 
 
+def _folder_tree(service, children_of):
+    """Answer is_record_descendant_of from a {folder_id: {descendant ids}} map."""
+    async def is_descendant(record_id, ancestor_id, transaction=None):
+        return record_id in children_of.get(ancestor_id, set())
+    service.graph_provider.is_record_descendant_of = AsyncMock(side_effect=is_descendant)
+
+
 class TestDeleteRecordsInFolder:
     @pytest.mark.asyncio
     async def test_success(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        _folder_tree(service, {"f1": {"r1"}})
 
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
         assert result["success"] is True
         service.processor.on_records_deleted_cascade.assert_awaited_once_with(["r1"], "kb1")
+
+    @pytest.mark.asyncio
+    async def test_a_record_outside_the_folder_is_not_deleted(self, service):
+        _setup_writer(service)
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        _folder_tree(service, {"f1": {"in-f1", "in-sub-of-f1"}, "f2": {"in-f2"}})
+        service.processor.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True, "total_requested": 2, "successfully_deleted": 2,
+            "failed_records": [], "failed_count": 0,
+        })
+
+        result = await service.delete_records_in_folder(
+            "kb1", "f1", ["in-f1", "in-f2", "root-record", "in-sub-of-f1"], "user1"
+        )
+
+        service.processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["in-f1", "in-sub-of-f1"], "kb1"
+        )
+        assert result["success"] is True
+        assert result["total_requested"] == 4
+        assert result["failed_count"] == 2
+        assert {f["record_id"] for f in result["failed_records"]} == {"in-f2", "root-record"}
+
+    @pytest.mark.asyncio
+    async def test_only_records_outside_the_folder_returns_404_and_deletes_nothing(self, service):
+        _setup_writer(service)
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        _folder_tree(service, {"f1": {"in-f1"}, "f2": {"in-f2"}})
+        # What the real cascade returns for an empty id list.
+        service.processor.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True, "deleted_records": [], "failed_records": [],
+            "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
+        })
+
+        result = await service.delete_records_in_folder("kb1", "f1", ["in-f2", "f1"], "user1")
+
+        assert result["success"] is False
+        assert result["code"] == 404
+        assert {f["record_id"] for f in result["failed_records"]} == {"in-f2", "f1"}
+        service.processor.on_records_deleted_cascade.assert_awaited_once_with([], "kb1")
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_membership_check_keeps_the_record(self, service):
+        _setup_writer(service)
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        # Both providers answer False when the traversal query fails.
+        service.graph_provider.is_record_descendant_of = AsyncMock(return_value=False)
+
+        await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
+
+        assert service.processor.on_records_deleted_cascade.await_args.args[0] == []
+
+    @pytest.mark.asyncio
+    async def test_repeated_ids_are_checked_and_deleted_once(self, service):
+        _setup_writer(service)
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        _folder_tree(service, {"f1": {"r1"}})
+
+        await service.delete_records_in_folder("kb1", "f1", ["r1", "r1"], "user1")
+
+        assert service.graph_provider.is_record_descendant_of.await_count == 1
+        service.processor.on_records_deleted_cascade.assert_awaited_once_with(["r1"], "kb1")
+
+    @pytest.mark.asyncio
+    async def test_many_ids_are_checked_in_bounded_batches(self, service):
+        from app.connectors.sources.localKB.handlers import kb_service as kb_module
+
+        _setup_writer(service)
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        ids = [f"r{i}" for i in range(kb_module.FOLDER_MEMBERSHIP_CHECK_BATCH * 2 + 3)]
+        _folder_tree(service, {"f1": set(ids)})
+
+        await service.delete_records_in_folder("kb1", "f1", ids, "user1")
+
+        assert service.graph_provider.is_record_descendant_of.await_count == len(ids)
+        service.processor.on_records_deleted_cascade.assert_awaited_once_with(ids, "kb1")
 
     @pytest.mark.asyncio
     async def test_insufficient_permission(self, service):
@@ -1106,6 +1190,7 @@ class TestDeleteRecordsInFolder:
     async def test_none_matched_returns_404(self, service):
         _setup_writer(service)
         service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        _folder_tree(service, {"f1": {"r1"}})
         service.processor.on_records_deleted_cascade = AsyncMock(return_value={
             "success": True,
             "total_requested": 1,
@@ -1120,6 +1205,7 @@ class TestDeleteRecordsInFolder:
     async def test_processor_failure(self, service):
         _setup_writer(service)
         service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        _folder_tree(service, {"f1": {"r1"}})
         service.processor.on_records_deleted_cascade = AsyncMock(return_value={
             "success": False,
             "reason": "delete failed",
@@ -1132,6 +1218,7 @@ class TestDeleteRecordsInFolder:
     async def test_processor_returns_none(self, service):
         _setup_writer(service)
         service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        _folder_tree(service, {"f1": {"r1"}})
         service.processor.on_records_deleted_cascade = AsyncMock(return_value=None)
 
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
