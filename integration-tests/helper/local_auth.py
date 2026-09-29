@@ -13,6 +13,7 @@ import time
 from typing import Tuple
 
 import requests
+from pydantic import BaseModel, Field, ValidationError
 
 
 # Every scope the backend defines (OAuthScopeNames in oauth-scopes.enum.ts):
@@ -122,13 +123,11 @@ def log_in_with_refresh_token(
     """
     base_url = base_url.rstrip("/")
     session_token = _init_auth(base_url, email, timeout)
-    data = _authenticate(base_url, session_token, email, password, timeout)
-    access_token = data["accessToken"]
+    result = _authenticate(base_url, session_token, email, password, timeout)
+    access_token = result.accessToken
     if "userId" not in jwt_claims(access_token):
-        access_token = _switch_to_org(
-            base_url, access_token, str(data.get("orgId") or ""), timeout
-        )
-    return access_token, str(data.get("refreshToken") or "")
+        access_token = _switch_to_org(base_url, access_token, result.orgId, timeout)
+    return access_token, result.refreshToken
 
 
 def jwt_claims(token: str) -> dict:
@@ -176,14 +175,22 @@ def _init_auth(base_url: str, email: str, timeout: int) -> str:
     return session_token
 
 
+class AuthenticateResult(BaseModel):
+    """The fields sign-in reads from ``authenticate``; others are ignored."""
+
+    accessToken: str = Field(min_length=1)
+    refreshToken: str = ""
+    # Absent on the open-source backend.
+    orgId: str = ""
+
+
 def _authenticate(
     base_url: str,
     session_token: str,
     email: str,
     password: str,
     timeout: int,
-) -> dict:
-    """Return the authenticate body; its ``orgId`` is absent on the open-source backend."""
+) -> AuthenticateResult:
     resp = requests.post(
         f"{base_url}/api/v1/userAccount/authenticate",
         headers={"x-session-token": session_token},
@@ -197,14 +204,17 @@ def _authenticate(
     if resp.status_code >= 400:
         raise RuntimeError(f"authenticate failed: HTTP {resp.status_code} - {resp.text[:200]}")
     try:
-        data = resp.json()
-    except ValueError:
-        raise RuntimeError("authenticate returned non-JSON response")
-    if not data.get("accessToken"):
-        raise RuntimeError(
-            f"authenticate did not return accessToken: {list(data.keys())}"
+        return AuthenticateResult.model_validate(resp.json())
+    except ValueError as exc:
+        # Field names only: the values may be live tokens.
+        problems = (
+            ", ".join(".".join(map(str, e["loc"])) or "body" for e in exc.errors())
+            if isinstance(exc, ValidationError)
+            else "not JSON"
         )
-    return data
+        raise RuntimeError(
+            f"authenticate returned an unusable response ({problems})"
+        ) from None
 
 
 def _create_oauth_app(
