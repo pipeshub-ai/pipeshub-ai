@@ -224,6 +224,18 @@ async def test_a_purged_page_whose_event_lost_its_id_is_still_removed(world) -> 
     assert set(store.records) == {"page/1", "page/3", "page/4"}
 
 
+async def test_a_purged_page_named_like_another_pages_id_is_still_removed(world) -> None:
+    source, store, connector = world
+    await connector._sync_records()
+    source.pages[3]["name"] = "(1) Introduction"
+    source.purge_page(3)
+
+    await connector._sync_records()
+
+    assert store.deleted == ["page/3"]
+    assert "page/1" in store.records
+
+
 async def test_a_purged_page_is_removed_once_the_page_list_can_be_read(world) -> None:
     source, store, connector = world
     await connector._sync_records()

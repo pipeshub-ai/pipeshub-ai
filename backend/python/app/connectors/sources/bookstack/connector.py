@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
@@ -95,14 +94,18 @@ _RECORD_SCAN_PAGE_SIZE = 1000
 def _deleted_page_id(event: dict) -> int | None:
     """The page id of a page_delete audit event, when it still has one.
 
-    A purge (the recycle bin emptied, or set to keep nothing) rewrites the
-    event's detail to the bare page name and clears loggable_id.
+    Only loggable_id is trusted. A purge (the recycle bin emptied, or set to
+    keep nothing) clears it and rewrites the detail to the bare page name, and
+    a name can itself look like "(1) Introduction".
     """
     loggable_id = event.get("loggable_id")
+    if isinstance(loggable_id, bool):
+        return None
     if isinstance(loggable_id, int):
         return loggable_id
-    match = re.match(r"\((\d+)\)", event.get("detail") or "")
-    return int(match.group(1)) if match else None
+    if isinstance(loggable_id, str) and loggable_id.isdigit():
+        return int(loggable_id)
+    return None
 
 
 def _is_listing(body: object) -> bool:
