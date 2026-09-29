@@ -1274,12 +1274,15 @@ class IGraphDBProvider(ABC):
 
         Args:
             connector_id (str): Connector ID
-            path (list[str]): File/record path in array format
+            path (list[str]): Record names from a top-level record of the group down to this one
             external_record_group_id (str): External Record group ID
             transaction (str | None): Optional transaction context
 
         Returns:
-            dict | None: Record data if found, None otherwise
+            dict | None: The stored document (not a Record) if found, None otherwise
+
+        Raises:
+            GraphQueryError: The lookup could not be read, so None would be a guess.
         """
         pass
 

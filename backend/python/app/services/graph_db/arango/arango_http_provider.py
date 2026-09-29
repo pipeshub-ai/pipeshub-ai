@@ -3671,21 +3671,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN r
             )
             FILTER rec0 != null
-            LET depth = LENGTH(parts) <= 1 ? 0 :length(parts) - 1
-
-            LET result_1  = depth == 0 ? rec0 :
-                (FOR v, e, p IN 1..100 OUTBOUND rec0
+            // Only a chain of PARENT_CHILD links naming every part in order is a match.
+            LET result = LENGTH(parts) <= 1 ? rec0 : FIRST(
+                FOR v, e, p IN 1..100 OUTBOUND rec0
                     recordRelations
-
-                    FILTER e.relationshipType == "PARENT_CHILD"
-
-                    FILTER v.recordName == parts[LENGTH(p.vertices)-1]
-
+                    PRUNE LENGTH(p.edges) >= LENGTH(parts) - 1
+                        OR v.recordName != parts[LENGTH(p.edges)]
+                        OR (e != null AND e.relationshipType != "PARENT_CHILD")
+                    FILTER LENGTH(p.edges) == LENGTH(parts) - 1
+                    FILTER p.edges[*].relationshipType ALL == "PARENT_CHILD"
+                    FILTER p.vertices[*].recordName == parts
                     RETURN v
-                    )
+            )
 
-            LET result = depth == 0 ? rec0 : LAST(result_1)
-
+            FILTER result != null
             return result
             """
             result = await self.http_client.execute_aql(
@@ -3699,11 +3698,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if result:
                 return result[0]
+            return None
         except Exception as e:
             self.logger.error(
                 f"❌ Failed to retrieve record for path {path}: {str(e)}"
             )
-            return None
+            raise GraphQueryError(f"Could not look up the record at path {path}: {e}") from e
 
     async def get_records_by_status(
         self,

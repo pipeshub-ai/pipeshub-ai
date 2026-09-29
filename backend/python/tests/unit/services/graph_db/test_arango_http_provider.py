@@ -1482,9 +1482,11 @@ class TestGetRecordByPath:
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_record_by_path("c1", ["path","file"], "record_group_id")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_record_by_path("c1", ["path","file"], "record_group_id")
 
 
 # ---------------------------------------------------------------------------
@@ -6630,10 +6632,12 @@ class TestGetRecordByPathProvider:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self, connected_provider):
+    async def test_exception_raises(self, connected_provider) -> None:
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_record_by_path("c1", ["some","path"], "record_group_id")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_record_by_path("c1", ["some","path"], "record_group_id")
 
 
 # ===========================================================================
@@ -18755,9 +18759,11 @@ class TestGetRecordByPathFullCoverage:
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider_fullcov):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider_fullcov.http_client.execute_aql = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider_fullcov.get_record_by_path("c1", ["some","file"], "record_group_id")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider_fullcov.get_record_by_path("c1", ["some","file"], "record_group_id")
 
 
 class TestEnsureSchemaFullCoverage:

@@ -2360,7 +2360,7 @@ class Neo4jProvider(IGraphDBProvider):
             return None
         except Exception as e:
             self.logger.error(f"❌ Get record by path failed: {str(e)}")
-            return None
+            raise GraphQueryError(f"Could not look up the record at path {path}: {e}") from e
 
     async def get_records_by_status(
         self,

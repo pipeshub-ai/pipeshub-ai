@@ -78,8 +78,8 @@ def db() -> FakeRecordsDb:
 
 
 @pytest.fixture
-def store() -> FakeStore:
-    return FakeStore()
+def store(db: FakeRecordsDb) -> FakeStore:
+    return FakeStore(db)
 
 
 @pytest.fixture(autouse=True)
@@ -1049,6 +1049,35 @@ class TestIncrementalSync:
 
         assert store.cursor() == str(server.latest_activity_id), "given up on, and still in its folder"
         assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+
+    async def test_a_new_file_finds_its_stored_folder_when_a_folder_above_cannot_be_read(
+        self, server, db, store
+    ) -> None:
+        connector = await synced(server, db, store)
+        server.add_file("Docs/Reports/q2.pdf", b"%PDF-1.7 q2", "application/pdf")
+        server.outage("PROPFIND", lambda p: p.rstrip("/").endswith("/Docs"), lambda: httpx.Response(503))
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await connector.run_sync()
+            assert db.path_of("q2.pdf") == "Docs/Reports/q2.pdf"
+
+        assert store.cursor() == str(server.latest_activity_id), "given up on, and still in its folder"
+
+    async def test_a_new_file_is_not_saved_without_its_folder_when_the_folder_lookup_fails(
+        self, server, db, store
+    ) -> None:
+        connector = await synced(server, db, store)
+        server.add_file("Docs/Reports/q2.pdf", b"%PDF-1.7 q2", "application/pdf")
+        outage = server.outage("PROPFIND", lambda p: p.rstrip("/").endswith("/Docs"), lambda: httpx.Response(503))
+        store.fail_path_lookups = True
+
+        await connector.run_sync()
+        assert "q2.pdf" not in db.names(), "a lookup that failed is not taken to mean there is no folder"
+
+        store.fail_path_lookups = False
+        outage.end()
+        await connector.run_sync()
+        assert db.path_of("q2.pdf") == "Docs/Reports/q2.pdf"
 
     async def test_a_file_restored_after_its_failed_delete_is_kept(self, server, db, store) -> None:
         connector = await synced(server, db, store)
