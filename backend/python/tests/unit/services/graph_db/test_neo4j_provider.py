@@ -1911,6 +1911,21 @@ class TestTraversalAndRecordLookups:
         neo4j_provider.get_document = AsyncMock(side_effect=[None])  # type: ignore[method-assign]
         assert await neo4j_provider.get_file_record_by_id("r1") is None
 
+    @pytest.mark.asyncio
+    async def test_get_file_record_by_id_answers_none_only_when_nothing_is_stored(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        assert await neo4j_provider.get_file_record_by_id("r1") is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing_read", [0, 1], ids=["file node", "record node"])
+    async def test_get_file_record_by_id_raises_when_a_read_fails(self, neo4j_provider: Neo4jProvider, failing_read: int) -> None:
+        # Through the real get_document: it swallows failures unless asked to raise.
+        results: list[object] = [[{"n": {"id": "r1"}}], [{"n": {"id": "r1"}}]]
+        results[failing_read] = Exception("neo4j unavailable")
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=results)
+        with pytest.raises(GraphQueryError, match="r1"):
+            await neo4j_provider.get_file_record_by_id("r1")
+
 
 class TestUserAndOrganizationLookups:
     @pytest.mark.asyncio

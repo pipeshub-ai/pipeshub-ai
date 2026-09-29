@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from app.connectors.sources.web.connector import WebConnector
-    from app.models.entities import Record
+    from app.models.entities import FileRecord, Record
 
 STORAGE_HOST = "storage.test"
 HEAD_HANGS_UP = -1  # a ``head_status`` meaning the site drops HEAD requests without answering
@@ -360,6 +360,7 @@ class FakeRecordsDb:
         self.deleted: list[str] = []
         self.record_groups: list[Any] = []
         self.fail_writes = False
+        self.unreadable_file_records: set[str] = set()
 
     def _store(self, record: Record) -> None:
         existing = self.records.get(record.external_record_id)
@@ -378,9 +379,13 @@ class FakeRecordsDb:
             return None
         return Record.model_validate(stored.model_dump(include=set(Record.model_fields)))
 
-    async def get_file_record_by_id(self, record_id: str) -> Record | None:
+    async def get_file_record_by_id(self, record_id: str) -> FileRecord | None:
+        """None only when no file record is stored; a read that fails raises ``GraphQueryError``, as both providers do."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
         from app.models.entities import FileRecord
 
+        if record_id in self.unreadable_file_records:
+            raise GraphQueryError(f"records database unavailable for {record_id}")
         stored = next((record for record in self.records.values() if record.id == record_id), None)
         return stored.model_copy(deep=True) if isinstance(stored, FileRecord) else None
 

@@ -63,6 +63,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.salesforce.common.apps import SalesforceApp
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -5812,9 +5813,13 @@ class SalesforceConnector(BaseConnector):
                         or getattr(existing, "weburl", None) != rec.weburl
                     )
                     if not metadata_changed:
-                        # The lookup above returns a base Record, which has no extension. If the
-                        # file record can't be read, the file can't be shown unchanged, so update it.
-                        existing_file = await self.data_entities_processor.get_file_record_by_id(existing.id)
+                        # The lookup above returns a base Record, which has no extension. If the file
+                        # record is missing or can't be read, the file can't be shown unchanged, so update it.
+                        try:
+                            existing_file = await self.data_entities_processor.get_file_record_by_id(existing.id)
+                        except GraphQueryError as read_error:
+                            self.logger.warning(f"Updating {ext_id}: its stored file record could not be read: {read_error}")
+                            existing_file = None
                         metadata_changed = existing_file is None or existing_file.extension != rec.extension
                     if content_changed or metadata_changed:
                         rec.id = existing.id

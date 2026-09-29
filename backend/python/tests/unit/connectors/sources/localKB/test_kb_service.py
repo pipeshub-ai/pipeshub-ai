@@ -29,6 +29,7 @@ from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.utils.user_messages import action_failed
 from app.config.constants.service import DefaultEndpoints
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord
 
 
@@ -701,6 +702,18 @@ class TestUpdateFolder:
         assert result["success"] is False
         assert result["code"] == 404
 
+    @pytest.mark.asyncio
+    async def test_folder_record_unreadable_is_not_reported_as_missing(self, service) -> None:
+        _setup_writer(service)
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
+        service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
+        service.graph_provider.get_file_record_by_id = AsyncMock(side_effect=GraphQueryError("unavailable"))
+
+        result = await service.updateFolder("f1", "kb1", "user1", "New")
+        assert result == {"success": False, "code": 500, "reason": action_failed("rename this folder")}
+
 
 # ===========================================================================
 # delete_folder
@@ -929,6 +942,16 @@ class TestUpdateRecord:
         result = await service.update_record("user1", "rec1", {})
         assert result["success"] is False
         assert result["code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_file_record_unreadable_is_not_reported_as_missing(self, service) -> None:
+        _setup_writer(service)
+        service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
+        service.graph_provider.get_file_record_by_id = AsyncMock(side_effect=GraphQueryError("unavailable"))
+
+        result = await service.update_record("user1", "rec1", {})
+        assert result == {"success": False, "code": 500, "reason": action_failed("update this file")}
+        service.processor.on_record_metadata_update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ignores_unmapped_update_keys(self, service):

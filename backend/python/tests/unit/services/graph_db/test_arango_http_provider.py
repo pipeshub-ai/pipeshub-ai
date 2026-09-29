@@ -1995,9 +1995,11 @@ class TestGetFileRecordById:
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.get_document.side_effect = Exception("fail")
-        result = await connected_provider.get_file_record_by_id("f1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_file_record_by_id("f1")
 
 
 # ---------------------------------------------------------------------------
@@ -6764,10 +6766,12 @@ class TestGetFileRecordById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self, connected_provider):
+    async def test_exception_raises(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.get_document.side_effect = Exception("fail")
-        result = await connected_provider.get_file_record_by_id("f1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_file_record_by_id("f1")
 
 
 # ===========================================================================
@@ -9836,9 +9840,11 @@ class TestGetFileRecordByIdProvider:
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.get_document = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_file_record_by_id("r1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_file_record_by_id("r1")
 
 
 class TestGetUserByEmailProvider:

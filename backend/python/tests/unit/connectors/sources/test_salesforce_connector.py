@@ -47,6 +47,7 @@ from app.connectors.sources.salesforce.connector import (
     _sanitize_soql_ids_batch,
     _ts_in_bounds,
 )
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.utils.time_conversion import epoch_ms_to_iso
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.sources.client.salesforce.salesforce import SalesforceResponse
@@ -3278,14 +3279,22 @@ class TestSyncFiles:
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_file_whose_file_record_cannot_be_read_is_updated(self) -> None:
+    @pytest.mark.parametrize(
+        "file_record_read",
+        [
+            AsyncMock(return_value=None),
+            AsyncMock(side_effect=GraphQueryError("Could not read file record: unavailable")),
+        ],
+        ids=["missing", "unreadable"],
+    )
+    async def test_a_file_whose_file_record_cannot_be_read_is_updated(self, file_record_read: AsyncMock) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._soql_query_paginated = _mock_pages([])
         file_row = self._make_file_row()
         stored = connector._build_file_record(file_row, "doc-1", external_record_group_id="org-files")
         self._store_like_the_graph(connector, stored)
-        connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_file_record_by_id = file_record_read
         connector._handle_record_updates = AsyncMock()
 
         await connector._sync_files(

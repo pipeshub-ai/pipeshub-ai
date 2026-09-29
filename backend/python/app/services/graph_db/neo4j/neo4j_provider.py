@@ -3258,15 +3258,21 @@ class Neo4jProvider(IGraphDBProvider):
         record_id: str,
         transaction: str | None = None
     ) -> FileRecord | None:
-        """Get file record by ID"""
+        """Get a file record by its internal ID.
+
+        None means the file or its record is not stored. A read that fails
+        raises GraphQueryError: callers act on None by treating the file as gone.
+        """
         try:
-            # Get file node
-            file = await self.get_document(record_id, CollectionNames.FILES.value, transaction)
+            file = await self.get_document(
+                record_id, CollectionNames.FILES.value, transaction, raise_on_error=True
+            )
             if not file:
                 return None
 
-            # Get record node
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
+            record = await self.get_document(
+                record_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True
+            )
             if not record:
                 return None
 
@@ -3274,7 +3280,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get file record by ID failed: {str(e)}")
-            return None
+            raise GraphQueryError(f"Could not read file record {record_id}: {e}") from e
 
     # ==================== User Operations ====================
 

@@ -4804,17 +4804,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         transaction: str | None = None
     ) -> FileRecord | None:
-        """Get file record by ID"""
+        """Get a file record by its internal ID.
+
+        None means the file or its record is not stored. A read that fails
+        raises GraphQueryError: callers act on None by treating the file as gone.
+        """
         try:
             file = await self.http_client.get_document(
                 CollectionNames.FILES.value,
                 record_id,
-                txn_id=transaction
+                txn_id=transaction,
+                raise_on_error=True,
             )
             record = await self.http_client.get_document(
                 CollectionNames.RECORDS.value,
                 record_id,
-                txn_id=transaction
+                txn_id=transaction,
+                raise_on_error=True,
             )
             if file and record:
                 file_data = self._translate_node_from_arango(file)
@@ -4826,7 +4832,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return None
         except Exception as e:
             self.logger.error(f"❌ Get file record by ID failed: {str(e)}")
-            return None
+            raise GraphQueryError(f"Could not read file record {record_id}: {e}") from e
 
     async def get_user_by_email(
         self,

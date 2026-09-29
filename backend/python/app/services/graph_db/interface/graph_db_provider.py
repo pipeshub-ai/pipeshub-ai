@@ -1906,7 +1906,13 @@ class IGraphDBProvider(ABC):
             transaction: Optional transaction context
 
         Returns:
-            Optional[Dict]: File record data if found, None otherwise
+            Optional[FileRecord]: The file record, or None when the file or its
+                record is not stored - never that the read failed.
+
+        Raises:
+            GraphQueryError: The file record could not be read. Callers act on
+                None by treating the file as gone, so a failure reported as
+                None would retire or skip a file that is still there.
         """
         pass
 

@@ -694,8 +694,22 @@ class TestGetFileRecordById:
 
     async def test_exception(self, connected_provider):
         connected_provider.http_client.get_document.side_effect = Exception("err")
-        result = await connected_provider.get_file_record_by_id("f1")
-        assert result is None
+        with pytest.raises(GraphQueryError, match="f1"):
+            await connected_provider.get_file_record_by_id("f1")
+
+    async def test_asks_the_client_to_raise_rather_than_answer_none(self, connected_provider) -> None:
+        # The client answers None for a 404, a 503 and a dead connection alike unless told to raise.
+        connected_provider.http_client.get_document.side_effect = [None, None]
+        await connected_provider.get_file_record_by_id("f1")
+        for call in connected_provider.http_client.get_document.await_args_list:
+            assert call.kwargs.get("raise_on_error") is True
+
+    async def test_a_server_error_from_the_client_raises(self, connected_provider) -> None:
+        connected_provider.http_client.get_document.side_effect = GraphQueryError(
+            "Could not read files/f1: ArangoDB answered 503"
+        )
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_file_record_by_id("f1")
 
 
 # ===================================================================
