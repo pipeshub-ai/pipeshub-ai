@@ -817,7 +817,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: newUser.orgId.toString(),
-          userId: newUser._id,
+          userId: newUser._id.toString(),
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
@@ -888,7 +888,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: orgId.toString(),
-          userId: newUser._id,
+          userId: newUser._id.toString(),
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
@@ -959,7 +959,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: orgId.toString(),
-          userId: newUser._id,
+          userId: newUser._id.toString(),
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
@@ -1262,7 +1262,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1314,7 +1314,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1361,7 +1361,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1408,7 +1408,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1455,7 +1455,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1671,7 +1671,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           email: user.email,
         } as UserDeletedEvent,
       };
@@ -2254,7 +2254,6 @@ export class UserController {
         await UserGroups.updateMany(
           { _id: { $in: groupIds }, orgId },
           { $addToSet: { users: userId } },
-          { new: true },
         );
       }
       await UserGroups.updateOne(
@@ -2344,7 +2343,6 @@ export class UserController {
           await UserGroups.updateMany(
             { _id: { $in: groupIds }, orgId },
             { $addToSet: { users: userId } },
-            { new: true },
           );
         }
         await UserGroups.updateOne(
@@ -2356,7 +2354,7 @@ export class UserController {
           timestamp: Date.now(),
           payload: {
             orgId: orgId.toString(),
-            userId,
+            userId: userId.toString(),
             email,
             syncAction: SyncAction.Immediate,
           } as UserAddedEvent,
@@ -2398,7 +2396,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: orgId.toString(),
-          userId,
+          userId: userId.toString(),
           email,
           syncAction: SyncAction.Immediate,
         } as UserAddedEvent,
