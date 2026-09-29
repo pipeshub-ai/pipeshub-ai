@@ -19427,6 +19427,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET groupRecords = (
                 FOR principal_id IN principal_ids
                 FOR group IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
+                    // The user's organization is reached here too; orgRecords handles it, with the type check.
+                    FILTER !IS_SAME_COLLECTION("{CollectionNames.ORGS.value}", group)
                     FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
