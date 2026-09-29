@@ -81,7 +81,7 @@ export function ArtifactsGridView({
                 >
                   <MaterialIcon name="download" size={16} />
                 </IconButton>
-                {item.conversationId && (
+                {item.conversationTitle && (
                   <IconButton
                     variant="ghost"
                     size="1"

@@ -114,6 +114,57 @@ class TestArangoGetArtifactDetailQueryShape:
         assert bind["artifact_id"] == "art-1"
 
 
+class TestArangoGalleryReadFailuresPropagate:
+    @pytest.mark.asyncio
+    async def test_list_failure_is_raised_not_returned_as_an_empty_page(self, provider):
+        provider.execute_query = AsyncMock(side_effect=RuntimeError("arango down"))
+        with pytest.raises(RuntimeError, match="arango down"):
+            await provider.list_accessible_artifacts(
+                user_id="user-key",
+                org_id="org-1",
+                skip=0,
+                limit=50,
+                search=None,
+                artifact_types=None,
+                conversation_id=None,
+                date_from=None,
+                date_to=None,
+                sort_by="createdAtTimestamp",
+                sort_order="desc",
+            )
+
+    @pytest.mark.asyncio
+    async def test_count_query_failure_is_raised(self, provider):
+        provider.execute_query = AsyncMock(
+            side_effect=[[{"id": "a1"}], RuntimeError("count failed")]
+        )
+        with pytest.raises(RuntimeError, match="count failed"):
+            await provider.list_accessible_artifacts(
+                user_id="user-key",
+                org_id="org-1",
+                skip=0,
+                limit=50,
+                search=None,
+                artifact_types=None,
+                conversation_id=None,
+                date_from=None,
+                date_to=None,
+                sort_by="createdAtTimestamp",
+                sort_order="desc",
+            )
+
+    @pytest.mark.asyncio
+    async def test_detail_failure_is_raised_not_returned_as_not_found(self, provider):
+        provider.execute_query = AsyncMock(side_effect=RuntimeError("arango down"))
+        with pytest.raises(RuntimeError, match="arango down"):
+            await provider.get_artifact_detail("user-key", "org-1", "art-1")
+
+    @pytest.mark.asyncio
+    async def test_detail_with_no_visible_row_is_still_none(self, provider):
+        provider.execute_query = AsyncMock(return_value=[])
+        assert await provider.get_artifact_detail("user-key", "org-1", "art-1") is None
+
+
 class TestArangoListAllRecordsExcludesArtifacts:
     @pytest.mark.asyncio
     async def test_kb_subquery_excludes_artifact_type(self, provider):

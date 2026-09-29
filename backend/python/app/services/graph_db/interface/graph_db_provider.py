@@ -2460,6 +2460,9 @@ class IGraphDBProvider(ABC):
         - ``visibility`` is ``VISIBLE`` or missing
         - ``isTemporary != true``
         - ``artifactType != TOOL_RESULT``
+
+        Store and query failures must propagate. An empty result means "nothing
+        visible", so swallowing an error here would show up as an empty gallery.
         """
         pass
 
@@ -2473,7 +2476,8 @@ class IGraphDBProvider(ABC):
         """Return one artifact the user can access, or None to hide existence.
 
         Same identity and display-policy contract as
-        ``list_accessible_artifacts``.
+        ``list_accessible_artifacts``. ``None`` means not found or not visible;
+        store and query failures must propagate rather than return ``None``.
         """
         pass
 

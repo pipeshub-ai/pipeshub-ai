@@ -12776,7 +12776,7 @@ class Neo4jProvider(IGraphDBProvider):
             return records, int(total or 0)
         except Exception as e:
             self.logger.error("❌ Failed to list accessible artifacts: %s", str(e))
-            return [], 0
+            raise
 
     async def get_artifact_detail(
         self,
@@ -12807,7 +12807,7 @@ class Neo4jProvider(IGraphDBProvider):
             return row.get("result", row)
         except Exception as e:
             self.logger.error("❌ Failed to get artifact detail: %s", str(e))
-            return None
+            raise
 
     async def list_kb_records(
         self,

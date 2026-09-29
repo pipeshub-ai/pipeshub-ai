@@ -147,7 +147,7 @@ export function ArtifactsListView({
               <Button variant="ghost" size="1" color="gray" onClick={() => onDownload(item)} aria-label={t('action.download')}>
                 <MaterialIcon name="download" size={16} />
               </Button>
-              {item.conversationId && (
+              {item.conversationTitle && (
                 <Button variant="ghost" size="1" color="gray" onClick={() => onOpenChat(item)} aria-label={t('artifacts.openInChat', { defaultValue: 'Open in chat' })}>
                   <MaterialIcon name="chat" size={16} />
                 </Button>
