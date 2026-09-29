@@ -352,6 +352,54 @@ class TestAllScheduledPagination:
         call = request.app.state.graph_provider.get_documents_paginated.call_args
         assert call[1]["filters"] == {"isActive": True}
 
+    @pytest.mark.asyncio
+    async def test_db_errors_raise_and_pages_are_stably_sorted(self):
+        request = _make_request(page_docs=[])
+
+        await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
+
+        call = request.app.state.graph_provider.get_documents_paginated.call_args
+        assert call[1]["raise_on_error"] is True
+        assert call[1]["sort_field"] == "_key"
+
+
+# ---------------------------------------------------------------------------
+# get_all_scheduled_connector_instances_internal — org ownership
+# ---------------------------------------------------------------------------
+
+
+class TestAllScheduledOrgOwnership:
+    @pytest.mark.asyncio
+    async def test_each_connector_keeps_its_own_org(self):
+        docs = [
+            {**_active_doc("conn-a", "Confluence"), "orgId": "org-a"},
+            {**_active_doc("conn-b", "Slack"), "orgId": "org-b"},
+        ]
+        request = _make_request(
+            orgs=[{"_key": "org-a"}, {"_key": "org-b"}],
+            page_docs=docs,
+            sync_configs=[_scheduled_sync(), _scheduled_sync()],
+        )
+
+        result = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
+
+        assert {i["connectorId"]: i["orgId"] for i in result["items"]} == {
+            "conn-a": "org-a",
+            "conn-b": "org-b",
+        }
+
+    @pytest.mark.asyncio
+    async def test_legacy_doc_without_org_falls_back_to_first_org(self):
+        request = _make_request(
+            orgs=[{"_key": "org-1"}],
+            page_docs=[_active_doc("conn-1", "Confluence")],
+            sync_configs=[_scheduled_sync()],
+        )
+
+        result = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
+
+        assert result["items"][0]["orgId"] == "org-1"
+
 
 # ---------------------------------------------------------------------------
 # get_all_scheduled_connector_instances_internal — error handling

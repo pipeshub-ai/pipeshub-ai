@@ -3,38 +3,26 @@ import { KeyValueStoreService } from '../../../../libs/services/keyValueStore.se
 import { CrawlingSchedulerService } from '../../../crawling_manager/services/crawling_service';
 import { AppConfig } from '../../../tokens_manager/config/config';
 import { configPaths } from '../../paths/paths';
-import { fetchConfigJwtGenerator } from '../../../../libs/utils/createJwt';
-import { executeConnectorCommand } from '../../../tokens_manager/utils/connector.utils';
-import { HttpMethod } from '../../../../libs/enums/http-methods.enum';
 import { getRedisProvider } from '../../../../libs/services/redis/connectionProviderFactory';
 import { redisConnectionConfigFromHostPort } from '../../../../libs/services/redis/connectionConfig';
 import {
-  ConnectorSyncBlock,
   buildCrawlingScheduleFromSync,
   isScheduledSyncStrategy,
 } from '../../../crawling_manager/utils/schedule_config_mapper';
-
-interface ScheduledConnectorRecord {
-  connectorId: string;
-  type: string;
-  orgId: string;
-  ownerUserId?: string | null;
-  isActive: boolean;
-  sync: ConnectorSyncBlock;
-}
+import {
+  SCHEDULED_CONNECTORS_MAX_PAGES,
+  ScheduledConnectorsPage,
+  fetchScheduledConnectorsPage,
+} from '../../../crawling_manager/utils/scheduled_connectors_client';
 
 const MIGRATION_FLAG_DONE = 'true';
-
-/** Page size sent to the Python all-scheduled endpoint. */
-const BACKFILL_BATCH_SIZE = 50;
 
 /** Exponential-backoff constants for waiting on the connector service. */
 const BACKFILL_MAX_ATTEMPTS = 10;
 const BACKFILL_INITIAL_DELAY_MS = 2_000;
 const BACKFILL_MAX_DELAY_MS = 30_000;
 
-/** Safety cap — prevents an infinite loop if the server always returns hasMore:true. */
-const BACKFILL_MAX_PAGES = 1_000;
+const BACKFILL_MAX_PAGES = SCHEDULED_CONNECTORS_MAX_PAGES;
 
 /**
  * One-time backfill that schedules BullMQ crawling jobs for connectors
@@ -315,57 +303,8 @@ export class ScheduledJobsBackfillMigration {
     }
   }
 
-  /**
-   * Fetch one page of connector records from the Python backend.
-   * `page` is 1-based. Throws on any HTTP or service error so callers can
-   * decide how to handle it.
-   */
-  private async fetchBatch(
-    page: number,
-  ): Promise<{ items: ScheduledConnectorRecord[]; hasMore: boolean }> {
-    const { connectorBackend, scopedJwtSecret } = this.appConfig;
-    if (!connectorBackend) {
-      throw new Error('connectorBackend URL is not configured');
-    }
-    if (!scopedJwtSecret) {
-      throw new Error('scopedJwtSecret is not configured');
-    }
-
-    let token: string;
-    try {
-      token = fetchConfigJwtGenerator('system', 'system', scopedJwtSecret);
-    } catch (error) {
-      throw new Error(
-        `Failed to mint scoped JWT: ${error instanceof Error ? error.message : 'Unknown'}`,
-      );
-    }
-
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-    };
-
-    const url =
-      `${connectorBackend}/api/v1/connectors/internal/all-scheduled` +
-      `?page=${page}&limit=${BACKFILL_BATCH_SIZE}`;
-
-    const resp = await executeConnectorCommand(url, HttpMethod.GET, headers);
-    const status = resp?.statusCode;
-
-    if (!status || status < 200 || status >= 300) {
-      throw new Error(
-        `Connector service returned non-2xx status ${status ?? '(no response)'}`,
-      );
-    }
-
-    const data = resp.data as {
-      items?: ScheduledConnectorRecord[];
-      hasMore?: boolean;
-    } | null;
-
-    return {
-      items: (data?.items ?? []) as ScheduledConnectorRecord[],
-      hasMore: data?.hasMore ?? false,
-    };
+  private fetchBatch(page: number): Promise<ScheduledConnectorsPage> {
+    return fetchScheduledConnectorsPage(this.appConfig, page);
   }
 
   /**
@@ -375,7 +314,7 @@ export class ScheduledJobsBackfillMigration {
    */
   private async fetchBatchWithBackoff(
     page: number,
-  ): Promise<{ items: ScheduledConnectorRecord[]; hasMore: boolean } | null> {
+  ): Promise<ScheduledConnectorsPage | null> {
     let delay = this.backoffInitialDelayMs;
 
     for (let attempt = 1; attempt <= this.backoffMaxAttempts; attempt++) {

@@ -4,6 +4,7 @@ import {
   Job,
   JobsOptions,
   RepeatOptions,
+  RepeatableJob,
   JobType,
   getNextMillis,
 } from 'bullmq';
@@ -1089,6 +1090,21 @@ export class CrawlingSchedulerService {
       });
       throw error;
     }
+  }
+
+  /** Name every repeatable job for this connector is registered under. */
+  jobNameFor(connector: string, connectorId: string): string {
+    return this.buildJobName(connector, connectorId);
+  }
+
+  /** Every repeatable schedule on the crawling queue, across all orgs. */
+  async listRepeatableSchedules(): Promise<RepeatableJob[]> {
+    return this.queue.getRepeatableJobs();
+  }
+
+  /** Remove one repeatable schedule and its next queued run. */
+  async removeRepeatableByKey(key: string): Promise<boolean> {
+    return this.queue.removeRepeatableByKey(key);
   }
 
   /**
