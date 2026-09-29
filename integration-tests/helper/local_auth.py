@@ -109,12 +109,26 @@ def obtain_user_session_token(base_url: str, timeout: int = 30) -> str:
 
 def log_in(base_url: str, email: str, password: str, timeout: int = 30) -> str:
     """Log in as any user with a password and return an org-scoped session JWT."""
+    access_token, _ = log_in_with_refresh_token(base_url, email, password, timeout)
+    return access_token
+
+
+def log_in_with_refresh_token(
+    base_url: str, email: str, password: str, timeout: int = 30
+) -> tuple[str, str]:
+    """Log in with a password and return ``(accessToken, refreshToken)``.
+
+    Each call is a separate session, as a second browser or device would be.
+    """
     base_url = base_url.rstrip("/")
     session_token = _init_auth(base_url, email, timeout)
-    access_token, org_id = _authenticate(base_url, session_token, email, password, timeout)
+    data = _authenticate(base_url, session_token, email, password, timeout)
+    access_token = data["accessToken"]
     if "userId" not in _jwt_claims(access_token):
-        access_token = _switch_to_org(base_url, access_token, org_id, timeout)
-    return access_token
+        access_token = _switch_to_org(
+            base_url, access_token, str(data.get("orgId") or ""), timeout
+        )
+    return access_token, str(data.get("refreshToken") or "")
 
 
 def _jwt_claims(token: str) -> dict:
@@ -168,8 +182,8 @@ def _authenticate(
     email: str,
     password: str,
     timeout: int,
-) -> tuple[str, str]:
-    """Return ``(accessToken, orgId)``; ``orgId`` is empty on the open-source backend."""
+) -> dict:
+    """Return the authenticate body; its ``orgId`` is absent on the open-source backend."""
     resp = requests.post(
         f"{base_url}/api/v1/userAccount/authenticate",
         headers={"x-session-token": session_token},
@@ -186,12 +200,11 @@ def _authenticate(
         data = resp.json()
     except ValueError:
         raise RuntimeError("authenticate returned non-JSON response")
-    access_token = data.get("accessToken")
-    if not access_token:
+    if not data.get("accessToken"):
         raise RuntimeError(
             f"authenticate did not return accessToken: {list(data.keys())}"
         )
-    return access_token, str(data.get("orgId") or "")
+    return data
 
 
 def _create_oauth_app(
