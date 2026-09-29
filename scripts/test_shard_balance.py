@@ -224,6 +224,14 @@ class TestThisRepo(unittest.TestCase):
             f"{owner} runs nextcloud/bookstack but does not start selfhosted-sources",
         )
 
+    def test_the_ai_agents_shard_never_runs_on_a_pull_request(self) -> None:
+        """Every ai_agents test costs model calls; the nightly runs them, a PR must not."""
+        workflow = balance.WORKFLOW.read_text(encoding="utf-8")
+        line = balance._MATRIX_LINE.search(workflow).group(0)
+        pr_list = line.split("github.event_name == 'pull_request_target' && ", 1)[1].split("'", 2)[1]
+        self.assertNotIn("ai_agents", pr_list)
+        self.assertIn("ai_agents", balance.matrix_solo_shards(workflow))
+
 
 if __name__ == "__main__":
     unittest.main()

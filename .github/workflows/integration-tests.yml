@@ -45,6 +45,7 @@ on:
             - mcp
             - zammad
             - demo
+            - ai_agents
             - resilience
             - permissions
             - storage
@@ -171,10 +172,14 @@ jobs:
         # other suite has indexed anything: the demo's prompt differs once the
         # workspace has real data, and core would index plenty. Core leaves the
         # demo marker out, so it runs once.
+        # "ai_agents" runs the AI models, agents, MCP and agent harness suite
+        # against a real model. Each test costs model calls, so it runs on the
+        # nightly and on a full manual run, never on a pull request; core leaves
+        # its marker out everywhere, so on a pull request it does not run at all.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || '["connectors-1","connectors-2","connectors-3","core","demo"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request_target' && '["connectors-1","connectors-2","connectors-3","core","demo"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -238,6 +243,11 @@ jobs:
       # (which changes pages through its control API) on the published port.
       WEB_FIXTURES_TEST_URL: http://localhost:8089
       WEB_FIXTURES_CONNECTOR_URL: http://web-fixtures:8080
+      # The agent tests register the mcp-fixture service as an external MCP
+      # server: PipesHub reaches it by service name, the test process reads its
+      # call log on the published port.
+      MCP_FIXTURE_TEST_URL: http://localhost:8097
+      MCP_FIXTURE_CONNECTOR_URL: http://mcp-fixture:8080/mcp
       # Nextcloud and BookStack run in the compose stack too, behind the
       # selfhosted-sources profile: only the shard that runs their tests
       # (connectors-1, or a dispatch of just one of them) starts them.
@@ -532,8 +542,9 @@ jobs:
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
+            ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
@@ -716,8 +727,9 @@ jobs:
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
+            ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
