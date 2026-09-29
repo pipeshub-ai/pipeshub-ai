@@ -63,7 +63,10 @@ export function createSamlRouter(container: Container) {
       cookie: {
         maxAge: 60 * 60 * 1000, // 1 hour
         domain: 'localhost',
-        secure: false, // Set to `true` if using HTTPS
+        // Not 'auto': the app sets no 'trust proxy', so behind a TLS proxy
+        // req.secure is false and 'auto' would never mark it Secure. Sign-in
+        // state travels in RelayState, so skipping it on plain http is safe.
+        secure: true,
         sameSite: 'lax',
       },
     }),

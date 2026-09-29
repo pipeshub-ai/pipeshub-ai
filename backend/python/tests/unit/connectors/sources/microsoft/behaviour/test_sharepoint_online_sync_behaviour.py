@@ -200,6 +200,40 @@ class TestDriveDelta:
         (record, perms), = db.permission_updates
         assert [(p.email, p.type) for p in perms] == [("ana@contoso.com", PermissionType.WRITE)]
 
+    async def test_a_file_seen_again_unchanged_is_not_reindexed(self, connector, api, db) -> None:
+        seed_file(db, connector, "i1", "plan.pdf", etag="e1", xor="h1")
+        delta_pages(api, {None: page([file_item("i1", "plan.pdf", etag="e1", xor="h1")], delta_link=delta_url("d1"))})
+        serve_item(api, "i1", [])
+
+        await sync_site(connector)
+
+        assert db.content_updates == []
+        assert db.metadata_updates == []
+
+    async def test_a_renamed_file_is_a_metadata_update_not_a_reindex(self, connector, api, db) -> None:
+        seed_file(db, connector, "i1", "plan.pdf", etag="e1", xor="h1")
+        delta_pages(api, {None: page([file_item("i1", "plan-final.pdf", etag="e2", xor="h1")], delta_link=delta_url("d1"))})
+        serve_item(api, "i1", [])
+
+        await sync_site(connector)
+
+        assert [r.record_name for r in db.metadata_updates] == ["plan-final.pdf"]
+        assert db.content_updates == []
+
+    async def test_a_file_whose_stored_hash_cannot_be_read_is_reindexed(self, connector, api, db, monkeypatch) -> None:
+        seed_file(db, connector, "i1", "plan.pdf", etag="e1", xor="h1")
+        delta_pages(api, {None: page([file_item("i1", "plan.pdf", etag="e1", xor="h1")], delta_link=delta_url("d1"))})
+        serve_item(api, "i1", [])
+
+        async def unreadable(record_id: str) -> None:
+            return None
+
+        monkeypatch.setattr(db, "get_file_record_by_id", unreadable)
+
+        await sync_site(connector)
+
+        assert [r.external_record_id for r in db.content_updates] == ["i1"]
+
     async def test_one_item_that_cannot_be_processed_does_not_stop_the_others(self, connector, api, db, monkeypatch) -> None:
         delta_pages(api, {None: page([file_item("bad", "broken.pdf"), file_item("ok", "fine.pdf")], delta_link=delta_url("d1"))})
         serve_item(api, "ok", [])

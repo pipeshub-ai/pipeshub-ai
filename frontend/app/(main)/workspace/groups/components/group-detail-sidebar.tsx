@@ -86,6 +86,11 @@ export function GroupDetailSidebar({
   } = usePaginatedUserOptions({
     enabled: isDetailPanelOpen && isEditMode,
     idField: 'userId',
+      // Service accounts are offered here, each marked, because membership is
+    // how one is given anything to read — the create panel tells an
+    // administrator to grant access through groups and teams.
+    includeServiceAccounts: true,
+    serviceAccountBadge: t('workspace.serviceAccounts.memberBadge'),
   });
 
   // Exclude already-added members from the options

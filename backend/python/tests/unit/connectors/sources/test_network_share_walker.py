@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.registry.filters import (
     DatetimeOperator,
     Filter,
@@ -19,8 +19,9 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.network_share.entry import DirectoryEntry, ShareInfo
 from app.connectors.sources.network_share.errors import DirectoryListingError
-from app.connectors.sources.network_share.record_mapper import RecordMapper
+from app.connectors.sources.network_share.record_mapper import RecordMapper, revision_id
 from app.connectors.sources.network_share.walker import ShareWalker
+from app.models.entities import Record, RecordType
 
 if TYPE_CHECKING:
     from app.models.entities import FileRecord
@@ -195,6 +196,49 @@ async def _walk(
 
 def _ids(upserts) -> set[str]:
     return {record.external_record_id for batch in upserts for record, _perms in batch}
+
+
+def _stored(ext_id: str, revision: str, record_id: str) -> Record:
+    return Record(
+        id=record_id,
+        record_name=ext_id.rsplit("/", 1)[-1],
+        record_type=RecordType.FILE,
+        external_record_id=ext_id,
+        external_revision_id=revision,
+        version=1,
+        origin=OriginTypes.CONNECTOR.value,
+        connector_name=Connectors.SMB,
+        connector_id="smb-1",
+    )
+
+
+class TestShareWalkerRenames:
+    async def test_new_hard_link_walked_first_does_not_take_the_other_links_record(self):
+        new_link = _entry("b.txt", file_id=7)
+        kept_link = _entry("a.txt", file_id=7)
+        rev = revision_id(SHARE, kept_link, "a.txt")
+        assert rev == revision_id(SHARE, new_link, "b.txt")
+        stored = _stored(f"{SHARE}/a.txt", rev, "kept")
+        ds = FakeNetworkShareDataSource(tree={(SHARE, ""): [new_link, kept_link]})
+        _result, upserts, moves = await _walk(
+            ds,
+            existing_by_id={stored.external_record_id: stored},
+            existing_by_revision={rev: stored},
+        )
+        assert moves == []
+        ids = {r.external_record_id: r.id for batch in upserts for r, _perms in batch}
+        assert ids[f"{SHARE}/a.txt"] == "kept"
+        assert ids[f"{SHARE}/b.txt"] != "kept"
+
+    async def test_rename_whose_old_path_is_gone_is_still_a_move(self):
+        renamed = _entry("b.txt", file_id=7)
+        rev = revision_id(SHARE, renamed, "b.txt")
+        stored = _stored(f"{SHARE}/a.txt", rev, "kept")
+        ds = FakeNetworkShareDataSource(tree={(SHARE, ""): [renamed]})
+        _result, upserts, moves = await _walk(ds, existing_by_revision={rev: stored})
+        [(old_ext_id, record, _perms)] = [move for batch in moves for move in batch]
+        assert (old_ext_id, record.id) == (f"{SHARE}/a.txt", "kept")
+        assert f"{SHARE}/b.txt" not in _ids(upserts)
 
 
 class TestShareWalker:

@@ -187,6 +187,10 @@ extraVolumeMounts: []
 extraEnv: []
 extraEnvFrom: []
 
+# aws-sdk v2 presigns us-east-1 with Signature V2. SSE-KMS buckets reject those
+# URLs. Images that set signatureVersion on the S3 client do not need this.
+s3SignatureV4Preload: false
+
 volumes: {}
 
 volumeMounts: {}

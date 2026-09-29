@@ -3507,7 +3507,8 @@
       },
       "disableTitle": "停用此服務帳戶？",
       "disableDescription": "{{name}} 會立即停止運作——包括它已持有的所有 Token，而不只是等到下次登入。在您重新啟用之前，使用這些 Token 的一切都會持續失敗。",
-      "disableConfirm": "停用"
+      "disableConfirm": "停用",
+      "memberBadge": "服務帳戶"
     }
   },
   "filePreview": {

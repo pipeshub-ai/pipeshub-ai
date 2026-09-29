@@ -29,7 +29,7 @@ from app.connectors.sources.network_share.errors import (
 )
 from app.connectors.sources.network_share.record_mapper import revision_id
 from app.connectors.sources.smb.connector import SmbConnector
-from app.models.entities import FileRecord, RecordGroupType, RecordType, User
+from app.models.entities import FileRecord, Record, RecordGroupType, RecordType, User
 from app.models.permission import EntityType, PermissionType
 from app.sources.client.smb.smb import REPARSE_POINT, SmbClient
 from tests.unit.connectors.sources.test_network_share_walker import (
@@ -81,6 +81,22 @@ def _file_record(
         connector_id="smb-1",
         indexing_status=indexing_status,
         is_file=is_file,
+    )
+
+
+def _stored_record(*, ext_id: str, revision: str, record_id: str = "rec-1") -> Record:
+    """The graph stores answer both lookups with a plain Record, never a FileRecord."""
+    return Record(
+        id=record_id,
+        record_name=ext_id.rsplit("/", 1)[-1],
+        record_type=RecordType.FILE,
+        external_record_id=ext_id,
+        external_revision_id=revision,
+        version=1,
+        origin=OriginTypes.CONNECTOR.value,
+        connector_name=Connectors.SMB,
+        connector_id="smb-1",
+        indexing_status=ProgressStatus.COMPLETED.value,
     )
 
 
@@ -313,7 +329,7 @@ class TestSmbConnectorSync:
     async def test_same_revision_reuses_existing_id(self, mock_filters, smb_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         item = _entry("a.txt", file_id=9, size=10)
-        existing = _file_record(
+        existing = _stored_record(
             ext_id=f"{SHARE}/a.txt",
             revision=revision_id(SHARE, item, "a.txt"),
         )
@@ -327,12 +343,13 @@ class TestSmbConnectorSync:
         record, _perms = batch[0]
         assert record.id == existing.id
         assert record.external_revision_id == existing.external_revision_id
+        assert record.version == existing.version
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_changed_revision_is_upsert_not_move(self, mock_filters, smb_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         item = _entry("a.txt", file_id=9, size=99)
-        existing = _file_record(ext_id=f"{SHARE}/a.txt", revision="stale-rev")
+        existing = _stored_record(ext_id=f"{SHARE}/a.txt", revision="stale-rev")
         mock_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         ds = _ds(tree={(SHARE, ""): [item]})
         smb_connector.data_source = ds
@@ -343,13 +360,14 @@ class TestSmbConnectorSync:
         record, _perms = batch[0]
         assert record.external_record_id == f"{SHARE}/a.txt"
         assert record.external_revision_id != existing.external_revision_id
+        assert record.version == existing.version + 1
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_nonzero_file_id_at_new_path_calls_on_records_moved(self, mock_filters, smb_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         item = _entry("renamed.txt", file_id=44, size=10)
         rev = revision_id(SHARE, item, "renamed.txt")
-        old = _file_record(ext_id=f"{SHARE}/old.txt", revision=rev, record_id="keep-me")
+        old = _stored_record(ext_id=f"{SHARE}/old.txt", revision=rev, record_id="keep-me")
         mock_processor.get_record_by_external_revision_id = AsyncMock(return_value=old)
         ds = _ds(tree={(SHARE, ""): [item]})
         smb_connector.data_source = ds
@@ -361,6 +379,49 @@ class TestSmbConnectorSync:
         assert old_id == f"{SHARE}/old.txt"
         assert record.external_record_id == f"{SHARE}/renamed.txt"
         assert record.id == "keep-me"
+        assert record.version == old.version
+        mock_processor.on_new_records.assert_not_awaited()
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_rename_with_same_named_files_elsewhere_moves_only_the_renamed_one(
+        self, mock_filters, smb_connector, mock_processor
+    ):
+        mock_filters.return_value = _empty_filters()
+        renamed = _entry("renamed-set.json", file_id=44, size=387)
+        sibling = _entry("set.json", file_id=45, size=384)
+        folders = [_entry(name, is_directory=True, file_id=fid) for name, fid in (("1", 2), ("2", 3))]
+        rev = revision_id(SHARE, renamed, "1/renamed-set.json")
+        old = _stored_record(ext_id=f"{SHARE}/1/set.json", revision=rev, record_id="keep-me")
+        kept = _stored_record(
+            ext_id=f"{SHARE}/2/set.json",
+            revision=revision_id(SHARE, sibling, "2/set.json"),
+            record_id="sibling",
+        )
+        stored = {old.external_record_id: old, kept.external_record_id: kept}
+        mock_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda _connector_id, ext_id: stored.get(ext_id)
+        )
+        mock_processor.get_record_by_external_revision_id = AsyncMock(
+            side_effect=lambda _connector_id, r: old if r == rev else None
+        )
+        smb_connector.data_source = _ds(
+            tree={
+                (SHARE, ""): folders,
+                (SHARE, "1"): [renamed],
+                (SHARE, "2"): [sibling],
+            }
+        )
+        smb_connector.configured_share = SHARE
+        await smb_connector.run_sync()
+        old_id, record, _perms = mock_processor.on_records_moved.await_args.args[0][0]
+        assert (old_id, record.id) == (f"{SHARE}/1/set.json", "keep-me")
+        upserted = {
+            r.external_record_id: r.id
+            for call in mock_processor.on_new_records.await_args_list
+            for r, _perms in call.args[0]
+        }
+        assert f"{SHARE}/1/renamed-set.json" not in upserted
+        assert upserted[f"{SHARE}/2/set.json"] == "sibling"
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_personal_scope_owner_permission(self, mock_filters, smb_connector, mock_processor):
@@ -506,7 +567,7 @@ class TestSmbConnectorSync:
         )
         smb_connector.data_source = ds
         smb_connector.configured_share = SHARE
-        moved = _file_record(
+        moved = _stored_record(
             ext_id=f"{SHARE}/old.txt",
             revision=revision_id(SHARE, renamed, "renamed.txt"),
             record_id="keep-me",

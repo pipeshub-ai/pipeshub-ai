@@ -15,13 +15,18 @@ import asyncio
 import io
 import logging
 import os
+import re
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
+from fastapi.testclient import TestClient
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -119,7 +124,8 @@ def _make_upload_file(filename="slides.pptx", content=b"fake-pptx-data"):
     """Build a mock UploadFile."""
     uf = MagicMock()
     uf.filename = filename
-    uf.read = AsyncMock(return_value=content)
+    # The handler reads in bounded chunks until EOF: content once, then b"".
+    uf.read = AsyncMock(side_effect=[content, b""])
     uf.close = AsyncMock()
     return uf
 
@@ -154,6 +160,7 @@ class TestGetRecordStream:
         with (
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process),
             patch("os.path.exists", return_value=True),
+            patch("tempfile.mkdtemp", return_value=tempfile.gettempdir()),
             patch("builtins.open", create=True) as mock_open,
             patch(f"{_ROUTER}.create_stream_record_response") as mock_stream,
         ):
@@ -1542,3 +1549,106 @@ class TestStreamRecordDeepPaths:
         with pytest.raises(HTTPException) as exc:
             await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+
+
+# ============================================================================
+# get_record_stream — multipart filename hardening (GHSA-6m7x-v2x9-47jv,
+# GHSA-f5vc-fp3q-27q7, GHSA-xxg6-rf88-hf87), exercised over HTTP so the raw
+# Content-Disposition filename reaches the handler exactly as a client sends it.
+# ============================================================================
+
+
+def _convert_client() -> TestClient:
+    app = FastAPI()
+    app.add_api_route("/api/v1/record/buffer/convert", get_record_stream, methods=["POST"])
+    return TestClient(app)
+
+
+def _multipart(filename: str, content: bytes) -> tuple[bytes, str]:
+    """Hand-built body so an empty or path-like filename is sent verbatim."""
+    boundary = "pipeshub-test-boundary"
+    head = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n"
+    ).encode()
+    return head + content + f"\r\n--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
+
+
+def _post_convert(filename: str, content: bytes = b"pptx-bytes") -> httpx.Response:
+    body, content_type = _multipart(filename, content)
+    return _convert_client().post(
+        "/api/v1/record/buffer/convert",
+        params={"to": MimeTypes.PDF.value},
+        content=body,
+        headers={"Content-Type": content_type},
+    )
+
+
+class TestConvertRouteFilenameHardening:
+    @pytest.mark.parametrize(
+        "bad_name",
+        ["../../outside.pptx", "/tmp/abs.pptx", "..\\..\\win.pptx", "%2e%2e/enc.pptx", ""],
+    )
+    def test_path_like_or_empty_filename_is_400_and_nothing_is_written_or_run(self, bad_name):
+        opened: list[str] = []
+        real_open = open
+
+        def spy_open(path, *args, **kwargs) -> io.IOBase:
+            if isinstance(path, str) and args and "w" in args[0]:
+                opened.append(path)
+            return real_open(path, *args, **kwargs)
+
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as exec_mock,
+            patch("builtins.open", side_effect=spy_open),
+        ):
+            resp = _post_convert(bad_name)
+
+        assert resp.status_code == HttpStatusCode.BAD_REQUEST.value, resp.text
+        assert opened == []
+        exec_mock.assert_not_called()
+
+    def test_disallowed_extension_is_400(self):
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as exec_mock:
+            resp = _post_convert("deck.exe")
+        assert resp.status_code == HttpStatusCode.BAD_REQUEST.value
+        exec_mock.assert_not_called()
+
+    def test_normal_filename_converts_from_a_random_path_inside_tmpdir(self):
+        commands: list[tuple[str, ...]] = []
+
+        async def fake_libreoffice(*cmd, **_kwargs) -> AsyncMock:
+            commands.append(cmd)
+            outdir = cmd[cmd.index("--outdir") + 1]
+            input_path = cmd[-1]
+            assert os.path.isfile(input_path)
+            with open(input_path, "rb") as f:
+                assert f.read() == b"pptx-bytes"
+            pdf_name = os.path.splitext(os.path.basename(input_path))[0] + ".pdf"
+            with open(os.path.join(outdir, pdf_name), "wb") as f:
+                f.write(b"%PDF-1.4 fake")
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            proc.returncode = 0
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_libreoffice):
+            resp = _post_convert("deck.pptx")
+
+        assert resp.status_code == HttpStatusCode.OK.value, resp.text
+        assert resp.content == b"%PDF-1.4 fake"
+        assert resp.headers["content-disposition"] == 'attachment; filename="deck.pdf"'
+
+        assert len(commands) == 1
+        cmd = commands[0]
+        outdir = cmd[cmd.index("--outdir") + 1]
+        input_path = cmd[-1]
+        assert os.path.dirname(os.path.realpath(input_path)) == os.path.realpath(outdir)
+        assert os.path.realpath(outdir).startswith(os.path.realpath(tempfile.gettempdir()))
+        assert re.fullmatch(r"[0-9a-f]{32}\.pptx", os.path.basename(input_path))
+        assert "deck" not in os.path.basename(input_path)
+        profile_args = [a for a in cmd if a.startswith("-env:UserInstallation=")]
+        assert profile_args == [
+            "-env:UserInstallation=" + Path(os.path.join(outdir, ".libreoffice-profile")).as_uri()
+        ]

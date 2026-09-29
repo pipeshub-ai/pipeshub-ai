@@ -24,7 +24,8 @@ export const authorizeQuerySchema = z.object({
     state: z.string().min(1),
     // RFC 7636: code_challenge must be base64url encoded (no padding)
     code_challenge: z.string().regex(codeChallengePattern, 'Invalid code_challenge format').optional(),
-    code_challenge_method: z.enum(['S256', 'plain']).optional(),
+    // RFC 9700: only S256; `plain` exposes the verifier on the wire
+    code_challenge_method: z.enum(['S256']).optional(),
     nonce: z.string().optional(),
   }),
 })
@@ -38,7 +39,8 @@ export const authorizeConsentSchema = z.object({
     consent: z.enum(['granted', 'denied']),
     // RFC 7636: code_challenge must be base64url encoded (no padding)
     code_challenge: z.string().regex(codeChallengePattern, 'Invalid code_challenge format').optional(),
-    code_challenge_method: z.enum(['S256', 'plain']).optional(),
+    // RFC 9700: only S256; `plain` exposes the verifier on the wire
+    code_challenge_method: z.enum(['S256']).optional(),
   }),
 })
 

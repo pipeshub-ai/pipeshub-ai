@@ -277,6 +277,9 @@ class TestChatStreamAgentLoopEndToEnd:
                 {"virtualRecordId": "vr-attach-1", "mimeType": "application/pdf", "fileName": "board_deck.pdf"},
             ],
         })
+        graph = AsyncMock()
+        graph.get_records_by_virtual_record_id.return_value = ["rec-attach-1"]
+        graph.check_record_access_with_details.return_value = {"id": "rec-attach-1"}
 
         with (
             patch(
@@ -292,7 +295,7 @@ class TestChatStreamAgentLoopEndToEnd:
             response = await askAIStream(
                 request=request,
                 retrieval_service=_mock_retrieval_service(),
-                graph_provider=MagicMock(),
+                graph_provider=graph,
                 config_service=_mock_config_service(),
                 cancellation_registry=_mock_cancellation_registry(),
             )

@@ -1682,9 +1682,10 @@ class TestTraversalAndRecordLookups:
         assert await neo4j_provider.get_record_by_path("conn-1", ["root"], "rg-1") is None
 
     @pytest.mark.asyncio
-    async def test_get_record_by_path_returns_none_on_exception(self, neo4j_provider: Neo4jProvider):
+    async def test_get_record_by_path_raises_when_the_lookup_fails(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("path fail"))
-        assert await neo4j_provider.get_record_by_path("conn-1", ["root"], "rg-1") is None
+        with pytest.raises(GraphQueryError):
+            await neo4j_provider.get_record_by_path("conn-1", ["root"], "rg-1")
 
     @pytest.mark.asyncio
     async def test_get_records_by_status_returns_typed_records(self, neo4j_provider: Neo4jProvider):

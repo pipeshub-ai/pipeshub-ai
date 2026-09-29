@@ -1,4 +1,4 @@
-"""`_sync_until` in the Google Drive folder-filter suites, with the stack stubbed.
+"""The Google Drive folder-filter suites' sync-until loop, with the stack stubbed.
 
 The loop re-syncs until a Drive edit is visible in the graph. What it must get
 right is its time budget: every sync wait it starts must be long enough to
@@ -17,17 +17,26 @@ from types import ModuleType
 import pytest
 
 _SUITES = Path(__file__).resolve().parents[1] / "connectors"
+# The workspace loop lives in the helpers shared by its My Drive and Shared Drive suites.
 _MODULES = {
-    "individual": _SUITES / "google_drive_individual" / "google_drive_individual_integration_test.py",
-    "workspace": _SUITES / "google_drive_workspace" / "google_drive_workspace_integration_test.py",
+    "individual": (
+        _SUITES / "google_drive_individual" / "google_drive_individual_integration_test.py",
+        "_sync_until",
+    ),
+    "workspace": (
+        _SUITES / "google_drive_workspace" / "drive_workspace_test_utils.py",
+        "sync_until",
+    ),
 }
 
 
 def _load(name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(f"_drive_suite_{name}", _MODULES[name])
+    path, sync_until_name = _MODULES[name]
+    spec = importlib.util.spec_from_file_location(f"_drive_suite_{name}", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.sync_until_under_test = getattr(module, sync_until_name)
     return module
 
 
@@ -64,7 +73,7 @@ def _fake_wait(suite: ModuleType, timeouts: list[float], *, settles: bool = True
 
 
 def _run(suite: ModuleType, check) -> None:
-    asyncio.run(suite._sync_until(_Client(), object(), "c1", check, description="the moved folder"))
+    asyncio.run(suite.sync_until_under_test(_Client(), object(), "c1", check, description="the moved folder"))
 
 
 def test_a_change_seen_on_a_later_round_passes(suite, monkeypatch) -> None:
