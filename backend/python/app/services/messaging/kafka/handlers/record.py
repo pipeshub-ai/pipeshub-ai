@@ -1,4 +1,5 @@
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
@@ -63,6 +64,21 @@ from app.utils.user_errors import (
     to_user_reason,
     unsupported_file_type,
 )
+
+
+STORED_DOCUMENTS_POLL_SECONDS = 5
+
+
+def stored_documents_wait_seconds() -> float:
+    """How long one delivery of deleteStoredDocuments waits for its records' delete to land.
+
+    Each of the (few) delivery attempts waits this long, so the window a
+    delete has to finish in is roughly attempts times this.
+    """
+    try:
+        return max(0.0, float(os.getenv("STORED_DOCUMENTS_WAIT_SECONDS", "900")))
+    except ValueError:
+        return 900.0
 
 
 class RecordEventHandler(BaseEventService):
@@ -327,6 +343,24 @@ class RecordEventHandler(BaseEventService):
         if not isinstance(containers, dict):
             return False
         return bool(containers.get("blocks") or containers.get("block_groups"))
+
+    async def _wait_until_unlisted(self, connector_id: str, document_ids: list[str]) -> set[str]:
+        """Wait for the graph delete that follows this event, then return what records still list.
+
+        The event is published before the records are deleted, so the first look
+        usually finds them. Waiting here, instead of raising, keeps an ordinary
+        delete from spending the delivery attempts, which are few and short.
+        """
+        deadline = asyncio.get_running_loop().time() + stored_documents_wait_seconds()
+        while True:
+            listed = set(
+                await self.event_processor.graph_provider.get_uploaded_document_ids(
+                    connector_id, among=list(document_ids)
+                )
+            )
+            if not listed or asyncio.get_running_loop().time() >= deadline:
+                return listed
+            await asyncio.sleep(STORED_DOCUMENTS_POLL_SECONDS)
 
     async def _purge_stored_documents(self, org_id: str, document_ids: list[str]) -> None:
         pipeline = self.event_processor.processor.indexing_pipeline
@@ -697,12 +731,7 @@ class RecordEventHandler(BaseEventService):
                 still_listed: set[str] = set()
                 connector_id = payload.get("connectorId")
                 if connector_id:
-                    # Published before the graph delete: never remove a file a record still lists.
-                    still_listed = set(
-                        await self.event_processor.graph_provider.get_uploaded_document_ids(
-                            connector_id, among=list(document_ids)
-                        )
-                    )
+                    still_listed = await self._wait_until_unlisted(connector_id, document_ids)
                 await self._purge_stored_documents(
                     org_id, [d for d in document_ids if d not in still_listed]
                 )

@@ -57,11 +57,31 @@ class TestDeleteStoredDocumentsEvent:
         pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
 
     @pytest.mark.asyncio
-    async def test_a_file_a_record_still_lists_is_kept_and_retried(self):
-        """Published before the graph delete: the records may still be there."""
+    async def test_it_waits_for_the_records_delete_without_spending_an_attempt(self, monkeypatch):
+        """The event is published before the graph delete, so the records are usually still there."""
+        handler, pipeline = _handler()
+        listings = iter([[DOC_ID], [DOC_ID], []])
+        handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(
+            side_effect=lambda *a, **k: next(listings)
+        )
+        monkeypatch.setattr("app.services.messaging.kafka.handlers.record.asyncio.sleep", AsyncMock())
+
+        events = await _run(
+            handler, EventTypes.DELETE_STORED_DOCUMENTS.value,
+            {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID]},
+        )
+
+        assert len(events) == 2
+        assert handler.event_processor.graph_provider.get_uploaded_document_ids.await_count == 3
+        pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
+
+    @pytest.mark.asyncio
+    async def test_a_file_a_record_still_lists_after_the_wait_is_kept_and_retried(self, monkeypatch):
+        """The graph delete failed, or is taking longer than the wait: keep the file, raise."""
         handler, pipeline = _handler()
         other = "65f1c0ffee0123456789abce"
         handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=[other])
+        monkeypatch.setenv("STORED_DOCUMENTS_WAIT_SECONDS", "0")
 
         with pytest.raises(IndexingError):
             await _run(
