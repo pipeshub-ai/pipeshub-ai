@@ -7206,13 +7206,15 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_id: str,
+        org_id: str,
         transaction: str | None = None
     ) -> dict:
         """Main entry point for record deletion. KB records require OWNER, WRITER, or FILEORGANIZER."""
         try:
             # Get record to determine connector type
             record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
-            if not record:
+            # A record in another org is reported exactly like a missing one so IDs can't be probed.
+            if not org_id or not record or record.get("orgId") != org_id:
                 return {
                     "success": False,
                     "code": 404,
@@ -7320,7 +7322,7 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.warning(f"⚠️ Record {external_id} not found for connector {connector_id}")
                 return
 
-            await self.delete_record(record.id, user_id, transaction)
+            await self.delete_record(record.id, user_id, record.org_id, transaction)
 
         except Exception as e:
             self.logger.error(f"❌ Delete record by external ID failed: {str(e)}")

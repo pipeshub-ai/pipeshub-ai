@@ -3033,23 +3033,23 @@ class TestDeleteRecord:
     @pytest.mark.asyncio
     async def test_record_not_found(self, connected_provider):
         connected_provider.http_client.get_document.return_value = None
-        result = await connected_provider.delete_record("missing", "u1")
+        result = await connected_provider.delete_record("missing", "u1", "org1")
         assert result["success"] is False
         assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_unsupported_connector(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
-            "_key": "r1", "connectorName": "UNKNOWN", "origin": "CONNECTOR"
+            "_key": "r1", "orgId": "org1", "connectorName": "UNKNOWN", "origin": "CONNECTOR"
         }
-        result = await connected_provider.delete_record("r1", "u1")
+        result = await connected_provider.delete_record("r1", "u1", "org1")
         assert result["success"] is False
         assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.get_document.side_effect = Exception("fail")
-        result = await connected_provider.delete_record("r1", "u1")
+        result = await connected_provider.delete_record("r1", "u1", "org1")
         assert result["success"] is False
         assert result["code"] == 500
 
@@ -5278,70 +5278,70 @@ class TestDeleteRecordRouting:
     @pytest.mark.asyncio
     async def test_routes_to_kb(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
-            "_key": "r1", "connectorName": "KB", "origin": "UPLOAD"
+            "_key": "r1", "orgId": "org1", "connectorName": "KB", "origin": "UPLOAD"
         }
         with patch.object(
             connected_provider, "delete_knowledge_base_record",
             new_callable=AsyncMock,
             return_value={"success": True}
         ) as mock_kb:
-            result = await connected_provider.delete_record("r1", "u1")
+            result = await connected_provider.delete_record("r1", "u1", "org1")
             assert result["success"] is True
             mock_kb.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_routes_to_drive(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
-            "_key": "r1", "connectorName": "DRIVE", "origin": "CONNECTOR"
+            "_key": "r1", "orgId": "org1", "connectorName": "DRIVE", "origin": "CONNECTOR"
         }
         with patch.object(
             connected_provider, "delete_google_drive_record",
             new_callable=AsyncMock,
             return_value={"success": True}
         ) as mock_drive:
-            result = await connected_provider.delete_record("r1", "u1")
+            result = await connected_provider.delete_record("r1", "u1", "org1")
             assert result["success"] is True
             mock_drive.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_routes_to_gmail(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
-            "_key": "r1", "connectorName": "GMAIL", "origin": "CONNECTOR"
+            "_key": "r1", "orgId": "org1", "connectorName": "GMAIL", "origin": "CONNECTOR"
         }
         with patch.object(
             connected_provider, "delete_gmail_record",
             new_callable=AsyncMock,
             return_value={"success": True}
         ) as mock_gmail:
-            result = await connected_provider.delete_record("r1", "u1")
+            result = await connected_provider.delete_record("r1", "u1", "org1")
             assert result["success"] is True
             mock_gmail.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_routes_to_outlook(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
-            "_key": "r1", "connectorName": "OUTLOOK", "origin": "CONNECTOR"
+            "_key": "r1", "orgId": "org1", "connectorName": "OUTLOOK", "origin": "CONNECTOR"
         }
         with patch.object(
             connected_provider, "delete_outlook_record",
             new_callable=AsyncMock,
             return_value={"success": True}
         ) as mock_outlook:
-            result = await connected_provider.delete_record("r1", "u1")
+            result = await connected_provider.delete_record("r1", "u1", "org1")
             assert result["success"] is True
             mock_outlook.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_routes_to_local_fs(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
-            "_key": "r1", "connectorName": "LOCAL_FS", "origin": "CONNECTOR"
+            "_key": "r1", "orgId": "org1", "connectorName": "LOCAL_FS", "origin": "CONNECTOR"
         }
         with patch.object(
             connected_provider, "delete_local_fs_record",
             new_callable=AsyncMock,
             return_value={"success": True}
         ) as mock_local_fs:
-            result = await connected_provider.delete_record("r1", "u1")
+            result = await connected_provider.delete_record("r1", "u1", "org1")
             assert result["success"] is True
             mock_local_fs.assert_awaited_once()
 
@@ -7228,36 +7228,36 @@ class TestDeleteRecordProvider:
     @pytest.mark.asyncio
     async def test_record_not_found(self, connected_provider):
         connected_provider.http_client.get_document.return_value = None
-        result = await connected_provider.delete_record("r1", "user1")
+        result = await connected_provider.delete_record("r1", "user1", "org1")
         assert result["success"] is False
         assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_unsupported_connector(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
-            "_key": "r1", "connectorName": "UNKNOWN", "origin": "CONNECTOR"
+            "_key": "r1", "orgId": "org1", "connectorName": "UNKNOWN", "origin": "CONNECTOR"
         }
-        result = await connected_provider.delete_record("r1", "user1")
+        result = await connected_provider.delete_record("r1", "user1", "org1")
         assert result["success"] is False
         assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.get_document.side_effect = Exception("fail")
-        result = await connected_provider.delete_record("r1", "user1")
+        result = await connected_provider.delete_record("r1", "user1", "org1")
         assert result["success"] is False
         assert result["code"] == 500
 
     @pytest.mark.asyncio
     async def test_routes_to_kb_for_upload(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
-            "_key": "r1", "connectorName": "KB", "origin": "UPLOAD"
+            "_key": "r1", "orgId": "org1", "connectorName": "KB", "origin": "UPLOAD"
         }
         with patch.object(
             connected_provider, "delete_knowledge_base_record",
             new_callable=AsyncMock, return_value={"success": True}
         ) as mock_delete:
-            result = await connected_provider.delete_record("r1", "user1")
+            result = await connected_provider.delete_record("r1", "user1", "org1")
             assert result["success"] is True
             mock_delete.assert_awaited_once()
 
@@ -12163,14 +12163,14 @@ class TestDeleteRecordKbOrigin:
     @pytest.mark.asyncio
     async def test_kb_origin_routes_correctly(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
-            "_key": "r1", "connectorName": "KB", "origin": "UPLOAD"
+            "_key": "r1", "orgId": "org1", "connectorName": "KB", "origin": "UPLOAD"
         }
         with patch.object(
             connected_provider, "delete_knowledge_base_record",
             new_callable=AsyncMock,
             return_value={"success": True}
         ) as mock_kb:
-            result = await connected_provider.delete_record("r1", "u1")
+            result = await connected_provider.delete_record("r1", "u1", "org1")
             assert result["success"] is True
             mock_kb.assert_awaited_once()
 

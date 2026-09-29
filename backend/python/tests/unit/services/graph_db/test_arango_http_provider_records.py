@@ -2288,13 +2288,13 @@ class TestDeleteRecordsAndRelations:
 class TestDeleteRecord:
     async def test_record_not_found(self, connected_provider):
         connected_provider.http_client.get_document.return_value = None
-        result = await connected_provider.delete_record("r1", "u1")
+        result = await connected_provider.delete_record("r1", "u1", "org1")
         assert result["success"] is False
         assert result["code"] == 404
 
     async def test_exception(self, connected_provider):
         connected_provider.http_client.get_document.side_effect = Exception("err")
-        result = await connected_provider.delete_record("r1", "u1")
+        result = await connected_provider.delete_record("r1", "u1", "org1")
         assert result["success"] is False
         assert result["code"] == 500
 

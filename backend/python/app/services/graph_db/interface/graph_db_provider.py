@@ -3639,6 +3639,7 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         user_id: str,
+        org_id: str,
         transaction: str | None = None
     ) -> dict:
         """
@@ -3647,6 +3648,7 @@ class IGraphDBProvider(ABC):
         Args:
             record_id (str): Record ID to delete
             user_id (str): User ID performing the deletion
+            org_id (str): Caller's organization; records outside it are reported as not found
             transaction (Optional[str]): Optional transaction context
 
         Returns:

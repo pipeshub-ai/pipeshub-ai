@@ -1438,24 +1438,35 @@ class TestStreamRecordDeepPaths:
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
-    async def test_org_mismatch_retries_with_record_org(self):
-        """JWT org_id differs from record org_id -> retry with record's org."""
+    async def test_org_mismatch_is_404_without_widening(self):
+        """JWT org_id differs from record org_id -> 404; the record's org is never used."""
         req, record, gp, cs, conn_obj = self._setup(is_google=False)
         record.org_id = "org-2"
-
-        call_count = [0]
-        async def get_doc(doc_id, collection):
-            call_count[0] += 1
-            if collection == CollectionNames.ORGS.value:
-                return {"_key": doc_id}
-            return {"_key": "conn-1", "name": "Drive", "type": "GD", "isActive": True}
-
-        gp.get_document = AsyncMock(side_effect=get_doc)
+        gp.check_record_access_with_details = AsyncMock(return_value={"id": "rec-1"})
 
         from app.connectors.api.router import stream_record
-        result = await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
-        # Should have fetched org-2 after mismatch
-        assert call_count[0] >= 2
+        with pytest.raises(HTTPException) as exc:
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.check_record_access_with_details.assert_not_awaited()
+        org_lookups = [
+            c for c in gp.get_document.await_args_list
+            if CollectionNames.ORGS.value in c.args
+        ]
+        assert all("org-2" not in c.args for c in org_lookups)
+
+    @pytest.mark.asyncio
+    async def test_record_without_org_is_404(self):
+        """A record with no org_id cannot be confined to the caller's org -> 404."""
+        req, record, gp, cs, conn_obj = self._setup(is_google=False)
+        record.org_id = ""
+        gp.check_record_access_with_details = AsyncMock(return_value={"id": "rec-1"})
+
+        from app.connectors.api.router import stream_record
+        with pytest.raises(HTTPException) as exc:
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.check_record_access_with_details.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_access_denied_raises_403(self):

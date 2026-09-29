@@ -127,7 +127,13 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
 
     config_service = state.get("config_service")
 
-    if config_service and state.get("has_sql_connector") and state.get("has_sql_knowledge"):
+    allowed_sql_connector_ids = state.get("allowed_sql_connector_ids") or frozenset()
+    if (
+        config_service
+        and state.get("has_sql_connector")
+        and state.get("has_sql_knowledge")
+        and allowed_sql_connector_ids
+    ):
         try:
             from app.utils.execute_query import create_execute_query_tool
             execute_query_tool = create_execute_query_tool(
@@ -137,6 +143,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 conversation_id=state.get("conversation_id"),
                 blob_store=state.get("blob_store"),
                 user_id=state.get("user_id"),
+                allowed_connector_ids=allowed_sql_connector_ids,
             )
             setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")
             app_name, tool_name = split_original_tool_name(execute_query_tool)

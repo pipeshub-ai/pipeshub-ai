@@ -586,6 +586,53 @@ class TestRunAgentLoopStream:
         assert events[1].startswith("event: complete\n")
         assert json.loads(events[1].split("data: ", 1)[1].strip()) == {"answer": "42"}
 
+    async def test_sql_allowlist_is_agent_knowledge_intersected_with_user_connectors(self) -> None:
+        """Only a SQL connector that is both attached to the agent AND visible
+        to this user (in this org) may be queried by `execute_sql_query`."""
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
+            captured["allowed"] = context.tool_state.get("allowed_sql_connector_ids")
+            return _stream_agent(MagicMock(success=True, error=None)), MagicMock(), MagicMock(), []
+
+        async def _fake_finalizer_run(self, **kwargs):
+            return {"answer": "ok"}
+
+        user_instances = [
+            {"_key": "pg-attached", "type": "POSTGRESQL", "isConfigured": True, "orgId": "org-1"},
+            {"_key": "pg-not-attached", "type": "POSTGRESQL", "isConfigured": True, "orgId": "org-1"},
+            {"_key": "pg-other-org", "type": "POSTGRESQL", "isConfigured": True, "orgId": "org-2"},
+        ]
+        agent_knowledge = [
+            {"connectorId": "pg-attached", "type": "POSTGRESQL"},
+            {"connectorId": "pg-other-org", "type": "POSTGRESQL"},
+            {"connectorId": "pg-user-cannot-see", "type": "POSTGRESQL"},
+        ]
+        with (
+            patch(
+                "app.utils.connector_instances.fetch_user_connector_instances",
+                new=AsyncMock(return_value=user_instances),
+            ),
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={
+                    "org_id": "org-1", "user_id": "user-1", "query": "hello",
+                    "agent_knowledge": agent_knowledge,
+                },
+            ),
+            patch(
+                "app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create",
+                new=_fake_create,
+            ),
+            patch(
+                "app.agents.agent_loop.stream_bridge.AnswerFinalizer.run",
+                new=_fake_finalizer_run,
+            ),
+        ):
+            [chunk async for chunk in run_agent_loop_stream(**self._base_kwargs())]
+
+        assert captured["allowed"] == {"pg-attached"}
+
     async def test_terminal_answer_streamed_live_before_finalizer_runs(self) -> None:
         """`_produce()` must drive the agent via `agent.stream(goal)` and
         feed every yielded event through `TerminalAnswerStreamer` — a

@@ -279,7 +279,11 @@ async def run_agent_loop_stream(
     """
     from app.modules.agents.qna.chat_state import build_initial_state
     from app.utils.connector_instances import fetch_user_connector_instances
-    from app.utils.execute_query import connector_instances_have_sql
+    from app.utils.execute_query import (
+        agent_knowledge_sql_connector_ids,
+        connector_instances_have_sql,
+        sql_connector_instance_ids,
+    )
     from app.utils.fetch_slack_thread import connector_instances_have_slack
 
     # Stop Generation (Phase 3a): registered BEFORE `build_initial_state()`
@@ -324,6 +328,10 @@ async def run_agent_loop_stream(
         )
         exclude_from_state(chat_state, demo_excluded)
         await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
+        chat_state["allowed_sql_connector_ids"] = (
+            sql_connector_instance_ids(connector_instances, user_info["orgId"])
+            & agent_knowledge_sql_connector_ids(chat_state.get("agent_knowledge"))
+        )
     except Exception as exc:
         log.error("agent-loop stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_exception(exc)
