@@ -86,9 +86,11 @@ tool was called).
 
 - PipesHub is only called with `chatMode: "internal_search"` (no web tools).
 - The benchmark stack runs with `PIPESHUB_ENABLE_CODE_EXECUTION=false` and
-  `PIPESHUB_AGENT_DISABLED_TOOLSETS=calculator,date_calculator,image_generator,artifacts`
-  (`deployment/docker-compose/docker-compose.benchmark.override.yml`), so the
-  agent has no compute tools the baselines lack.
+  `PIPESHUB_ENABLE_SKILLS=false`
+  (`deployment/docker-compose/docker-compose.benchmark.override.yml`). PipesHub
+  keeps its `calculator` and `date_calculator`: they do arithmetic over values
+  already retrieved and cannot bring in outside information, and `guard.py`
+  allows them explicitly. The other systems do the same arithmetic in-model.
 - `guard.py` checks every tool call in every trace against an allowlist of
   knowledge/planning tools; anything else makes the run **invalid**.
 - Baselines and judges never receive tools or web grounding.
@@ -116,7 +118,7 @@ at the same `reasoning_effort`. Hybrid search is PipesHub's own query: dense +
 |---|---|
 | `retrieval` | `dense` · `sparse` · `hybrid` |
 | `transform` | `none` · `expansion` (`n_queries`, RRF-merged) · `decomposition` (`max_subquestions`, round-robin merged) |
-| `rerank` | cross-encoder (`reranker`, default `BAAI/bge-reranker-v2-m3`) over `candidate_k` (default `2 × top_k`) |
+| `rerank` | cross-encoder (`reranker`, default `cross-encoder/ms-marco-MiniLM-L-6-v2`, the one PipesHub ships) over `candidate_k` (default `2 × top_k`) |
 | `top_k` / `small_to_big` | chunks in context / full text for the N best articles |
 
 `naive_rag` is dense top-`k` and accepts only `top_k`. Query transforms are
