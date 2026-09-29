@@ -11931,7 +11931,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "summaryDocumentId": record.get("summaryDocumentId"),
                 "virtualRecordId": record.get("virtualRecordId"),
                 "connectorId": record.get("connectorId"),
-                "uploadDocumentId": uploaded_document_id(record, file_record),
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
@@ -12405,21 +12404,42 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
 
     async def get_uploaded_document_ids(
-        self, connector_id: str, transaction: str | None = None
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+        *,
+        under_record_ids: list[str] | None = None,
+        among: list[str] | None = None,
     ) -> list[str]:
-        rows = await self.execute_query(
+        bind_vars: dict = {
+            "connector_id": connector_id,
+            "upload": OriginTypes.UPLOAD.value,
+            "among": among,
+            "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+        }
+        if under_record_ids is None:
+            source = "FOR r IN @@records FILTER r.connectorId == @connector_id"
+            bind_vars["@records"] = CollectionNames.RECORDS.value
+        else:
+            source = f"""
+            FOR rid IN @roots
+                LET root = DOCUMENT(CONCAT("{CollectionNames.RECORDS.value}/", rid))
+                FILTER root != null AND root.connectorId == @connector_id
+                FOR r, e, p IN 0..20 OUTBOUND root._id @@record_relations
+                    PRUNE e != null AND e.relationshipType NOT IN ['PARENT_CHILD', 'ATTACHMENT']
+                    FILTER p.edges[*].relationshipType ALL IN ['PARENT_CHILD', 'ATTACHMENT']
+                    FILTER r.connectorId == @connector_id
             """
-            FOR r IN @@records
-                FILTER r.connectorId == @connector_id AND r.origin == @upload
+            bind_vars["roots"] = under_record_ids
+            bind_vars["@record_relations"] = CollectionNames.RECORD_RELATIONS.value
+        rows = await self.execute_query(
+            source + """
+                FILTER r.origin == @upload
+                FILTER @among == null OR r.externalRecordId IN @among
                 LET t = FIRST(FOR v IN 1..1 OUTBOUND r._id @@is_of_type RETURN v)
-                RETURN {origin: r.origin, externalRecordId: r.externalRecordId, isFile: t.isFile}
+                RETURN DISTINCT {origin: r.origin, externalRecordId: r.externalRecordId, isFile: t.isFile}
             """,
-            bind_vars={
-                "connector_id": connector_id,
-                "upload": OriginTypes.UPLOAD.value,
-                "@records": CollectionNames.RECORDS.value,
-                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-            },
+            bind_vars=bind_vars,
             transaction=transaction,
         )
         ids = (
@@ -12574,10 +12594,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 try:
                     for rt in records_with_type:
                         rec = rt["record"]
-                        type_doc = (rt.get("type_target") or {}).get("doc") or {}
-                        # An upload that never indexed still has its file to remove.
-                        if not rec.get("virtualRecordId") and not uploaded_document_id(rec, type_doc):
+                        if not rec.get("virtualRecordId"):
                             continue
+                        type_doc = (rt.get("type_target") or {}).get("doc") or {}
                         delete_payload = await self._create_deleted_record_event_payload(rec, type_doc)
                         if delete_payload:
                             delete_payload["connectorName"] = rec.get("connectorName")
@@ -12678,10 +12697,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 try:
                     for rt in records_with_type:
                         rec = rt["record"]
-                        type_doc = (rt.get("type_target") or {}).get("doc") or {}
-                        # An upload that never indexed still has its file to remove.
-                        if not rec.get("virtualRecordId") and not uploaded_document_id(rec, type_doc):
+                        if not rec.get("virtualRecordId"):
                             continue
+                        type_doc = (rt.get("type_target") or {}).get("doc") or {}
                         delete_payload = await self._create_deleted_record_event_payload(rec, type_doc)
                         if delete_payload:
                             delete_payload["connectorName"] = rec.get("connectorName")

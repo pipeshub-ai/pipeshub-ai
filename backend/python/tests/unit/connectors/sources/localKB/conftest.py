@@ -14,7 +14,10 @@ def mock_logger():
 
 @pytest.fixture
 def mock_graph_provider():
-    return AsyncMock()
+    provider = AsyncMock()
+    # Like the real providers: a list, empty when nothing was uploaded.
+    provider.get_uploaded_document_ids = AsyncMock(return_value=[])
+    return provider
 
 
 @pytest.fixture

@@ -699,8 +699,10 @@ class RecordEventHandler(BaseEventService):
                 if connector_id:
                     # Published before the graph delete: never remove a file a record still lists.
                     still_listed = set(
-                        await self.event_processor.graph_provider.get_uploaded_document_ids(connector_id)
-                    ) & set(document_ids)
+                        await self.event_processor.graph_provider.get_uploaded_document_ids(
+                            connector_id, among=list(document_ids)
+                        )
+                    )
                 await self._purge_stored_documents(
                     org_id, [d for d in document_ids if d not in still_listed]
                 )
@@ -740,16 +742,6 @@ class RecordEventHandler(BaseEventService):
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
-                # The record's own uploaded file, a separate step from the vectors:
-                # re-running the vector delete on a retry is harmless.
-                upload_document_id = payload.get("uploadDocumentId")
-                if upload_document_id:
-                    if not payload.get("orgId"):
-                        raise ProcessingError(
-                            "deleteRecord names an uploaded file but carries no orgId",
-                            details={"record_id": record_id},
-                        )
-                    await self._purge_stored_documents(payload["orgId"], [upload_document_id])
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

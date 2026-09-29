@@ -32,42 +32,15 @@ async def _run(handler, event_type, payload):
     return [event async for event in handler.process_event(event_type, payload)]
 
 
-class TestDeletedRecordsUpload:
+class TestDeleteRecordLeavesStorageToItsOwnEvent:
     @pytest.mark.asyncio
-    async def test_the_vectors_go_then_the_upload(self):
-        handler, pipeline = _handler()
-        payload = {"recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1", "uploadDocumentId": DOC_ID}
-
-        events = await _run(handler, EventTypes.DELETE_RECORD.value, payload)
-
-        assert len(events) == 2
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
-        pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
-
-    @pytest.mark.asyncio
-    async def test_a_record_without_an_upload_touches_no_storage(self):
+    async def test_a_record_delete_touches_only_the_vectors(self):
+        """Uploads are scheduled before the graph delete, as deleteStoredDocuments."""
         handler, pipeline = _handler()
 
         await _run(handler, EventTypes.DELETE_RECORD.value, {"recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1"})
 
-        pipeline.purge_stored_documents.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_an_upload_still_stored_fails_the_event_so_it_is_retried(self):
-        handler, pipeline = _handler()
-        pipeline.purge_stored_documents = AsyncMock(return_value=[DOC_ID])
-        payload = {"recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1", "uploadDocumentId": DOC_ID}
-
-        with pytest.raises(IndexingError):
-            await _run(handler, EventTypes.DELETE_RECORD.value, payload)
-
-
-    @pytest.mark.asyncio
-    async def test_an_upload_without_an_org_is_dead_lettered_not_skipped(self):
-        handler, pipeline = _handler()
-
-        with pytest.raises(ProcessingError):
-            await _run(handler, EventTypes.DELETE_RECORD.value, {"recordId": "r1", "virtualRecordId": "vr1", "uploadDocumentId": DOC_ID})
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
         pipeline.purge_stored_documents.assert_not_awaited()
 
 
@@ -97,7 +70,9 @@ class TestDeleteStoredDocumentsEvent:
                 {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID, other]},
             )
 
-        handler.event_processor.graph_provider.get_uploaded_document_ids.assert_awaited_once_with("kb-1")
+        handler.event_processor.graph_provider.get_uploaded_document_ids.assert_awaited_once_with(
+            "kb-1", among=[DOC_ID, other]
+        )
         pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
 
     @pytest.mark.asyncio

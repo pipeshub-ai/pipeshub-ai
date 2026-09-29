@@ -106,6 +106,9 @@ from app.connectors.core.registry.filters import sync_filter_selection_problems
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.vector_cleanup_events import (
+    build_stored_document_cleanup_events,
+)
 from app.connectors.services.vector_store_rebuild import (
     VectorStoreRebuildBusyError,
     VectorStoreRebuildConflictError,
@@ -2263,6 +2266,8 @@ async def delete_record(
                 detail="You do not have access to this record",
             )
 
+        await _schedule_upload_removal(graph_provider, kafka_service, logger, record_id, org_id)
+
         result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id,
@@ -2339,6 +2344,47 @@ async def delete_record(
             status_code=500,
             detail=action_failed("delete this file")
         ) from e
+
+async def _schedule_upload_removal(
+    graph_provider: IGraphDBProvider,
+    kafka_service: KafkaService,
+    logger: logging.Logger,
+    record_id: str,
+    org_id: str,
+) -> None:
+    """Publish the removal of an uploaded file (and anything it contains) before its record goes.
+
+    After the graph delete nothing points at the file, so a lost event would
+    strand it. The consumer purges only files no record lists any more and
+    retries while the record is still there. Raises a 503 when the removal
+    cannot be scheduled; nothing has been deleted then.
+    """
+    record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+    connector_id = (record or {}).get("connectorId")
+    if not connector_id or (record or {}).get("origin") != OriginTypes.UPLOAD.value:
+        return
+    try:
+        files = await graph_provider.get_uploaded_document_ids(
+            connector_id, under_record_ids=[record_id]
+        )
+        for event in build_stored_document_cleanup_events(
+            org_id=org_id, document_ids=files, connector_id=connector_id
+        ):
+            await retry_async(
+                lambda event=event: kafka_service.publish_event("record-events", event),
+                logger=logger,
+                description=f"publish {event['eventType']} for record {record_id}",
+            )
+    except Exception as e:
+        logger.error(
+            "Could not schedule the removal of record %s's stored files; nothing was deleted: %s",
+            record_id, e,
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail="We couldn't schedule the removal of this file, so nothing was deleted. Please try again.",
+        ) from e
+
 
 def _parse_reindex_body(request_body: dict | None) -> tuple[int, list[str] | None]:
     """Parse depth and optional statusFilters from a reindex request body."""
