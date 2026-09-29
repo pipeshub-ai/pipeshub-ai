@@ -616,7 +616,8 @@ class GoogleDriveDataSource:
         pageSize: Optional[int] = None,
         pageToken: Optional[str] = None,
         q: Optional[str] = None,
-        useDomainAdminAccess: Optional[bool] = None
+        useDomainAdminAccess: Optional[bool] = None,
+        fields: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Google Drive API:  Lists the user's shared drives. This method accepts the `q` parameter, which is a search query combining one or more search terms. For more information, see the [Search for shared drives](/workspace/drive/api/guides/search-shareddrives) guide.
 
@@ -627,6 +628,7 @@ class GoogleDriveDataSource:
             pageToken (str, optional): Page token for shared drives.
             q (str, optional): Query string for searching shared drives.
             useDomainAdminAccess (bool, optional): Issue the request as a domain administrator; if set to true, then all shared drives of the domain in which the requester is an administrator are returned.
+            fields (str, optional): Partial response mask. Capabilities on each drive say whether this user can edit or manage members.
 
         Returns:
             Dict[str, Any]: API response
@@ -640,6 +642,8 @@ class GoogleDriveDataSource:
             kwargs['q'] = q
         if useDomainAdminAccess is not None:
             kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.drives().list(**kwargs) # type: ignore
         return await self._execute(request)
