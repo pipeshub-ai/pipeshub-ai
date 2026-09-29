@@ -103,19 +103,19 @@ def build_connector_vector_cleanup_events(
 
 
 def build_stored_document_cleanup_events(
-    *, org_id: str, document_ids: Sequence[str] | None
+    *, org_id: str, document_ids: Sequence[str] | None, connector_id: str
 ) -> list[dict[str, Any]]:
-    """``deleteStoredDocuments`` events for the uploaded files of deleted records.
+    """``deleteStoredDocuments`` events for the uploaded files of a knowledge base being deleted.
 
-    A knowledge-base delete removes its records in one graph call and publishes
-    no per-record events, so the files' storage document ids travel here,
-    chunked like the virtual record ids above.
+    Published before the graph delete, so an event is never lost after the only
+    other handle on the files is gone. ``connectorId`` lets the consumer skip
+    (and retry) any file a record of that knowledge base still lists.
     """
     ids = _unique_non_empty(document_ids)
     return [
         _event(
             EventTypes.DELETE_STORED_DOCUMENTS.value,
-            {"orgId": org_id, "documentIds": chunk},
+            {"orgId": org_id, "connectorId": connector_id, "documentIds": chunk},
         )
         for chunk in _chunks(ids, MAX_VIRTUAL_RECORD_IDS_PER_EVENT)
     ]

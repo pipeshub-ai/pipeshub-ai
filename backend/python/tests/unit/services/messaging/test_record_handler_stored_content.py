@@ -62,6 +62,15 @@ class TestDeletedRecordsUpload:
             await _run(handler, EventTypes.DELETE_RECORD.value, payload)
 
 
+    @pytest.mark.asyncio
+    async def test_an_upload_without_an_org_is_dead_lettered_not_skipped(self):
+        handler, pipeline = _handler()
+
+        with pytest.raises(ProcessingError):
+            await _run(handler, EventTypes.DELETE_RECORD.value, {"recordId": "r1", "virtualRecordId": "vr1", "uploadDocumentId": DOC_ID})
+        pipeline.purge_stored_documents.assert_not_awaited()
+
+
 class TestDeleteStoredDocumentsEvent:
     @pytest.mark.asyncio
     async def test_purges_the_listed_documents(self):
@@ -72,6 +81,36 @@ class TestDeleteStoredDocumentsEvent:
         )
 
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
+
+    @pytest.mark.asyncio
+    async def test_a_file_a_record_still_lists_is_kept_and_retried(self):
+        """Published before the graph delete: the records may still be there."""
+        handler, pipeline = _handler()
+        other = "65f1c0ffee0123456789abce"
+        handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=[other])
+
+        with pytest.raises(IndexingError):
+            await _run(
+                handler,
+                EventTypes.DELETE_STORED_DOCUMENTS.value,
+                {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID, other]},
+            )
+
+        handler.event_processor.graph_provider.get_uploaded_document_ids.assert_awaited_once_with("kb-1")
+        pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
+
+    @pytest.mark.asyncio
+    async def test_once_the_records_are_gone_every_file_is_purged(self):
+        handler, pipeline = _handler()
+        handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=[])
+
+        await _run(
+            handler,
+            EventTypes.DELETE_STORED_DOCUMENTS.value,
+            {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID]},
+        )
+
         pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
 
     @pytest.mark.asyncio

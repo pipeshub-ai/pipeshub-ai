@@ -694,7 +694,21 @@ class RecordEventHandler(BaseEventService):
                         "deleteStoredDocuments carries no orgId",
                         details={"payload_keys": sorted(payload.keys())},
                     )
-                await self._purge_stored_documents(org_id, document_ids)
+                still_listed: set[str] = set()
+                connector_id = payload.get("connectorId")
+                if connector_id:
+                    # Published before the graph delete: never remove a file a record still lists.
+                    still_listed = set(
+                        await self.event_processor.graph_provider.get_uploaded_document_ids(connector_id)
+                    ) & set(document_ids)
+                await self._purge_stored_documents(
+                    org_id, [d for d in document_ids if d not in still_listed]
+                )
+                if still_listed:
+                    raise IndexingError(
+                        "Records still list some of these files; retrying after their delete",
+                        details={"connector_id": connector_id, "document_ids": sorted(still_listed)},
+                    )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
                 return
@@ -729,7 +743,12 @@ class RecordEventHandler(BaseEventService):
                 # The record's own uploaded file, a separate step from the vectors:
                 # re-running the vector delete on a retry is harmless.
                 upload_document_id = payload.get("uploadDocumentId")
-                if upload_document_id and payload.get("orgId"):
+                if upload_document_id:
+                    if not payload.get("orgId"):
+                        raise ProcessingError(
+                            "deleteRecord names an uploaded file but carries no orgId",
+                            details={"record_id": record_id},
+                        )
                     await self._purge_stored_documents(payload["orgId"], [upload_document_id])
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))

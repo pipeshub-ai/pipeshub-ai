@@ -509,6 +509,15 @@ components:
             crawl:write: Create and manage crawling jobs
 
   schemas:
+    StoragePurgeResult:
+      type: object
+      required:
+        - purged
+      properties:
+        purged:
+          type: integer
+          minimum: 0
+          description: Number of documents removed.
     # ==================== COMMON SCHEMAS ====================
 
 
@@ -23129,6 +23138,70 @@ paths:
           description: The storage scoped token was missing or invalid.
         '404':
           description: No such document.
+  /document/internal/{documentId}/purge:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove a document and its stored files (service-to-service)
+      description: |
+        Removes every stored copy of the document's file (the current file and
+        each version), then the document record. Called when the record that
+        owned the document is deleted. A document that is already gone counts
+        as purged, so the call is safe to repeat. If a stored file cannot be
+        removed the record is kept and the call answers 503, so it can be retried.
+      operationId: internalPurgeDocumentById
+      security:
+        - scopedToken: []
+      parameters:
+        - $ref: '#/components/parameters/InternalDocumentId'
+      responses:
+        '200':
+          description: How many documents were removed (0 if it was already gone).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The document id is not a 24-character hex id.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: A stored file could not be removed; the document was kept so the removal can be retried.
+  /document/internal/records/{virtualRecordId}/purge:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove a processed record's documents and stored files (service-to-service)
+      description: |
+        Removes every document filed at the exact org-scoped path
+        `records/{virtualRecordId}`, where indexing keeps a record's processed
+        content, together with their stored files. Records with identical
+        content share one virtual record id, so the caller purges only once no
+        record uses it. Safe to repeat.
+      operationId: internalPurgeVirtualRecordDocuments
+      security:
+        - scopedToken: []
+      parameters:
+        - name: virtualRecordId
+          in: path
+          required: true
+          description: Virtual record id (letters, digits, `-` and `_`); matched exactly, never as a prefix.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
+      responses:
+        '200':
+          description: How many documents were removed (0 if none were filed there).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The virtual record id is not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: A stored file could not be removed; its document was kept so the removal can be retried.
   /document/internal/{documentId}/download:
     get:
       tags:

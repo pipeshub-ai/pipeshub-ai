@@ -267,18 +267,18 @@ class TestUploadedDocumentId:
 class TestStoredDocumentCleanupEvents:
     def test_one_event_per_chunk_of_unique_ids(self):
         ids = [f"{i:024x}" for i in range(MAX_VIRTUAL_RECORD_IDS_PER_EVENT + 1)]
-        events = build_stored_document_cleanup_events(org_id="org-1", document_ids=ids + ids[:3])
+        events = build_stored_document_cleanup_events(org_id="org-1", document_ids=ids + ids[:3], connector_id="kb-1")
 
         assert [e["eventType"] for e in events] == [EventTypes.DELETE_STORED_DOCUMENTS.value] * 2
         assert sum(len(e["payload"]["documentIds"]) for e in events) == len(ids)
-        assert all(e["payload"]["orgId"] == "org-1" for e in events)
+        assert all(e["payload"]["orgId"] == "org-1" and e["payload"]["connectorId"] == "kb-1" for e in events)
 
     def test_no_ids_no_events(self):
-        assert build_stored_document_cleanup_events(org_id="org-1", document_ids=[]) == []
+        assert build_stored_document_cleanup_events(org_id="org-1", document_ids=[], connector_id="kb-1") == []
 
     def test_a_failed_publish_says_files_stay_in_storage(self):
         logger = MagicMock()
-        event = build_stored_document_cleanup_events(org_id="org-1", document_ids=[DOC_ID])[0]
+        event = build_stored_document_cleanup_events(org_id="org-1", document_ids=[DOC_ID], connector_id="kb-1")[0]
 
         log_cleanup_publish_failure(logger, event, "KB kb-1", RuntimeError("broker down"))
 

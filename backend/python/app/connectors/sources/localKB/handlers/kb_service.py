@@ -19,6 +19,7 @@ from app.connectors.services.vector_cleanup_events import (
 from app.models.entities import FileRecord, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import PEOPLE_GONE, action_failed
 
@@ -699,15 +700,42 @@ class KnowledgeBaseService:
 
             self.logger.info(f"🔐 User {user_key} has OWNER permission - proceeding with deletion")
 
-            # Listed first: once the records are gone nothing points at these files.
+            # Listed first, and required: once the records are gone nothing points
+            # at these files, so deleting without the list would strand them.
             try:
                 uploaded_files = await self.graph_provider.get_uploaded_document_ids(kb_id)
             except Exception as e:
-                uploaded_files = []
                 self.logger.error(
-                    "Could not list the uploaded files of knowledge base %s; they will "
-                    "stay in storage after it is deleted: %s", kb_id, e,
+                    "Could not list the uploaded files of knowledge base %s; nothing was deleted: %s",
+                    kb_id, e,
                 )
+                return {
+                    "success": False,
+                    "code": 503,
+                    "reason": (
+                        "We couldn't list this collection's files, so nothing was deleted. "
+                        "Please try again."
+                    ),
+                }
+
+            # Published before the graph delete: afterwards a lost event could never
+            # be recovered. The consumer purges only files no record of this KB lists
+            # any more, and retries while the records are still there.
+            for event in build_stored_document_cleanup_events(
+                org_id=org_id, document_ids=uploaded_files, connector_id=kb_id
+            ):
+                try:
+                    await self._publish_with_retry(event, kb_id)
+                except Exception as e:
+                    log_cleanup_publish_failure(self.logger, event, f"KB {kb_id}", e)
+                    return {
+                        "success": False,
+                        "code": 503,
+                        "reason": (
+                            "We couldn't schedule the removal of this collection's files, "
+                            "so nothing was deleted. Please try again."
+                        ),
+                    }
 
             result = await self.graph_provider.delete_connector_instance(
                 connector_id=kb_id, org_id=org_id
@@ -740,11 +768,11 @@ class KnowledgeBaseService:
                 connector_name=result.get("connector_name"),
                 record_group_ids=result.get("record_group_ids", []),
                 virtual_record_ids=result.get("virtual_record_ids", []),
-            ) + build_stored_document_cleanup_events(org_id=org_id, document_ids=uploaded_files)
+            )
             published = 0
             for event in events:
                 try:
-                    await self.kafka_service.publish_event("record-events", event)
+                    await self._publish_with_retry(event, kb_id)
                     published += 1
                 except Exception as e:
                     log_cleanup_publish_failure(self.logger, event, f"KB {kb_id}", e)
@@ -775,6 +803,13 @@ class KnowledgeBaseService:
                 "code": 500,
                 "reason": action_failed("delete this knowledge base")
             }
+
+    async def _publish_with_retry(self, event: dict, kb_id: str) -> None:
+        await retry_async(
+            lambda: self.kafka_service.publish_event("record-events", event),
+            logger=self.logger,
+            description=f"publish {event['eventType']} for KB {kb_id}",
+        )
 
     def _build_kb_folder_record(
         self,
