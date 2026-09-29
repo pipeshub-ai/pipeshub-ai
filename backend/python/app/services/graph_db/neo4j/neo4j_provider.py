@@ -17050,6 +17050,7 @@ class Neo4jProvider(IGraphDBProvider):
                CASE WHEN coalesce(rg.hideChildren, false) = true THEN []
                ELSE [(record:Record)-[:INHERIT_PERMISSIONS]->(rg)
                 WHERE record.orgId = $org_id
+               AND {live_record}
                | record]
                END
              ] AS records_lists
@@ -17089,6 +17090,7 @@ class Neo4jProvider(IGraphDBProvider):
              [kb_app IN all_kb_apps |
                [(record:Record)-[:INHERIT_PERMISSIONS]->(kb_app)
                 WHERE record.orgId = $org_id
+                  AND {live_record}
                   {scope_filter_record}
                | record]
              ] AS kb_records_lists
@@ -17106,6 +17108,7 @@ class Neo4jProvider(IGraphDBProvider):
             WITH principal.user AS pu, principal.connectorId AS linked_connector, user_accessible_app_ids
             MATCH (pu)-[:PERMISSION {type: 'USER'}]->(record:Record)
             WHERE record.orgId = $org_id
+              AND {live_record}
               AND (linked_connector IS NULL OR record.connectorId = linked_connector)
               {scope_filter_record}
 
@@ -17125,6 +17128,7 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE grp:Group OR grp:Role
             MATCH (grp)-[:PERMISSION]->(record:Record)
             WHERE record.orgId = $org_id
+              AND {live_record}
               AND (linked_connector IS NULL OR record.connectorId = linked_connector)
               {scope_filter_record}
 
@@ -17143,6 +17147,7 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (pu)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
             MATCH (org)-[:PERMISSION {type: 'ORG'}]->(record:Record)
             WHERE record.orgId = $org_id
+              AND {live_record}
               AND (linked_connector IS NULL OR record.connectorId = linked_connector)
               {scope_filter_record}
 
@@ -17169,7 +17174,7 @@ class Neo4jProvider(IGraphDBProvider):
         # Replace placeholders
         cypher = cypher.replace("{scope_filter_rg}", scope_filter_rg)
         cypher = cypher.replace("{scope_filter_record}", scope_filter_record)
-        return cypher
+        return cypher.replace("{live_record}", cypher_live_record("record"))
 
     def _build_minimal_node_construction_cypher(self, filter_clause: str) -> str:
         """
@@ -17401,6 +17406,7 @@ class Neo4jProvider(IGraphDBProvider):
         // Match paginated nodes by ID with labels for index efficiency
         MATCH (matched_node)
         WHERE (matched_node:Record OR matched_node:RecordGroup) AND matched_node.id IN $paginated_ids
+          AND (matched_node:RecordGroup OR {live_record})
 
         // Collect matched nodes for processing
         WITH collect(matched_node) AS matched_nodes
@@ -17527,7 +17533,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         // Filter out nulls (in case some IDs weren't found)
         RETURN [n IN ordered_nodes WHERE n IS NOT NULL] AS nodes
-        """
+        """.replace("{live_record}", cypher_live_record("matched_node"))
 
 
     # ==================== Team Operations ====================

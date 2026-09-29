@@ -17,6 +17,7 @@ from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.integration import test_record_visibility_e2e as real_graph
 from tests.support.record_visibility_registry import REGISTRY, Rule
 
 PROVIDERS = {"arango": ArangoHTTPProvider, "neo4j": Neo4jProvider}
@@ -84,3 +85,20 @@ def test_other_methods_take_no_visibility(name, owner) -> None:
     """A method that grew a visibility parameter belongs in PARAM, where the default is checked."""
     cls = IGraphDBProvider if owner == "interface" else PROVIDERS[owner]
     assert "visibility" not in inspect.signature(getattr(cls, name)).parameters
+
+
+def test_every_param_method_is_probed_on_a_real_graph() -> None:
+    assert set(PARAM_METHODS) == set(real_graph.PARAM_PROBES)
+
+
+def test_every_live_method_is_called_on_a_real_graph() -> None:
+    """A label nobody checks is how Knowledge Hub search was called LIVE while it was not."""
+    for method, test_name in real_graph.EXERCISED_HERE.items():
+        assert method in REGISTRY, method
+        assert callable(getattr(real_graph, test_name, None)), f"{method} names {test_name}, which does not exist"
+    live = {n for n, (rule, _) in REGISTRY.items() if rule is Rule.LIVE}
+    unchecked = sorted(live - real_graph.EXERCISED_HERE.keys())
+    assert not unchecked, (
+        f"LIVE in the registry but never called against a real graph: {unchecked}. "
+        "Add a case to tests/integration/test_record_visibility_e2e.py and list it in EXERCISED_HERE."
+    )

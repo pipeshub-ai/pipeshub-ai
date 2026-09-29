@@ -136,3 +136,11 @@ class TestArangoSchema:
 
     def test_nothing_new_is_required(self) -> None:
         assert not set(NEW_KEYS) & set(record_schema["rule"]["required"])
+
+
+def test_the_typed_document_carries_no_delete_state() -> None:
+    """Deletion lives on the base `records` document; the typed collections are strict too."""
+    typed = FileRecord(**{**_record().model_dump(), "is_file": True}).model_copy(
+        update={"is_deleted": True, "deleted_at": 1, "delete_source": DeleteSource.USER}
+    ).to_arango_record()
+    assert not {"isDeleted", "deletedByUserId", *NEW_KEYS} & typed.keys()

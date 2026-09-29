@@ -14750,6 +14750,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     LET is_rg = IS_SAME_COLLECTION("recordGroups", inherited_node)
                     LET is_record = IS_SAME_COLLECTION("records", inherited_node)
                     FILTER is_rg OR is_record
+                    FILTER is_rg OR {aql_live_record("inherited_node")}
                     {inherited_access}
                     FILTER (
                         (is_rg AND ({scope_filter_rg_inline})) OR
@@ -14784,7 +14785,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER perm._from == principal.id AND perm.type == "USER"
                 FILTER STARTS_WITH(perm._to, "records/")
                 LET record = DOCUMENT(perm._to)
-                FILTER record != null AND record.orgId == @org_id
+                FILTER record != null AND record.orgId == @org_id AND {aql_live_record("record")}
                 FILTER principal.connectorId == null OR record.connectorId == principal.connectorId
                 LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                 LET record_parent_app = record_app
@@ -14806,7 +14807,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR record, groupEdge IN 1..1 ANY group._id permission
                     FILTER groupEdge.type == "GROUP" OR groupEdge.type == "ROLE"
                     FILTER IS_SAME_COLLECTION("records", record)
-                    FILTER record.orgId == @org_id
+                    FILTER record.orgId == @org_id AND {aql_live_record("record")}
                     FILTER principal.connectorId == null OR record.connectorId == principal.connectorId
                     LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                     LET record_parent_app = record_app
@@ -14827,7 +14828,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR record, orgPerm IN 1..1 ANY org._id permission
                     FILTER orgPerm.type == "ORG"
                     FILTER IS_SAME_COLLECTION("records", record)
-                    FILTER record.orgId == @org_id
+                    FILTER record.orgId == @org_id AND {aql_live_record("record")}
                     FILTER principal.connectorId == null OR record.connectorId == principal.connectorId
                     LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                     LET record_parent_app = record_app
@@ -14872,7 +14873,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR edge IN inheritPermissions
                     FILTER edge._to == seed_app._id
                     LET record = DOCUMENT(edge._from)
-                    FILTER record != null AND record.orgId == @org_id
+                    FILTER record != null AND record.orgId == @org_id AND {aql_live_record("record")}
                     LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                     {scope_filter_record}
                     {record_prefilter}
@@ -15133,7 +15134,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }
                 )[0] : null
 
-                LET record_node = record != null ? (
+                LET record_node = record != null AND __LIVE_RECORD__ ? (
                     LET file_info = FIRST(
                         FOR file_edge IN isOfType FILTER file_edge._from == record._id
                         LET file = DOCUMENT(file_edge._to) RETURN file
@@ -15183,7 +15184,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         RETURN { nodes: hydrated_nodes }
-        """
+        """.replace("__LIVE_RECORD__", aql_live_record("record"))
 
     async def get_knowledge_hub_search(
         self,
