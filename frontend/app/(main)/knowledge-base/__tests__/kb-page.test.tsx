@@ -81,6 +81,14 @@ vi.mock('@/config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/config')>();
   return {
     ...actual,
+    // Keep the real collection views, but do not wire the real auth client.
+    // A live client calls /api/v1/connectors with no token, toasts that failure,
+    // and the reindex "Try again" test then clicks the wrong error toast.
+    useAuthStore: undefined,
+    logoutAndRedirect: undefined,
+    logoutFromWorkspaceMenu: undefined,
+    apiClient: undefined,
+    apiClientDefault: undefined,
     useUserPermission: (key: string) => !permissions.denied.has(key),
     PermissionLockIcon: () => <span>Locked</span>,
     usePermissionDeniedDialog: () => ({
