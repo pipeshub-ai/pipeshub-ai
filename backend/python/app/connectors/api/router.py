@@ -601,10 +601,11 @@ async def get_record_content_internal(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        # Org mismatch: reject rather than widen (unlike the admin path).
-        if record.org_id and record.org_id != org_id:
+        # Org mismatch: reject rather than widen. A record with no org cannot be
+        # confined to one, so it is refused as well.
+        if not record.org_id or record.org_id != org_id:
             logger.warning(
-                "get_record_content_internal: org mismatch record=%s record_org=%s token_org=%s",
+                "get_record_content_internal: org mismatch record=%s record_org=%r token_org=%s",
                 record_id, record.org_id, org_id,
             )
             raise HTTPException(
@@ -1422,14 +1423,14 @@ async def stream_record(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        # Validate that the org_id matches the record's org_id
-        if record and record.org_id and record.org_id != org_id:
-            logger.warning(f"OrgId mismatch: JWT has {org_id}, but record has {record.org_id}. Using record's org_id.")
-            org_id = record.org_id
-            org = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
-            if not org:
-                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
-
+        # Same response as a missing record, so a caller cannot probe another org's record IDs.
+        # A record with no org cannot be confined to one, so it is refused as well.
+        if not record.org_id or record.org_id != org_id:
+            logger.warning(
+                "stream_record: org mismatch record=%s record_org=%r token_org=%s",
+                record_id, record.org_id, org_id,
+            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
