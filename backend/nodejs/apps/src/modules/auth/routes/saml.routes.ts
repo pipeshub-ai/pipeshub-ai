@@ -2,7 +2,6 @@ import { Router, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 
 import passport from 'passport';
-import session from 'express-session';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { AuthSessionRequest } from '../middlewares/types';
 import {
@@ -55,24 +54,9 @@ export function createSamlRouter(container: Container) {
 
   const logger = container.get<Logger>('Logger');
   router.use(attachContainerMiddleware(container));
-  router.use(
-    session({
-      secret: config.cookieSecret,
-      resave: true,
-      saveUninitialized: true,
-      cookie: {
-        maxAge: 60 * 60 * 1000, // 1 hour
-        domain: 'localhost',
-        // Not 'auto': the app sets no 'trust proxy', so behind a TLS proxy
-        // req.secure is false and 'auto' would never mark it Secure. Sign-in
-        // state travels in RelayState, so skipping it on plain http is safe.
-        secure: true,
-        sameSite: 'lax',
-      },
-    }),
-  );
+  // No server-side login session: sign-in state travels in RelayState and the
+  // Redis sign-in session, and the callback sets its own token cookies.
   router.use(passport.initialize());
-  router.use(passport.session());
 
   router.get(
     '/signIn',
@@ -105,7 +89,10 @@ export function createSamlRouter(container: Container) {
           }
           next();
         };
-        passport.authenticate("saml", { failureRedirect: `${config.frontendUrl}/login?saml_error=auth_failed` })(req, res, samlErrorNext);
+        passport.authenticate('saml', {
+          session: false,
+          failureRedirect: `${config.frontendUrl}/login?saml_error=auth_failed`,
+        })(req, res, samlErrorNext);
       } catch (error) {
         logger.error('SAML passport error', { error: error instanceof Error ? error.message : String(error) });
         return res.redirect(`${config.frontendUrl}/login?saml_error=auth_failed`);

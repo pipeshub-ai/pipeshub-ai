@@ -29,15 +29,6 @@ import { Org } from '../../user_management/schema/org.schema';
 import { isValidEmail } from '../routes/saml.routes';
 
 const orgIdToSamlEmailKey: Record<string, string> = {};
-passport.serializeUser((user, done) => {
-  done(null, user);
-});
-
-passport.deserializeUser((obj, done) => {
-  if (obj) {
-    done(null, obj);
-  }
-});
 @injectable()
 export class SamlController {
   constructor(
@@ -191,6 +182,7 @@ export class SamlController {
       req.query.RelayState = relayStateEncoded;
 
       passport.authenticate('saml', {
+        session: false,
         failureRedirect: `/${this.config.frontendUrl}/auth/sign-in`,
         successRedirect: '/',
       })(req, res, next);

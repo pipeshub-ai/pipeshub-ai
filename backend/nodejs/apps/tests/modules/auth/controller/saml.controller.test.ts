@@ -206,6 +206,7 @@ describe('SamlController', () => {
       await controller.signInViaSAML(req, res, next);
 
       expect(passport.authenticate.calledOnce).to.be.true;
+      expect((passport.authenticate as any).firstCall.args[1].session).to.equal(false);
     });
 
     it('should call next(NotFoundError) when certificate is missing in credentials', async () => {

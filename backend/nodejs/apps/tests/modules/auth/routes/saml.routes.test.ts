@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import express from 'express';
 import { AddressInfo } from 'net';
 import sinon from 'sinon';
+import passport from 'passport';
 import { Container } from 'inversify';
 import { createSamlRouter } from '../../../../src/modules/auth/routes/saml.routes';
 import { IamService } from '../../../../src/modules/auth/services/iam.service';
@@ -126,36 +127,72 @@ describe('createSamlRouter', () => {
     expect(router).to.have.property('stack');
   });
 
-  describe('session cookie', () => {
-    const sessionCookieFor = async (forwardedProto: string): Promise<string | undefined> => {
-      const app = express();
-      app.set('trust proxy', true);
-      app.use(createSamlRouter(container));
-      app.get('/probe', (_req, res) => {
-        res.send('ok');
+  describe('without a server-side session', () => {
+    const profile = { email: 'test@example.com', orgId: '507f1f77bcf86cd799439011' };
+    let previousStrategy: unknown;
+
+    beforeEach(() => {
+      previousStrategy = (passport as any)._strategy('saml');
+      // Stands in for the SAML strategy after it has validated the IdP's response.
+      passport.use('saml', {
+        authenticate(this: { success: (user: unknown) => void }) {
+          this.success(profile);
+        },
+      } as any);
+      container.get<any>('IamService').getUserByEmail.resolves({
+        statusCode: 200,
+        data: { _id: '507f1f77bcf86cd799439012', email: profile.email, orgId: profile.orgId, hasLoggedIn: true },
       });
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves({ kind: 'human', isDisabled: false }),
+          }),
+        }),
+      } as any);
+    });
+
+    afterEach(() => {
+      if (previousStrategy) passport.use('saml', previousStrategy as any);
+      else passport.unuse('saml');
+    });
+
+    const send = async (method: 'GET' | 'POST', path: string) => {
+      const app = express();
+      app.use(express.urlencoded({ extended: true }));
+      app.use(createSamlRouter(container));
       const server = app.listen(0);
       try {
         const { port } = server.address() as AddressInfo;
-        const response = await fetch(`http://127.0.0.1:${port}/probe`, {
-          headers: { 'x-forwarded-proto': forwardedProto },
+        const relayState = Buffer.from(JSON.stringify({ orgId: profile.orgId })).toString('base64');
+        return await fetch(`http://127.0.0.1:${port}${path}`, {
+          method,
+          redirect: 'manual',
+          headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-proto': 'https' },
+          body: method === 'POST' ? new URLSearchParams({ SAMLResponse: 'x', RelayState: relayState }).toString() : undefined,
         });
-        return response.headers
-          .getSetCookie()
-          .find((cookie) => cookie.startsWith('connect.sid='));
       } finally {
         server.close();
       }
     };
 
-    it('is marked Secure over HTTPS', async () => {
-      const cookie = await sessionCookieFor('https');
-      expect(cookie).to.be.a('string');
-      expect(cookie).to.match(/;\s*Secure/i);
+    it('completes sign-in from the callback and sets no express-session cookie', async () => {
+      const response = await send('POST', '/signIn/callback');
+
+      expect(response.status).to.equal(302);
+      expect(response.headers.get('location')).to.equal(`${mockConfig.frontendUrl}/auth/sign-in/samlSso/success`);
+      const cookies = response.headers.getSetCookie();
+      expect(cookies.some((c) => c.startsWith('accessToken='))).to.equal(true);
+      expect(cookies.some((c) => c.startsWith('refreshToken='))).to.equal(true);
+      expect(cookies.some((c) => c.startsWith('connect.sid='))).to.equal(false);
+      const sessionService = container.get<any>('SessionService');
+      expect(sessionService.completeAuthentication.calledOnce).to.equal(true);
     });
 
-    it('is never sent over plain HTTP', async () => {
-      expect(await sessionCookieFor('http')).to.equal(undefined);
+    it('sets no express-session cookie on other SAML routes', async () => {
+      const response = await send('GET', '/probe');
+
+      expect(response.headers.getSetCookie().some((c) => c.startsWith('connect.sid='))).to.equal(false);
     });
   });
 
@@ -211,8 +248,8 @@ describe('createSamlRouter', () => {
     const middlewareLayers = router.stack.filter(
       (layer: any) => !layer.route,
     );
-    // Should have at least: attachContainer, session, passport.initialize, passport.session
-    expect(middlewareLayers.length).to.be.greaterThanOrEqual(3);
+    // attachContainer + passport.initialize
+    expect(middlewareLayers.length).to.equal(2);
   });
 
   describe('route count', () => {
@@ -262,13 +299,13 @@ describe('createSamlRouter', () => {
       expect(updateConfigRoute.route.stack.length).to.be.greaterThanOrEqual(2);
     });
 
-    it('should use session, passport.initialize, and passport.session as router-level middleware', () => {
+    it('should use only attachContainer and passport.initialize as router-level middleware', () => {
       const router = createSamlRouter(container);
       const middlewareLayers = router.stack.filter(
         (layer: any) => !layer.route,
       );
-      // attachContainer + session + passport.initialize + passport.session = at least 4
-      expect(middlewareLayers.length).to.be.greaterThanOrEqual(4);
+      expect(middlewareLayers.map((layer: any) => layer.name)).to.not.include('session');
+      expect(middlewareLayers.length).to.equal(2);
     });
   });
 
@@ -356,13 +393,12 @@ describe('createSamlRouter', () => {
   });
 
   describe('middleware layer types', () => {
-    it('should include session middleware as non-route layer', () => {
+    it('should include no session middleware', () => {
       const router = createSamlRouter(container);
       const middlewareLayers = (router as any).stack.filter(
         (layer: any) => !layer.route,
       );
-      // Should have at least attachContainer + session + passport.init + passport.session
-      expect(middlewareLayers.length).to.be.greaterThanOrEqual(4);
+      expect(middlewareLayers.map((layer: any) => layer.name)).to.not.include('session');
     });
 
     it('no route should have zero handlers', () => {
