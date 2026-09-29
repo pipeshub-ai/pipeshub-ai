@@ -1,10 +1,11 @@
 import asyncio
 import io
+import json
 import logging
 import os
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -127,6 +128,10 @@ _DRIVE_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 
 # Org-wide, not per user: the folder filter's scope is settled once per run for everyone.
 FOLDER_FILTER_SYNC_POINT_KEY = "folder_filter"
+# The sync filters every stored record was last checked against, so a filter change
+# removes what it now leaves out once, not on every run.
+FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
+FILTER_CLEANUP_PAGE_SIZE = 500
 
 
 @ConnectorBuilder("Drive Workspace")\
@@ -315,6 +320,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Decides where a shared-with-me item is filed, not whether it syncs: membership is
         # per-user and lives alongside the user being synced.
         self._synced_drive_ids: set = set()
+        # Every shared drive in the domain before the DRIVE_IDS filter, to tell a shared
+        # drive's records from My Drive ones when that filter is checked.
+        self._listed_shared_drive_ids: set = set()
 
         # Google clients and data sources (initialized in init())
         self.admin_client: Optional[GoogleClient] = None
@@ -487,6 +495,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Processing user drives in batches...")
             # Use users synced in Step 1
             await self._process_users_in_batches(self.synced_users)
+
+            # Step 6: Remove what changed sync filters now leave out
+            await self._remove_records_outside_filters()
 
             self.logger.info("Google Drive enterprise connector sync completed successfully")
 
@@ -1129,6 +1140,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     raise
 
             self.logger.info(f"Fetched {len(all_drives)} total shared drives")
+            self._listed_shared_drive_ids = {d["id"] for d in all_drives if d.get("id")}
 
             all_drives = [d for d in all_drives if self._pass_drive_ids_filter(d.get("id", ""))]
             self.logger.info(f"Processing {len(all_drives)} shared drives after DRIVE_IDS filter")
@@ -1636,6 +1648,232 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self.data_entities_processor.on_record_deleted(
                 record_id=existing_record.id
             )
+
+    async def _handle_removed_change(
+        self,
+        file_id: str | None,
+        user: AppUser,
+        owner_sources: dict[str, GoogleDriveDataSource],
+    ) -> None:
+        """Apply a `removed` change from one user's changes feed.
+
+        Drive reports `removed` both when a file is deleted and when only this user lost
+        access to it. The file's owner can tell the two apart, so the owner is asked: a
+        clean "not found", or a file in the trash, deletes the record, and anything else
+        drops just this user's access. A transient error raises, so the change is read
+        again next run instead of being lost.
+        """
+        if not file_id:
+            return
+        record = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id, external_record_id=file_id
+        )
+        if record is None:
+            return
+        if await self._owner_reports_file_gone(record, owner_sources):
+            await self._delete_record_tree(record)
+            return
+        # Deleting only their direct USER edge would leave group- and drive-derived
+        # access intact, and stale access is the worse way to be wrong here.
+        self.logger.info(f"Removing permission from record {record.record_name} for user {user.email}")
+        await self.data_entities_processor.delete_permission_from_record(
+            record_id=record.id, user_email=user.email
+        )
+
+    async def _owner_reports_file_gone(
+        self, record: Record, owner_sources: dict[str, GoogleDriveDataSource]
+    ) -> bool:
+        owner_email = await self.data_entities_processor.get_record_owner_source_user_email(record.id)
+        owner = next(
+            (u for u in self.synced_users if owner_email and u.email.lower() == owner_email.lower()),
+            None,
+        )
+        if owner is None:
+            return False
+        source = owner_sources.get(owner.email)
+        if source is None:
+            try:
+                source = await self._build_user_drive_data_source(owner)
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not act as {owner.email} to check whether {record.record_name} "
+                    f"still exists: {e}; keeping the record"
+                )
+                return False
+            owner_sources[owner.email] = source
+        try:
+            metadata = await source.files_get(
+                fileId=record.external_record_id, supportsAllDrives=True, fields="id, trashed"
+            )
+        except HttpError as e:
+            status = e.resp.status
+            if status == HttpStatusCode.NOT_FOUND.value:
+                return True
+            if status == HttpStatusCode.TOO_MANY_REQUESTS.value or status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value or is_retryable_403(e):
+                raise
+            self.logger.warning(
+                f"Google Drive refused to say whether {record.record_name} still exists "
+                f"(HTTP {status}); keeping the record"
+            )
+            return False
+        return bool(metadata.get("trashed"))
+
+    async def _delete_gone_item(self, file_id: str | None) -> None:
+        """Delete the record of a file that is in the trash or deleted, if one was synced."""
+        if not file_id:
+            return
+        record = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id, external_record_id=file_id
+        )
+        if record is not None:
+            await self._delete_record_tree(record)
+
+    async def _delete_record_tree(self, record: Record) -> None:
+        """Delete a record; a folder takes the records under it along."""
+        self.logger.info("Deleting record: %s", record.record_name)
+        if record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+            await self.data_entities_processor.on_records_deleted_cascade([record.id], self.connector_id)
+        else:
+            await self.data_entities_processor.on_record_deleted(record_id=record.id)
+
+    def _sync_filters_key(self) -> str:
+        return json.dumps(
+            sorted(
+                (f.model_dump(mode="json") for f in self.sync_filters.filters),
+                key=lambda f: str(f.get("key")),
+            ),
+            sort_keys=True,
+        )
+
+    def _unresolved_filter_folders(self) -> set:
+        """Selected folders whose subtree is unknown, as opposed to ones no user can see."""
+        invisible = self._folders_probed - self._blocked_folder_ids - self._expanded_folder_ids
+        return self._pending_folder_expansions() - invisible
+
+    @staticmethod
+    def _epoch_ms_to_iso(epoch_ms: int | None) -> str | None:
+        if not epoch_ms:
+            return None
+        return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
+
+    def _record_passes_sync_filters(self, record: Record) -> bool:
+        """Check a stored record against the sync filters, the way a listed file is checked.
+
+        A file at the top of a drive is stored with no parent, so its drive's root folder
+        stands in for it.
+        """
+        group_id = record.external_record_group_id
+        if group_id in self._listed_shared_drive_ids and not self._pass_drive_ids_filter(group_id):
+            return False
+        parent = record.parent_external_record_id or group_id
+        metadata = {
+            "id": record.external_record_id,
+            "name": record.record_name,
+            "mimeType": record.mime_type,
+            "parents": [parent] if parent else [],
+            "createdTime": self._epoch_ms_to_iso(record.source_created_at),
+            "modifiedTime": self._epoch_ms_to_iso(record.source_updated_at),
+        }
+        tracked_folder_ids = self._tracked_folder_ids if self._folder_seed_ids else None
+        return (
+            pass_folder_filter(metadata, tracked_folder_ids)
+            and self._pass_date_filters(metadata)
+            and self._pass_extension_filter(metadata)
+        )
+
+    async def _remove_records_outside_filters(self) -> None:
+        """Delete the records the sync filters leave out, once after they change.
+
+        Narrowing a filter stops the files it excludes from syncing, but not the ones
+        synced before. Editing the filters clears the sync points, so the first run
+        after an edit checks every stored record against them. A folder that still
+        holds records is kept, so the tree still leads to the selected folders.
+
+        Nothing is removed while a selected folder could not be read, since its
+        subtree is unknown. The filters are recorded as applied only once every
+        delete went through, so a failure is retried next run.
+        """
+        filters_key = self._sync_filters_key()
+        applied = await self.drive_delta_sync_point.read_sync_point(FILTER_CLEANUP_SYNC_POINT_KEY)
+        if (applied or {}).get("filters") == filters_key:
+            return
+        if all(f.is_empty() for f in self.sync_filters.filters):
+            await self.drive_delta_sync_point.update_sync_point(
+                FILTER_CLEANUP_SYNC_POINT_KEY, {"filters": filters_key}
+            )
+            return
+        if self._folder_seed_ids and self._unresolved_filter_folders():
+            self.logger.warning(
+                "Not removing files outside the sync filters yet: some selected folders could "
+                "not be read, so what is inside them is unknown. This is tried again next run."
+            )
+            return
+
+        removed = failed = 0
+        excluded_folders: list[Record] = []
+        try:
+            after_key: str | None = None
+            while True:
+                page = await self.data_entities_processor.get_records_by_status(
+                    connector_id=self.connector_id,
+                    status_filters=None,
+                    limit=FILTER_CLEANUP_PAGE_SIZE,
+                    is_placeholder=False,
+                    after_key=after_key,
+                )
+                for record in page:
+                    if self._record_passes_sync_filters(record):
+                        continue
+                    if record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+                        excluded_folders.append(record)
+                        continue
+                    try:
+                        await self.data_entities_processor.on_record_deleted(record_id=record.id)
+                        removed += 1
+                    except Exception as e:
+                        failed += 1
+                        self.logger.warning(f"Failed to remove {record.record_name} outside the sync filters: {e}")
+                if len(page) < FILTER_CLEANUP_PAGE_SIZE:
+                    break
+                after_key = page[-1].id
+
+            # Innermost first: a folder emptied in one pass can empty its parent in the next.
+            while excluded_folders:
+                kept: list[Record] = []
+                for folder in excluded_folders:
+                    if await self.data_entities_processor.get_records_by_parent(
+                        self.connector_id, folder.external_record_id
+                    ):
+                        kept.append(folder)
+                        continue
+                    try:
+                        await self.data_entities_processor.on_record_deleted(record_id=folder.id)
+                        removed += 1
+                    except Exception as e:
+                        failed += 1
+                        kept.append(folder)
+                        self.logger.warning(f"Failed to remove folder {folder.record_name} outside the sync filters: {e}")
+                if len(kept) == len(excluded_folders):
+                    break
+                excluded_folders = kept
+        except Exception as e:
+            self.logger.error(
+                f"Could not finish removing files outside the sync filters: {e}. "
+                "This is tried again next run.",
+                exc_info=True,
+            )
+            return
+
+        if removed:
+            self.logger.info(f"Removed {removed} records the sync filters now leave out")
+        if failed:
+            self.logger.warning(
+                f"{failed} records outside the sync filters could not be removed; retrying next run"
+            )
+            return
+        await self.drive_delta_sync_point.update_sync_point(
+            FILTER_CLEANUP_SYNC_POINT_KEY, {"filters": filters_key}
+        )
 
     def _pending_folder_expansions(self) -> set:
         """
@@ -2430,6 +2668,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             while True:
                 # Prepare files_list parameters
                 list_params = {
+                    "q": "trashed = false",
                     "fields": DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
                 }
 
@@ -2504,6 +2743,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             current_page_token = page_token
             total_changes = 0
+            owner_sources: dict[str, GoogleDriveDataSource] = {}
 
             while True:
                 # Prepare changes_list parameters
@@ -2546,22 +2786,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                     file_metadata = change.get("file")
 
                     if is_removed:
-                        existing_record = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=change.get("fileId")
-                        )
+                        await self._handle_removed_change(change.get("fileId"), user, owner_sources)
+                        continue
 
-                        # A removal means this user permanently lost the item, so drop the
-                        # access edge wherever the record is filed. Deleting only their
-                        # direct USER edge leaves group- and drive-derived access intact,
-                        # and stale access is the worse way to be wrong here.
-                        if existing_record and existing_record.id:
-                            self.logger.info(f"Removing permission from record {existing_record.record_name} for user {user.email}")
-
-                            await self.data_entities_processor.delete_permission_from_record(
-                                    record_id=existing_record.id,
-                                    user_email=user.email
-                                )
+                    if file_metadata and file_metadata.get("trashed"):
+                        await self._delete_gone_item(file_metadata.get("id"))
+                        continue
 
                     if file_metadata:
                         item_drive_id = file_metadata.get("driveId")
@@ -3025,6 +3255,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                                         "corpora": "drive",
                                         "supportsAllDrives": True,
                                         "includeItemsFromAllDrives": True,  # Required when driveId is specified
+                                        "q": "trashed = false",
                                         "fields": DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
                                     }
 
@@ -3148,6 +3379,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                                                     external_record_id=file_id
                                                 )
                                                 await self._handle_record_updates(deleted_update)
+                                            continue
+
+                                        if file_metadata and file_metadata.get("trashed"):
+                                            await self._delete_gone_item(file_metadata.get("id"))
                                             continue
 
                                         if file_metadata:
