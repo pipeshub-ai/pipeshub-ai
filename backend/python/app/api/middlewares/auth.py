@@ -34,11 +34,24 @@ AUTH_POLICY_ATTR = "__auth_policy__"
 # arrives carrying them must not be able to pose as an OAuth client.
 _OAUTH_DERIVED_CLAIMS = ("isOAuth", "oauthScopes", "oauthClientId")
 
-# How long Node's answer about a session token is reused. Concurrent requests share
-# one lookup whatever this is, so it only has to cover steady traffic; kept short so
-# that signing out, a password change or a lockout reaches these services in seconds.
-SESSION_CHECK_TTL_SECONDS = 2.0
-_session_checks = CallerRoleCache(ttl_seconds=SESSION_CHECK_TTL_SECONDS, max_entries=10_000)
+DEFAULT_SESSION_CHECK_TTL_SECONDS = 30.0
+
+
+def session_check_ttl_seconds() -> float:
+    """How long Node's answer about a session token is reused (``SESSION_CHECK_CACHE_SECONDS``).
+
+    This bounds both how late signing out, a password change or a lockout takes effect
+    here and how often each session costs Node a lookup.
+    """
+    raw = os.environ.get("SESSION_CHECK_CACHE_SECONDS", "").strip()
+    try:
+        ttl = float(raw) if raw else DEFAULT_SESSION_CHECK_TTL_SECONDS
+    except ValueError:
+        return DEFAULT_SESSION_CHECK_TTL_SECONDS
+    return ttl if 0 <= ttl < float("inf") else DEFAULT_SESSION_CHECK_TTL_SECONDS
+
+
+_session_checks = CallerRoleCache(ttl_seconds=session_check_ttl_seconds(), max_entries=10_000)
 
 
 async def get_config_service(request: Request) -> ConfigurationService:

@@ -16,13 +16,19 @@ import hashlib
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Literal, cast
 
 import httpx
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service import (
+    DefaultEndpoints,
+    TokenScopes,
+    config_node_constants,
+)
+from app.utils.jwt import mint_service_token
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -40,6 +46,8 @@ _TIMEOUT_SECONDS = 5.0
 # Node authenticates the caller from the Authorization header alone, so nothing else is
 # sent; cookies in particular can carry a long-lived refresh token.
 _FORWARDED_HEADERS = ("authorization",)
+SERVICE_AUTHORIZATION_HEADER = "x-service-authorization"
+_SERVICE_TOKEN_TTL = timedelta(minutes=5)
 
 Role = Literal["admin", "member"]
 
@@ -99,6 +107,30 @@ def _ssl_context() -> ssl.SSLContext:
     return httpx.create_ssl_context()
 
 
+async def _service_credentials(config_service: ConfigurationService) -> dict[str, str]:
+    """A service token that lets Node's rate limiter tell this lookup from client traffic.
+
+    Every user's lookup leaves from the same few service addresses, so counted per
+    address they would share one allowance. Without the secret the lookup still goes
+    out, only counted like any other request.
+    """
+    try:
+        secret_keys = cast(
+            "object",
+            await config_service.get_config(config_node_constants.SECRET_KEYS.value, use_cache=True),
+        )
+    except Exception as exc:
+        logger.warning("Could not read the service secret (%s)", type(exc).__name__)
+        return {}
+    secret = _str_field(secret_keys, "scopedJwtSecret")
+    if not isinstance(secret, str) or not secret:
+        return {}
+    token = mint_service_token(
+        secret, {"scopes": [TokenScopes.CALLER_ROLE.value]}, ttl=_SERVICE_TOKEN_TTL
+    )
+    return {SERVICE_AUTHORIZATION_HEADER: f"Bearer {token}"}
+
+
 def _forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:
     present = {name.lower(): value for name, value in headers.items()}
     return {name: present[name] for name in _FORWARDED_HEADERS if present.get(name)}
@@ -112,6 +144,7 @@ async def fetch_caller_role(
     if not headers.get("authorization"):
         return _UNKNOWN
 
+    headers.update(await _service_credentials(config_service))
     url = f"{await _nodejs_endpoint(config_service)}{CALLER_ROLE_PATH}"
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, verify=_ssl_context()) as client:

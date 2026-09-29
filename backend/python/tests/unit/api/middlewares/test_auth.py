@@ -1126,6 +1126,21 @@ class TestAuthMiddleware:
 # ---------------------------------------------------------------------------
 
 
+class TestSessionCheckTtl:
+    def test_defaults_to_thirty_seconds(self, monkeypatch):
+        monkeypatch.delenv("SESSION_CHECK_CACHE_SECONDS", raising=False)
+        assert auth_module.session_check_ttl_seconds() == 30.0
+
+    def test_reads_the_environment(self, monkeypatch):
+        monkeypatch.setenv("SESSION_CHECK_CACHE_SECONDS", "2")
+        assert auth_module.session_check_ttl_seconds() == 2.0
+
+    @pytest.mark.parametrize("raw", ["soon", "-1", "nan", "inf"])
+    def test_unusable_values_fall_back_to_the_default(self, monkeypatch, raw):
+        monkeypatch.setenv("SESSION_CHECK_CACHE_SECONDS", raw)
+        assert auth_module.session_check_ttl_seconds() == 30.0
+
+
 class TestAuthRoleHelpers:
     def test_normalize_auth_role_admin_variants(self):
         assert normalize_auth_role("admin") == "admin"

@@ -1,7 +1,15 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { createGlobalRateLimiter, createOAuthClientRateLimiter, createSkillsImportRateLimiter } from '../../../src/libs/middlewares/rate-limit.middleware'
+import jwt from 'jsonwebtoken'
+import {
+  CALLER_ROLE_LOOKUP_PATH,
+  SERVICE_AUTHORIZATION_HEADER,
+  createGlobalRateLimiter,
+  createOAuthClientRateLimiter,
+  createSkillsImportRateLimiter,
+} from '../../../src/libs/middlewares/rate-limit.middleware'
+import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 import { Logger } from '../../../src/libs/services/logger.service'
 
 // ---------------------------------------------------------------------------
@@ -465,6 +473,118 @@ describe('Rate Limit Middleware', () => {
       })
 
       limiter(req, res, next)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Python services' caller-role lookups
+  // -----------------------------------------------------------------------
+  describe('caller-role lookups from the Python services', () => {
+    const SCOPED_SECRET = 'scoped-secret-for-tests'
+    const PYTHON_IP = '10.9.0.2'
+    const LIMIT = 1000
+
+    function serviceToken(
+      scopes: string[] = [TokenScopes.CALLER_ROLE],
+      secret = SCOPED_SECRET,
+    ): string {
+      return jwt.sign({ scopes }, secret, { expiresIn: '5m' })
+    }
+
+    // Plain objects rather than sinon stubs: these tests send over a thousand requests.
+    function lookup(token?: string, overrides: Record<string, any> = {}): any {
+      return {
+        method: 'GET',
+        path: CALLER_ROLE_LOOKUP_PATH,
+        ip: PYTHON_IP,
+        socket: { remoteAddress: PYTHON_IP },
+        app: { enabled: () => false },
+        get: () => undefined,
+        headers: {
+          authorization: 'Bearer some-users-session',
+          ...(token ? { [SERVICE_AUTHORIZATION_HEADER]: `Bearer ${token}` } : {}),
+        },
+        ...overrides,
+      }
+    }
+
+    // Resolves with 200 when the limiter lets the request through, else its status.
+    function send(limiter: any, req: any): Promise<number> {
+      return new Promise((resolve, reject) => {
+        const headers: Record<string, unknown> = {}
+        const res: any = {
+          statusCode: 200,
+          headersSent: false,
+          setHeader: (key: string, value: unknown) => { headers[key] = value; return res },
+          getHeader: (key: string) => headers[key],
+          header: (key: string, value: unknown) => { headers[key] = value; return res },
+          set: (key: string, value: unknown) => { headers[key] = value; return res },
+          status: (code: number) => { res.statusCode = code; return res },
+          json: () => { resolve(res.statusCode); return res },
+          send: () => { resolve(res.statusCode); return res },
+        }
+        Promise.resolve(limiter(req, res, () => resolve(200))).catch(reject)
+      })
+    }
+
+    async function statuses(limiter: any, requests: any[]): Promise<number[]> {
+      const seen: number[] = []
+      for (const req of requests) {
+        seen.push(await send(limiter, req))
+      }
+      return seen
+    }
+
+    it('lets a burst of more than 1,000 a minute through from one address', async () => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, LIMIT, SCOPED_SECRET)
+      const token = serviceToken()
+
+      const seen = await statuses(
+        limiter,
+        Array.from({ length: LIMIT + 200 }, () => lookup(token)),
+      )
+
+      expect(seen.filter((status) => status === 429)).to.have.lengthOf(0)
+    })
+
+    it('still limits an ordinary client at the same address', async () => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, LIMIT, SCOPED_SECRET)
+
+      const seen = await statuses(
+        limiter,
+        Array.from({ length: LIMIT + 1 }, () => lookup()),
+      )
+
+      expect(seen.slice(0, LIMIT).every((status) => status === 200)).to.be.true
+      expect(seen[LIMIT]).to.equal(429)
+    })
+
+    it('counts a lookup whose service token is forged, mis-scoped, expired or aimed elsewhere', async () => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 1, SCOPED_SECRET)
+      const expired = jwt.sign(
+        { scopes: [TokenScopes.CALLER_ROLE], exp: Math.floor(Date.now() / 1000) - 60 },
+        SCOPED_SECRET,
+      )
+      const refused = [
+        lookup(serviceToken([TokenScopes.CALLER_ROLE], 'not-the-server-secret'), { ip: '10.9.1.1' }),
+        lookup(serviceToken([TokenScopes.FETCH_CONFIG]), { ip: '10.9.1.2' }),
+        lookup(expired, { ip: '10.9.1.3' }),
+        lookup(serviceToken(), { ip: '10.9.1.4', path: '/api/v1/users' }),
+        lookup(serviceToken(), { ip: '10.9.1.5', method: 'POST' }),
+      ]
+
+      for (const req of refused) {
+        // The first request from each address fits the allowance of one; the second must not.
+        expect(await send(limiter, req)).to.equal(200)
+        expect(await send(limiter, { ...req })).to.equal(429)
+      }
+    })
+
+    it('exempts nothing when no scoped secret is configured', async () => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 1)
+      const token = serviceToken()
+
+      expect(await statuses(limiter, [lookup(token), lookup(token)])).to.deep.equal([200, 429])
     })
   })
 })

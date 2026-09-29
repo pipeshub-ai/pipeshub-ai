@@ -495,7 +495,13 @@ export class Application {
     );
 
     // Global rate limiter - applies to all routes
-    this.app.use(createGlobalRateLimiter(this.logger, appConfig.maxRequestsPerMinute));
+    this.app.use(
+      createGlobalRateLimiter(
+        this.logger,
+        appConfig.maxRequestsPerMinute,
+        appConfig.scopedJwtSecret,
+      ),
+    );
     this.app.use(metricsMiddleware());
   }
 

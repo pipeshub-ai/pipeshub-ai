@@ -1,20 +1,27 @@
 """Tests for app.api.middlewares.caller_role."""
 
 import asyncio
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from jose import jwt
 
 from app.api.middlewares.caller_role import (
     CALLER_ROLE_PATH,
+    SERVICE_AUTHORIZATION_HEADER,
     CallerRole,
     CallerRoleCache,
     CallerRoleStatus,
     fetch_caller_role,
     normalize_auth_role,
 )
-from app.config.constants.service import DefaultEndpoints
+from app.config.constants.service import (
+    DefaultEndpoints,
+    TokenScopes,
+    config_node_constants,
+)
 
 _NODE = "http://nodejs:3000"
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
@@ -45,6 +52,25 @@ def _node(handler):
 
 
 _BEARER = {"authorization": "Bearer caller-token"}
+_SCOPED_SECRET = "scoped-secret-for-tests"
+
+
+def _config_with_secret() -> AsyncMock:
+    values = {
+        config_node_constants.ENDPOINTS.value: {"nodejs": {"endpoint": _NODE}},
+        config_node_constants.SECRET_KEYS.value: {"scopedJwtSecret": _SCOPED_SECRET},
+    }
+    config_service = AsyncMock()
+    config_service.get_config = AsyncMock(side_effect=lambda key, **_kwargs: values[key])
+    return config_service
+
+
+def _seen_by_node(seen: list) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"role": "member"})
+
+    return handler
 
 
 class TestFetchCallerRole:
@@ -118,6 +144,26 @@ class TestFetchCallerRole:
         assert "x-organization-id" not in sent
         assert "x-is-admin" not in sent
         assert sent["host"] == "nodejs:3000"
+
+    async def test_carries_a_caller_role_service_token_for_nodes_rate_limiter(self):
+        seen: list = []
+        request = _request({**_BEARER, "X-Service-Authorization": "Bearer from-the-client"})
+        with _node(_seen_by_node(seen)):
+            await fetch_caller_role(request, _config_with_secret())
+
+        header = seen[0].headers[SERVICE_AUTHORIZATION_HEADER]
+        assert header != "Bearer from-the-client"
+        claims = jwt.decode(header.removeprefix("Bearer "), _SCOPED_SECRET, algorithms=["HS256"])
+        assert claims["scopes"] == [TokenScopes.CALLER_ROLE.value]
+        assert claims["exp"] - claims["iat"] <= 300
+
+    async def test_without_the_secret_the_lookup_still_goes_out(self):
+        seen: list = []
+        with _node(_seen_by_node(seen)):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+
+        assert result == CallerRole(CallerRoleStatus.VALID, "member")
+        assert SERVICE_AUTHORIZATION_HEADER not in seen[0].headers
 
     @pytest.mark.parametrize(
         "headers",
