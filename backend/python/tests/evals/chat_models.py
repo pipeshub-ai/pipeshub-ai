@@ -126,6 +126,10 @@ _AZURE_RESOURCE_HOST = re.compile(
 )
 
 
+# The judge's key is only ever sent to an Azure host.
+_AZURE_HOST_SUFFIXES = (".services.ai.azure.com", ".openai.azure.com", ".cognitiveservices.azure.com")
+
+
 class JudgeConfigError(RuntimeError):
     """JUDGE_PROVIDER is set but the rest of the judge's settings are not usable."""
 
@@ -156,7 +160,8 @@ def foundry_base_url(endpoint: str) -> str | None:
     and including ``/anthropic``; None when the endpoint has no such path."""
     parsed = urlparse(endpoint)
     segments = parsed.path.split("/")
-    if parsed.scheme != "https" or not parsed.hostname or "anthropic" not in segments:
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not host.endswith(_AZURE_HOST_SUFFIXES) or "anthropic" not in segments:
         return None
     path = "/".join(segments[: segments.index("anthropic") + 1])
     return f"https://{parsed.netloc}{path}"

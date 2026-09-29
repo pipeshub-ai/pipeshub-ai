@@ -11,7 +11,10 @@ import json
 
 import pytest
 
-from app.connectors.sources.demo.harness.answer_judge import AnswerJudge
+from app.connectors.sources.demo.harness.answer_judge import (
+    AnswerJudge,
+    split_sentences,
+)
 from tests.evals.run_judge_calibration import (
     DEFAULT_THRESHOLD,
     CalibrationCase,
@@ -27,20 +30,22 @@ class LabelClient:
     """Replies with each claim's first labelled verdict, or always with ``fixed``."""
 
     def __init__(self, cases: CalibrationSet, fixed: str | None = None, garble: set[str] | None = None) -> None:
-        self._by_answer = {c.answer: c for c in cases.cases}
+        self._by_sentences = {
+            "\n".join(f"[{i}] {t}" for i, t in enumerate(split_sentences(c.answer), start=1)): c for c in cases.cases
+        }
         self._fixed = fixed
         self._garble = garble or set()
 
     def complete(self, system: str, user: str) -> str:
-        answer = user.split("<<<ANSWER\n", 1)[1].rsplit("\nANSWER>>>", 1)[0]
-        case = self._by_answer[answer]
+        numbered = user.split("<<<ANSWER\n", 1)[1].rsplit("\nANSWER>>>", 1)[0]
+        case = self._by_sentences[numbered]
         if case.id in self._garble:
             return "not json"
         ordered = [c for c in case.claims if c.kind == "must_state"] + [c for c in case.claims if c.kind == "must_not_state"]
         claims = []
         for i, claim in enumerate(ordered, start=1):
             verdict = self._fixed or claim.expect[0]
-            claims.append({"id": i, "reasoning": "", "verdict": verdict, "quote": "" if verdict == "missing" else " ".join(answer.split()[:3])})
+            claims.append({"id": i, "reasoning": "", "verdict": verdict, "evidence_sentence_ids": [] if verdict == "missing" else [1]})
         return json.dumps({"claims": claims})
 
 
@@ -104,9 +109,9 @@ def test_a_repeated_claim_keeps_its_own_label() -> None:
     })
     # The judge reports must-state claims first: supported, missing, then the must-not-state one.
     reply = json.dumps({"claims": [
-        {"id": 1, "verdict": "supported", "quote": "up to $250"},
-        {"id": 2, "verdict": "missing", "quote": ""},
-        {"id": 3, "verdict": "supported", "quote": "up to $250"},
+        {"id": 1, "verdict": "supported", "evidence_sentence_ids": [1]},
+        {"id": 2, "verdict": "missing", "evidence_sentence_ids": []},
+        {"id": 3, "verdict": "supported", "evidence_sentence_ids": [1]},
     ]})
 
     class OneReply:

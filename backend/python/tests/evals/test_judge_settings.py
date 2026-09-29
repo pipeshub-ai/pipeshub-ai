@@ -204,6 +204,13 @@ def test_the_real_foundry_builder_points_the_sdk_at_the_resource() -> None:
     ("https://claude-res.services.ai.azure.com/anthropic", "https://claude-res.services.ai.azure.com/anthropic"),
     ("https://claude-res.cognitiveservices.azure.com/", None),
     ("http://claude-res.services.ai.azure.com/anthropic", None),
+    ("https://claude-res.openai.azure.com/anthropic/v1/messages", "https://claude-res.openai.azure.com/anthropic"),
+    ("https://claude-res.cognitiveservices.azure.com/anthropic", "https://claude-res.cognitiveservices.azure.com/anthropic"),
+    # Only Azure hosts get the judge's key.
+    ("https://example.com/anthropic/v1/messages", None),
+    ("https://claude-res.services.ai.azure.com.evil.example/anthropic", None),
+    ("https://evilservices.ai.azure.com/anthropic", None),
+    ("https://services.ai.azure.com/anthropic", None),
 ])
 def test_a_foundry_target_uri_gives_the_base_url(endpoint: str, base_url: str | None) -> None:
     assert chat_models.foundry_base_url(endpoint) == base_url
@@ -228,3 +235,10 @@ def test_the_real_foundry_builder_uses_a_target_uri_base_url() -> None:
     )
     url = urlparse(str(client._sdk.base_url))
     assert (url.hostname, url.path.rstrip("/")) == ("claude-res.services.ai.azure.com", "/anthropic")
+
+
+def test_a_target_uri_on_a_non_azure_host_is_a_config_error(monkeypatch: pytest.MonkeyPatch, built: list[dict]) -> None:
+    _set(monkeypatch, FOUNDRY_JUDGE | {"JUDGE_AZURE_ENDPOINT": "https://example.com/anthropic/v1/messages"})
+    with pytest.raises(JudgeConfigError, match="JUDGE_AZURE_ENDPOINT"):
+        judge_model_from_env()
+    assert built == []

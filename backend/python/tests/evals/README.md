@@ -224,13 +224,21 @@ Hedged ("I think", "usually"), partial and edge-wrong statements ("under $250"
 for "up to and including $250") are not support. The judge is told to judge
 only what the answer says, not what is true.
 
-Every `supported` or `contradicted` verdict must quote the answer. If the quote
-is not in the answer, the verdict becomes `unverified`, which fails: the judge
-may not invent its evidence. The check splits both into words and numbers and
-looks for the quote's run inside the answer's. Case, spacing, punctuation,
-quote marks and markdown emphasis don't matter. Each number is compared by its
-value and unit, with any "k", "million" or "bn" after it included, so "$250.00"
-matches "$250", while "$250k", "$250 million", "$2,500" and "250%" don't.
+**Evidence is a sentence number, not a quote.** Before the call, the answer is
+split into numbered sentences, and each line and bullet counts as one. For a
+`supported` or `contradicted` verdict the judge must cite at least one of those
+numbers. The check is exact: every cited number must exist, and at least one is
+required. Otherwise the verdict becomes `unverified`, which fails. The cited
+sentences are kept in the result and shown in failure messages.
+
+An earlier version asked for a quote and checked it against the answer as text.
+That kept failing on numbers: "$250" matched "$250-million", "$250 (million)",
+"$250 000", "- $250" and "10 - 15". Each fix revealed another way of writing a
+number, which is the same endless grammar the phrase lists ran into. Whether
+"$250 million" supports "up to $250" is a question of meaning, so the judge
+decides it, and the number cases in the calibration set measure how well it
+does. Citing a sentence number still stops the judge from inventing evidence,
+with no parsing at all.
 
 A must-state claim passes only when `supported`; a must-not-state claim passes
 when `missing` or `contradicted`. A model error, a timeout or a reply that is
@@ -285,11 +293,13 @@ the `JUDGE_*` settings. The calibration summary and its JSON (`provider`,
 
 ### Calibration
 
-`answer_judge_calibration.yaml` holds about 45 hand-labelled hard cases:
+`answer_judge_calibration.yaml` holds 54 hand-labelled hard cases (65 claims):
 negation, "under" against "up to and including", the right amount on the
 wrong subject, time phrases ("will sign off on Monday"), hedging, a fact buried
-in a long answer, an answer that states a fact and then contradicts it, and an
-instruction to the grader hidden in the answer. Most are around the expense
+in a long answer, an answer that states a fact and then contradicts it, an
+instruction to the grader hidden in the answer, and numbers written in unusual
+ways ("$250-million", "$250 (million)", "$250 000", "250 %", "- $250",
+"10 - 15 days"). Most are around the expense
 policy's approval bands; the rest cover PR #482's review, the export fix, the
 on-call handbook, the exports launch and the holiday carry-over change.
 
@@ -319,7 +329,7 @@ good material for more cases.
 The judge's instructions are about 470 tokens; with the claims and a typical
 answer a call is roughly 1,000 to 1,500 tokens in and 100 to 300 out. On a
 GPT-4o-class model that is about half a cent per call, so the nightly
-calibration (one call per case) costs around 20 cents, and a tenth of that on a
+calibration (one call per case) costs around 25 cents, and a tenth of that on a
 mini model. In the demo test, only answers to questions that list facts are
 judged, one call each; today no golden question lists any, so it costs
 nothing until questions are converted. The calibration run prints its token

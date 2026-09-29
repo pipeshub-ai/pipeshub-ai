@@ -399,3 +399,72 @@ cases:
     claims:
       - state: "Up to five days of unused annual leave can be carried over."
         expect: contradicted
+
+  # --- Numbers written in unusual ways ---------------------------------------------
+  # Whether an amount in the answer is the claim's amount is the judge's call:
+  # string matching on numbers can't be made complete. These track how well it
+  # makes that call.
+  - id: number-hyphen-million
+    about: '"$250-million" is not $250'
+    answer: "Purchases up to $250-million need no approval."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: [contradicted, missing]
+
+  - id: number-bracketed-million
+    about: '"$250 (million)" is not $250'
+    answer: "Purchases up to $250 (million) need no approval."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: [contradicted, missing]
+
+  - id: number-space-thousands
+    about: '"$250 000" is a quarter of a million, not $250'
+    answer: "Purchases up to $250 000 need no approval."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: [contradicted, missing]
+
+  - id: number-percent-not-dollars
+    about: '"250 %" is a percentage, not an amount'
+    answer: "Purchases up to 250 % of your monthly budget need no approval."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: [contradicted, missing]
+
+  - id: number-spaced-percent-same-rate
+    about: '"2.2 %" is the same rate as "2.2%"'
+    answer: "We pay 2.2 % on each card transaction under the processing agreement."
+    claims:
+      - state: "The card processing rate is 2.2% per transaction."
+        expect: supported
+
+  - id: number-spaced-minus
+    about: '"- $250" is a negative balance'
+    answer: "After the credit note, Contoso's balance is - $250."
+    claims:
+      - state: "After the credit note, Contoso's balance is -$250."
+        expect: supported
+      - not_state: "After the credit note, Contoso owes $250."
+        expect: [contradicted, missing]
+
+  - id: number-sign-dropped
+    about: a positive $250 is not a balance of -$250
+    answer: "After the credit note, Contoso's balance is $250."
+    claims:
+      - state: "After the credit note, Contoso's balance is -$250."
+        expect: [contradicted, missing]
+
+  - id: number-spaced-range
+    about: '"10 - 15 days" is a range, not minus fifteen'
+    answer: "A refund reaches the customer in 10 - 15 working days."
+    claims:
+      - state: "A refund takes 10 to 15 working days."
+        expect: supported
+
+  - id: number-range-end-only
+    about: the end of a range is not the range
+    answer: "A refund reaches the customer in 15 working days."
+    claims:
+      - state: "A refund takes 10 to 15 working days."
+        expect: [contradicted, missing]

@@ -2,7 +2,8 @@
 
 Nothing here calls a model. Each test hands the judge the reply a model might
 give and checks what the harness makes of it: a pass only for a supported claim
-quoted from the answer, and never a pass for a failed or garbled read.
+that cites a real sentence of the answer, and never a pass for a failed or
+garbled read.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from app.connectors.sources.demo.harness.answer_judge import (
     AnthropicJudgeClient,
     JudgeResult,
     LangChainJudgeClient,
-    quote_in_answer,
+    split_sentences,
 )
 from app.connectors.sources.demo.harness.kb_harness import score
 
@@ -47,7 +48,7 @@ class RefusingClient:
 
     def complete(self, system: str, user: str) -> str:
         self.calls += 1
-        return reply(("supported", "x"))
+        return reply(("supported", [1]))
 
 
 class StatusError(Exception):
@@ -56,10 +57,10 @@ class StatusError(Exception):
         self.status_code = status_code
 
 
-def reply(*claims: tuple[str, str]) -> str:
+def reply(*claims: tuple[str, list[int]]) -> str:
     return json.dumps({"claims": [
-        {"id": i, "reasoning": "because", "verdict": verdict, "quote": quote}
-        for i, (verdict, quote) in enumerate(claims, start=1)
+        {"id": i, "reasoning": "because", "verdict": verdict, "evidence_sentence_ids": ids}
+        for i, (verdict, ids) in enumerate(claims, start=1)
     ]})
 
 
@@ -73,18 +74,18 @@ def _judge_not_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(aj.REQUIRE_JUDGE_ENV, raising=False)
 
 
-def test_a_supported_claim_quoted_from_the_answer_passes() -> None:
-    judge, client = judge_with(reply(("supported", "up to $250 on a purchase without any approval")))
+def test_a_supported_claim_citing_a_sentence_of_the_answer_passes() -> None:
+    judge, client = judge_with(reply(("supported", [1])))
     result = judge.judge(ANSWER, [NO_APPROVAL])
     assert result.status == "judged" and result.passed
     assert result.claims[0].verdict == "supported"
     assert len(client.calls) == 1
-    assert NO_APPROVAL in client.calls[0][1] and ANSWER in client.calls[0][1]
+    assert NO_APPROVAL in client.calls[0][1]
 
 
 def test_every_claim_goes_in_one_call() -> None:
     judge, client = judge_with(reply(
-        ("supported", "without any approval"), ("supported", "within 30 days"), ("missing", ""),
+        ("supported", [1]), ("supported", [2]), ("missing", []),
     ))
     result = judge.judge(ANSWER, [NO_APPROVAL, RECEIPT], ["Every purchase needs manager approval."])
     assert result.passed
@@ -93,119 +94,78 @@ def test_every_claim_goes_in_one_call() -> None:
 
 def test_a_contradicted_claim_fails() -> None:
     answer = "Every purchase needs your manager's approval."
-    judge, _ = judge_with(reply(("contradicted", "Every purchase needs your manager's approval")))
+    judge, _ = judge_with(reply(("contradicted", [1])))
     result = judge.judge(answer, [NO_APPROVAL])
     assert not result.passed
     assert result.claims[0].verdict == "contradicted"
 
 
 def test_a_missing_claim_fails() -> None:
-    judge, _ = judge_with(reply(("missing", "")))
+    judge, _ = judge_with(reply(("missing", [])))
     assert not judge.judge("I couldn't find the expense policy.", [NO_APPROVAL]).passed
 
 
-def test_a_quote_that_is_not_in_the_answer_is_downgraded_to_unverified() -> None:
-    judge, _ = judge_with(reply(("supported", "purchases of $250 or less need no approval")))
+@pytest.mark.parametrize("ids", [[3], [0], [-1], [1, 7]])
+def test_citing_a_sentence_the_answer_does_not_have_is_unverified(ids: list[int]) -> None:
+    judge, _ = judge_with(reply(("supported", ids)))
     result = judge.judge(ANSWER, [NO_APPROVAL])
     assert not result.passed
     assert result.claims[0].verdict == "unverified"
 
 
-def test_an_empty_quote_on_a_supported_verdict_is_unverified() -> None:
-    judge, _ = judge_with(reply(("supported", "")))
+@pytest.mark.parametrize("verdict", ["supported", "contradicted"])
+def test_a_verdict_that_cites_no_sentence_is_unverified(verdict: str) -> None:
+    judge, _ = judge_with(reply((verdict, [])))
     assert judge.judge(ANSWER, [NO_APPROVAL]).claims[0].verdict == "unverified"
 
 
-@pytest.mark.parametrize(("quote", "found"), [
-    ("You can spend up to $250", True),
-    # Case, spacing, curly quotes and markdown emphasis don't make a quote invented.
-    ("you  can SPEND up to $250", True),
-    ("“up to $250 on a purchase”", True),
-    ("spend up to **$250**", True),
-    ("You can spend ... without any approval", True),
-    ("without any approval ... You can spend", False),
-    ("up to $2,500", False),
-    ("", False),
+def test_a_must_not_state_claim_with_no_citation_is_unverified_and_fails() -> None:
+    judge, _ = judge_with(reply(("contradicted", [])))
+    assert not judge.judge(ANSWER, [], ["Every purchase needs manager approval."]).passed
+
+
+def test_the_cited_sentences_are_kept_for_the_report() -> None:
+    judge, _ = judge_with(reply(("contradicted", [2])))
+    claim = judge.judge(ANSWER, [NO_APPROVAL]).claims[0]
+    assert claim.evidence_ids == [2]
+    assert claim.evidence == ["Submit the receipt within 30 days."]
+    assert "Submit the receipt" in claim.render()
+
+
+def test_the_judge_sees_the_answer_as_numbered_sentences() -> None:
+    judge, client = judge_with(reply(("supported", [1])))
+    judge.judge(ANSWER, [NO_APPROVAL])
+    prompt = client.calls[0][1]
+    assert "[1] You can spend up to **$250** on a purchase without any approval." in prompt
+    assert "[2] Submit the receipt within 30 days." in prompt
+
+
+def test_an_empty_answer_leaves_nothing_to_cite() -> None:
+    judge, _ = judge_with(reply(("supported", [1])))
+    assert judge.judge("", [NO_APPROVAL]).claims[0].verdict == "unverified"
+
+
+@pytest.mark.parametrize(("answer", "sentences"), [
+    ("One. Two! Three? Four", ["One.", "Two!", "Three?", "Four"]),
+    ("Up to $250 needs no approval. Submit within 30 days.", ["Up to $250 needs no approval.", "Submit within 30 days."]),
+    # No split inside a number, an abbreviation followed by lower case, or a decimal.
+    ("The rate is 2.2% and e.g. cards are 3.1% this year.", ["The rate is 2.2% and e.g. cards are 3.1% this year."]),
+    ("## Approvals\n- Up to $250: no approval.\n* Over $2,500: finance.\n\n1. First. 2) Second",
+     ["## Approvals", "Up to $250: no approval.", "Over $2,500: finance.", "First.", "2) Second"]),
+    ('She said "yes." Then it merged.', ['She said "yes."', "Then it merged."]),
+    ("**Marcus Webb** approved. **Dana** asked for a bucket.", ["**Marcus Webb** approved.", "**Dana** asked for a bucket."]),
+    ("   \n\n  ", []),
 ])
-def test_quote_matching_ignores_formatting_but_not_words(quote: str, found: bool) -> None:
-    assert quote_in_answer(quote, ANSWER) is found
-
-
-@pytest.mark.parametrize(("quote", "answer", "found"), [
-    ("up to $250", "You can spend up to $2500 without approval.", False),
-    ("up to $250", "You can spend up to $250 without approval.", True),
-    ("up to $250", "You can spend up to $250.00 without approval.", True),
-    ("up to $250", "You can spend up to $250.50 without approval.", False),
-    ("up to $250", "Spend up to $250, then ask.", True),
-    ("$250", "The limit is $12500.", False),
-    ("250", "The limit is 12500.", False),
-    ("$2", "The limit is $2,500.", False),
-    ("$250", "The limit is $250,000.", False),
-    # A later occurrence is still found when the first runs on into a longer number.
-    ("up to $250", "Not up to $2500: up to $250 needs no approval.", True),
-    ("up to $250 ... no approval", "Up to $2500 ... no approval", False),
-    ("up to $250", "Deals up to $250k need a VP.", False),
-    ("up to $250", "Deals up to $250K need a VP.", False),
-    ("up to $250", "Deals up to $250m need a VP.", False),
-    ("up to $250", "Deals up to $250bn need a VP.", False),
-    ("up to $250", "Deals up to $250MM need a VP.", False),
-    ("up to $250", "Deals up to $250 million need a VP.", False),
-    ("up to $250", "Deals up to $250 thousand need a VP.", False),
-    ("up to $250", "Deals up to $250billion need a VP.", False),
-    ("up to $250", "No approval is needed up to $250.", True),
-    ("up to $250", "No approval (up to $250) is needed.", True),
-    ("up to $250", "Up to $250, no approval is needed.", True),
-    ("up to $250", "Up to $250 more or less needs no approval.", True),
-    ("up to $250", "Deals up to $250.00 million need a VP.", False),
-    ("up to $250", "Deals up to $250.00k need a VP.", False),
-    ("up to $250", "Deals up to $250 k need a VP.", False),
-    ("up to $250", "Deals up to $250 bn need a VP.", False),
-    ("up to $250", "Spend up to $250 before asking.", True),
-    ("up to $250", "Spend up to $ 250 before asking.", True),
-    ("$250", "The limit is $2,500.", False),
-    ("$250", "Growth was 250% this year.", False),
-    ("250%", "Growth was 250% this year.", True),
-    ("$250 thousand", "The deal is worth $250k.", True),
-    ("2.2%", "We pay 2.2% per card transaction.", True),
-    ("2.2%", "We pay 2.25% per card transaction.", False),
-    ("PR #21", "PR #211 fixed it.", False),
-    ("up to $250", "Deals up to $250-million need a VP.", False),
-    ("up to $250", "Deals up to $250 (million) need a VP.", False),
-    ("up to $250", "Deals up to $250(million) need a VP.", False),
-    ("up to $250", "Deals up to $250, million need a VP.", False),
-    ("250", "Growth was 250 % this year.", False),
-    ("250 %", "Growth was 250 this year.", False),
-    ("250 %", "Growth was 250% this year.", True),
-    ("-$250", "The limit is $250.", False),
-    ("$250", "The balance is -$250.", False),
-    ("-$250", "The balance is \u2212$250.", True),
-    # A hyphen between numbers is a range, not a minus.
-    ("$250", "Budget $200-$250 for it.", True),
-    ("15 days", "It takes 10-15 days.", True),
-    ("SEV-2", "Every SEV-2 gets a postmortem.", True),
-    ("up to $250, but", "Up to $250, but not more.", True),
-])
-def test_a_quoted_number_must_not_be_part_of_a_longer_one(quote: str, answer: str, found: bool) -> None:
-    assert quote_in_answer(quote, answer) is found
-
-
-@pytest.mark.parametrize("q", [
-    {"answer_must_state": "A purchase of up to $250 needs no approval."},
-    {"answer_must_state": [NO_APPROVAL], "answer_must_not_state": "Every purchase needs manager approval."},
-    {"answer_must_state": [NO_APPROVAL, ""]},
-])
-def test_facts_that_are_not_a_list_of_sentences_are_a_judge_error(q: dict) -> None:
-    client = RefusingClient()
-    result = aj.check_content(q, ANSWER, AnswerJudge(client))
-    assert result is not None and result.status == "judge error" and not result.passed
-    assert client.calls == 0
+def test_the_answer_is_split_into_lines_and_sentences(answer: str, sentences: list[str]) -> None:
+    assert split_sentences(answer) == sentences
 
 
 @pytest.mark.parametrize("raw", [
     "not json at all",
-    '{"claims": [{"id": 1, "verdict": "probably", "quote": ""}]}',
+    '{"claims": [{"id": 1, "verdict": "probably", "evidence_sentence_ids": []}]}',
+    '{"claims": [{"id": 1, "verdict": "supported", "evidence_sentence_ids": "one"}]}',
     '{"claims": []}',
-    '{"claims": [{"id": 2, "verdict": "missing", "quote": ""}]}',
+    '{"claims": [{"id": 2, "verdict": "missing", "evidence_sentence_ids": []}]}',
     '{"verdicts": "supported"}',
 ])
 def test_a_malformed_reply_is_a_judge_error_not_a_pass(raw: str) -> None:
@@ -216,7 +176,7 @@ def test_a_malformed_reply_is_a_judge_error_not_a_pass(raw: str) -> None:
 
 
 def test_a_fenced_json_reply_is_accepted() -> None:
-    judge, _ = judge_with("```json\n" + reply(("supported", "without any approval")) + "\n```")
+    judge, _ = judge_with("```json\n" + reply(("supported", [1])) + "\n```")
     assert judge.judge(ANSWER, [NO_APPROVAL]).passed
 
 
@@ -237,7 +197,7 @@ def test_a_timeout_that_outlasts_the_retries_is_a_judge_error() -> None:
 @pytest.mark.parametrize("status", [429, 500, 503])
 def test_rate_limits_and_server_errors_are_retried_with_backoff(status: int) -> None:
     slept: list[float] = []
-    client = ScriptedClient(StatusError(status), StatusError(status), reply(("supported", "without any approval")))
+    client = ScriptedClient(StatusError(status), StatusError(status), reply(("supported", [1])))
     result = AnswerJudge(client, sleep=slept.append, backoff_s=1.0).judge(ANSWER, [NO_APPROVAL])
     assert result.passed
     assert slept == [1.0, 2.0]
@@ -245,12 +205,12 @@ def test_rate_limits_and_server_errors_are_retried_with_backoff(status: int) -> 
 
 def test_a_must_not_state_claim_fails_only_when_the_answer_states_it() -> None:
     forbidden = "Every purchase needs manager approval."
-    for verdict, quote, passed in [
-        ("missing", "", True),
-        ("contradicted", "without any approval", True),
-        ("supported", "without any approval", False),
+    for verdict, ids, passed in [
+        ("missing", [], True),
+        ("contradicted", [1], True),
+        ("supported", [1], False),
     ]:
-        judge, _ = judge_with(reply((verdict, quote)))
+        judge, _ = judge_with(reply((verdict, ids)))
         assert judge.judge(ANSWER, [], [forbidden]).passed is passed, verdict
 
 
@@ -274,7 +234,7 @@ CITED = {"drive-fin-expense-policy"}
 
 
 def test_score_passes_when_citations_and_judged_content_both_pass() -> None:
-    judge, _ = judge_with(reply(("supported", "without any approval")))
+    judge, _ = judge_with(reply(("supported", [1])))
     ok, verdict = score(QUESTION, "cites", CITED, ANSWER, judge=judge)
     assert ok
     assert verdict.startswith("PASS (full)") and "ok supported" in verdict
@@ -282,7 +242,7 @@ def test_score_passes_when_citations_and_judged_content_both_pass() -> None:
 
 def test_score_fails_a_well_cited_answer_the_judge_rejects() -> None:
     answer = "Up to $250, your manager has to approve the purchase."
-    judge, _ = judge_with(reply(("contradicted", "your manager has to approve")))
+    judge, _ = judge_with(reply(("contradicted", [1])))
     ok, verdict = score(QUESTION, "cites", CITED, answer, judge=judge)
     assert not ok
     assert verdict.startswith("FAIL (full)")
@@ -373,7 +333,7 @@ class FakeAnthropic:
 
 
 def test_the_anthropic_client_sends_no_sampling_parameters_and_reads_only_text() -> None:
-    body = reply(("supported", "without any approval"))
+    body = reply(("supported", [1]))
     sdk = FakeAnthropic(Response([Block("thinking", "{not the answer}"), Block("text", body)]))
     client = AnthropicJudgeClient(sdk, "claude-sonnet-5.5")
     assert client.complete("system", "user") == body
@@ -386,14 +346,14 @@ def test_the_anthropic_client_sends_no_sampling_parameters_and_reads_only_text()
 
 
 def test_the_anthropic_client_reply_is_judged_like_any_other() -> None:
-    sdk = FakeAnthropic(Response([Block("text", "Here is my assessment:\n" + reply(("supported", "without any approval")))]))
+    sdk = FakeAnthropic(Response([Block("text", "Here is my assessment:\n" + reply(("supported", [1])))]))
     result = AnswerJudge(AnthropicJudgeClient(sdk, "claude-sonnet-5.5"), sleep=lambda _s: None).judge(ANSWER, [NO_APPROVAL])
     assert result.status == "judged" and result.passed
 
 
 @pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
 def test_a_refusal_or_a_cut_off_reply_is_a_judge_error(stop_reason: str) -> None:
-    sdk = FakeAnthropic(Response([Block("text", reply(("supported", "without any approval")))], stop_reason))
+    sdk = FakeAnthropic(Response([Block("text", reply(("supported", [1])))], stop_reason))
     result = AnswerJudge(AnthropicJudgeClient(sdk, "claude-sonnet-5.5"), sleep=lambda _s: None).judge(ANSWER, [NO_APPROVAL])
     assert result.status == "judge error" and not result.passed
     assert stop_reason in result.detail

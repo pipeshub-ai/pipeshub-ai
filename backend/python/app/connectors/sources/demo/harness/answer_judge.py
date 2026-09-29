@@ -15,12 +15,14 @@ How it decides:
   (the answer says something incompatible, including stating it and then taking
   it back) or ``missing`` (neither). Hedged, partial and edge-wrong statements
   are not support.
-- A ``supported`` or ``contradicted`` verdict must quote the answer. The
-  quote and answer are compared as runs of words and numbers, ignoring case,
-  spacing, punctuation, quote marks and markdown emphasis, with each number
-  compared by value and unit ("$250.00" is "$250"; "$250k", "$2,500" and
-  "250%" are not). A quote that is not in the answer turns the verdict into
-  ``unverified``, a fail: the judge may not invent its evidence.
+- The answer is split into numbered sentences (each line and bullet counts as
+  one) before the judge sees it, and a ``supported`` or ``contradicted``
+  verdict must cite at least one of those numbers. No citation, or a number
+  that doesn't exist, turns the verdict into ``unverified``, a fail: the judge
+  can't invent its evidence. There is deliberately no string matching of
+  quotes: matching numbers as text ("$250" against "$250-million", "$250 000",
+  "- $250") can't be made complete, so whether a sentence supports a claim is
+  the judge's call, and the calibration set measures how well it makes it.
 - A must-state claim passes only when supported. A must-not-state claim passes
   when it is missing or contradicted.
 - A model error, a timeout, a reply that is not the JSON asked for, or
@@ -38,8 +40,6 @@ import json
 import os
 import re
 import time
-import unicodedata
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import httpx
@@ -81,13 +81,14 @@ more";
 - a different time: "will sign off on Monday" does not support "signed off on \
 Monday", and "by Friday" does not support "on Friday".
 
-For every claim, first write one or two sentences of reasoning, then the \
-verdict. For "supported" and "contradicted", copy the shortest passage of the \
-answer that shows it, exactly as written. For "missing", leave the quote empty.
+The answer is given as numbered sentences. For every claim, first write one or \
+two sentences of reasoning, then the verdict. For "supported" and \
+"contradicted", list in evidence_sentence_ids the numbers of the sentences \
+that show it. For "missing", leave the list empty.
 
 Reply with JSON only, no other text, in exactly this shape, one entry per \
 claim, using the claim ids given:
-{"claims": [{"id": 1, "reasoning": "...", "verdict": "supported", "quote": "..."}]}"""
+{"claims": [{"id": 1, "reasoning": "...", "verdict": "supported", "evidence_sentence_ids": [2]}]}"""
 
 
 class JudgeClient(Protocol):
@@ -100,7 +101,7 @@ class _ReplyClaim(BaseModel):
     id: int
     reasoning: str = ""
     verdict: Verdict
-    quote: str = ""
+    evidence_sentence_ids: list[int] = Field(default_factory=list)
 
 
 class _Reply(BaseModel):
@@ -111,7 +112,9 @@ class ClaimResult(BaseModel):
     claim: str
     kind: ClaimKind
     verdict: Outcome
-    quote: str = ""
+    evidence_ids: list[int] = Field(default_factory=list)
+    # The cited sentences' text, for the report.
+    evidence: list[str] = Field(default_factory=list)
     reasoning: str = ""
     passed: bool
 
@@ -119,8 +122,10 @@ class ClaimResult(BaseModel):
         want = "state" if self.kind == "must_state" else "not state"
         head = f"{'ok' if self.passed else 'FAIL'} {self.verdict} (must {want}): {self.claim!r}"
         if self.verdict == "unverified":
-            return f"{head} quote not in answer={self.quote[:120]!r}"
-        return f"{head} quote={self.quote[:120]!r}" if self.quote and not self.passed else head
+            return f"{head} cited sentences={self.evidence_ids} (none, or not in the answer)"
+        if self.evidence and not self.passed:
+            return f"{head} evidence={' '.join(self.evidence)[:160]!r}"
+        return head
 
 
 class JudgeResult(BaseModel):
@@ -145,78 +150,25 @@ class JudgeResult(BaseModel):
         return "judge: " + "; ".join(c.render() for c in self.claims)
 
 
-_QUOTE_MARKS = str.maketrans({
-    "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'", "`": "'",
-    "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"',
-    "–": "-", "—": "-", "−": "-", "*": None,
-})
-
-
-def normalise(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text).translate(_QUOTE_MARKS).lower()
-    return " ".join(text.split())
-
-
-_MAGNITUDES = {
-    "k": 10**3, "thousand": 10**3,
-    "m": 10**6, "mm": 10**6, "million": 10**6,
-    "b": 10**9, "bn": 10**9, "billion": 10**9,
-}
-_TOKEN = re.compile(
-    # A minus only when it starts the number: "$200-$250" and "10-15" are ranges.
-    r"(?:(?<![\w.])(?P<sign>-))?"
-    r"(?P<cur>[$\u20ac\u00a3\u20b9\u00a5])? ?"
-    r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
-    # The next word, even past a hyphen, bracket or comma: "$250-million", "$250 (million)".
-    r"(?:[\s(\[,-]{0,3}(?P<mag>" + "|".join(sorted(_MAGNITUDES, key=len, reverse=True)) + r")\b)?"
-    r"(?: ?(?P<pct>%))?"
-    r"|(?P<word>[^\W\d_]+(?:['_][^\W\d_]+)*)"
+# A sentence ends at . ! or ? followed by space and what starts a new one.
+_SENTENCE_END = re.compile(
+    r"(?:(?<=[.!?])|(?<=[.!?][\"')\]]))\s+(?=[\"'(\[*_`]*[A-Z0-9$\u00a3\u20ac])"
 )
-
-Token = tuple[str, ...] | tuple[str, Decimal, str]
-
-
-def tokens(text: str) -> list[Token]:
-    """Words, and numbers as (value, unit): "$250.00" and "$250" are one amount,
-    "$250 k", "$250-million", "-$250" and "$2,500" are others, and "250 %" is
-    not "$250"."""
-    out: list[Token] = []
-    for m in _TOKEN.finditer(normalise(text)):
-        if m.group("word"):
-            out.append(("w", m.group("word")))
-            continue
-        value = Decimal(m.group("num").replace(",", "")) * _MAGNITUDES.get(m.group("mag") or "", 1)
-        if m.group("sign"):
-            value = -value
-        out.append(("n", value.normalize(), (m.group("cur") or "") + (m.group("pct") or "")))
-    return out
+_BULLET = re.compile(r"^\s*(?:[-*+\u2022]|\d+[.)])\s+")
 
 
-def quote_in_answer(quote: str, answer: str) -> bool:
-    """Whether the quote's tokens appear contiguously in the answer's, numbers
-    compared by value and unit.
+def split_sentences(answer: str) -> list[str]:
+    """The answer as a list of sentences for the judge to cite by number.
 
-    Judges shorten long passages with an ellipsis, so the fragments either side
-    of one are matched separately, in order.
+    Every non-empty line is at least one sentence, so bullets, headings and
+    table rows each get a number; a line is split further at sentence ends.
+    Splitting too finely only means the judge cites two numbers instead of one.
     """
-    haystack = tokens(answer)
-    fragments = [t for t in (tokens(f) for f in re.split(r"\.\.\.|\u2026", quote)) if t]
-    if not fragments:
-        return False
-    pos = 0
-    for fragment in fragments:
-        found = _find_run(haystack, fragment, pos)
-        if found < 0:
-            return False
-        pos = found + len(fragment)
-    return True
-
-
-def _find_run(haystack: list[Token], needle: list[Token], start: int) -> int:
-    for i in range(start, len(haystack) - len(needle) + 1):
-        if haystack[i:i + len(needle)] == needle:
-            return i
-    return -1
+    sentences = []
+    for raw_line in answer.splitlines():
+        line = _BULLET.sub("", raw_line).strip()
+        sentences += [part.strip() for part in _SENTENCE_END.split(line) if part.strip()]
+    return sentences
 
 
 def _status_code(exc: BaseException) -> int | None:
@@ -262,9 +214,10 @@ def _parse_reply(raw: str, expected_ids: set[int]) -> _Reply:
     return reply
 
 
-def build_prompt(answer: str, claims: list[str]) -> str:
+def build_prompt(sentences: list[str], claims: list[str]) -> str:
     listed = "\n".join(f"{i}. {c}" for i, c in enumerate(claims, start=1))
-    return f"Claims:\n{listed}\n\nAnswer:\n<<<ANSWER\n{answer}\nANSWER>>>"
+    numbered = "\n".join(f"[{i}] {sentence}" for i, sentence in enumerate(sentences, start=1))
+    return f"Claims:\n{listed}\n\nAnswer, as numbered sentences:\n<<<ANSWER\n{numbered}\nANSWER>>>"
 
 
 class AnswerJudge:
@@ -308,8 +261,9 @@ class AnswerJudge:
             return JudgeResult(status="judged", passed=True)
         if self._config_error:
             return JudgeResult.error(f"judge misconfigured: {self._config_error}")
+        sentences = split_sentences(answer)
         try:
-            raw = self._complete(build_prompt(answer, [c for c, _ in kinds]))
+            raw = self._complete(build_prompt(sentences, [c for c, _ in kinds]))
         except Exception as exc:
             code = _status_code(exc)
             status = f" (HTTP {code})" if code else ""
@@ -323,12 +277,16 @@ class AnswerJudge:
         results = []
         for i, (claim, kind) in enumerate(kinds, start=1):
             got = by_id[i]
+            ids = got.evidence_sentence_ids
+            valid = all(1 <= n <= len(sentences) for n in ids)
             outcome: Outcome = got.verdict
-            if outcome != "missing" and not quote_in_answer(got.quote, answer):
+            if not valid or (outcome != "missing" and not ids):
                 outcome = "unverified"
             passed = outcome == "supported" if kind == "must_state" else outcome in ("missing", "contradicted")
             results.append(ClaimResult(
-                claim=claim, kind=kind, verdict=outcome, quote=got.quote, reasoning=got.reasoning, passed=passed,
+                claim=claim, kind=kind, verdict=outcome, evidence_ids=ids,
+                evidence=[sentences[n - 1] for n in ids] if valid else [],
+                reasoning=got.reasoning, passed=passed,
             ))
         return JudgeResult(status="judged", passed=all(r.passed for r in results), claims=results)
 
@@ -425,6 +383,5 @@ __all__ = [
     "LangChainJudgeClient",
     "build_prompt",
     "check_content",
-    "normalise",
-    "quote_in_answer",
+    "split_sentences",
 ]

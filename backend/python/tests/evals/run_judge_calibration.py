@@ -110,7 +110,7 @@ class ClaimAgreement(BaseModel):
     judged_pass: bool
     verdict: str
     reasoning: str = ""
-    quote: str = ""
+    evidence: str = ""
 
     @property
     def agrees(self) -> bool:
@@ -159,7 +159,7 @@ def _compare(case: CalibrationCase, result: JudgeResult) -> list[ClaimAgreement]
             judged_pass=got.passed if got else not claim.should_pass,
             verdict=got.verdict if got else result.status,
             reasoning=got.reasoning if got else result.detail,
-            quote=got.quote if got else "",
+            evidence=" ".join(got.evidence) if got else "",
         ))
     return rows
 
