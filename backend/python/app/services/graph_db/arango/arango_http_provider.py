@@ -40,6 +40,7 @@ from app.exceptions.graph_db_exceptions import (
     GraphQueryError,
     PermissionVerificationUnavailableError,
 )
+from app.models.permission import ORG_SHARE_PERMISSION_TYPES
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -1905,7 +1906,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     LET org = DOCUMENT(belongs_edge._to)
                     FILTER org != null
                     FOR perm IN @@permission
-                        FILTER perm._from == org._id AND perm._to == record_from AND perm.type == "ORG"
+                        FILTER perm._from == org._id AND perm._to == record_from AND perm.type IN @org_share_types
                         RETURN perm.role
             )
 
@@ -1918,6 +1919,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                     // Org -> record_group permission
                     FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id @@permission
+                        FILTER orgToRgEdge.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
                         // Record group -> nested record groups (0 to 2 levels) -> record
@@ -1995,6 +1997,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "record_from": record_from,
                 "record_id": record_id,
                 "check_drive_inheritance": check_drive_inheritance,
+                "org_share_types": list(ORG_SHARE_PERMISSION_TYPES),
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
@@ -16713,6 +16716,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET orgAccessPermissionEdge = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FOR record, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                FILTER permEdge.type IN @org_share_types
                 FILTER record._key == @recordId
                 {app_record_filter}
                 RETURN {{
@@ -16825,6 +16829,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "userId": user_id,
                 "recordId": record_id,
                 "user_apps_ids": user_apps_ids,
+                "org_share_types": list(ORG_SHARE_PERMISSION_TYPES),
                 "@users": CollectionNames.USERS.value,
                 "records": CollectionNames.RECORDS.value,
                 "files": CollectionNames.FILES.value,
@@ -19370,6 +19375,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "userId": user_id,
                 "connectorId": connector_id,
                 "completedStatus": ProgressStatus.COMPLETED.value,
+                "org_share_types": list(ORG_SHARE_PERMISSION_TYPES),
                 "@users": CollectionNames.USERS.value,
             }
 
@@ -19443,7 +19449,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET orgRecords = (
                 FOR principal_id IN principal_ids
                 FOR org IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
-                    FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    FOR record, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER orgPerm.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
@@ -19454,7 +19461,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET orgRecordGroupRecords = (
                 FOR principal_id IN principal_ids
                 FOR org IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
-                    FOR recordGroup IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    FOR recordGroup, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER orgPerm.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
                         FOR record IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                             FILTER IS_SAME_COLLECTION("records", record)
