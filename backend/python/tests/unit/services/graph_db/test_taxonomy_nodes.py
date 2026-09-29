@@ -83,8 +83,10 @@ class TestArango:
             TOPICS, "k1", ["A", "a", "", "B"], ["a", "a", "", "b"], max_aliases=5, transaction="t1",
         )
         query = p.execute_query.await_args.args[0]
-        assert "UNION_DISTINCT" in query and "SLICE" in query and f"IN {TOPICS}" in query
-        assert "normalizedAliases: SLICE" in query
+        assert "UNION_DISTINCT" not in query and f"IN {TOPICS}" in query
+        assert "FILTER incoming_normals[i] NOT IN normals" in query
+        assert "APPEND(displays, (FOR i IN fresh RETURN incoming_displays[i]))" in query
+        assert "APPEND(normals, (FOR i IN fresh RETURN incoming_normals[i]))" in query
         assert p.execute_query.await_args.kwargs["bind_vars"] == {
             "key": "k1", "aliases": ["A", "B"], "normalized": ["a", "b"], "max_aliases": 5,
         }
@@ -135,8 +137,10 @@ class TestNeo4j:
         p = _neo4j()
         await p.add_taxonomy_aliases(TOPICS, "k1", ["A", "a", "B"], ["a", "a", "b"], max_aliases=7)
         query, = p.client.execute_query.await_args.args
-        assert "reduce(" in query and "[0..$max_aliases]" in query
-        assert "n.normalizedAliases = reduce(" in query
+        assert "reduce(" not in query
+        assert "WHERE NOT $normalized[i] IN normals] AS fresh" in query
+        assert "(displays + [i IN fresh | $aliases[i]])[0..$max_aliases]" in query
+        assert "(normals + [i IN fresh | $normalized[i]])[0..$max_aliases]" in query
         assert p.client.execute_query.await_args.kwargs["parameters"] == {
             "key": "k1", "aliases": ["A", "B"], "normalized": ["a", "b"], "max_aliases": 7,
         }

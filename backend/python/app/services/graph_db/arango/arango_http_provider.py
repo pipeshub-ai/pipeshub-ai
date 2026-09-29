@@ -16380,15 +16380,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
         pairs = _alias_pairs(aliases, normalized_aliases)
         if not key or not pairs:
             return
+        # Merged as pairs so both lists stay aligned; the stored lists are cut
+        # to their common length first so an already-skewed node heals.
         query = f"""
             FOR doc IN {collection}
                 FILTER doc._key == @key
+                LET stored_displays = NOT_NULL(doc.aliases, [])
+                LET stored_normals = NOT_NULL(doc.normalizedAliases, [])
+                LET paired = MIN([LENGTH(stored_displays), LENGTH(stored_normals)])
+                LET displays = paired > 0 ? SLICE(stored_displays, 0, paired) : []
+                LET normals = paired > 0 ? SLICE(stored_normals, 0, paired) : []
+                LET incoming_displays = @aliases
+                LET incoming_normals = @normalized
+                LET fresh = (
+                    FOR i IN 0..LENGTH(incoming_normals) - 1
+                        FILTER incoming_normals[i] NOT IN normals
+                        RETURN i
+                )
                 UPDATE doc WITH {{
                     aliases: SLICE(
-                        UNION_DISTINCT(NOT_NULL(doc.aliases, []), @aliases), 0, @max_aliases
+                        APPEND(displays, (FOR i IN fresh RETURN incoming_displays[i])),
+                        0, @max_aliases
                     ),
                     normalizedAliases: SLICE(
-                        UNION_DISTINCT(NOT_NULL(doc.normalizedAliases, []), @normalized),
+                        APPEND(normals, (FOR i IN fresh RETURN incoming_normals[i])),
                         0, @max_aliases
                     )
                 }} IN {collection}

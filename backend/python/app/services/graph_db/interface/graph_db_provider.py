@@ -5431,8 +5431,9 @@ class IGraphDBProvider(ABC):
         """Union ``aliases`` into the node's ``aliases`` list and
         ``normalized_aliases`` into ``normalizedAliases``, both capped at
         ``max_aliases`` entries, in one atomic statement. The two lists are
-        positional pairs (display spelling, its normalized form) and the
-        caller keeps them free of duplicates by normalized form.
+        positional pairs (display spelling, its normalized form). The union is
+        taken on pairs, keyed by normalized form, so the stored lists stay
+        aligned at the same length through dedupe and the cap.
 
         A no-op when ``aliases`` is empty or the node does not exist.
 

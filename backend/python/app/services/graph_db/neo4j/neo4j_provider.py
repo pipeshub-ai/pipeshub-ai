@@ -15565,16 +15565,18 @@ class Neo4jProvider(IGraphDBProvider):
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
         label = collection_to_label(collection)
+        # Merged as pairs so both lists stay aligned; the stored lists are cut
+        # to their common length first so an already-skewed node heals.
         query = f"""
             MATCH (n:{label} {{id: $key}})
-            SET n.aliases = reduce(
-                acc = coalesce(n.aliases, []),
-                alias IN $aliases | CASE WHEN alias IN acc THEN acc ELSE acc + alias END
-            )[0..$max_aliases],
-                n.normalizedAliases = reduce(
-                acc = coalesce(n.normalizedAliases, []),
-                alias IN $normalized | CASE WHEN alias IN acc THEN acc ELSE acc + alias END
-            )[0..$max_aliases]
+            WITH n, coalesce(n.aliases, []) AS displays, coalesce(n.normalizedAliases, []) AS normals
+            WITH n, displays, normals,
+                CASE WHEN size(displays) < size(normals) THEN size(displays) ELSE size(normals) END AS paired
+            WITH n, displays[0..paired] AS displays, normals[0..paired] AS normals
+            WITH n, displays, normals,
+                [i IN range(0, size($normalized) - 1) WHERE NOT $normalized[i] IN normals] AS fresh
+            SET n.aliases = (displays + [i IN fresh | $aliases[i]])[0..$max_aliases],
+                n.normalizedAliases = (normals + [i IN fresh | $normalized[i]])[0..$max_aliases]
             RETURN n.id AS id
         """
         await self.client.execute_query(
