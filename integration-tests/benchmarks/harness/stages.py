@@ -25,7 +25,6 @@ from benchmarks.harness.corpus.manifest import (
 )
 from benchmarks.harness.corpus.view import CorpusView
 from benchmarks.harness.dataset.split import apply_split, load_split, select_questions, split_sha256
-from benchmarks.harness.config import SystemConfig
 from benchmarks.harness.errors import (
     BackendContractError,
     CorpusError,

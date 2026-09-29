@@ -64,7 +64,7 @@ class TestConfigHashScope:
 
         from benchmarks.harness.config import load_config
 
-        return load_config(Path("benchmarks/datasets/frames/configs/blog-dev-fixed2.yaml"))
+        return load_config(Path("benchmarks/datasets/frames/configs/full-rag.yaml"))
 
     @pytest.mark.parametrize("field", ["max_cost_usd", "max_error_rate", "min_items_for_breaker"])
     def test_budget_and_breaker_do_not_change_the_hash(self, field: str) -> None:

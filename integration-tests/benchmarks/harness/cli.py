@@ -13,7 +13,7 @@ import signal
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from benchmarks.harness.config import FRAMES_SNAPSHOT, RunConfig, load_config
+from benchmarks.harness.config import FRAMES_SNAPSHOT, DatasetConfig, RunConfig, load_config
 from benchmarks.harness.credentials import Credentials
 from benchmarks.harness.dataset.split import stratified_split, write_split
 from benchmarks.harness.errors import FramesError
@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     logs = commands.add_parser("backend-logs", help="group backend warnings/errors logged during a run")
     logs.add_argument("--resume", metavar="RUN_ID", required=True)
     logs.add_argument("--container", default="pipeshub-ai-pipeshub-ai-1")
+    logs.add_argument("--dataset", default="frames", help="registered dataset name")
     for name in (*PIPELINES, "seed-models"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
@@ -104,7 +105,7 @@ def _backend_logs(args: argparse.Namespace) -> int:
     from benchmarks.harness.models import Prediction
     from benchmarks.harness.report.backend_logs import collect, render_issues
 
-    run_dir = reports_dir(config.dataset.name) / args.resume
+    run_dir = reports_dir(args.dataset) / args.resume
     latest: dict[tuple[str, int, int], Prediction] = {}
     for line in (run_dir / "predictions.jsonl").read_text().splitlines():
         prediction = Prediction.model_validate_json(line)

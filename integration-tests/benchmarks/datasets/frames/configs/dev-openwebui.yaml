@@ -1,16 +1,18 @@
-# Open WebUI v0.11.4 (slim) on the same corpus, answer model, embedding model
-# and judges as blog-dev-v7d-tables, so its row compares directly with
-# PipesHub v7d and the RAG baseline. Parity contract and deviations: the
-# "FRAMES: other RAG systems" plan.
+# Open WebUI v0.11.4 at its strongest configuration on the dev split: a chat
+# with a knowledge base attached (native tool calling: up-front retrieval plus
+# the builtin knowledge tools the model can call repeatedly), retrieval query
+# generation on, and the RAG baselines' cross-encoder as its external reranker
+# (100 candidates reranked to 50). Same corpus, answer model, embedding model
+# and judges as the PipesHub and RAG runs.
 #
 # Open WebUI's own settings live in benchmarks/competitors/openwebui/
 # docker-compose.yml: pgvector store, native hybrid search (BM25 weight 0.5),
-# RAG_TOP_K=50, no reranker, 1,000-char chunks with 100 overlap, Azure
-# text-embedding-3-small, Azure gpt-5.6-luna through the Responses API with
-# reasoning effort high sent per request, and no query generation, titles,
-# tags or follow-ups. Bring it up with that directory's up.sh and export
-# OPENWEBUI_API_KEY. oracle rides along as the in-run control.
-run_name: blog-dev-openwebui
+# 1,000-char chunks with 100 overlap, Azure text-embedding-3-small, and the
+# answer model through the Responses API at high reasoning effort. Bring it up
+# with that directory's up.sh, start the shared reranker
+# (python -m benchmarks.harness.systems.rag.rerank_server --port 8787) and
+# export OPENWEBUI_API_KEY. The oracle rides along as the in-run control.
+run_name: blog-dev-openwebui-strongest
 dataset:
   split: dev
 corpus:
@@ -43,12 +45,19 @@ systems:
 - kind: oracle
   concurrency: 8
 - kind: openwebui
+  label: openwebui-strongest
   # Each fallback from native hybrid search loads the whole collection
   # (~300K chunks) into memory; more overlap than this runs out of RAM.
   concurrency: 2
   options:
     base_url: http://localhost:8080
     api_key_env: OPENWEBUI_API_KEY
+    query_generation: true
+    ui_chat: true
+    reranker:
+      url: http://host.docker.internal:8787/v1/rerank
+      model: cross-encoder/ms-marco-MiniLM-L-6-v2
+      candidates: 100
     upload_workers: 8
 grading:
   primary:

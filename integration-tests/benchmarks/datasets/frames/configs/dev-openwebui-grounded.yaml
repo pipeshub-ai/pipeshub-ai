@@ -1,29 +1,21 @@
-# Strongest configuration plus PipesHub's internal-search grounding instruction
-# in the RAG template (see blog-dev-openwebui-grounded.yaml).
-#
-# Strongest configuration: Open WebUI as its web UI runs a chat with a
-# knowledge base attached (native tool calling: up-front retrieval plus the
-# builtin knowledge tools the model can call repeatedly), retrieval query
-# generation on, and the RAG baselines' cross-encoder as its external
-# reranker (100 candidates reranked to the usual 50). Needs the shared
-# reranker: python -m benchmarks.harness.systems.rag.rerank_server --port 8787
-#
-# Best configuration: Open WebUI with its default retrieval query generation
-# on (the model rewrites the question into search queries before retrieval).
-# The adapter switches it on for this run; everything else as below.
-#
-# Open WebUI v0.11.4 (slim) on the same corpus, answer model, embedding model
-# and judges as blog-dev-v7d-tables, so its row compares directly with
-# PipesHub v7d and the RAG baseline. Parity contract and deviations: the
-# "FRAMES: other RAG systems" plan.
+# Open WebUI v0.11.4 at its strongest configuration on the dev split: a chat
+# with a knowledge base attached (native tool calling: up-front retrieval plus
+# the builtin knowledge tools the model can call repeatedly), retrieval query
+# generation on, and the RAG baselines' cross-encoder as its external reranker
+# (100 candidates reranked to 50). Same corpus, answer model, embedding model
+# and judges as the PipesHub and RAG runs.
 #
 # Open WebUI's own settings live in benchmarks/competitors/openwebui/
 # docker-compose.yml: pgvector store, native hybrid search (BM25 weight 0.5),
-# RAG_TOP_K=50, no reranker, 1,000-char chunks with 100 overlap, Azure
-# text-embedding-3-small, Azure gpt-5.6-luna through the Responses API with
-# reasoning effort high sent per request, and no query generation, titles,
-# tags or follow-ups. Bring it up with that directory's up.sh and export
-# OPENWEBUI_API_KEY. oracle rides along as the in-run control.
+# 1,000-char chunks with 100 overlap, Azure text-embedding-3-small, and the
+# answer model through the Responses API at high reasoning effort. Bring it up
+# with that directory's up.sh, start the shared reranker
+# (python -m benchmarks.harness.systems.rag.rerank_server --port 8787) and
+# export OPENWEBUI_API_KEY. The oracle rides along as the in-run control.
+#
+# Grounded variant: PipesHub's enterprise-search grounding instruction ("answer
+# only from the knowledge base; say so when the answer isn't there") added to
+# the system's prompt, the same instruction PipesHub itself answers under.
 run_name: blog-dev-openwebui-strongest-grounded
 dataset:
   split: dev

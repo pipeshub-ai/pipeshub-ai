@@ -1,27 +1,22 @@
-# Strongest configuration A: RAGFlow's agentic research loop (reasoning
-# level 3, "high": sufficiency checks, a planner, repeated retrieval). The
-# loop does not use a reranker. Level 4 adds only a knowledge-graph tool,
-# and there is no knowledge graph (GraphRAG is out of scope). The chat model
-# must be registered with is_tools (up.sh), or RAGFlow silently falls back to
-# one retrieval.
-#
-# Best configuration: RAGFlow with its default system prompt ("summarize the
-# content of the dataset... list the data") replaced by the RAG baseline's
-# answer prompt (rag-answer-v1, minus its citation-format sentence, since
-# RAGFlow adds its own citation instructions). Everything else as below.
-#
-# RAGFlow v0.27.2 on the same corpus, answer model, embedding model and
-# judges as blog-dev-v7d-tables, so its row compares directly with PipesHub
-# v7d, the RAG baseline and Open WebUI. Parity contract and deviations: the
-# "FRAMES: other RAG systems" plan.
+# RAGFlow v0.27.2 at its strongest configuration on the dev split: weighted
+# hybrid retrieval (term 0.7, vector 0.3, RAGFlow's default) with keyword
+# extraction (an LLM call adding keywords to the query) and the RAG baselines'
+# cross-encoder as its reranker over 100 candidates (registered by up.sh as
+# frames-rerank and served by benchmarks.harness.systems.rag.rerank_server);
+# RAGFlow blends (1 - w) * keyword score + w * rerank score with w = 0.3.
+# Its default system prompt is replaced by the RAG baselines' answer prompt
+# without the citation-format sentence (RAGFlow adds its own). 50 chunks go to
+# the model through Chat Completions (LiteLLM). Same corpus, answer model,
+# embedding model and judges as the PipesHub and RAG runs.
 #
 # Bring RAGFlow up with benchmarks/competitors/ragflow/up.sh (it registers
-# Azure OpenAI and writes an API key), stop PipesHub's stack first, and
-# export RAGFLOW_API_KEY. Retrieval: weighted hybrid (term 0.7, vector 0.3,
-# RAGFlow's default), 50 chunks to the model, no reranker, no keyword or
-# knowledge-graph step. Answers go through Chat Completions (LiteLLM), not
-# the Responses API. oracle rides along as the in-run control.
-run_name: blog-dev-ragflow-strongest-reasoning
+# Azure OpenAI and writes an API key), stop PipesHub's stack first, and export
+# RAGFLOW_API_KEY. The oracle rides along as the in-run control.
+#
+# Grounded variant: PipesHub's enterprise-search grounding instruction ("answer
+# only from the knowledge base; say so when the answer isn't there") added to
+# the system's prompt, the same instruction PipesHub itself answers under.
+run_name: blog-dev-ragflow-strongest-rerank-grounded
 dataset:
   split: dev
 corpus:
@@ -54,14 +49,14 @@ systems:
 - kind: oracle
   concurrency: 8
 - kind: ragflow
-  label: ragflow-reasoning
+  label: ragflow-rerank-grounded
   concurrency: 6
   options:
     base_url: http://localhost:9380
     api_key_env: RAGFLOW_API_KEY
-    reasoning: "3"
+    prompt_options: {keyword: true}
     system_prompt: |-
-      You answer factual questions using the passages below, which are from Wikipedia articles. Base your answer on the passages. Reason carefully, then state the final answer explicitly and concisely on the last line.
+      You answer factual questions using the passages below, which are from Wikipedia articles. Answer ONLY from the provided context. Do not use your own training knowledge to answer factual questions. If the answer is not present in the retrieved context, say so explicitly rather than guessing. Reason carefully, then state the final answer explicitly and concisely on the last line.
 
       Here are the passages:
       {knowledge}
@@ -87,7 +82,8 @@ systems:
       top_n: 50
       similarity_threshold: 0
       vector_similarity_weight: 0.3
-      rerank_id: ""
+      rerank_id: "cross-encoder/ms-marco-MiniLM-L-6-v2@frames-rerank@HuggingFace"
+      rerank_candidates_count: 100
 grading:
   primary:
     model: claude-sonnet-5

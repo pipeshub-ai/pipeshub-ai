@@ -9,7 +9,6 @@ statement (ALCE's precision definition).
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 

@@ -1,6 +1,6 @@
 # Overrides for RAGFlow v0.27.2's own docker/docker-compose.yml, for the FRAMES
 # comparison. Used by up.sh; the parity settings for datasets and chats live
-# in the run config (benchmarks/datasets/frames/configs/blog-dev-ragflow.yaml).
+# in the run config (benchmarks/datasets/frames/configs/dev-ragflow.yaml).
 services:
   ragflow-cpu:
     # The published image is amd64-only; on Apple silicon it runs emulated.
