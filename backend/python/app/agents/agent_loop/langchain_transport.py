@@ -52,6 +52,10 @@ from app.agent_loop_lib.core.streaming import (
     ToolCallDeltaEvent,
 )
 from app.agent_loop_lib.transport.base import LLMTransport
+from app.agent_loop_lib.transport.content_filter import (
+    CONTENT_FILTER_STOP_REASONS,
+    content_filter_error,
+)
 from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
 from app.agent_loop_lib.transport.provider_conflicts import (
     API_SHAPE_CONFLICT_MARKERS,
@@ -82,7 +86,7 @@ if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
 
     from app.agent_loop_lib.core.context import CancellationToken
-    from app.agent_loop_lib.core.messages import Message
+    from app.agent_loop_lib.core.messages import AssistantMessage, Message
     from app.agent_loop_lib.core.tool_schema import ToolSchema
 
 logger = logging.getLogger(__name__)
@@ -174,6 +178,18 @@ def _extract_json_from_raw(raw: Any) -> dict[str, Any] | None:
         return obj if isinstance(obj, dict) else None
     except (json.JSONDecodeError, ValueError):
         return None
+
+
+def _content_filter_detail(metadata: dict[str, Any]) -> str | None:
+    """Which field reported a content-filter stop, or None."""
+    finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+    if finish_reason in CONTENT_FILTER_STOP_REASONS:
+        return f"finish_reason={finish_reason}"
+    details = metadata.get("incomplete_details")
+    reason = details.get("reason") if isinstance(details, dict) else None
+    if reason in CONTENT_FILTER_STOP_REASONS:
+        return f"incomplete_details.reason={reason}"
+    return None
 
 
 def _is_network_error(exc: Exception) -> bool:
@@ -563,6 +579,30 @@ class LangChainTransport(LLMTransport):
             return StopReason.TOOL_USE
         return StopReason.END_TURN
 
+    def _check_model_output(
+        self, ai_message: AIMessage, assistant_message: AssistantMessage, context: str,
+    ) -> None:
+        """Log a response that produced nothing, and raise when a content filter
+        stopped it. Ids, statuses and sizes only -- never content."""
+        if assistant_message.text or assistant_message.tool_calls:
+            return
+        metadata = ai_message.response_metadata or {}
+        details = metadata.get("incomplete_details")
+        usage = token_usage_from_ai_message(ai_message)
+        logger.warning(
+            "LangChainTransport.%s: model=%s returned no output "
+            "(response_id=%s status=%s finish_reason=%s incomplete_reason=%s "
+            "input_tokens=%d output_tokens=%d)",
+            context, self._model, metadata.get("id") or getattr(ai_message, "id", None),
+            metadata.get("status"),
+            metadata.get("finish_reason") or metadata.get("stop_reason"),
+            details.get("reason") if isinstance(details, dict) else None,
+            usage.input_tokens, usage.output_tokens,
+        )
+        detail = _content_filter_detail(metadata)
+        if detail is not None:
+            raise content_filter_error(context, detail)
+
     async def complete(
         self,
         messages: list[Message],
@@ -648,6 +688,7 @@ class LangChainTransport(LLMTransport):
         self, ai_message: AIMessage, tools: list[ToolSchema] | None, model: str | None,
     ) -> ModelResponse:
         assistant_message = convert_assistant_message_from_langchain(ai_message)
+        self._check_model_output(ai_message, assistant_message, "complete")
         stop_reason = (
             StopReason.MAX_TOKENS if assistant_message.truncated
             else self._stop_reason_from(ai_message)
@@ -1000,6 +1041,7 @@ class LangChainTransport(LLMTransport):
             assistant_message.tool_calls = None
             stop_reason = StopReason.CANCELLED
         else:
+            self._check_model_output(final_ai_message, assistant_message, "stream")
             stop_reason = (
                 StopReason.MAX_TOKENS if assistant_message.truncated
                 else self._stop_reason_from(final_ai_message)

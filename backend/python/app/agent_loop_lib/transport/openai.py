@@ -34,6 +34,10 @@ from app.agent_loop_lib.core.streaming import (
 )
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
+from app.agent_loop_lib.transport.content_filter import (
+    CONTENT_FILTER_STOP_REASONS,
+    content_filter_error,
+)
 from app.agent_loop_lib.transport.openai_responses import (
     EVT_COMPLETED,
     EVT_ERROR,
@@ -413,6 +417,7 @@ class OpenAITransport(LLMTransport):
 
         message = parse_responses_output(response)
         usage = self._record_usage(*responses_usage_fields(response))
+        self._check_responses_output(response, message, usage, "complete")
         stop_reason = stop_reason_from_responses(response, bool(message.tool_calls))
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
@@ -528,6 +533,7 @@ class OpenAITransport(LLMTransport):
         if final_response is not None:
             message = parse_responses_output(final_response)
             usage = self._record_usage(*responses_usage_fields(final_response))
+            self._check_responses_output(final_response, message, usage, "stream")
             stop_reason = stop_reason_from_responses(final_response, bool(message.tool_calls))
         else:
             # Stream ended without a terminal event; salvage what arrived.
@@ -641,6 +647,40 @@ class OpenAITransport(LLMTransport):
 
         return self._record_usage(input_tokens, output_tokens, cached)
 
+    def _check_responses_output(
+        self, response: Any, message: AssistantMessage, usage: TokenUsage, context: str,
+    ) -> None:
+        if message.text or message.tool_calls:
+            return
+        reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
+        output_types = [
+            getattr(item, "type", None) for item in (getattr(response, "output", None) or [])
+        ]
+        logger.warning(
+            "OpenAITransport.%s: model=%s returned no output (response_id=%s status=%s "
+            "incomplete_reason=%s output_types=%s input_tokens=%d output_tokens=%d)",
+            context, self._model, getattr(response, "id", None),
+            getattr(response, "status", None), reason, output_types,
+            usage.input_tokens, usage.output_tokens,
+        )
+        if reason in CONTENT_FILTER_STOP_REASONS:
+            raise content_filter_error(context, f"incomplete_details.reason={reason}")
+
+    def _check_chat_output(
+        self, message: AssistantMessage, usage: TokenUsage, context: str, *,
+        response_id: str | None, finish_reason: str | None,
+    ) -> None:
+        if message.text or message.tool_calls:
+            return
+        logger.warning(
+            "OpenAITransport.%s: model=%s returned no output (response_id=%s "
+            "finish_reason=%s input_tokens=%d output_tokens=%d)",
+            context, self._model, response_id, finish_reason,
+            usage.input_tokens, usage.output_tokens,
+        )
+        if finish_reason in CONTENT_FILTER_STOP_REASONS:
+            raise content_filter_error(context, f"finish_reason={finish_reason}")
+
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         status_code = getattr(exc, "status_code", None)
         # OSError included to match LangChainTransport._is_network_error: a
@@ -708,6 +748,10 @@ class OpenAITransport(LLMTransport):
         usage = self._usage_from(response)
         message = self._parse_response(response.choices[0].message)
         finish_reason = getattr(response.choices[0], "finish_reason", None)
+        self._check_chat_output(
+            message, usage, "complete", response_id=getattr(response, "id", None),
+            finish_reason=finish_reason,
+        )
         stop_reason = self._chat_stop_reason(finish_reason, bool(message.tool_calls))
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
@@ -791,6 +835,7 @@ class OpenAITransport(LLMTransport):
         text_parts: list[str] = []
         usage = TokenUsage()
         finish_reason: str | None = None
+        response_id: str | None = None
         # Tool call deltas arrive fragmented across chunks, indexed by
         # position in the assistant's tool_calls list — accumulate by
         # index until the stream ends, same pattern every OpenAI streaming
@@ -800,6 +845,7 @@ class OpenAITransport(LLMTransport):
         try:
             stream = await self._client.chat.completions.create(**kwargs)
             async for chunk in stream:
+                response_id = response_id or getattr(chunk, "id", None)
                 if getattr(chunk, "usage", None) is not None:
                     usage = self._usage_from(chunk)
                 if not chunk.choices:
@@ -862,6 +908,9 @@ class OpenAITransport(LLMTransport):
             )
         final_text = "".join(text_parts) or None
         message = AssistantMessage(content=final_text, tool_calls=final_tool_calls or None)
+        self._check_chat_output(
+            message, usage, "stream", response_id=response_id, finish_reason=finish_reason,
+        )
         stop_reason = self._chat_stop_reason(finish_reason, bool(final_tool_calls))
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
