@@ -244,14 +244,16 @@ configured, the facts are **not judged**; that passes locally and fails when
 Models tend to rate their own writing kindly, so the judge should not be the
 model that wrote the answer. `chat_models.judge_model_from_env()` picks it:
 
-| Setting | Where it comes from | What it is |
+| Setting | What it is | In CI, set from |
 | --- | --- | --- |
-| `JUDGE_PROVIDER` | repository variable | `azure_openai`, `openai` or `anthropic` |
-| `JUDGE_MODEL` | repository variable | the model name (for Azure, defaults to the deployment) |
-| `JUDGE_API_KEY` | secret | the judge's own key |
-| `JUDGE_AZURE_ENDPOINT` | repository variable | Azure only |
-| `JUDGE_AZURE_DEPLOYMENT` | repository variable | Azure only |
-| `JUDGE_AZURE_API_VERSION` | optional | Azure only; defaults to the product's API version |
+| `JUDGE_PROVIDER` | `azure_openai`, `openai` or `anthropic` | `azure_openai` whenever the `AZURE_JUDGE_API_KEY` secret exists |
+| `JUDGE_MODEL` | the model name | the `AZURE_JUDGE_MODEL` secret |
+| `JUDGE_API_KEY` | the judge's own key | the `AZURE_JUDGE_API_KEY` secret |
+| `JUDGE_AZURE_ENDPOINT` | Azure only | the same endpoint as `TEST_AZURE_OPENAI_ENDPOINT` |
+| `JUDGE_AZURE_DEPLOYMENT` | Azure only | the `AZURE_JUDGE_MODEL` secret, since the deployment is named after the model |
+| `JUDGE_AZURE_API_VERSION` | Azure only, optional | not set; defaults to the product's API version |
+
+Run locally by exporting the `JUDGE_*` names directly.
 
 When `JUDGE_PROVIDER` is set, the judge uses **only** these. If one it needs is
 missing, every judgement is a judge error that names the missing setting. It

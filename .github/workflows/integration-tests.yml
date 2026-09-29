@@ -281,11 +281,12 @@ jobs:
       PIPESHUB_REQUIRE_JUDGE: '1'
       # A separate judge model, so it doesn't grade answers from its own model
       # (see backend/python/tests/evals/README.md). Unset JUDGE_PROVIDER uses the above.
-      JUDGE_PROVIDER: ${{ vars.JUDGE_PROVIDER }}
-      JUDGE_MODEL: ${{ vars.JUDGE_MODEL }}
-      JUDGE_AZURE_ENDPOINT: ${{ vars.JUDGE_AZURE_ENDPOINT }}
-      JUDGE_AZURE_DEPLOYMENT: ${{ vars.JUDGE_AZURE_DEPLOYMENT }}
-      JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}
+      # The judge is its own Azure deployment on the same endpoint; the deployment is named after the model.
+      JUDGE_PROVIDER: ${{ secrets.AZURE_JUDGE_API_KEY && 'azure_openai' || '' }}
+      JUDGE_MODEL: ${{ secrets.AZURE_JUDGE_MODEL }}
+      JUDGE_AZURE_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+      JUDGE_AZURE_DEPLOYMENT: ${{ secrets.AZURE_JUDGE_MODEL }}
+      JUDGE_API_KEY: ${{ secrets.AZURE_JUDGE_API_KEY }}
       CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
       CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
       CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
