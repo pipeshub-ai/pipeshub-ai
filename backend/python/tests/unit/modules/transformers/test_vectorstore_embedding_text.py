@@ -1,8 +1,10 @@
 """What the vector store embeds versus what it leaves in the stored blocks."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from langchain_core.documents import Document
 
 from app.models.blocks import (
     Block,
@@ -10,12 +12,13 @@ from app.models.blocks import (
     BlockGroupChildren,
     BlocksContainer,
     BlockType,
+    CitationMetadata,
     DataFormat,
     GroupType,
     ImageMetadata,
     MediaMetadata,
 )
-from app.modules.transformers.vectorstore import VectorStore
+from app.modules.transformers.vectorstore import VectorStore, _embedding_text
 from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore_p1
 
 LINKED_TEXT = (
@@ -133,6 +136,82 @@ async def test_block_that_is_only_an_empty_image_link_embeds_nothing():
     await _index(vs, BlocksContainer(blocks=[_text_block(0, "![](https://example.com/spacer.gif)")]))
 
     assert capture.dense == []
+
+
+def _record(name: str = "Shipping Handbook.html", extension: str | None = "html"):
+    return SimpleNamespace(
+        record_name=name, extension=extension, connector_id=None, connector_name=None,
+        semantic_metadata=None,
+    )
+
+
+def _in_section(block: Block, path: str) -> Block:
+    block.citation_metadata = CitationMetadata(section_title=path)
+    return block
+
+
+async def _index_record(vs, container: BlocksContainer, record) -> None:
+    await vs.index_documents(
+        block_containers=container,
+        org_id="org-1",
+        record_id="rec-1",
+        virtual_record_id="vr-1",
+        record=record,
+    )
+
+
+@pytest.mark.asyncio
+async def test_text_embeds_with_title_and_section_but_stores_its_own_text():
+    vs, capture = _capturing_vectorstore()
+    block = _in_section(_text_block(0, "Parcels ship on Mondays."), "Operations › Shipping")
+
+    await _index_record(vs, BlocksContainer(blocks=[block]), _record())
+
+    assert capture.dense == ["Shipping Handbook › Operations › Shipping\nParcels ship on Mondays."]
+    assert capture.sparse == capture.dense
+    (point,) = capture.points
+    assert point.payload["page_content"] == "Parcels ship on Mondays."
+    assert "_embedContext" not in point.payload["metadata"]
+    assert block.data == "Parcels ship on Mondays."
+
+
+@pytest.mark.asyncio
+async def test_table_row_embeds_with_its_section():
+    vs, capture = _capturing_vectorstore()
+    container = _table("Zone: A, Price: 5")
+    _in_section(container.blocks[0], "Rates")
+
+    await _index_record(vs, container, _record())
+
+    assert "Shipping Handbook › Rates\nZone: A, Price: 5" in capture.dense
+    row_point = next(p for p in capture.points if p.payload["metadata"]["blockType"] == "table_row")
+    assert row_point.payload["page_content"] == "Zone: A, Price: 5"
+
+
+@pytest.mark.asyncio
+async def test_section_repeating_the_title_is_not_embedded_twice():
+    vs, capture = _capturing_vectorstore()
+    block = _in_section(_text_block(0, "Body."), "Shipping Handbook › Returns")
+
+    await _index_record(vs, BlocksContainer(blocks=[block]), _record())
+
+    assert capture.dense == ["Shipping Handbook › Returns\nBody."]
+
+
+@pytest.mark.asyncio
+async def test_blocks_parsed_before_section_paths_embed_as_before():
+    vs, capture = _capturing_vectorstore()
+
+    await _index(vs, BlocksContainer(blocks=[_text_block(0, "Body.")]))
+
+    assert capture.dense == ["Body."]
+
+
+def test_context_is_dropped_rather_than_overflowing_the_model_limit(monkeypatch):
+    monkeypatch.setenv("PIPESHUB_EMBED_TOKEN_LIMIT", "8")
+    document = Document(page_content="a b c d e f g h",
+                        metadata={"_embedContext": "A long title › A long section"})
+    assert _embedding_text(document) == "a b c d e f g h"
 
 
 def test_image_alt_text_is_part_of_the_image_description():

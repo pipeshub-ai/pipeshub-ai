@@ -41,6 +41,7 @@ from app.modules.qna.prompt_templates import (
     qna_prompt_simple,
     table_prompt,
 )
+from app.modules.parsers.section_paths import MAX_SECTION_PATH_CHARS, block_section_path
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -2127,6 +2128,57 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_count,
         )
 
+def _attach_section_paths(
+    flattened_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, Any],
+) -> None:
+    """Copy each hit's stored section path onto the hit for rendering.
+
+    Records parsed before section paths were stored have none, and their
+    hits render exactly as before.
+    """
+    for result in flattened_results:
+        if result.get("section_path"):
+            continue
+        record = virtual_record_id_to_result.get(result.get("virtual_record_id"))
+        if not isinstance(record, dict):
+            continue
+        containers = record.get("block_containers") or {}
+        group_index = result.get("block_group_index")
+        if isinstance(group_index, int):
+            items, index = containers.get("block_groups") or [], group_index
+        else:
+            items, index = containers.get("blocks") or [], result.get("block_index")
+        if isinstance(index, int) and 0 <= index < len(items) and isinstance(items[index], dict):
+            path = block_section_path(items[index])
+            if path:
+                result["section_path"] = path
+
+
+def section_path_note(result: dict[str, Any]) -> str:
+    """`` (§ Section › Subsection)`` for a hit that has a section path, else ``""``.
+
+    Rendered inside the hit's own text so budget trimming drops it with the
+    hit, and it names no block, so it adds no citation ref.
+    """
+    path = result.get("section_path")
+    if not isinstance(path, str) or not path.strip():
+        return ""
+    return f" (§ {path.strip()[:MAX_SECTION_PATH_CHARS]})"
+
+
+def _with_section_note(rendered: str, header: str, result: dict[str, Any]) -> str:
+    """Put the section note right after a rendered group's ``header``.
+
+    Matched by the header text rather than the first line, since a table
+    summary can itself span lines.
+    """
+    note = section_path_note(result)
+    if not note or not rendered.startswith(header):
+        return rendered
+    return f"{header}{note}{rendered[len(header):]}"
+
+
 def _point_position(meta: dict[str, Any]) -> int | None:
     """Where a vector point's block sits, when the point says so itself.
 
@@ -2778,6 +2830,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         result["metadata"] = enhanced_metadata
         flattened_results.append(result)
 
+    _attach_section_paths(flattened_results, virtual_record_id_to_result)
     return flattened_results
 
 def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:dict[str, Any]) -> dict[str, Any]:
@@ -4665,10 +4718,17 @@ def build_message_content_array(
                     )
                     content.append({
                         "type": "text",
-                        "text": prepend_record_blocks_sorted_header(f"{rendered_form}{fk_info}\n\n"),
+                        "text": prepend_record_blocks_sorted_header(
+                            _with_section_note(
+                                rendered_form,
+                                f"[Table #{block_group_index}: {table_summary}]",
+                                result,
+                            )
+                            + f"{fk_info}\n\n"
+                        ),
                     })
                 else:
-                    header = f"[Table #{block_group_index}: {table_summary}]\n"
+                    header = f"[Table #{block_group_index}: {table_summary}]{section_path_note(result)}\n"
                     content.append({
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(f"{header}{fk_info}"),
@@ -4682,7 +4742,7 @@ def build_message_content_array(
                 content.append({
                     "type": "text",
                     "text": prepend_record_blocks_sorted_header(
-                        f"[{block_index}|{ref}] {result.get('content')}\n\n"
+                        f"[{block_index}|{ref}]{section_path_note(result)} {result.get('content')}\n\n"
                     ),
                 })
             elif block_type == BlockType.CODE.value:
@@ -4723,11 +4783,16 @@ def build_message_content_array(
                     current_record_has_blocks = True
                     content.append({
                         "type": "text",
-                        "text": prepend_record_blocks_sorted_header(f"{rendered_form}\n\n"),
+                        "text": prepend_record_blocks_sorted_header(
+                            _with_section_note(
+                                rendered_form, f"[{block_type} #{block_group_index}]", result,
+                            )
+                            + "\n\n"
+                        ),
                     })
                 else:
                     # Emit blocks in reading order to preserve text/image interleaving.
-                    header = f"[{block_type} #{block_group_index}]\n"
+                    header = f"[{block_type} #{block_group_index}]{section_path_note(result)}\n"
                     current_record_has_blocks = True
                     content.append({
                         "type": "text",

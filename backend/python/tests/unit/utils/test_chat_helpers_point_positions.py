@@ -87,6 +87,17 @@ async def test_old_table_block_point_flagged_as_a_group_does_not_read_another_ta
     assert all(r.get("content", ("",))[0] != "Unrelated" for r in results)
 
 
+async def test_hits_carry_the_section_path_stored_on_their_block() -> None:
+    store = InMemoryBlobStore({"v1": blob("v1", [
+        text(0, "a", citation_metadata={"section_title": "Guide › Setup"}),
+        text(1, "b"),
+    ])})
+    results, _ = await flatten(store, [hit("v1", 0), hit("v1", 1)], {"v1": graph_record("r1")})
+    by_index = {r["block_index"]: r for r in results}
+    assert by_index[0]["section_path"] == "Guide › Setup"
+    assert "section_path" not in by_index[1]
+
+
 async def test_record_summary_hit_does_not_read_reconciliation_metadata() -> None:
     store = _CountingStore({"v1": blob("v1", [text(0, "a")])}, recon={"v1": RECON_DOWN})
     summary = {

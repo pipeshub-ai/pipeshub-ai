@@ -36,6 +36,7 @@ from app.exceptions.indexing_exceptions import (
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
 from app.modules.parsers.link_text import anchor_text_only
+from app.modules.parsers.section_paths import SECTION_PATH_SEPARATOR, block_section_path
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
@@ -116,6 +117,12 @@ _OVERSIZED_CHUNK_SIZE = 1500
 _OVERSIZED_CHUNK_OVERLAP = 200
 _LANGUAGE_DETECTION_SAMPLE_CHARS = 2000
 _DEFAULT_SENTENCE_EMBED_MIN_WORDS = 100
+
+# Where a block sits (record title, section headings) is embedded with it but
+# never stored as its text; the key rides on Document metadata and is removed
+# before the point payload is written.
+_EMBED_CONTEXT_KEY = "_embedContext"
+_MAX_EMBED_TITLE_CHARS = 100
 
 # Safety-net timeouts — prevent any single step from blocking the pipeline forever.
 # asyncio.to_thread / run_in_executor cannot actually kill the underlying thread on
@@ -415,11 +422,52 @@ def _bounded_documents(text: str, metadata: dict) -> List[Document]:
     ]
 
 
+def _embedding_context(record_title: str | None, block: object) -> str:
+    """``Title › Section › Subsection`` for a block, or ``""`` when neither is known.
+
+    A section that repeats the title (a page's own top heading) is dropped.
+    """
+    parts: List[str] = []
+    title = " ".join((record_title or "").split())[:_MAX_EMBED_TITLE_CHARS]
+    if title:
+        parts.append(title)
+    path = block_section_path(block)
+    sections = path.split(SECTION_PATH_SEPARATOR) if path else []
+    if sections and title and sections[0].strip().lower() == title.lower():
+        sections = sections[1:]
+    parts.extend(section for section in sections if section.strip())
+    return SECTION_PATH_SEPARATOR.join(parts)
+
+
+def _with_context(metadata: dict, context: str) -> dict:
+    return {**metadata, _EMBED_CONTEXT_KEY: context} if context else metadata
+
+
+def _embedding_text(document: Document) -> str:
+    """The text a Document is embedded as: its context line, then its content.
+
+    The context is dropped rather than letting it push a piece that was sized
+    to the model's limit over it.
+    """
+    context = document.metadata.get(_EMBED_CONTEXT_KEY)
+    if not context:
+        return document.page_content
+    text = f"{context}\n{document.page_content}"
+    if _exceeds_token_ceiling(text, _embed_token_ceiling()):
+        return document.page_content
+    return text
+
+
+def _stored_metadata(metadata: dict) -> dict:
+    return {k: v for k, v in metadata.items() if k != _EMBED_CONTEXT_KEY}
+
+
 def _build_text_documents(
     text_blocks: List,
     virtual_record_id: str,
     org_id: str,
     language: str,
+    record_title: str | None = None,
 ) -> List[Document]:
     """Sentence-split each text block into embeddable Documents.
 
@@ -433,20 +481,19 @@ def _build_text_documents(
         # empty at parse time re-hydrates with data=None — which is why this only
         # shows up on the blob-backed reindex path and not during normal
         # indexing. There is nothing to embed either way: an empty document would
-        # just be a useless retrieval unit.
-        # Links stay in the stored block for citations; only the embedded
-        # text loses their targets.
+        # just be a useless retrieval unit. Links stay in the stored block for
+        # citations; only the embedded text loses their targets.
         block_text = anchor_text_only(block.data or "")
         if not block_text.strip():
             continue
-        metadata = {
+        metadata = _with_context({
             "virtualRecordId": virtual_record_id,
             "blockId": block.id,
             "blockIndex": block.index,
             "orgId": org_id,
             "isBlockGroup": False,
             "blockType": BlockType.TEXT.value,
-        }
+        }, _embedding_context(record_title, block))
 
         # The character cap stays as a cheap upper guard for pathological
         # blocks; the ceiling that decides whether this can embed as one
@@ -519,6 +566,7 @@ def _process_text_blocks(
     text_blocks: List,
     virtual_record_id: str,
     org_id: str,
+    record_title: str | None = None,
 ) -> List[Document]:
     """Detect language and build embeddable Documents for a record's text blocks.
 
@@ -526,7 +574,20 @@ def _process_text_blocks(
     ``asyncio.to_thread`` call (see call site in ``index_documents``).
     """
     language = _detect_record_language(text_blocks)
-    return _build_text_documents(text_blocks, virtual_record_id, org_id, language)
+    return _build_text_documents(
+        text_blocks, virtual_record_id, org_id, language, record_title
+    )
+
+
+def _record_title(record: Optional["Record"]) -> str:
+    """The record's name as a title: a stored file name loses its extension."""
+    name = (getattr(record, "record_name", None) or "").strip() if record is not None else ""
+    if not isinstance(name, str):
+        return ""
+    extension = getattr(record, "extension", None)
+    if isinstance(extension, str) and extension and name.lower().endswith(f".{extension.lower()}"):
+        name = name[: -len(extension) - 1]
+    return name.strip()
 
 
 def _storage_reconcile_enabled() -> bool:
@@ -1418,7 +1479,7 @@ class VectorStore(Transformer):
         if record_doc is None:
             return False
 
-        texts = [doc.page_content for doc in documents]
+        texts = [_embedding_text(doc) for doc in documents]
 
         dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
 
@@ -1430,7 +1491,7 @@ class VectorStore(Transformer):
                 id=str(uuid.uuid4()),
                 dense_vector=dense,
                 sparse_vector=sparse,
-                payload=vector_point_payload(doc.metadata, doc.page_content),
+                payload=vector_point_payload(_stored_metadata(doc.metadata), doc.page_content),
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
@@ -1655,6 +1716,7 @@ class VectorStore(Transformer):
             )
 
             documents_to_embed: List = []
+            record_title = _record_title(record)
 
             # ── Code blocks ──
             if code_blocks:
@@ -1668,7 +1730,8 @@ class VectorStore(Transformer):
                 try:
                     text_documents = await asyncio.wait_for(
                         asyncio.to_thread(
-                            _process_text_blocks, text_blocks, virtual_record_id, org_id
+                            _process_text_blocks, text_blocks, virtual_record_id, org_id,
+                            record_title,
                         ),
                         timeout=_TEXT_PROCESSING_TIMEOUT_S,
                     )
@@ -1901,7 +1964,7 @@ class VectorStore(Transformer):
                         if row_text:
                             documents_to_embed.extend(_bounded_documents(
                                 row_text,
-                                {
+                                _with_context({
                                     "virtualRecordId": virtual_record_id,
                                     "blockId": block.id,
                                     "blockIndex": block.index,
@@ -1909,7 +1972,7 @@ class VectorStore(Transformer):
                                     "isBlock": True,
                                     "isBlockGroup": False,
                                     "blockType": BlockType.TABLE_ROW.value,
-                                },
+                                }, _embedding_context(record_title, block)),
                             ))
 
             # Record summary (only on fresh full index, not reconciliation/partial update)
