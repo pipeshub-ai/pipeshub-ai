@@ -215,13 +215,14 @@ class EventService:
     async def process_event(self, event_type: str, payload: dict[str, Any]) -> bool:
         """Handle connector-specific events - implementing abstract method"""
         try:
-            if "." in event_type:
-                parts = event_type.split(".")
-                connector_name = parts[0].replace(" ", "").lower()
-                action = parts[1].lower()
-            else:
-                self.logger.error(f"Invalid event type format (missing connector prefix): {event_type}")
+            parts = event_type.split(".")
+            # Exactly "<connector>.<action>": the action picks the handler, so a
+            # connector name carrying its own dot must not be able to choose it.
+            if len(parts) != 2:
+                self.logger.error(f"Invalid event type format (expected '<connector>.<action>'): {event_type}")
                 return False
+            connector_name = parts[0].replace(" ", "").lower()
+            action = parts[1].lower()
 
             self.logger.info(f"Handling {connector_name} connector event: {action}")
 

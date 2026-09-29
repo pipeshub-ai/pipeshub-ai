@@ -260,7 +260,6 @@ export class UserGroupController {
     const updatedGroups = await UserGroups.updateMany(
       { _id: { $in: groupIds }, orgId, isDeleted: false },
       { $addToSet: { users: { $each: userIds } } },
-      { new: true },
     );
 
     if (updatedGroups.modifiedCount === 0) {
@@ -288,7 +287,6 @@ export class UserGroupController {
     const updatedGroups = await UserGroups.updateMany(
       { _id: { $in: groupIds }, orgId, isDeleted: false },
       { $pullAll: { users: userIds } },
-      { new: true },
     );
 
     if (updatedGroups.modifiedCount === 0) {

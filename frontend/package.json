@@ -86,7 +86,7 @@
     "socket.io-client": "^4.8.3",
     "swr": "^2.3.6",
     "tiptap-markdown": "^0.8.10",
-    "xlsx": "^0.18.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zustand": "^5.0.9"
   },
   "devDependencies": {
@@ -107,5 +107,8 @@
     "sharp": "^0.35.4",
     "typescript": "^5.9.2",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "postcss": "^8.5.23"
   }
 }
