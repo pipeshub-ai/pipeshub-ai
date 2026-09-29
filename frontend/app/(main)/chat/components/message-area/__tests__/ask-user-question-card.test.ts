@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
+  askUserQuestionOwnsRow,
+  buildAnswerMessage,
+  hasUnansweredQuestions,
   mergeAskUserQuestionPayloads,
   normalizeAskUserQuestionPayload,
   parseAnswerMessage,
 } from '../ask-user-question-card';
-import type { AskUserQuestionPayload } from '../../../types';
+import type { AskUserQuestionPayload, PendingAskUserQuestion } from '../../../types';
 
 describe('normalizeAskUserQuestionPayload', () => {
   it('fills missing question uuids and option ids', () => {
@@ -88,5 +91,121 @@ describe('mergeAskUserQuestionPayloads', () => {
       'What should I analyze?',
       'Which format?',
     ]);
+  });
+});
+
+/** Shape the backend sends: option ids derive from the label alone, so two
+ *  questions offering the same label carry the same option id. */
+function sharedOptionPayload(): AskUserQuestionPayload {
+  return {
+    name: 'ask_user_question',
+    questions: [
+      {
+        uuid: 'q-project',
+        question: 'Which project?',
+        options: [
+          { id: 'opt_apollo', label: 'Apollo', isUserInput: false },
+          { id: 'opt_all', label: 'All', isUserInput: false },
+        ],
+        multiSelect: false,
+      },
+      {
+        uuid: 'q-status',
+        question: 'Which status?',
+        options: [
+          { id: 'opt_open', label: 'Open', isUserInput: false },
+          { id: 'opt_all', label: 'All', isUserInput: false },
+        ],
+        multiSelect: false,
+      },
+    ],
+  };
+}
+
+describe('ask_user_question answers', () => {
+  it('does not treat one question as answered because a sibling shares an option id', () => {
+    const answers = {
+      'q-project': {
+        questionUuid: 'q-project',
+        selectedOptionIds: ['opt_all'],
+        userInputs: {},
+      },
+    };
+
+    expect(hasUnansweredQuestions(sharedOptionPayload(), answers)).toBe(true);
+  });
+
+  it('reports every question answered once each has its own selection', () => {
+    const answers = {
+      'q-project': {
+        questionUuid: 'q-project',
+        selectedOptionIds: ['opt_all'],
+        userInputs: {},
+      },
+      'q-status': {
+        questionUuid: 'q-status',
+        selectedOptionIds: ['opt_open'],
+        userInputs: {},
+      },
+    };
+
+    expect(hasUnansweredQuestions(sharedOptionPayload(), answers)).toBe(false);
+  });
+
+  it('never reports a selection the user did not make for a shared option', () => {
+    const answers = {
+      'q-project': {
+        questionUuid: 'q-project',
+        selectedOptionIds: ['opt_all'],
+        userInputs: {},
+      },
+    };
+
+    const message = buildAnswerMessage(sharedOptionPayload(), answers);
+
+    expect(message).toContain('1. "Which project?" → All');
+    expect(message).toContain('2. "Which status?" → ');
+    expect(message).not.toContain('"Which status?" → All');
+  });
+
+  it('still matches an answer whose uuid belongs to no question in the card', () => {
+    // History-parsed answers can carry ids from an older payload; that fallback
+    // is what the sibling guard must not break.
+    const answers = {
+      stale: {
+        questionUuid: 'stale-uuid',
+        selectedOptionIds: ['opt_open'],
+        userInputs: {},
+      },
+    };
+
+    const message = buildAnswerMessage(sharedOptionPayload(), answers);
+
+    expect(message).toContain('2. "Which status?" → Open');
+  });
+});
+
+describe('askUserQuestionOwnsRow', () => {
+  const pending = (assistantMessageId: string): PendingAskUserQuestion => ({
+    assistantMessageId,
+    payload: sharedOptionPayload(),
+    answers: {},
+    status: 'pending',
+  });
+
+  it('matches the row the live send asked on, by thread row id', () => {
+    expect(askUserQuestionOwnsRow(pending('row-2'), 'row-2', 'mongo-2')).toBe(true);
+  });
+
+  it('matches the regenerated row, whose card is keyed by the backend id', () => {
+    expect(askUserQuestionOwnsRow(pending('mongo-2'), 'row-2', 'mongo-2')).toBe(true);
+  });
+
+  it('leaves every other row in the thread alone', () => {
+    expect(askUserQuestionOwnsRow(pending('mongo-2'), 'row-1', 'mongo-1')).toBe(false);
+  });
+
+  it('claims no row when a card has ids the row does not carry', () => {
+    expect(askUserQuestionOwnsRow(pending('mongo-2'), undefined, undefined)).toBe(false);
   });
 });

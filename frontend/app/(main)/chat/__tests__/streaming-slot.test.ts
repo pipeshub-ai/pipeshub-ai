@@ -13,7 +13,7 @@ import {
   sseResponse,
   type StreamPlan,
 } from '@/lib/api/__tests__/sse-response';
-import type { StreamChatRequest, ConversationMessage } from '../types';
+import type { StreamChatRequest, ConversationMessage, MessagePart } from '../types';
 
 installMemoryStorage();
 
@@ -203,6 +203,43 @@ describe('an existing conversation', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conv-old/messages/stream');
     expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['conv-old', 'conv-other']);
     expect(slot(slotId).isStreaming).toBe(false);
+  });
+
+  it("leaves an earlier turn's activity timeline alone when a later turn finishes", async () => {
+    const slotId = newSlot('conv-real');
+    const conversation = {
+      ...finishedConversation('Second answer.'),
+      messages: [
+        storedMessage({ _id: 'q1', messageType: 'user_query', content: 'First question' }),
+        storedMessage({
+          _id: 'a1',
+          messageType: 'bot_response',
+          content: 'First answer.',
+          parts: [{
+            type: 'tool_call',
+            toolCallId: 'old-call',
+            toolName: 'confluence_search',
+            status: 'completed',
+          }],
+        }),
+        storedMessage({ _id: 'q2', messageType: 'user_query', content: Q }),
+        storedMessage({ _id: 'a2', messageType: 'bot_response', content: 'Second answer.' }),
+      ],
+    };
+    respondWith([
+      frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-1', toolCallName: 'jira_search' }),
+      frame('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 'call-1', content: '3 issues', status: 'completed' }),
+      frame('TEXT_MESSAGE_START', { runId: 'root' }),
+      frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'Second answer.' }),
+      frame('TEXT_MESSAGE_END', { runId: 'root' }),
+      frame('RUN_FINISHED', { result: { conversation } }),
+    ]);
+
+    await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-real' }));
+
+    const earlier = slot(slotId).messages.find((m) => m.id === 'a1');
+    const earlierCustom = earlier?.metadata?.custom as { persistedParts?: MessagePart[] } | undefined;
+    expect((earlierCustom?.persistedParts ?? []).map((p) => p.toolName)).toEqual(['confluence_search']);
   });
 });
 
@@ -805,6 +842,60 @@ describe('asking the user a question mid-run', () => {
     expect(pending?.answers).toEqual({
       'q-proceed': { questionUuid: 'q-proceed', selectedOptionIds: ['kb'], userInputs: {} },
     });
+
+    // Answer the question that resume asked, and have that second resume come
+    // back with nothing. The text the first resume left on the card must not
+    // pass for this one's answer, or the card locks with no way to retry.
+    useChatStore.getState().updateSlot(slotId, {
+      pendingAskUserQuestion: {
+        ...slot(slotId).pendingAskUserQuestion!,
+        answers: {
+          'q-proceed': { questionUuid: 'q-proceed', selectedOptionIds: ['kb'], userInputs: {} },
+          'q-topic': { questionUuid: 'q-topic', selectedOptionIds: ['keywords'], userInputs: {} },
+        },
+        status: 'submitted',
+      },
+    });
+    const secondResumeQuery = 'User selections:\n1. "What topic should I search for?" → Enter a topic or keywords';
+    respondWith([
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation(''),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: first }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+              storedMessage({ _id: 'sel', messageType: 'user_query', content: resumeQuery }),
+              storedMessage({
+                _id: 'a2',
+                messageType: 'bot_response',
+                content: "I'll use the knowledge base.",
+              }),
+              storedMessage({
+                _id: 't2',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: second }],
+              }),
+              storedMessage({ _id: 'sel2', messageType: 'user_query', content: secondResumeQuery }),
+              storedMessage({ _id: 'a3', messageType: 'bot_response', content: '' }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(
+      slotId,
+      secondResumeQuery,
+      request({ query: secondResumeQuery }),
+      { resumeAskUserQuestion: true },
+    );
+
+    expect(slot(slotId).pendingAskUserQuestion?.status).toBe('pending');
   });
 });
 

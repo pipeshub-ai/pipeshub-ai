@@ -115,6 +115,7 @@ interface StreamCall {
   messageId?: mongoose.Types.ObjectId | string | null
   onComplete?: (data: IAIResponse) => void
   accumulator?: StreamedContentAccumulator
+  onAskUserQuestion?: (payload: unknown) => void
 }
 
 const feed = (res: FakeResponse, call: StreamCall): string =>
@@ -129,6 +130,8 @@ const feed = (res: FakeResponse, call: StreamCall): string =>
     call.onComplete ?? ((): void => undefined),
     AGUI_PROTOCOL,
     call.accumulator,
+    undefined,
+    call.onAskUserQuestion,
   )
 
 describe('Regenerating an answer (enterprise search utils)', () => {
@@ -269,45 +272,44 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(conversation.save.called).to.equal(false)
     })
 
-    it('records an ask_user_question for an agent regeneration and forwards it', async () => {
+    it('reports an ask_user_question for an agent regeneration and forwards it', async () => {
       const res = makeRes()
       const conversation = makeConversation({ agentKey: 'agent-1' })
-      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq: 9 })
       const insert = sinon.stub(ChatSessionMessage, 'insertMany').resolves([])
       const toolData = { question: 'Which region?', options: ['EMEA', 'APAC'] }
       const frame = frameAGUI('CUSTOM', { name: 'ask_user_question', value: { toolData } })
+      const onAskUserQuestion = sinon.spy()
 
-      feed(res, { chunk: frame, conversation })
+      feed(res, { chunk: frame, conversation, onAskUserQuestion })
       await settle()
 
       expect(written(res)).to.equal(frame)
-      const [docs] = insert.firstCall.args as [Array<{ sessionId: mongoose.Types.ObjectId; orgId: mongoose.Types.ObjectId; seq: number; tools: Array<{ toolResult: unknown }> }>]
-      expect(at(docs).sessionId).to.equal(conversation._id)
-      expect(at(docs).orgId).to.equal(conversation.orgId)
-      expect(at(docs).seq).to.equal(9)
-      expect(at(at(docs).tools).toolResult).to.deep.equal(toolData)
+      expect(onAskUserQuestion.firstCall.args[0]).to.deep.equal(toolData)
+      // The payload rides on the regenerated answer itself (see
+      // attachAskUserQuestionToMessage) — a second row would outlive the next
+      // regeneration and restore a card that answer never asked.
+      expect(insert.called).to.equal(false)
     })
 
-    it('records an ask_user_question for a plain chat regeneration too, so a reload can restore the card', async () => {
+    it('reports an ask_user_question for a plain chat regeneration too, so a reload can restore the card', async () => {
       const res = makeRes()
       const conversation = makeConversation()
-      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq: 1 })
       const insert = sinon.stub(ChatSessionMessage, 'insertMany').resolves([])
       const toolData = { q: 1 }
       const frame = frameAGUI('CUSTOM', { name: 'ask_user_question', value: { toolData } })
+      const onAskUserQuestion = sinon.spy()
 
-      feed(res, { chunk: frame, conversation })
+      feed(res, { chunk: frame, conversation, onAskUserQuestion })
       await settle()
 
       expect(written(res)).to.equal(frame)
-      const [docs] = insert.firstCall.args as [Array<{ tools: Array<{ toolResult: unknown }> }>]
-      expect(at(at(docs).tools).toolResult).to.deep.equal(toolData)
+      expect(onAskUserQuestion.firstCall.args[0]).to.deep.equal(toolData)
+      expect(insert.called).to.equal(false)
     })
 
-    it('keeps streaming when saving an ask_user_question fails', async () => {
+    it('keeps streaming when an ask_user_question frame has no payload', async () => {
       const res = makeRes()
       const conversation = makeConversation({ agentKey: 'agent-1' })
-      sinon.stub(ChatSession, 'findOneAndUpdate').resolves(null)
       const insert = sinon.stub(ChatSessionMessage, 'insertMany')
       const frame = frameAGUI('CUSTOM', { name: 'ask_user_question', value: { toolData: {} } })
       const unhandled = sinon.spy()

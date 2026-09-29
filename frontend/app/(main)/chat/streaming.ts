@@ -417,24 +417,23 @@ function createStatusDwellScheduler(
  *   streams, `ChatApi.streamMessage` always sends `filters: { apps, kb }` and `tools: [...]`
  *   — empty arrays mean no knowledge / no tools (same explicit contract).
  */
-/** Live trailing text is the answer (`AnswerContent`). Mark it `isFinal` so
- *  the activity timeline does not also render it after we persist `streamingParts`. */
+/** The row this run's card lives on, or undefined when the run had no card —
+ *  a positional guess would hand back an unrelated turn and let the caller
+ *  overwrite that turn's persisted transcript. */
 function findAskUserQuestionRow(
   finalMessages: ThreadMessageLike[],
   pending: PendingAskUserQuestion | null | undefined,
 ): ThreadMessageLike | undefined {
+  if (!pending) return undefined;
   const assistants = finalMessages.filter((m) => m.role === 'assistant');
-  if (pending?.assistantMessageId) {
-    const byId = assistants.find((m) => m.id === pending.assistantMessageId);
-    if (byId) return byId;
-  }
-  const withCard = assistants.find((m) => {
+  const byId = assistants.find((m) => m.id === pending.assistantMessageId);
+  if (byId) return byId;
+  // The live placeholder id does not survive the reload; the card this run just
+  // asked is the newest persisted one, not the first.
+  return [...assistants].reverse().find((m) => {
     const custom = m.metadata?.custom as { persistedAskUserQuestion?: unknown } | undefined;
     return Boolean(custom?.persistedAskUserQuestion);
   });
-  if (withCard) return withCard;
-  if (assistants.length >= 2) return assistants[assistants.length - 2];
-  return assistants[0];
 }
 
 function textFromLiveParts(parts: MessagePart[]): string {
@@ -447,6 +446,8 @@ function textFromLiveParts(parts: MessagePart[]): string {
   return '';
 }
 
+/** Live trailing text is the answer (`AnswerContent`). Mark it `isFinal` so
+ *  the activity timeline does not also render it after we persist `streamingParts`. */
 function withFinalAnswerMarked(parts: MessagePart[]): MessagePart[] {
   let lastText = -1;
   for (let i = parts.length - 1; i >= 0; i -= 1) {
@@ -522,7 +523,11 @@ export async function streamMessageForSlot(
       }
     }
   }
-  if (!lastAssistantId) {
+  // A card id the thread does not carry must not fall through to "newest
+  // assistant row": reusing an unrelated turn overwrites the answer already
+  // there. Start a fresh turn instead — misplaced at worst, not destructive.
+  const cardRowMissing = Boolean(cardAssistantId) && !lastAssistantId;
+  if (!lastAssistantId && !cardRowMissing) {
     for (let i = baseMessages.length - 1; i >= 0; i -= 1) {
       const row = baseMessages[i];
       if (!lastAssistantId && row.role === 'assistant' && typeof row.id === 'string') {
@@ -883,6 +888,12 @@ export async function streamMessageForSlot(
               textFromLiveParts(liveParts),
             ].find((text) => isUsableFollowUpText(text))?.trim() ?? ''
           : '';
+        // `liveParts` is seeded from the reused card row (`reuseExistingAssistant`
+        // above), so it holds an earlier resume's text too. `accumulatedContent`
+        // belongs to this run alone and `onAskUserQuestion` clears it, so it is
+        // the only thing that can say whether THIS resume produced an answer.
+        const resumeStreamedAnswer = resumeAskUserQuestion
+          && isUsableFollowUpText(accumulatedContent);
         const pendingBefore = slotBeforeComplete?.pendingAskUserQuestion;
         let remappedPending: PendingAskUserQuestion | undefined;
         const lastAsst = [...finalMessages].reverse().find((m) => m.role === 'assistant');
@@ -900,7 +911,10 @@ export async function streamMessageForSlot(
                 : pendingBefore.assistantMessageId),
           };
         }
-        const partsTarget = cardRow ?? lastAsst;
+        // Only a card turn needs this: the resume's activity is merged into the
+        // card row, which the server never saved parts for. Every other turn
+        // already carries its own persisted `parts`.
+        const partsTarget = cardRow ?? (resumeAskUserQuestion ? lastAsst : undefined);
         if (partsTarget && liveParts.length) {
           const prevCustom = (partsTarget.metadata?.custom ?? {}) as Record<string, unknown>;
           const persistedParts = withFinalAnswerMarked(liveParts);
@@ -992,7 +1006,14 @@ export async function streamMessageForSlot(
               resumeAskUserQuestion && rowHasFollowUp && pendingBefore
                 ? {
                     ...pendingBefore,
-                    status: resumeAskedMore ? ('pending' as const) : ('submitted' as const),
+                    // `rowHasFollowUp` is also true for text an EARLIER resume
+                    // left on the card, so it cannot settle this one. This
+                    // resume answered only if it streamed text or history saw
+                    // one (`hasFollowUpAfterResume`); otherwise it came back
+                    // empty and has to stay retryable.
+                    status: resumeAskedMore || (!resumeStreamedAnswer && unansweredAskUserQuestion)
+                      ? ('pending' as const)
+                      : ('submitted' as const),
                     assistantMessageId:
                       (cardRow && typeof cardRow.id === 'string' ? cardRow.id : pendingBefore.assistantMessageId),
                   }

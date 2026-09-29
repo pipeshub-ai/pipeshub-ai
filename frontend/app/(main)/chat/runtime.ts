@@ -1,4 +1,4 @@
-﻿/**
+/**
  * External Store Runtime bridge for assistant-ui.
  *
  * Provides:
@@ -576,13 +576,20 @@ export function loadHistoricalMessages(
       const isAnswered = capturedPayload
         ? isAskUserQuestionAnswered(messages, i)
         : false;
-      if (capturedPayload && !isAnswered) {
+      // A reply merged into an earlier card row (`mergeNextBotIntoId`) never
+      // becomes a row of its own, so the card must stay addressed to the row
+      // that survives: a resume bound to the merged-away id cannot find it and
+      // streams onto the newest turn instead. When that row is already the
+      // tracked one, its payload and selections are the fuller pair — the
+      // `tool_call` branch above merged the new question into them.
+      const cardRowId = mergeNextBotIntoId ?? msg._id;
+      if (capturedPayload && !isAnswered && cardRowId !== lastUnansweredAssistantId) {
         if (lastUnansweredAssistantId && lastUnansweredPayload) {
           stampPersistedQuestionCard(
             result, lastUnansweredAssistantId, lastUnansweredPayload,
           );
         }
-        lastUnansweredAssistantId = msg._id;
+        lastUnansweredAssistantId = cardRowId;
         lastUnansweredPayload = capturedPayload;
         lastUnansweredAnswers = {};
       }

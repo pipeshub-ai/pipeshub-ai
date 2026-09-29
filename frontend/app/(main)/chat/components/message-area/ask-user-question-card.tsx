@@ -19,6 +19,7 @@ import type {
   AskUserQuestionItem,
   AskUserQuestionOption,
   AskUserQuestionPayload,
+  PendingAskUserQuestion,
 } from '../../types';
 
 const SOMETHING_ELSE_ID = '__something_else__';
@@ -110,7 +111,7 @@ export function buildAnswerMessage(
 ): string {
   const questions = normalizeAskUserQuestionPayload(payload).questions;
   const lines = questions.map((q, i) => {
-    const a = answerForQuestion(q, answers);
+    const a = answerForQuestion(q, answers, questions);
     const parts = (a?.selectedOptionIds ?? [])
       .map((optId) => {
         if (optId === NO_PREFERENCE_ID) return '[No preference]';
@@ -196,16 +197,26 @@ export function parseAnswerMessage(
 function answerForQuestion(
   q: AskUserQuestionItem,
   answers: Record<string, AskUserQuestionAnswer>,
+  siblings: AskUserQuestionItem[],
 ): AskUserQuestionAnswer | undefined {
   if (q.uuid && answers[q.uuid]) return answers[q.uuid];
   const values = Object.values(answers);
   const byUuid = values.find((a) => a.questionUuid === q.uuid);
   if (byUuid) return byUuid;
+  // Option ids come from the label alone (`optionId` here, `"opt_" + label` in
+  // intrim_tools.py), so two questions offering "Yes" share that option's id.
+  // Matching on id/label is a last resort for answers built against another
+  // payload; skipping the ones a sibling question owns keeps answering the
+  // first question from silently answering the rest.
+  const owned = new Set(
+    siblings.filter((s) => s.uuid && s.uuid !== q.uuid).map((s) => s.uuid),
+  );
   const labels = new Set(
     (q.options ?? []).map((o) => optionLabel(o).trim().toLowerCase()).filter(Boolean),
   );
   const ids = new Set((q.options ?? []).map((o) => optionId(o)));
   return values.find((a) =>
+    !owned.has(a.questionUuid) &&
     (a.selectedOptionIds ?? []).some((id) => {
       if (id === SOMETHING_ELSE_ID || id === NO_PREFERENCE_ID) return false;
       if (ids.has(id)) return true;
@@ -282,7 +293,7 @@ function firstUnansweredStep(
   answers: Record<string, AskUserQuestionAnswer>,
 ): number {
   const idx = questions.findIndex((q) =>
-    !validateQuestion(q, answerForQuestion(q, answers), [SOMETHING_ELSE_OPTION]),
+    !validateQuestion(q, answerForQuestion(q, answers, questions), [SOMETHING_ELSE_OPTION]),
   );
   return idx >= 0 ? idx : Math.max(0, questions.length - 1);
 }
@@ -295,8 +306,26 @@ export function hasUnansweredQuestions(
   payload: AskUserQuestionPayload,
   answers: Record<string, AskUserQuestionAnswer>,
 ): boolean {
-  return normalizeAskUserQuestionPayload(payload).questions.some(
-    (q) => !validateQuestion(q, answerForQuestion(q, answers), [SOMETHING_ELSE_OPTION]),
+  const questions = normalizeAskUserQuestionPayload(payload).questions;
+  return questions.some(
+    (q) => !validateQuestion(q, answerForQuestion(q, answers, questions), [SOMETHING_ELSE_OPTION]),
+  );
+}
+
+/** Whether `pending`'s card belongs to this assistant row. Both ids are checked
+ *  because `assistantMessageId` holds whichever the asking run had: the thread
+ *  row id for a live send, the backend id for a regenerate (see
+ *  `onAskUserQuestion`'s `rowId` in streaming.ts). Any slot-wide test here would
+ *  hand one card to every assistant row in the thread. */
+export function askUserQuestionOwnsRow(
+  pending: PendingAskUserQuestion | null | undefined,
+  rowKey: string | undefined,
+  backendMessageId: string | undefined,
+): boolean {
+  if (!pending) return false;
+  return (
+    (Boolean(rowKey) && pending.assistantMessageId === rowKey) ||
+    (Boolean(backendMessageId) && pending.assistantMessageId === backendMessageId)
   );
 }
 
@@ -305,7 +334,7 @@ function hasVisibleSelections(
   answers: Record<string, AskUserQuestionAnswer>,
 ): boolean {
   return questions.some((q) => {
-    const a = answerForQuestion(q, answers);
+    const a = answerForQuestion(q, answers, questions);
     return (a?.selectedOptionIds?.length ?? 0) > 0;
   });
 }
@@ -351,7 +380,7 @@ export function AskUserQuestionCard({
         currentQ &&
         !validateQuestion(
           currentQ,
-          answerForQuestion(currentQ, answers),
+          answerForQuestion(currentQ, answers, questions),
           [SOMETHING_ELSE_OPTION],
         )
       ) {
@@ -378,11 +407,11 @@ export function AskUserQuestionCard({
       currentQ
         ? validateQuestion(
           currentQ,
-          answerForQuestion(currentQ, answers),
+          answerForQuestion(currentQ, answers, questions),
           [SOMETHING_ELSE_OPTION]
         )
         : false,
-    [currentQ, answers]
+    [currentQ, answers, questions]
   );
 
   const setSelectionForQuestion = useCallback(
@@ -545,7 +574,7 @@ export function AskUserQuestionCard({
               {questions.map((q, i) => {
                 const rows = answeredOptions(
                   q,
-                  answerForQuestion(q, answers),
+                  answerForQuestion(q, answers, questions),
                   t('askUserQuestion.somethingElse'),
                   t('askUserQuestion.noPreference'),
                 );
@@ -588,7 +617,7 @@ export function AskUserQuestionCard({
 
   if (!currentQ) return null;
 
-  const currentAnswer = answerForQuestion(currentQ, answers);
+  const currentAnswer = answerForQuestion(currentQ, answers, questions);
   const selectedIds = currentAnswer?.selectedOptionIds ?? [];
   const cleanOptions = stripCatchAlls(currentQ.options);
   const augmentedOptions = [...cleanOptions, SOMETHING_ELSE_OPTION];

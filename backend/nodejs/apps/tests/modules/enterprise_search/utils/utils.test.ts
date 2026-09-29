@@ -3760,11 +3760,12 @@ describe('AG-UI Protocol', () => {
       expect(res.write.firstCall.args[0]).to.include('event: RUN_ERROR')
     })
 
-    it('should persist an ask_user_question tool_call from a CUSTOM event', async () => {
+    it('should report an ask_user_question from a CUSTOM event without saving a row', async () => {
       const res = createMockResponse()
       const mockConv: any = { _id: 'c1', orgId: 'org-1', agentKey: 'agent-1' }
       const { insertManyStub } = stubAppendMessages([{ _id: new mongoose.Types.ObjectId() }])
       const toolData = { question: 'Pick a channel', options: ['#general', '#random'] }
+      const onAskUserQuestion = sinon.stub()
       const chunk = Buffer.from(
         `event: CUSTOM\ndata: ${JSON.stringify({
           type: 'CUSTOM',
@@ -3773,15 +3774,16 @@ describe('AG-UI Protocol', () => {
         })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
+      handleRegenerationStreamData(
+        chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL,
+        undefined, undefined, onAskUserQuestion,
+      )
       await Promise.resolve()
       await Promise.resolve()
 
       expect(res.write.calledOnce).to.be.true
-      expect(insertManyStub.calledOnce).to.be.true
-      const inserted = insertManyStub.firstCall.args[0]
-      expect(inserted[0].tools[0].toolName).to.equal('ask_user_question')
-      expect(inserted[0].tools[0].toolResult).to.deep.equal(toolData)
+      expect(onAskUserQuestion.firstCall.args[0]).to.deep.equal(toolData)
+      expect(insertManyStub.called).to.be.false
     })
 
     it('should ignore CUSTOM events that are not ask_user_question', () => {

@@ -106,6 +106,39 @@ async def test_inject_replaces_parked_tool_result_and_drops_empty_fallback() -> 
 
 
 @pytest.mark.asyncio
+async def test_inject_keeps_the_turns_taken_after_a_card_was_left_unanswered() -> None:
+    """Answering an old card must not truncate the chat that happened since."""
+    ctx = ContextManager()
+    await ctx.add(UserMessage(content="which editor should i use"))
+    await ctx.add(AssistantMessage(
+        content=[],
+        tool_calls=[ToolCall(
+            id="tc-ask-1",
+            name="internaltools__ask_user_question",
+            arguments={},
+        )],
+    ))
+    await ctx.add(ToolMessage(content='{"questions":[]}', tool_call_id="tc-ask-1"))
+    await ctx.add(AssistantMessage(
+        content="I wasn't able to generate a response. Please try rephrasing.",
+    ))
+    await ctx.add(UserMessage(content="actually, who owns billing?"))
+    await ctx.add(AssistantMessage(content="Priya owns billing."))
+    agent = SimpleNamespace(context=ctx)
+
+    await inject_ask_user_question_resume(agent, 'User selections:\n1. "Which?" → Vim')
+
+    messages = await ctx.messages()
+    assert any(
+        isinstance(m, AssistantMessage) and m.text == "Priya owns billing."
+        for m in messages
+    )
+    assert isinstance(messages[-1], ToolMessage)
+    assert messages[-1].tool_call_id == "ask_user_question_resume"
+    assert messages[-2].tool_calls[0].id == "ask_user_question_resume"
+
+
+@pytest.mark.asyncio
 async def test_inject_strips_fallback_when_history_has_no_tool_call() -> None:
     ctx = ContextManager()
     await ctx.add(UserMessage(content="hi i ask questions"))

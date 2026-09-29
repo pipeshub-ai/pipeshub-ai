@@ -12,7 +12,7 @@ import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel } from './artifacts-panel';
-import { AskUserQuestionCard } from './ask-user-question-card';
+import { AskUserQuestionCard, askUserQuestionOwnsRow } from './ask-user-question-card';
 import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity } from './agent-activity';
 import { ExpandableUserQuery } from './expandable-user-query';
 import { streamMessageForSlot } from '../../streaming';
@@ -374,20 +374,12 @@ export const ChatResponse = React.memo(function ChatResponse({
   const pendingAskUserQuestion = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.pendingAskUserQuestion ?? null : null
   );
-  const regenerateMessageId = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.regenerateMessageId ?? null : null
-  );
 
-  const askQuestionMatchesRow =
-    Boolean(
-      pendingAskUserQuestion &&
-      (
-        (citationMessageRowKey &&
-          pendingAskUserQuestion.assistantMessageId === citationMessageRowKey) ||
-        (messageId && pendingAskUserQuestion.assistantMessageId === messageId) ||
-        (isStreaming && Boolean(regenerateMessageId))
-      )
-    );
+  const askQuestionMatchesRow = askUserQuestionOwnsRow(
+    pendingAskUserQuestion,
+    citationMessageRowKey,
+    messageId,
+  );
   const questionPending =
     askQuestionMatchesRow && pendingAskUserQuestion?.status === 'pending';
 

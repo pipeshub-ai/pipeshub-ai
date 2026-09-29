@@ -281,6 +281,59 @@ export const updateMessageById = async (
   );
 };
 
+const hasAskUserQuestionTool = (msg: IMessage | undefined): boolean =>
+  Boolean(msg?.tools?.some((tool) => tool.toolName?.includes('ask_user_question')));
+
+/**
+ * The `ask_user_question` `tool_call` rows sitting either side of one bot turn,
+ * which a regeneration of that turn makes stale.
+ *
+ * `updateMessageById` replaces the answer in place, but those rows are separate
+ * documents and `appendMessages` can only add more (a fresh `seq` each time).
+ * Left alone, every regeneration of a card turn keeps the discarded run's
+ * questions, so `formatPreviousConversations` replays them to the model and a
+ * reload restores a card the current answer never asked. The replacement answer
+ * carries the payload itself — see `attachAskUserQuestionToMessage`.
+ *
+ * @param messages chronological (`seq`-ascending) window containing the turn
+ */
+export const staleAskUserQuestionToolCallIds = (
+  messages: Array<IMessage & { _id?: mongoose.Types.ObjectId }>,
+  botMessageId: mongoose.Types.ObjectId | string,
+): mongoose.Types.ObjectId[] => {
+  const botIndex = messages.findIndex(
+    (msg) => msg._id?.toString() === botMessageId.toString(),
+  );
+  if (botIndex < 0) {
+    return [];
+  }
+  const stale: mongoose.Types.ObjectId[] = [];
+  const collect = (from: number, step: number): void => {
+    for (let i = from; i >= 0 && i < messages.length; i += step) {
+      const row = messages[i];
+      if (row?.messageType !== 'tool_call') break;
+      if (row._id && hasAskUserQuestionTool(row)) stale.push(row._id);
+    }
+  };
+  collect(botIndex - 1, -1);
+  collect(botIndex + 1, 1);
+  return stale;
+};
+
+export const deleteMessagesById = async (
+  messageIds: mongoose.Types.ObjectId[],
+  mongoSession?: ClientSession | null,
+): Promise<number> => {
+  if (messageIds.length === 0) {
+    return 0;
+  }
+  const result = await ChatSessionMessage.deleteMany(
+    { _id: { $in: messageIds } },
+    mongoSession ? { session: mongoSession } : undefined,
+  );
+  return result.deletedCount ?? 0;
+};
+
 /** Append a feedback entry to one message's `feedback` array. */
 export const appendMessageFeedback = async (
   messageId: mongoose.Types.ObjectId | string,
@@ -683,10 +736,10 @@ const toolResultsFromParts = (
 
 type PreviousToolResult = ReturnType<typeof toolResultsFromParts>[number];
 
-const askToolResultsFromToolCall = (
+const askToolResults = (
   msg: IMessage | undefined,
 ): PreviousToolResult[] => {
-  if (!msg || msg.messageType !== 'tool_call' || !msg.tools?.length) {
+  if (!msg?.tools?.length) {
     return [];
   }
   return msg.tools
@@ -704,7 +757,34 @@ const askToolResultsFromToolCall = (
     }));
 };
 
-const withAdjacentAskToolResults = (
+/**
+ * The questions one bot turn asked, from whichever copy is newest.
+ *
+ * Regeneration stamps the payload on the answer itself; the live path saves it
+ * as a `tool_call` row just before the answer. Trailing `tool_call` rows are
+ * what regenerations appended before `staleAskUserQuestionToolCallIds` —
+ * only the last of those is the turn's current question, the rest belong to
+ * discarded runs.
+ */
+const askResultsForTurn = (
+  messages: IMessage[],
+  botIndex: number,
+): PreviousToolResult[] => {
+  const own = askToolResults(messages[botIndex]);
+  if (own.length) return own;
+  let trailing: PreviousToolResult[] = [];
+  for (let j = botIndex + 1; j < messages.length; j++) {
+    if (messages[j]?.messageType !== 'tool_call') break;
+    const rows = askToolResults(messages[j]);
+    if (rows.length) trailing = rows;
+  }
+  if (trailing.length) return trailing;
+  return messages[botIndex - 1]?.messageType === 'tool_call'
+    ? askToolResults(messages[botIndex - 1])
+    : [];
+};
+
+const withTurnAskToolResults = (
   messages: IMessage[],
   botIndex: number,
   existing: PreviousToolResult[],
@@ -712,12 +792,7 @@ const withAdjacentAskToolResults = (
   if (existing.some((row) => row.tool_name?.includes('ask_user_question'))) {
     return existing;
   }
-  const extra = [...askToolResultsFromToolCall(messages[botIndex - 1])];
-  for (let j = botIndex + 1; j < messages.length; j++) {
-    const next = messages[j];
-    if (next?.messageType !== 'tool_call') break;
-    extra.push(...askToolResultsFromToolCall(next));
-  }
+  const extra = askResultsForTurn(messages, botIndex);
   return extra.length ? [...existing, ...extra] : existing;
 };
 
@@ -731,8 +806,9 @@ export const formatPreviousConversations = (messages: IMessage[]) => {
     let toolResults: PreviousToolResult[] =
       msg.messageType === 'bot_response' ? toolResultsFromParts(msg.parts) : [];
     if (msg.messageType === 'bot_response') {
-      // Regen persists ask_user_question after the bot; resume needs it on this turn.
-      toolResults = withAdjacentAskToolResults(messages, i, toolResults);
+      // The questions row is a sibling of the answer, not part of its `parts`;
+      // a resume needs it on this turn.
+      toolResults = withTurnAskToolResults(messages, i, toolResults);
     }
     result.push({
       content: msg.content,
@@ -2201,40 +2277,6 @@ export const sendSSECompleteEvent = (
 /**
  * Handle regeneration stream data events
  */
-const persistAskUserQuestionToolCall = (
-  conversation: IChatSessionDocument,
-  payload: unknown,
-  requestId: string,
-): void => {
-  void appendMessages(
-    conversation._id as mongoose.Types.ObjectId,
-    conversation.orgId,
-    [
-      {
-        messageType: 'tool_call' as const,
-        content: '',
-        tools: [
-          {
-            toolName: 'ask_user_question',
-            toolResult: payload,
-          },
-        ],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    ],
-  ).catch((saveErr: any) => {
-    logger.error(
-      'Failed to persist ask_user_question tool_call message during regenerate',
-      {
-        requestId,
-        conversationId: conversation._id,
-        error: saveErr?.message,
-      },
-    );
-  });
-};
-
 export const handleRegenerationStreamData = (
   chunk: Buffer,
   buffer: string,
@@ -2334,11 +2376,6 @@ export const handleRegenerationStreamData = (
           if (eventData?.name === 'ask_user_question' && eventData.value) {
             const payload = eventData.value.toolData ?? eventData.value;
             onAskUserQuestion?.(payload);
-            persistAskUserQuestionToolCall(
-              existingConversation,
-              payload,
-              requestId,
-            );
           }
         } catch (parseErr: any) {
           logger.warn('Failed to parse CUSTOM event data during regenerate', {
@@ -2434,11 +2471,6 @@ export const handleRegenerationStreamData = (
           ) {
             const payload = eventData.toolData ?? eventData;
             onAskUserQuestion?.(payload);
-            persistAskUserQuestionToolCall(
-              existingConversation,
-              payload,
-              requestId,
-            );
           }
         } catch (parseErr: any) {
           logger.warn(
@@ -2475,6 +2507,7 @@ export const handleRegenerationSuccess = async (
   session: ClientSession | null,
   modelInfo?: IAIModel,
   askUserQuestionPayload?: unknown,
+  staleAskToolCallIds?: mongoose.Types.ObjectId[],
 ): Promise<{
   conversation: any;
   savedCitations: ICitation[];
@@ -2515,6 +2548,21 @@ export const handleRegenerationSuccess = async (
     throw new InternalServerError(
       'Failed to update conversation with regenerated response: message not found',
     );
+  }
+
+  // The replacement answer carries its own questions payload, so the rows the
+  // discarded run left beside it are stale. Non-fatal: an answer the user can
+  // already see must not fail on transcript housekeeping.
+  if (staleAskToolCallIds?.length) {
+    try {
+      await deleteMessagesById(staleAskToolCallIds, session);
+    } catch (cleanupErr: any) {
+      logger.warn('Failed to drop stale ask_user_question rows after regenerate', {
+        conversationId: existingConversation._id,
+        messageId,
+        error: cleanupErr?.message,
+      });
+    }
   }
 
   if (modelInfo) {

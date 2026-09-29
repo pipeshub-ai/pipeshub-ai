@@ -1214,9 +1214,17 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
     if ctx is None:
         return
     messages = await ctx.messages()
+    # Only the newest user turn can still be parked on a card. Binding to an
+    # older turn's call — a card the user left unanswered before chatting on —
+    # would truncate every turn since; the synthetic branch below keeps them.
+    turn_start = 0
+    for i, msg in enumerate(messages):
+        if isinstance(msg, UserMessage):
+            turn_start = i
     keep_through: int | None = None
     tool_call_id: str | None = None
-    for i, msg in enumerate(messages):
+    for i in range(turn_start, len(messages)):
+        msg = messages[i]
         if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
             continue
         for call in reversed(msg.tool_calls):

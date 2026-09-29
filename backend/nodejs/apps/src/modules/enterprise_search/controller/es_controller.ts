@@ -13,6 +13,7 @@ import {
   sendSSECompleteEvent,
   handleRegenerationStreamData,
   handleRegenerationSuccess,
+  staleAskUserQuestionToolCallIds,
   handleRegenerationError,
 } from './../utils/utils';
 import sharp from 'sharp';
@@ -3165,7 +3166,11 @@ async function regenerateAnswersInternal(
   // Helper function to validate and get conversation
   async function performRegenerateAnswersValidation(
     session?: ClientSession | null,
-  ): Promise<{ conversation: IChatSessionDocument; userQuery: IMessage }> {
+  ): Promise<{
+    conversation: IChatSessionDocument;
+    userQuery: IMessage;
+    staleAskToolCallIds: mongoose.Types.ObjectId[];
+  }> {
     if (!conversationId) {
       throw new BadRequestError('Conversation ID is required');
     }
@@ -3227,7 +3232,14 @@ async function regenerateAnswersInternal(
       timestamp: new Date().toISOString(),
     });
 
-    return { conversation, userQuery };
+    // Computed here so the replacement answer costs no extra read: this tail is
+    // the turn as it stands before the regeneration overwrites it.
+    const staleAskToolCallIds = staleAskUserQuestionToolCallIds(
+      [...recentMessages].reverse(),
+      lastBot._id,
+    );
+
+    return { conversation, userQuery, staleAskToolCallIds };
   }
 
   try {
@@ -3245,6 +3257,7 @@ async function regenerateAnswersInternal(
     let validationResult: {
       conversation: IChatSessionDocument;
       userQuery: IMessage;
+      staleAskToolCallIds: mongoose.Types.ObjectId[];
     } | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
@@ -3263,6 +3276,7 @@ async function regenerateAnswersInternal(
     }
     existingConversation = validationResult.conversation;
     const userQuery = validationResult.userQuery;
+    const staleAskToolCallIds = validationResult.staleAskToolCallIds;
 
     // Format previous conversations up to this message (exclude last bot
     // response and the user query that triggered it)
@@ -3447,6 +3461,7 @@ async function regenerateAnswersInternal(
               session,
               modelInfo,
               askUserQuestionPayload,
+              staleAskToolCallIds,
             );
 
           // Send final response event with the complete conversation data

@@ -508,6 +508,62 @@ describe('loadHistoricalMessages', () => {
     ).toEqual(['q-proceed', 'q-topic']);
   });
 
+  it('keeps the card on its own row when the user chats on past an unanswered question', () => {
+    // The live path saves the new question's `tool_call` BEFORE the bot row, so
+    // the resume's reply is merged away into the card row. The card must stay
+    // addressed to the surviving row: a resume that binds to the merged-away id
+    // cannot find it and lands the answer on the newest turn instead.
+    const first = {
+      name: 'ask_user_question',
+      questions: [{
+        uuid: 'q-help',
+        question: 'What would you like help with today?',
+        multiSelect: false,
+        options: [{ id: 'web', label: 'Search the public web', isUserInput: false }],
+      }],
+    };
+    const second = {
+      name: 'ask_user_question',
+      questions: [{
+        uuid: 'q-topic',
+        question: 'What should I search for?',
+        multiSelect: false,
+        options: [{ id: 'weather', label: 'Weather in Pune', isUserInput: false }],
+      }],
+    };
+    const { messages, unansweredAskUserQuestion } = loadHistoricalMessages([
+      message({ _id: 'q1', messageType: 'user_query', content: 'ask me one question' }),
+      message({
+        _id: 't1',
+        messageType: 'tool_call',
+        tools: [{ toolName: 'ask_user_question', toolResult: first }],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'a1', messageType: 'bot_response', content: 'Here are a few ways I can help.' }),
+      message({
+        _id: 'sel',
+        messageType: 'user_query',
+        content: 'User selections:\n1. "What would you like help with today?" → Search the public web',
+      }),
+      message({
+        _id: 't2',
+        messageType: 'tool_call',
+        tools: [{ toolName: 'ask_user_question', toolResult: second }],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'a2', messageType: 'bot_response', content: 'What should I search for?' }),
+      message({ _id: 'q2', messageType: 'user_query', content: 'you know ki i am in pune' }),
+      message({ _id: 'a3', messageType: 'bot_response', content: 'Noted, you are in Pune.' }),
+      message({ _id: 'q3', messageType: 'user_query', content: 'where i am living' }),
+      message({ _id: 'a4', messageType: 'bot_response', content: 'Pune.' }),
+    ]);
+
+    const rowIds = messages.filter((m) => m.role === 'assistant').map((m) => m.id);
+    expect(rowIds).toEqual(['a1', 'a3', 'a4']);
+    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('a1');
+    expect(unansweredAskUserQuestion?.answers).toMatchObject({
+      'q-help': { questionUuid: 'q-help', selectedOptionIds: ['web'], userInputs: {} },
+    });
+  });
+
   it('still shows an error row that follows a real user message', () => {
     const { messages } = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'hello' }),
